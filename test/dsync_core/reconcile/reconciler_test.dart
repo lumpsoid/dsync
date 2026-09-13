@@ -43,18 +43,34 @@ void main() {
 
     test('unchanged / created copies B to A', () {
       final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.unchanged)],
-        [entry('f', ScanStatus.created)],
+        [entry('f', ScanStatus.unchanged, hash: 'a')],
+        [entry('f', ScanStatus.created, hash: 'b')],
       );
       expect(actionFor(plan, 'f'), ActionType.copyBtoA);
     });
 
     test('unchanged / modified copies B to A', () {
       final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.unchanged)],
-        [entry('f', ScanStatus.modified)],
+        [entry('f', ScanStatus.unchanged, hash: 'a')],
+        [entry('f', ScanStatus.modified, hash: 'b')],
       );
       expect(actionFor(plan, 'f'), ActionType.copyBtoA);
+    });
+
+    test('unchanged / created with same hash is commit-only, no transfer', () {
+      final plan = reconciler.reconcile(
+        [entry('f', ScanStatus.unchanged, hash: 'same')],
+        [entry('f', ScanStatus.created, hash: 'same')],
+      );
+      expect(actionFor(plan, 'f'), ActionType.commitOnly);
+    });
+
+    test('unchanged / modified with same hash is commit-only, no transfer', () {
+      final plan = reconciler.reconcile(
+        [entry('f', ScanStatus.unchanged, hash: 'same')],
+        [entry('f', ScanStatus.modified, hash: 'same')],
+      );
+      expect(actionFor(plan, 'f'), ActionType.commitOnly);
     });
 
     test('unchanged / deleted deletes on A', () {
@@ -69,18 +85,34 @@ void main() {
   group('created / modified rows', () {
     test('created / unchanged copies A to B', () {
       final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.created)],
-        [entry('f', ScanStatus.unchanged)],
+        [entry('f', ScanStatus.created, hash: 'a')],
+        [entry('f', ScanStatus.unchanged, hash: 'b')],
       );
       expect(actionFor(plan, 'f'), ActionType.copyAtoB);
     });
 
     test('modified / unchanged copies A to B', () {
       final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.modified)],
-        [entry('f', ScanStatus.unchanged)],
+        [entry('f', ScanStatus.modified, hash: 'a')],
+        [entry('f', ScanStatus.unchanged, hash: 'b')],
       );
       expect(actionFor(plan, 'f'), ActionType.copyAtoB);
+    });
+
+    test('created / unchanged with same hash is commit-only, no transfer', () {
+      final plan = reconciler.reconcile(
+        [entry('f', ScanStatus.created, hash: 'same')],
+        [entry('f', ScanStatus.unchanged, hash: 'same')],
+      );
+      expect(actionFor(plan, 'f'), ActionType.commitOnly);
+    });
+
+    test('modified / unchanged with same hash is commit-only, no transfer', () {
+      final plan = reconciler.reconcile(
+        [entry('f', ScanStatus.modified, hash: 'same')],
+        [entry('f', ScanStatus.unchanged, hash: 'same')],
+      );
+      expect(actionFor(plan, 'f'), ActionType.commitOnly);
     });
 
     test('created / created with same hash is commit-only, no transfer', () {

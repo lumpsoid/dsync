@@ -76,13 +76,17 @@ void _resolveCell(
       return;
     case (ScanStatus.unchanged, ScanStatus.created) ||
         (ScanStatus.unchanged, ScanStatus.modified):
-      act(ActionType.copyBtoA);
+      entryA.hash == entryB.hash
+          ? act(ActionType.commitOnly)
+          : act(ActionType.copyBtoA);
     case (ScanStatus.unchanged, ScanStatus.deleted):
       act(ActionType.deleteOnA);
 
     case (ScanStatus.created, ScanStatus.unchanged) ||
         (ScanStatus.modified, ScanStatus.unchanged):
-      act(ActionType.copyAtoB);
+      entryA.hash == entryB.hash
+          ? act(ActionType.commitOnly)
+          : act(ActionType.copyAtoB);
 
     case (ScanStatus.created, ScanStatus.created) ||
         (ScanStatus.created, ScanStatus.modified) ||
