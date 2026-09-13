@@ -43,9 +43,35 @@ void main() {
   );
 
   group('hello', () {
-    test('is a no-op', () async {
-      await agent().hello();
-    });
+    test(
+      'reports a null last-commit time when the archive has no log yet',
+      () async {
+        final info = await agent().hello();
+
+        expect(info.lastCommitTime, isNull);
+      },
+    );
+
+    test(
+      "reports the archive log's mtime once a commit has happened",
+      () async {
+        await archiveStore.load();
+        await archiveStore.commitUpsert(
+          const ArchiveEntry(
+            path: 'a.txt',
+            size: 1,
+            mtime: 1,
+            mode: 420,
+            hash: 'h',
+          ),
+        );
+
+        final expected = (await archiveLog.stat()).modified;
+        final info = await agent().hello();
+
+        expect(info.lastCommitTime, expected);
+      },
+    );
   });
 
   group('lock/unlock', () {

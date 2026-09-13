@@ -6,6 +6,8 @@ import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -15,6 +17,15 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
+
+/// The spec every test's `hello` prologue sends, when the test doesn't care
+/// what it contains.
+const _testSpec = ReplicaSpec(
+  rootPath: '/replica',
+  profileId: 'notes',
+  side: 'a',
+  jobs: 2,
+);
 
 void main() {
   late _FakeAgent agent;
@@ -27,8 +38,17 @@ void main() {
     agent = _FakeAgent();
     clientFrames = StreamIterator(FrameCodec().decode(client.input));
 
-    unawaited(AgentServer().serve(b, agent));
+    unawaited(AgentServer().serve(b, (_) => agent));
     await performVersionHandshake(client, clientFrames);
+    await client.send(
+      FrameCodec().encode(
+        AgentRequest('hello', {
+          'replica': replicaSpecToJson(_testSpec),
+        }).toFrame(),
+      ),
+    );
+    await clientFrames.moveNext();
+    expect(AgentResult.fromFrame(clientFrames.current), isA<AgentSuccess>());
   });
 
   Future<AgentResult> call(
@@ -247,6 +267,61 @@ void main() {
       expect(result.error, contains('locked elsewhere'));
     });
   });
+
+  // Separate from the suites above: these drive their own [AgentServer.serve]
+  // session, since the `hello` prologue itself is what's under test — every
+  // other group's `setUp` already assumes it succeeds.
+  group('hello prologue', () {
+    test('builds the agent from the spec the client sent', () async {
+      final (client, server) = InMemoryChannel.pair();
+      final clientFrames = StreamIterator(FrameCodec().decode(client.input));
+      ReplicaSpec? received;
+      unawaited(
+        AgentServer().serve(server, (spec) {
+          received = spec;
+          return _FakeAgent();
+        }),
+      );
+      await performVersionHandshake(client, clientFrames);
+
+      const spec = ReplicaSpec(
+        rootPath: '~/notes',
+        profileId: 'notes',
+        side: 'b',
+        jobs: 3,
+      );
+      await client.send(
+        FrameCodec().encode(
+          AgentRequest('hello', {'replica': replicaSpecToJson(spec)}).toFrame(),
+        ),
+      );
+      await clientFrames.moveNext();
+      expect(AgentResult.fromFrame(clientFrames.current), isA<AgentSuccess>());
+
+      expect(received?.rootPath, '~/notes');
+      expect(received?.profileId, 'notes');
+      expect(received?.side, 'b');
+      expect(received?.jobs, 3);
+    });
+
+    test('a first frame that is not hello gets an AgentFailure and ends the '
+        'session', () async {
+      final (client, server) = InMemoryChannel.pair();
+      final clientFrames = StreamIterator(FrameCodec().decode(client.input));
+      final serveFuture = AgentServer().serve(server, (_) => _FakeAgent());
+      await performVersionHandshake(client, clientFrames);
+
+      await client.send(
+        FrameCodec().encode(const AgentRequest('lock').toFrame()),
+      );
+      await clientFrames.moveNext();
+      expect(AgentResult.fromFrame(clientFrames.current), isA<AgentFailure>());
+
+      // No dispatch loop is ever entered, so `serve` itself returns —
+      // nothing is left reading the channel for a next request.
+      await expectLater(serveFuture, completes);
+    });
+  });
 }
 
 /// A minimal in-memory [Agent] fake — just enough to drive [AgentServer]'s
@@ -262,7 +337,7 @@ class _FakeAgent implements Agent {
   Object? writeError;
 
   @override
-  Future<void> hello() async {}
+  Future<ReplicaInfo> hello() async => const ReplicaInfo();
 
   @override
   Future<void> lock() async {

@@ -64,6 +64,12 @@ abstract class ArchiveStore {
 
   /// The state resulting from the commits applied since [load].
   Archive snapshot();
+
+  /// The on-disk log's last-modified time, or `null` if no commit has ever
+  /// happened (SPEC §8.2). Read straight off disk rather than tracked in
+  /// memory, since `Agent.hello` — which needs this — may run before [load]
+  /// does.
+  Future<DateTime?> lastCommitTime();
 }
 
 /// Thrown by [ArchiveStore.load] when the stored archive does not belong to

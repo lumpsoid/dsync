@@ -290,6 +290,23 @@ void main() {
     );
   });
 
+  group('lastCommitTime', () {
+    test('is null when no log file exists', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+
+      expect(await store.lastCommitTime(), isNull);
+    });
+
+    test("is the log file's mtime once a commit has happened", () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+
+      final expected = (await logFile().stat()).modified;
+      expect(await store.lastCommitTime(), expected);
+    });
+  });
+
   group('compact', () {
     const updated = ArchiveEntry(
       path: 'a.txt',

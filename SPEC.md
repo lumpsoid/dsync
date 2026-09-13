@@ -43,6 +43,7 @@ A location `user@host:path` is resolved before the run. If `host` is `localhost`
 - v0 transport: spawn the system `ssh` executable. The channel is a bidirectional byte stream; the transport is behind a `Channel` interface so a Dart SSH client or a plain socket can replace `ssh` later (needed for the Flutter head, which cannot rely on a system `ssh` binary — deferred).
 - Protocol: framed messages over the stream. Frame = 1 byte type + 4 byte big-endian length + payload. Type `0` = UTF-8 JSON control message, type `1` = raw file bytes. First exchange is a version handshake; mismatched protocol versions abort the run.
 - Agent operations: `hello`, `lock`, `unlock`, `scan`, `readFile` (streamed), `writeFile` (streamed, temp + rename, set mtime/mode), `delete`, `removeEmptyDirs`, `archiveCommit`.
+- `hello` carries the replica this connection should serve (root path — unexpanded — profile id, side, job count) and replies with that replica's archive last-commit time (or `null`), since the initiator cannot `stat` an archive on the remote host.
 
 ### 4.3 Locking
 Each agent takes a lock file in its state directory for the replica before scanning and releases it at exit. A held lock aborts the run with a fatal error.

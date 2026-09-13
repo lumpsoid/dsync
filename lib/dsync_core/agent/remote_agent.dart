@@ -4,6 +4,8 @@ import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -24,6 +26,7 @@ import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 /// SPEC §7.6 has the run starting its next action immediately.
 class RemoteAgent implements Agent {
   final Channel _channel;
+  final ReplicaSpec _spec;
   final StreamIterator<Frame> _frames;
 
   /// Completes when the operation currently holding the wire is finished with
@@ -31,8 +34,12 @@ class RemoteAgent implements Agent {
   /// interleaving.
   Future<void> _wire = Future<void>.value();
 
-  RemoteAgent(Channel channel)
+  /// [spec] identifies the replica this agent drives on the other end of
+  /// [channel] — sent as part of [hello], since nothing else tells the peer
+  /// a root path, profile id, side, or job count (SPEC §4.2).
+  RemoteAgent(Channel channel, ReplicaSpec spec)
     : _channel = channel,
+      _spec = spec,
       _frames = StreamIterator(FrameCodec().decode(channel.input));
 
   /// Waits for the wire, then hands back the callback that releases it.
@@ -46,10 +53,15 @@ class RemoteAgent implements Agent {
   }
 
   @override
-  Future<void> hello() async {
+  Future<ReplicaInfo> hello() async {
     final release = await _acquireWire();
     try {
       await performVersionHandshake(_channel, _frames);
+      // Inlined rather than a call to `_call`, which would try to acquire
+      // the wire a second time and deadlock against the acquisition above —
+      // the handshake and `hello` share one acquisition (SPEC §4.2).
+      await _send(AgentRequest('hello', {'replica': replicaSpecToJson(_spec)}));
+      return replicaInfoFromJson(await _awaitResult());
     } finally {
       release();
     }

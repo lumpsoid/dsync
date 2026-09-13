@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 
@@ -14,10 +15,16 @@ import 'package:dsync/dsync_core/models/scan_result.dart';
 /// and this replica's `ArchiveStore`. Interface only — see the `LocalAgent`
 /// and `RemoteAgent` tasks for implementations.
 abstract class Agent {
-  /// Confirms the connection is usable, per SPEC §4.2's version handshake. A
-  /// no-op for an in-process agent; for a remote one, negotiates protocol
-  /// compatibility and aborts (fatal, SPEC §11.5 exit 3) on a mismatch.
-  Future<void> hello();
+  /// Confirms the connection is usable and reports this replica's own state,
+  /// per SPEC §4.2's `hello`. A no-op beyond that for an in-process agent;
+  /// for a remote one, this is the version handshake plus the `hello`
+  /// exchange that tells the other end which replica to serve, and aborts
+  /// (fatal, SPEC §11.5 exit 3) on a version mismatch or a rejected reply.
+  ///
+  /// Returns this replica's [ReplicaInfo] — currently just its archive's
+  /// last-commit time, which the initiator cannot otherwise learn about a
+  /// replica that lives on the remote host.
+  Future<ReplicaInfo> hello();
 
   /// Takes this replica's lock file, per SPEC §4.3. Throws if another run
   /// already holds it — fatal for the caller (SPEC §11.5 exit 3).

@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -379,10 +380,10 @@ class _RecordingAgent implements Agent {
   _RecordingAgent(this._wrapped, {this.helloError});
 
   @override
-  Future<void> hello() async {
+  Future<ReplicaInfo> hello() async {
     calls.add('hello');
     if (helloError != null) throw helloError!;
-    await _wrapped.hello();
+    return _wrapped.hello();
   }
 
   @override

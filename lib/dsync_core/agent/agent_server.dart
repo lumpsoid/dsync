@@ -2,21 +2,59 @@ import 'dart:async';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 
 /// The remote end of the framed protocol (SPEC §4.2): performs the version
-/// handshake, then reads control-frame requests off a [Channel] and
-/// dispatches each to the [Agent] it was started with — in practice always a
-/// `LocalAgent`, so what a `RemoteAgent` on the other end drives really is
-/// this replica's filesystem.
+/// handshake, then the required `hello` prologue, then reads control-frame
+/// requests off a [Channel] and dispatches each to the [Agent] `hello` built
+/// — in practice always a `LocalAgent`, so what a `RemoteAgent` on the other
+/// end drives really is this replica's filesystem.
 class AgentServer {
-  /// Serves [agent] over [channel] until the channel's input closes.
-  Future<void> serve(Channel channel, Agent agent) async {
+  /// Serves a replica over [channel] until the channel's input closes.
+  ///
+  /// After the version handshake, the very next frame must be a `hello`
+  /// request carrying a [ReplicaSpec] (SPEC §4.2); [buildAgent] turns that
+  /// into the [Agent] the rest of the session dispatches to. `hello` is a
+  /// callback rather than an interface — nothing here has a second
+  /// implementation, the same reason `RunController`'s `Presenter` typedef is
+  /// a callback rather than an interface — and requiring it as a prologue
+  /// means this method never holds a nullable or `late` [Agent]: by the time
+  /// the dispatch loop starts, one already exists.
+  ///
+  /// A first frame that is not `hello` ends the session with an
+  /// [AgentFailure] reply rather than dispatching against no agent at all.
+  Future<void> serve(
+    Channel channel,
+    Agent Function(ReplicaSpec spec) buildAgent,
+  ) async {
     final frames = StreamIterator(FrameCodec().decode(channel.input));
     await performVersionHandshake(channel, frames);
+
+    if (!await frames.moveNext()) {
+      throw StateError('Channel closed before hello arrived');
+    }
+    final request = AgentRequest.fromFrame(frames.current);
+    if (request.op != 'hello') {
+      await _reply(
+        channel,
+        AgentFailure(
+          'Expected "hello" as the first operation, got '
+          '"${request.op}"',
+        ),
+      );
+      return;
+    }
+
+    final spec = replicaSpecFromJson(
+      request.params['replica'] as Map<String, dynamic>,
+    );
+    final agent = buildAgent(spec);
+    final info = await agent.hello();
+    await _reply(channel, AgentSuccess(replicaInfoToJson(info)));
 
     while (await frames.moveNext()) {
       await _dispatch(channel, frames, agent, frames.current);

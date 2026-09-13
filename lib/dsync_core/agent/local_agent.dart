@@ -4,6 +4,7 @@ import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -38,7 +39,9 @@ class LocalAgent implements Agent {
   }) : scanner = scanner ?? Scanner();
 
   @override
-  Future<void> hello() async {}
+  Future<ReplicaInfo> hello() async {
+    return ReplicaInfo(lastCommitTime: await archiveStore.lastCommitTime());
+  }
 
   @override
   Future<void> lock() => replicaLock.acquire();

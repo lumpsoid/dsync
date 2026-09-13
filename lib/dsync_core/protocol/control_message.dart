@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -78,6 +80,36 @@ class AgentFailure extends AgentResult {
 
 Map<String, dynamic> _decodeControlJson(Frame frame) =>
     Map<String, dynamic>.from(jsonDecode(utf8.decode(frame.payload)) as Map);
+
+/// The replica identification sent as `hello`'s `replica` parameter (SPEC
+/// §4.2), so the peer can construct the `LocalAgent` it is about to be asked
+/// to drive.
+Map<String, dynamic> replicaSpecToJson(ReplicaSpec spec) => {
+  'rootPath': spec.rootPath,
+  'profileId': spec.profileId,
+  'side': spec.side,
+  'jobs': spec.jobs,
+};
+
+ReplicaSpec replicaSpecFromJson(Map<String, dynamic> json) => ReplicaSpec(
+  rootPath: json['rootPath'] as String,
+  profileId: json['profileId'] as String,
+  side: json['side'] as String,
+  jobs: json['jobs'] as int,
+);
+
+/// What `hello` replies with (SPEC §4.2): the replying replica's own
+/// [ReplicaInfo].
+Map<String, dynamic> replicaInfoToJson(ReplicaInfo info) => {
+  if (info.lastCommitTime != null)
+    'lastCommitTime': info.lastCommitTime!.microsecondsSinceEpoch,
+};
+
+ReplicaInfo replicaInfoFromJson(Map<String, dynamic> json) => ReplicaInfo(
+  lastCommitTime: json['lastCommitTime'] == null
+      ? null
+      : DateTime.fromMicrosecondsSinceEpoch(json['lastCommitTime'] as int),
+);
 
 /// Thrown by `RemoteAgent` when the peer reports an [AgentFailure] for an
 /// operation (SPEC §4.2) — fatal for the caller (SPEC §11.5 exit 3), the same

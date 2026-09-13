@@ -6,12 +6,21 @@ import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:test/test.dart';
+
+const _testSpec = ReplicaSpec(
+  rootPath: '/replica',
+  profileId: 'notes',
+  side: 'a',
+  jobs: 2,
+);
 
 void main() {
   late _FakeAgent backing;
@@ -20,9 +29,27 @@ void main() {
   setUp(() async {
     final (clientChannel, serverChannel) = InMemoryChannel.pair();
     backing = _FakeAgent();
-    unawaited(AgentServer().serve(serverChannel, backing));
-    remote = RemoteAgent(clientChannel);
+    unawaited(AgentServer().serve(serverChannel, (_) => backing));
+    remote = RemoteAgent(clientChannel, _testSpec);
     await remote.hello();
+  });
+
+  group('hello', () {
+    test('returns the ReplicaInfo the backing agent reports', () async {
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final backingWithCommit = _FakeAgent()
+        ..helloInfo = ReplicaInfo(lastCommitTime: DateTime.utc(2024, 1, 1));
+      unawaited(AgentServer().serve(serverChannel, (_) => backingWithCommit));
+
+      final info = await RemoteAgent(clientChannel, _testSpec).hello();
+
+      // The instant survives the wire; whether it comes back UTC or local
+      // depends on `DateTime.fromMicrosecondsSinceEpoch`'s default.
+      expect(
+        info.lastCommitTime?.isAtSameMomentAs(DateTime.utc(2024, 1, 1)),
+        isTrue,
+      );
+    });
   });
 
   group('lock / unlock', () {
@@ -142,9 +169,10 @@ class _FakeAgent implements Agent {
   final Map<String, ArchiveEntry> archive = {};
   String? removedEmptyDirsFor;
   Object? lockError;
+  ReplicaInfo helloInfo = const ReplicaInfo();
 
   @override
-  Future<void> hello() async {}
+  Future<ReplicaInfo> hello() async => helloInfo;
 
   @override
   Future<void> lock() async {
@@ -158,7 +186,8 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<ScanResult> scan(RuleSet rules) async => ScanResult(entries: scanResult);
+  Future<ScanResult> scan(RuleSet rules) async =>
+      ScanResult(entries: scanResult);
 
   @override
   Stream<List<int>> readFile(String path) {

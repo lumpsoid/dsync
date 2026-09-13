@@ -29,7 +29,9 @@ typedef Presenter = Future<List<PlanAction>> Function(Plan plan);
 /// in this codebase yet (no CLI, no profile parser) — out of scope here.
 /// [agentA]/[agentB] are already-constructed [Agent]s the caller hands in;
 /// "connect" is [Agent.hello] (SPEC §4.2), a no-op for an in-process agent
-/// and a version handshake for a remote one.
+/// and a version handshake plus replica identification for a remote one.
+/// Each call also returns a `ReplicaInfo`, discarded here for now — a later
+/// task (the run header, SPEC §11.4) is what consumes it.
 ///
 /// Locking is symmetric on every exit path (SPEC §4.3): if [agentA]'s lock
 /// succeeds and [agentB]'s then throws, [agentA] is still unlocked before

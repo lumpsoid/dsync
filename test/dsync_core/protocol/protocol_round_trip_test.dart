@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -33,6 +34,16 @@ void main() {
     rootPath: '/does/not/matter',
   );
 
+  // The agent this session drives is already built — `connectAgent`'s caller
+  // fixes it — so the spec's content plays no role here beyond crossing the
+  // wire as valid JSON.
+  const testSpec = ReplicaSpec(
+    rootPath: '/does/not/matter',
+    profileId: 'notes',
+    side: 'a',
+    jobs: 2,
+  );
+
   RemoteAgent connectAgent(Directory dir) {
     final localAgent = LocalAgent(
       rootPath: Directory('${dir.path}/replica').path,
@@ -43,8 +54,8 @@ void main() {
       replicaLock: ReplicaLock(File('${dir.path}/replica.lock')),
     );
     final (clientChannel, serverChannel) = InMemoryChannel.pair();
-    unawaited(AgentServer().serve(serverChannel, localAgent));
-    return RemoteAgent(clientChannel);
+    unawaited(AgentServer().serve(serverChannel, (_) => localAgent));
+    return RemoteAgent(clientChannel, testSpec);
   }
 
   setUp(() async {
@@ -86,7 +97,7 @@ void main() {
       );
 
       await expectLater(
-        RemoteAgent(client).hello(),
+        RemoteAgent(client, testSpec).hello(),
         throwsA(isA<ProtocolVersionMismatchException>()),
       );
     });
@@ -132,7 +143,8 @@ void main() {
       await Link('${replicaDir.path}/link.txt')
           .create('${replicaDir.path}/target.txt');
 
-      final entries = (await remote.scan(RuleSet(follow: ['link.txt']))).entries;
+      final entries = (await remote.scan(RuleSet(follow: ['link.txt'])))
+          .entries;
 
       expect(entries.map((e) => e.path), contains('link.txt'));
     }, testOn: 'linux');

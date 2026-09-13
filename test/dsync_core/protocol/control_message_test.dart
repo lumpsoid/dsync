@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -115,6 +117,48 @@ void main() {
       expect(decoded.size, metadata.size);
       expect(decoded.mtime, metadata.mtime);
       expect(decoded.mode, metadata.mode);
+    });
+  });
+
+  group('replicaSpecToJson / replicaSpecFromJson', () {
+    test('round-trips', () {
+      const spec = ReplicaSpec(
+        rootPath: '~/notes',
+        profileId: 'notes',
+        side: 'a',
+        jobs: 3,
+      );
+
+      final decoded = replicaSpecFromJson(replicaSpecToJson(spec));
+
+      expect(decoded.rootPath, spec.rootPath);
+      expect(decoded.profileId, spec.profileId);
+      expect(decoded.side, spec.side);
+      expect(decoded.jobs, spec.jobs);
+    });
+  });
+
+  group('replicaInfoToJson / replicaInfoFromJson', () {
+    test('round-trips a last-commit time', () {
+      final info = ReplicaInfo(lastCommitTime: DateTime.utc(2024, 1, 1));
+
+      final decoded = replicaInfoFromJson(replicaInfoToJson(info));
+
+      // The instant survives the round trip; whether it comes back UTC or
+      // local depends on `DateTime.fromMicrosecondsSinceEpoch`'s default, not
+      // on anything this encoding controls.
+      expect(
+        decoded.lastCommitTime?.isAtSameMomentAs(DateTime.utc(2024, 1, 1)),
+        isTrue,
+      );
+    });
+
+    test('round-trips a null last-commit time', () {
+      const info = ReplicaInfo();
+
+      final decoded = replicaInfoFromJson(replicaInfoToJson(info));
+
+      expect(decoded.lastCommitTime, isNull);
     });
   });
 

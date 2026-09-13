@@ -181,6 +181,12 @@ class JsonlArchiveStore implements ArchiveStore {
   }
 
   @override
+  Future<DateTime?> lastCommitTime() async {
+    if (!await _logFile.exists()) return null;
+    return (await _logFile.stat()).modified;
+  }
+
+  @override
   Future<void> compact() async {
     if (!_needsRepair && _logLineCount == _entries.length) return;
 
