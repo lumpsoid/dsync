@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 
+import 'commands/agent_command.dart';
 import 'commands/status_command.dart';
 import 'commands/sync_command.dart';
 
@@ -13,10 +14,9 @@ import 'commands/sync_command.dart';
 /// compiled binary and in-process end-to-end tests drive the CLI the same
 /// way, without either one spawning a child process.
 ///
-/// `sync` and `status` (SPEC §11.1) are registered below (task 867af9).
-/// `agent --stdio` is deliberately not — it is a later task (e54d88) — so it
-/// is still reported as an unknown command via [UsageException], the same
-/// path any other unrecognized command name takes.
+/// `sync`, `status`, and `agent` (SPEC §11.1) are all registered below (tasks
+/// 867af9 and e54d88). Any other command name is reported as unknown via
+/// [UsageException], the same path an unrecognized flag or argument takes.
 Future<int> runDsyncCli(List<String> argv) async {
   final runner = DsyncCommandRunner();
   try {
@@ -33,9 +33,9 @@ Future<int> runDsyncCli(List<String> argv) async {
 /// same spirit as `RunController` in `dsync_core`: it doesn't decide
 /// anything itself, it only wires argv to whichever [Command] handles it.
 ///
-/// `sync` and `status` are registered here; `agent` is not (SPEC §11.1) —
-/// see [runDsyncCli]. Each flag in §11.2 belongs on the command(s) it
-/// applies to (`lib/cli/commands/common_flags.dart`), not here.
+/// `sync`, `status`, and `agent` are all registered here (SPEC §11.1). Each
+/// flag in §11.2 belongs on the command(s) it applies to
+/// (`lib/cli/commands/common_flags.dart`), not here.
 class DsyncCommandRunner extends CommandRunner<void> {
   DsyncCommandRunner()
     : super(
@@ -44,5 +44,6 @@ class DsyncCommandRunner extends CommandRunner<void> {
       ) {
     addCommand(SyncCommand());
     addCommand(StatusCommand());
+    addCommand(AgentCommand());
   }
 }

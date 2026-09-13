@@ -32,32 +32,45 @@ class AgentServer {
     Agent Function(ReplicaSpec spec) buildAgent,
   ) async {
     final frames = StreamIterator(FrameCodec().decode(channel.input));
-    await performVersionHandshake(channel, frames);
+    // Cancelled on every way out of the `try` below — the ordinary end of
+    // the dispatch loop, the early return for a non-`hello` first frame, and
+    // a `performVersionHandshake` throw alike — because a `StreamIterator`
+    // that is never cancelled leaves its subscription on `channel.input`
+    // alive after `serve` returns. That is silent for an in-memory or SSH
+    // channel, but on a channel over a process's own stdio it is the
+    // subscription that keeps that process's event loop non-empty: the
+    // caller may need the process to actually exit once `serve` is done with
+    // it, and it can't while something is still listening for more input.
+    try {
+      await performVersionHandshake(channel, frames);
 
-    if (!await frames.moveNext()) {
-      throw StateError('Channel closed before hello arrived');
-    }
-    final request = AgentRequest.fromFrame(frames.current);
-    if (request.op != 'hello') {
-      await _reply(
-        channel,
-        AgentFailure(
-          'Expected "hello" as the first operation, got '
-          '"${request.op}"',
-        ),
+      if (!await frames.moveNext()) {
+        throw StateError('Channel closed before hello arrived');
+      }
+      final request = AgentRequest.fromFrame(frames.current);
+      if (request.op != 'hello') {
+        await _reply(
+          channel,
+          AgentFailure(
+            'Expected "hello" as the first operation, got '
+            '"${request.op}"',
+          ),
+        );
+        return;
+      }
+
+      final spec = replicaSpecFromJson(
+        request.params['replica'] as Map<String, dynamic>,
       );
-      return;
-    }
+      final agent = buildAgent(spec);
+      final info = await agent.hello();
+      await _reply(channel, AgentSuccess(replicaInfoToJson(info)));
 
-    final spec = replicaSpecFromJson(
-      request.params['replica'] as Map<String, dynamic>,
-    );
-    final agent = buildAgent(spec);
-    final info = await agent.hello();
-    await _reply(channel, AgentSuccess(replicaInfoToJson(info)));
-
-    while (await frames.moveNext()) {
-      await _dispatch(channel, frames, agent, frames.current);
+      while (await frames.moveNext()) {
+        await _dispatch(channel, frames, agent, frames.current);
+      }
+    } finally {
+      await frames.cancel();
     }
   }
 

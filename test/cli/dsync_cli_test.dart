@@ -50,12 +50,16 @@ void main() {
       },
     );
 
-    test('agent --stdio is reported as unknown until its task lands', () async {
-      // SPEC §11.1 names sync/status/agent. sync and status are
-      // registered by task 867af9 (see test/cli/commands/); agent is a
-      // later task (e54d88) and is deliberately left unregistered.
-      final exitCode = await runDsyncCli(['agent', '--stdio']);
-      expect(exitCode, 3);
-    });
+    test(
+      'a command name that merely resembles a real one is still unknown',
+      () async {
+        // SPEC §11.1 names sync/status/agent, all three now registered
+        // (tasks 867af9 and e54d88). This checks that registering `agent`
+        // didn't loosen unknown-command matching into something that would
+        // also accept a lookalike.
+        final exitCode = await runDsyncCli(['remote-agent', '--stdio']);
+        expect(exitCode, 3);
+      },
+    );
   });
 }
