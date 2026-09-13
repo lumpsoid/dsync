@@ -123,7 +123,7 @@ A failed action is recorded, the path is left in whatever state it reached (temp
 One archive per replica, on the host of that replica, keyed by profile id + replica side. Header: schema version, profile id, root path. Entry: `path`, `size`, `mtime`, `mode`, `hash`.
 
 ### 8.2 Format (default chosen, see §15)
-Append-only JSON Lines log. Each commit appends one line (an upsert or a tombstone) and flushes. At the end of a run that reached the apply phase, the log is compacted into a fresh file and swapped in by rename. On load, the log is replayed; last write per path wins.
+Append-only JSON Lines log. Each commit appends one line (an upsert or a tombstone) and flushes. At the end of a run that reached the apply phase, the log is compacted into a fresh file and swapped in by rename. A run that committed nothing does not compact. On load, the log is replayed; last write per path wins.
 
 Rationale: per-path durable commits (§7.3) without rewriting the whole file, no native dependency, trivially inspectable. The archive sits behind an `ArchiveStore` interface so a SQLite implementation can replace it if the log approach proves inadequate on large trees.
 

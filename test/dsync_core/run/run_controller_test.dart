@@ -64,6 +64,20 @@ void main() {
   Future<Archive> reloadA() => JsonlArchiveStore(archiveLogA, headerA).load();
   Future<Archive> reloadB() => JsonlArchiveStore(archiveLogB, headerB).load();
 
+  /// Every regular file under [dir], by root-relative path, with its raw
+  /// bytes — used to assert a tree is byte-identical before and after a run
+  /// without caring about mtimes or traversal order.
+  Future<Map<String, List<int>>> snapshotTree(Directory dir) async {
+    final snapshot = <String, List<int>>{};
+    await for (final entity in dir.list(recursive: true)) {
+      if (entity is File) {
+        final relative = entity.path.substring(dir.path.length + 1);
+        snapshot[relative] = await entity.readAsBytes();
+      }
+    }
+    return snapshot;
+  }
+
   Future<void> expectLocksFree() async {
     final freeA = ReplicaLock(lockFileA);
     await freeA.acquire();
@@ -306,6 +320,92 @@ void main() {
           await File('${replicaBDir.path}/conflict.txt').readAsString(),
           'from a',
         );
+      },
+      testOn: 'linux',
+    );
+  });
+
+  group('dry run (presenter returns no actions)', () {
+    test(
+      'both trees and both archive logs are byte-identical before and after',
+      () async {
+        // Seed a real, non-trivial archive on each side first, so
+        // "untouched" means more than "the log still doesn't exist".
+        await File('${replicaADir.path}/shared.txt').writeAsString('same');
+        await File('${replicaBDir.path}/shared.txt').writeAsString('same');
+        await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        // A genuine pending action — created on A only, so the dry run's
+        // plan is non-empty and there is something a buggy dry run could
+        // apply or compact away.
+        await File('${replicaADir.path}/new.txt').writeAsString('hello');
+
+        final treeABefore = await snapshotTree(replicaADir);
+        final treeBBefore = await snapshotTree(replicaBDir);
+        final logABefore = await archiveLogA.readAsBytes();
+        final logBBefore = await archiveLogB.readAsBytes();
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => [],
+        ).run().toList();
+
+        final planEvent = events.whereType<RunPlanEvent>().single;
+        expect(planEvent.plan.actions.map((a) => a.path), contains('new.txt'));
+        expect(events.whereType<RunActionEvent>(), isEmpty);
+
+        final summary = events.whereType<RunSummaryEvent>().single;
+        expect(summary.appliedCount, 0);
+        expect(summary.skippedCount, 1);
+
+        expect(await snapshotTree(replicaADir), equals(treeABefore));
+        expect(await snapshotTree(replicaBDir), equals(treeBBefore));
+        expect(await archiveLogA.readAsBytes(), equals(logABefore));
+        expect(await archiveLogB.readAsBytes(), equals(logBBefore));
+      },
+      testOn: 'linux',
+    );
+
+    test(
+      'a log with redundant lines is left uncompacted by a dry run',
+      () async {
+        await File('${replicaADir.path}/shared.txt').writeAsString('same');
+        await File('${replicaBDir.path}/shared.txt').writeAsString('same');
+        await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        // Deliberately accumulate a redundant line: a second upsert for a
+        // path the log already has a line for. This is exactly the state
+        // that makes JsonlArchiveStore.compact (SPEC §8.2) rewrite the file
+        // if it runs — one live path, two lines.
+        final entry = (await reloadA()).entries['shared.txt']!;
+        await JsonlArchiveStore(archiveLogA, headerA).commitUpsert(entry);
+
+        await File('${replicaADir.path}/new.txt').writeAsString('hello');
+
+        final treeABefore = await snapshotTree(replicaADir);
+        final treeBBefore = await snapshotTree(replicaBDir);
+        final logABefore = await archiveLogA.readAsBytes();
+        final logBBefore = await archiveLogB.readAsBytes();
+
+        await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => [],
+        ).run().toList();
+
+        expect(await snapshotTree(replicaADir), equals(treeABefore));
+        expect(await snapshotTree(replicaBDir), equals(treeBBefore));
+        expect(await archiveLogA.readAsBytes(), equals(logABefore));
+        expect(await archiveLogB.readAsBytes(), equals(logBBefore));
       },
       testOn: 'linux',
     );

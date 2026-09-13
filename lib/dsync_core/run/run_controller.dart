@@ -172,10 +172,19 @@ class RunController {
       yield RunProgressEvent(completed: completed, total: total);
     }
 
-    // Compaction runs whenever a run reaches the apply phase (SPEC §8.2,
-    // §13), unconditionally — §7.6 failures don't block the rest of the run.
-    await agentA.compact();
-    await agentB.compact();
+    // SPEC §8.2: a run that committed nothing does not compact. Every action
+    // type — including commitOnly — reaches archiveCommitUpsert/Delete on
+    // *both* sides before Applier.apply records it in `applied` (never in
+    // `failed`: a failed action may have partially committed on one side,
+    // but that is the same "crash between the two commits" state SPEC §7.3
+    // already resolves on the next run, so it is not "committed" for this
+    // purpose). So `applied` non-empty is exactly "at least one line landed
+    // in each log" — not derived from the shape of the plan, since an
+    // all-skipped or all-failed-before-any-commit plan must not compact.
+    if (applyResult.applied.isNotEmpty) {
+      await agentA.compact();
+      await agentB.compact();
+    }
 
     // Counted by path rather than by list length: the presenter may add an
     // action for a conflict it resolved (SPEC §11.3), which would otherwise
