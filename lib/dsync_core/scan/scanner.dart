@@ -13,13 +13,12 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 /// each side reports statuses relative to its own archive, which is enough
 /// for reconciliation (SPEC §5, §6).
 class Scanner {
-  final RuleSet rules;
-
   /// Hashing concurrency (SPEC §5.2: "hashing runs in isolates, parallelism
-  /// configurable").
+  /// configurable"). A property of this host's resources, unlike the rules,
+  /// which belong to the run.
   final int jobs;
 
-  Scanner({RuleSet? rules, this.jobs = 4}) : rules = rules ?? RuleSet();
+  Scanner({this.jobs = 4});
 
   /// Walks [rootPath] and returns one [ScanEntry] per path that is either
   /// present on disk (and not ignored) or present in [archive] but now
@@ -34,11 +33,16 @@ class Scanner {
   /// Symlinks are skipped unless [rules] has a matching `follow` pattern, in
   /// which case the target is scanned as if it lived at the link's path
   /// (SPEC §5.1).
+  ///
+  /// [rules] is a parameter rather than construction state because the rules
+  /// belong to the run, not to the host: they come from the initiator's
+  /// profile and are handed to whichever replica is scanning (SPEC §9).
   Future<List<ScanEntry>> scan({
     required String rootPath,
     required Archive archive,
+    RuleSet? rules,
   }) async {
-    final context = _ScanContext(archive);
+    final context = _ScanContext(archive, rules ?? RuleSet());
     await _walk(Directory(rootPath), '', context);
     final hashed = await _hashAll(context.pendingHash);
 
@@ -46,7 +50,7 @@ class Scanner {
       ...context.fastPath,
       ...hashed,
       for (final path in archive.entries.keys)
-        if (!context.seen.contains(path) && !rules.ignores(path))
+        if (!context.seen.contains(path) && !context.rules.ignores(path))
           ScanEntry.deleted(path),
     ];
   }
@@ -64,7 +68,7 @@ class Scanner {
       final relativePath = relativePrefix.isEmpty
           ? name
           : '$relativePrefix/$name';
-      if (rules.ignores(relativePath)) continue;
+      if (context.rules.ignores(relativePath)) continue;
 
       switch (await FileSystemEntity.type(child.path, followLinks: false)) {
         case FileSystemEntityType.directory:
@@ -72,7 +76,7 @@ class Scanner {
         case FileSystemEntityType.file:
           await _visitFile(File(child.path), relativePath, context);
         case FileSystemEntityType.link:
-          if (rules.follows(relativePath)) {
+          if (context.rules.follows(relativePath)) {
             await _visitLink(child.path, relativePath, context);
           }
         default:
@@ -164,11 +168,12 @@ class Scanner {
 /// Accumulates walk results so the recursive walk methods stay narrow.
 class _ScanContext {
   final Archive archive;
+  final RuleSet rules;
   final Set<String> seen = {};
   final List<ScanEntry> fastPath = [];
   final List<_HashCandidate> pendingHash = [];
 
-  _ScanContext(this.archive);
+  _ScanContext(this.archive, this.rules);
 }
 
 /// A file whose fast path (SPEC §5.2 step 1) didn't resolve it, so its

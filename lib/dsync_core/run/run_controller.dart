@@ -1,6 +1,7 @@
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/apply/applier.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 
@@ -41,6 +42,13 @@ class RunController {
   final Agent agentA;
   final Agent agentB;
   final Presenter presenter;
+
+  /// The run's ignore and follow rules — the profile's plus any `--ignore`
+  /// flags, already merged (SPEC §9). Held here rather than on either agent
+  /// because both sides must scan by the same rules, and only the initiating
+  /// side can read the profile.
+  final RuleSet rules;
+
   final Reconciler _reconciler = Reconciler();
   final Applier _applier = Applier();
 
@@ -48,7 +56,8 @@ class RunController {
     required this.agentA,
     required this.agentB,
     required this.presenter,
-  });
+    RuleSet? rules,
+  }) : rules = rules ?? RuleSet();
 
   /// Drives one run end to end, emitting [RunEvent]s as it goes (SPEC
   /// §11.4). The stream always ends normally — whether the run succeeded,
@@ -93,7 +102,7 @@ class RunController {
   /// Scan → reconcile → present → apply → compact, once both replicas are
   /// locked.
   Stream<RunEvent> _runLocked() async* {
-    final scans = await Future.wait([agentA.scan(), agentB.scan()]);
+    final scans = await Future.wait([agentA.scan(rules), agentB.scan(rules)]);
     final onA = scans[0];
     final onB = scans[1];
 

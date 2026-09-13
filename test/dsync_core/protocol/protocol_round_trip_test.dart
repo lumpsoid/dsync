@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -107,11 +108,33 @@ void main() {
     test('reports a real file against an empty archive', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
 
-      final entries = await remote.scan();
+      final entries = await remote.scan(RuleSet());
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);
     });
+
+    test('applies the initiator ignore rules on the remote side', () async {
+      await File('${replicaDir.path}/a.txt').writeAsString('hello');
+      await File('${replicaDir.path}/a.tmp').writeAsString('scratch');
+
+      final entries = await remote.scan(RuleSet(ignore: ['*.tmp']));
+
+      // The rules live in the initiator's profile (SPEC §9); the remote
+      // replica has no way to read them, so they have to cross the wire.
+      expect(entries.map((e) => e.path), contains('a.txt'));
+      expect(entries.map((e) => e.path), isNot(contains('a.tmp')));
+    });
+
+    test('applies the initiator follow rules on the remote side', () async {
+      await File('${replicaDir.path}/target.txt').writeAsString('hello');
+      await Link('${replicaDir.path}/link.txt')
+          .create('${replicaDir.path}/target.txt');
+
+      final entries = await remote.scan(RuleSet(follow: ['link.txt']));
+
+      expect(entries.map((e) => e.path), contains('link.txt'));
+    }, testOn: 'linux');
   });
 
   group('readFile / writeFile', () {

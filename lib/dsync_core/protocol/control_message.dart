@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -155,6 +156,19 @@ ScanEntry scanEntryFromJson(Map<String, dynamic> json) => ScanEntry(
   mtime: json['mtime'] as int?,
   mode: json['mode'] as int?,
   hash: json['hash'] as String?,
+);
+
+/// Sends the rules as the patterns they were written as, not as compiled
+/// regexes: the peer compiles them itself, so a malformed pattern is rejected
+/// on both sides (SPEC §9).
+Map<String, dynamic> ruleSetToJson(RuleSet rules) => {
+  'ignore': rules.ignorePatterns,
+  'follow': rules.followPatterns,
+};
+
+RuleSet ruleSetFromJson(Map<String, dynamic> json) => RuleSet(
+  ignore: (json['ignore'] as List? ?? const []).cast<String>(),
+  follow: (json['follow'] as List? ?? const []).cast<String>(),
 );
 
 Map<String, dynamic> archiveEntryToJson(ArchiveEntry entry) => {

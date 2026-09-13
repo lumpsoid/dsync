@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
@@ -52,7 +53,7 @@ void main() {
         ),
       ];
 
-      final entries = await remote.scan();
+      final entries = await remote.scan(RuleSet());
 
       expect(entries.single.path, 'a.txt');
       expect(entries.single.status, ScanStatus.created);
@@ -156,7 +157,7 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<List<ScanEntry>> scan() async => scanResult;
+  Future<List<ScanEntry>> scan(RuleSet rules) async => scanResult;
 
   @override
   Stream<List<int>> readFile(String path) {

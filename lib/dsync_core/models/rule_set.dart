@@ -18,6 +18,19 @@ class RuleSet {
     );
   }
 
+  /// The `ignore` patterns this set was built from, in order.
+  ///
+  /// Exposed so the rules can be sent to a remote replica (SPEC §9: rules come
+  /// from the profile, which only the initiating side has). The compiled form
+  /// stays private — a peer receives patterns and compiles them itself, so a
+  /// malformed one is rejected on both sides rather than smuggled across as a
+  /// regex.
+  List<String> get ignorePatterns => [for (final glob in _ignore) glob.source];
+
+  /// The `follow` patterns this set was built from, in order. See
+  /// [ignorePatterns].
+  List<String> get followPatterns => [for (final glob in _follow) glob.source];
+
   /// Combines this set's patterns with [other]'s.
   ///
   /// Per SPEC §9, profile rules and CLI `--ignore` flags are additive rather
@@ -60,9 +73,12 @@ class RuleSet {
 class _GlobPattern {
   static const _regexSpecial = r'.\^$+{}()|';
 
+  /// The pattern as written, kept so a [RuleSet] can be sent over the wire.
+  final String source;
+
   final RegExp _regex;
 
-  _GlobPattern(String pattern) : _regex = RegExp(_translate(pattern));
+  _GlobPattern(this.source) : _regex = RegExp(_translate(source));
 
   bool matches(String path) => _regex.hasMatch(path);
 

@@ -5,6 +5,7 @@ import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:test/test.dart';
 
@@ -61,7 +62,7 @@ void main() {
     test('reports a new file as created against an empty archive', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
 
-      final entries = await agent().scan();
+      final entries = await agent().scan(RuleSet());
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);

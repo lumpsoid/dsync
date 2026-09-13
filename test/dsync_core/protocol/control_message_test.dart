@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
@@ -114,6 +115,38 @@ void main() {
       expect(decoded.size, metadata.size);
       expect(decoded.mtime, metadata.mtime);
       expect(decoded.mode, metadata.mode);
+    });
+  });
+
+  group('ruleSetToJson / ruleSetFromJson', () {
+    test('round-trips ignore and follow patterns', () {
+      final rules = RuleSet(ignore: ['**/.git', '*.tmp'], follow: ['shared']);
+
+      final decoded = ruleSetFromJson(ruleSetToJson(rules));
+
+      expect(decoded.ignorePatterns, ['**/.git', '*.tmp']);
+      expect(decoded.followPatterns, ['shared']);
+      expect(decoded.ignores('sub/.git/config'), isTrue);
+      expect(decoded.follows('shared'), isTrue);
+    });
+
+    test('round-trips an empty rule set', () {
+      final decoded = ruleSetFromJson(ruleSetToJson(RuleSet()));
+
+      expect(decoded.ignorePatterns, isEmpty);
+      expect(decoded.followPatterns, isEmpty);
+    });
+
+    test('rejects a malformed pattern on decode', () {
+      // Patterns cross the wire as written, so the peer compiles them itself
+      // and refuses a bad one rather than trusting a foreign regex.
+      expect(
+        () => ruleSetFromJson({
+          'ignore': ['a[bc'],
+          'follow': <String>[],
+        }),
+        throwsFormatException,
+      );
     });
   });
 

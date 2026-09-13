@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
@@ -61,12 +62,26 @@ void main() {
         ),
       ];
 
-      final result = await call('scan') as AgentSuccess;
+      final result = await call('scan', {
+        'rules': ruleSetToJson(RuleSet()),
+      }) as AgentSuccess;
 
       final entries = (result.data['entries'] as List)
           .cast<Map<String, dynamic>>();
       expect(entries.single['path'], 'a.txt');
       expect(entries.single['status'], 'created');
+    });
+
+    test("hands the request's rules to the agent", () async {
+      agent.scanResult = [];
+
+      await call('scan', {
+        'rules': ruleSetToJson(RuleSet(ignore: ['*.tmp'])),
+      });
+
+      // The rules come from the initiator's profile (SPEC §9), so the server
+      // must pass through what it was sent rather than scanning by its own.
+      expect(agent.lastScanRules?.ignorePatterns, ['*.tmp']);
     });
   });
 
@@ -192,6 +207,7 @@ void main() {
 class _FakeAgent implements Agent {
   bool locked = false;
   List<ScanEntry> scanResult = [];
+  RuleSet? lastScanRules;
   final Map<String, List<int>> fileContents = {};
   final Map<String, ArchiveEntry> archive = {};
   String? removedEmptyDirsFor;
@@ -212,7 +228,10 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<List<ScanEntry>> scan() async => scanResult;
+  Future<List<ScanEntry>> scan(RuleSet rules) async {
+    lastScanRules = rules;
+    return scanResult;
+  }
 
   @override
   Stream<List<int>> readFile(String path) {

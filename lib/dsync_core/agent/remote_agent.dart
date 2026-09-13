@@ -4,6 +4,7 @@ import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
@@ -36,8 +37,8 @@ class RemoteAgent implements Agent {
   Future<void> unlock() => _call('unlock');
 
   @override
-  Future<List<ScanEntry>> scan() async {
-    final result = await _call('scan');
+  Future<List<ScanEntry>> scan(RuleSet rules) async {
+    final result = await _call('scan', {'rules': ruleSetToJson(rules)});
     return (result['entries'] as List)
         .map((e) => scanEntryFromJson(e as Map<String, dynamic>))
         .toList();

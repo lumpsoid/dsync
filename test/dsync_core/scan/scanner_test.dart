@@ -173,8 +173,11 @@ void main() {
       await File('${tempDir.path}/a.txt').writeAsString('hello');
       await File('${tempDir.path}/a.tmp').writeAsString('scratch');
 
-      final entries = await Scanner(rules: RuleSet(ignore: ['*.tmp']))
-          .scan(rootPath: tempDir.path, archive: archiveOf({}));
+      final entries = await Scanner().scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+          rules: RuleSet(ignore: ['*.tmp']),
+        );
 
       expect(entries.map((e) => e.path), contains('a.txt'));
       expect(entries.map((e) => e.path), isNot(contains('a.tmp')));
@@ -185,8 +188,11 @@ void main() {
       await File('${tempDir.path}/node_modules/x.js').writeAsString('x');
       await File('${tempDir.path}/keep.txt').writeAsString('keep');
 
-      final entries = await Scanner(rules: RuleSet(ignore: ['node_modules/**']))
-          .scan(rootPath: tempDir.path, archive: archiveOf({}));
+      final entries = await Scanner().scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+          rules: RuleSet(ignore: ['node_modules/**']),
+        );
 
       expect(entries.map((e) => e.path), contains('keep.txt'));
       expect(entries.map((e) => e.path), isNot(contains('node_modules/x.js')));
@@ -197,7 +203,8 @@ void main() {
       () async {
         await File('${tempDir.path}/a.tmp').writeAsString('scratch');
 
-        final entries = await Scanner(rules: RuleSet(ignore: ['*.tmp'])).scan(
+        final entries = await Scanner().scan(
+          rules: RuleSet(ignore: ['*.tmp']),
           rootPath: tempDir.path,
           archive: archiveOf({
             'a.tmp': const ArchiveEntry(
@@ -224,7 +231,8 @@ void main() {
         await Directory('${tempDir.path}/.git').create();
         await File('${tempDir.path}/.git/config').writeAsString('x');
 
-        final entries = await Scanner(rules: RuleSet(ignore: ['**/.git'])).scan(
+        final entries = await Scanner().scan(
+          rules: RuleSet(ignore: ['**/.git']),
           rootPath: tempDir.path,
           archive: archiveOf({
             '.git/config': const ArchiveEntry(
@@ -267,8 +275,11 @@ void main() {
         await Link('${tempDir.path}/link.txt')
             .create('${tempDir.path}/target.txt');
 
-        final entries = await Scanner(rules: RuleSet(follow: ['link.txt']))
-            .scan(rootPath: tempDir.path, archive: archiveOf({}));
+        final entries = await Scanner().scan(
+            rootPath: tempDir.path,
+            archive: archiveOf({}),
+            rules: RuleSet(follow: ['link.txt']),
+          );
 
         final entry = entryFor(entries, 'link.txt');
         expect(entry.status, ScanStatus.created);
@@ -283,8 +294,11 @@ void main() {
         await Link('${tempDir.path}/link.txt')
             .create('${tempDir.path}/nowhere.txt');
 
-        final entries = await Scanner(rules: RuleSet(follow: ['link.txt']))
-            .scan(rootPath: tempDir.path, archive: archiveOf({}));
+        final entries = await Scanner().scan(
+            rootPath: tempDir.path,
+            archive: archiveOf({}),
+            rules: RuleSet(follow: ['link.txt']),
+          );
 
         expect(entries.map((e) => e.path), isNot(contains('link.txt')));
       },

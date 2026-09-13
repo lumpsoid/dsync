@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:test/test.dart';
@@ -108,8 +109,8 @@ void main() {
     // 4. Scan both sides for real and reconcile: A differs from its stale
     // archive (modified, hash of v2), B still matches its archive
     // (unchanged, hash of v1) -> exactly one copyAtoB.
-    final scanA1 = await agentA.scan();
-    final scanB1 = await agentB.scan();
+    final scanA1 = await agentA.scan(RuleSet());
+    final scanB1 = await agentB.scan(RuleSet());
     final entryA1 = scanA1.singleWhere((e) => e.path == 'f');
     final entryB1 = scanB1.singleWhere((e) => e.path == 'f');
     expect(entryA1.status, ScanStatus.modified);
@@ -149,8 +150,8 @@ void main() {
     // --- Re-run: a completely fresh, uninterrupted run. ----------------
 
     // 8. Fresh scans with the real, unwrapped agents.
-    final scanA2 = await agentA.scan();
-    final scanB2 = await agentB.scan();
+    final scanA2 = await agentA.scan(RuleSet());
+    final scanB2 = await agentB.scan(RuleSet());
     final entryA2 = scanA2.singleWhere((e) => e.path == 'f');
     final entryB2 = scanB2.singleWhere((e) => e.path == 'f');
 
@@ -251,7 +252,7 @@ class _CrashingCommitAgent implements Agent {
   Future<void> unlock() => _wrapped.unlock();
 
   @override
-  Future<List<ScanEntry>> scan() => _wrapped.scan();
+  Future<List<ScanEntry>> scan(RuleSet rules) => _wrapped.scan(rules);
 
   @override
   Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
