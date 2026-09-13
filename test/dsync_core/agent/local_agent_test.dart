@@ -216,6 +216,63 @@ void main() {
     });
   });
 
+  group('paths outside the replica root', () {
+    // Every path a LocalAgent acts on arrives from the peer, which an agent
+    // reached over ssh has no reason to trust.
+    test('writeFile refuses to escape the root', () async {
+      await expectLater(
+        agent().writeFile(
+          '../escaped.txt',
+          Stream.value(utf8.encode('x')),
+          mtime: 1,
+          mode: 420,
+        ),
+        throwsA(isA<PathEscapesRootException>()),
+      );
+      expect(File('${tempDir.path}/escaped.txt').existsSync(), isFalse);
+    });
+
+    test('delete refuses to escape the root', () async {
+      final outside = File('${tempDir.path}/outside.txt');
+      await outside.writeAsString('keep me');
+
+      await expectLater(
+        agent().delete('../outside.txt'),
+        throwsA(isA<PathEscapesRootException>()),
+      );
+      expect(outside.existsSync(), isTrue);
+    });
+
+    test('readFile refuses an absolute path', () {
+      expect(
+        () => agent().readFile('/etc/passwd'),
+        throwsA(isA<PathEscapesRootException>()),
+      );
+    });
+
+    test('removeEmptyDirs refuses to escape the root', () async {
+      await expectLater(
+        agent().removeEmptyDirs('../../gone/a.txt'),
+        throwsA(isA<PathEscapesRootException>()),
+      );
+    });
+
+    test('a deeply nested .. is still rejected', () {
+      expect(
+        () => resolveWithinRoot('/root', 'a/b/../../../etc/passwd'),
+        throwsA(isA<PathEscapesRootException>()),
+      );
+    });
+
+    test('ordinary nested paths still resolve', () {
+      expect(resolveWithinRoot('/root', 'a/b/c.txt'), '/root/a/b/c.txt');
+    });
+
+    test('a file literally named ".." is not a thing, but "..x" is', () {
+      expect(resolveWithinRoot('/root', '..x'), '/root/..x');
+    });
+  });
+
   group('archive commits', () {
     const entry = ArchiveEntry(
       path: 'a.txt',

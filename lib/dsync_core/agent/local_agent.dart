@@ -89,7 +89,11 @@ class LocalAgent implements Agent {
   }
 
   @override
-  Future<void> delete(String path) => File(_absolute(path)).delete();
+  // `async` rather than expression-bodied so a rejected path surfaces through
+  // the returned Future like every other failure, not as a synchronous throw.
+  Future<void> delete(String path) async {
+    await File(_absolute(path)).delete();
+  }
 
   @override
   Future<void> removeEmptyDirs(String path) async {
@@ -113,7 +117,8 @@ class LocalAgent implements Agent {
   @override
   Future<void> compact() => archiveStore.compact();
 
-  String _absolute(String relativePath) => '$rootPath/$relativePath';
+  String _absolute(String relativePath) =>
+      resolveWithinRoot(rootPath, relativePath);
 }
 
 /// The parent of a root-relative path, or `null` when [path] is already
@@ -122,4 +127,37 @@ class LocalAgent implements Agent {
 String? _parentOf(String path) {
   final lastSlash = path.lastIndexOf('/');
   return lastSlash == -1 ? null : path.substring(0, lastSlash);
+}
+
+/// Joins [rootRelativePath] onto [rootPath], refusing anything that would
+/// land outside the replica.
+///
+/// Every path a [LocalAgent] acts on arrives from the other end of the
+/// connection, and an agent reached over ssh has no reason to trust the far
+/// side: `../../.ssh/authorized_keys` would otherwise be written with the
+/// agent user's privileges. Nothing the engine itself produces is affected —
+/// scan paths are built by walking the tree — so a rejection here always
+/// means the request was malformed or hostile.
+///
+/// Pure string logic, so it is testable without a filesystem.
+String resolveWithinRoot(String rootPath, String rootRelativePath) {
+  final segments = rootRelativePath.split('/');
+  if (rootRelativePath.isEmpty ||
+      rootRelativePath.startsWith('/') ||
+      segments.contains('..')) {
+    throw PathEscapesRootException(root: rootPath, path: rootRelativePath);
+  }
+  return '$rootPath/$rootRelativePath';
+}
+
+/// Thrown when a peer asks an agent to act on a path outside its replica
+/// root — fatal for that operation, and reported to the peer as a failure.
+class PathEscapesRootException implements Exception {
+  final String root;
+  final String path;
+
+  const PathEscapesRootException({required this.root, required this.path});
+
+  @override
+  String toString() => 'Path escapes the replica root $root: "$path"';
 }
