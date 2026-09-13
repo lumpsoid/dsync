@@ -139,6 +139,52 @@ void main() {
         expect(result.data['metadata'], {'size': 5, 'mtime': 123, 'mode': 420});
       },
     );
+
+    test('a write that fails before reading the bytes still serves the next '
+        'request', () async {
+      agent.writeError = Exception('permission denied');
+
+      await client.send(
+        FrameCodec().encode(
+          const AgentRequest('writeFile', {
+            'path': 'a.txt',
+            'mtime': 123,
+            'mode': 420,
+          }).toFrame(),
+        ),
+      );
+      await sendByteStream(client, Stream.value(utf8.encode('hello')));
+
+      await clientFrames.moveNext();
+      expect(AgentResult.fromFrame(clientFrames.current), isA<AgentFailure>());
+
+      // The peer had already committed to sending the whole transfer. If
+      // those frames were left queued the serve loop would read file bytes
+      // where it expects a request — and SPEC §7.6 keeps the run going, so
+      // there is always a next request.
+      expect(await call('lock'), isA<AgentSuccess>());
+    });
+  });
+
+  group('malformed frames', () {
+    test(
+      'a frame that is not a request fails without ending the session',
+      () async {
+        await client.send(
+          FrameCodec().encode(
+            const Frame(type: FrameType.control, payload: [0x7b, 0x7b]),
+          ),
+        );
+
+        await clientFrames.moveNext();
+        expect(
+          AgentResult.fromFrame(clientFrames.current),
+          isA<AgentFailure>(),
+        );
+
+        expect(await call('lock'), isA<AgentSuccess>());
+      },
+    );
   });
 
   group('delete / removeEmptyDirs', () {
@@ -212,6 +258,7 @@ class _FakeAgent implements Agent {
   final Map<String, ArchiveEntry> archive = {};
   String? removedEmptyDirsFor;
   Object? lockError;
+  Object? writeError;
 
   @override
   Future<void> hello() async {}
@@ -249,6 +296,9 @@ class _FakeAgent implements Agent {
     required int mtime,
     required int mode,
   }) async {
+    // Thrown before `data` is touched, like a parent directory that cannot
+    // be created.
+    if (writeError != null) throw writeError!;
     final bytes = <int>[];
     await for (final chunk in data) {
       bytes.addAll(chunk);
