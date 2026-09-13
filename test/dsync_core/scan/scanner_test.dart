@@ -297,6 +297,39 @@ void main() {
       expect(result.skippedSymlinks, ['link.txt']);
     }, testOn: 'linux');
 
+    test('a followed link pointing at an ancestor terminates', () async {
+      await Directory('${tempDir.path}/sub').create();
+      await File('${tempDir.path}/sub/a.txt').writeAsString('hello');
+      await Link('${tempDir.path}/sub/up').create(tempDir.path);
+
+      final result = await Scanner()
+          .scan(
+            rootPath: tempDir.path,
+            archive: archiveOf({}),
+            rules: RuleSet(follow: ['**/up']),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      expect(result.entries.map((e) => e.path), contains('sub/a.txt'));
+      expect(result.skippedSymlinks, contains('sub/up'));
+    }, testOn: 'linux');
+
+    test('a followed link pointing sideways is still scanned', () async {
+      await Directory('${tempDir.path}/real').create();
+      await File('${tempDir.path}/real/a.txt').writeAsString('hello');
+      await Link('${tempDir.path}/alias').create('${tempDir.path}/real');
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+        rules: RuleSet(follow: ['alias']),
+      );
+
+      // Not a cycle: the walk is not inside `real` when it follows the link.
+      expect(result.entries.map((e) => e.path), contains('alias/a.txt'));
+      expect(result.skippedSymlinks, isEmpty);
+    }, testOn: 'linux');
+
     test('a followed link is not reported as skipped', () async {
       await File('${tempDir.path}/target.txt').writeAsString('hello');
       await Link('${tempDir.path}/link.txt')

@@ -44,7 +44,11 @@ class Scanner {
     RuleSet? rules,
   }) async {
     final context = _ScanContext(archive, rules ?? RuleSet());
-    await _walk(Directory(rootPath), '', context);
+    // Canonicalised so the paths on the walk stack are directly comparable
+    // with a followed link's resolved target — that comparison is what stops
+    // a link pointing at one of its own ancestors from recursing forever.
+    final root = await Directory(rootPath).resolveSymbolicLinks();
+    await _walk(Directory(root), '', context);
     final hashed = await _hashAll(context.pendingHash);
 
     return ScanResult(
@@ -60,6 +64,19 @@ class Scanner {
   }
 
   Future<void> _walk(
+    Directory dir,
+    String relativePrefix,
+    _ScanContext context,
+  ) async {
+    context.openDirs.add(dir.path);
+    try {
+      await _walkChildren(dir, relativePrefix, context);
+    } finally {
+      context.openDirs.remove(dir.path);
+    }
+  }
+
+  Future<void> _walkChildren(
     Directory dir,
     String relativePrefix,
     _ScanContext context,
@@ -111,6 +128,12 @@ class Scanner {
 
     switch (await FileSystemEntity.type(target)) {
       case FileSystemEntityType.directory:
+        if (context.openDirs.contains(target)) {
+          // The link points at a directory this walk is already inside, so
+          // following it would descend through itself without end.
+          context.skippedSymlinks.add(relativePath);
+          return;
+        }
         await _walk(Directory(target), relativePath, context);
       case FileSystemEntityType.file:
         await _visitFile(File(target), relativePath, context);
@@ -182,6 +205,12 @@ class _ScanContext {
   final Archive archive;
   final RuleSet rules;
   final Set<String> seen = {};
+
+  /// Absolute paths of the directories the walk is currently inside — the
+  /// chain from the root down to where it is now. A followed symlink whose
+  /// target is already in here would send the walk back through itself.
+  final Set<String> openDirs = {};
+
   final List<ScanEntry> fastPath = [];
   final List<String> skippedSymlinks = [];
   final List<_HashCandidate> pendingHash = [];
