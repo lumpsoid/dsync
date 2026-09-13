@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 /// Append-only JSON Lines [ArchiveStore] (SPEC §8.2, chosen in §15).
 ///
@@ -229,17 +230,11 @@ class JsonlArchiveStore implements ArchiveStore {
 }
 
 /// The standard per-replica archive log path (SPEC §8.1, §8.3):
-/// `$XDG_STATE_HOME/dsync/<profileId>-<side>.jsonl`, defaulting
-/// `XDG_STATE_HOME` to `~/.local/state` when unset.
-///
-/// Pure function of [environment] — takes no environment implicitly — so it
-/// is testable without touching the filesystem or real process environment.
+/// `<state dir>/<profileId>-<side>.jsonl`. See [resolveStateDir].
 File resolveArchiveLogPath({
   required String profileId,
   required String side,
   Map<String, String> environment = const {},
 }) {
-  final stateHome =
-      environment['XDG_STATE_HOME'] ?? '${environment['HOME']}/.local/state';
-  return File('$stateHome/dsync/$profileId-$side.jsonl');
+  return File('${resolveStateDir(environment)}/$profileId-$side.jsonl');
 }

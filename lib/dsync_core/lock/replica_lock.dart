@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:dsync/dsync_core/state_dir.dart';
+
 /// Advisory OS-level lock on one replica's state directory (SPEC §4.3).
 ///
 /// Taken by an `Agent` before scanning and released on every exit path,
@@ -70,17 +72,11 @@ class ReplicaLockHeldException implements Exception {
 }
 
 /// The standard per-replica lock path (SPEC §4.3, §8.3):
-/// `$XDG_STATE_HOME/dsync/<profileId>-<side>.lock`, defaulting
-/// `XDG_STATE_HOME` to `~/.local/state` when unset.
-///
-/// Pure function of [environment] — takes no environment implicitly — so it
-/// is testable without touching the filesystem or real process environment.
+/// `<state dir>/<profileId>-<side>.lock`. See [resolveStateDir].
 File resolveLockPath({
   required String profileId,
   required String side,
   Map<String, String> environment = const {},
 }) {
-  final stateHome =
-      environment['XDG_STATE_HOME'] ?? '${environment['HOME']}/.local/state';
-  return File('$stateHome/dsync/$profileId-$side.lock');
+  return File('${resolveStateDir(environment)}/$profileId-$side.lock');
 }
