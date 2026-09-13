@@ -1,6 +1,7 @@
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/apply/applier.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
@@ -30,8 +31,11 @@ typedef Presenter = Future<List<PlanAction>> Function(Plan plan);
 /// [agentA]/[agentB] are already-constructed [Agent]s the caller hands in;
 /// "connect" is [Agent.hello] (SPEC §4.2), a no-op for an in-process agent
 /// and a version handshake plus replica identification for a remote one.
-/// Each call also returns a `ReplicaInfo`, discarded here for now — a later
-/// task (the run header, SPEC §11.4) is what consumes it.
+/// Each call also returns a `ReplicaInfo`; once both succeed, both are
+/// yielded together as one [RunReplicasEvent] — before locking even starts,
+/// so SPEC §11.4's run header (task ee190c: which replicas, and what the
+/// tool already knows about the pair) can print before anything else,
+/// including before a lock could fail.
 ///
 /// Locking is symmetric on every exit path (SPEC §4.3): if [agentA]'s lock
 /// succeeds and [agentB]'s then throws, [agentA] is still unlocked before
@@ -67,13 +71,16 @@ class RunController {
   /// compaction, or unlocking), or hit a fatal error.
   Stream<RunEvent> run() async* {
     try {
+      final ReplicaInfo infoA;
+      final ReplicaInfo infoB;
       try {
-        await agentA.hello();
-        await agentB.hello();
+        infoA = await agentA.hello();
+        infoB = await agentB.hello();
       } catch (error) {
         yield RunErrorEvent(error);
         return;
       }
+      yield RunReplicasEvent(infoA: infoA, infoB: infoB);
 
       try {
         await agentA.lock();

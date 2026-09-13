@@ -196,6 +196,62 @@ void main() {
       expect(a.calls, contains('disconnect'));
       expect(b.calls, contains('disconnect'));
     });
+
+    test(
+      'a fatal hello failure on B alone still yields only a RunErrorEvent',
+      () async {
+        final a = _RecordingAgent(agentA);
+        final b = _RecordingAgent(agentB, helloError: Exception('unreachable'));
+
+        final events = await RunController(
+          agentA: a,
+          agentB: b,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        expect(events.single, isA<RunErrorEvent>());
+        // A's hello succeeded, so its own agent still tore down cleanly.
+        expect(a.calls, contains('disconnect'));
+        expect(b.calls, contains('disconnect'));
+      },
+    );
+  });
+
+  group('run header (RunReplicasEvent, task ee190c)', () {
+    test('both hello replies are yielded as one event, before anything else, '
+        'on a first run against two empty archives', () async {
+      final events = await RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      expect(events.first, isA<RunReplicasEvent>());
+      final replicas = events.first as RunReplicasEvent;
+      expect(replicas.infoA.lastCommitTime, isNull);
+      expect(replicas.infoB.lastCommitTime, isNull);
+    }, testOn: 'linux');
+
+    test('a run against a pair that has already synced reports both sides\' '
+        'last-commit time', () async {
+      await File('${replicaADir.path}/shared.txt').writeAsString('same');
+      await File('${replicaBDir.path}/shared.txt').writeAsString('same');
+      await RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      final events = await RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      final replicas = events.first as RunReplicasEvent;
+      expect(replicas.infoA.lastCommitTime, isNotNull);
+      expect(replicas.infoB.lastCommitTime, isNotNull);
+    }, testOn: 'linux');
   });
 
   group('conflicts', () {
@@ -451,12 +507,13 @@ void main(List<String> args) async {
         holder.stdin.writeln();
         await holder.exitCode;
 
-        expect(events, hasLength(1));
-        expect(events.single, isA<RunErrorEvent>());
-        expect(
-          (events.single as RunErrorEvent).error,
-          isA<ReplicaLockHeldException>(),
-        );
+        // Both `hello()`s succeeded before B's lock() threw, so the run
+        // header (`RunReplicasEvent`) already went out ahead of the error.
+        expect(events, hasLength(2));
+        expect(events.first, isA<RunReplicasEvent>());
+        final error = events.last;
+        expect(error, isA<RunErrorEvent>());
+        expect((error as RunErrorEvent).error, isA<ReplicaLockHeldException>());
 
         // A was locked successfully before B's lock() threw; it must have
         // been released, not left held.

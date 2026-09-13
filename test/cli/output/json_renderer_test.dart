@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/cli/output/human_renderer.dart';
 import 'package:dsync/cli/output/json_renderer.dart';
+import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:test/test.dart';
@@ -45,8 +48,18 @@ class _Rendered {
   final _BufferSink err = _BufferSink();
   late final JsonRenderer renderer;
 
-  _Rendered() {
-    renderer = JsonRenderer(out: out.sink, err: err.sink);
+  _Rendered({
+    String profileId = 'test-profile',
+    ReplicaDiagnostics? diagnosticsA,
+    ReplicaDiagnostics? diagnosticsB,
+  }) {
+    renderer = JsonRenderer(
+      out: out.sink,
+      err: err.sink,
+      profileId: profileId,
+      diagnosticsA: diagnosticsA,
+      diagnosticsB: diagnosticsB,
+    );
   }
 }
 
@@ -70,6 +83,71 @@ Future<List<Map<String, dynamic>>> _renderAll(
 
 void main() {
   group('JsonRenderer', () {
+    group('replicas (task ee190c)', () {
+      final localDiagnostics = ReplicaDiagnostics(
+        archivePath: '/state/notes-a.jsonl',
+        lockPath: '/state/notes-a.lock',
+        location: Location.parse('/home/me/notes'),
+        locality: Locality.inProcess,
+      );
+      final remoteDiagnostics = ReplicaDiagnostics(
+        archivePath: '/state/notes-b.jsonl',
+        lockPath: '/state/notes-b.lock',
+        location: Location.parse('me@phone:/sdcard/notes'),
+        locality: Locality.remote,
+      );
+
+      test('carries each side\'s location, locality, resolved archive path, '
+          'last-commit time, the profile id, and firstSync — facts, no '
+          'prose', () async {
+        final r = _Rendered(
+          profileId: 'notes',
+          diagnosticsA: localDiagnostics,
+          diagnosticsB: remoteDiagnostics,
+        );
+        final event = RunReplicasEvent(
+          infoA: ReplicaInfo(
+            lastCommitTime: DateTime.utc(2026, 9, 10, 14, 3),
+            archivePath: '/home/me/.local/state/dsync/notes-a.jsonl',
+          ),
+          infoB: const ReplicaInfo(),
+        );
+
+        final decoded = (await _renderAll(r, [event])).single;
+
+        expect(decoded['type'], 'replicas');
+        expect(decoded['profileId'], 'notes');
+        expect(decoded['a'], {
+          'location': {'path': '/home/me/notes'},
+          'locality': 'inProcess',
+          'archivePath': '/home/me/.local/state/dsync/notes-a.jsonl',
+          'lastCommitTime': DateTime.utc(2026, 9, 10, 14, 3).toIso8601String(),
+        });
+        expect(decoded['b'], {
+          'location': {'path': '/sdcard/notes', 'host': 'phone', 'user': 'me'},
+          'locality': 'remote',
+        });
+        expect(decoded['firstSync'], isTrue);
+
+        // No stray prose anywhere in the line.
+        final raw = jsonEncode(decoded);
+        expect(raw, isNot(contains('first sync of this pair')));
+        expect(raw, isNot(contains('never deleted')));
+      });
+
+      test('firstSync is false once both sides have committed', () async {
+        final r = _Rendered();
+        final event = RunReplicasEvent(
+          infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 2)),
+        );
+
+        final decoded = (await _renderAll(r, [event])).single;
+
+        expect(decoded['firstSync'], isFalse);
+      });
+    });
+
     test(
       'plan: actions and conflicts, each shaped like their own line type',
       () async {

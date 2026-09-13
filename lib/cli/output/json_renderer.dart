@@ -1,22 +1,24 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/cli/output/human_renderer.dart';
+import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 
 /// Renders a `RunController` run as SPEC §11.4's `--json` stream: one JSON
 /// object per line on stdout, one line per [RunEvent], each carrying a
-/// `type` field naming which of the eight line shapes it is (`plan`,
-/// `action`, `conflict`, `symlink`, `progress`, `result`, `summary`,
+/// `type` field naming which of the nine line shapes it is (`replicas`,
+/// `plan`, `action`, `conflict`, `symlink`, `progress`, `result`, `summary`,
 /// `error`).
 ///
 /// `RunEvent` is a `sealed class`, so the switch in [render] is exhaustive:
-/// the ninth line type task ee190c adds (`replicas`, carrying each side's
-/// location, locality, resolved archive path, last-commit time, profile id
-/// and `firstSync`) is one more case there, not a restructuring.
+/// the compiler pointed at this file (and `HumanRenderer`) as exactly what
+/// task ee190c's new `RunReplicasEvent` needed to touch.
 ///
 /// This renderer never writes to [err] — every [RunEvent] SPEC §11.4's
-/// `--json` mode produces is one of the eight types above, all of which
+/// `--json` mode produces is one of the nine types above, all of which
 /// belong on stdout, so there is no human text of this renderer's own to
 /// divert ("Human text goes to stderr in this mode so stdout stays
 /// parseable"). [err] is still accepted, unused, as a constructor parameter
@@ -27,12 +29,49 @@ class JsonRenderer {
   final IOSink out;
   final IOSink err;
 
-  JsonRenderer({required this.out, required this.err});
+  /// This run's profile id (SPEC §8.1, §8.3) — a profile's name, or the
+  /// derived `adhoc-<16 hex>` (`EffectiveOptions`'s own doc comment) — on
+  /// every `replicas` line (task ee190c's DECIDED).
+  final String profileId;
+
+  /// Replica A's and B's [ReplicaDiagnostics] — only [ReplicaDiagnostics.location]
+  /// and [ReplicaDiagnostics.locality] are read here; [ReplicaDiagnostics.archivePath]
+  /// is deliberately not, since a remote side's authoritative archive path is
+  /// the one that comes back on the `replicas` event itself
+  /// ([ReplicaInfo.archivePath]), not the initiator-side label this object
+  /// carries for `HumanRenderer`'s verbose preamble. Independently nullable,
+  /// matching `HumanRenderer`'s own convention: a `replicas` line still
+  /// renders, minus whichever side's location/locality it has no diagnostics
+  /// for.
+  final ReplicaDiagnostics? diagnosticsA;
+  final ReplicaDiagnostics? diagnosticsB;
+
+  JsonRenderer({
+    required this.out,
+    required this.err,
+    required this.profileId,
+    this.diagnosticsA,
+    this.diagnosticsB,
+  });
 
   /// Encodes [event] as one JSON line and writes it, terminated by a single
   /// newline, to the stdout sink this renderer was built with.
   void render(RunEvent event) {
     final json = switch (event) {
+      RunReplicasEvent(:final infoA, :final infoB) => {
+        'type': 'replicas',
+        'profileId': profileId,
+        'a': _replicaSideToJson(infoA, diagnosticsA),
+        'b': _replicaSideToJson(infoB, diagnosticsB),
+        // SPEC §6, "a path one side has never seen": whenever either side
+        // has no archive at all, every path this run touches falls into
+        // that case, so the whole run behaves like a first sync of the
+        // pair. Facts only (task ee190c's DECIDED) — the human-readable
+        // "a file present on one side only is copied, never deleted" note
+        // is `HumanRenderer`'s job, not a string here.
+        'firstSync':
+            infoA.lastCommitTime == null || infoB.lastCommitTime == null,
+      },
       RunPlanEvent(:final plan) => {
         'type': 'plan',
         'actions': plan.actions.map(_actionToJson).toList(),
@@ -110,4 +149,31 @@ Map<String, dynamic> _conflictToJson(Conflict conflict) => {
   'path': conflict.path,
   if (conflict.onA != null) 'onA': conflict.onA!.status.name,
   if (conflict.onB != null) 'onB': conflict.onB!.status.name,
+};
+
+/// One side of a `replicas` line (task ee190c's DECIDED): this side's
+/// location and locality (from [diagnostics], when supplied), plus its
+/// resolved archive path and last-commit time (from [info] — the side's own
+/// `hello` reply, the only place a remote side's archive path is
+/// authoritative). Every key is independently omitted rather than emitted
+/// `null`, matching this file's existing null-omission convention
+/// ([_conflictToJson]).
+Map<String, dynamic> _replicaSideToJson(
+  ReplicaInfo info,
+  ReplicaDiagnostics? diagnostics,
+) => {
+  if (diagnostics != null) 'location': _locationToJson(diagnostics.location),
+  if (diagnostics != null) 'locality': diagnostics.locality.name,
+  if (info.archivePath != null) 'archivePath': info.archivePath,
+  if (info.lastCommitTime != null)
+    'lastCommitTime': info.lastCommitTime!.toIso8601String(),
+};
+
+/// [location] exactly as resolved into this side (no expansion, no
+/// canonicalization) — `path`, plus `host`/`user` when this is not a bare
+/// local path (SPEC §2).
+Map<String, dynamic> _locationToJson(Location location) => {
+  'path': location.path,
+  if (location.host != null) 'host': location.host,
+  if (location.user != null) 'user': location.user,
 };

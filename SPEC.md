@@ -168,8 +168,8 @@ dsync status <profile>            # scan + reconcile + print plan, apply nothing
 Default is interactive: the plan is shown, conflicts first, then each proposed action; the user accepts, skips, or picks a direction per item, or accepts all remaining. `--batch` skips the prompts for non-conflicts. With `--batch`, conflicts are never resolved automatically.
 
 ### 11.4 Output
-- Human mode: a plan table, then progress lines during apply, then a summary (applied / skipped / conflicts / failed).
-- `--json`: one JSON object per line with a `type` field (`plan`, `action`, `conflict`, `symlink`, `progress`, `result`, `summary`, `error`). `symlink` reports a link the scan skipped (§5.1). Human text goes to stderr in this mode so stdout stays parseable.
+- Human mode: a run header naming both replicas and when the pair last synced, then a plan table, then progress lines during apply, then a summary (applied / skipped / conflicts / failed). The header prints before anything moves, so a mistyped location is caught while it is still harmless; when either side has no archive it says so, because that run mirrors rather than propagating deletions (§6).
+- `--json`: one JSON object per line with a `type` field (`replicas`, `plan`, `action`, `conflict`, `symlink`, `progress`, `result`, `summary`, `error`). `symlink` reports a link the scan skipped (§5.1). `replicas` is the header's data — each side's location, locality, archive path and last-commit time, plus the profile id and `firstSync` — as facts only; the human warning is a rendering of `firstSync`, not a string on the wire. Human text goes to stderr in this mode so stdout stays parseable.
 
 ### 11.5 Exit codes
 ```

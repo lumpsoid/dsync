@@ -97,6 +97,13 @@ class AgentCommand extends Command<int> {
   /// yet resolved): the initiator and this host may not agree on where either
   /// points, so expansion has to happen here, against this process's own
   /// environment, via the same [Location.expandedPath] a local replica uses.
+  ///
+  /// [LocalAgent.archivePath] is resolved here too, against this process's
+  /// own environment, and handed straight to [LocalAgent] so its `hello`
+  /// reports this replica's real archive path back to the initiator (SPEC
+  /// §11.4's run header, task ee190c) — the one thing the initiator cannot
+  /// resolve for itself about a remote side (see
+  /// `lib/cli/agents/connected_replicas.dart`'s doc comment).
   Agent _buildAgent(ReplicaSpec spec) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);
@@ -115,6 +122,11 @@ class AgentCommand extends Command<int> {
         environment: Platform.environment,
       ),
       scanner: Scanner(jobs: spec.jobs),
+      archivePath: resolveArchiveLogPath(
+        profileId: spec.profileId,
+        side: spec.side,
+        environment: Platform.environment,
+      ).path,
     );
   }
 }

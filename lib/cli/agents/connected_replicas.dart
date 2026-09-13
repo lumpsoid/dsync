@@ -15,11 +15,22 @@ import 'local_addresses.dart';
 import 'replica_unreachable_exception.dart';
 
 /// Turns an [EffectiveOptions] into two live [Agent]s, one per side (SPEC
-/// §4.1), plus the [ReplicaDiagnostics] SPEC §11.4's verbose preamble wants
-/// for each — the resolved archive path, lock path, and (for a remote side)
-/// ssh argv. This is the only place that computes all three, so a later
+/// §4.1), plus the [ReplicaDiagnostics] SPEC §11.4's verbose preamble *and*
+/// its run header (task ee190c) want for each: the resolved archive path,
+/// lock path, this side's [Location] and [Locality], and (for a remote side)
+/// ssh argv. This is the only place that computes all of them, so a later
 /// wiring layer reads them off [ConnectedReplicas] instead of re-deriving
 /// them.
+///
+/// [ReplicaDiagnostics.archivePath] for a *remote* side is only ever a label
+/// computed here, against the *initiator's* own `environment` — the run
+/// header does not use it for that reason. The authoritative archive path
+/// for a remote side is `LocalAgent`'s own, reported back over the wire once
+/// `hello` runs (`Agent.hello`'s `ReplicaInfo.archivePath`), since only the
+/// far end knows its own `$XDG_STATE_HOME` and user. This field stays for
+/// the verbose preamble, which is inherently an initiator's-eye view (it
+/// also shows lock path and ssh argv, neither of which the far end reports
+/// either).
 ///
 /// Lives in `lib/cli/` rather than `lib/dsync_core/`: choosing the system
 /// `ssh` binary is a CLI decision — the Flutter head will reach a remote
@@ -178,6 +189,10 @@ Future<_ResolvedSide> _resolveLocalSide({
       environment: environment,
     ),
     scanner: Scanner(jobs: jobs),
+    // So this side's own `hello` (SPEC §4.2) reports it back as its
+    // `ReplicaInfo.archivePath` — the authoritative value SPEC §11.4's run
+    // header uses, in place of the label below.
+    archivePath: archivePath,
   );
 
   return (
@@ -185,6 +200,8 @@ Future<_ResolvedSide> _resolveLocalSide({
     diagnostics: ReplicaDiagnostics(
       archivePath: archivePath,
       lockPath: lockPath,
+      location: location,
+      locality: Locality.inProcess,
     ),
   );
 }
@@ -232,6 +249,8 @@ Future<_ResolvedSide> _resolveRemoteSide({
     diagnostics: ReplicaDiagnostics(
       archivePath: archivePath,
       lockPath: lockPath,
+      location: location,
+      locality: Locality.remote,
       sshArgs: sshArgsFor(host: host, user: user),
     ),
   );
@@ -283,7 +302,7 @@ class _DiagnosedRemoteAgent extends RemoteAgent {
 
 /// [resolveReplicaAgents]'s result: each side's connected [Agent] and the
 /// [ReplicaDiagnostics] a later wiring layer feeds to `HumanRenderer`'s
-/// verbose preamble (SPEC §11.4).
+/// verbose preamble and to both renderers' run header (SPEC §11.4).
 ///
 /// Teardown beyond a partial-resolution failure (see
 /// [resolveReplicaAgents]'s doc comment) is `RunController`'s job once these

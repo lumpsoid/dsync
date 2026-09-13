@@ -70,4 +70,72 @@ void main() {
       }
     });
   });
+
+  group(
+    'run header ordering (SPEC §11.4, task ee190c), real process stdout',
+    () {
+      // `runDsyncCli`'s own renderers write to this process's real `stdout`
+      // (`lib/cli/run/sync_runner.dart`), which nothing in-process can
+      // intercept — `dart:io`'s `IOOverrides` can redirect `stdout` to another
+      // real `Stdout`, but not to an arbitrary in-memory sink. Proving the
+      // header actually reaches stdout before the plan therefore means
+      // spawning the real compiled binary and reading its stdout pipe, the
+      // same way `test/cli/commands/agent_stdio_test.dart` does for `agent
+      // --stdio`.
+      late Directory binDir;
+      late String binaryPath;
+
+      setUpAll(() async {
+        binDir = await Directory.systemTemp.createTemp('dsync_sync_bin_');
+        binaryPath = '${binDir.path}/dsync_sync_test';
+        final compile = await Process.run(Platform.resolvedExecutable, [
+          'compile',
+          'exe',
+          'bin/dsync.dart',
+          '-o',
+          binaryPath,
+        ]);
+        if (compile.exitCode != 0) {
+          fail('failed to compile bin/dsync.dart:\n${compile.stderr}');
+        }
+      });
+
+      tearDownAll(() async {
+        await binDir.delete(recursive: true);
+      });
+
+      late Directory tempDir;
+      late Directory rootA;
+      late Directory rootB;
+
+      setUp(() async {
+        tempDir = await Directory.systemTemp.createTemp('dsync_e2e_header_');
+        rootA = await Directory('${tempDir.path}/replica-a').create();
+        rootB = await Directory('${tempDir.path}/replica-b').create();
+      });
+
+      tearDown(() async {
+        await tempDir.delete(recursive: true);
+      });
+
+      test('the header appears before the plan on a real ad-hoc run', () async {
+        await File('${rootA.path}/hello.txt').writeAsString('hi there');
+
+        final result = await Process.run(
+          binaryPath,
+          ['sync', rootA.path, rootB.path, '--batch'],
+          environment: {'XDG_STATE_HOME': '${tempDir.path}/state'},
+          workingDirectory: tempDir.path,
+        );
+
+        expect(result.exitCode, 0);
+        final output = result.stdout as String;
+
+        final headerIndex = output.indexOf('first sync of this pair');
+        final planIndex = output.indexOf('plan:');
+        expect(headerIndex, greaterThanOrEqualTo(0));
+        expect(planIndex, greaterThan(headerIndex));
+      });
+    },
+  );
 }

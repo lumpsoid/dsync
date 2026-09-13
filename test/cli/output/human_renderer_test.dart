@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:dsync/cli/options/verbosity.dart';
 import 'package:dsync/cli/output/human_renderer.dart';
+import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
@@ -68,6 +70,9 @@ class _Rendered {
     RuleSet? rules,
     ReplicaDiagnostics? diagnosticsA,
     ReplicaDiagnostics? diagnosticsB,
+    String profileId = 'test-profile',
+    bool isAdHoc = false,
+    DateTime Function()? now,
   }) {
     renderer = HumanRenderer(
       out: out,
@@ -77,6 +82,9 @@ class _Rendered {
       rules: rules,
       diagnosticsA: diagnosticsA,
       diagnosticsB: diagnosticsB,
+      profileId: profileId,
+      isAdHoc: isAdHoc,
+      now: now ?? DateTime.now,
     );
   }
 }
@@ -284,6 +292,129 @@ void main() {
     });
   });
 
+  group('HumanRenderer.render(RunReplicasEvent) (task ee190c: run header)', () {
+    final fixedNow = DateTime.utc(2026, 9, 13, 12, 0);
+    final localDiagnostics = ReplicaDiagnostics(
+      archivePath: '/state/notes-a.jsonl',
+      lockPath: '/state/notes-a.lock',
+      location: Location.parse('/home/me/notes'),
+      locality: Locality.inProcess,
+    );
+    final remoteDiagnostics = ReplicaDiagnostics(
+      archivePath: '/state/notes-b.jsonl',
+      lockPath: '/state/notes-b.lock',
+      location: Location.parse('me@phone:/sdcard/notes'),
+      locality: Locality.remote,
+      sshArgs: const ['-T', 'me@phone', 'dsync', 'agent', '--stdio'],
+    );
+
+    test('a profile run with both sides synced shows the profile name, both '
+        'rows, and last synced', () {
+      final r = _Rendered(
+        diagnosticsA: localDiagnostics,
+        diagnosticsB: remoteDiagnostics,
+        profileId: 'notes',
+        now: () => fixedNow,
+      );
+      r.renderer.render(
+        RunReplicasEvent(
+          infoA: ReplicaInfo(
+            lastCommitTime: fixedNow.subtract(const Duration(days: 3)),
+          ),
+          infoB: ReplicaInfo(
+            lastCommitTime: fixedNow.subtract(const Duration(days: 3)),
+          ),
+        ),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('profile notes'));
+      expect(output, contains('/home/me/notes'));
+      expect(output, contains('local'));
+      expect(output, contains('me@phone:/sdcard/notes'));
+      expect(output, contains('ssh'));
+      expect(output, contains('last synced'));
+      expect(output, contains('3 day(s) ago'));
+    });
+
+    test('a true first sync (both sides empty) says so and carries the '
+        'warning note', () {
+      final r = _Rendered(profileId: 'notes');
+      r.renderer.render(
+        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('first sync of this pair'));
+      expect(output, contains('First sync:'));
+      expect(output, isNot(contains('has no archive yet')));
+    });
+
+    test('the asymmetric case (one archive, one none) is flagged distinctly '
+        'from the both-empty case', () {
+      final r = _Rendered(profileId: 'notes');
+      r.renderer.render(
+        RunReplicasEvent(
+          infoA: const ReplicaInfo(),
+          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+        ),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('first sync of this pair'));
+      expect(output, contains('A has no archive yet'));
+      expect(output, contains('First sync:'));
+    });
+
+    test('an ad-hoc run shows its derived id next to the summary line, not '
+        'as a "profile" header', () {
+      final r = _Rendered(profileId: 'adhoc-3f2a9c1b7e4d0a85', isAdHoc: true);
+      r.renderer.render(
+        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, isNot(contains('profile adhoc-3f2a9c1b7e4d0a85')));
+      expect(
+        output,
+        contains('adhoc-3f2a9c1b7e4d0a85 · first sync of this pair'),
+      );
+    });
+
+    test('--quiet shows none of it', () {
+      final r = _Rendered(
+        verbosity: Verbosity.quiet,
+        profileId: 'notes',
+        diagnosticsA: localDiagnostics,
+        diagnosticsB: remoteDiagnostics,
+      );
+      r.renderer.render(
+        RunReplicasEvent(
+          infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+        ),
+      );
+
+      expect(r.out.buffer.toString(), isEmpty);
+    });
+
+    test('renders only what is present, without throwing, when diagnostics '
+        'are missing', () {
+      final r = _Rendered(profileId: 'notes');
+
+      expect(
+        () => r.renderer.render(
+          RunReplicasEvent(
+            infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+            infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+          ),
+        ),
+        returnsNormally,
+      );
+      expect(r.out.buffer.toString(), isNot(contains('A  ')));
+    });
+  });
+
   group('HumanRenderer, Verbosity.verbose', () {
     test('shows at least everything normal shows', () {
       final r = _Rendered(verbosity: Verbosity.verbose);
@@ -300,14 +431,18 @@ void main() {
 
   group('HumanRenderer.renderPreamble (task e9b4b6 DECIDED verbose set)', () {
     final rules = RuleSet(ignore: const ['*.tmp'], follow: const ['links/**']);
-    const remoteDiagnostics = ReplicaDiagnostics(
+    final remoteDiagnostics = ReplicaDiagnostics(
       archivePath: '/state/profile-a.jsonl',
       lockPath: '/state/profile-a.lock',
-      sshArgs: ['-T', 'user@host', 'dsync', 'agent', '--stdio'],
+      location: Location.parse('user@host:/notes'),
+      locality: Locality.remote,
+      sshArgs: const ['-T', 'user@host', 'dsync', 'agent', '--stdio'],
     );
-    const localDiagnostics = ReplicaDiagnostics(
+    final localDiagnostics = ReplicaDiagnostics(
       archivePath: '/state/profile-b.jsonl',
       lockPath: '/state/profile-b.lock',
+      location: Location.parse('/home/me/notes'),
+      locality: Locality.inProcess,
     );
 
     test('at verbose, shows the merged ignore/follow rules', () {

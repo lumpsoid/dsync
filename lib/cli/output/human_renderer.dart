@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/cli/options/verbosity.dart';
+import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
@@ -8,18 +9,36 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 
 /// Run-level facts about one replica side, known before the run starts —
 /// resolved by whatever already computes them (`resolveArchiveLogPath`,
-/// `resolveLockPath`, `sshArgsFor`), never by this renderer, which touches no
-/// filesystem and spawns nothing so it stays testable on plain values.
+/// `resolveLockPath`, `sshArgsFor`, `Location.classify`), never by this
+/// renderer, which touches no filesystem and spawns nothing so it stays
+/// testable on plain values.
 ///
-/// One object per side rather than three loose parameters per side on
-/// [HumanRenderer]'s constructor: three values that must stay matched up
-/// with each other (this archive path goes with this lock path goes with
-/// this ssh argv, for side A and not side B) is exactly the kind of cluster
-/// CLAUDE.md says to give a name to, so a wiring mistake pairing A's archive
-/// path with B's lock path cannot even be expressed.
+/// One object per side rather than five loose parameters per side on
+/// [HumanRenderer]'s constructor: values that must stay matched up with
+/// each other (this archive path goes with this lock path goes with this
+/// ssh argv goes with this location, for side A and not side B) is exactly
+/// the kind of cluster CLAUDE.md says to give a name to, so a wiring mistake
+/// pairing A's archive path with B's location cannot even be expressed.
+///
+/// [location] and [locality] were added for SPEC §11.4's run header (task
+/// ee190c) — the same "known before the run starts" facts [archivePath] and
+/// [lockPath] already are, just not previously retained anywhere.
 class ReplicaDiagnostics {
   final String archivePath;
   final String lockPath;
+
+  /// This side's location exactly as [EffectiveOptions] resolved it into
+  /// side A or B (no `~`/env-var expansion, no canonicalization): the run
+  /// header shows back what was typed, unmodified, so a mistyped location
+  /// reads as the mistake it is rather than something already normalized.
+  final Location location;
+
+  /// Where this side's agent actually runs (SPEC §4.1) — decided once by
+  /// whoever resolved this side ([resolveReplicaAgents]) and handed down
+  /// here rather than re-derived from [sshArgs]: a side's locality is a fact
+  /// about it, not something to infer from a diagnostic that happens to
+  /// correlate with it.
+  final Locality locality;
 
   /// The ssh argv used to reach this side (`sshArgsFor`), or `null` when the
   /// side is local. `null` rather than an empty list: an empty list would
@@ -30,6 +49,8 @@ class ReplicaDiagnostics {
   const ReplicaDiagnostics({
     required this.archivePath,
     required this.lockPath,
+    required this.location,
+    required this.locality,
     this.sshArgs,
   });
 }
@@ -46,8 +67,8 @@ class ReplicaDiagnostics {
 /// [verbosity] picks how much of SPEC §11.4's three levels this instance
 /// shows (task e9b4b6, DECIDED):
 /// - [Verbosity.quiet] — the summary line and any error. Nothing else.
-/// - [Verbosity.normal] — run header (not this renderer's job, see below),
-///   plan table, conflicts, skipped-symlink notes, progress, summary.
+/// - [Verbosity.normal] — run header (via [_renderReplicas], below), plan
+///   table, conflicts, skipped-symlink notes, progress, summary.
 /// - [Verbosity.verbose] — everything [Verbosity.normal] shows, plus (via
 ///   [renderPreamble]) the effective ignore/follow rules and each side's
 ///   resolved archive/lock paths and ssh argv. The fourth DECIDED item — the
@@ -58,14 +79,15 @@ class ReplicaDiagnostics {
 ///   per-method notes below for exactly what is and isn't available.
 ///
 /// SPEC §11.4's run header — "which replicas, and when this pair last
-/// synced" — is task ee190c, running separately, and is deliberately not
-/// rendered here: no [RunEvent] carries replica identity or last-sync data.
-/// The obvious slot for it is a line printed once before the first [render]
-/// call (the wiring task already knows which replicas it connected, ahead of
-/// starting `RunController.run()`), or a new case in the `switch` below if a
-/// `RunHeaderEvent` is introduced instead. This renderer's first output is
-/// whatever the first real event is — typically a skipped-symlink note or a
-/// conflict, per the order `RunController.run()` emits them in.
+/// synced" (task ee190c) — is [render]ed like any other event, from a
+/// [RunReplicasEvent]: `RunController.run()` yields exactly one, right after
+/// both sides' `hello()` succeed and before locking begins, so this is
+/// always the first thing a successful run's stream produces. It is a
+/// [render] case rather than a call made once up front (the way
+/// [renderPreamble] is, before the stream starts) because the one thing it
+/// needs beyond [profileId]/[isAdHoc]/[diagnosticsA]/[diagnosticsB] — each
+/// side's `hello` reply — genuinely does not exist until `RunController`
+/// produces it.
 class HumanRenderer {
   final IOSink out;
   final IOSink err;
@@ -82,21 +104,48 @@ class HumanRenderer {
   /// [renderPreamble].
   final RuleSet? rules;
 
-  /// Replica A's and B's [ReplicaDiagnostics], shown at [Verbosity.verbose]
-  /// only, via [renderPreamble]. Independently nullable: a caller with
-  /// diagnostics for one side but not the other (or neither) still gets a
-  /// working renderer that shows whatever it has.
+  /// Replica A's and B's [ReplicaDiagnostics] — each side's location,
+  /// locality, archive path, and lock path. Shown at [Verbosity.verbose] via
+  /// [renderPreamble] (archive/lock paths and ssh argv), and at
+  /// [Verbosity.normal] via the run header (location and locality).
+  /// Independently nullable: a caller with diagnostics for one side but not
+  /// the other (or neither) still gets a working renderer that shows
+  /// whatever it has.
   final ReplicaDiagnostics? diagnosticsA;
   final ReplicaDiagnostics? diagnosticsB;
+
+  /// This run's profile id (SPEC §8.1, §8.3) — a profile's name, or the
+  /// derived `adhoc-<16 hex>` (SPEC ee190c's DECIDED, `EffectiveOptions`'s
+  /// own doc comment). Shown in the run header.
+  final String profileId;
+
+  /// Whether this run has no profile — `sync <locA> <locB>` rather than
+  /// `sync <profile>` (SPEC §11.1). Decides the run header's shape: a
+  /// profile run shows its name once, up top; an ad-hoc run has no name
+  /// worth centering there, so [profileId] (the derived id) instead sits
+  /// next to the per-pair summary line, which is where showing it actually
+  /// matters — "which id did canonicalization derive for this pair" (task
+  /// ee190c).
+  final bool isAdHoc;
+
+  /// The wall clock, for the run header's "N day(s) ago" (task ee190c) —
+  /// threaded through rather than read from `DateTime.now()` directly
+  /// (matching this codebase's convention for `environment`,
+  /// `localAddressLookup`, ...) so a test can fix "now" instead of racing a
+  /// real clock.
+  final DateTime Function() now;
 
   HumanRenderer({
     required this.out,
     required this.err,
     required this.verbosity,
+    required this.profileId,
     this.warnSizeBytes,
     this.rules,
     this.diagnosticsA,
     this.diagnosticsB,
+    this.isAdHoc = false,
+    this.now = DateTime.now,
   });
 
   /// Run-level context — not tied to any one [RunEvent] — shown once, at
@@ -151,6 +200,8 @@ class HumanRenderer {
         _renderError(e);
 
       // Everything else is silent at Verbosity.quiet.
+      case RunReplicasEvent e:
+        if (verbosity != Verbosity.quiet) _renderReplicas(e);
       case RunSkippedSymlinkEvent e:
         if (verbosity != Verbosity.quiet) _renderSkippedSymlink(e);
       case RunConflictEvent e:
@@ -164,6 +215,109 @@ class HumanRenderer {
       case RunProgressEvent e:
         if (verbosity != Verbosity.quiet) _renderProgress(e);
     }
+  }
+
+  /// SPEC §11.4's run header (task ee190c): which replicas this run
+  /// connects, and what the tool already knows about the pair, ahead of the
+  /// plan. A profile run shows its name once, up top ([isAdHoc] false); an
+  /// ad-hoc run has no name to show there, so [profileId] — the derived id
+  /// canonicalization produced — sits on the summary line instead, right
+  /// where "first sync of this pair" would otherwise stand alone (task
+  /// ee190c: "that is what keeps canonicalization from being a silent
+  /// implication").
+  ///
+  /// "First sync" (SPEC §6, "a path one side has never seen") is flagged
+  /// whenever either side's archive has never committed — [event]'s
+  /// [ReplicaInfo.lastCommitTime] `null` on either side — and the
+  /// asymmetric case (one side has history, the other none) is worded
+  /// differently from the both-empty case: the same silent mirroring run
+  /// results either way, but only the asymmetric one is likely a mistake
+  /// (a wiped state dir) rather than an expected first run.
+  void _renderReplicas(RunReplicasEvent event) {
+    if (!isAdHoc) out.writeln('profile $profileId');
+
+    _renderReplicaRow('A', diagnosticsA);
+    _renderReplicaRow('B', diagnosticsB);
+
+    final lastA = event.infoA.lastCommitTime;
+    final lastB = event.infoB.lastCommitTime;
+    final label = isAdHoc ? '$profileId · ' : '';
+
+    if (lastA == null && lastB == null) {
+      out.writeln('  ${label}first sync of this pair');
+      _renderFirstSyncNote();
+    } else if (lastA == null || lastB == null) {
+      final emptySide = lastA == null ? 'A' : 'B';
+      out.writeln(
+        '  ${label}first sync of this pair '
+        '($emptySide has no archive yet — a wiped state dir, or a new '
+        'replica joining an established one)',
+      );
+      _renderFirstSyncNote();
+    } else {
+      out.writeln('  $label${_lastSyncedSummary(lastA, lastB)}');
+    }
+  }
+
+  void _renderReplicaRow(String side, ReplicaDiagnostics? diagnostics) {
+    if (diagnostics == null) return;
+    final locality = diagnostics.locality == Locality.inProcess
+        ? 'local'
+        : 'ssh';
+    out.writeln('$side  ${_formatLocation(diagnostics.location)}  $locality');
+  }
+
+  /// One shared "last synced" line when both sides agree to the minute,
+  /// otherwise one per side: SPEC §7.3/§8.2 already tolerate the two
+  /// archives committing at slightly different instants (a crash between
+  /// the two commits resolves on the next run), so nothing guarantees they
+  /// land in the same minute.
+  String _lastSyncedSummary(DateTime lastA, DateTime lastB) {
+    final formattedA = _formatTimestamp(lastA);
+    final formattedB = _formatTimestamp(lastB);
+    if (formattedA == formattedB) {
+      return 'last synced $formattedA (${_relativeTime(lastA)})';
+    }
+    return 'last synced A $formattedA (${_relativeTime(lastA)}), '
+        'B $formattedB (${_relativeTime(lastB)})';
+  }
+
+  /// SPEC §6's "a path one side has never seen": with no archive on the
+  /// affected side(s), a file present on only one side cannot be told apart
+  /// from a file the other side already deleted, so it is always copied,
+  /// never deleted.
+  void _renderFirstSyncNote() {
+    out.writeln(
+      '! First sync: with no archive, a file present on one side only is '
+      'copied,\n'
+      '  never deleted — there is no way yet to tell a new file from a '
+      'deleted one.',
+    );
+  }
+
+  /// [location] exactly as typed/configured (no expansion, no
+  /// canonicalization) — `user@host:path`, `host:path`, or a bare local
+  /// `path`, matching the grammar `Location.parse` accepts (SPEC §2).
+  String _formatLocation(Location location) {
+    final host = location.host;
+    if (host == null) return location.path;
+    final user = location.user;
+    return '${user == null ? '' : '$user@'}$host:${location.path}';
+  }
+
+  String _formatTimestamp(DateTime time) {
+    final local = time.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  String _relativeTime(DateTime time) {
+    final diff = now().difference(time);
+    if (diff.inDays >= 1) return '${diff.inDays} day(s) ago';
+    if (diff.inHours >= 1) return '${diff.inHours} hour(s) ago';
+    if (diff.inMinutes >= 1) return '${diff.inMinutes} minute(s) ago';
+    return 'just now';
   }
 
   /// SPEC §5.1: a symlink the scan skipped rather than followed. [onA] says

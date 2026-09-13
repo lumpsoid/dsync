@@ -64,6 +64,23 @@ void main() {
       expect((result.agentA as LocalAgent).rootPath, rootA.path);
       expect((result.agentB as LocalAgent).rootPath, rootB.path);
 
+      // task ee190c: a local `LocalAgent` is built with the same archive
+      // path its diagnostics carry, so its own `hello()` reports it back
+      // (`ReplicaInfo.archivePath`) — not just this initiator-side label.
+      expect(
+        (result.agentA as LocalAgent).archivePath,
+        result.diagnosticsA.archivePath,
+      );
+      expect(
+        (result.agentB as LocalAgent).archivePath,
+        result.diagnosticsB.archivePath,
+      );
+
+      expect(result.diagnosticsA.location.path, rootA.path);
+      expect(result.diagnosticsB.location.path, rootB.path);
+      expect(result.diagnosticsA.locality, Locality.inProcess);
+      expect(result.diagnosticsB.locality, Locality.inProcess);
+
       expect(result.diagnosticsA.sshArgs, isNull);
       expect(result.diagnosticsB.sshArgs, isNull);
       expect(
@@ -119,6 +136,11 @@ void main() {
         expect(result.agentA, isA<LocalAgent>());
         expect((result.agentA as LocalAgent).rootPath, '${tempDir.path}/notes');
         expect(result.diagnosticsA.sshArgs, isNull);
+        expect(result.diagnosticsA.locality, Locality.inProcess);
+        expect(
+          result.diagnosticsA.location.host,
+          'this-host',
+        ); // as typed, unexpanded (SPEC §11.4's run header shows this back).
       },
     );
 
@@ -147,6 +169,8 @@ void main() {
           'agent',
           '--stdio',
         ]);
+        expect(result.diagnosticsB.locality, Locality.remote);
+        expect(result.diagnosticsB.location.host, 'foreign-host');
 
         await result.agentA.disconnect();
         await result.agentB.disconnect();

@@ -23,6 +23,14 @@ class LocalAgent implements Agent {
   final ReplicaLock replicaLock;
   final Scanner scanner;
 
+  /// This replica's resolved archive log path, reported back in [hello]'s
+  /// [ReplicaInfo] (SPEC §11.4's run header, task ee190c). Optional because
+  /// [archiveStore] is already the thing that actually reads and writes the
+  /// archive — this is only a label the caller who built [archiveStore]
+  /// already knows and hands in, not re-derived here, and plenty of callers
+  /// (most tests) have no reason to supply it.
+  final String? archivePath;
+
   /// Set once `chmod` has turned out not to exist on this host. See
   /// [_applyMode].
   bool _chmodUnavailable = false;
@@ -36,11 +44,15 @@ class LocalAgent implements Agent {
     required this.archiveStore,
     required this.replicaLock,
     Scanner? scanner,
+    this.archivePath,
   }) : scanner = scanner ?? Scanner();
 
   @override
   Future<ReplicaInfo> hello() async {
-    return ReplicaInfo(lastCommitTime: await archiveStore.lastCommitTime());
+    return ReplicaInfo(
+      lastCommitTime: await archiveStore.lastCommitTime(),
+      archivePath: archivePath,
+    );
   }
 
   @override

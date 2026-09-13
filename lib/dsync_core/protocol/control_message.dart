@@ -103,12 +103,14 @@ ReplicaSpec replicaSpecFromJson(Map<String, dynamic> json) => ReplicaSpec(
 Map<String, dynamic> replicaInfoToJson(ReplicaInfo info) => {
   if (info.lastCommitTime != null)
     'lastCommitTime': info.lastCommitTime!.microsecondsSinceEpoch,
+  if (info.archivePath != null) 'archivePath': info.archivePath,
 };
 
 ReplicaInfo replicaInfoFromJson(Map<String, dynamic> json) => ReplicaInfo(
   lastCommitTime: json['lastCommitTime'] == null
       ? null
       : DateTime.fromMicrosecondsSinceEpoch(json['lastCommitTime'] as int),
+  archivePath: json['archivePath'] as String?,
 );
 
 /// Thrown by `RemoteAgent` when the peer reports an [AgentFailure] for an

@@ -52,13 +52,13 @@ typedef RunSync = Future<int> Function(CliOptions options);
 /// own here, either, since SPEC §11.1 makes it `sync --dry-run` under a
 /// friendlier name all the way down to [CliOptions].
 ///
-/// The next task (ee190c) prints a run header — which replicas, and when
-/// this pair last synced — once the agents are connected but before the
-/// plan is shown. That slots in right after `resolveReplicaAgents` returns
-/// [ConnectedReplicas] below (which already has both sides' identity) and
-/// before the presenter/renderer are built: one more call in [run], not a
-/// restructuring, and it would also add a `replicas` line to
-/// `--json`, which is [JsonRenderer]'s call to add when that event exists.
+/// SPEC §11.4's run header — which replicas, and what the tool already
+/// knows about the pair (task ee190c) — needs no extra call here: it rides
+/// the same [RunEvent] stream as everything else, as a `RunReplicasEvent`
+/// `RunController.run()` yields right after both `hello()`s succeed. This
+/// class's only job for it is threading [EffectiveOptions.profileId] and
+/// [ConnectedReplicas]'s diagnostics into whichever renderer gets built
+/// below, alongside the context each already receives.
 class SyncRunner {
   /// The process environment, threaded through rather than read from
   /// [Platform.environment] directly, so a caller (`runDsyncCli`, or a test)
@@ -146,9 +146,6 @@ class SyncRunner {
       sshExecutable: sshExecutable,
     );
 
-    // --- the next task's run header (ee190c) slots in right here: both
-    // agents are connected ([connected]), nothing has been rendered yet. ---
-
     final controller = RunController(
       agentA: connected.agentA,
       agentB: connected.agentB,
@@ -156,9 +153,20 @@ class SyncRunner {
       rules: effective.rules,
     );
 
+    // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC
+    // §11.4, task ee190c) shows the derived id in a different place than a
+    // profile run shows its name — see HumanRenderer.isAdHoc.
+    final isAdHoc = target is AdHocTarget;
+
     final void Function(RunEvent) render;
     if (options.json) {
-      render = JsonRenderer(out: stdout, err: stderr).render;
+      render = JsonRenderer(
+        out: stdout,
+        err: stderr,
+        profileId: effective.profileId,
+        diagnosticsA: connected.diagnosticsA,
+        diagnosticsB: connected.diagnosticsB,
+      ).render;
     } else {
       final renderer = HumanRenderer(
         out: stdout,
@@ -168,6 +176,8 @@ class SyncRunner {
         rules: effective.rules,
         diagnosticsA: connected.diagnosticsA,
         diagnosticsB: connected.diagnosticsB,
+        profileId: effective.profileId,
+        isAdHoc: isAdHoc,
       );
       renderer.renderPreamble(); // no-op below Verbosity.verbose.
       render = renderer.render;

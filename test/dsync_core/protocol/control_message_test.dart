@@ -159,6 +159,15 @@ void main() {
       final decoded = replicaInfoFromJson(replicaInfoToJson(info));
 
       expect(decoded.lastCommitTime, isNull);
+      expect(decoded.archivePath, isNull);
+    });
+
+    test('round-trips an archive path (task ee190c)', () {
+      const info = ReplicaInfo(archivePath: '/state/notes-a.jsonl');
+
+      final decoded = replicaInfoFromJson(replicaInfoToJson(info));
+
+      expect(decoded.archivePath, '/state/notes-a.jsonl');
     });
   });
 

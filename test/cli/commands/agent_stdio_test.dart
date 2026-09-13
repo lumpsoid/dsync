@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
@@ -97,7 +98,19 @@ void main() {
         ),
       );
       await frames.moveNext();
-      expect(AgentResult.fromFrame(frames.current), isA<AgentSuccess>());
+      final helloReply = AgentResult.fromFrame(frames.current);
+      expect(helloReply, isA<AgentSuccess>());
+      // task ee190c: the remote side's own `LocalAgent` resolves and
+      // reports its real archive path — the initiator has no way to
+      // `stat` it itself.
+      expect(
+        (helloReply as AgentSuccess).data['archivePath'],
+        resolveArchiveLogPath(
+          profileId: 'agent-stdio-test',
+          side: 'a',
+          environment: {'XDG_STATE_HOME': stateHome.path},
+        ).path,
+      );
 
       await channel.send(
         FrameCodec().encode(

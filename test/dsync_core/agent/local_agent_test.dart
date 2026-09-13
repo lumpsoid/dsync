@@ -72,6 +72,19 @@ void main() {
         expect(info.lastCommitTime, expected);
       },
     );
+
+    test('reports the archive path it was built with (task ee190c), or null '
+        'when none was supplied', () async {
+      expect((await agent().hello()).archivePath, isNull);
+
+      final withPath = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        archivePath: archiveLog.path,
+      );
+      expect((await withPath.hello()).archivePath, archiveLog.path);
+    });
   });
 
   group('lock/unlock', () {

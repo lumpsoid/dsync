@@ -1,14 +1,34 @@
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 
 /// One line of a `RunController` run, mirroring the `--json` schema of SPEC
 /// §11.4: each subtype corresponds to one of that schema's `type` values
-/// (`plan`, `action`, `conflict`, `symlink`, `progress`, `result`, `summary`,
-/// `error`).
+/// (`replicas`, `plan`, `action`, `conflict`, `symlink`, `progress`,
+/// `result`, `summary`, `error`).
 /// A head decides how to render each event; `RunController` only decides
 /// what happened and when — no CLI-specific concept (TTY, argparse, prompt
 /// UI) lives here.
 sealed class RunEvent {
   const RunEvent();
+}
+
+/// Both replicas' [ReplicaInfo], as reported by `hello` (SPEC §4.2),
+/// emitted once both calls succeed and before locking begins — the first
+/// event of any successful run (`RunController.run()`). SPEC §11.4's run
+/// header (task ee190c: which replicas, and what the tool already knows
+/// about the pair) is built from this.
+///
+/// Carries only what `hello` actually returns per side, nothing about
+/// location, locality, or profile id: `RunController` only ever holds an
+/// opaque `Agent`, so it has no way to know those — the caller that built
+/// each `Agent` (`SyncRunner`, `resolveReplicaAgents`) does, and a head
+/// joins this event's facts with that context to render the header
+/// (`HumanRenderer`, `JsonRenderer`).
+class RunReplicasEvent extends RunEvent {
+  final ReplicaInfo infoA;
+  final ReplicaInfo infoB;
+
+  const RunReplicasEvent({required this.infoA, required this.infoB});
 }
 
 /// The reconciled [Plan] (SPEC §6), emitted once its conflicts have been
