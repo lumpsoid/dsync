@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -152,7 +153,7 @@ void main() {
         expect(metadata.size, 5);
         expect(metadata.mtime, mtime);
         expect(metadata.mode, 416);
-        expect(await File('${file.path}.dsync.tmp').exists(), isFalse);
+        expect(await _leftoverTempFiles(replicaDir), isEmpty);
       },
       testOn: 'linux',
     );
@@ -227,10 +228,48 @@ void main() {
       );
 
       expect(await File('${replicaDir.path}/a.txt').exists(), isFalse);
-      expect(
-        await File('${replicaDir.path}/a.txt.dsync.tmp').exists(),
-        isFalse,
+      expect(await _leftoverTempFiles(replicaDir), isEmpty);
+    });
+
+    test('two writes to the same target use different scratch files', () async {
+      final paths = <String>{};
+      Stream<List<int>> recording() async* {
+        paths.addAll(await _leftoverTempFiles(replicaDir));
+        yield utf8.encode('hello');
+      }
+
+      final a = agent();
+      await a.writeFile(
+        'a.txt',
+        recording(),
+        mtime: DateTime.now().microsecondsSinceEpoch,
+        mode: 420,
       );
+      await a.writeFile(
+        'a.txt',
+        recording(),
+        mtime: DateTime.now().microsecondsSinceEpoch,
+        mode: 420,
+      );
+
+      // Two writes racing on one scratch path would rename over each other.
+      // The replica lock rules that out today, but atomicity should not
+      // depend on a lock held elsewhere.
+      expect(paths, hasLength(2));
+    });
+  });
+
+  group('leftover scratch files', () {
+    test('a scratch file from a crashed write is not scanned', () async {
+      await File('${replicaDir.path}/a.txt').writeAsString('hello');
+      await File(tempPathFor('${replicaDir.path}/a.txt', 7))
+          .writeAsString('half a file');
+
+      final entries = (await agent().scan(RuleSet())).entries;
+
+      // Otherwise the next run reports dsync's own half-written scratch data
+      // as a new file and propagates it to the other replica.
+      expect(entries.map((e) => e.path), ['a.txt']);
     });
   });
 
@@ -398,4 +437,14 @@ void main() {
       expect(lines, hasLength(2));
     });
   });
+}
+
+/// Scratch files (SPEC §7.2) still sitting in [dir], by name. A write that
+/// finished — or failed — should leave none.
+Future<List<String>> _leftoverTempFiles(Directory dir) async {
+  final entries = await dir.list(recursive: true).toList();
+  return [
+    for (final entry in entries)
+      if (isTempFileName(entry.path)) entry.path,
+  ];
 }

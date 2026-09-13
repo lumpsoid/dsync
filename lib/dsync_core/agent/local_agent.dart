@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
+import 'package:dsync/dsync_core/temp_file.dart';
 
 /// [Agent] implementation over the real filesystem (SPEC §4.1).
 ///
@@ -24,6 +25,10 @@ class LocalAgent implements Agent {
   /// Set once `chmod` has turned out not to exist on this host. See
   /// [_applyMode].
   bool _chmodUnavailable = false;
+
+  /// Distinguishes this agent's scratch files from each other. See
+  /// [tempPathFor].
+  int _nextTempSequence = 0;
 
   LocalAgent({
     required this.rootPath,
@@ -109,7 +114,7 @@ class LocalAgent implements Agent {
   }) async {
     final target = File(_absolute(path));
     await target.parent.create(recursive: true);
-    final temp = File('${target.path}.dsync.tmp');
+    final temp = File(tempPathFor(target.path, _nextTempSequence++));
 
     try {
       final sink = temp.openWrite();

@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/temp_file.dart';
 
 /// Scans a replica's file tree and compares it against its own archive
 /// (SPEC §5).
@@ -90,6 +91,10 @@ class Scanner {
           ? name
           : '$relativePrefix/$name';
       if (context.rules.ignores(relativePath)) continue;
+      // A scratch file a crashed write left behind (SPEC §7.2) lives inside
+      // the replica; reporting it would propagate dsync's own half-written
+      // data to the other side as a new file.
+      if (isTempFileName(name)) continue;
 
       switch (await FileSystemEntity.type(child.path, followLinks: false)) {
         case FileSystemEntityType.directory:
