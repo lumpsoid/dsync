@@ -83,12 +83,39 @@ class SyncRunner {
   /// real host.
   final String sshExecutable;
 
+  /// Builds the [Presenter] the default (non-`--batch`, non-`--dry-run`)
+  /// path uses (SPEC §11.3) — see [_choosePresenter]. Real callers never set
+  /// this; it defaults to [_defaultInteractivePresenter], which is exactly
+  /// what [_choosePresenter] built inline before this seam existed: an
+  /// [InteractivePresenter] over the real [stdin]/[stdout].
+  ///
+  /// Overridable for the same reason [localAddressLookup] and
+  /// [sshExecutable] are, and in the same shape as the [RunSync] typedef
+  /// above: a real terminal is the one piece of this run a test cannot
+  /// otherwise reach. `stdin.hasTerminal` is always `false` in a test
+  /// process, which makes [InteractivePresenter] throw
+  /// [NonInteractiveStdinError] before it ever reads a scripted answer — so
+  /// there is no way to drive interactive review (accept / skip / resolve a
+  /// conflict by direction) through a real [run] without this (task 67d911).
+  /// A test hands in one built over a scripted `Stream<String>` and a
+  /// buffering `IOSink`, with `isTerminal` forced `true`, instead of
+  /// constructing `SyncRunner` some other way.
+  final Presenter Function() buildInteractivePresenter;
+
   SyncRunner({
     required this.environment,
     required this.workingDirectory,
     this.localAddressLookup = systemLocalAddresses,
     this.sshExecutable = 'ssh',
-  });
+    Presenter Function()? buildInteractivePresenter,
+  }) : buildInteractivePresenter =
+           buildInteractivePresenter ?? _defaultInteractivePresenter;
+
+  static Presenter _defaultInteractivePresenter() => InteractivePresenter(
+    lines: stdin.transform(utf8.decoder).transform(const LineSplitter()),
+    output: stdout,
+    isTerminal: stdin.hasTerminal,
+  ).call;
 
   /// Runs [options] to completion and returns the process exit code (SPEC
   /// §11.5).
@@ -267,17 +294,13 @@ class SyncRunner {
 
   /// SPEC §11.1, §11.3: dry-run (which includes `status`) never applies
   /// anything; `--batch` applies every non-conflicting action unasked;
-  /// otherwise the default is interactive, over the real [stdin] — `--batch`
-  /// and `--dry-run` cannot both be set ([CliOptions] already rejects that
-  /// combination), so this is a plain if-chain, not a validated priority
-  /// order.
+  /// otherwise the default is interactive, via [buildInteractivePresenter] —
+  /// `--batch` and `--dry-run` cannot both be set ([CliOptions] already
+  /// rejects that combination), so this is a plain if-chain, not a validated
+  /// priority order.
   Presenter _choosePresenter(CliOptions options) {
     if (options.dryRun) return const DryRunPresenter().call;
     if (options.batch) return const BatchPresenter().call;
-    return InteractivePresenter(
-      lines: stdin.transform(utf8.decoder).transform(const LineSplitter()),
-      output: stdout,
-      isTerminal: stdin.hasTerminal,
-    ).call;
+    return buildInteractivePresenter();
   }
 }
