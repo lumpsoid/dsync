@@ -177,6 +177,65 @@ void main() {
     });
   });
 
+  group('torn tail', () {
+    /// Appends a fragment of a record, as a crash partway through a commit
+    /// would leave behind.
+    Future<void> tear() async {
+      await logFile().writeAsString(
+        '{"op":"upsert","path":"b.t',
+        mode: FileMode.append,
+      );
+    }
+
+    test(
+      'a half-written last line is dropped, earlier lines survive',
+      () async {
+        final writer = JsonlArchiveStore(logFile(), header);
+        await writer.load();
+        await writer.commitUpsert(entry);
+        await tear();
+
+        final archive = await JsonlArchiveStore(logFile(), header).load();
+
+        expectEntry(archive.entries['a.txt'], entry);
+        expect(archive.entries.containsKey('b.txt'), isFalse);
+      },
+    );
+
+    test('the torn bytes are removed before the next commit', () async {
+      final writer = JsonlArchiveStore(logFile(), header);
+      await writer.load();
+      await writer.commitUpsert(entry);
+      await tear();
+
+      final reopened = JsonlArchiveStore(logFile(), header);
+      await reopened.load();
+      await reopened.commitDelete('a.txt');
+
+      // Appending onto the fragment would splice it into the next record and
+      // turn a recoverable tear into corruption mid-log, so the next load has
+      // to come back clean.
+      final archive = await JsonlArchiveStore(logFile(), header).load();
+      expect(archive.entries, isEmpty);
+    });
+
+    test('a malformed line that is not the last aborts the load', () async {
+      final writer = JsonlArchiveStore(logFile(), header);
+      await writer.load();
+      await writer.commitUpsert(entry);
+      await logFile().writeAsString(
+        'not json\n{"op":"delete","path":"a.txt"}\n',
+        mode: FileMode.append,
+      );
+
+      // Real corruption, not a torn tail: SPEC §11.5 exit 3.
+      await expectLater(
+        JsonlArchiveStore(logFile(), header).load(),
+        throwsFormatException,
+      );
+    });
+  });
+
   group('snapshot', () {
     test(
       'reflects commits made since load without rereading the file',

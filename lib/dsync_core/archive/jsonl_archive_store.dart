@@ -8,9 +8,11 @@ import 'package:dsync/dsync_core/models/archive.dart';
 /// The first line is the header (SPEC §8.1); every line after it is one
 /// commit — an upsert or a tombstone — appended and flushed before returning,
 /// so a commit that returns has survived a crash. [load] checks the header,
-/// then replays the log; the last line for a path wins. [compact] folds the
-/// log back down to one line per live path by writing a fresh file and
-/// renaming it over the log, atomic on the same filesystem.
+/// then replays the log; the last line for a path wins. A half-written last
+/// line — the state a crash mid-append leaves behind — is dropped on load and
+/// repaired before the next commit. [compact] folds the log back down to one
+/// line per live path by writing a fresh file and renaming it over the log,
+/// atomic on the same filesystem.
 class JsonlArchiveStore implements ArchiveStore {
   /// Bumped when the on-disk line format changes. Version 2 added the header
   /// line, so a version 1 log — which starts straight in on commits — is
@@ -25,6 +27,12 @@ class JsonlArchiveStore implements ArchiveStore {
   /// Compared against `_entries.length` to tell whether the log already holds
   /// exactly one upsert per live path — i.e. compaction would be a no-op.
   int _logLineCount = 0;
+
+  /// Set by [load] when it dropped a half-written last line. The file still
+  /// holds those bytes; appending after them would splice the fragment onto
+  /// the next record and turn a recoverable tear into a corrupt line in the
+  /// middle of the log. Rewriting before the next append clears it.
+  bool _needsRepair = false;
 
   JsonlArchiveStore(this._logFile, this._header);
 
@@ -55,14 +63,28 @@ class JsonlArchiveStore implements ArchiveStore {
   Future<Archive> load() async {
     final entries = <String, ArchiveEntry>{};
     var lineCount = 0;
+    var torn = false;
     if (await _logFile.exists()) {
       final lines = (await _logFile.readAsLines())
         ..removeWhere((line) => line.isEmpty);
       if (lines.isNotEmpty) {
         _verifyHeader(lines.first);
-        for (final line in lines.skip(1)) {
+        final records = lines.skip(1).toList();
+        for (var i = 0; i < records.length; i++) {
+          final Map<String, dynamic> record;
+          try {
+            record = jsonDecode(records[i]) as Map<String, dynamic>;
+          } on FormatException {
+            // A crash partway through an append leaves a half-written last
+            // line. That is the one failure an append-only log is supposed to
+            // survive (SPEC §8.2), so the torn tail is dropped and repaired on
+            // the next commit. The same damage anywhere earlier is real
+            // corruption and still aborts the run (SPEC §11.5 exit 3).
+            if (i != records.length - 1) rethrow;
+            torn = true;
+            break;
+          }
           lineCount++;
-          final record = jsonDecode(line) as Map<String, dynamic>;
           final path = record['path'] as String;
           if (record['op'] == 'delete') {
             entries.remove(path);
@@ -80,6 +102,7 @@ class JsonlArchiveStore implements ArchiveStore {
     }
     _entries = entries;
     _logLineCount = lineCount;
+    _needsRepair = torn;
     return snapshot();
   }
 
@@ -143,7 +166,7 @@ class JsonlArchiveStore implements ArchiveStore {
 
   @override
   Future<void> compact() async {
-    if (_logLineCount == _entries.length) return;
+    if (!_needsRepair && _logLineCount == _entries.length) return;
 
     final tempFile = File('${_logFile.path}.compact.tmp');
     final sink = tempFile.openWrite();
@@ -155,6 +178,7 @@ class JsonlArchiveStore implements ArchiveStore {
     await sink.close();
     await tempFile.rename(_logFile.path);
     _logLineCount = _entries.length;
+    _needsRepair = false;
   }
 
   @override
@@ -177,6 +201,7 @@ class JsonlArchiveStore implements ArchiveStore {
   };
 
   Future<void> _append(Map<String, Object?> record) async {
+    if (_needsRepair) await compact();
     await _logFile.parent.create(recursive: true);
     final isNewLog = !await _logFile.exists();
     final sink = _logFile.openWrite(mode: FileMode.append);
