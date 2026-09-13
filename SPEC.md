@@ -106,6 +106,7 @@ After an action succeeds on both sides, **both** agents commit the entry for tha
 ### 7.4 Metadata
 - `mtime`: always propagated. If setting it fails, the write still succeeds; the actual mtime is what gets archived.
 - Mode bits: propagated on a best-effort basis; failure is logged, not fatal.
+- Mode bits travel with content, never on their own. The fast path (§5.2) keys on size and mtime, so a file whose permissions changed and whose content did not scans as `unchanged` and gets no action. A mode-only difference between the replicas is therefore never detected and never repaired; it is corrected the next time that file's content changes. Detecting it would mean comparing the scanned mode against the archived one and adding a metadata-only action, which v0 does not have.
 - Ownership, xattrs: not touched.
 
 ### 7.5 Delete

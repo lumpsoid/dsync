@@ -154,6 +154,9 @@ class Scanner {
     final mode = stat.mode & 0xFFF; // permission + setuid/setgid/sticky bits
     final existing = context.archive.entries[relativePath];
 
+    // Deliberately keyed on size and mtime alone (SPEC §5.2): a mode-only
+    // change leaves the file `unchanged` and is not propagated, which §7.4
+    // states outright.
     if (existing != null && existing.size == size && existing.mtime == mtime) {
       context.fastPath.add(
         ScanEntry(
