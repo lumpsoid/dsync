@@ -191,6 +191,58 @@ void main() {
       expect(entries.map((e) => e.path), contains('keep.txt'));
       expect(entries.map((e) => e.path), isNot(contains('node_modules/x.js')));
     });
+
+    test(
+      'an ignored file still in the archive is not reported as deleted',
+      () async {
+        await File('${tempDir.path}/a.tmp').writeAsString('scratch');
+
+        final entries = await Scanner(rules: RuleSet(ignore: ['*.tmp'])).scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({
+            'a.tmp': const ArchiveEntry(
+              path: 'a.tmp',
+              size: 7,
+              mtime: 1,
+              mode: 0644,
+              hash: 'x',
+            ),
+          }),
+        );
+
+        // SPEC §9: ignored paths are neither scanned nor deleted. Reporting
+        // this as deleted would plan a deleteOnB against the other replica,
+        // which still holds the file.
+        expect(entries.map((e) => e.path), isNot(contains('a.tmp')));
+        expect(File('${tempDir.path}/a.tmp').existsSync(), isTrue);
+      },
+    );
+
+    test(
+      'a file under an ignored directory is not reported as deleted',
+      () async {
+        await Directory('${tempDir.path}/.git').create();
+        await File('${tempDir.path}/.git/config').writeAsString('x');
+
+        final entries = await Scanner(rules: RuleSet(ignore: ['**/.git'])).scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({
+            '.git/config': const ArchiveEntry(
+              path: '.git/config',
+              size: 1,
+              mtime: 1,
+              mode: 0644,
+              hash: 'x',
+            ),
+          }),
+        );
+
+        // `**/.git` matches the directory but not the paths beneath it, so
+        // only an ancestor-aware ignore check keeps the pruned subtree out of
+        // the deletion list.
+        expect(entries, isEmpty);
+      },
+    );
   });
 
   group('symlinks', () {

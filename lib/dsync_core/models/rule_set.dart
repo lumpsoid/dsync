@@ -8,7 +8,10 @@ class RuleSet {
 
   RuleSet._(this._ignore, this._follow);
 
-  factory RuleSet({List<String> ignore = const [], List<String> follow = const []}) {
+  factory RuleSet({
+    List<String> ignore = const [],
+    List<String> follow = const [],
+  }) {
     return RuleSet._(
       [for (final pattern in ignore) _GlobPattern(pattern)],
       [for (final pattern in follow) _GlobPattern(pattern)],
@@ -20,14 +23,33 @@ class RuleSet {
   /// Per SPEC §9, profile rules and CLI `--ignore` flags are additive rather
   /// than one replacing the other.
   RuleSet mergedWith(RuleSet other) {
-    return RuleSet._([..._ignore, ...other._ignore], [..._follow, ...other._follow]);
+    return RuleSet._(
+      [..._ignore, ...other._ignore],
+      [..._follow, ...other._follow],
+    );
   }
 
-  /// Whether [rootRelativePath] matches an `ignore` rule (SPEC §5.1, §9).
-  bool ignores(String rootRelativePath) => _ignore.any((glob) => glob.matches(rootRelativePath));
+  /// Whether [rootRelativePath] is excluded from the sync (SPEC §5.1, §9).
+  ///
+  /// True when the path itself matches an `ignore` rule, or when any ancestor
+  /// directory does. The ancestor case is not a convenience: the walk prunes
+  /// an ignored directory instead of descending into it, so its children are
+  /// never visited even though their own paths match nothing — `**/.git`
+  /// matches `.git` but not `.git/config`. Everything that decides whether a
+  /// path is in the sync has to agree with the walk, or a pruned subtree reads
+  /// as a tree of deletions and gets propagated as one.
+  bool ignores(String rootRelativePath) {
+    final segments = rootRelativePath.split('/');
+    for (var i = 1; i <= segments.length; i++) {
+      final prefix = segments.take(i).join('/');
+      if (_ignore.any((glob) => glob.matches(prefix))) return true;
+    }
+    return false;
+  }
 
   /// Whether [rootRelativePath] matches a `follow` rule (SPEC §5.1, §9).
-  bool follows(String rootRelativePath) => _follow.any((glob) => glob.matches(rootRelativePath));
+  bool follows(String rootRelativePath) =>
+      _follow.any((glob) => glob.matches(rootRelativePath));
 }
 
 /// A single compiled glob pattern, matched against a whole root-relative path.

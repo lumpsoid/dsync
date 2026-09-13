@@ -25,6 +25,11 @@ class Scanner {
   /// present on disk (and not ignored) or present in [archive] but now
   /// missing.
   ///
+  /// An ignored path is reported neither way, even when [archive] still holds
+  /// an entry for it: SPEC §9 says matching paths are "neither scanned nor
+  /// deleted", and an entry the walk never visited is indistinguishable from
+  /// one that is genuinely gone.
+  ///
   /// Directories are traversed but never themselves reported (SPEC §5.1).
   /// Symlinks are skipped unless [rules] has a matching `follow` pattern, in
   /// which case the target is scanned as if it lived at the link's path
@@ -41,7 +46,8 @@ class Scanner {
       ...context.fastPath,
       ...hashed,
       for (final path in archive.entries.keys)
-        if (!context.seen.contains(path)) ScanEntry.deleted(path),
+        if (!context.seen.contains(path) && !rules.ignores(path))
+          ScanEntry.deleted(path),
     ];
   }
 

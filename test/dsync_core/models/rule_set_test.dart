@@ -75,6 +75,29 @@ void main() {
     });
   });
 
+  group('RuleSet.ignores covers ancestors', () {
+    test('a path beneath an ignored directory is ignored', () {
+      final rules = RuleSet(ignore: ['**/.git']);
+      // `**/.git` matches the directory itself and nothing beneath it, but the
+      // walk prunes the whole subtree, so everything under it must read as
+      // ignored too — otherwise the archive diff reports it all as deleted.
+      expect(rules.ignores('.git/config'), isTrue);
+      expect(rules.ignores('sub/.git/refs/heads/main'), isTrue);
+    });
+
+    test('a sibling of an ignored directory is not ignored', () {
+      final rules = RuleSet(ignore: ['**/.git']);
+      expect(rules.ignores('.gitignore'), isFalse);
+      expect(rules.ignores('sub/notes.txt'), isFalse);
+    });
+
+    test('follow rules are matched on the path alone, not its ancestors', () {
+      final rules = RuleSet(follow: ['shared']);
+      expect(rules.follows('shared'), isTrue);
+      expect(rules.follows('shared/deep.txt'), isFalse);
+    });
+  });
+
   group('RuleSet ignore vs follow', () {
     test('ignore and follow patterns are independent', () {
       final rules = RuleSet(ignore: ['*.tmp'], follow: ['shared']);
