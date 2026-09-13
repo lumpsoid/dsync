@@ -40,6 +40,13 @@ class JsonlArchiveStore implements ArchiveStore {
   /// middle of the log. Rewriting before the next append clears it.
   bool _needsRepair = false;
 
+  /// Whether the log file and its directory are known to be in place.
+  ///
+  /// A run commits once per path it touches (SPEC §7.3), and creating the
+  /// state directory and stat-ing the log before every one of those is work
+  /// with a fixed answer. Reset by [compact], which replaces the file.
+  bool _logExists = false;
+
   JsonlArchiveStore(this._logFile, this._header);
 
   /// Resolves the standard per-replica log location (SPEC §8.1, §8.3):
@@ -70,7 +77,8 @@ class JsonlArchiveStore implements ArchiveStore {
     final entries = <String, ArchiveEntry>{};
     var lineCount = 0;
     var torn = false;
-    if (await _logFile.exists()) {
+    _logExists = await _logFile.exists();
+    if (_logExists) {
       final lines = (await _logFile.readAsLines())
         ..removeWhere((line) => line.isEmpty);
       if (lines.isNotEmpty) {
@@ -188,6 +196,7 @@ class JsonlArchiveStore implements ArchiveStore {
     await tempFile.rename(_logFile.path);
     _logLineCount = _entries.length;
     _needsRepair = false;
+    _logExists = true;
   }
 
   /// The archive as it stands, detached from later commits.
@@ -224,8 +233,13 @@ class JsonlArchiveStore implements ArchiveStore {
   /// so this flush is a real fsync.
   Future<void> _append(Map<String, Object?> record) async {
     if (_needsRepair) await compact();
-    await _logFile.parent.create(recursive: true);
-    final isNewLog = !await _logFile.exists();
+
+    var isNewLog = false;
+    if (!_logExists) {
+      await _logFile.parent.create(recursive: true);
+      isNewLog = !await _logFile.exists();
+    }
+
     final handle = await _logFile.open(mode: FileMode.append);
     try {
       // The header is written by whoever creates the log, not by load(), so a
@@ -238,6 +252,7 @@ class JsonlArchiveStore implements ArchiveStore {
     } finally {
       await handle.close();
     }
+    _logExists = true;
     _logLineCount++;
   }
 }

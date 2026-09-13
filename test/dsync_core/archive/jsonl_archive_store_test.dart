@@ -104,6 +104,36 @@ void main() {
   });
 
   group('header', () {
+    test('the header is written once, not once per commit', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      await store.commitDelete('a.txt');
+      await store.commitUpsert(entry);
+
+      final lines = await logFile().readAsLines();
+      expect(lines.where((l) => l.contains('"op":"header"')), hasLength(1));
+      expect(lines, hasLength(4));
+    });
+
+    test(
+      'a commit against an existing log does not add a second header',
+      () async {
+        final writer = JsonlArchiveStore(logFile(), header);
+        await writer.load();
+        await writer.commitUpsert(entry);
+
+        // A fresh store that has loaded the existing file must not decide it is
+        // creating the log.
+        final reopened = JsonlArchiveStore(logFile(), header);
+        await reopened.load();
+        await reopened.commitDelete('a.txt');
+
+        final lines = await logFile().readAsLines();
+        expect(lines.where((l) => l.contains('"op":"header"')), hasLength(1));
+      },
+    );
+
     test('the first line of a new log is the header', () async {
       final store = JsonlArchiveStore(logFile(), header);
       await store.load();
