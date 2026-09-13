@@ -50,14 +50,12 @@ void main() {
       },
     );
 
-    test(
-      'a real command is reported as unknown until its task lands',
-      () async {
-        // SPEC §11.1 names sync/status/agent, but none is registered yet
-        // (this task's scope stops at --help and the unknown-command path).
-        final exitCode = await runDsyncCli(['sync', 'profile-name']);
-        expect(exitCode, 3);
-      },
-    );
+    test('agent --stdio is reported as unknown until its task lands', () async {
+      // SPEC §11.1 names sync/status/agent. sync and status are
+      // registered by task 867af9 (see test/cli/commands/); agent is a
+      // later task (e54d88) and is deliberately left unregistered.
+      final exitCode = await runDsyncCli(['agent', '--stdio']);
+      expect(exitCode, 3);
+    });
   });
 }

@@ -2,6 +2,9 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 
+import 'commands/status_command.dart';
+import 'commands/sync_command.dart';
+
 /// Parses [argv] and runs the requested dsync command, returning the
 /// process exit code (SPEC §11.5).
 ///
@@ -10,13 +13,10 @@ import 'package:args/command_runner.dart';
 /// compiled binary and in-process end-to-end tests drive the CLI the same
 /// way, without either one spawning a child process.
 ///
-/// No subcommand is registered yet. `sync`, `status`, and `agent --stdio`
-/// (SPEC §11.1) each land in their own task, which registers a [Command] on
-/// [DsyncCommandRunner] via `addCommand`. Until then, [CommandRunner]
-/// itself already gives us the two behaviours this task is scoped to:
-/// `dsync --help` (and no arguments) prints the command list, and any
-/// command name is reported as unknown via [UsageException] — so nothing
-/// here needs to change when those tasks land.
+/// `sync` and `status` (SPEC §11.1) are registered below (task 867af9).
+/// `agent --stdio` is deliberately not — it is a later task (e54d88) — so it
+/// is still reported as an unknown command via [UsageException], the same
+/// path any other unrecognized command name takes.
 Future<int> runDsyncCli(List<String> argv) async {
   final runner = DsyncCommandRunner();
   try {
@@ -33,13 +33,16 @@ Future<int> runDsyncCli(List<String> argv) async {
 /// same spirit as `RunController` in `dsync_core`: it doesn't decide
 /// anything itself, it only wires argv to whichever [Command] handles it.
 ///
-/// Empty today — this task only ships the shell. Future tasks extend it by
-/// calling `addCommand` for `sync`, `status`, and `agent` (SPEC §11.1); each
-/// flag in §11.2 belongs on the command(s) it applies to, not here.
+/// `sync` and `status` are registered here; `agent` is not (SPEC §11.1) —
+/// see [runDsyncCli]. Each flag in §11.2 belongs on the command(s) it
+/// applies to (`lib/cli/commands/common_flags.dart`), not here.
 class DsyncCommandRunner extends CommandRunner<void> {
   DsyncCommandRunner()
     : super(
         'dsync',
         'Bidirectional file sync between two replicas. See SPEC.md.',
-      );
+      ) {
+    addCommand(SyncCommand());
+    addCommand(StatusCommand());
+  }
 }
