@@ -39,6 +39,13 @@ dependencies:
   cupertino_icons: ^1.0.8
   crypto: ^3.0.7
 
+  # Pinned, not a range (SPEC §3, same rationale as the SDK pin above): the
+  # CLI's flag parsing (§11.2) and profile format (§12) must behave
+  # identically on every host that runs an agent, so the toolchain is fixed
+  # rather than resolved per machine.
+  args: 2.7.0
+  toml: 0.18.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
