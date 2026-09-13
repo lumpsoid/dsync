@@ -1,0 +1,186 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/models/file_metadata.dart';
+import 'package:dsync/dsync_core/models/frame.dart';
+import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+
+/// The wire schema `RemoteAgent` and the agent server handler share for
+/// every `Agent` operation other than the version handshake (SPEC §4.2):
+/// requests and results as control frames, plus the byte-stream framing used
+/// by `readFile`/`writeFile`. Defined once here so both ends decode exactly
+/// what the other encodes.
+/// One `Agent` operation's request, sent as a control frame.
+class AgentRequest {
+  final String op;
+  final Map<String, dynamic> params;
+
+  const AgentRequest(this.op, [this.params = const {}]);
+
+  Frame toFrame() => Frame(
+    type: FrameType.control,
+    payload: utf8.encode(jsonEncode({'op': op, ...params})),
+  );
+
+  static AgentRequest fromFrame(Frame frame) {
+    final json = _decodeControlJson(frame);
+    final op = json.remove('op') as String;
+    return AgentRequest(op, json);
+  }
+}
+
+/// The outcome of one `Agent` operation, sent back as a control frame.
+sealed class AgentResult {
+  const AgentResult();
+
+  Frame toFrame();
+
+  static AgentResult fromFrame(Frame frame) {
+    final json = _decodeControlJson(frame);
+    return json['ok'] == true
+        ? AgentSuccess(json..remove('ok'))
+        : AgentFailure(json['error'] as String);
+  }
+}
+
+/// The operation succeeded; [data] carries whatever result it returns, empty
+/// for operations with nothing to report beyond having happened.
+class AgentSuccess extends AgentResult {
+  final Map<String, dynamic> data;
+
+  const AgentSuccess([this.data = const {}]);
+
+  @override
+  Frame toFrame() => Frame(
+    type: FrameType.control,
+    payload: utf8.encode(jsonEncode({'ok': true, ...data})),
+  );
+}
+
+/// The operation failed; [error] is the failure's `toString()` on the side
+/// that raised it.
+class AgentFailure extends AgentResult {
+  final String error;
+
+  const AgentFailure(this.error);
+
+  @override
+  Frame toFrame() => Frame(
+    type: FrameType.control,
+    payload: utf8.encode(jsonEncode({'ok': false, 'error': error})),
+  );
+}
+
+Map<String, dynamic> _decodeControlJson(Frame frame) =>
+    Map<String, dynamic>.from(jsonDecode(utf8.decode(frame.payload)) as Map);
+
+/// Thrown by `RemoteAgent` when the peer reports an [AgentFailure] for an
+/// operation (SPEC §4.2) — fatal for the caller (SPEC §11.5 exit 3), the same
+/// as the equivalent local failure would be.
+class AgentOperationException implements Exception {
+  final String message;
+
+  const AgentOperationException(this.message);
+
+  @override
+  String toString() => 'Remote agent operation failed: $message';
+}
+
+/// Sends [data] over [channel] as `fileBytes` frames (SPEC §4.2), one per
+/// chunk, terminated by an empty `fileBytes` frame so the receiver learns the
+/// stream ended without needing its length up front. Never buffers more than
+/// one chunk at a time.
+///
+/// If [data] itself fails, the failure is sent as a control frame in place of
+/// the terminator so [readByteStream] aborts instead of treating a partial
+/// transfer as complete. This function never throws: the shared frame stream
+/// stays aligned for whatever operation comes next, and the caller is
+/// expected to still await that operation's own response.
+Future<void> sendByteStream(Channel channel, Stream<List<int>> data) async {
+  final codec = FrameCodec();
+  try {
+    await for (final chunk in data) {
+      if (chunk.isEmpty) continue;
+      await channel.send(
+        codec.encode(Frame(type: FrameType.fileBytes, payload: chunk)),
+      );
+    }
+    await channel.send(
+      codec.encode(Frame(type: FrameType.fileBytes, payload: const [])),
+    );
+  } catch (error) {
+    await channel.send(codec.encode(AgentFailure('$error').toFrame()));
+  }
+}
+
+/// Reads the `fileBytes` frames [sendByteStream] wrote back out of [frames],
+/// yielding each non-empty chunk and stopping at the empty terminator frame.
+///
+/// Throws [AgentOperationException] if the sender aborted with a failure
+/// control frame instead of a normal terminator, or [StateError] if the
+/// channel closes mid-stream.
+Stream<List<int>> readByteStream(StreamIterator<Frame> frames) async* {
+  while (true) {
+    if (!await frames.moveNext()) {
+      throw StateError('Channel closed mid-stream');
+    }
+    final frame = frames.current;
+    if (frame.type == FrameType.control) {
+      throw switch (AgentResult.fromFrame(frame)) {
+        AgentFailure(:final error) => AgentOperationException(error),
+        AgentSuccess() => StateError('Unexpected success frame mid-stream'),
+      };
+    }
+    if (frame.payload.isEmpty) return;
+    yield frame.payload;
+  }
+}
+
+Map<String, dynamic> scanEntryToJson(ScanEntry entry) => {
+  'path': entry.path,
+  'status': entry.status.name,
+  if (entry.size != null) 'size': entry.size,
+  if (entry.mtime != null) 'mtime': entry.mtime,
+  if (entry.mode != null) 'mode': entry.mode,
+  if (entry.hash != null) 'hash': entry.hash,
+};
+
+ScanEntry scanEntryFromJson(Map<String, dynamic> json) => ScanEntry(
+  path: json['path'] as String,
+  status: ScanStatus.values.byName(json['status'] as String),
+  size: json['size'] as int?,
+  mtime: json['mtime'] as int?,
+  mode: json['mode'] as int?,
+  hash: json['hash'] as String?,
+);
+
+Map<String, dynamic> archiveEntryToJson(ArchiveEntry entry) => {
+  'path': entry.path,
+  'size': entry.size,
+  'mtime': entry.mtime,
+  'mode': entry.mode,
+  'hash': entry.hash,
+};
+
+ArchiveEntry archiveEntryFromJson(Map<String, dynamic> json) => ArchiveEntry(
+  path: json['path'] as String,
+  size: json['size'] as int,
+  mtime: json['mtime'] as int,
+  mode: json['mode'] as int,
+  hash: json['hash'] as String,
+);
+
+Map<String, dynamic> fileMetadataToJson(FileMetadata metadata) => {
+  'size': metadata.size,
+  'mtime': metadata.mtime,
+  'mode': metadata.mode,
+};
+
+FileMetadata fileMetadataFromJson(Map<String, dynamic> json) => FileMetadata(
+  size: json['size'] as int,
+  mtime: json['mtime'] as int,
+  mode: json['mode'] as int,
+);
