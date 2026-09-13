@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -16,6 +17,7 @@ import '../presenter/batch_presenter.dart';
 import '../presenter/dry_run_presenter.dart';
 import '../presenter/interactive_presenter.dart';
 import '../profile/profile_loader.dart';
+import 'interrupt_guard.dart';
 
 /// The run step `SyncCommand` and `StatusCommand`
 /// (`lib/cli/commands/sync_command.dart`, `status_command.dart`) each take as
@@ -37,7 +39,8 @@ typedef RunSync = Future<int> Function(CliOptions options);
 /// The one owner of a `sync`/`status` run's ordering (SPEC §11; CLAUDE.md
 /// "One owner for cross-module ordering"): resolve the target → connect both
 /// replica agents → pick a presenter and a renderer → drive
-/// `RunController.run()` → resolve the exit code (SPEC §11.5).
+/// `RunController.run()`, watching for SIGINT alongside it (task fc661b) →
+/// resolve the exit code (SPEC §11.5).
 ///
 /// A concrete, single-implementation class with no interface, in the same
 /// spirit as `RunController` itself and `DsyncCommandRunner`
@@ -98,8 +101,15 @@ class SyncRunner {
   /// [RunController.run] is driving the stream, its own contract already
   /// turns any failure into a [RunErrorEvent] rather than a thrown
   /// exception, so the loop below never needs a second layer either — it
-  /// only ever does the two plain assignments SPEC §11.5's exit code is
-  /// computed from, once, after the stream ends.
+  /// only ever does the plain assignments SPEC §11.5's exit code is computed
+  /// from, once, after the stream ends.
+  ///
+  /// task fc661b: a SIGINT received anywhere during the loop stops the run
+  /// between actions rather than mid-copy — [InterruptGuard.shouldStop]
+  /// decides exactly when that is safe — and always forces the exit code to
+  /// [sigintExitCode] regardless of what [RunOutcome] would otherwise say,
+  /// since the signal describes what the *user* did, not what the run did. A
+  /// second SIGINT skips all of this and calls `exit` directly.
   Future<int> run(CliOptions options) async {
     final target = options.target;
 
@@ -183,21 +193,76 @@ class SyncRunner {
       render = renderer.render;
     }
 
+    // task fc661b: a SIGINT stops the run between actions rather than
+    // mid-copy. The one real signal subscription lives here, scoped to this
+    // run — `dsync agent --stdio` (`AgentCommand`) never calls `SyncRunner`,
+    // so it never installs one; it already exits cleanly on the EOF killing
+    // its `ssh` gives it.
+    final interrupt = InterruptGuard();
+    late final StreamSubscription<ProcessSignal> sigintSubscription;
+    sigintSubscription = ProcessSignal.sigint.watch().listen((_) {
+      // A second SIGINT "exits immediately" (task fc661b): whatever grace
+      // the first one bought — reaching the next safe point below — is over,
+      // so this skips straight past `RunController.run()`'s own unlock/
+      // disconnect `finally` blocks. That is fine: SPEC's own correction
+      // that this task opens with is exactly why — the OS drops the file
+      // lock when this process dies by any means, and `ssh` dying gives the
+      // remote side's lock the same fate.
+      if (interrupt.receiveSignal() == InterruptResponse.exitImmediately) {
+        exit(sigintExitCode);
+      }
+    });
+
     RunSummaryEvent? summary;
     RunErrorEvent? error;
-    await for (final event in controller.run()) {
-      render(event);
-      switch (event) {
-        case RunSummaryEvent e:
-          summary = e;
-        case RunErrorEvent e:
-          error = e;
-        default:
-          break;
+    var sawFirstAction = false;
+    try {
+      await for (final event in controller.run()) {
+        render(event);
+        switch (event) {
+          case RunSummaryEvent e:
+            summary = e;
+          case RunErrorEvent e:
+            error = e;
+          default:
+            break;
+        }
+
+        // Checked before folding this event into `sawFirstAction`: stopping
+        // in reaction to the very first `RunActionEvent` is still safe (see
+        // `InterruptGuard.shouldStop`'s own doc comment) — it runs before
+        // `Applier.apply` is ever called for this plan, which is what keeps
+        // a scratch file from ever being created in the first place. This
+        // `break` cancels `controller.run()`'s subscription, which runs
+        // `RunController.run()`'s unlock/disconnect `finally` blocks exactly
+        // as a normal end of stream would.
+        if (interrupt.shouldStop(sawFirstAction: sawFirstAction)) break;
+        if (event is RunActionEvent) sawFirstAction = true;
       }
+    } finally {
+      await sigintSubscription.cancel();
     }
 
-    return RunOutcome(summary: summary, error: error).exitCode;
+    // task fc661b: report what was applied before stopping, rather than
+    // just changing the exit code silently. When apply had already started,
+    // `summary` is the real `RunSummaryEvent` (rendered above like any
+    // other), so there is nothing more to add beyond noting *why* the exit
+    // code is about to say "interrupted" instead of whatever this run
+    // actually finished doing.
+    if (interrupt.requested) {
+      stderr.writeln(
+        summary == null
+            ? 'interrupted (SIGINT) before applying any changes.'
+            : 'interrupted (SIGINT); this run had already finished applying '
+                  '— see summary above.',
+      );
+    }
+
+    return RunOutcome(
+      summary: summary,
+      error: error,
+      interrupted: interrupt.requested,
+    ).exitCode;
   }
 
   /// SPEC §11.1, §11.3: dry-run (which includes `status`) never applies

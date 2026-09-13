@@ -173,13 +173,18 @@ Default is interactive: the plan is shown, conflicts first, then each proposed a
 
 ### 11.5 Exit codes
 ```
-0  all planned actions applied, no conflicts
-1  completed, but some paths were skipped or are unresolved conflicts
-2  completed, but some actions failed
-3  fatal: bad arguments, cannot reach a replica, lock held, archive unreadable,
-   protocol version mismatch
+0    all planned actions applied, no conflicts
+1    completed, but some paths were skipped or are unresolved conflicts
+2    completed, but some actions failed
+3    fatal: bad arguments, cannot reach a replica, lock held, archive unreadable,
+     protocol version mismatch
+130  interrupted by SIGINT (128 + 2)
+143  interrupted by SIGTERM (128 + 15)
 ```
-When both 1 and 2 apply, 2 wins.
+When both 1 and 2 apply, 2 wins. 130/143 are deliberately outside the 0-3
+scheme: they say what the user did, not what the run did, so they win over
+any of 0-3 rather than being ranked against them — folding an interrupt into
+3 would have retry logic retrying a run the user asked to stop.
 
 ## 12. Profile file
 

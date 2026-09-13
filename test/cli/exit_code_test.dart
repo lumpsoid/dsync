@@ -97,5 +97,48 @@ void main() {
       final dryRunInSync = _summary();
       expect(RunOutcome(summary: dryRunInSync).exitCode, 0);
     });
+
+    group('interrupted (task fc661b, DECIDED)', () {
+      test('interrupted with no summary and no error -> 130, not 3', () {
+        const outcome = RunOutcome(interrupted: true);
+        expect(outcome.exitCode, sigintExitCode);
+        expect(outcome.exitCode, 130);
+      });
+
+      test(
+        'interrupted wins over a clean summary that would otherwise be 0',
+        () {
+          final outcome = RunOutcome(
+            summary: _summary(applied: 7),
+            interrupted: true,
+          );
+          expect(outcome.exitCode, 130);
+        },
+      );
+
+      test('interrupted wins over a summary with failures that would '
+          'otherwise be 2', () {
+        final outcome = RunOutcome(
+          summary: _summary(applied: 2, failed: 1),
+          interrupted: true,
+        );
+        expect(outcome.exitCode, 130);
+      });
+
+      test('interrupted wins over a fatal RunErrorEvent that would '
+          'otherwise be 3', () {
+        final outcome = RunOutcome(
+          error: RunErrorEvent('boom'),
+          interrupted: true,
+        );
+        expect(outcome.exitCode, 130);
+      });
+
+      test('not interrupted falls back to the ordinary 0-3 scheme '
+          'unchanged', () {
+        final outcome = RunOutcome(summary: _summary(applied: 3));
+        expect(outcome.exitCode, 0);
+      });
+    });
   });
 }
