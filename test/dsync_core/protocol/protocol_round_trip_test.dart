@@ -169,6 +169,58 @@ void main() {
         throwsA(isA<AgentOperationException>()),
       );
     });
+
+    test(
+      'the next operation still works after a read is abandoned mid-stream',
+      () async {
+        // Several chunks, so stopping after the first leaves frames queued.
+        await File('${replicaDir.path}/big.bin')
+            .writeAsBytes(List.filled(400 * 1024, 7));
+
+        // What Applier does when the destination's write fails partway: the
+        // source stream is dropped and, per SPEC §7.6, the run carries on.
+        await remote.readFile('big.bin').take(1).drain<void>();
+
+        final entries = await remote.scan(RuleSet());
+
+        expect(entries.map((e) => e.path), contains('big.bin'));
+      },
+    );
+
+    test(
+      'operations issued concurrently queue instead of interleaving',
+      () async {
+        await File('${replicaDir.path}/a.txt').writeAsString('hello');
+
+        // Responses are matched to requests positionally, so two operations
+        // sharing the wire would decode each other's frames.
+        final results = await Future.wait([
+          remote.readFile('a.txt').toList(),
+          remote.scan(RuleSet()),
+          remote.readFile('a.txt').toList(),
+        ]);
+
+        final first = (results[0] as List<List<int>>).expand((c) => c).toList();
+        final third = (results[2] as List<List<int>>).expand((c) => c).toList();
+        expect(utf8.decode(first), 'hello');
+        expect(utf8.decode(third), 'hello');
+        expect(
+          (results[1] as List<ScanEntry>).map((e) => e.path),
+          contains('a.txt'),
+        );
+      },
+    );
+
+    test(
+      'a read abandoned before its first chunk leaves the wire usable',
+      () async {
+        await File('${replicaDir.path}/a.txt').writeAsString('hello');
+
+        await remote.readFile('a.txt').take(0).drain<void>();
+
+        expect(await remote.readFile('a.txt').toList(), isNotEmpty);
+      },
+    );
   });
 
   group('delete / removeEmptyDirs', () {

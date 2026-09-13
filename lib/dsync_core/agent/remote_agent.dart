@@ -15,20 +15,45 @@ import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 /// exchanging framed control messages and file bytes with the agent server
 /// handler on the other end (SPEC §4.2).
 ///
-/// Requests are not pipelined: each method sends its request, then reads
-/// from the same decoded-frame stream until that operation's result arrives,
-/// before the next call may start — matching the single in-flight request
-/// the agent server handler expects.
+/// Requests are not pipelined: responses are matched to requests positionally
+/// over one shared frame stream, so exactly one operation may be in flight —
+/// matching the single in-flight request the agent server handler expects.
+/// That is enforced here rather than left to callers, because the window is
+/// not always visible from the outside: an abandoned `readFile` keeps reading
+/// frames after its consumer has stopped listening (see [readFile]), while
+/// SPEC §7.6 has the run starting its next action immediately.
 class RemoteAgent implements Agent {
   final Channel _channel;
   final StreamIterator<Frame> _frames;
+
+  /// Completes when the operation currently holding the wire is finished with
+  /// it. Each operation chains onto the last, so they queue instead of
+  /// interleaving.
+  Future<void> _wire = Future<void>.value();
 
   RemoteAgent(Channel channel)
     : _channel = channel,
       _frames = StreamIterator(FrameCodec().decode(channel.input));
 
+  /// Waits for the wire, then hands back the callback that releases it.
+  /// Callers must release in a `finally`, or every later operation hangs.
+  Future<void Function()> _acquireWire() async {
+    final previous = _wire;
+    final done = Completer<void>();
+    _wire = done.future;
+    await previous;
+    return done.complete;
+  }
+
   @override
-  Future<void> hello() => performVersionHandshake(_channel, _frames);
+  Future<void> hello() async {
+    final release = await _acquireWire();
+    try {
+      await performVersionHandshake(_channel, _frames);
+    } finally {
+      release();
+    }
+  }
 
   @override
   Future<void> lock() => _call('lock');
@@ -44,10 +69,53 @@ class RemoteAgent implements Agent {
         .toList();
   }
 
+  /// Streams the file, and guarantees the shared frame stream is left
+  /// positioned at the next operation's response even if the consumer stops
+  /// early.
+  ///
+  /// Stopping early is the normal case, not an exotic one: `Applier` pipes
+  /// this straight into the destination's `writeFile`, and SPEC §7.6 requires
+  /// the run to carry on to the next action after that write fails. Without
+  /// the drain, the peer's remaining `fileBytes` frames stay queued and the
+  /// next operation decodes raw file bytes as its own control reply — one
+  /// failed path silently breaks every later action against this replica.
+  ///
+  /// Draining does pull the rest of the file over the wire for nothing. The
+  /// alternative is tagging requests so a reply can be matched instead of
+  /// positionally, which is a protocol change; this keeps a failed copy
+  /// costing bandwidth rather than correctness.
   @override
   Stream<List<int>> readFile(String path) async* {
-    await _send(AgentRequest('readFile', {'path': path}));
-    yield* readByteStream(_frames);
+    final release = await _acquireWire();
+    try {
+      await _send(AgentRequest('readFile', {'path': path}));
+      // Held as an iterator rather than consumed with `await for` so the drain
+      // below can continue this same transfer. A second readByteStream over
+      // `_frames` would have two `moveNext` calls in flight at once.
+      final bytes = StreamIterator(readByteStream(_frames));
+      var midStream = true;
+      try {
+        while (await bytes.moveNext()) {
+          yield bytes.current;
+        }
+        midStream = false;
+      } catch (_) {
+        // The peer replaced the terminator with a failure frame, which
+        // readByteStream has already consumed — the wire is past the transfer.
+        midStream = false;
+        rethrow;
+      } finally {
+        if (midStream) {
+          try {
+            while (await bytes.moveNext()) {}
+          } catch (_) {
+            // However the transfer ended, the frame stream is now past it.
+          }
+        }
+      }
+    } finally {
+      release();
+    }
   }
 
   @override
@@ -57,12 +125,17 @@ class RemoteAgent implements Agent {
     required int mtime,
     required int mode,
   }) async {
-    await _send(
-      AgentRequest('writeFile', {'path': path, 'mtime': mtime, 'mode': mode}),
-    );
-    await sendByteStream(_channel, data);
-    final result = await _awaitResult();
-    return fileMetadataFromJson(result['metadata'] as Map<String, dynamic>);
+    final release = await _acquireWire();
+    try {
+      await _send(
+        AgentRequest('writeFile', {'path': path, 'mtime': mtime, 'mode': mode}),
+      );
+      await sendByteStream(_channel, data);
+      final result = await _awaitResult();
+      return fileMetadataFromJson(result['metadata'] as Map<String, dynamic>);
+    } finally {
+      release();
+    }
   }
 
   @override
@@ -87,8 +160,13 @@ class RemoteAgent implements Agent {
     String op, [
     Map<String, dynamic> params = const {},
   ]) async {
-    await _send(AgentRequest(op, params));
-    return _awaitResult();
+    final release = await _acquireWire();
+    try {
+      await _send(AgentRequest(op, params));
+      return await _awaitResult();
+    } finally {
+      release();
+    }
   }
 
   Future<void> _send(AgentRequest request) =>
