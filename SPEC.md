@@ -83,6 +83,7 @@ Done on the initiating side from the two status lists. Per path, with statuses o
 
 Additional rules:
 - **Same content, no transfer.** Whenever both sides currently hold the same hash, no bytes move; both archives are committed with the current state.
+- **A path one side has never seen.** The table assumes both replicas report a status for every path. A replica with neither the file nor an archive entry for it reports nothing at all — the normal state of a fresh replica being set up against an established one, and of any path that is new to this pair. Such a path is mirrored from whichever side has it, whatever status that side gives it, or dropped when that side has since deleted it too. It is not a conflict: treating it as one would make the first run against an empty directory conflict on every file.
 - **Type mismatch.** A file at `P` on one side and a directory containing files at `P` on the other is a conflict on `P`.
 - **Conflicts are never auto-resolved.** They are presented to the user, who picks a direction or skips.
 - **Deletions are actions.** A propagated deletion appears in the plan like any other action and can be vetoed per item in interactive mode.

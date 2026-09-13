@@ -214,6 +214,26 @@ void main() {
       expect(plan.actions, isEmpty);
       expect(plan.conflicts, isEmpty);
     });
+
+    test('modified on B and never known on A is mirrored, not a conflict', () {
+      // SPEC §6, "a path one side has never seen". Making this a conflict
+      // would make the first run against an empty replica conflict on every
+      // file — the status the other side reports is beside the point.
+      final plan = reconciler.reconcile([], [entry('f', ScanStatus.modified)]);
+      expect(actionFor(plan, 'f'), ActionType.copyBtoA);
+      expect(plan.conflicts, isEmpty);
+    });
+
+    test('a whole fresh replica mirrors rather than conflicting', () {
+      final plan = reconciler.reconcile([], [
+        entry('a.txt', ScanStatus.unchanged),
+        entry('b.txt', ScanStatus.modified),
+        entry('c.txt', ScanStatus.created),
+      ]);
+
+      expect(plan.conflicts, isEmpty);
+      expect(plan.actions.map((a) => a.type).toSet(), {ActionType.copyBtoA});
+    });
   });
 
   group('type mismatch', () {

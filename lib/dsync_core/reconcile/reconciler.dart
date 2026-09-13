@@ -47,12 +47,10 @@ class Reconciler {
 /// appends the outcome to [actions] or [conflicts].
 ///
 /// A `null` entry means that side's scan has no record of the path at all —
-/// it never had an archive entry and doesn't currently have the file. That
-/// isn't in the SPEC §6 table, which assumes both sides always report a
-/// status; it happens whenever a path is new to a replica that has never
-/// seen it before (e.g. the first run over two pre-existing trees). Treated
-/// as: mirror whatever the other side currently has, or do nothing if the
-/// other side has since deleted it too.
+/// no archive entry and no file. The SPEC §6 table assumes both sides report
+/// a status, so this case is covered by §6's "a path one side has never seen"
+/// rule instead: mirror whatever the other side has, or do nothing when that
+/// side has since deleted it too.
 void _resolveCell(
   String path,
   ScanEntry? entryA,
