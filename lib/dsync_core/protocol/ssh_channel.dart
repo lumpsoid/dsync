@@ -32,19 +32,43 @@ List<String> sshArgsFor({
 /// interface so a Dart SSH client or a socket can replace it later, for the
 /// Flutter head (SPEC §16).
 class SshChannel implements Channel {
+  /// How many stderr lines are kept for [recentStderr]. Bounded so a chatty
+  /// remote cannot grow this without limit over a long run.
+  static const _stderrBufferLines = 50;
+
   final Process _process;
   final StreamController<String> _stderrLines = StreamController.broadcast();
+  final List<String> _recentStderr = [];
 
   SshChannel._(this._process) {
     _process.stderr
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .listen(_stderrLines.add, onDone: _stderrLines.close);
+        .listen(_record, onDone: _stderrLines.close);
+  }
+
+  void _record(String line) {
+    _recentStderr.add(line);
+    if (_recentStderr.length > _stderrBufferLines) _recentStderr.removeAt(0);
+    _stderrLines.add(line);
   }
 
   /// Lines `ssh` or the remote `dsync` process wrote to stderr, for
   /// diagnostics — not part of the protocol stream.
+  ///
+  /// A broadcast stream with no replay: anything written before a listener
+  /// attached is not delivered here. Use [recentStderr] after the fact.
   Stream<String> get stderrLines => _stderrLines.stream;
+
+  /// The most recent stderr lines, oldest first.
+  ///
+  /// Recorded from the moment the process starts, because the lines that
+  /// explain a failed connection — `Permission denied`, `Host key
+  /// verification failed` — arrive within milliseconds of the spawn, well
+  /// before a caller knows it needs them. Without this they were written to a
+  /// broadcast stream with no listener and dropped, leaving a failed run with
+  /// nothing to report but a closed channel.
+  List<String> get recentStderr => List.unmodifiable(_recentStderr);
 
   /// Spawns `ssh` to reach [host] (as [user], if given) and starts
   /// `dsync agent --stdio` there. [extraArgs] are inserted before the

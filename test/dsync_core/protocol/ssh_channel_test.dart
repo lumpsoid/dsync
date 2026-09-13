@@ -95,6 +95,29 @@ exec cat
       await channel.close();
     }, testOn: 'linux');
 
+    test('stderr written before anyone listens is still available', () async {
+      final script = File('${tempDir.path}/noisy-ssh');
+      await script.writeAsString(
+        '#!/bin/sh\necho "Permission denied (publickey)." 1>&2\nexec cat\n',
+      );
+      await Process.run('chmod', ['+x', script.path]);
+
+      final channel = await SshChannel.connect(
+        host: 'example.com',
+        executable: script.path,
+      );
+
+      // Never subscribes to stderrLines: the line that explains a failed
+      // connection arrives within milliseconds of the spawn, long before a
+      // caller knows to ask, and a broadcast stream with no listener drops it.
+      while (channel.recentStderr.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(channel.recentStderr, contains('Permission denied (publickey).'));
+
+      await channel.close();
+    }, testOn: 'linux');
+
     test('close kills a child that ignores the closed stdin', () async {
       final script = File('${tempDir.path}/wedged-ssh');
       // Never reads stdin and never exits — a wedged remote agent, or an ssh
