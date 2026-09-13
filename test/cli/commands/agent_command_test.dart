@@ -4,9 +4,11 @@ import 'package:test/test.dart';
 
 /// A bare [CommandRunner] with only [AgentCommand] registered, so these
 /// tests exercise the exact argv-to-[ArgResults] path `DsyncCommandRunner`
-/// uses without pulling in `sync`/`status`.
-CommandRunner<void> buildRunner(AgentCommand command) =>
-    CommandRunner<void>('dsync', 'test runner')..addCommand(command);
+/// uses without pulling in `sync`/`status`. `<int>`, not `<void>`, matching
+/// `AgentCommand extends Command<int>` (`args`' `CommandRunner<T>` requires
+/// every registered `Command` to share its `T`).
+CommandRunner<int> buildRunner(AgentCommand command) =>
+    CommandRunner<int>('dsync', 'test runner')..addCommand(command);
 
 void main() {
   group('AgentCommand', () {

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dsync/cli/dsync_cli.dart';
 import 'package:test/test.dart';
 
@@ -8,17 +10,76 @@ import 'package:test/test.dart';
 /// code (SPEC §11.5), since that is all `runDsyncCli` exposes.
 void main() {
   group('sync/status exit codes (SPEC §11.5)', () {
-    test('sync <profile> with no flags exits 0', () async {
-      expect(await runDsyncCli(['sync', 'work']), 0);
+    late Directory tempDir;
+    late Map<String, String> unresolvableEnvironment;
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('dsync_exit_code_test_');
+      // No "work" profile, and no "notes"/"backup" directory, exists
+      // anywhere under here — used below by the three tests that now drive
+      // a real run (task ee190c's predecessor wired `sync`/`status` up to
+      // actually do something) rather than a `CliOptions`-only rejection,
+      // so their fatal outcome is deterministic regardless of what the
+      // machine running this suite happens to have under its own real
+      // $HOME/$XDG_CONFIG_HOME.
+      unresolvableEnvironment = {
+        'HOME': tempDir.path,
+        'XDG_CONFIG_HOME': '${tempDir.path}/config',
+        'XDG_STATE_HOME': '${tempDir.path}/state',
+      };
     });
 
-    test('sync <locA> <locB>, both local, exits 0', () async {
-      expect(await runDsyncCli(['sync', '~/notes', '~/backup']), 0);
+    tearDown(() async {
+      await tempDir.delete(recursive: true);
     });
 
-    test('status <profile> exits 0', () async {
-      expect(await runDsyncCli(['status', 'work']), 0);
-    });
+    // These three used to assert exit 0 back when `sync`/`status` only
+    // parsed their flags and did nothing (this file predates task ee190c's
+    // predecessor, which wired `SyncRunner` up to actually run them). A
+    // profile named "work", or replicas at "~/notes"/"~/backup", are exactly
+    // the kind of thing a real invocation needs and this suite must not
+    // depend on — so what they now assert is the real, equally deterministic
+    // outcome: neither exists, so each is fatal (SPEC §11.5, exit 3), not a
+    // usage error.
+    test(
+      'sync <profile> against a profile that does not exist exits 3',
+      () async {
+        expect(
+          await runDsyncCli([
+            'sync',
+            'work',
+          ], environment: unresolvableEnvironment),
+          3,
+        );
+      },
+    );
+
+    test(
+      'sync <locA> <locB>, both local, but neither replica exists, exits 3',
+      () async {
+        expect(
+          await runDsyncCli([
+            'sync',
+            '~/notes',
+            '~/backup',
+          ], environment: unresolvableEnvironment),
+          3,
+        );
+      },
+    );
+
+    test(
+      'status <profile> against a profile that does not exist exits 3',
+      () async {
+        expect(
+          await runDsyncCli([
+            'status',
+            'work',
+          ], environment: unresolvableEnvironment),
+          3,
+        );
+      },
+    );
 
     test(
       'a remote-first mixed ad-hoc pair exits 3 — DECIDED "local first"',

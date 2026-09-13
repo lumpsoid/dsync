@@ -3,6 +3,7 @@ import 'package:args/command_runner.dart';
 import '../options/cli_options.dart';
 import '../options/cli_options_error.dart';
 import '../options/sync_target.dart';
+import '../run/sync_runner.dart';
 import 'common_flags.dart';
 
 /// `dsync status <profile>` (SPEC §11.1) — "`status` is `sync --dry-run`
@@ -11,29 +12,33 @@ import 'common_flags.dart';
 /// [run] builds the exact [CliOptions] a `sync --dry-run` invocation for the
 /// same profile would, with [CliOptions.dryRun] forced `true`: not a second
 /// code path, just a different [Command] wiring the same shared flags
-/// (`lib/cli/commands/common_flags.dart`) with one value pinned. `--dry-run`
-/// itself is not among those flags here (`includeDryRun: false`), so passing
-/// it to `status` is an unknown-option error rather than an accepted no-op —
-/// SPEC §11.1 only documents `status <profile>`, with no `--dry-run` of its
-/// own to redundantly set.
-class StatusCommand extends Command<void> {
+/// (`lib/cli/commands/common_flags.dart`) with one value pinned, then hands
+/// it to [runSync] and returns its exit code (SPEC §11.5) as this command's
+/// own return value, exactly like `SyncCommand` does — no branch of its own
+/// there either. `--dry-run` itself is not among those flags here
+/// (`includeDryRun: false`), so passing it to `status` is an unknown-option
+/// error rather than an accepted no-op — SPEC §11.1 only documents
+/// `status <profile>`, with no `--dry-run` of its own to redundantly set.
+///
+/// [runSync] is injected the same way and for the same reason as
+/// `SyncCommand`'s — see [RunSync]'s doc comment.
+class StatusCommand extends Command<int> {
   @override
   final name = 'status';
 
   @override
   final description = 'Scan, reconcile, and print the plan. Apply nothing.';
 
-  /// The options built by the most recent [run]. `null` until [run] has
-  /// executed at least once without hitting a `CliOptionsError`.
-  CliOptions? options;
+  final RunSync runSync;
 
-  StatusCommand() {
+  StatusCommand({required this.runSync}) {
     addCommonSyncFlags(argParser, includeDryRun: false);
   }
 
   @override
-  Future<void> run() async {
+  Future<int> run() async {
     final results = argResults!;
+    final CliOptions options;
     try {
       options = CliOptions(
         target: ProfileTarget.fromStatusPositionals(results.rest),
@@ -49,5 +54,6 @@ class StatusCommand extends Command<void> {
     } on CliOptionsError catch (error) {
       usageException(error.message);
     }
+    return runSync(options);
   }
 }

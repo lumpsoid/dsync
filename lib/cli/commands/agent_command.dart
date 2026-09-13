@@ -26,21 +26,28 @@ import 'package:dsync/dsync_core/scan/scanner.dart';
 /// hands it to [AgentServer.serve] with [_buildAgent] as the `hello`
 /// callback. `serve` returns once the input side of the channel closes (SPEC
 /// §4.2) — the ordinary end of a session — or throws, a version mismatch
-/// (SPEC §4.2) foremost among the ways that can happen. Either way, [run]
-/// then just returns, the same as every other command: `serve` cancels its
-/// own frame-stream subscription on the way out (see `AgentServer.serve`'s
-/// doc comment) precisely so nothing is left listening on the real stdin
-/// afterward, which is what lets `bin/dsync.dart` decide this process's exit
-/// code the ordinary way — by reading what `runDsyncCli` returns once the
-/// event loop actually goes idle — instead of this command forcing the
-/// issue with `exit()`.
+/// (SPEC §4.2) foremost among the ways that can happen. On the ordinary end,
+/// [run] returns `0`, the same as `Command<int>.run()`'s return value always
+/// is when nothing went wrong: `serve` cancels its own frame-stream
+/// subscription on the way out (see `AgentServer.serve`'s doc comment)
+/// precisely so nothing is left listening on the real stdin afterward, which
+/// is what lets `bin/dsync.dart` decide this process's exit code the
+/// ordinary way — by reading what `runDsyncCli` returns once the event loop
+/// actually goes idle — instead of this command forcing the issue with
+/// `exit()`.
 ///
-/// A failure out of `serve` is reported through [usageException], same as
-/// `CliOptionsError` already is for `sync`/`status` (see its doc comment):
-/// `runDsyncCli` catches the resulting [UsageException], writes it to
-/// stderr — where `ssh` relays it back to the initiator — and maps it to
-/// exit code 3 (SPEC §11.5).
-class AgentCommand extends Command<void> {
+/// A failure out of `serve` is left to propagate, unlike `CliOptionsError`
+/// for `sync`/`status` (see its doc comment): a version mismatch or a
+/// rejected `hello` is not a *usage* error, so wrapping it in
+/// [usageException] would print this command's `--stdio` usage block after
+/// it — noise that only buries the one line of explanation `ssh` relays back
+/// to the initiator. `runDsyncCli`'s catch-all (`lib/cli/dsync_cli.dart`)
+/// writes whatever this throws to stderr, message only, and maps it to exit
+/// code 3 (SPEC §11.5) the same way it does for a profile that fails to load
+/// or a replica that cannot be reached — the same fatal bucket, just reached
+/// from a different command. Missing `--stdio` below stays a genuine usage
+/// error and keeps [usageException].
+class AgentCommand extends Command<int> {
   @override
   final name = 'agent';
 
@@ -60,7 +67,7 @@ class AgentCommand extends Command<void> {
   }
 
   @override
-  Future<void> run() async {
+  Future<int> run() async {
     if (!argResults!.flag('stdio')) {
       usageException(
         'dsync agent requires --stdio; no other transport is implemented '
@@ -71,15 +78,15 @@ class AgentCommand extends Command<void> {
     final channel = StdioChannel();
     try {
       await AgentServer().serve(channel, _buildAgent);
-    } catch (error) {
-      usageException('$error');
     } finally {
-      // Best-effort cleanup on every path, including a thrown
-      // UsageException: the peer gets whatever this side already queued
-      // instead of a connection that just vanishes.
+      // Best-effort cleanup on every path, including a thrown error left to
+      // propagate (see this class's doc comment): the peer gets whatever
+      // this side already queued instead of a connection that just
+      // vanishes.
       await stderr.flush();
       await channel.close();
     }
+    return 0; // A clean end of session (SPEC §4.2) is always success.
   }
 
   /// Builds the [LocalAgent] that serves the replica [spec] identifies (SPEC
