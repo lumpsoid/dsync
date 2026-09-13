@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 void main() {
   test('bytes sent on one end arrive on the other\'s input', () async {

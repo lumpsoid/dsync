@@ -1,5 +1,5 @@
 import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 void main() {
   group('RuleSet with no patterns', () {

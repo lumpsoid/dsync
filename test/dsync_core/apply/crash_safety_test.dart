@@ -12,7 +12,7 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 /// Crash-safety of the per-path archive commit (SPEC §7.3, §14): killing the
 /// apply between the two commits a copy makes must not lose or duplicate

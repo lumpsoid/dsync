@@ -1,5 +1,5 @@
 import 'package:dsync/dsync_core/models/location.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:test/test.dart';
 
 void main() {
   group('Location.parse', () {
