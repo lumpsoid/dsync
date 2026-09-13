@@ -147,7 +147,7 @@ class Scanner {
 
     context.pendingHash.add(
       _HashCandidate(
-        file: file,
+        absolutePath: file.path,
         path: relativePath,
         size: size,
         mtime: mtime,
@@ -189,10 +189,38 @@ class _ScanContext {
   _ScanContext(this.archive, this.rules);
 }
 
+/// Files at least this large are hashed in their own isolate; smaller ones
+/// are hashed inline.
+///
+/// SPEC §5.2 puts hashing in isolates so that a big file neither stalls the
+/// event loop nor monopolises one core. Neither concern applies below this
+/// size: SHA-256 over a couple of hundred kilobytes finishes in well under a
+/// millisecond, while spawning an isolate costs more than that — a tree of
+/// many small files would spend most of the scan starting isolates.
+const _isolateThresholdBytes = 256 * 1024;
+
+/// The SHA-256 of the file at [absolutePath], as a hex string.
+Future<String> _digestOf(String absolutePath, int size) {
+  return size >= _isolateThresholdBytes
+      ? Isolate.run(() => _hashFile(absolutePath))
+      : _hashFile(absolutePath);
+}
+
+/// Streams the file through the hash rather than reading it whole.
+///
+/// Only the path crosses into the isolate. Reading the bytes first and
+/// hashing them there would do the I/O on the calling isolate and then copy
+/// the entire file into the new one, so peak memory was twice the file size
+/// per job — enough to kill the process on a large file, times [Scanner.jobs].
+Future<String> _hashFile(String absolutePath) async {
+  final digest = await sha256.bind(File(absolutePath).openRead()).first;
+  return digest.toString();
+}
+
 /// A file whose fast path (SPEC §5.2 step 1) didn't resolve it, so its
 /// content must be hashed to tell unchanged, created, and modified apart.
 class _HashCandidate {
-  final File file;
+  final String absolutePath;
   final String path;
   final int size;
   final int mtime;
@@ -200,7 +228,7 @@ class _HashCandidate {
   final ArchiveEntry? existing;
 
   _HashCandidate({
-    required this.file,
+    required this.absolutePath,
     required this.path,
     required this.size,
     required this.mtime,
@@ -209,8 +237,7 @@ class _HashCandidate {
   });
 
   Future<ScanEntry> hash() async {
-    final bytes = await file.readAsBytes();
-    final digest = await Isolate.run(() => sha256.convert(bytes).toString());
+    final digest = await _digestOf(absolutePath, size);
 
     final existing = this.existing;
     final status = existing == null

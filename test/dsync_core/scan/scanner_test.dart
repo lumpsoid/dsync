@@ -393,6 +393,42 @@ void main() {
     );
   });
 
+  group('hashing', () {
+    test(
+      'a file past the isolate threshold hashes to the same digest',
+      () async {
+        // 1 MiB, comfortably over the threshold, so this takes the isolate
+        // path; the digest has to match the inline one byte for byte.
+        final bytes = List.generate(1024 * 1024, (i) => i % 256);
+        await File('${tempDir.path}/big.bin').writeAsBytes(bytes);
+
+        final entries = (await Scanner().scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+        )).entries;
+
+        expect(
+          entryFor(entries, 'big.bin').hash,
+          sha256.convert(bytes).toString(),
+        );
+      },
+    );
+
+    test('an empty file hashes to the digest of no bytes', () async {
+      await File('${tempDir.path}/empty.txt').writeAsString('');
+
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      )).entries;
+
+      expect(
+        entryFor(entries, 'empty.txt').hash,
+        sha256.convert(const []).toString(),
+      );
+    });
+  });
+
   group('jobs', () {
     test('scanning is correct regardless of configured parallelism', () async {
       for (var i = 0; i < 5; i++) {
