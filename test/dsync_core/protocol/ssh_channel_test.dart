@@ -94,5 +94,25 @@ exec cat
       expect(utf8.decode(chunk), 'hello');
       await channel.close();
     }, testOn: 'linux');
+
+    test('close kills a child that ignores the closed stdin', () async {
+      final script = File('${tempDir.path}/wedged-ssh');
+      // Never reads stdin and never exits — a wedged remote agent, or an ssh
+      // session that will not give up the connection.
+      await script.writeAsString('#!/bin/sh\nwhile true; do sleep 1; done\n');
+      await Process.run('chmod', ['+x', script.path]);
+
+      final channel = await SshChannel.connect(
+        host: 'example.com',
+        executable: script.path,
+      );
+
+      // Completes via the grace period and a signal rather than hanging the
+      // run that is trying to finish.
+      await expectLater(
+        channel.close().timeout(const Duration(seconds: 30)),
+        completes,
+      );
+    }, testOn: 'linux');
   });
 }

@@ -74,4 +74,13 @@ abstract class Agent {
   /// `RunController` once a run has reached the apply phase, regardless of
   /// whether every action succeeded.
   Future<void> compact();
+
+  /// Tears down the connection to this replica — the mirror of [hello].
+  ///
+  /// A no-op for an in-process agent. For a remote one it closes the
+  /// transport, without which the `ssh` process the run started outlives it
+  /// (SPEC §2: a run ends by exiting). Called on every exit path, including
+  /// after a fatal failure, and after [unlock] so the lock is released over a
+  /// connection that is still open.
+  Future<void> disconnect();
 }

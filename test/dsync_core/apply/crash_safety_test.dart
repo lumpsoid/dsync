@@ -286,4 +286,7 @@ class _CrashingCommitAgent implements Agent {
 
   @override
   Future<void> compact() => _wrapped.compact();
+
+  @override
+  Future<void> disconnect() async {}
 }

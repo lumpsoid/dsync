@@ -461,4 +461,7 @@ class _FailingWriteAgent implements Agent {
 
   @override
   Future<void> compact() async {}
+
+  @override
+  Future<void> disconnect() async {}
 }

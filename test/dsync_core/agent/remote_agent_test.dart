@@ -210,4 +210,7 @@ class _FakeAgent implements Agent {
   Future<void> compact() async {
     compacted = true;
   }
+
+  @override
+  Future<void> disconnect() async {}
 }

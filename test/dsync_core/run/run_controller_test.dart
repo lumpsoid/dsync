@@ -1,12 +1,16 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
 import 'package:test/test.dart';
 
@@ -146,6 +150,37 @@ void main() {
       },
       testOn: 'linux',
     );
+
+    test('both agents are disconnected, after unlocking', () async {
+      final a = _RecordingAgent(agentA);
+      final b = _RecordingAgent(agentB);
+
+      await RunController(
+        agentA: a,
+        agentB: b,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      // Without this the ssh process a remote run started outlives the run,
+      // and unlock has to happen while the connection is still open.
+      expect(a.calls, containsAllInOrder(['unlock', 'disconnect']));
+      expect(b.calls, containsAllInOrder(['unlock', 'disconnect']));
+    });
+
+    test('both agents are disconnected after a fatal failure', () async {
+      final a = _RecordingAgent(agentA, helloError: Exception('unreachable'));
+      final b = _RecordingAgent(agentB);
+
+      final events = await RunController(
+        agentA: a,
+        agentB: b,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      expect(events.single, isA<RunErrorEvent>());
+      expect(a.calls, contains('disconnect'));
+      expect(b.calls, contains('disconnect'));
+    });
   });
 
   group('conflicts', () {
@@ -294,4 +329,71 @@ void main(List<String> args) async {
       testOn: 'linux',
     );
   });
+}
+
+/// Wraps a real [Agent] and records the order of the lifecycle calls
+/// [RunController] makes, so the teardown sequence can be asserted without
+/// standing up a remote transport.
+class _RecordingAgent implements Agent {
+  final Agent _wrapped;
+  final Object? helloError;
+  final List<String> calls = [];
+
+  _RecordingAgent(this._wrapped, {this.helloError});
+
+  @override
+  Future<void> hello() async {
+    calls.add('hello');
+    if (helloError != null) throw helloError!;
+    await _wrapped.hello();
+  }
+
+  @override
+  Future<void> lock() {
+    calls.add('lock');
+    return _wrapped.lock();
+  }
+
+  @override
+  Future<void> unlock() {
+    calls.add('unlock');
+    return _wrapped.unlock();
+  }
+
+  @override
+  Future<void> disconnect() async {
+    calls.add('disconnect');
+    await _wrapped.disconnect();
+  }
+
+  @override
+  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+
+  @override
+  Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
+
+  @override
+  Future<FileMetadata> writeFile(
+    String path,
+    Stream<List<int>> data, {
+    required int mtime,
+    required int mode,
+  }) => _wrapped.writeFile(path, data, mtime: mtime, mode: mode);
+
+  @override
+  Future<void> delete(String path) => _wrapped.delete(path);
+
+  @override
+  Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
+
+  @override
+  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
+      _wrapped.archiveCommitUpsert(entry);
+
+  @override
+  Future<void> archiveCommitDelete(String path) =>
+      _wrapped.archiveCommitDelete(path);
+
+  @override
+  Future<void> compact() => _wrapped.compact();
 }

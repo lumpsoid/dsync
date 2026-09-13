@@ -155,6 +155,18 @@ class RemoteAgent implements Agent {
   @override
   Future<void> compact() => _call('compact');
 
+  @override
+  Future<void> disconnect() async {
+    // Waits for the wire so an operation still unwinding — an abandoned
+    // transfer draining, say — is not cut off mid-frame.
+    final release = await _acquireWire();
+    try {
+      await _channel.close();
+    } finally {
+      release();
+    }
+  }
+
   Future<Map<String, dynamic>> _call(
     String op, [
     Map<String, dynamic> params = const {},

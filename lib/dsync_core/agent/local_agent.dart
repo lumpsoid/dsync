@@ -168,6 +168,9 @@ class LocalAgent implements Agent {
   @override
   Future<void> compact() => archiveStore.compact();
 
+  @override
+  Future<void> disconnect() async {}
+
   String _absolute(String relativePath) =>
       resolveWithinRoot(rootPath, relativePath);
 }

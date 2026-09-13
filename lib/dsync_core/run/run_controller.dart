@@ -19,7 +19,7 @@ typedef Presenter = Future<List<PlanAction>> Function(Plan plan);
 
 /// The one owner of the run flow (SPEC §13): resolve locations → connect
 /// both agents → lock → scan both → reconcile → present → apply → compact →
-/// unlock → exit. A concrete, single-implementation ordering owner (no
+/// unlock → disconnect → exit. A concrete, single-implementation ordering owner (no
 /// interface, per this project's code principles) — every step's actual
 /// logic lives in its own component ([Agent], [Reconciler], [Applier]); this
 /// class only calls them in the right order and turns the results into
@@ -65,38 +65,55 @@ class RunController {
   /// compaction, or unlocking), or hit a fatal error.
   Stream<RunEvent> run() async* {
     try {
-      await agentA.hello();
-      await agentB.hello();
-    } catch (error) {
-      yield RunErrorEvent(error);
-      return;
-    }
-
-    try {
-      await agentA.lock();
-    } catch (error) {
-      yield RunErrorEvent(error);
-      return;
-    }
-
-    try {
       try {
-        await agentB.lock();
+        await agentA.hello();
+        await agentB.hello();
       } catch (error) {
         yield RunErrorEvent(error);
         return;
       }
 
       try {
-        yield* _runLocked();
+        await agentA.lock();
       } catch (error) {
         yield RunErrorEvent(error);
+        return;
+      }
+
+      try {
+        try {
+          await agentB.lock();
+        } catch (error) {
+          yield RunErrorEvent(error);
+          return;
+        }
+
+        try {
+          yield* _runLocked();
+        } catch (error) {
+          yield RunErrorEvent(error);
+        } finally {
+          await agentB.unlock();
+        }
       } finally {
-        await agentB.unlock();
+        await agentA.unlock();
       }
     } finally {
-      await agentA.unlock();
+      await _disconnect(agentA);
+      await _disconnect(agentB);
     }
+  }
+
+  /// Hangs up, whatever happened. Inside the locks' `finally` blocks so the
+  /// connection is still open when [Agent.unlock] runs.
+  ///
+  /// A teardown failure is swallowed: the run is already over, and reporting
+  /// "failed to hang up" as the run's outcome would misdescribe it. The
+  /// process still exits, since the transport is closed either way.
+  Future<void> _disconnect(Agent agent) async {
+    try {
+      await agent.disconnect();
+    } catch (_) {}
   }
 
   /// Scan → reconcile → present → apply → compact, once both replicas are

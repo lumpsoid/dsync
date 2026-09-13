@@ -74,6 +74,17 @@ class SshChannel implements Channel {
   @override
   Future<void> close() async {
     await _process.stdin.close();
-    await _process.exitCode;
+    try {
+      await _process.exitCode.timeout(_shutdownGrace);
+    } on TimeoutException {
+      // The remote agent exits when its stdin closes. One that does not —
+      // wedged, or an ssh session that will not give up the connection — must
+      // not hang the run that is trying to finish.
+      _process.kill();
+      await _process.exitCode;
+    }
   }
+
+  /// How long [close] waits for a clean exit before signalling the process.
+  static const _shutdownGrace = Duration(seconds: 5);
 }
