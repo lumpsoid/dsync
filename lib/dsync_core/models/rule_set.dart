@@ -106,13 +106,8 @@ class _GlobPattern {
         buffer.write('[^/]');
         i += 1;
       } else if (char == '[') {
-        final end = pattern.indexOf(']', i + 1);
-        if (end == -1) {
-          throw FormatException('Unterminated character class', pattern, i);
-        }
-        var body = pattern.substring(i + 1, end);
-        if (body.startsWith('!')) body = '^${body.substring(1)}';
-        buffer.write('[$body]');
+        final end = _classEnd(pattern, i);
+        buffer.write(_translateClass(pattern.substring(i + 1, end)));
         i = end + 1;
       } else if (_regexSpecial.contains(char)) {
         buffer.write('\\$char');
@@ -123,6 +118,50 @@ class _GlobPattern {
       }
     }
     buffer.write(r'$');
+    return buffer.toString();
+  }
+
+  /// The index of the `]` closing the class that opens at [open].
+  ///
+  /// A `]` in the first position — right after `[`, or right after the `!`
+  /// that negates it — is a literal member of the class rather than its
+  /// terminator, which is how glob spells "a class containing `]`", since
+  /// glob has no escape character.
+  static int _classEnd(String pattern, int open) {
+    var search = open + 1;
+    if (search < pattern.length &&
+        (pattern[search] == '!' || pattern[search] == '^')) {
+      search++;
+    }
+    if (search < pattern.length && pattern[search] == ']') search++;
+
+    final end = pattern.indexOf(']', search);
+    if (end == -1) {
+      throw FormatException('Unterminated character class', pattern, open);
+    }
+    return end;
+  }
+
+  /// Rewrites a glob class body as a regex one.
+  ///
+  /// Every character that means something to a regex inside a class is
+  /// escaped, so a pattern cannot reach through the glob syntax and use regex
+  /// features that SPEC §9 does not offer — `[\d]` is the characters `\` and
+  /// `d`, not "any digit". `-` is left alone, since ranges are part of the
+  /// glob grammar.
+  static String _translateClass(String body) {
+    final buffer = StringBuffer('[');
+    var i = 0;
+    if (body.startsWith('!') || body.startsWith('^')) {
+      buffer.write('^');
+      i = 1;
+    }
+    for (; i < body.length; i++) {
+      final char = body[i];
+      if (r'\^]['.contains(char)) buffer.write(r'\');
+      buffer.write(char);
+    }
+    buffer.write(']');
     return buffer.toString();
   }
 }

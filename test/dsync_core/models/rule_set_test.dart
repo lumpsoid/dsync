@@ -66,6 +66,44 @@ void main() {
       expect(rules.ignores('aXb'), isFalse);
     });
 
+    test('character class range', () {
+      final rules = RuleSet(ignore: ['file[a-c].txt']);
+      expect(rules.ignores('fileb.txt'), isTrue);
+      expect(rules.ignores('filed.txt'), isFalse);
+    });
+
+    test('a leading ] is a literal member of the class', () {
+      // Glob has no escape character, so this is the only way to write a
+      // class containing ']'.
+      final rules = RuleSet(ignore: ['file[]a].txt']);
+      expect(rules.ignores('file].txt'), isTrue);
+      expect(rules.ignores('filea.txt'), isTrue);
+      expect(rules.ignores('fileb.txt'), isFalse);
+    });
+
+    test('a leading ] after a negation is also literal', () {
+      final rules = RuleSet(ignore: ['file[!]a].txt']);
+      expect(rules.ignores('fileb.txt'), isTrue);
+      expect(rules.ignores('file].txt'), isFalse);
+      expect(rules.ignores('filea.txt'), isFalse);
+    });
+
+    test('regex syntax inside a class is literal, not regex', () {
+      // SPEC §9 offers globs, not regexes: these are the characters `\` and
+      // `d`, not "any digit".
+      final rules = RuleSet(ignore: [r'file[\d].txt']);
+      expect(rules.ignores(r'file\.txt'), isTrue);
+      expect(rules.ignores('filed.txt'), isTrue);
+      expect(rules.ignores('file5.txt'), isFalse);
+    });
+
+    test('a caret that is not leading is a literal in the class', () {
+      final rules = RuleSet(ignore: ['file[a^].txt']);
+      expect(rules.ignores('file^.txt'), isTrue);
+      expect(rules.ignores('filea.txt'), isTrue);
+      expect(rules.ignores('fileb.txt'), isFalse);
+    });
+
     test('rejects an empty pattern', () {
       expect(() => RuleSet(ignore: ['']), throwsFormatException);
     });
