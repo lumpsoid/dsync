@@ -253,6 +253,58 @@ void main() {
     });
   });
 
+  group('transfer size', () {
+    test('a copy carries the source size, either direction', () {
+      final aToB = reconciler.reconcile(
+        [entry('f', ScanStatus.modified, hash: 'a', size: 4096)],
+        [entry('f', ScanStatus.unchanged, hash: 'b', size: 1)],
+      );
+      final bToA = reconciler.reconcile(
+        [entry('f', ScanStatus.unchanged, hash: 'a', size: 1)],
+        [entry('f', ScanStatus.modified, hash: 'b', size: 4096)],
+      );
+
+      expect(aToB.actions.single.bytes, 4096);
+      expect(bToA.actions.single.bytes, 4096);
+    });
+
+    test('a path new to one side carries the other side\'s size', () {
+      final plan = reconciler.reconcile([], [
+        entry('f', ScanStatus.created, size: 900),
+      ]);
+
+      expect(plan.actions.single.bytes, 900);
+    });
+
+    test('deletions and commit-only move nothing', () {
+      final deletion = reconciler.reconcile(
+        [entry('f', ScanStatus.unchanged, size: 4096)],
+        [entry('f', ScanStatus.deleted)],
+      );
+      final sameContent = reconciler.reconcile(
+        [entry('f', ScanStatus.modified, hash: 'same', size: 4096)],
+        [entry('f', ScanStatus.modified, hash: 'same', size: 4096)],
+      );
+
+      expect(deletion.actions.single.bytes, 0);
+      expect(sameContent.actions.single.type, ActionType.commitOnly);
+      expect(sameContent.actions.single.bytes, 0);
+    });
+
+    test('bytesToTransfer sums the plan, for the SPEC §10 warning', () {
+      final plan = reconciler.reconcile(
+        [
+          entry('big', ScanStatus.created, size: 5000),
+          entry('small', ScanStatus.created, size: 7),
+          entry('gone', ScanStatus.deleted),
+        ],
+        [entry('gone', ScanStatus.unchanged, size: 99999)],
+      );
+
+      expect(plan.bytesToTransfer, 5007);
+    });
+  });
+
   group('deterministic ordering', () {
     test('actions and conflicts are sorted by path', () {
       final plan = reconciler.reconcile([

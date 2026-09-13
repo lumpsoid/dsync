@@ -60,14 +60,18 @@ void _resolveCell(
   List<PlanAction> actions,
   List<Conflict> conflicts,
 ) {
-  void act(ActionType type) => actions.add(PlanAction(path: path, type: type));
+  void act(ActionType type, {int bytes = 0}) =>
+      actions.add(PlanAction(path: path, type: type, bytes: bytes));
   void conflict() =>
       conflicts.add(Conflict(path: path, onA: entryA, onB: entryB));
 
   if (entryA == null || entryB == null) {
     final present = entryA ?? entryB!;
     if (present.status == ScanStatus.deleted) return;
-    act(entryA == null ? ActionType.copyBtoA : ActionType.copyAtoB);
+    act(
+      entryA == null ? ActionType.copyBtoA : ActionType.copyAtoB,
+      bytes: _transferBytes(present),
+    );
     return;
   }
 
@@ -78,7 +82,7 @@ void _resolveCell(
         (ScanStatus.unchanged, ScanStatus.modified):
       entryA.hash == entryB.hash
           ? act(ActionType.commitOnly)
-          : act(ActionType.copyBtoA);
+          : act(ActionType.copyBtoA, bytes: _transferBytes(entryB));
     case (ScanStatus.unchanged, ScanStatus.deleted):
       act(ActionType.deleteOnA);
 
@@ -86,7 +90,7 @@ void _resolveCell(
         (ScanStatus.modified, ScanStatus.unchanged):
       entryA.hash == entryB.hash
           ? act(ActionType.commitOnly)
-          : act(ActionType.copyAtoB);
+          : act(ActionType.copyAtoB, bytes: _transferBytes(entryA));
 
     case (ScanStatus.created, ScanStatus.created) ||
         (ScanStatus.created, ScanStatus.modified) ||
@@ -107,6 +111,13 @@ void _resolveCell(
       act(ActionType.commitOnly);
   }
 }
+
+/// The bytes a copy from [source] moves (SPEC §10).
+///
+/// The table never copies from a side that no longer has the file, so a
+/// source entry's size is always known; the fallback is only here because
+/// [ScanEntry] represents a deleted path with nulls in those fields.
+int _transferBytes(ScanEntry source) => source.size ?? 0;
 
 /// Whether [entry] is a file currently present at a path that [otherSideDirs]
 /// says is a directory on the other side.

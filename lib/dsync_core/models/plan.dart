@@ -17,7 +17,14 @@ class PlanAction {
   final String path;
   final ActionType type;
 
-  const PlanAction({required this.path, required this.type});
+  /// Bytes this action moves — the source file's size for a copy, zero for a
+  /// deletion or a commit-only (SPEC §6: "same content, no transfer").
+  ///
+  /// Recorded per action because the reconciler is the last place that has
+  /// the scan entries in hand; a head presenting the plan has only the plan.
+  final int bytes;
+
+  const PlanAction({required this.path, required this.type, this.bytes = 0});
 }
 
 /// A path the [Reconciler] could not resolve on its own (SPEC §6: "Conflicts
@@ -38,4 +45,9 @@ class Plan {
   final List<Conflict> conflicts;
 
   const Plan({required this.actions, required this.conflicts});
+
+  /// Total bytes this plan will move (SPEC §10). A head compares it against
+  /// the profile's `warn_size_bytes` and shows a warning; nothing is blocked.
+  int get bytesToTransfer =>
+      actions.fold(0, (total, action) => total + action.bytes);
 }
