@@ -270,7 +270,44 @@ void main() {
       expect(archiveA.entries.containsKey('skip.txt'), isFalse);
       expect(archiveB.entries.containsKey('keep.txt'), isTrue);
       expect(archiveB.entries.containsKey('skip.txt'), isFalse);
+
+      // SPEC §11.5 exit 1 is "skipped or unresolved conflicts", so a head
+      // needs the skipped count to pick an exit code.
+      final summary = events.whereType<RunSummaryEvent>().single;
+      expect(summary.appliedCount, 1);
+      expect(summary.skippedCount, 1);
     }, testOn: 'linux');
+
+    test(
+      'resolving a conflict by direction is not counted as a skip',
+      () async {
+        await File('${replicaADir.path}/conflict.txt').writeAsString('from a');
+        await File('${replicaBDir.path}/conflict.txt').writeAsString('from b');
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          // What an interactive head does when the user picks a direction
+          // (SPEC §11.3): an action for a path the plan itself proposed none
+          // for.
+          presenter: (plan) async => [
+            ...plan.actions,
+            for (final conflict in plan.conflicts)
+              PlanAction(path: conflict.path, type: ActionType.copyAtoB),
+          ],
+        ).run().toList();
+
+        final summary = events.whereType<RunSummaryEvent>().single;
+        expect(summary.appliedCount, 1);
+        expect(summary.skippedCount, 0);
+        expect(summary.conflictCount, 1);
+        expect(
+          await File('${replicaBDir.path}/conflict.txt').readAsString(),
+          'from a',
+        );
+      },
+      testOn: 'linux',
+    );
   });
 
   group('fatal failure', () {

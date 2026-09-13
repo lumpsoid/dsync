@@ -175,10 +175,18 @@ class RunController {
     await agentA.compact();
     await agentB.compact();
 
+    // Counted by path rather than by list length: the presenter may add an
+    // action for a conflict it resolved (SPEC §11.3), which would otherwise
+    // cancel out a genuine skip.
+    final keptPaths = actionsToApply.map((action) => action.path).toSet();
+
     yield RunSummaryEvent(
       appliedCount: applyResult.applied.length,
       failedCount: applyResult.failed.length,
       conflictCount: plan.conflicts.length,
+      skippedCount: plan.actions
+          .where((action) => !keptPaths.contains(action.path))
+          .length,
     );
   }
 }

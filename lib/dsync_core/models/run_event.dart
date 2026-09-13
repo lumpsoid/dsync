@@ -75,16 +75,23 @@ class RunResultEvent extends RunEvent {
 
 /// Aggregate counts once a run has finished applying (SPEC §11.4). Exit-code
 /// selection (SPEC §11.5) is out of scope here — a head derives it from
-/// these counts.
+/// these counts, and every input it needs is here: exit 1 is
+/// `skippedCount > 0 || conflictCount > 0`, exit 2 is `failedCount > 0`.
 class RunSummaryEvent extends RunEvent {
   final int appliedCount;
   final int failedCount;
   final int conflictCount;
 
+  /// Proposed actions the presenter declined to run (SPEC §11.3). Counted by
+  /// path, so a conflict the user resolved by picking a direction is not a
+  /// skip — only a path the plan proposed and the run did not touch.
+  final int skippedCount;
+
   const RunSummaryEvent({
     required this.appliedCount,
     required this.failedCount,
     required this.conflictCount,
+    required this.skippedCount,
   });
 }
 
