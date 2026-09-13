@@ -7,8 +7,8 @@ import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
-import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
+import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -16,7 +16,7 @@ void main() {
   late RemoteAgent remote;
 
   setUp(() async {
-    final (clientChannel, serverChannel) = _pairedChannels();
+    final (clientChannel, serverChannel) = InMemoryChannel.pair();
     backing = _FakeAgent();
     unawaited(AgentServer().serve(serverChannel, backing));
     remote = RemoteAgent(clientChannel);
@@ -122,35 +122,6 @@ void main() {
       expect(backing.archive.containsKey('a.txt'), isFalse);
     });
   });
-}
-
-(Channel, Channel) _pairedChannels() {
-  final aToB = StreamController<List<int>>();
-  final bToA = StreamController<List<int>>();
-  final a = _FakeChannel(outbox: aToB, input: bToA.stream);
-  final b = _FakeChannel(outbox: bToA, input: aToB.stream);
-  return (a, b);
-}
-
-/// A minimal [Channel] wiring two in-memory byte streams — just enough to
-/// drive the protocol in isolation. The real shared in-memory `Channel`
-/// (SPEC §14) is a separate task; this one stays test-local.
-class _FakeChannel implements Channel {
-  final StreamController<List<int>> outbox;
-  @override
-  final Stream<List<int>> input;
-
-  _FakeChannel({required this.outbox, required this.input});
-
-  @override
-  Future<void> send(List<int> bytes) async {
-    outbox.add(bytes);
-  }
-
-  @override
-  Future<void> close() async {
-    await outbox.close();
-  }
 }
 
 /// A minimal in-memory [Agent] fake — just enough to be driven through
