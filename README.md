@@ -9,14 +9,33 @@ behaviour, and every module's doc comments reference its section numbers.
 
 ## Status
 
-v0, in development. The core engine is implemented; the CLI and the Flutter
-head are not yet.
+v0, in development. The core engine and the CLI are implemented; the Flutter
+head is not.
 
 | Area | State |
 |---|---|
 | `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
-| `lib/cli/` — args, prompts, output | not started |
+| `lib/cli/` — args, profile, prompts, output | implemented |
 | `lib/app/` — Flutter head | skeleton only (SPEC §16) |
+
+## Using it
+
+```sh
+dsync sync <profile>              # the main one-shot run
+dsync sync <locA> <locB>          # ad-hoc, no profile
+dsync status <profile>            # scan + reconcile + print plan, apply nothing
+dsync agent --stdio               # started by ssh on the remote host
+```
+
+A location is a local path or `user@host:path`; in an ad-hoc pair the local
+one comes first. Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml`
+(SPEC §12), archives and locks in `$XDG_STATE_HOME/dsync/` (SPEC §8.3).
+
+Every run prints a header naming both replicas and when the pair last synced,
+before anything moves. `--dry-run` and `status` show the plan and apply
+nothing; `--batch` applies without prompting but never resolves a conflict;
+`--json` writes JSON Lines to stdout. See SPEC §11.2 for the full flag list
+and §11.5 for the exit codes.
 
 ## Layout
 
