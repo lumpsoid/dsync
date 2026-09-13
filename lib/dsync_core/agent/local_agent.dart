@@ -21,6 +21,10 @@ class LocalAgent implements Agent {
   final ReplicaLock replicaLock;
   final Scanner scanner;
 
+  /// Set once `chmod` has turned out not to exist on this host. See
+  /// [_applyMode].
+  bool _chmodUnavailable = false;
+
   LocalAgent({
     required this.rootPath,
     required this.archiveStore,
@@ -119,11 +123,7 @@ class LocalAgent implements Agent {
         // Best-effort (SPEC §7.4): the stat below archives whatever mtime
         // actually landed, so a setter failure here isn't fatal.
       }
-      try {
-        await Process.run('chmod', [mode.toRadixString(8), temp.path]);
-      } on ProcessException {
-        // Best-effort mode propagation (SPEC §7.4).
-      }
+      await _applyMode(temp, mode);
 
       await temp.rename(target.path);
     } catch (_) {
@@ -137,6 +137,28 @@ class LocalAgent implements Agent {
       mtime: stat.modified.microsecondsSinceEpoch,
       mode: stat.mode & 0xFFF,
     );
+  }
+
+  /// Sets [file]'s permission bits, best-effort (SPEC §7.4).
+  ///
+  /// Dart has no chmod, so this shells out — which costs a process spawn, on
+  /// a path that runs once per copied file. Two things keep that off the
+  /// common case: a freshly created file usually already carries the mode
+  /// being asked for, which a stat settles far more cheaply than a spawn; and
+  /// a host without a `chmod` at all (SPEC §3 flags Android storage as a
+  /// place metadata writes can be rejected) is discovered once instead of
+  /// once per file.
+  Future<void> _applyMode(File file, int mode) async {
+    if (_chmodUnavailable) return;
+
+    final current = await file.stat();
+    if (current.mode & 0xFFF == mode) return;
+
+    try {
+      await Process.run('chmod', [mode.toRadixString(8), file.path]);
+    } on ProcessException {
+      _chmodUnavailable = true;
+    }
   }
 
   @override

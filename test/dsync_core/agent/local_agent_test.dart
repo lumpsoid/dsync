@@ -157,6 +157,31 @@ void main() {
       testOn: 'linux',
     );
 
+    test('a mode the new file already has still lands correctly', () async {
+      // 0o644 is what a fresh file gets under the usual umask, so this takes
+      // the path that skips the chmod entirely.
+      final metadata = await agent().writeFile(
+        'a.txt',
+        Stream.value(utf8.encode('hello')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 420,
+      );
+
+      expect(metadata.mode, 420);
+    }, testOn: 'linux');
+
+    test('a mode requiring a change is applied', () async {
+      // 0o600 differs from the default, so chmod actually runs.
+      final metadata = await agent().writeFile(
+        'a.txt',
+        Stream.value(utf8.encode('hello')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 384,
+      );
+
+      expect(metadata.mode, 384);
+    }, testOn: 'linux');
+
     test('creates parent directories as needed', () async {
       await agent().writeFile(
         'sub/dir/a.txt',
