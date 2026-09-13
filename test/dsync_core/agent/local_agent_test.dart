@@ -259,7 +259,8 @@ void main() {
       await a.compact();
 
       final lines = await archiveLog.readAsLines();
-      expect(lines, hasLength(1));
+      // The header line (SPEC §8.1) plus the one surviving upsert.
+      expect(lines, hasLength(2));
     });
   });
 }

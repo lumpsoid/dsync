@@ -65,3 +65,32 @@ abstract class ArchiveStore {
   /// The state resulting from the commits applied since [load].
   Archive snapshot();
 }
+
+/// Thrown by [ArchiveStore.load] when the stored archive does not belong to
+/// the replica being scanned, or was written by an incompatible schema
+/// version (SPEC §8.1) — fatal for the caller (SPEC §11.5 exit 3, "archive
+/// unreadable").
+///
+/// Refusing to run is the safe outcome, not the cautious one. An archive from
+/// a different root lists paths that are all absent under this one, so a run
+/// that went ahead would scan the whole tree as deleted and propagate that to
+/// the other replica.
+class ArchiveMismatchException implements Exception {
+  final String path;
+  final ArchiveHeader expected;
+  final ArchiveHeader found;
+
+  const ArchiveMismatchException({
+    required this.path,
+    required this.expected,
+    required this.found,
+  });
+
+  @override
+  String toString() =>
+      'Archive at $path belongs to a different replica or schema: '
+      'expected schema ${expected.schemaVersion} profile '
+      '${expected.profileId} root ${expected.rootPath}, '
+      'found schema ${found.schemaVersion} profile ${found.profileId} '
+      'root ${found.rootPath}';
+}

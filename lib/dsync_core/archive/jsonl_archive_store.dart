@@ -5,22 +5,25 @@ import 'package:dsync/dsync_core/models/archive.dart';
 
 /// Append-only JSON Lines [ArchiveStore] (SPEC §8.2, chosen in §15).
 ///
-/// Each commit appends one line — an upsert or a tombstone — and flushes
-/// before returning, so a commit that returns has survived a crash. [load]
-/// replays the whole log; the last line for a path wins. [compact] folds the
+/// The first line is the header (SPEC §8.1); every line after it is one
+/// commit — an upsert or a tombstone — appended and flushed before returning,
+/// so a commit that returns has survived a crash. [load] checks the header,
+/// then replays the log; the last line for a path wins. [compact] folds the
 /// log back down to one line per live path by writing a fresh file and
 /// renaming it over the log, atomic on the same filesystem.
 class JsonlArchiveStore implements ArchiveStore {
-  /// Bumped when the on-disk line format changes.
-  static const schemaVersion = 1;
+  /// Bumped when the on-disk line format changes. Version 2 added the header
+  /// line, so a version 1 log — which starts straight in on commits — is
+  /// correctly rejected as belonging to an older schema.
+  static const schemaVersion = 2;
 
   final File _logFile;
   final ArchiveHeader _header;
   Map<String, ArchiveEntry> _entries = const {};
 
-  /// Lines currently on disk in [_logFile]. Compared against
-  /// `_entries.length` to tell whether the log already holds exactly one
-  /// upsert per live path — i.e. compaction would be a no-op.
+  /// Commit lines currently on disk in [_logFile], not counting the header.
+  /// Compared against `_entries.length` to tell whether the log already holds
+  /// exactly one upsert per live path — i.e. compaction would be a no-op.
   int _logLineCount = 0;
 
   JsonlArchiveStore(this._logFile, this._header);
@@ -53,28 +56,77 @@ class JsonlArchiveStore implements ArchiveStore {
     final entries = <String, ArchiveEntry>{};
     var lineCount = 0;
     if (await _logFile.exists()) {
-      final lines = await _logFile.readAsLines();
-      for (final line in lines) {
-        if (line.isEmpty) continue;
-        lineCount++;
-        final record = jsonDecode(line) as Map<String, dynamic>;
-        final path = record['path'] as String;
-        if (record['op'] == 'delete') {
-          entries.remove(path);
-        } else {
-          entries[path] = ArchiveEntry(
-            path: path,
-            size: record['size'] as int,
-            mtime: record['mtime'] as int,
-            mode: record['mode'] as int,
-            hash: record['hash'] as String,
-          );
+      final lines = (await _logFile.readAsLines())
+        ..removeWhere((line) => line.isEmpty);
+      if (lines.isNotEmpty) {
+        _verifyHeader(lines.first);
+        for (final line in lines.skip(1)) {
+          lineCount++;
+          final record = jsonDecode(line) as Map<String, dynamic>;
+          final path = record['path'] as String;
+          if (record['op'] == 'delete') {
+            entries.remove(path);
+          } else {
+            entries[path] = ArchiveEntry(
+              path: path,
+              size: record['size'] as int,
+              mtime: record['mtime'] as int,
+              mode: record['mode'] as int,
+              hash: record['hash'] as String,
+            );
+          }
         }
       }
     }
     _entries = entries;
     _logLineCount = lineCount;
     return snapshot();
+  }
+
+  /// Checks that the log's first line identifies the replica this store was
+  /// constructed for (SPEC §8.1). Anything else — an older schema, another
+  /// profile, a root that has since been repointed — aborts the run rather
+  /// than replaying entries that describe a different tree.
+  void _verifyHeader(String line) {
+    final found = _headerFromLine(line);
+    if (found.schemaVersion != _header.schemaVersion ||
+        found.profileId != _header.profileId ||
+        found.rootPath != _header.rootPath) {
+      throw ArchiveMismatchException(
+        path: _logFile.path,
+        expected: _header,
+        found: found,
+      );
+    }
+  }
+
+  /// The header a log line describes, or a zeroed stand-in when the line is
+  /// not a header at all — a schema 1 log, whose first line is a commit.
+  /// Reported as a mismatch rather than a parse error, because that is what
+  /// it is.
+  ArchiveHeader _headerFromLine(String line) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(line);
+    } on FormatException {
+      return const ArchiveHeader(
+        schemaVersion: 0,
+        profileId: '<unreadable>',
+        rootPath: '<unreadable>',
+      );
+    }
+    if (decoded is! Map<String, dynamic> || decoded['op'] != 'header') {
+      return const ArchiveHeader(
+        schemaVersion: 0,
+        profileId: '<no header>',
+        rootPath: '<no header>',
+      );
+    }
+    return ArchiveHeader(
+      schemaVersion: decoded['schemaVersion'] as int,
+      profileId: decoded['profileId'] as String,
+      rootPath: decoded['rootPath'] as String,
+    );
   }
 
   @override
@@ -95,6 +147,7 @@ class JsonlArchiveStore implements ArchiveStore {
 
     final tempFile = File('${_logFile.path}.compact.tmp');
     final sink = tempFile.openWrite();
+    sink.writeln(jsonEncode(_headerRecord()));
     for (final entry in _entries.values) {
       sink.writeln(jsonEncode(_upsertRecord(entry)));
     }
@@ -107,6 +160,13 @@ class JsonlArchiveStore implements ArchiveStore {
   @override
   Archive snapshot() => Archive(header: _header, entries: _entries);
 
+  Map<String, Object?> _headerRecord() => {
+    'op': 'header',
+    'schemaVersion': _header.schemaVersion,
+    'profileId': _header.profileId,
+    'rootPath': _header.rootPath,
+  };
+
   Map<String, Object?> _upsertRecord(ArchiveEntry entry) => {
     'op': 'upsert',
     'path': entry.path,
@@ -118,7 +178,11 @@ class JsonlArchiveStore implements ArchiveStore {
 
   Future<void> _append(Map<String, Object?> record) async {
     await _logFile.parent.create(recursive: true);
+    final isNewLog = !await _logFile.exists();
     final sink = _logFile.openWrite(mode: FileMode.append);
+    // The header is written by whoever creates the log, not by load(), so a
+    // run that never commits anything — a dry run — leaves no file behind.
+    if (isNewLog) sink.writeln(jsonEncode(_headerRecord()));
     sink.writeln(jsonEncode(record));
     await sink.flush();
     await sink.close();

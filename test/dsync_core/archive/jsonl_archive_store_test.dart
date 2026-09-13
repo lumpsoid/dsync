@@ -11,7 +11,7 @@ void main() {
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('jsonl_archive_store_test');
     header = const ArchiveHeader(
-      schemaVersion: 1,
+      schemaVersion: JsonlArchiveStore.schemaVersion,
       profileId: 'notes',
       rootPath: '/home/me/notes',
     );
@@ -103,6 +103,80 @@ void main() {
     });
   });
 
+  group('header', () {
+    test('the first line of a new log is the header', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+
+      final first = (await logFile().readAsLines()).first;
+      expect(first, contains('"op":"header"'));
+      expect(first, contains('"profileId":"notes"'));
+      expect(first, contains('"rootPath":"/home/me/notes"'));
+    });
+
+    test('a load that commits nothing leaves no file behind', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+
+      // A dry run (SPEC §11.2) reaches load and stops; it must not create
+      // state for a replica it never touched.
+      expect(await logFile().exists(), isFalse);
+    });
+
+    test('refuses a log written for a different root path', () async {
+      final writer = JsonlArchiveStore(logFile(), header);
+      await writer.load();
+      await writer.commitUpsert(entry);
+
+      final repointed = JsonlArchiveStore(
+        logFile(),
+        const ArchiveHeader(
+          schemaVersion: JsonlArchiveStore.schemaVersion,
+          profileId: 'notes',
+          rootPath: '/home/me/notes-moved',
+        ),
+      );
+
+      // Replaying this archive against the new root would report every
+      // archived path as deleted and propagate that to the other replica.
+      await expectLater(
+        repointed.load(),
+        throwsA(isA<ArchiveMismatchException>()),
+      );
+    });
+
+    test('refuses a log written for a different profile', () async {
+      final writer = JsonlArchiveStore(logFile(), header);
+      await writer.load();
+      await writer.commitUpsert(entry);
+
+      final other = JsonlArchiveStore(
+        logFile(),
+        const ArchiveHeader(
+          schemaVersion: JsonlArchiveStore.schemaVersion,
+          profileId: 'photos',
+          rootPath: '/home/me/notes',
+        ),
+      );
+
+      await expectLater(other.load(), throwsA(isA<ArchiveMismatchException>()));
+    });
+
+    test('refuses a log written by an older schema', () async {
+      // A schema 1 log has no header line — it starts straight in on commits.
+      await logFile().writeAsString(
+        '{"op":"upsert","path":"a.txt","size":1,"mtime":1,'
+        '"mode":420,"hash":"h"}\n',
+      );
+
+      await expectLater(
+        JsonlArchiveStore(logFile(), header).load(),
+        throwsA(isA<ArchiveMismatchException>()),
+      );
+    });
+  });
+
   group('snapshot', () {
     test(
       'reflects commits made since load without rereading the file',
@@ -142,7 +216,8 @@ void main() {
 
       await store.compact();
 
-      expect(await logFile().readAsLines(), hasLength(1));
+      // One header line (SPEC §8.1) plus one upsert per live path.
+      expect(await logFile().readAsLines(), hasLength(2));
       final reader = JsonlArchiveStore(logFile(), header);
       final archive = await reader.load();
       expectEntry(archive.entries['a.txt'], updated);
@@ -189,7 +264,7 @@ void main() {
         }
 
         expect(await logFile().readAsString(), before);
-        expect(await tempFile.readAsLines(), hasLength(1));
+        expect(await tempFile.readAsLines(), hasLength(2));
       },
       testOn: 'linux',
     );
