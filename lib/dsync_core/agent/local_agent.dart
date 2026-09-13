@@ -5,6 +5,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
@@ -39,7 +40,57 @@ class LocalAgent implements Agent {
   @override
   Future<ScanResult> scan(RuleSet rules) async {
     final archive = await archiveStore.load();
-    return scanner.scan(rootPath: rootPath, archive: archive, rules: rules);
+    final result = await scanner.scan(
+      rootPath: rootPath,
+      archive: archive,
+      rules: rules,
+    );
+    await _refreshFastPathKeys(result.entries, archive);
+    return result;
+  }
+
+  /// Writes back the size and mtime of files a rehash proved unchanged (SPEC
+  /// §5.2 step 2: "the archive entry's `size`/`mtime` are refreshed at
+  /// commit").
+  ///
+  /// Nothing else ever does this. The fast path keys on size and mtime; when
+  /// they drift but the content does not — a touch, a restore from backup, a
+  /// filesystem that rounds mtimes (SPEC §15.6) — the scan rehashes and
+  /// reports `unchanged`, and the §6 table resolves `unchanged / unchanged`
+  /// to "nothing". So no action's commit refreshes the keys, and the same
+  /// file is rehashed on every run, forever, against SPEC §1's "skip work
+  /// whenever the stored state allows it".
+  ///
+  /// Only the fast-path keys move; the hash — the one authoritative field —
+  /// is carried over untouched, because it is precisely what the rehash
+  /// confirmed. That is also why this is safe during a `--dry-run` (SPEC
+  /// §11.2): it updates a cache, not a record of what is synced, and leaves
+  /// the replicas alone.
+  Future<void> _refreshFastPathKeys(
+    List<ScanEntry> entries,
+    Archive archive,
+  ) async {
+    for (final entry in entries) {
+      if (entry.status != ScanStatus.unchanged) continue;
+      final archived = archive.entries[entry.path];
+      final size = entry.size;
+      final mtime = entry.mtime;
+      final mode = entry.mode;
+      if (archived == null || size == null || mtime == null || mode == null) {
+        continue;
+      }
+      if (archived.size == size && archived.mtime == mtime) continue;
+
+      await archiveStore.commitUpsert(
+        ArchiveEntry(
+          path: entry.path,
+          size: size,
+          mtime: mtime,
+          mode: mode,
+          hash: archived.hash,
+        ),
+      );
+    }
   }
 
   @override

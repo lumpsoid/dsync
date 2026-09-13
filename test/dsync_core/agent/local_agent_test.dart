@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
@@ -66,6 +67,58 @@ void main() {
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);
+    });
+
+    test(
+      'a rehash that confirms the content refreshes the archive keys',
+      () async {
+        final file = File('${replicaDir.path}/a.txt');
+        await file.writeAsString('hello');
+        final stat = await file.stat();
+        final realMtime = stat.modified.microsecondsSinceEpoch;
+        final hash = sha256.convert(utf8.encode('hello')).toString();
+
+        await archiveStore.load();
+        await archiveStore.commitUpsert(
+          ArchiveEntry(
+            path: 'a.txt',
+            size: stat.size,
+            mtime: realMtime - 1000000, // drifted, forces a rehash
+            mode: 0644,
+            hash: hash,
+          ),
+        );
+
+        await agent().scan(RuleSet());
+
+        // Without the write-back the fast path never matches again and this
+        // file is rehashed on every run, forever (SPEC §5.2 step 2).
+        final reloaded = await JsonlArchiveStore(archiveLog, header).load();
+        expect(reloaded.entries['a.txt']?.mtime, realMtime);
+        expect(reloaded.entries['a.txt']?.hash, hash);
+      },
+    );
+
+    test('an unchanged file whose keys already match writes nothing', () async {
+      final file = File('${replicaDir.path}/a.txt');
+      await file.writeAsString('hello');
+      final stat = await file.stat();
+
+      await archiveStore.load();
+      await archiveStore.commitUpsert(
+        ArchiveEntry(
+          path: 'a.txt',
+          size: stat.size,
+          mtime: stat.modified.microsecondsSinceEpoch,
+          mode: 0644,
+          hash: 'sentinel-not-recomputed',
+        ),
+      );
+      final before = await archiveLog.readAsString();
+
+      await agent().scan(RuleSet());
+
+      expect(await archiveLog.readAsString(), before);
     });
   });
 
