@@ -57,6 +57,11 @@ abstract class ArchiveStore {
   /// Durably commits a tombstone for [path].
   Future<void> commitDelete(String path);
 
+  /// Folds the durable log down to the minimal record of [snapshot] (SPEC
+  /// §8.2). Called once a run has reached the apply phase. A no-op when the
+  /// log already holds nothing more than that.
+  Future<void> compact();
+
   /// The state resulting from the commits applied since [load].
   Archive snapshot();
 }

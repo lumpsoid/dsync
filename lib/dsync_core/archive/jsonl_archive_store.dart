@@ -7,8 +7,9 @@ import 'package:dsync/dsync_core/models/archive.dart';
 ///
 /// Each commit appends one line — an upsert or a tombstone — and flushes
 /// before returning, so a commit that returns has survived a crash. [load]
-/// replays the whole log; the last line for a path wins. Compaction (folding
-/// the log back down to one line per live path) is a separate concern.
+/// replays the whole log; the last line for a path wins. [compact] folds the
+/// log back down to one line per live path by writing a fresh file and
+/// renaming it over the log, atomic on the same filesystem.
 class JsonlArchiveStore implements ArchiveStore {
   /// Bumped when the on-disk line format changes.
   static const schemaVersion = 1;
@@ -16,6 +17,11 @@ class JsonlArchiveStore implements ArchiveStore {
   final File _logFile;
   final ArchiveHeader _header;
   Map<String, ArchiveEntry> _entries = const {};
+
+  /// Lines currently on disk in [_logFile]. Compared against
+  /// `_entries.length` to tell whether the log already holds exactly one
+  /// upsert per live path — i.e. compaction would be a no-op.
+  int _logLineCount = 0;
 
   JsonlArchiveStore(this._logFile, this._header);
 
@@ -45,10 +51,12 @@ class JsonlArchiveStore implements ArchiveStore {
   @override
   Future<Archive> load() async {
     final entries = <String, ArchiveEntry>{};
+    var lineCount = 0;
     if (await _logFile.exists()) {
       final lines = await _logFile.readAsLines();
       for (final line in lines) {
         if (line.isEmpty) continue;
+        lineCount++;
         final record = jsonDecode(line) as Map<String, dynamic>;
         final path = record['path'] as String;
         if (record['op'] == 'delete') {
@@ -65,19 +73,13 @@ class JsonlArchiveStore implements ArchiveStore {
       }
     }
     _entries = entries;
+    _logLineCount = lineCount;
     return snapshot();
   }
 
   @override
   Future<void> commitUpsert(ArchiveEntry entry) async {
-    await _append({
-      'op': 'upsert',
-      'path': entry.path,
-      'size': entry.size,
-      'mtime': entry.mtime,
-      'mode': entry.mode,
-      'hash': entry.hash,
-    });
+    await _append(_upsertRecord(entry));
     _entries = {..._entries, entry.path: entry};
   }
 
@@ -88,7 +90,31 @@ class JsonlArchiveStore implements ArchiveStore {
   }
 
   @override
+  Future<void> compact() async {
+    if (_logLineCount == _entries.length) return;
+
+    final tempFile = File('${_logFile.path}.compact.tmp');
+    final sink = tempFile.openWrite();
+    for (final entry in _entries.values) {
+      sink.writeln(jsonEncode(_upsertRecord(entry)));
+    }
+    await sink.flush();
+    await sink.close();
+    await tempFile.rename(_logFile.path);
+    _logLineCount = _entries.length;
+  }
+
+  @override
   Archive snapshot() => Archive(header: _header, entries: _entries);
+
+  Map<String, Object?> _upsertRecord(ArchiveEntry entry) => {
+    'op': 'upsert',
+    'path': entry.path,
+    'size': entry.size,
+    'mtime': entry.mtime,
+    'mode': entry.mode,
+    'hash': entry.hash,
+  };
 
   Future<void> _append(Map<String, Object?> record) async {
     await _logFile.parent.create(recursive: true);
@@ -96,6 +122,7 @@ class JsonlArchiveStore implements ArchiveStore {
     sink.writeln(jsonEncode(record));
     await sink.flush();
     await sink.close();
+    _logLineCount++;
   }
 }
 

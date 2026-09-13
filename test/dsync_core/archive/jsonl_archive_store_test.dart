@@ -115,6 +115,86 @@ void main() {
     );
   });
 
+  group('compact', () {
+    const updated = ArchiveEntry(
+      path: 'a.txt',
+      size: 99,
+      mtime: 999,
+      mode: 0644,
+      hash: 'cafefeed',
+    );
+
+    test('rewrites the log to one line per live path', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      await store.commitUpsert(updated);
+      await store.commitUpsert(
+        const ArchiveEntry(
+          path: 'b.txt',
+          size: 1,
+          mtime: 1,
+          mode: 0644,
+          hash: 'beef',
+        ),
+      );
+      await store.commitDelete('b.txt');
+
+      await store.compact();
+
+      expect(await logFile().readAsLines(), hasLength(1));
+      final reader = JsonlArchiveStore(logFile(), header);
+      final archive = await reader.load();
+      expectEntry(archive.entries['a.txt'], updated);
+      expect(archive.entries.containsKey('b.txt'), isFalse);
+    });
+
+    test('is a no-op when the log already holds one line per path', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      final before = await logFile().readAsString();
+
+      await store.compact();
+
+      expect(await logFile().readAsString(), before);
+      expect(await File('${logFile().path}.compact.tmp').exists(), isFalse);
+    });
+
+    test(
+      'a rename failure between rewrite and swap leaves the old log intact',
+      () async {
+        final store = JsonlArchiveStore(logFile(), header);
+        await store.load();
+        await store.commitUpsert(entry);
+        await store.commitUpsert(updated); // 2 lines on disk, 1 live entry
+        final before = await logFile().readAsString();
+
+        // Pre-create the compaction temp file so the "rewrite" step below
+        // only needs write access to that file, not to the directory —
+        // then take away the directory's write bit so the rename that
+        // swaps it in fails, simulating a crash in that gap.
+        final tempFile = File('${logFile().path}.compact.tmp');
+        await tempFile.writeAsString('');
+        final chmodDown = await Process.run('chmod', ['555', tempDir.path]);
+        expect(chmodDown.exitCode, 0);
+        try {
+          await expectLater(
+            store.compact(),
+            throwsA(isA<FileSystemException>()),
+          );
+        } finally {
+          final chmodUp = await Process.run('chmod', ['755', tempDir.path]);
+          expect(chmodUp.exitCode, 0);
+        }
+
+        expect(await logFile().readAsString(), before);
+        expect(await tempFile.readAsLines(), hasLength(1));
+      },
+      testOn: 'linux',
+    );
+  });
+
   group('resolveArchiveLogPath', () {
     test('uses XDG_STATE_HOME when set', () {
       final path = resolveArchiveLogPath(
