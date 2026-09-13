@@ -301,6 +301,25 @@ void main() {
       },
     );
 
+    test('leaves a directory that was already empty before the run', () async {
+      await Directory('${replicaDir.path}/sub/dir').create(recursive: true);
+      // Empty, and nothing this run did made it so — SPEC §7.5: the tool
+      // only removes emptiness it created.
+      await Directory('${replicaDir.path}/sub/untouched').create();
+      final file = File('${replicaDir.path}/sub/dir/a.txt');
+      await file.writeAsString('bye');
+      await file.delete();
+
+      await agent().removeEmptyDirs('sub/dir/a.txt');
+
+      expect(await Directory('${replicaDir.path}/sub/dir').exists(), isFalse);
+      expect(
+        await Directory('${replicaDir.path}/sub/untouched').exists(),
+        isTrue,
+      );
+      expect(await Directory('${replicaDir.path}/sub').exists(), isTrue);
+    });
+
     test('stops at the first ancestor that still has a file', () async {
       await Directory('${replicaDir.path}/sub/dir').create(recursive: true);
       await File('${replicaDir.path}/sub/keep.txt').writeAsString('keep');

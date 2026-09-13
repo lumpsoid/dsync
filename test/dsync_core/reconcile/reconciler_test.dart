@@ -115,37 +115,28 @@ void main() {
       expect(actionFor(plan, 'f'), ActionType.commitOnly);
     });
 
-    test('created / created with same hash is commit-only, no transfer', () {
-      final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.created, hash: 'same')],
-        [entry('f', ScanStatus.created, hash: 'same')],
-      );
-      expect(actionFor(plan, 'f'), ActionType.commitOnly);
-    });
+    // §14 asks for every cell of the §6 table. These four share one cell's
+    // behaviour, and only two of the four were covered above.
+    for (final a in [ScanStatus.created, ScanStatus.modified]) {
+      for (final b in [ScanStatus.created, ScanStatus.modified]) {
+        test('${a.name} / ${b.name} with same hash is commit-only', () {
+          final plan = reconciler.reconcile(
+            [entry('f', a, hash: 'same')],
+            [entry('f', b, hash: 'same')],
+          );
+          expect(actionFor(plan, 'f'), ActionType.commitOnly);
+        });
 
-    test('created / created with different hash conflicts', () {
-      final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.created, hash: 'a')],
-        [entry('f', ScanStatus.created, hash: 'b')],
-      );
-      expect(isConflict(plan, 'f'), isTrue);
-    });
-
-    test('modified / modified with different hash conflicts', () {
-      final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.modified, hash: 'a')],
-        [entry('f', ScanStatus.modified, hash: 'b')],
-      );
-      expect(isConflict(plan, 'f'), isTrue);
-    });
-
-    test('created / modified with same hash is commit-only', () {
-      final plan = reconciler.reconcile(
-        [entry('f', ScanStatus.created, hash: 'same')],
-        [entry('f', ScanStatus.modified, hash: 'same')],
-      );
-      expect(actionFor(plan, 'f'), ActionType.commitOnly);
-    });
+        test('${a.name} / ${b.name} with different hash conflicts', () {
+          final plan = reconciler.reconcile(
+            [entry('f', a, hash: 'a')],
+            [entry('f', b, hash: 'b')],
+          );
+          expect(isConflict(plan, 'f'), isTrue);
+          expect(plan.actions, isEmpty);
+        });
+      }
+    }
 
     test('created / deleted conflicts', () {
       final plan = reconciler.reconcile(
