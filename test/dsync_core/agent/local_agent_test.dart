@@ -241,4 +241,24 @@ void main() {
       expect(reloaded.entries.containsKey('a.txt'), isFalse);
     });
   });
+
+  group('compact', () {
+    test('delegates to the archive store', () async {
+      const entry = ArchiveEntry(
+        path: 'a.txt',
+        size: 5,
+        mtime: 123,
+        mode: 0644,
+        hash: 'deadbeef',
+      );
+      final a = agent();
+      await a.archiveCommitUpsert(entry);
+      await a.archiveCommitUpsert(entry);
+
+      await a.compact();
+
+      final lines = await archiveLog.readAsLines();
+      expect(lines, hasLength(1));
+    });
+  });
 }

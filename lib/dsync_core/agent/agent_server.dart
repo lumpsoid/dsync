@@ -80,6 +80,9 @@ class AgentServer {
         case 'archiveCommitDelete':
           await agent.archiveCommitDelete(request.params['path'] as String);
           await _reply(channel, const AgentSuccess());
+        case 'compact':
+          await agent.compact();
+          await _reply(channel, const AgentSuccess());
         default:
           throw FormatException('Unknown agent operation: ${request.op}');
       }

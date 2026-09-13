@@ -165,6 +165,13 @@ void main() {
     });
   });
 
+  group('compact', () {
+    test('dispatches to the agent', () async {
+      expect(await call('compact'), isA<AgentSuccess>());
+      expect(agent.compacted, isTrue);
+    });
+  });
+
   group('errors', () {
     test('an unknown op replies with a failure', () async {
       expect(await call('bogus'), isA<AgentFailure>());
@@ -249,5 +256,12 @@ class _FakeAgent implements Agent {
   @override
   Future<void> archiveCommitDelete(String path) async {
     archive.remove(path);
+  }
+
+  bool compacted = false;
+
+  @override
+  Future<void> compact() async {
+    compacted = true;
   }
 }

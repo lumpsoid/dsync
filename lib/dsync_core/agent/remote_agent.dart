@@ -79,6 +79,9 @@ class RemoteAgent implements Agent {
   Future<void> archiveCommitDelete(String path) =>
       _call('archiveCommitDelete', {'path': path});
 
+  @override
+  Future<void> compact() => _call('compact');
+
   Future<Map<String, dynamic>> _call(
     String op, [
     Map<String, dynamic> params = const {},

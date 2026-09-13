@@ -109,6 +109,9 @@ class LocalAgent implements Agent {
   Future<void> archiveCommitDelete(String path) =>
       archiveStore.commitDelete(path);
 
+  @override
+  Future<void> compact() => archiveStore.compact();
+
   String _absolute(String relativePath) => '$rootPath/$relativePath';
 }
 

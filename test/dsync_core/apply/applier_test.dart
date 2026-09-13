@@ -456,4 +456,7 @@ class _FailingWriteAgent implements Agent {
   Future<void> archiveCommitDelete(String path) async {
     archive.remove(path);
   }
+
+  @override
+  Future<void> compact() async {}
 }

@@ -122,6 +122,13 @@ void main() {
       expect(backing.archive.containsKey('a.txt'), isFalse);
     });
   });
+
+  group('compact', () {
+    test('dispatches to the backing agent', () async {
+      await remote.compact();
+      expect(backing.compacted, isTrue);
+    });
+  });
 }
 
 /// A minimal in-memory [Agent] fake — just enough to be driven through
@@ -193,5 +200,12 @@ class _FakeAgent implements Agent {
   @override
   Future<void> archiveCommitDelete(String path) async {
     archive.remove(path);
+  }
+
+  bool compacted = false;
+
+  @override
+  Future<void> compact() async {
+    compacted = true;
   }
 }

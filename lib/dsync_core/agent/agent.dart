@@ -62,4 +62,9 @@ abstract class Agent {
   /// Durably commits a tombstone for [path] to this replica's archive (SPEC
   /// §7.3, §8).
   Future<void> archiveCommitDelete(String path);
+
+  /// Compacts this replica's archive log (SPEC §8.2, §13). Called by
+  /// `RunController` once a run has reached the apply phase, regardless of
+  /// whether every action succeeded.
+  Future<void> compact();
 }
