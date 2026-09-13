@@ -102,6 +102,14 @@ class Applier {
       mode: sourceEntry.mode!,
     );
 
+    if (metadata.size != sourceEntry.size) {
+      throw TransferSizeMismatchException(
+        path: path,
+        expected: sourceEntry.size!,
+        actual: metadata.size,
+      );
+    }
+
     await dest.archiveCommitUpsert(
       ArchiveEntry(
         path: path,
@@ -168,4 +176,35 @@ class Applier {
     mode: entry.mode!,
     hash: entry.hash!,
   );
+}
+
+/// Thrown when a copy leaves the destination a different size from the
+/// source (SPEC §7.2 step 4).
+///
+/// The destination's archive entry records the *source's* hash rather than
+/// rehashing bytes that are supposed to be identical. That shortcut is only
+/// sound if the transfer completed, and the size the destination stat-ed
+/// against the size the source reported is the cheapest available check that
+/// it did. Without it a truncated transfer is archived under a hash that does
+/// not describe the file on disk, and from the next run on both replicas
+/// agree that a corrupt file is in sync — the one outcome SPEC §1 rules out.
+///
+/// Treated as a failed action (SPEC §7.6): the path is left as it landed, and
+/// neither archive is committed, so the next run sees the difference and
+/// resolves it.
+class TransferSizeMismatchException implements Exception {
+  final String path;
+  final int expected;
+  final int actual;
+
+  const TransferSizeMismatchException({
+    required this.path,
+    required this.expected,
+    required this.actual,
+  });
+
+  @override
+  String toString() =>
+      'Incomplete transfer of "$path": expected $expected bytes, '
+      'destination has $actual';
 }

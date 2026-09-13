@@ -395,7 +395,79 @@ void main() {
       expect(archiveA.entries.containsKey('bad.txt'), isFalse);
       expect(archiveA.entries['good.txt']?.hash, 'good-hash');
     }, testOn: 'linux');
+
+    test(
+      'a short transfer fails the path instead of archiving a wrong hash',
+      () async {
+        await File('${replicaADir.path}/a.txt').writeAsString('hello');
+        final mtime = DateTime.utc(2022, 3, 3).microsecondsSinceEpoch;
+
+        final entry = ScanEntry(
+          path: 'a.txt',
+          status: ScanStatus.created,
+          size: 5,
+          mtime: mtime,
+          mode: 420,
+          hash: 'hash-of-hello',
+        );
+
+        // A destination that reports fewer bytes than the source had. The
+        // destination archives the source's hash without rehashing, so nothing
+        // else would notice the file on disk is not what that hash describes —
+        // and both replicas would then agree a corrupt file is in sync.
+        final truncatingB = _TruncatingWriteAgent();
+
+        final result = await Applier().apply(
+          const Plan(
+            actions: [PlanAction(path: 'a.txt', type: ActionType.copyAtoB)],
+            conflicts: [],
+          ),
+          [entry],
+          const [],
+          agentA,
+          truncatingB,
+        );
+
+        expect(result.applied, isEmpty);
+        expect(result.failed.single.path, 'a.txt');
+        expect(
+          result.failed.single.error,
+          isA<TransferSizeMismatchException>(),
+        );
+        expect(truncatingB.archive, isEmpty);
+
+        final archiveA = await JsonlArchiveStore(archiveLogA, headerA).load();
+        expect(archiveA.entries, isEmpty);
+      },
+      testOn: 'linux',
+    );
   });
+}
+
+/// An [Agent] whose [writeFile] reports one byte fewer than it received, as a
+/// transfer cut short would.
+class _TruncatingWriteAgent extends _FailingWriteAgent {
+  _TruncatingWriteAgent() : super(failOn: const {});
+
+  @override
+  Future<FileMetadata> writeFile(
+    String path,
+    Stream<List<int>> data, {
+    required int mtime,
+    required int mode,
+  }) async {
+    final metadata = await super.writeFile(
+      path,
+      data,
+      mtime: mtime,
+      mode: mode,
+    );
+    return FileMetadata(
+      size: metadata.size - 1,
+      mtime: metadata.mtime,
+      mode: metadata.mode,
+    );
+  }
 }
 
 /// A minimal in-memory [Agent] fake whose [writeFile] throws for a chosen
