@@ -205,16 +205,16 @@ move, not a rewrite:
 
 ```
 lib/
-  dsync-core/    pure Dart: agent, scan, reconcile, apply, archive, protocol, rules
+  dsync_core/    pure Dart: agent, scan, reconcile, apply, archive, protocol, rules
   cli/           args parsing, TTY prompts, output formatting — everything CLI-specific
   app/           Flutter head; deferred beyond skeleton
 ```
 
-`dsync-core/` holds all core code and depends on nothing head-specific.
+`dsync_core/` holds all core code and depends on nothing head-specific.
 `cli/` holds everything specific to the CLI experience and depends on
-`dsync-core/`. `app/` will do the same for the Flutter head.
+`dsync_core/`. `app/` will do the same for the Flutter head.
 
-The `dsync-core` boundary exposes: `Location`, `Agent` (+ `LocalAgent`,
+The `dsync_core` boundary exposes: `Location`, `Agent` (+ `LocalAgent`,
 `RemoteAgent`), `Channel`, `Scanner`, `Reconciler`, `Plan`, `Applier`,
 `ArchiveStore`, `RuleSet`, and a `RunController` that drives a run and emits
 events the heads render.
