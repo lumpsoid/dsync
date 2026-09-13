@@ -6,7 +6,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 /// Append-only JSON Lines [ArchiveStore] (SPEC §8.2, chosen in §15).
 ///
 /// The first line is the header (SPEC §8.1); every line after it is one
-/// commit — an upsert or a tombstone — appended and flushed before returning,
+/// commit — an upsert or a tombstone — appended and fsynced before returning,
 /// so a commit that returns has survived a crash. [load] checks the header,
 /// then replays the log; the last line for a path wins. A half-written last
 /// line — the state a crash mid-append leaves behind — is dropped on load and
@@ -169,13 +169,14 @@ class JsonlArchiveStore implements ArchiveStore {
     if (!_needsRepair && _logLineCount == _entries.length) return;
 
     final tempFile = File('${_logFile.path}.compact.tmp');
-    final sink = tempFile.openWrite();
-    sink.writeln(jsonEncode(_headerRecord()));
-    for (final entry in _entries.values) {
-      sink.writeln(jsonEncode(_upsertRecord(entry)));
-    }
-    await sink.flush();
-    await sink.close();
+    final lines = [
+      _headerRecord(),
+      for (final entry in _entries.values) _upsertRecord(entry),
+    ].map(jsonEncode).join('\n');
+    // flush: true is fsync — the replacement has to be on disk before the
+    // rename swaps it in, or a crash in that window loses the whole archive
+    // rather than one commit.
+    await tempFile.writeAsString('$lines\n', flush: true);
     await tempFile.rename(_logFile.path);
     _logLineCount = _entries.length;
     _needsRepair = false;
@@ -200,17 +201,29 @@ class JsonlArchiveStore implements ArchiveStore {
     'hash': entry.hash,
   };
 
+  /// Appends one record and returns only once it is on disk.
+  ///
+  /// Uses [RandomAccessFile] rather than an [IOSink] because `IOSink.flush`
+  /// only pushes Dart's buffers to the OS, which survives a process crash but
+  /// not a power loss. SPEC §7.3 commits per path so that an interrupted run
+  /// converges on the next one; that argument needs the commit to be durable,
+  /// so this flush is a real fsync.
   Future<void> _append(Map<String, Object?> record) async {
     if (_needsRepair) await compact();
     await _logFile.parent.create(recursive: true);
     final isNewLog = !await _logFile.exists();
-    final sink = _logFile.openWrite(mode: FileMode.append);
-    // The header is written by whoever creates the log, not by load(), so a
-    // run that never commits anything — a dry run — leaves no file behind.
-    if (isNewLog) sink.writeln(jsonEncode(_headerRecord()));
-    sink.writeln(jsonEncode(record));
-    await sink.flush();
-    await sink.close();
+    final handle = await _logFile.open(mode: FileMode.append);
+    try {
+      // The header is written by whoever creates the log, not by load(), so a
+      // run that never commits anything — a dry run — leaves no file behind.
+      if (isNewLog) {
+        await handle.writeString('${jsonEncode(_headerRecord())}\n');
+      }
+      await handle.writeString('${jsonEncode(record)}\n');
+      await handle.flush();
+    } finally {
+      await handle.close();
+    }
     _logLineCount++;
   }
 }
