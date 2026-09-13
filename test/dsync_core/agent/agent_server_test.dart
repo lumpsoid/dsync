@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -275,9 +276,9 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<List<ScanEntry>> scan(RuleSet rules) async {
+  Future<ScanResult> scan(RuleSet rules) async {
     lastScanRules = rules;
-    return scanResult;
+    return ScanResult(entries: scanResult);
   }
 
   @override

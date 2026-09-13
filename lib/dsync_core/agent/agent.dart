@@ -1,7 +1,7 @@
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 
 /// Direct filesystem access to one replica, whether in-process or remote
 /// (SPEC §2, §4.1).
@@ -37,7 +37,7 @@ abstract class Agent {
   /// a remote replica has no way to read. Both sides must scan by the same
   /// rules: a path ignored on one side and not the other reconciles as a
   /// one-sided deletion.
-  Future<List<ScanEntry>> scan(RuleSet rules);
+  Future<ScanResult> scan(RuleSet rules);
 
   /// Streams the current bytes of the file at [path].
   Stream<List<int>> readFile(String path);

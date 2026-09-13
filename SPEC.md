@@ -53,7 +53,7 @@ Each agent scans its own replica and compares against **its own archive**. It re
 
 ### 5.1 What is scanned
 - Regular files only. Directories are traversed but not tracked as entries.
-- Symlinks: skipped and reported, unless the path matches a `follow` rule (§9), in which case the link is resolved and the target is treated as if it were at the link's path.
+- Symlinks: skipped and reported, unless the path matches a `follow` rule (§9), in which case the link is resolved and the target is treated as if it were at the link's path. A `follow` link that is broken, or whose target is neither a regular file nor a directory, is also reported as skipped. Reported paths travel alongside the status list and surface as `symlink` lines (§11.4); they are not status entries, since a skipped link has no state relative to the archive to reconcile.
 - Hardlinks: treated as independent regular files.
 - Paths matching an `ignore` rule are not scanned.
 
@@ -166,7 +166,7 @@ Default is interactive: the plan is shown, conflicts first, then each proposed a
 
 ### 11.4 Output
 - Human mode: a plan table, then progress lines during apply, then a summary (applied / skipped / conflicts / failed).
-- `--json`: one JSON object per line with a `type` field (`plan`, `action`, `conflict`, `progress`, `result`, `summary`, `error`). Human text goes to stderr in this mode so stdout stays parseable.
+- `--json`: one JSON object per line with a `type` field (`plan`, `action`, `conflict`, `symlink`, `progress`, `result`, `summary`, `error`). `symlink` reports a link the scan skipped (§5.1). Human text goes to stderr in this mode so stdout stays parseable.
 
 ### 11.5 Exit codes
 ```

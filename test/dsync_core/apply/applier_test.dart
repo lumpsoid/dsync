@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -417,7 +418,7 @@ class _FailingWriteAgent implements Agent {
   Future<void> unlock() async {}
 
   @override
-  Future<List<ScanEntry>> scan(RuleSet rules) async => [];
+  Future<ScanResult> scan(RuleSet rules) async => const ScanResult(entries: []);
 
   @override
   Stream<List<int>> readFile(String path) => Stream.value(files[path] ?? []);

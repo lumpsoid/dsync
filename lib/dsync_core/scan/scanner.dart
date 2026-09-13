@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 
 /// Scans a replica's file tree and compares it against its own archive
 /// (SPEC §5).
@@ -37,7 +38,7 @@ class Scanner {
   /// [rules] is a parameter rather than construction state because the rules
   /// belong to the run, not to the host: they come from the initiator's
   /// profile and are handed to whichever replica is scanning (SPEC §9).
-  Future<List<ScanEntry>> scan({
+  Future<ScanResult> scan({
     required String rootPath,
     required Archive archive,
     RuleSet? rules,
@@ -46,13 +47,16 @@ class Scanner {
     await _walk(Directory(rootPath), '', context);
     final hashed = await _hashAll(context.pendingHash);
 
-    return [
-      ...context.fastPath,
-      ...hashed,
-      for (final path in archive.entries.keys)
-        if (!context.seen.contains(path) && !context.rules.ignores(path))
-          ScanEntry.deleted(path),
-    ];
+    return ScanResult(
+      entries: [
+        ...context.fastPath,
+        ...hashed,
+        for (final path in archive.entries.keys)
+          if (!context.seen.contains(path) && !context.rules.ignores(path))
+            ScanEntry.deleted(path),
+      ],
+      skippedSymlinks: context.skippedSymlinks,
+    );
   }
 
   Future<void> _walk(
@@ -78,6 +82,11 @@ class Scanner {
         case FileSystemEntityType.link:
           if (context.rules.follows(relativePath)) {
             await _visitLink(child.path, relativePath, context);
+          } else {
+            // SPEC §5.1: skipped *and reported* — a link silently missing
+            // from a sync is exactly the kind of surprise this tool is
+            // supposed to avoid.
+            context.skippedSymlinks.add(relativePath);
           }
         default:
           break;
@@ -94,7 +103,10 @@ class Scanner {
     try {
       target = await Link(linkPath).resolveSymbolicLinks();
     } on FileSystemException {
-      return; // broken link: nothing to scan
+      // Broken link: nothing to scan, but the user asked to follow it, so
+      // saying nothing would be the worst answer.
+      context.skippedSymlinks.add(relativePath);
+      return;
     }
 
     switch (await FileSystemEntity.type(target)) {
@@ -103,7 +115,7 @@ class Scanner {
       case FileSystemEntityType.file:
         await _visitFile(File(target), relativePath, context);
       default:
-        break;
+        context.skippedSymlinks.add(relativePath);
     }
   }
 
@@ -171,6 +183,7 @@ class _ScanContext {
   final RuleSet rules;
   final Set<String> seen = {};
   final List<ScanEntry> fastPath = [];
+  final List<String> skippedSymlinks = [];
   final List<_HashCandidate> pendingHash = [];
 
   _ScanContext(this.archive, this.rules);

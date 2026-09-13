@@ -38,10 +38,10 @@ void main() {
     test('a file with no archive entry is created, hashed', () async {
       await File('${tempDir.path}/a.txt').writeAsString('hello');
 
-      final entries = await Scanner().scan(
+      final entries = (await Scanner().scan(
         rootPath: tempDir.path,
         archive: archiveOf({}),
-      );
+      )).entries;
 
       final entry = entryFor(entries, 'a.txt');
       expect(entry.status, ScanStatus.created);
@@ -55,10 +55,10 @@ void main() {
         await Directory('${tempDir.path}/sub/dir').create(recursive: true);
         await File('${tempDir.path}/sub/dir/b.txt').writeAsString('nested');
 
-        final entries = await Scanner().scan(
+        final entries = (await Scanner().scan(
           rootPath: tempDir.path,
           archive: archiveOf({}),
-        );
+        )).entries;
 
         expect(entries.map((e) => e.path), contains('sub/dir/b.txt'));
       },
@@ -71,7 +71,7 @@ void main() {
       await file.writeAsString('hello');
       final stat = await file.stat();
 
-      final entries = await Scanner().scan(
+      final entries = (await Scanner().scan(
         rootPath: tempDir.path,
         archive: archiveOf({
           'a.txt': ArchiveEntry(
@@ -82,7 +82,7 @@ void main() {
             hash: 'sentinel-not-recomputed',
           ),
         }),
-      );
+      )).entries;
 
       final entry = entryFor(entries, 'a.txt');
       expect(entry.status, ScanStatus.unchanged);
@@ -97,7 +97,7 @@ void main() {
       final stat = await file.stat();
       final realMtime = stat.modified.microsecondsSinceEpoch;
 
-      final entries = await Scanner().scan(
+      final entries = (await Scanner().scan(
         rootPath: tempDir.path,
         archive: archiveOf({
           'a.txt': ArchiveEntry(
@@ -108,7 +108,7 @@ void main() {
             hash: hashOf('hello'),
           ),
         }),
-      );
+      )).entries;
 
       final entry = entryFor(entries, 'a.txt');
       expect(entry.status, ScanStatus.unchanged);
@@ -125,7 +125,7 @@ void main() {
         await file.writeAsString('hello v2');
         final stat = await file.stat();
 
-        final entries = await Scanner().scan(
+        final entries = (await Scanner().scan(
           rootPath: tempDir.path,
           archive: archiveOf({
             'a.txt': ArchiveEntry(
@@ -136,7 +136,7 @@ void main() {
               hash: hashOf('hello'),
             ),
           }),
-        );
+        )).entries;
 
         final entry = entryFor(entries, 'a.txt');
         expect(entry.status, ScanStatus.modified);
@@ -147,7 +147,7 @@ void main() {
 
   group('deleted', () {
     test('an archive entry with no matching file is deleted', () async {
-      final entries = await Scanner().scan(
+      final entries = (await Scanner().scan(
         rootPath: tempDir.path,
         archive: archiveOf({
           'gone.txt': const ArchiveEntry(
@@ -158,7 +158,7 @@ void main() {
             hash: 'x',
           ),
         }),
-      );
+      )).entries;
 
       final entry = entryFor(entries, 'gone.txt');
       expect(entry.status, ScanStatus.deleted);
@@ -173,11 +173,11 @@ void main() {
       await File('${tempDir.path}/a.txt').writeAsString('hello');
       await File('${tempDir.path}/a.tmp').writeAsString('scratch');
 
-      final entries = await Scanner().scan(
-          rootPath: tempDir.path,
-          archive: archiveOf({}),
-          rules: RuleSet(ignore: ['*.tmp']),
-        );
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+        rules: RuleSet(ignore: ['*.tmp']),
+      )).entries;
 
       expect(entries.map((e) => e.path), contains('a.txt'));
       expect(entries.map((e) => e.path), isNot(contains('a.tmp')));
@@ -188,11 +188,11 @@ void main() {
       await File('${tempDir.path}/node_modules/x.js').writeAsString('x');
       await File('${tempDir.path}/keep.txt').writeAsString('keep');
 
-      final entries = await Scanner().scan(
-          rootPath: tempDir.path,
-          archive: archiveOf({}),
-          rules: RuleSet(ignore: ['node_modules/**']),
-        );
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+        rules: RuleSet(ignore: ['node_modules/**']),
+      )).entries;
 
       expect(entries.map((e) => e.path), contains('keep.txt'));
       expect(entries.map((e) => e.path), isNot(contains('node_modules/x.js')));
@@ -203,7 +203,7 @@ void main() {
       () async {
         await File('${tempDir.path}/a.tmp').writeAsString('scratch');
 
-        final entries = await Scanner().scan(
+        final entries = (await Scanner().scan(
           rules: RuleSet(ignore: ['*.tmp']),
           rootPath: tempDir.path,
           archive: archiveOf({
@@ -215,7 +215,7 @@ void main() {
               hash: 'x',
             ),
           }),
-        );
+        )).entries;
 
         // SPEC §9: ignored paths are neither scanned nor deleted. Reporting
         // this as deleted would plan a deleteOnB against the other replica,
@@ -231,7 +231,7 @@ void main() {
         await Directory('${tempDir.path}/.git').create();
         await File('${tempDir.path}/.git/config').writeAsString('x');
 
-        final entries = await Scanner().scan(
+        final entries = (await Scanner().scan(
           rules: RuleSet(ignore: ['**/.git']),
           rootPath: tempDir.path,
           archive: archiveOf({
@@ -243,7 +243,7 @@ void main() {
               hash: 'x',
             ),
           }),
-        );
+        )).entries;
 
         // `**/.git` matches the directory but not the paths beneath it, so
         // only an ancestor-aware ignore check keeps the pruned subtree out of
@@ -259,13 +259,56 @@ void main() {
       await Link('${tempDir.path}/link.txt')
           .create('${tempDir.path}/target.txt');
 
-      final entries = await Scanner().scan(
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      )).entries;
+
+      expect(entries.map((e) => e.path), contains('target.txt'));
+      expect(entries.map((e) => e.path), isNot(contains('link.txt')));
+    }, testOn: 'linux');
+
+    test('a skipped symlink is reported, not silently dropped', () async {
+      await File('${tempDir.path}/target.txt').writeAsString('hello');
+      await Link('${tempDir.path}/link.txt')
+          .create('${tempDir.path}/target.txt');
+
+      final result = await Scanner().scan(
         rootPath: tempDir.path,
         archive: archiveOf({}),
       );
 
-      expect(entries.map((e) => e.path), contains('target.txt'));
-      expect(entries.map((e) => e.path), isNot(contains('link.txt')));
+      // SPEC §5.1: symlinks are skipped *and reported*.
+      expect(result.skippedSymlinks, ['link.txt']);
+    }, testOn: 'linux');
+
+    test('a followed link that is broken is reported as skipped', () async {
+      await Link('${tempDir.path}/link.txt')
+          .create('${tempDir.path}/nowhere.txt');
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+        rules: RuleSet(follow: ['link.txt']),
+      );
+
+      // The user asked to follow this one, so saying nothing about it would
+      // be the worst possible answer.
+      expect(result.skippedSymlinks, ['link.txt']);
+    }, testOn: 'linux');
+
+    test('a followed link is not reported as skipped', () async {
+      await File('${tempDir.path}/target.txt').writeAsString('hello');
+      await Link('${tempDir.path}/link.txt')
+          .create('${tempDir.path}/target.txt');
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+        rules: RuleSet(follow: ['link.txt']),
+      );
+
+      expect(result.skippedSymlinks, isEmpty);
     }, testOn: 'linux');
 
     test(
@@ -275,11 +318,11 @@ void main() {
         await Link('${tempDir.path}/link.txt')
             .create('${tempDir.path}/target.txt');
 
-        final entries = await Scanner().scan(
-            rootPath: tempDir.path,
-            archive: archiveOf({}),
-            rules: RuleSet(follow: ['link.txt']),
-          );
+        final entries = (await Scanner().scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+          rules: RuleSet(follow: ['link.txt']),
+        )).entries;
 
         final entry = entryFor(entries, 'link.txt');
         expect(entry.status, ScanStatus.created);
@@ -294,11 +337,11 @@ void main() {
         await Link('${tempDir.path}/link.txt')
             .create('${tempDir.path}/nowhere.txt');
 
-        final entries = await Scanner().scan(
-            rootPath: tempDir.path,
-            archive: archiveOf({}),
-            rules: RuleSet(follow: ['link.txt']),
-          );
+        final entries = (await Scanner().scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+          rules: RuleSet(follow: ['link.txt']),
+        )).entries;
 
         expect(entries.map((e) => e.path), isNot(contains('link.txt')));
       },
@@ -316,10 +359,10 @@ void main() {
       ]);
       expect(link.exitCode, 0);
 
-      final entries = await Scanner().scan(
+      final entries = (await Scanner().scan(
         rootPath: tempDir.path,
         archive: archiveOf({}),
-      );
+      )).entries;
 
       final a = entryFor(entries, 'a.txt');
       final b = entryFor(entries, 'b.txt');
@@ -338,10 +381,10 @@ void main() {
         final chmod = await Process.run('chmod', ['640', file.path]);
         expect(chmod.exitCode, 0);
 
-        final entries = await Scanner().scan(
+        final entries = (await Scanner().scan(
           rootPath: tempDir.path,
           archive: archiveOf({}),
-        );
+        )).entries;
 
         // Dart has no octal literal syntax; 0o640 in decimal is 416.
         expect(entryFor(entries, 'a.txt').mode, 416);
@@ -356,8 +399,9 @@ void main() {
         await File('${tempDir.path}/f$i.txt').writeAsString('content $i');
       }
 
-      final entries = await Scanner(jobs: 1)
-          .scan(rootPath: tempDir.path, archive: archiveOf({}));
+      final entries = (await Scanner(
+        jobs: 1,
+      ).scan(rootPath: tempDir.path, archive: archiveOf({}))).entries;
 
       expect(entries, hasLength(5));
       for (var i = 0; i < 5; i++) {

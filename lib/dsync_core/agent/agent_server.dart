@@ -45,13 +45,10 @@ class AgentServer {
           await agent.unlock();
           await _reply(channel, const AgentSuccess());
         case 'scan':
-          final entries = await agent.scan(
+          final result = await agent.scan(
             ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
           );
-          await _reply(
-            channel,
-            AgentSuccess({'entries': entries.map(scanEntryToJson).toList()}),
-          );
+          await _reply(channel, AgentSuccess(scanResultToJson(result)));
         case 'readFile':
           await sendByteStream(
             channel,

@@ -11,6 +11,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
@@ -108,7 +109,7 @@ void main() {
     test('reports a real file against an empty archive', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
 
-      final entries = await remote.scan(RuleSet());
+      final entries = (await remote.scan(RuleSet())).entries;
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);
@@ -118,7 +119,7 @@ void main() {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
       await File('${replicaDir.path}/a.tmp').writeAsString('scratch');
 
-      final entries = await remote.scan(RuleSet(ignore: ['*.tmp']));
+      final entries = (await remote.scan(RuleSet(ignore: ['*.tmp']))).entries;
 
       // The rules live in the initiator's profile (SPEC §9); the remote
       // replica has no way to read them, so they have to cross the wire.
@@ -131,7 +132,7 @@ void main() {
       await Link('${replicaDir.path}/link.txt')
           .create('${replicaDir.path}/target.txt');
 
-      final entries = await remote.scan(RuleSet(follow: ['link.txt']));
+      final entries = (await remote.scan(RuleSet(follow: ['link.txt']))).entries;
 
       expect(entries.map((e) => e.path), contains('link.txt'));
     }, testOn: 'linux');
@@ -181,7 +182,7 @@ void main() {
         // source stream is dropped and, per SPEC §7.6, the run carries on.
         await remote.readFile('big.bin').take(1).drain<void>();
 
-        final entries = await remote.scan(RuleSet());
+        final entries = (await remote.scan(RuleSet())).entries;
 
         expect(entries.map((e) => e.path), contains('big.bin'));
       },
@@ -205,7 +206,7 @@ void main() {
         expect(utf8.decode(first), 'hello');
         expect(utf8.decode(third), 'hello');
         expect(
-          (results[1] as List<ScanEntry>).map((e) => e.path),
+          (results[1] as ScanResult).entries.map((e) => e.path),
           contains('a.txt'),
         );
       },

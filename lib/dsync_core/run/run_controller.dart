@@ -103,8 +103,15 @@ class RunController {
   /// locked.
   Stream<RunEvent> _runLocked() async* {
     final scans = await Future.wait([agentA.scan(rules), agentB.scan(rules)]);
-    final onA = scans[0];
-    final onB = scans[1];
+    final onA = scans[0].entries;
+    final onB = scans[1].entries;
+
+    for (final path in scans[0].skippedSymlinks) {
+      yield RunSkippedSymlinkEvent(path: path, onA: true);
+    }
+    for (final path in scans[1].skippedSymlinks) {
+      yield RunSkippedSymlinkEvent(path: path, onA: false);
+    }
 
     final plan = _reconciler.reconcile(onA, onB);
 

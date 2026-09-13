@@ -117,6 +117,35 @@ void main() {
 
       await expectLocksFree();
     }, testOn: 'linux');
+
+    test(
+      'a skipped symlink on each side is reported before the plan',
+      () async {
+        await File('${replicaADir.path}/target.txt').writeAsString('x');
+        await Link('${replicaADir.path}/link-a.txt')
+            .create('${replicaADir.path}/target.txt');
+        await File('${replicaBDir.path}/target.txt').writeAsString('x');
+        await Link('${replicaBDir.path}/link-b.txt')
+            .create('${replicaBDir.path}/target.txt');
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        final skipped = events.whereType<RunSkippedSymlinkEvent>().toList();
+        expect(
+          skipped.map((e) => (e.path, e.onA)),
+          containsAll([('link-a.txt', true), ('link-b.txt', false)]),
+        );
+        expect(
+          events.indexOf(skipped.first),
+          lessThan(events.indexWhere((e) => e is RunPlanEvent)),
+        );
+      },
+      testOn: 'linux',
+    );
   });
 
   group('conflicts', () {

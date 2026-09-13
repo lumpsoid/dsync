@@ -62,7 +62,7 @@ void main() {
     test('reports a new file as created against an empty archive', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
 
-      final entries = await agent().scan(RuleSet());
+      final entries = (await agent().scan(RuleSet())).entries;
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);

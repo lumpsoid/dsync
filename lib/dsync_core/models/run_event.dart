@@ -2,7 +2,8 @@ import 'package:dsync/dsync_core/models/plan.dart';
 
 /// One line of a `RunController` run, mirroring the `--json` schema of SPEC
 /// §11.4: each subtype corresponds to one of that schema's `type` values
-/// (`plan`, `action`, `conflict`, `progress`, `result`, `summary`, `error`).
+/// (`plan`, `action`, `conflict`, `symlink`, `progress`, `result`, `summary`,
+/// `error`).
 /// A head decides how to render each event; `RunController` only decides
 /// what happened and when — no CLI-specific concept (TTY, argparse, prompt
 /// UI) lives here.
@@ -16,6 +17,17 @@ class RunPlanEvent extends RunEvent {
   final Plan plan;
 
   const RunPlanEvent(this.plan);
+}
+
+/// A symlink the scan did not follow (SPEC §5.1: symlinks are "skipped and
+/// reported"). Emitted for each side before reconciliation, since a link that
+/// is silently absent from a sync is the kind of surprise this tool exists to
+/// avoid. [onA] says which replica it was found on.
+class RunSkippedSymlinkEvent extends RunEvent {
+  final String path;
+  final bool onA;
+
+  const RunSkippedSymlinkEvent({required this.path, required this.onA});
 }
 
 /// One path the `Reconciler` could not resolve on its own (SPEC §6:

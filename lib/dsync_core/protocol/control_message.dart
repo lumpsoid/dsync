@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 
@@ -139,6 +140,19 @@ Stream<List<int>> readByteStream(StreamIterator<Frame> frames) async* {
     yield frame.payload;
   }
 }
+
+Map<String, dynamic> scanResultToJson(ScanResult result) => {
+  'entries': result.entries.map(scanEntryToJson).toList(),
+  'skippedSymlinks': result.skippedSymlinks,
+};
+
+ScanResult scanResultFromJson(Map<String, dynamic> json) => ScanResult(
+  entries: (json['entries'] as List)
+      .map((e) => scanEntryFromJson(e as Map<String, dynamic>))
+      .toList(),
+  skippedSymlinks: (json['skippedSymlinks'] as List? ?? const [])
+      .cast<String>(),
+);
 
 Map<String, dynamic> scanEntryToJson(ScanEntry entry) => {
   'path': entry.path,
