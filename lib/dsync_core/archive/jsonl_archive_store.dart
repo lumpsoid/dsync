@@ -22,7 +22,12 @@ class JsonlArchiveStore implements ArchiveStore {
 
   final File _logFile;
   final ArchiveHeader _header;
-  Map<String, ArchiveEntry> _entries = const {};
+
+  /// Mutated in place by each commit. [snapshot] is what hands out a stable
+  /// view, so a commit costs one map write rather than a copy of the whole
+  /// archive — a run that commits every path would otherwise be quadratic in
+  /// the size of the tree.
+  final Map<String, ArchiveEntry> _entries = {};
 
   /// Commit lines currently on disk in [_logFile], not counting the header.
   /// Compared against `_entries.length` to tell whether the log already holds
@@ -101,7 +106,9 @@ class JsonlArchiveStore implements ArchiveStore {
         }
       }
     }
-    _entries = entries;
+    _entries
+      ..clear()
+      ..addAll(entries);
     _logLineCount = lineCount;
     _needsRepair = torn;
     return snapshot();
@@ -156,13 +163,13 @@ class JsonlArchiveStore implements ArchiveStore {
   @override
   Future<void> commitUpsert(ArchiveEntry entry) async {
     await _append(_upsertRecord(entry));
-    _entries = {..._entries, entry.path: entry};
+    _entries[entry.path] = entry;
   }
 
   @override
   Future<void> commitDelete(String path) async {
     await _append({'op': 'delete', 'path': path});
-    _entries = {..._entries}..remove(path);
+    _entries.remove(path);
   }
 
   @override
@@ -183,8 +190,14 @@ class JsonlArchiveStore implements ArchiveStore {
     _needsRepair = false;
   }
 
+  /// The archive as it stands, detached from later commits.
+  ///
+  /// Copies, because [_entries] is mutated in place: a caller holding the
+  /// result across commits — [LocalAgent] does, to compare the scan against
+  /// the archive it loaded — must not see it shift underneath.
   @override
-  Archive snapshot() => Archive(header: _header, entries: _entries);
+  Archive snapshot() =>
+      Archive(header: _header, entries: Map.unmodifiable(_entries));
 
   Map<String, Object?> _headerRecord() => {
     'op': 'header',

@@ -237,6 +237,18 @@ void main() {
   });
 
   group('snapshot', () {
+    test('a snapshot does not shift under later commits', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      final loaded = await store.load();
+
+      await store.commitUpsert(entry);
+
+      // LocalAgent holds the loaded archive while committing against it, so
+      // the view it got has to stay the one it scanned against.
+      expect(loaded.entries, isEmpty);
+      expect(store.snapshot().entries, hasLength(1));
+    });
+
     test(
       'reflects commits made since load without rereading the file',
       () async {
