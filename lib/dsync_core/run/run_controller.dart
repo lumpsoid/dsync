@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/apply/applier.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
@@ -151,33 +153,56 @@ class RunController {
       yield RunActionEvent(action);
     }
 
-    final applyResult = await _applier.apply(
+    // Bridges Applier's per-action ApplyProgress callback — which fires
+    // *inside* the awaited apply() call, so it cannot itself `yield` — onto
+    // this generator (task e9f31c). `apply()` runs concurrently in the
+    // background; each callback invocation hands its event to `pending` and
+    // then awaits an `ack` that only the loop below completes, once that
+    // event has actually been yielded downstream. That makes `pending` hold
+    // at most one undelivered event at a time — not a buffer that races
+    // ahead of the consumer, a one-at-a-time handoff: `apply()`'s own loop
+    // cannot start the next action until this generator has caught up with
+    // the last one.
+    //
+    // A consumer of `RunController.run()`'s stream that stops listening
+    // mid-apply cancels this generator at whichever `yield` below it is
+    // currently suspended on; the `ack` for that event is then never
+    // completed, so `apply()` stays suspended at that action boundary
+    // forever — the action already recorded is durable (SPEC §7.3), and
+    // nothing after it ever starts. See `ApplyProgress`'s own doc comment.
+    final pending =
+        StreamController<(String, ActionType, Object?, Completer<void>)>();
+    final applyResultFuture = _applier.apply(
       Plan(actions: actionsToApply, conflicts: const []),
       onA,
       onB,
       agentA,
       agentB,
+      onAction: (path, type, error) {
+        final ack = Completer<void>();
+        pending.add((path, type, error, ack));
+        return ack.future;
+      },
     );
+    // Whatever apply() finishes with — normal return or, for a bug that
+    // escapes Applier's own per-action try/catch, an error — `pending` must
+    // still be closed so the `await for` below always ends instead of
+    // waiting on an event that will never arrive.
+    unawaited(applyResultFuture.whenComplete(pending.close));
 
-    // v0 compromise (see RunProgressEvent doc comment): Applier.apply has no
-    // incremental callback, so progress is only known once each path's
-    // result is, and is emitted alongside it rather than as work happens.
-    final total = applyResult.applied.length + applyResult.failed.length;
+    final total = actionsToApply.length;
     var completed = 0;
-    for (final applied in applyResult.applied) {
+    await for (final (path, type, error, ack) in pending.stream) {
       completed++;
-      yield RunResultEvent(path: applied.path, type: applied.type);
+      yield RunResultEvent(path: path, type: type, error: error);
       yield RunProgressEvent(completed: completed, total: total);
+      ack.complete();
     }
-    for (final failed in applyResult.failed) {
-      completed++;
-      yield RunResultEvent(
-        path: failed.path,
-        type: failed.type,
-        error: failed.error,
-      );
-      yield RunProgressEvent(completed: completed, total: total);
-    }
+
+    // Rethrows here if apply() itself failed outside its per-action
+    // handling; `run()`'s own try/catch (around `yield* _runLocked()`) turns
+    // that into a `RunErrorEvent` exactly like any other unexpected failure.
+    final applyResult = await applyResultFuture;
 
     // SPEC §8.2: a run that committed nothing does not compact. Every action
     // type — including commitOnly — reaches archiveCommitUpsert/Delete on

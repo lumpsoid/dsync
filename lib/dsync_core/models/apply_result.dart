@@ -26,8 +26,11 @@ class FailedPath {
 }
 
 /// The outcome of applying a [Plan]: which paths succeeded and which failed
-/// and why (SPEC §7.6). Consumed by `RunController` for its `result`/
-/// `summary` events and, eventually, the CLI exit code (SPEC §11.5) — this
+/// and why (SPEC §7.6). `RunController` gets each path's outcome as it
+/// happens from `Applier.apply`'s `ApplyProgress` callback (task e9f31c), not
+/// from this type — by the time `Applier.apply` returns this, a run has
+/// already finished, so `RunController` only reads it for its aggregate
+/// `summary` counts and, eventually, the CLI exit code (SPEC §11.5). This
 /// type only records facts, it makes no exit-code decision itself.
 class ApplyResult {
   final List<AppliedPath> applied;

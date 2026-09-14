@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -524,6 +525,128 @@ void main(List<String> args) async {
       testOn: 'linux',
     );
   });
+
+  group('per-action progress (task e9f31c)', () {
+    test('RunResultEvent/RunProgressEvent are emitted per action, in plan '
+        'order — not grouped applied-first, failed-second the way replaying '
+        'ApplyResult afterward would', () async {
+      await File('${replicaADir.path}/bad1.txt').writeAsString('bad1');
+      await File('${replicaADir.path}/good1.txt').writeAsString('good1');
+      await File('${replicaADir.path}/bad2.txt').writeAsString('bad2');
+      await File('${replicaADir.path}/good2.txt').writeAsString('good2');
+
+      final flakyB = _FailingPathsAgent(
+        agentB,
+        failOn: {'bad1.txt', 'bad2.txt'},
+      );
+
+      final events = await RunController(
+        agentA: agentA,
+        agentB: flakyB,
+        // Deliberately not plan order as the reconciler happens to
+        // produce it: pinned to bad/good/bad/good so the assertions below
+        // are checking this run's actual behaviour, not the reconciler's
+        // incidental scan order.
+        presenter: (plan) async {
+          final byPath = {
+            for (final action in plan.actions) action.path: action,
+          };
+          return [
+            byPath['bad1.txt']!,
+            byPath['good1.txt']!,
+            byPath['bad2.txt']!,
+            byPath['good2.txt']!,
+          ];
+        },
+      ).run().toList();
+
+      final resultsAndProgress = events
+          .where((e) => e is RunResultEvent || e is RunProgressEvent)
+          .toList();
+
+      // Strictly alternating: each result immediately followed by its own
+      // progress line, four times over — never all four results first.
+      expect(resultsAndProgress, hasLength(8));
+      for (var i = 0; i < 4; i++) {
+        expect(resultsAndProgress[i * 2], isA<RunResultEvent>());
+        expect(resultsAndProgress[i * 2 + 1], isA<RunProgressEvent>());
+      }
+
+      final resultEvents = resultsAndProgress.whereType<RunResultEvent>();
+      // Plan order (SPEC §7.1) — the pre-task-e9f31c behaviour (replaying
+      // `ApplyResult.applied` then `ApplyResult.failed`) would have
+      // produced [good1, good2, bad1, bad2] instead.
+      expect(resultEvents.map((e) => e.path).toList(), [
+        'bad1.txt',
+        'good1.txt',
+        'bad2.txt',
+        'good2.txt',
+      ]);
+      expect(resultEvents.map((e) => e.succeeded).toList(), [
+        false,
+        true,
+        false,
+        true,
+      ]);
+
+      final progressEvents = resultsAndProgress.whereType<RunProgressEvent>();
+      expect(progressEvents.map((e) => e.completed).toList(), [1, 2, 3, 4]);
+      expect(progressEvents.every((e) => e.total == 4), isTrue);
+    }, testOn: 'linux');
+  });
+
+  group('backpressure: a consumer that stops listening (task e9f31c)', () {
+    test('stops the apply loop at that action boundary — later actions never '
+        'touch the filesystem', () async {
+      await File('${replicaADir.path}/a.txt').writeAsString('a');
+      await File('${replicaADir.path}/b.txt').writeAsString('b');
+      await File('${replicaADir.path}/c.txt').writeAsString('c');
+
+      final controller = RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async {
+          final byPath = {
+            for (final action in plan.actions) action.path: action,
+          };
+          return [byPath['a.txt']!, byPath['b.txt']!, byPath['c.txt']!];
+        },
+      );
+
+      var resultCount = 0;
+      final stoppedAfterSecondResult = Completer<void>();
+      late final StreamSubscription<RunEvent> subscription;
+      subscription = controller.run().listen((event) {
+        if (event is RunResultEvent) {
+          resultCount++;
+          // Stop right after the second of three actions' results — a
+          // real consumer (a cancelled `SyncRunner.run` loop, a dropped
+          // Flutter stream subscription) doing the same thing must leave
+          // the third action's file untouched, not merely "not reported".
+          if (resultCount == 2) {
+            unawaited(subscription.cancel());
+            stoppedAfterSecondResult.complete();
+          }
+        }
+      });
+
+      await stoppedAfterSecondResult.future;
+      // Long enough for a bridge that buffers ahead of the consumer's
+      // pace, instead of actually blocking `Applier.apply`, to have raced
+      // through the third action anyway.
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(await File('${replicaBDir.path}/a.txt').exists(), isTrue);
+      expect(await File('${replicaBDir.path}/b.txt').exists(), isTrue);
+      expect(await File('${replicaBDir.path}/c.txt').exists(), isFalse);
+
+      // Cancelling mid-apply still unwinds `RunController.run()`'s own
+      // unlock/disconnect `finally` blocks (SPEC §4.3) — `Applier.apply`
+      // being left permanently suspended on the third action's callback
+      // does not leave a replica lock held forever too.
+      await expectLocksFree();
+    }, testOn: 'linux');
+  });
 }
 
 /// Wraps a real [Agent] and records the order of the lifecycle calls
@@ -574,6 +697,66 @@ class _RecordingAgent implements Agent {
     required int mtime,
     required int mode,
   }) => _wrapped.writeFile(path, data, mtime: mtime, mode: mode);
+
+  @override
+  Future<void> delete(String path) => _wrapped.delete(path);
+
+  @override
+  Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
+
+  @override
+  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
+      _wrapped.archiveCommitUpsert(entry);
+
+  @override
+  Future<void> archiveCommitDelete(String path) =>
+      _wrapped.archiveCommitDelete(path);
+
+  @override
+  Future<void> compact() => _wrapped.compact();
+}
+
+/// Wraps a real [Agent], delegating every method to it, except [writeFile]
+/// which throws for a chosen set of paths — used to make some of a run's
+/// actions fail (SPEC §7.6) without relying on a flaky real-filesystem
+/// failure mode. Mirrors `_FailingWriteAgent` in applier_test.dart, minus
+/// the in-memory bookkeeping that test needs and this one doesn't.
+class _FailingPathsAgent implements Agent {
+  final Agent _wrapped;
+  final Set<String> failOn;
+
+  _FailingPathsAgent(this._wrapped, {required this.failOn});
+
+  @override
+  Future<ReplicaInfo> hello() => _wrapped.hello();
+
+  @override
+  Future<void> lock() => _wrapped.lock();
+
+  @override
+  Future<void> unlock() => _wrapped.unlock();
+
+  @override
+  Future<void> disconnect() => _wrapped.disconnect();
+
+  @override
+  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+
+  @override
+  Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
+
+  @override
+  Future<FileMetadata> writeFile(
+    String path,
+    Stream<List<int>> data, {
+    required int mtime,
+    required int mode,
+  }) {
+    if (failOn.contains(path)) {
+      return Future.error(Exception('boom: $path'));
+    }
+    return _wrapped.writeFile(path, data, mtime: mtime, mode: mode);
+  }
 
   @override
   Future<void> delete(String path) => _wrapped.delete(path);

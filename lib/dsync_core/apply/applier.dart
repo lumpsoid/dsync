@@ -4,6 +4,33 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 
+/// Reports one action's outcome as [Applier.apply] finishes it, before
+/// moving on to the next path in plan order (SPEC §7.1) — `error` is `null`
+/// on success, the thrown error otherwise (SPEC §7.6), matching exactly what
+/// [FailedPath.error] would say.
+///
+/// [Applier.apply] `await`s the returned future before starting the next
+/// action, so this doubles as the only cancellation seam it has: a caller
+/// whose own consumer stopped wanting more events can simply never resolve
+/// it, which leaves the loop suspended at this action boundary — the
+/// action already recorded is not undone (SPEC §7.3 already made it durable
+/// on both sides before this fires), and no action after it ever starts.
+/// `RunController` is the caller that does this (see its own doc comments).
+///
+/// Shaped like the callbacks already in this codebase — `RunController`'s
+/// own `Presenter` typedef, `AgentServer.serve`'s `Agent Function(ReplicaSpec)`
+/// — a plain function type, not a second interface: `Applier` still has
+/// exactly one implementation of "how to apply a plan", only how its
+/// progress leaves it changes (task e9f31c).
+typedef ApplyProgress = Future<void> Function(
+  String path,
+  ActionType type,
+  Object? error,
+);
+
+Future<void> _noopApplyProgress(String path, ActionType type, Object? error) =>
+    Future.value();
+
 /// Executes a [Plan] against the two replicas' [Agent]s (SPEC §7).
 ///
 /// Orchestrates `copy`/`delete`/archive-commit calls on [Agent] — never
@@ -23,8 +50,9 @@ class Applier {
     List<ScanEntry> onA,
     List<ScanEntry> onB,
     Agent agentA,
-    Agent agentB,
-  ) async {
+    Agent agentB, {
+    ApplyProgress onAction = _noopApplyProgress,
+  }) async {
     final a = {for (final e in onA) e.path: e};
     final b = {for (final e in onB) e.path: e};
 
@@ -32,6 +60,7 @@ class Applier {
     final failed = <FailedPath>[];
 
     for (final action in plan.actions) {
+      Object? error;
       try {
         switch (action.type) {
           case ActionType.copyAtoB:
@@ -72,11 +101,11 @@ class Applier {
             );
         }
         applied.add(AppliedPath(path: action.path, type: action.type));
-      } catch (error) {
-        failed.add(
-          FailedPath(path: action.path, type: action.type, error: error),
-        );
+      } catch (e) {
+        error = e;
+        failed.add(FailedPath(path: action.path, type: action.type, error: e));
       }
+      await onAction(action.path, action.type, error);
     }
 
     return ApplyResult(applied: applied, failed: failed);

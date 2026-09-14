@@ -15,19 +15,29 @@ enum InterruptResponse {
 }
 
 /// Counts the SIGINTs one `sync`/`status` run has received and says what to
-/// do about each one, plus whether `SyncRunner.run`'s consumer should stop
-/// asking `RunController.run()`'s stream for the next `RunEvent`.
+/// do about each one.
 ///
 /// Kept free of `dart:io` entirely: `SyncRunner.run` owns the one real
 /// `ProcessSignal.sigint.watch()` subscription and calls [receiveSignal]
 /// each time it fires; this class only ever sees plain method calls, which
-/// is what makes both rules below testable on plain values (task fc661b:
-/// "unit-test whatever decides ... the stop-after-current-action logic ...
-/// without signals").
+/// is what makes it testable on plain values (task fc661b: "unit-test
+/// whatever decides ... without signals").
+///
+/// task e9f31c removed the second rule this class used to hold —
+/// `shouldStop(sawFirstAction:)`, which only let `SyncRunner.run` stop up to
+/// and including the *first* `RunActionEvent`, because `Applier.apply` ran
+/// every action it was given as one uninterruptible unit. Now that
+/// `Applier.apply` reports each action as it finishes (`ApplyProgress`),
+/// every point `SyncRunner.run` sees a `RunEvent` is a safe action boundary
+/// to stop at, first action or not — so [requested] alone is the whole
+/// answer, checked directly at the call site instead of through a second
+/// method here.
 class InterruptGuard {
   int _signalCount = 0;
 
-  /// Whether at least one SIGINT has been recorded.
+  /// Whether at least one SIGINT has been recorded — also
+  /// `SyncRunner.run`'s answer to "should the consumer stop after the event
+  /// it just rendered, rather than asking for the next one".
   bool get requested => _signalCount > 0;
 
   /// Records one SIGINT. The first call returns
@@ -39,21 +49,4 @@ class InterruptGuard {
         ? InterruptResponse.stopGracefully
         : InterruptResponse.exitImmediately;
   }
-
-  /// Whether `SyncRunner.run`'s consumer should stop after the event it just
-  /// rendered, rather than asking for the next one.
-  ///
-  /// True only once a SIGINT has been [requested], and only up to and
-  /// including the first `RunActionEvent`: `Applier.apply` has no
-  /// incremental callback (see `RunController`'s own doc comment), so once
-  /// it has been handed even one action, the whole plan it was given runs as
-  /// a single, uninterruptible unit — stopping partway through would only
-  /// discard the summary that run has already committed to producing, not
-  /// prevent any actual work. [sawFirstAction] must reflect the state
-  /// *before* the current event is folded in, so the call reacting to that
-  /// very first `RunActionEvent` still sees it `false` here — stopping right
-  /// there is safe: it runs before `Applier.apply` is ever invoked for this
-  /// plan.
-  bool shouldStop({required bool sawFirstAction}) =>
-      requested && !sawFirstAction;
 }

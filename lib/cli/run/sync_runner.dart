@@ -132,11 +132,13 @@ class SyncRunner {
   /// from, once, after the stream ends.
   ///
   /// task fc661b: a SIGINT received anywhere during the loop stops the run
-  /// between actions rather than mid-copy — [InterruptGuard.shouldStop]
-  /// decides exactly when that is safe — and always forces the exit code to
-  /// [sigintExitCode] regardless of what [RunOutcome] would otherwise say,
-  /// since the signal describes what the *user* did, not what the run did. A
-  /// second SIGINT skips all of this and calls `exit` directly.
+  /// at the next action boundary — task e9f31c made every `RunEvent` one of
+  /// those, by giving `Applier.apply` a per-action callback, so the check
+  /// below is just [InterruptGuard.requested] — and always forces the exit
+  /// code to [sigintExitCode] regardless of what [RunOutcome] would
+  /// otherwise say, since the signal describes what the *user* did, not what
+  /// the run did. A second SIGINT skips all of this and calls `exit`
+  /// directly.
   Future<int> run(CliOptions options) async {
     final target = options.target;
 
@@ -242,7 +244,7 @@ class SyncRunner {
 
     RunSummaryEvent? summary;
     RunErrorEvent? error;
-    var sawFirstAction = false;
+    var appliedAny = false;
     try {
       await for (final event in controller.run()) {
         render(event);
@@ -251,38 +253,50 @@ class SyncRunner {
             summary = e;
           case RunErrorEvent e:
             error = e;
+          case RunResultEvent():
+            appliedAny = true;
           default:
             break;
         }
 
-        // Checked before folding this event into `sawFirstAction`: stopping
-        // in reaction to the very first `RunActionEvent` is still safe (see
-        // `InterruptGuard.shouldStop`'s own doc comment) — it runs before
-        // `Applier.apply` is ever called for this plan, which is what keeps
-        // a scratch file from ever being created in the first place. This
-        // `break` cancels `controller.run()`'s subscription, which runs
-        // `RunController.run()`'s unlock/disconnect `finally` blocks exactly
-        // as a normal end of stream would.
-        if (interrupt.shouldStop(sawFirstAction: sawFirstAction)) break;
-        if (event is RunActionEvent) sawFirstAction = true;
+        // task e9f31c: every `RunEvent` is now a safe point to stop at —
+        // `Applier.apply` reports each action as it finishes rather than
+        // running the whole plan as one uninterruptible unit, so there is no
+        // longer a "before the first action" restriction to check for. This
+        // `break` cancels `controller.run()`'s subscription, which — because
+        // `RunController.run()`'s generator is suspended exactly at a
+        // `yield` when that happens — runs its unlock/disconnect `finally`
+        // blocks exactly as a normal end of stream would, and (mid-apply)
+        // leaves `Applier.apply` itself suspended at the action boundary it
+        // had just reported, never starting the next one.
+        if (interrupt.requested) break;
       }
     } finally {
       await sigintSubscription.cancel();
     }
 
     // task fc661b: report what was applied before stopping, rather than
-    // just changing the exit code silently. When apply had already started,
-    // `summary` is the real `RunSummaryEvent` (rendered above like any
-    // other), so there is nothing more to add beyond noting *why* the exit
-    // code is about to say "interrupted" instead of whatever this run
-    // actually finished doing.
+    // just changing the exit code silently. `summary` only exists when the
+    // whole plan finished applying (rendered above like any other event), so
+    // there is nothing more to add there beyond noting *why* the exit code
+    // is about to say "interrupted" instead of whatever this run actually
+    // finished doing. task e9f31c added the middle case: stopped partway
+    // through apply, after at least one `RunResultEvent` but before the
+    // summary — `appliedAny` is what tells that apart from "never got to
+    // apply at all".
     if (interrupt.requested) {
-      stderr.writeln(
-        summary == null
-            ? 'interrupted (SIGINT) before applying any changes.'
-            : 'interrupted (SIGINT); this run had already finished applying '
-                  '— see summary above.',
-      );
+      stderr.writeln(switch ((summary != null, appliedAny)) {
+        (true, _) =>
+          'interrupted (SIGINT); this run had already finished applying '
+              '— see summary above.',
+        (false, true) =>
+          'interrupted (SIGINT) partway through applying — see the '
+              'results above for what already landed; the rest of the '
+              'plan was not attempted.',
+        (false, false) =>
+          'interrupted (SIGINT) before applying any '
+              'changes.',
+      });
     }
 
     return RunOutcome(

@@ -59,21 +59,25 @@ class RunConflictEvent extends RunEvent {
   const RunConflictEvent(this.conflict);
 }
 
-/// One action the presentation callback decided to run, announced right
-/// before `Applier.apply` is called (SPEC §7). `Applier` applies its whole
-/// plan at once and reports one aggregate result at the end, so this is the
-/// closest thing to a per-action "starting" signal available in v0.
+/// One action the presentation callback decided to run, announced before any
+/// of them are handed to `Applier.apply` (SPEC §7). All of a run's
+/// [RunActionEvent]s are emitted together, ahead of the first
+/// [RunResultEvent]: this is "here is the whole committed plan, about to
+/// run", not a per-action "starting now" signal — for that, watch for a
+/// path's own [RunResultEvent] instead, emitted as `Applier` actually
+/// finishes each one (task e9f31c).
 class RunActionEvent extends RunEvent {
   final PlanAction action;
 
   const RunActionEvent(this.action);
 }
 
-/// Best-effort progress signal (SPEC §11.4). v0 compromise: `Applier.apply`
-/// has no incremental callback, so this is only emitted once per completed
-/// path, right alongside that path's [RunResultEvent] — not as work actually
-/// happens inside `Applier`. A future `Applier` with a progress callback
-/// could make this finer-grained without changing this event's shape.
+/// Progress signal (SPEC §11.4), emitted once per path immediately after
+/// that path's own [RunResultEvent] — as `Applier.apply` actually finishes
+/// each action (task e9f31c's per-action callback), not replayed afterward
+/// from the finished plan. [completed] therefore only ever grows one at a
+/// time, in the same plan order (SPEC §7.1) the actions ran in; [total] is
+/// fixed for the whole run — the number of actions the presenter kept.
 class RunProgressEvent extends RunEvent {
   final int completed;
   final int total;
@@ -81,8 +85,9 @@ class RunProgressEvent extends RunEvent {
   const RunProgressEvent({required this.completed, required this.total});
 }
 
-/// One path's outcome after `Applier.apply` resolves (SPEC §7.6): applied
-/// successfully when [error] is `null`, failed otherwise.
+/// One path's outcome, emitted as `Applier.apply` finishes that action
+/// (task e9f31c) rather than only once the whole plan has (SPEC §7.6):
+/// applied successfully when [error] is `null`, failed otherwise.
 class RunResultEvent extends RunEvent {
   final String path;
   final ActionType type;

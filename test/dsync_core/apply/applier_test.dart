@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
@@ -498,6 +499,130 @@ void main() {
 
         final archiveA = await JsonlArchiveStore(archiveLogA, headerA).load();
         expect(archiveA.entries, isEmpty);
+      },
+      testOn: 'linux',
+    );
+  });
+
+  group('onAction callback (task e9f31c)', () {
+    test('fires once per action, in plan order, including for a failed action (SPEC §7.6)', () async {
+      await File('${replicaADir.path}/one.txt').writeAsString('one');
+      await File('${replicaADir.path}/two.txt').writeAsString('two-fails');
+      await File('${replicaADir.path}/three.txt').writeAsString('three');
+      final mtime = DateTime.utc(2022, 1, 1).microsecondsSinceEpoch;
+
+      ScanEntry entry(String path, int size, String hash) => ScanEntry(
+        path: path,
+        status: ScanStatus.created,
+        size: size,
+        mtime: mtime,
+        mode: 420,
+        hash: hash,
+      );
+
+      // Fails the middle action only, so the callback's error argument has
+      // to distinguish success/failure per call, not just per run.
+      final flakyB = _FailingWriteAgent(failOn: {'two.txt'});
+
+      final plan = Plan(
+        actions: [
+          const PlanAction(path: 'one.txt', type: ActionType.copyAtoB),
+          const PlanAction(path: 'two.txt', type: ActionType.copyAtoB),
+          const PlanAction(path: 'three.txt', type: ActionType.copyAtoB),
+        ],
+        conflicts: [],
+      );
+
+      final calls = <(String, ActionType, Object?)>[];
+      final result = await Applier().apply(
+        plan,
+        [
+          entry('one.txt', 3, 'h1'),
+          entry('two.txt', 9, 'h2'),
+          entry('three.txt', 5, 'h3'),
+        ],
+        [],
+        agentA,
+        flakyB,
+        onAction: (path, type, error) async {
+          calls.add((path, type, error));
+        },
+      );
+
+      // Fired for every action, in the plan's own order — not "applied
+      // ones first" (that grouping is `ApplyResult`'s, not the callback's).
+      expect(calls.map((c) => c.$1).toList(), [
+        'one.txt',
+        'two.txt',
+        'three.txt',
+      ]);
+      expect(calls.map((c) => c.$2).toSet(), {ActionType.copyAtoB});
+      expect(calls[0].$3, isNull);
+      expect(calls[1].$3, isNotNull);
+      expect(calls[2].$3, isNull);
+
+      expect(result.applied.map((a) => a.path), ['one.txt', 'three.txt']);
+      expect(result.failed.single.path, 'two.txt');
+    }, testOn: 'linux');
+
+    test(
+      'a caller that never resolves the callback holds the loop at that '
+      'action boundary — the next action never touches the filesystem',
+      () async {
+        await File('${replicaADir.path}/first.txt').writeAsString('first');
+        await File('${replicaADir.path}/second.txt').writeAsString('second');
+        final mtime = DateTime.utc(2022, 1, 1).microsecondsSinceEpoch;
+
+        final entries = [
+          ScanEntry(
+            path: 'first.txt',
+            status: ScanStatus.created,
+            size: 5,
+            mtime: mtime,
+            mode: 420,
+            hash: 'h1',
+          ),
+          ScanEntry(
+            path: 'second.txt',
+            status: ScanStatus.created,
+            size: 6,
+            mtime: mtime,
+            mode: 420,
+            hash: 'h2',
+          ),
+        ];
+
+        final plan = Plan(
+          actions: [
+            const PlanAction(path: 'first.txt', type: ActionType.copyAtoB),
+            const PlanAction(path: 'second.txt', type: ActionType.copyAtoB),
+          ],
+          conflicts: [],
+        );
+
+        // A callback that never resolves is exactly what a downstream
+        // consumer that stopped listening looks like from `apply()`'s side
+        // (see `ApplyProgress`'s own doc comment) — this is the direct,
+        // Applier-level half of the backpressure guarantee; the
+        // `RunController`-level half (a stream consumer that actually
+        // cancels) is asserted in run_controller_test.dart.
+        unawaited(
+          Applier().apply(
+            plan,
+            entries,
+            [],
+            agentA,
+            agentB,
+            onAction: (path, type, error) => Completer<void>().future,
+          ),
+        );
+
+        // Long enough for a buggy implementation that ignores the callback's
+        // future to have raced through the second action already.
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(await File('${replicaBDir.path}/first.txt').exists(), isTrue);
+        expect(await File('${replicaBDir.path}/second.txt').exists(), isFalse);
       },
       testOn: 'linux',
     );

@@ -23,28 +23,11 @@ void main() {
       expect(guard.receiveSignal(), InterruptResponse.exitImmediately);
     });
 
-    group('shouldStop (the stop-after-current-action logic)', () {
-      test('no signal yet -> never stop, whether or not an action has '
-          'started', () {
-        final guard = InterruptGuard();
-        expect(guard.shouldStop(sawFirstAction: false), isFalse);
-        expect(guard.shouldStop(sawFirstAction: true), isFalse);
-      });
-
-      test('signalled, no action has started yet -> stop (this is the '
-          'window before `Applier.apply` is ever called)', () {
-        final guard = InterruptGuard();
-        guard.receiveSignal();
-        expect(guard.shouldStop(sawFirstAction: false), isTrue);
-      });
-
-      test('signalled, but an action already started -> do not stop; the '
-          'whole plan already handed to Applier.apply runs to completion so '
-          'its summary is never discarded', () {
-        final guard = InterruptGuard();
-        guard.receiveSignal();
-        expect(guard.shouldStop(sawFirstAction: true), isFalse);
-      });
-    });
+    // task e9f31c removed `shouldStop(sawFirstAction:)`: `Applier.apply`
+    // now reports each action as it finishes rather than running the whole
+    // plan as one uninterruptible unit, so every `RunEvent` is a safe
+    // action boundary to stop at — `SyncRunner.run` checks `requested`
+    // directly instead of through a second method here. `requested`'s own
+    // behavior is already covered by the tests above.
   });
 }
