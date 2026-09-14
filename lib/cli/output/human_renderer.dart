@@ -366,16 +366,22 @@ class HumanRenderer {
   /// outright rather than leaving them to infer it from the word "skipped".
   /// That is the whole point of reporting it — silence is how someone ends up
   /// believing a file is synced when it never was.
+  ///
+  /// [SkippedPath.detail] goes on both, because on both it is the part the
+  /// reader cannot work out for themselves: "broken link" and "target is a
+  /// directory this walk is already inside" need different fixes, and only
+  /// the walk ever knew which it hit.
   void _renderSkippedPath(RunSkippedPathEvent event) {
     final side = event.onA ? 'A' : 'B';
     final skipped = event.skipped;
     switch (skipped.reason) {
       case SkippedReason.symlink:
-        out.writeln('symlink  $side  ${skipped.path}  (skipped, not followed)');
+        out.writeln('symlink  $side  ${skipped.path}  (${skipped.detail})');
       case SkippedReason.unreadable:
-        final detail = skipped.detail;
-        final note = detail == null ? 'not synced' : '$detail — not synced';
-        out.writeln('unreadable  $side  ${skipped.path}  ($note)');
+        out.writeln(
+          'unreadable  $side  ${skipped.path}  '
+          '(${skipped.detail} — not synced)',
+        );
     }
   }
 

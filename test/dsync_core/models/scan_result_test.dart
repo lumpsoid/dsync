@@ -59,8 +59,8 @@ void main() {
       const result = ScanResult(
         entries: [],
         skippedPaths: [
-          SkippedPath.symlink('link.txt'),
-          SkippedPath.symlink('other-link.txt'),
+          SkippedPath.symlink('link.txt', 'no follow rule matched'),
+          SkippedPath.symlink('other-link.txt', 'no follow rule matched'),
           SkippedPath.unreadable('locked.txt', 'Permission denied'),
         ],
       );

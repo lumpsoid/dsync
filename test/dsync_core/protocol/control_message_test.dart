@@ -128,12 +128,11 @@ void main() {
   });
 
   group('scanResultToJson / scanResultFromJson (task 37bf4f)', () {
-    test('round-trips both skip reasons, and the detail that only one of '
-        'them carries', () {
+    test('round-trips both skip reasons, each with its own detail', () {
       const result = ScanResult(
         entries: [ScanEntry(path: 'a.txt', reason: ScanReason.created)],
         skippedPaths: [
-          SkippedPath.symlink('link.txt'),
+          SkippedPath.symlink('link.txt', 'broken link'),
           SkippedPath.unreadable('locked.txt', 'Permission denied'),
         ],
       );
@@ -142,10 +141,30 @@ void main() {
 
       expect(decoded.entries.map((e) => e.path), ['a.txt']);
       expect(decoded.skippedPaths.map((s) => (s.path, s.reason, s.detail)), [
-        ('link.txt', SkippedReason.symlink, null),
+        ('link.txt', SkippedReason.symlink, 'broken link'),
         ('locked.txt', SkippedReason.unreadable, 'Permission denied'),
       ]);
       expect(decoded.unreadableCount, 1);
+    });
+
+    test('a symlink\'s detail survives the wire, so which of SPEC §5.1\'s '
+        'cases the walk saw reaches the initiator from a remote replica — '
+        'the information this task stopped discarding', () {
+      final decoded = skippedPathFromJson(
+        skippedPathToJson(
+          const SkippedPath.symlink(
+            'up',
+            'target is a directory this walk is already inside',
+          ),
+        ),
+      );
+
+      expect(decoded.reason, SkippedReason.symlink);
+      expect(
+        decoded.detail,
+        'target is a directory this walk is already '
+        'inside',
+      );
     });
 
     test('a peer that reports no skipped paths decodes to an empty list, '

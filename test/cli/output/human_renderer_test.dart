@@ -117,7 +117,7 @@ void main() {
       r.renderer.render(_plan);
       r.renderer.render(
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('link'),
+          skipped: SkippedPath.symlink('link', 'no follow rule matched'),
           onA: true,
         ),
       );
@@ -224,13 +224,13 @@ void main() {
       final r = _Rendered();
       r.renderer.render(
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('on-a-link'),
+          skipped: SkippedPath.symlink('on-a-link', 'no follow rule matched'),
           onA: true,
         ),
       );
       r.renderer.render(
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('on-b-link'),
+          skipped: SkippedPath.symlink('on-b-link', 'no follow rule matched'),
           onA: false,
         ),
       );
@@ -238,6 +238,36 @@ void main() {
       final output = r.out.buffer.toString();
       expect(output, contains('on-a-link'));
       expect(output, contains('on-b-link'));
+    });
+
+    test('a skipped symlink says which of SPEC §5.1\'s cases it was (task '
+        '37bf4f): "add a follow rule" and "repoint this link" are different '
+        'fixes, and the walk is the only thing that knew which applied', () {
+      final notFollowed = _Rendered();
+      notFollowed.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('a', 'no follow rule matched'),
+          onA: true,
+        ),
+      );
+      final broken = _Rendered();
+      broken.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('a', 'broken link'),
+          onA: true,
+        ),
+      );
+
+      expect(
+        notFollowed.out.buffer.toString(),
+        contains('no follow rule matched'),
+      );
+      expect(broken.out.buffer.toString(), contains('broken link'));
+      // Same path, same side, same reason — and still distinguishable.
+      expect(
+        notFollowed.out.buffer.toString(),
+        isNot(equals(broken.out.buffer.toString())),
+      );
     });
 
     test('an unreadable path says outright that it did not sync, and why '
@@ -261,7 +291,10 @@ void main() {
         'different outcomes and the line says which', () {
       final symlink = _Rendered();
       symlink.renderer.render(
-        const RunSkippedPathEvent(skipped: SkippedPath.symlink('p'), onA: true),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('p', 'no follow rule matched'),
+          onA: true,
+        ),
       );
       final unreadable = _Rendered();
       unreadable.renderer.render(
@@ -280,14 +313,14 @@ void main() {
       final onA = _Rendered();
       onA.renderer.render(
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('link'),
+          skipped: SkippedPath.symlink('link', 'no follow rule matched'),
           onA: true,
         ),
       );
       final onB = _Rendered();
       onB.renderer.render(
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('link'),
+          skipped: SkippedPath.symlink('link', 'no follow rule matched'),
           onA: false,
         ),
       );
@@ -536,7 +569,7 @@ void main() {
       r.renderer.render(_plan);
       r.renderer.render(
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('link'),
+          skipped: SkippedPath.symlink('link', 'no follow rule matched'),
           onA: true,
         ),
       );

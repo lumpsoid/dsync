@@ -269,25 +269,34 @@ void main() {
       },
     );
 
-    test('symlink: path and which side it was found on', () async {
+    test('symlink: path, which side it was found on, and which of SPEC '
+        '§5.1\'s cases it was', () async {
       final r = _Rendered();
 
       final decoded = (await _renderAll(r, [
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('link'),
+          skipped: SkippedPath.symlink('link', 'no follow rule matched'),
           onA: true,
         ),
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('other-link'),
+          skipped: SkippedPath.symlink('other-link', 'broken link'),
           onA: false,
         ),
       ]));
 
-      expect(decoded[0], {'type': 'symlink', 'path': 'link', 'onA': true});
+      expect(decoded[0], {
+        'type': 'symlink',
+        'path': 'link',
+        'onA': true,
+        'detail': 'no follow rule matched',
+      });
+      // Same type, same shape, different case — the distinction a consumer
+      // could not make before (task 37bf4f).
       expect(decoded[1], {
         'type': 'symlink',
         'path': 'other-link',
         'onA': false,
+        'detail': 'broken link',
       });
     });
 
@@ -482,7 +491,7 @@ void main() {
           ),
         ),
         const RunSkippedPathEvent(
-          skipped: SkippedPath.symlink('link'),
+          skipped: SkippedPath.symlink('link', 'no follow rule matched'),
           onA: true,
         ),
         const RunConflictEvent(

@@ -99,7 +99,7 @@ class JsonRenderer {
         },
         'path': skipped.path,
         'onA': onA,
-        if (skipped.detail != null) 'detail': skipped.detail,
+        'detail': skipped.detail,
       },
       RunConflictEvent(:final conflict) => {
         'type': 'conflict',

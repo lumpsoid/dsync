@@ -8,22 +8,22 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// The protocol version this build speaks (SPEC §4.2). Bumped whenever the
 /// wire format changes in a way older and newer builds can't both handle.
 ///
-/// The rule this codebase has settled on, after several changes that did not
-/// bump it (`hello`'s last field addition, `scanEntryToJson`'s `reason`):
-/// **adding** an optional field does not bump, because a peer that omits it
-/// decodes to the same absence it would have had anyway — the older build
-/// simply cannot serve the newer operation. **Renaming or repurposing** a
-/// field does, because both directions then decode successfully and silently
-/// wrong: the key the peer sent is not the key that is read, so the value is
-/// dropped with no error anywhere.
+/// Still 1, and every wire change so far has left it there — `hello`'s last
+/// field addition, `scanEntryToJson`'s `reason`, task 37bf4f renaming
+/// `scan`'s `skippedSymlinks` to `skippedPaths`. A version exists to protect
+/// pairs that cannot be upgraded together, and there are none: no stable
+/// release, no users, no deployed agent. Bumping now would only make this
+/// build refuse yesterday's build of itself.
 ///
-/// Bumped to 2 by task 37bf4f, the first change of the second kind: `scan`'s
-/// reply renamed `skippedSymlinks` (a list of paths) to `skippedPaths` (a
-/// list of objects carrying a reason, SPEC §5.1). A version-1 agent paired
-/// with this build would report no skipped symlinks at all rather than fail,
-/// which is precisely the surprise §5.1 exists to prevent — better to refuse
-/// the pairing outright (SPEC §11.5 exit 3).
-const protocolVersion = 2;
+/// What a bump is *for*, when there is finally something to protect:
+/// **adding** an optional field does not need one, because a peer that omits
+/// it decodes to the same absence it would have had anyway. **Renaming or
+/// repurposing** a field does, because both directions then decode
+/// successfully and silently wrong — the key the peer sent is not the key
+/// that is read, so the value is dropped with no error anywhere. 37bf4f's
+/// rename is the first change of that second kind; the next one after the
+/// first release is the one that has to bump.
+const protocolVersion = 1;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this
 /// build's [protocolVersion] as a control frame, then reads the peer's.

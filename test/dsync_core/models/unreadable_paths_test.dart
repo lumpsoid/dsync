@@ -9,7 +9,7 @@ void main() {
         'reconciliation would change how a symlink on one side and a real '
         'file on the other resolve today', () {
       final unreadable = UnreadablePaths.from(const [
-        SkippedPath.symlink('link.txt'),
+        SkippedPath.symlink('link.txt', 'no follow rule matched'),
         SkippedPath.unreadable('locked.txt', 'Permission denied'),
       ]);
 

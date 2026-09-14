@@ -321,6 +321,7 @@ void main() {
 
       // SPEC §5.1: symlinks are skipped *and reported*.
       expect(result.skippedPaths.map((s) => s.path), ['link.txt']);
+      expect(result.skippedPaths.single.detail, 'no follow rule matched');
     }, testOn: 'linux');
 
     test('a followed link that is broken is reported as skipped', () async {
@@ -336,6 +337,9 @@ void main() {
       // The user asked to follow this one, so saying nothing about it would
       // be the worst possible answer.
       expect(result.skippedPaths.map((s) => s.path), ['link.txt']);
+      // And "broken" is the part they can act on: the link needs repointing,
+      // which is a different fix from adding a follow rule.
+      expect(result.skippedPaths.single.detail, 'broken link');
     }, testOn: 'linux');
 
     test('a followed link pointing at an ancestor terminates', () async {
@@ -353,6 +357,51 @@ void main() {
 
       expect(result.entries.map((e) => e.path), contains('sub/a.txt'));
       expect(result.skippedPaths.map((s) => s.path), contains('sub/up'));
+      expect(
+        result.skippedPaths.singleWhere((s) => s.path == 'sub/up').detail,
+        'target is a directory this walk is already inside',
+      );
+    }, testOn: 'linux');
+
+    test('each of SPEC §5.1\'s symlink cases is reported as the case it '
+        'actually was, not as a generic "skipped" (task 37bf4f). One '
+        'reason, four details: the tool does the same thing about all four, '
+        'but the reader needs a different fix for each.', () async {
+      await Directory('${tempDir.path}/sub').create();
+      await File('${tempDir.path}/target.txt').writeAsString('hello');
+      await Link('${tempDir.path}/plain').create('${tempDir.path}/target.txt');
+      await Link('${tempDir.path}/broken').create('${tempDir.path}/nowhere');
+      await Link('${tempDir.path}/sub/up').create(tempDir.path);
+      await Link('${tempDir.path}/fifo').create('/dev/null');
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+        // `plain` deliberately has no follow rule; the other three do, so
+        // each reaches its own branch rather than stopping at "not followed".
+        rules: RuleSet(follow: ['broken', '**/up', 'fifo']),
+      );
+
+      final byPath = {
+        for (final skipped in result.skippedPaths) skipped.path: skipped,
+      };
+      expect(byPath.keys, containsAll(['plain', 'broken', 'sub/up', 'fifo']));
+      expect(byPath['plain']!.detail, 'no follow rule matched');
+      expect(byPath['broken']!.detail, 'broken link');
+      expect(
+        byPath['sub/up']!.detail,
+        'target is a directory this walk is already inside',
+      );
+      expect(
+        byPath['fifo']!.detail,
+        'target is neither a regular file nor a directory',
+      );
+      // All four are still one reason: none of them moves the exit code, and
+      // none of them is excluded from reconciliation.
+      expect(byPath.values.map((s) => s.reason).toSet(), {
+        SkippedReason.symlink,
+      });
+      expect(result.unreadableCount, 0);
     }, testOn: 'linux');
 
     test('a followed link pointing sideways is still scanned', () async {

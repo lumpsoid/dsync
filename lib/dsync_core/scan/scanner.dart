@@ -145,7 +145,9 @@ class Scanner {
             // SPEC §5.1: skipped *and reported* — a link silently missing
             // from a sync is exactly the kind of surprise this tool is
             // supposed to avoid.
-            context.skipped.add(SkippedPath.symlink(relativePath));
+            context.skipped.add(
+              SkippedPath.symlink(relativePath, 'no follow rule matched'),
+            );
           }
         default:
           break;
@@ -164,7 +166,7 @@ class Scanner {
     } on FileSystemException {
       // Broken link: nothing to scan, but the user asked to follow it, so
       // saying nothing would be the worst answer.
-      context.skipped.add(SkippedPath.symlink(relativePath));
+      context.skipped.add(SkippedPath.symlink(relativePath, 'broken link'));
       return;
     }
 
@@ -173,14 +175,24 @@ class Scanner {
         if (context.openDirs.contains(target)) {
           // The link points at a directory this walk is already inside, so
           // following it would descend through itself without end.
-          context.skipped.add(SkippedPath.symlink(relativePath));
+          context.skipped.add(
+            SkippedPath.symlink(
+              relativePath,
+              'target is a directory this walk is already inside',
+            ),
+          );
           return;
         }
         await _walk(Directory(target), relativePath, context);
       case FileSystemEntityType.file:
         await _visitFile(File(target), relativePath, context);
       default:
-        context.skipped.add(SkippedPath.symlink(relativePath));
+        context.skipped.add(
+          SkippedPath.symlink(
+            relativePath,
+            'target is neither a regular file nor a directory',
+          ),
+        );
     }
   }
 

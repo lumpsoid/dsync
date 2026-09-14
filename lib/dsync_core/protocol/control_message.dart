@@ -191,20 +191,19 @@ ScanResult scanResultFromJson(Map<String, dynamic> json) => ScanResult(
 );
 
 /// One [SkippedPath] (SPEC §5, §5.1), as it appears in a `scan` reply's
-/// `skippedPaths` list. [SkippedPath.detail] is omitted when null, matching
-/// this file's null-omission convention — it is meaningful for
-/// [SkippedReason.unreadable] and has nothing to say for
-/// [SkippedReason.symlink].
+/// `skippedPaths` list. Unlike this file's other encoders, nothing here is
+/// conditional: [SkippedPath.detail] is meaningful for both reasons (see its
+/// own doc comment), so there is no absence to omit.
 Map<String, dynamic> skippedPathToJson(SkippedPath skipped) => {
   'path': skipped.path,
   'reason': skipped.reason.name,
-  if (skipped.detail != null) 'detail': skipped.detail,
+  'detail': skipped.detail,
 };
 
 SkippedPath skippedPathFromJson(Map<String, dynamic> json) => SkippedPath(
   path: json['path'] as String,
   reason: SkippedReason.values.byName(json['reason'] as String),
-  detail: json['detail'] as String?,
+  detail: json['detail'] as String,
 );
 
 /// Encodes [entry] with [ScanEntry.reason], not the coarser [ScanEntry.status]
@@ -212,12 +211,11 @@ SkippedPath skippedPathFromJson(Map<String, dynamic> json) => SkippedPath(
 /// entry's state (see its doc comment), so it is the one fact this wire
 /// format needs; re-deriving [ScanStatus] after decode via [ScanEntry.status]
 /// can never disagree with it, the way sending both independently could.
-/// [protocolVersion] was not bumped for this (SPEC §4.2): an added field is
-/// absent either way to a peer that does not know it, so an agent built
-/// before this field existed cannot serve a `scan` request but nothing
-/// decodes silently wrong. See [protocolVersion]'s own doc comment for where
-/// that stops being true — task 37bf4f's rename of this same reply's
-/// `skippedSymlinks` is the change that did bump it.
+/// [protocolVersion] was not bumped for this (SPEC §4.2): nothing is
+/// deployed, so an agent built before this field existed cannot serve a
+/// `scan` request, but nothing older is out there to break. See
+/// [protocolVersion]'s own doc comment for what a bump is actually for, and
+/// when this codebase will owe one.
 Map<String, dynamic> scanEntryToJson(ScanEntry entry) => {
   'path': entry.path,
   'reason': entry.reason.name,
