@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -192,6 +193,57 @@ void main() {
       await Process.run('chmod', ['+x', script.path]);
       return script;
     }
+
+    test('a remote shell that talks over the protocol is reported as what it '
+        'sent, alongside anything ssh said', () async {
+      final rootA = await tempDir.createTemp('root-a');
+      // What a `.bashrc` greeting does to the stream: sshd sources it even
+      // for a non-interactive command, so the banner reaches the initiator
+      // ahead of the agent's version frame. The stderr line is the noise
+      // that used to stand in for the cause and hide it.
+      final script = File('${tempDir.path}/chatty-ssh.sh');
+      await script.writeAsString(
+        '#!/bin/sh\n'
+        'echo "Warning: Permanently added the host key." >&2\n'
+        'echo "Welcome to build-box!"\n'
+        'sleep 0.2\n'
+        'exit 255\n',
+      );
+      await Process.run('chmod', ['+x', script.path]);
+
+      final result = await resolveReplicaAgents(
+        optionsFor(
+          Location.parse(rootA.path),
+          Location.parse('me@foreign-host:/sdcard/notes'),
+        ),
+        environment: stateEnv,
+        localAddressLookup: () async => {},
+        sshExecutable: script.path,
+      );
+
+      await expectLater(
+        result.agentB.hello(),
+        throwsA(
+          isA<ReplicaUnreachableException>()
+              .having(
+                (e) => e.cause,
+                'cause',
+                isA<PeerNotSpeakingProtocolException>(),
+              )
+              .having(
+                (e) => e.toString(),
+                'toString()',
+                allOf(
+                  contains('Welcome to build-box!'),
+                  contains('~/.bashrc'),
+                  contains('Permanently added the host key.'),
+                ),
+              ),
+        ),
+      );
+
+      await result.agentA.disconnect();
+    });
 
     test('a version handshake that never replies names the side and carries '
         'the ssh stderr', () async {

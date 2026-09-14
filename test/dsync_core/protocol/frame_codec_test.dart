@@ -95,12 +95,50 @@ void main() {
       expect(frames.single.payload, isEmpty);
     });
 
-    test('throws FormatException on an unknown type byte', () async {
+    test('throws FrameDecodeException on an unknown type byte', () async {
       final bad = Uint8List.fromList([2, 0, 0, 0, 0]);
 
       await expectLater(
         codec.decode(Stream.value(bad)).toList(),
-        throwsFormatException,
+        throwsA(
+          isA<FrameDecodeException>()
+              .having((e) => e.message, 'message', contains('2'))
+              .having((e) => e.received, 'received', [2, 0, 0, 0, 0])
+              .having((e) => e.truncated, 'truncated', isFalse),
+        ),
+      );
+    });
+
+    test('fails on the header rather than waiting out the bogus length a '
+        'text stream declares', () async {
+      // "Welcome" read as a frame is type `W` with a payload of `elco`
+      // bytes — 1.7 GB. Nothing would ever complete it, so a decoder that
+      // checked the type only after the payload arrived would sit here in
+      // silence until the connection closed.
+      final banner = Uint8List.fromList(utf8.encode('Welcome to build-box!\n'));
+
+      await expectLater(
+        codec.decode(Stream.value(banner)).toList(),
+        throwsA(
+          isA<FrameDecodeException>().having(
+            (e) => utf8.decode(e.received),
+            'received',
+            'Welcome to build-box!\n',
+          ),
+        ),
+      );
+    });
+
+    test('keeps only a glance of a long undecodable stream', () async {
+      final chatty = Uint8List.fromList(utf8.encode('W' * 1000));
+
+      await expectLater(
+        codec.decode(Stream.value(chatty)).toList(),
+        throwsA(
+          isA<FrameDecodeException>()
+              .having((e) => e.received, 'received', hasLength(256))
+              .having((e) => e.truncated, 'truncated', isTrue),
+        ),
       );
     });
   });

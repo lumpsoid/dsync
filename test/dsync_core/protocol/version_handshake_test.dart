@@ -40,6 +40,65 @@ void main() {
       );
     });
 
+    test('quotes what the peer sent when its first bytes are not frames '
+        'at all', () async {
+      final (a, b) = _pairedChannels();
+      await b.send(utf8.encode('Welcome to build-box!\nLast login: today\n'));
+
+      await expectLater(
+        performVersionHandshake(a, _frameIterator(a)),
+        throwsA(
+          isA<PeerNotSpeakingProtocolException>().having(
+            (e) => e.toString(),
+            'toString()',
+            allOf(
+              contains('Welcome to build-box!'),
+              contains('Last login: today'),
+              contains('stdout'),
+              contains('~/.bashrc'),
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('renders unprintable bytes rather than letting the peer drive the '
+        'terminal', () async {
+      final (a, b) = _pairedChannels();
+      await b.send([...utf8.encode('hi\x1b[2Jthere'), 0x07]);
+
+      await expectLater(
+        performVersionHandshake(a, _frameIterator(a)),
+        throwsA(
+          isA<PeerNotSpeakingProtocolException>().having(
+            (e) => e.toString(),
+            'toString()',
+            allOf(contains('hi.[2Jthere'), isNot(contains('\x1b'))),
+          ),
+        ),
+      );
+    });
+
+    test('leaves a decode failure after the handshake as the protocol bug it '
+        'is', () async {
+      final (a, b) = _pairedChannels();
+      final frames = _frameIterator(a);
+
+      await Future.wait([
+        performVersionHandshake(a, frames),
+        performVersionHandshake(b, _frameIterator(b)),
+      ]);
+      await b.send(utf8.encode('Welcome to build-box!\n'));
+
+      // The raw codec failure, not a shell-chatter diagnosis: once the
+      // handshake has succeeded, garbage on the wire is a protocol bug and
+      // pointing the next debugger at ~/.bashrc would waste their time.
+      await expectLater(
+        frames.moveNext(),
+        throwsA(isA<FrameDecodeException>()),
+      );
+    });
+
     test(
       'throws StateError when the channel closes before anything arrives',
       () async {

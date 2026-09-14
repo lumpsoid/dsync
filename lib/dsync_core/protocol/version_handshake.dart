@@ -35,15 +35,33 @@ const protocolVersion = 1;
 /// iterator once this returns.
 ///
 /// Throws [ProtocolVersionMismatchException] — fatal for the caller (SPEC
-/// §11.5 exit 3) — if the versions differ. Throws [StateError] if the channel
-/// closes before the peer's version arrives.
+/// §11.5 exit 3) — if the versions differ. Throws
+/// [PeerNotSpeakingProtocolException] if what arrives is not frames at all.
+/// Throws [StateError] if the channel closes before the peer's version
+/// arrives.
 Future<void> performVersionHandshake(
   Channel channel,
   StreamIterator<Frame> frames,
 ) async {
   await channel.send(FrameCodec().encode(_versionFrame(protocolVersion)));
 
-  if (!await frames.moveNext()) {
+  final bool replied;
+  try {
+    replied = await frames.moveNext();
+  } on FrameDecodeException catch (error) {
+    // Rewritten here and nowhere else, deliberately. These are the first
+    // bytes of a fresh connection, so undecodable ones mean nobody is
+    // speaking the protocol yet — in practice a remote shell talking over
+    // it. The identical failure *after* the handshake has succeeded is a
+    // real protocol bug, and dressing that one up as "check your dotfiles"
+    // would send the next debugger the wrong way, so it propagates as
+    // itself.
+    throw PeerNotSpeakingProtocolException(
+      error.received,
+      truncated: error.truncated,
+    );
+  }
+  if (!replied) {
     throw StateError('Channel closed before version handshake completed');
   }
   final remoteVersion = _versionFromFrame(frames.current);
@@ -65,6 +83,53 @@ int _versionFromFrame(Frame frame) {
       jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>;
   return message['version'] as int;
 }
+
+/// Thrown by [performVersionHandshake] when what arrives in place of the
+/// peer's version frame is not this protocol's framing at all (SPEC §4.2) —
+/// fatal for the caller (SPEC §11.5 exit 3).
+///
+/// Quotes [received] back, because the whole point is that the bytes explain
+/// themselves: `-T` already keeps a pty from echoing the stream, and `ssh`'s
+/// own stderr already explains a connection that never opened, but neither
+/// covers a connection that opens and is then talked over. What a user needs
+/// to see is their own login banner sitting where a version frame should be.
+class PeerNotSpeakingProtocolException implements Exception {
+  /// The first bytes of the connection, as `FrameCodec` buffered them before
+  /// giving up — capped, so this never holds more than a glance's worth.
+  final List<int> received;
+
+  /// Whether more arrived than [received] holds.
+  final bool truncated;
+
+  const PeerNotSpeakingProtocolException(
+    this.received, {
+    this.truncated = false,
+  });
+
+  @override
+  String toString() =>
+      'The peer is not speaking the dsync protocol (SPEC §4.2). In place of '
+      'a version frame it sent:\n\n'
+      '${_indented(_asText(received))}${truncated ? '\n  …' : ''}\n\n'
+      'The connection itself opened, so this is not an ssh failure — '
+      'something on the far side is writing to stdout, which is the stream '
+      'the protocol runs over. sshd sources ~/.bashrc and friends even for a '
+      'non-interactive command, so a login banner, an motd echo or a version '
+      'manager greeting all land here. The shell that runs '
+      '`dsync agent --stdio` has to say nothing on stdout.';
+}
+
+/// [bytes] as the text a human can recognize, with everything unprintable
+/// replaced — a remote that sent escape sequences must not get to drive the
+/// terminal this is printed to. Tabs and newlines are kept: they are what
+/// make a banner look like the banner it is.
+String _asText(List<int> bytes) => utf8
+    .decode(bytes, allowMalformed: true)
+    .replaceAll(RegExp(r'[\x00-\x08\x0b-\x1f\x7f]'), '.')
+    .trimRight();
+
+String _indented(String text) =>
+    text.split('\n').map((line) => '  $line').join('\n');
 
 /// Thrown by [performVersionHandshake] when the peer speaks a different
 /// protocol version (SPEC §4.2) — fatal for the caller (SPEC §11.5 exit 3).
