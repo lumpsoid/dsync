@@ -397,6 +397,65 @@ void main() {
       expect(archiveA.entries['good.txt']?.hash, 'good-hash');
     }, testOn: 'linux');
 
+    test('a delete whose second archive commit fails still leaves the first '
+        'side\'s commit landed (FailedPath does not guarantee neither side '
+        'committed) — the copyAtoB equivalent of this is already covered end '
+        'to end by crash_safety_test.dart', () async {
+      await agentA.archiveCommitUpsert(
+        const ArchiveEntry(
+          path: 'sub/a.txt',
+          size: 3,
+          mtime: 1,
+          mode: 420,
+          hash: 'old',
+        ),
+      );
+      await agentB.archiveCommitUpsert(
+        const ArchiveEntry(
+          path: 'sub/a.txt',
+          size: 3,
+          mtime: 1,
+          mode: 420,
+          hash: 'old',
+        ),
+      );
+      await Directory('${replicaADir.path}/sub').create();
+      final file = File('${replicaADir.path}/sub/a.txt')
+        ..writeAsStringSync('bye');
+
+      // Applier._delete commits agentA's tombstone first, agentB's
+      // second (SPEC §7.3). Wrapping only agentB's archiveCommitDelete
+      // simulates a crash landing A's commit durably while B's is lost.
+      final crashingB = _CrashingDeleteAgent(agentB, crashOn: {'sub/a.txt'});
+
+      final plan = Plan(
+        actions: [
+          const PlanAction(path: 'sub/a.txt', type: ActionType.deleteOnA),
+        ],
+        conflicts: [],
+      );
+
+      final result = await Applier().apply(plan, [], [], agentA, crashingB);
+
+      expect(result.applied, isEmpty);
+      expect(result.failed, hasLength(1));
+      expect(result.failed.single.path, 'sub/a.txt');
+
+      // The filesystem delete already ran before either archive commit,
+      // so it happened regardless of the later commit failure.
+      expect(await file.exists(), isFalse);
+
+      // A's commit is the first of the two and landed durably even though
+      // the whole action is recorded as `failed`, not `applied`.
+      final archiveA = await reloadA();
+      expect(archiveA.entries.containsKey('sub/a.txt'), isFalse);
+
+      // B's commit is the one that threw: it never landed, so B's
+      // pre-delete entry is still there.
+      final archiveB = await reloadB();
+      expect(archiveB.entries['sub/a.txt']?.hash, 'old');
+    }, testOn: 'linux');
+
     test(
       'a short transfer fails the path instead of archiving a wrong hash',
       () async {
@@ -534,6 +593,67 @@ class _FailingWriteAgent implements Agent {
 
   @override
   Future<void> compact() async {}
+
+  @override
+  Future<void> disconnect() async {}
+}
+
+/// Wraps a real [Agent], delegating every method to it by default, except
+/// [archiveCommitDelete] which throws the first time it's called for a path
+/// in [crashOn] — simulating a crash after the *other* side's tombstone
+/// commit already landed durably, but before this side's own does (SPEC
+/// §7.3). Mirrors `_CrashingCommitAgent` in crash_safety_test.dart, but for
+/// the delete/tombstone commit instead of the upsert commit.
+class _CrashingDeleteAgent implements Agent {
+  final Agent _wrapped;
+  final Set<String> crashOn;
+  final Set<String> _alreadyCrashed = {};
+
+  _CrashingDeleteAgent(this._wrapped, {required this.crashOn});
+
+  @override
+  Future<ReplicaInfo> hello() => _wrapped.hello();
+
+  @override
+  Future<void> lock() => _wrapped.lock();
+
+  @override
+  Future<void> unlock() => _wrapped.unlock();
+
+  @override
+  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+
+  @override
+  Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
+
+  @override
+  Future<FileMetadata> writeFile(
+    String path,
+    Stream<List<int>> data, {
+    required int mtime,
+    required int mode,
+  }) => _wrapped.writeFile(path, data, mtime: mtime, mode: mode);
+
+  @override
+  Future<void> delete(String path) => _wrapped.delete(path);
+
+  @override
+  Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
+
+  @override
+  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
+      _wrapped.archiveCommitUpsert(entry);
+
+  @override
+  Future<void> archiveCommitDelete(String path) async {
+    if (crashOn.contains(path) && _alreadyCrashed.add(path)) {
+      throw Exception('simulated crash committing delete of $path');
+    }
+    await _wrapped.archiveCommitDelete(path);
+  }
+
+  @override
+  Future<void> compact() => _wrapped.compact();
 
   @override
   Future<void> disconnect() async {}

@@ -9,7 +9,10 @@ class AppliedPath {
 }
 
 /// One path an [Applier] could not apply (SPEC §7.6). The path is left in
-/// whatever state it reached; neither archive was committed for it.
+/// whatever state it reached (temp files cleaned up) — that is the only
+/// guarantee. Each action commits its two archives one after the other, so a
+/// failure between them can leave one side already committed; SPEC §7.3 is
+/// designed around exactly that gap, so it is safe, not a defect to fix here.
 class FailedPath {
   final String path;
   final ActionType type;
