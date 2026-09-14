@@ -52,8 +52,8 @@ void _expectSingleAction(
   expect(result.single.bytes, bytes);
 }
 
-const _entryA = ScanEntry(path: 'p', status: ScanStatus.modified, size: 10);
-const _entryB = ScanEntry(path: 'p', status: ScanStatus.modified, size: 20);
+const _entryA = ScanEntry(path: 'p', reason: ScanReason.modified, size: 10);
+const _entryB = ScanEntry(path: 'p', reason: ScanReason.modified, size: 20);
 
 void main() {
   group('InteractivePresenter', () {

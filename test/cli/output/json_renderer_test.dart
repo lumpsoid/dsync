@@ -161,12 +161,12 @@ void main() {
             conflicts: [
               Conflict(
                 path: 'c.txt',
-                onA: ScanEntry(path: 'c.txt', status: ScanStatus.modified),
-                onB: ScanEntry(path: 'c.txt', status: ScanStatus.deleted),
+                onA: ScanEntry(path: 'c.txt', reason: ScanReason.modified),
+                onB: ScanEntry(path: 'c.txt', reason: ScanReason.deleted),
               ),
               Conflict(
                 path: 'd.txt',
-                onB: ScanEntry(path: 'd.txt', status: ScanStatus.created),
+                onB: ScanEntry(path: 'd.txt', reason: ScanReason.created),
               ),
             ],
           ),
@@ -180,13 +180,21 @@ void main() {
           {'path': 'b.txt', 'actionType': 'deleteOnB', 'bytes': 0},
         ]);
         expect(decoded['conflicts'], [
-          {'path': 'c.txt', 'onA': 'modified', 'onB': 'deleted'},
-          {'path': 'd.txt', 'onB': 'created'},
+          {
+            'path': 'c.txt',
+            'onA': 'modified',
+            'onAReason': 'modified',
+            'onB': 'deleted',
+            'onBReason': 'deleted',
+          },
+          {'path': 'd.txt', 'onB': 'created', 'onBReason': 'created'},
         ]);
-        // A side with no record at all omits its key rather than emitting
-        // `null` (matches control_message.dart's `*ToJson` null-omission
-        // convention).
-        expect((decoded['conflicts'] as List).last, isNot(contains('onA')));
+        // A side with no record at all omits its key (and its reason) rather
+        // than emitting `null` (matches control_message.dart's `*ToJson`
+        // null-omission convention).
+        final lastConflict = (decoded['conflicts'] as List).last;
+        expect(lastConflict, isNot(contains('onA')));
+        expect(lastConflict, isNot(contains('onAReason')));
       },
     );
 
@@ -206,13 +214,13 @@ void main() {
       });
     });
 
-    test('conflict: path and each side\'s status', () async {
+    test('conflict: path and each side\'s status and reason', () async {
       final r = _Rendered();
       const event = RunConflictEvent(
         Conflict(
           path: 'c.txt',
-          onA: ScanEntry(path: 'c.txt', status: ScanStatus.modified),
-          onB: ScanEntry(path: 'c.txt', status: ScanStatus.deleted),
+          onA: ScanEntry(path: 'c.txt', reason: ScanReason.modified),
+          onB: ScanEntry(path: 'c.txt', reason: ScanReason.deleted),
         ),
       );
 
@@ -222,8 +230,29 @@ void main() {
         'type': 'conflict',
         'path': 'c.txt',
         'onA': 'modified',
+        'onAReason': 'modified',
         'onB': 'deleted',
+        'onBReason': 'deleted',
       });
+    });
+
+    test("conflict: a side's reason distinguishes ScanStatus.unchanged's two "
+        'possible causes (SPEC §5.2), unlike its status alone', () async {
+      final r = _Rendered();
+      const event = RunConflictEvent(
+        Conflict(
+          path: 'c.txt',
+          onA: ScanEntry(path: 'c.txt', reason: ScanReason.metadataMatched),
+          onB: ScanEntry(path: 'c.txt', reason: ScanReason.hashMatched),
+        ),
+      );
+
+      final decoded = (await _renderAll(r, [event])).single;
+
+      expect(decoded['onA'], 'unchanged');
+      expect(decoded['onAReason'], 'metadataMatched');
+      expect(decoded['onB'], 'unchanged');
+      expect(decoded['onBReason'], 'hashMatched');
     });
 
     test('conflict: a side with no record omits its key, not a null', () async {
@@ -231,14 +260,16 @@ void main() {
       const event = RunConflictEvent(
         Conflict(
           path: 'new.txt',
-          onB: ScanEntry(path: 'new.txt', status: ScanStatus.created),
+          onB: ScanEntry(path: 'new.txt', reason: ScanReason.created),
         ),
       );
 
       final decoded = (await _renderAll(r, [event])).single;
 
       expect(decoded.containsKey('onA'), isFalse);
+      expect(decoded.containsKey('onAReason'), isFalse);
       expect(decoded['onB'], 'created');
+      expect(decoded['onBReason'], 'created');
     });
 
     test('action: path, action type, and bytes moved', () async {
@@ -338,8 +369,8 @@ void main() {
         const RunConflictEvent(
           Conflict(
             path: 'c.txt',
-            onA: ScanEntry(path: 'c.txt', status: ScanStatus.modified),
-            onB: ScanEntry(path: 'c.txt', status: ScanStatus.deleted),
+            onA: ScanEntry(path: 'c.txt', reason: ScanReason.modified),
+            onB: ScanEntry(path: 'c.txt', reason: ScanReason.deleted),
           ),
         ),
         const RunPlanEvent(

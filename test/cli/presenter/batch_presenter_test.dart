@@ -23,8 +23,8 @@ void main() {
         conflicts: [
           Conflict(
             path: 'conflicted.txt',
-            onA: ScanEntry(path: 'conflicted.txt', status: ScanStatus.modified),
-            onB: ScanEntry(path: 'conflicted.txt', status: ScanStatus.modified),
+            onA: ScanEntry(path: 'conflicted.txt', reason: ScanReason.modified),
+            onB: ScanEntry(path: 'conflicted.txt', reason: ScanReason.modified),
           ),
         ],
       );

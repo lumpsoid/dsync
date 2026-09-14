@@ -142,13 +142,23 @@ Map<String, dynamic> _actionToJson(PlanAction action) => {
 
 /// One [Conflict], as it appears standalone on a `conflict` line and nested
 /// in a `plan` line's `conflicts` list. A side with no record of the path at
-/// all (`onA`/`onB` null, per [Conflict]'s own doc comment) omits that key,
-/// matching the null-omission convention `control_message.dart`'s `*ToJson`
-/// helpers use.
+/// all (`onA`/`onB` null, per [Conflict]'s own doc comment) omits that key
+/// (and its paired `onAReason`/`onBReason`), matching the null-omission
+/// convention `control_message.dart`'s `*ToJson` helpers use.
+///
+/// `onAReason`/`onBReason` (task 8a3ff1) carry [ScanEntry.reason] — which of
+/// SPEC §5.2's branches produced that side's status — unconditionally
+/// alongside `onA`/`onB`, not gated behind `--verbose` the way
+/// `HumanRenderer` gates it: `--json` is machine-readable and this is a fact
+/// about the scan, not commentary for a human, and SPEC §11.4 fixes the
+/// `conflict` line's type rather than its field set, so adding a field here
+/// stays inside that contract where inventing a tenth line type would not.
 Map<String, dynamic> _conflictToJson(Conflict conflict) => {
   'path': conflict.path,
   if (conflict.onA != null) 'onA': conflict.onA!.status.name,
+  if (conflict.onA != null) 'onAReason': conflict.onA!.reason.name,
   if (conflict.onB != null) 'onB': conflict.onB!.status.name,
+  if (conflict.onB != null) 'onBReason': conflict.onB!.reason.name,
 };
 
 /// One side of a `replicas` line (task ee190c's DECIDED): this side's

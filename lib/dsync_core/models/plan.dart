@@ -13,6 +13,19 @@ enum ActionType {
 }
 
 /// One path's resolution in a [Plan] (SPEC §6).
+///
+/// Deliberately carries no [ScanReason] (task 8a3ff1): unlike [Conflict],
+/// which already holds both sides' whole [ScanEntry] and so gets a reason
+/// for free, a [PlanAction] has no natural single entry to attribute one to
+/// — `commitOnly` touches both sides' archives equally, and for a copy the
+/// reason that would matter (why the *source* side's status is what it is)
+/// never changes which [ActionType] the [Reconciler] picked, since the
+/// table above and below it compares hashes either way, fast-pathed or not.
+/// The reason that changes a human's decision lives on [Conflict], where it
+/// already reaches the renderer; adding it here would mean threading a
+/// second, often-irrelevant [ScanReason] through every call site in
+/// `_resolveCell` for a value that never explains anything the resulting
+/// [ActionType] doesn't already.
 class PlanAction {
   final String path;
   final ActionType type;
@@ -30,6 +43,11 @@ class PlanAction {
 /// A path the [Reconciler] could not resolve on its own (SPEC §6: "Conflicts
 /// are never auto-resolved"). `null` on either side means that side has no
 /// record of the path at all — the other side scanned it fresh.
+///
+/// Holding the whole [ScanEntry] rather than just its [ScanStatus] means
+/// [onA]'s and [onB]'s [ScanEntry.reason] — which of SPEC §5.2's branches
+/// produced that status — reaches [Conflict] for free (task 8a3ff1); SPEC
+/// §11.4's verbose output renders it.
 class Conflict {
   final String path;
   final ScanEntry? onA;

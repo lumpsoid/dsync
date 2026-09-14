@@ -166,7 +166,7 @@ class Scanner {
       context.fastPath.add(
         ScanEntry(
           path: relativePath,
-          status: ScanStatus.unchanged,
+          reason: ScanReason.metadataMatched,
           size: size,
           mtime: mtime,
           mode: mode,
@@ -277,15 +277,15 @@ class _HashCandidate {
     final digest = await _digestOf(absolutePath, size);
 
     final existing = this.existing;
-    final status = existing == null
-        ? ScanStatus.created
+    final reason = existing == null
+        ? ScanReason.created
         : (existing.hash == digest
-              ? ScanStatus.unchanged
-              : ScanStatus.modified);
+              ? ScanReason.hashMatched
+              : ScanReason.modified);
 
     return ScanEntry(
       path: path,
-      status: status,
+      reason: reason,
       size: size,
       mtime: mtime,
       mode: mode,

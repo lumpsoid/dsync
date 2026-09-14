@@ -123,7 +123,7 @@ void main() {
       final entries = ((scanReply as AgentSuccess).data['entries'] as List)
           .cast<Map<String, dynamic>>();
       expect(entries.single['path'], 'a.txt');
-      expect(entries.single['status'], 'created');
+      expect(entries.single['reason'], 'created');
 
       await process.stdin.close();
       final exitCode = await process.exitCode.timeout(

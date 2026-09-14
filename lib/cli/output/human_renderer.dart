@@ -71,12 +71,14 @@ class ReplicaDiagnostics {
 ///   table, conflicts, skipped-symlink notes, progress, summary.
 /// - [Verbosity.verbose] — everything [Verbosity.normal] shows, plus (via
 ///   [renderPreamble]) the effective ignore/follow rules and each side's
-///   resolved archive/lock paths and ssh argv. The fourth DECIDED item — the
-///   per-path reason behind each status, which of SPEC §5.2's branches
-///   decided it — has nowhere to come from: no [RunEvent] carries it and
-///   neither does [ScanEntry], which has only [ScanEntry.status], not a
-///   rationale. Filed separately rather than rendered here; see the
-///   per-method notes below for exactly what is and isn't available.
+///   resolved archive/lock paths and ssh argv, and (per-path, on
+///   [_renderConflict]) the fourth DECIDED item — the reason behind each
+///   status, which of SPEC §5.2's branches decided it (task 8a3ff1's
+///   [ScanEntry.reason]). Only [_renderConflict] shows it: it is the one
+///   per-path line that already shows a raw [ScanStatus] at all — plan and
+///   result lines show [ActionType] instead, which the reason never changes
+///   (see [ScanReason]'s doc comment and `PlanAction`'s), so there is
+///   nothing for it to add there.
 ///
 /// SPEC §11.4's run header — "which replicas, and when this pair last
 /// synced" (task ee190c) — is [render]ed like any other event, from a
@@ -329,13 +331,12 @@ class HumanRenderer {
   }
 
   /// SPEC §6: a path the `Reconciler` could not resolve on its own. Shows
-  /// each side's [ScanStatus] — the one piece of "why this is a conflict"
-  /// that actually reaches a [RunEvent]. The finer reason SPEC §5.2 would
-  /// give (which fast-path branch produced that status: mtime+size match,
-  /// hash match, hash mismatch, ...) is not on [ScanEntry] at all — it only
-  /// has [ScanEntry.status], not a rationale — so [Verbosity.verbose] cannot
-  /// add anything more here without a core model change, which is out of
-  /// this task's scope (see the report back to the task owner).
+  /// each side's [ScanStatus] always, and — at [Verbosity.verbose] only — the
+  /// [ScanReason] behind it (SPEC §11.4, task 8a3ff1): which of SPEC §5.2's
+  /// branches decided that status, e.g. the fast path never hashing versus a
+  /// rehash confirming the content actually matched despite a metadata
+  /// drift. Those two reasons both show as `unchanged` without [_describeSide]
+  /// naming the branch, so this is exactly the case the task exists for.
   void _renderConflict(RunConflictEvent event) {
     final conflict = event.conflict;
     out.writeln(
@@ -345,8 +346,23 @@ class HumanRenderer {
     );
   }
 
-  String _describeSide(ScanEntry? entry) =>
-      entry == null ? 'absent' : entry.status.name;
+  String _describeSide(ScanEntry? entry) {
+    if (entry == null) return 'absent';
+    if (verbosity != Verbosity.verbose) return entry.status.name;
+    return '${entry.status.name} [${_describeReason(entry.reason)}]';
+  }
+
+  /// SPEC §5.2's branches, worded for a human reading a conflict line
+  /// ([_describeSide], [Verbosity.verbose] only) — mirrors
+  /// [_describeActionType]'s job of translating an enum into the table's own
+  /// notation rather than its camelCase name.
+  String _describeReason(ScanReason reason) => switch (reason) {
+    ScanReason.metadataMatched => 'size/mtime matched archive, not rehashed',
+    ScanReason.hashMatched => 'size/mtime drifted, rehash matched archive',
+    ScanReason.modified => 'rehash differed from archive',
+    ScanReason.created => 'no archive entry',
+    ScanReason.deleted => 'archive entry, file absent',
+  };
 
   /// SPEC §11.3/§11.4: the plan table, shown before apply. Conflicts are not
   /// repeated here — they already printed as their own [RunConflictEvent]s,

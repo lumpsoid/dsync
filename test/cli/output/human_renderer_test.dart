@@ -102,8 +102,8 @@ const _plan = RunPlanEvent(
 const _conflict = RunConflictEvent(
   Conflict(
     path: 'c.txt',
-    onA: ScanEntry(path: 'c.txt', status: ScanStatus.modified),
-    onB: ScanEntry(path: 'c.txt', status: ScanStatus.deleted),
+    onA: ScanEntry(path: 'c.txt', reason: ScanReason.modified),
+    onB: ScanEntry(path: 'c.txt', reason: ScanReason.deleted),
   ),
 );
 
@@ -173,6 +173,17 @@ void main() {
       r.renderer.render(_conflict);
 
       expect(r.out.buffer.toString(), contains('c.txt'));
+    });
+
+    test('does not show the reason behind either side\'s status '
+        '(verbose-only, SPEC §11.4, task 8a3ff1)', () {
+      final r = _Rendered();
+      r.renderer.render(_conflict);
+
+      expect(
+        r.out.buffer.toString(),
+        isNot(contains('rehash differed from archive')),
+      );
     });
 
     test('renders a skipped symlink for each side (SPEC §5.1)', () {
@@ -426,6 +437,34 @@ void main() {
       expect(output, contains('c.txt'));
       expect(output, contains('a.txt'));
       expect(output, contains('link'));
+    });
+
+    test('shows the reason behind each side\'s status on a conflict line '
+        '(SPEC §11.4, task 8a3ff1)', () {
+      final r = _Rendered(verbosity: Verbosity.verbose);
+      r.renderer.render(_conflict);
+
+      final output = r.out.buffer.toString();
+      // _conflict: onA is ScanReason.modified, onB is ScanReason.deleted.
+      expect(output, contains('rehash differed from archive'));
+      expect(output, contains('archive entry, file absent'));
+    });
+
+    test('distinguishes ScanStatus.unchanged\'s two reasons, which a bare '
+        'status cannot (SPEC §5.2: fast path vs. a rehash that matched)', () {
+      const conflict = RunConflictEvent(
+        Conflict(
+          path: 'c.txt',
+          onA: ScanEntry(path: 'c.txt', reason: ScanReason.metadataMatched),
+          onB: ScanEntry(path: 'c.txt', reason: ScanReason.hashMatched),
+        ),
+      );
+      final r = _Rendered(verbosity: Verbosity.verbose);
+      r.renderer.render(conflict);
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('size/mtime matched archive, not rehashed'));
+      expect(output, contains('size/mtime drifted, rehash matched archive'));
     });
   });
 

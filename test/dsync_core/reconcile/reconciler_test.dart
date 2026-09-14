@@ -6,6 +6,16 @@ import 'package:test/test.dart';
 void main() {
   final reconciler = Reconciler();
 
+  // The reconciler only ever reads `.status`/`.hash`/`.size` (SPEC §6's table
+  // is defined over statuses, not reasons), so any reason that implies the
+  // requested status is an equally valid stand-in here.
+  ScanReason reasonFor(ScanStatus status) => switch (status) {
+    ScanStatus.unchanged => ScanReason.metadataMatched,
+    ScanStatus.created => ScanReason.created,
+    ScanStatus.modified => ScanReason.modified,
+    ScanStatus.deleted => ScanReason.deleted,
+  };
+
   ScanEntry entry(
     String path,
     ScanStatus status, {
@@ -17,7 +27,7 @@ void main() {
     if (status == ScanStatus.deleted) return ScanEntry.deleted(path);
     return ScanEntry(
       path: path,
-      status: status,
+      reason: reasonFor(status),
       size: size,
       mtime: mtime,
       mode: mode,

@@ -124,7 +124,37 @@ void main() {
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);
+      expect(entry.reason, ScanReason.created);
     });
+
+    test(
+      'a reason survives the wire even for the fast path that never hashes',
+      () async {
+        // Round-trips a real scan through commit and back so the second scan
+        // takes SPEC §5.2 step 1 on the *remote* side — proving
+        // ScanEntry.reason (task 8a3ff1) isn't lost crossing
+        // scanEntryToJson/scanEntryFromJson the way a value only computed
+        // for the in-process case would be.
+        await File('${replicaDir.path}/a.txt').writeAsString('hello');
+        final firstScan = (await remote.scan(RuleSet())).entries
+            .firstWhere((e) => e.path == 'a.txt');
+
+        await remote.archiveCommitUpsert(
+          ArchiveEntry(
+            path: firstScan.path,
+            size: firstScan.size!,
+            mtime: firstScan.mtime!,
+            mode: firstScan.mode!,
+            hash: firstScan.hash!,
+          ),
+        );
+
+        final secondScan = (await remote.scan(RuleSet())).entries
+            .firstWhere((e) => e.path == 'a.txt');
+        expect(secondScan.status, ScanStatus.unchanged);
+        expect(secondScan.reason, ScanReason.metadataMatched);
+      },
+    );
 
     test('applies the initiator ignore rules on the remote side', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');

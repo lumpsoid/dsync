@@ -75,7 +75,7 @@ void main() {
       agent.scanResult = [
         const ScanEntry(
           path: 'a.txt',
-          status: ScanStatus.created,
+          reason: ScanReason.created,
           size: 1,
           mtime: 1,
           mode: 420,
@@ -90,7 +90,7 @@ void main() {
       final entries = (result.data['entries'] as List)
           .cast<Map<String, dynamic>>();
       expect(entries.single['path'], 'a.txt');
-      expect(entries.single['status'], 'created');
+      expect(entries.single['reason'], 'created');
     });
 
     test("hands the request's rules to the agent", () async {

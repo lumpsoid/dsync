@@ -45,6 +45,7 @@ void main() {
 
       final entry = entryFor(entries, 'a.txt');
       expect(entry.status, ScanStatus.created);
+      expect(entry.reason, ScanReason.created);
       expect(entry.hash, hashOf('hello'));
       expect(entry.size, 5);
     });
@@ -86,6 +87,7 @@ void main() {
 
       final entry = entryFor(entries, 'a.txt');
       expect(entry.status, ScanStatus.unchanged);
+      expect(entry.reason, ScanReason.metadataMatched);
       // Proves the fast path never rehashed: a real hash of "hello" would
       // never equal this sentinel.
       expect(entry.hash, 'sentinel-not-recomputed');
@@ -112,6 +114,11 @@ void main() {
 
       final entry = entryFor(entries, 'a.txt');
       expect(entry.status, ScanStatus.unchanged);
+      // The branch that's easy to miss: mtime moved, so the fast path
+      // couldn't apply, but the rehash proved the content never changed —
+      // distinct from ScanReason.metadataMatched, and from ScanReason
+      // .modified, which a status-only check couldn't tell apart.
+      expect(entry.reason, ScanReason.hashMatched);
       expect(entry.mtime, realMtime);
       expect(entry.size, stat.size);
     });
@@ -140,6 +147,7 @@ void main() {
 
         final entry = entryFor(entries, 'a.txt');
         expect(entry.status, ScanStatus.modified);
+        expect(entry.reason, ScanReason.modified);
         expect(entry.hash, hashOf('hello v2'));
       },
     );
@@ -162,6 +170,7 @@ void main() {
 
       final entry = entryFor(entries, 'gone.txt');
       expect(entry.status, ScanStatus.deleted);
+      expect(entry.reason, ScanReason.deleted);
       expect(entry.size, isNull);
       expect(entry.mtime, isNull);
       expect(entry.hash, isNull);

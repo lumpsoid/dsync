@@ -188,9 +188,18 @@ ScanResult scanResultFromJson(Map<String, dynamic> json) => ScanResult(
       .cast<String>(),
 );
 
+/// Encodes [entry] with [ScanEntry.reason], not the coarser [ScanEntry.status]
+/// it derives — [ScanReason] is the sum type that actually decides the
+/// entry's state (see its doc comment), so it is the one fact this wire
+/// format needs; re-deriving [ScanStatus] after decode via [ScanEntry.status]
+/// can never disagree with it, the way sending both independently could.
+/// [protocolVersion] was not bumped for this (SPEC §4.2): nothing is
+/// deployed, matching the precedent set by `hello`'s own last field
+/// addition, so an agent built before this field existed cannot serve a
+/// `scan` request, but nothing older is out there to break.
 Map<String, dynamic> scanEntryToJson(ScanEntry entry) => {
   'path': entry.path,
-  'status': entry.status.name,
+  'reason': entry.reason.name,
   if (entry.size != null) 'size': entry.size,
   if (entry.mtime != null) 'mtime': entry.mtime,
   if (entry.mode != null) 'mode': entry.mode,
@@ -199,7 +208,7 @@ Map<String, dynamic> scanEntryToJson(ScanEntry entry) => {
 
 ScanEntry scanEntryFromJson(Map<String, dynamic> json) => ScanEntry(
   path: json['path'] as String,
-  status: ScanStatus.values.byName(json['status'] as String),
+  reason: ScanReason.values.byName(json['reason'] as String),
   size: json['size'] as int?,
   mtime: json['mtime'] as int?,
   mode: json['mode'] as int?,

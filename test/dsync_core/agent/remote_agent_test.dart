@@ -73,7 +73,7 @@ void main() {
       backing.scanResult = [
         const ScanEntry(
           path: 'a.txt',
-          status: ScanStatus.created,
+          reason: ScanReason.created,
           size: 1,
           mtime: 1,
           mode: 420,

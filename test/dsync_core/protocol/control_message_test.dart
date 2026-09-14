@@ -58,7 +58,7 @@ void main() {
     test('round-trips a fully populated entry', () {
       const entry = ScanEntry(
         path: 'a.txt',
-        status: ScanStatus.modified,
+        reason: ScanReason.modified,
         size: 5,
         mtime: 123,
         mode: 420,
@@ -69,6 +69,7 @@ void main() {
 
       expect(decoded.path, entry.path);
       expect(decoded.status, entry.status);
+      expect(decoded.reason, entry.reason);
       expect(decoded.size, entry.size);
       expect(decoded.mtime, entry.mtime);
       expect(decoded.mode, entry.mode);
@@ -81,11 +82,47 @@ void main() {
       final decoded = scanEntryFromJson(scanEntryToJson(entry));
 
       expect(decoded.status, ScanStatus.deleted);
+      expect(decoded.reason, ScanReason.deleted);
       expect(decoded.size, isNull);
       expect(decoded.mtime, isNull);
       expect(decoded.mode, isNull);
       expect(decoded.hash, isNull);
     });
+
+    test(
+      "round-trips the two reasons behind ScanStatus.unchanged distinctly "
+      '(SPEC §5.2: metadata match vs. a rehash that confirmed the content)',
+      () {
+        const metadataMatched = ScanEntry(
+          path: 'a.txt',
+          reason: ScanReason.metadataMatched,
+          size: 5,
+          mtime: 123,
+          mode: 420,
+          hash: 'deadbeef',
+        );
+        const hashMatched = ScanEntry(
+          path: 'a.txt',
+          reason: ScanReason.hashMatched,
+          size: 5,
+          mtime: 123,
+          mode: 420,
+          hash: 'deadbeef',
+        );
+
+        final decodedMetadataMatched = scanEntryFromJson(
+          scanEntryToJson(metadataMatched),
+        );
+        final decodedHashMatched = scanEntryFromJson(
+          scanEntryToJson(hashMatched),
+        );
+
+        expect(decodedMetadataMatched.status, ScanStatus.unchanged);
+        expect(decodedMetadataMatched.reason, ScanReason.metadataMatched);
+        expect(decodedHashMatched.status, ScanStatus.unchanged);
+        expect(decodedHashMatched.reason, ScanReason.hashMatched);
+      },
+    );
   });
 
   group('archiveEntryToJson / archiveEntryFromJson', () {

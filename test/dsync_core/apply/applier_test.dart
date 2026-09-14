@@ -66,7 +66,7 @@ void main() {
       final mtime = DateTime.utc(2024, 1, 1).microsecondsSinceEpoch;
       final sourceEntry = ScanEntry(
         path: 'a.txt',
-        status: ScanStatus.created,
+        reason: ScanReason.created,
         size: 5,
         mtime: mtime,
         mode: 420, // 0644
@@ -112,7 +112,7 @@ void main() {
       final mtime = DateTime.utc(2023, 6, 15).microsecondsSinceEpoch;
       final sourceEntry = ScanEntry(
         path: 'b.txt',
-        status: ScanStatus.created,
+        reason: ScanReason.created,
         size: 5,
         mtime: mtime,
         mode: 420,
@@ -244,7 +244,7 @@ void main() {
 
         final entryA = ScanEntry(
           path: 'same.txt',
-          status: ScanStatus.modified,
+          reason: ScanReason.modified,
           size: 4,
           mtime: statBeforeA.modified.microsecondsSinceEpoch,
           mode: 420,
@@ -252,7 +252,7 @@ void main() {
         );
         final entryB = ScanEntry(
           path: 'same.txt',
-          status: ScanStatus.unchanged,
+          reason: ScanReason.metadataMatched,
           size: 4,
           mtime: statBeforeB.modified.microsecondsSinceEpoch,
           mode: 420,
@@ -347,7 +347,7 @@ void main() {
 
       final badEntry = ScanEntry(
         path: 'bad.txt',
-        status: ScanStatus.created,
+        reason: ScanReason.created,
         size: 17,
         mtime: mtime,
         mode: 420,
@@ -355,7 +355,7 @@ void main() {
       );
       final goodEntry = ScanEntry(
         path: 'good.txt',
-        status: ScanStatus.created,
+        reason: ScanReason.created,
         size: 7,
         mtime: mtime,
         mode: 420,
@@ -465,7 +465,7 @@ void main() {
 
         final entry = ScanEntry(
           path: 'a.txt',
-          status: ScanStatus.created,
+          reason: ScanReason.created,
           size: 5,
           mtime: mtime,
           mode: 420,
@@ -513,7 +513,7 @@ void main() {
 
       ScanEntry entry(String path, int size, String hash) => ScanEntry(
         path: path,
-        status: ScanStatus.created,
+        reason: ScanReason.created,
         size: size,
         mtime: mtime,
         mode: 420,
@@ -576,7 +576,7 @@ void main() {
         final entries = [
           ScanEntry(
             path: 'first.txt',
-            status: ScanStatus.created,
+            reason: ScanReason.created,
             size: 5,
             mtime: mtime,
             mode: 420,
@@ -584,7 +584,7 @@ void main() {
           ),
           ScanEntry(
             path: 'second.txt',
-            status: ScanStatus.created,
+            reason: ScanReason.created,
             size: 6,
             mtime: mtime,
             mode: 420,
