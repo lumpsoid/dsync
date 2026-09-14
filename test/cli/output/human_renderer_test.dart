@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:test/test.dart';
 
 /// A synchronous fake [IOSink] backed by a [StringBuffer], so a test reads
@@ -467,6 +468,84 @@ void main() {
       expect(output, contains('size/mtime drifted, rehash matched archive'));
     });
   });
+
+  group(
+    'HumanRenderer.render(RunScanTallyEvent) (SPEC §5.2, §11.4, task 1fd42b)',
+    () {
+      const scanTally = RunScanTallyEvent(
+        tallyA: ScanReasonTally(
+          metadataMatched: 47,
+          hashMatched: 3,
+          modified: 0,
+          created: 0,
+          deleted: 0,
+        ),
+        tallyB: ScanReasonTally(
+          metadataMatched: 10,
+          hashMatched: 38,
+          modified: 0,
+          created: 0,
+          deleted: 0,
+        ),
+      );
+
+      test('is silent at Verbosity.quiet', () {
+        final r = _Rendered(verbosity: Verbosity.quiet);
+        r.renderer.render(scanTally);
+
+        expect(r.out.buffer.toString(), isEmpty);
+      });
+
+      test('is silent at Verbosity.normal, unlike most other events', () {
+        final r = _Rendered();
+        r.renderer.render(scanTally);
+
+        expect(r.out.buffer.toString(), isEmpty);
+      });
+
+      test('at Verbosity.verbose, shows each side\'s total scanned and how '
+          'many it had to rehash to confirm unchanged', () {
+        final r = _Rendered(verbosity: Verbosity.verbose);
+        r.renderer.render(scanTally);
+
+        final output = r.out.buffer.toString();
+        expect(output, contains('scan A'));
+        expect(output, contains('50 path(s) scanned'));
+        expect(output, contains('3 rehashed'));
+        expect(output, contains('scan B'));
+        expect(output, contains('48 path(s) scanned'));
+        expect(output, contains('38 rehashed'));
+      });
+
+      test('a side that never needed a rehash still shows a zero, not a '
+          'missing line', () {
+        final r = _Rendered(verbosity: Verbosity.verbose);
+        r.renderer.render(
+          const RunScanTallyEvent(
+            tallyA: ScanReasonTally(
+              metadataMatched: 5,
+              hashMatched: 0,
+              modified: 0,
+              created: 0,
+              deleted: 0,
+            ),
+            tallyB: ScanReasonTally(
+              metadataMatched: 5,
+              hashMatched: 0,
+              modified: 0,
+              created: 0,
+              deleted: 0,
+            ),
+          ),
+        );
+
+        final output = r.out.buffer.toString();
+        expect(output, contains('scan A'));
+        expect(output, contains('scan B'));
+        expect(output, contains('0 rehashed'));
+      });
+    },
+  );
 
   group('HumanRenderer.renderPreamble (task e9b4b6 DECIDED verbose set)', () {
     final rules = RuleSet(ignore: const ['*.tmp'], follow: const ['links/**']);

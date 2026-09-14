@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 
 /// Run-level facts about one replica side, known before the run starts —
 /// resolved by whatever already computes them (`resolveArchiveLogPath`,
@@ -71,14 +72,17 @@ class ReplicaDiagnostics {
 ///   table, conflicts, skipped-symlink notes, progress, summary.
 /// - [Verbosity.verbose] — everything [Verbosity.normal] shows, plus (via
 ///   [renderPreamble]) the effective ignore/follow rules and each side's
-///   resolved archive/lock paths and ssh argv, and (per-path, on
+///   resolved archive/lock paths and ssh argv, (per-path, on
 ///   [_renderConflict]) the fourth DECIDED item — the reason behind each
 ///   status, which of SPEC §5.2's branches decided it (task 8a3ff1's
-///   [ScanEntry.reason]). Only [_renderConflict] shows it: it is the one
-///   per-path line that already shows a raw [ScanStatus] at all — plan and
-///   result lines show [ActionType] instead, which the reason never changes
-///   (see [ScanReason]'s doc comment and `PlanAction`'s), so there is
-///   nothing for it to add there.
+///   [ScanEntry.reason]) — and (on [_renderScanTally], task 1fd42b) the
+///   per-side scan fast-path tally: how many paths never needed a rehash
+///   versus how many did but turned out unchanged anyway, the one reason
+///   pair no other event ever reports (see [RunScanTallyEvent]'s own doc
+///   comment). [_renderConflict] is the one per-path line that already shows
+///   a raw [ScanStatus] at all — plan and result lines show [ActionType]
+///   instead, which the reason never changes (see [ScanReason]'s doc comment
+///   and `PlanAction`'s), so there is nothing for it to add there.
 ///
 /// SPEC §11.4's run header — "which replicas, and when this pair last
 /// synced" (task ee190c) — is [render]ed like any other event, from a
@@ -204,6 +208,12 @@ class HumanRenderer {
       // Everything else is silent at Verbosity.quiet.
       case RunReplicasEvent e:
         if (verbosity != Verbosity.quiet) _renderReplicas(e);
+      // Verbose-only (task 1fd42b, unlike the rest of this group): a bare
+      // dump of all five ScanReasons per side, most of them usually zero,
+      // would be noise at Verbosity.normal — see [_renderScanTally]'s own
+      // doc comment.
+      case RunScanTallyEvent e:
+        if (verbosity == Verbosity.verbose) _renderScanTally(e);
       case RunSkippedSymlinkEvent e:
         if (verbosity != Verbosity.quiet) _renderSkippedSymlink(e);
       case RunConflictEvent e:
@@ -320,6 +330,29 @@ class HumanRenderer {
     if (diff.inHours >= 1) return '${diff.inHours} hour(s) ago';
     if (diff.inMinutes >= 1) return '${diff.inMinutes} minute(s) ago';
     return 'just now';
+  }
+
+  /// SPEC §5.2's scan fast-path tally (SPEC §11.4, task 1fd42b), shown at
+  /// [Verbosity.verbose] only. A full breakdown of all five [ScanReason]s
+  /// per side would be noise — [ScanReasonTally.modified],
+  /// [ScanReasonTally.created], and [ScanReasonTally.deleted] already
+  /// surface through the plan and action lines, so repeating them here would
+  /// only echo what the user already saw. What does not appear anywhere
+  /// else, and what actually answers "why is this sync slow", is how many
+  /// paths a side scanned in total and how many of those needed a rehash
+  /// only to turn out unchanged — a side stuck doing that on every run is a
+  /// side worth investigating (a filesystem that rounds mtimes, most
+  /// commonly).
+  void _renderScanTally(RunScanTallyEvent event) {
+    _renderScanTallyLine('A', event.tallyA);
+    _renderScanTallyLine('B', event.tallyB);
+  }
+
+  void _renderScanTallyLine(String side, ScanReasonTally tally) {
+    out.writeln(
+      'scan $side: ${tally.total} path(s) scanned, '
+      '${tally.hashMatched} rehashed to confirm unchanged',
+    );
   }
 
   /// SPEC §5.1: a symlink the scan skipped rather than followed. [onA] says

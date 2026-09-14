@@ -255,6 +255,89 @@ void main() {
     }, testOn: 'linux');
   });
 
+  group('scan tally (SPEC §5.2, §11.4, task 1fd42b)', () {
+    test('a path whose archived mtime is stale but whose content did not '
+        'change scans hashMatched on that side, tallied apart from the other '
+        "side's fast path (metadataMatched)", () async {
+      await File('${replicaADir.path}/shared.txt')
+          .writeAsString('same content');
+      await File('${replicaBDir.path}/shared.txt')
+          .writeAsString('same content');
+
+      await RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      // Stale A's archived mtime without touching the file on disk, so
+      // A's next scan cannot take the fast path (SPEC §5.2 step 1) but
+      // the rehash it triggers finds the content unchanged (step 2, hash
+      // equal) — ScanReason.hashMatched. B's archive and file are left
+      // untouched, so B's next scan still takes the fast path —
+      // ScanReason.metadataMatched. Mirrors scanner_test.dart's "rehash
+      // with equal content refreshes size and mtime" construction, at the
+      // RunController level, where a real archive commit (not a
+      // hand-built one) is what a rounding-prone filesystem would
+      // actually produce (SPEC §15 point 6).
+      final staleEntry = (await reloadA()).entries['shared.txt']!;
+      await JsonlArchiveStore(archiveLogA, headerA).commitUpsert(
+        ArchiveEntry(
+          path: staleEntry.path,
+          size: staleEntry.size,
+          mtime: staleEntry.mtime - 1000000,
+          mode: staleEntry.mode,
+          hash: staleEntry.hash,
+        ),
+      );
+
+      final events = await RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      final tally = events.whereType<RunScanTallyEvent>().single;
+      expect(tally.tallyA.hashMatched, 1);
+      expect(tally.tallyA.metadataMatched, 0);
+      expect(tally.tallyB.metadataMatched, 1);
+      expect(tally.tallyB.hashMatched, 0);
+
+      // The rehash proved shared.txt genuinely unchanged, so the plan
+      // this run reconciles from it is empty — the tally is the only
+      // place this ever became visible.
+      final plan = events.whereType<RunPlanEvent>().single.plan;
+      expect(plan.actions, isEmpty);
+      expect(plan.conflicts, isEmpty);
+    }, testOn: 'linux');
+
+    test(
+      'is emitted once, after both scans complete and before the plan',
+      () async {
+        await File('${replicaADir.path}/new.txt').writeAsString('hello');
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        final tallyEvents = events.whereType<RunScanTallyEvent>().toList();
+        expect(tallyEvents, hasLength(1));
+        expect(
+          events.indexOf(tallyEvents.single),
+          lessThan(events.indexWhere((e) => e is RunPlanEvent)),
+        );
+
+        // The one file this run actually found is tallied as `created`
+        // (SPEC §5.2 step 3), on the side that has it.
+        expect(tallyEvents.single.tallyA.created, 1);
+        expect(tallyEvents.single.tallyB.created, 0);
+      },
+      testOn: 'linux',
+    );
+  });
+
   group('conflicts', () {
     test(
       'a conflicting path is left untouched and reported as a conflict event',

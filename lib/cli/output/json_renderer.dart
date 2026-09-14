@@ -6,12 +6,13 @@ import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 
 /// Renders a `RunController` run as SPEC §11.4's `--json` stream: one JSON
 /// object per line on stdout, one line per [RunEvent], each carrying a
-/// `type` field naming which of the nine line shapes it is (`replicas`,
-/// `plan`, `action`, `conflict`, `symlink`, `progress`, `result`, `summary`,
-/// `error`).
+/// `type` field naming which of the ten line shapes it is (`replicas`,
+/// `plan`, `action`, `conflict`, `symlink`, `scanTally`, `progress`,
+/// `result`, `summary`, `error`).
 ///
 /// `RunEvent` is a `sealed class`, so the switch in [render] is exhaustive:
 /// the compiler pointed at this file (and `HumanRenderer`) as exactly what
@@ -77,6 +78,11 @@ class JsonRenderer {
         'actions': plan.actions.map(_actionToJson).toList(),
         'conflicts': plan.conflicts.map(_conflictToJson).toList(),
       },
+      RunScanTallyEvent(:final tallyA, :final tallyB) => {
+        'type': 'scanTally',
+        'a': _scanReasonTallyToJson(tallyA),
+        'b': _scanReasonTallyToJson(tallyB),
+      },
       RunSkippedSymlinkEvent(:final path, :final onA) => {
         'type': 'symlink',
         'path': path,
@@ -138,6 +144,19 @@ Map<String, dynamic> _actionToJson(PlanAction action) => {
   'path': action.path,
   'actionType': action.type.name,
   'bytes': action.bytes,
+};
+
+/// One side's [ScanReasonTally] (SPEC §5.2, §11.4, task 1fd42b), as it
+/// appears nested under `a`/`b` on a `scanTally` line. All five counts,
+/// unconditionally — no null-omission here, unlike [_conflictToJson]'s
+/// `onA`/`onB`: every [ScanReason] always has a count (zero when a side had
+/// none), there is no "this side has nothing to say" case to distinguish.
+Map<String, dynamic> _scanReasonTallyToJson(ScanReasonTally tally) => {
+  'metadataMatched': tally.metadataMatched,
+  'hashMatched': tally.hashMatched,
+  'modified': tally.modified,
+  'created': tally.created,
+  'deleted': tally.deleted,
 };
 
 /// One [Conflict], as it appears standalone on a `conflict` line and nested

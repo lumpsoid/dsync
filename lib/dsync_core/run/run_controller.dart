@@ -134,6 +134,15 @@ class RunController {
     final onA = scans[0].entries;
     final onB = scans[1].entries;
 
+    // Task 1fd42b: the scan fast-path tally (SPEC §5.2, §11.4). Right after
+    // the scans complete and before the plan is reconciled — that is where
+    // the work this reports actually happened, and it lets a head show what
+    // the scan cost before the plan even appears.
+    yield RunScanTallyEvent(
+      tallyA: scans[0].reasonTally,
+      tallyB: scans[1].reasonTally,
+    );
+
     for (final path in scans[0].skippedSymlinks) {
       yield RunSkippedSymlinkEvent(path: path, onA: true);
     }

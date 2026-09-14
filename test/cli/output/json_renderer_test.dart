@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:test/test.dart';
 
 /// An [IOSink] over an in-memory buffer, so a test reads what [JsonRenderer]
@@ -198,6 +199,75 @@ void main() {
       },
     );
 
+    test('scanTally: both sides\' counts by ScanReason, always present '
+        '(SPEC §5.2, §11.4, task 1fd42b)', () async {
+      final r = _Rendered();
+      const event = RunScanTallyEvent(
+        tallyA: ScanReasonTally(
+          metadataMatched: 47,
+          hashMatched: 3,
+          modified: 1,
+          created: 2,
+          deleted: 0,
+        ),
+        tallyB: ScanReasonTally(
+          metadataMatched: 10,
+          hashMatched: 38,
+          modified: 0,
+          created: 0,
+          deleted: 0,
+        ),
+      );
+
+      final decoded = (await _renderAll(r, [event])).single;
+
+      expect(decoded, {
+        'type': 'scanTally',
+        'a': {
+          'metadataMatched': 47,
+          'hashMatched': 3,
+          'modified': 1,
+          'created': 2,
+          'deleted': 0,
+        },
+        'b': {
+          'metadataMatched': 10,
+          'hashMatched': 38,
+          'modified': 0,
+          'created': 0,
+          'deleted': 0,
+        },
+      });
+    });
+
+    test(
+      'scanTally: unconditionally emitted, unlike HumanRenderer which gates '
+      'it behind --verbose — no verbosity concept exists in --json',
+      () async {
+        final r = _Rendered();
+        const event = RunScanTallyEvent(
+          tallyA: ScanReasonTally(
+            metadataMatched: 0,
+            hashMatched: 0,
+            modified: 0,
+            created: 0,
+            deleted: 0,
+          ),
+          tallyB: ScanReasonTally(
+            metadataMatched: 0,
+            hashMatched: 0,
+            modified: 0,
+            created: 0,
+            deleted: 0,
+          ),
+        );
+
+        final decoded = (await _renderAll(r, [event])).single;
+
+        expect(decoded['type'], 'scanTally');
+      },
+    );
+
     test('symlink: path and which side it was found on', () async {
       final r = _Rendered();
 
@@ -365,6 +435,22 @@ void main() {
         'and nothing but JSON on stdout', () async {
       final r = _Rendered();
       final events = <RunEvent>[
+        const RunScanTallyEvent(
+          tallyA: ScanReasonTally(
+            metadataMatched: 1,
+            hashMatched: 0,
+            modified: 1,
+            created: 0,
+            deleted: 0,
+          ),
+          tallyB: ScanReasonTally(
+            metadataMatched: 0,
+            hashMatched: 1,
+            modified: 0,
+            created: 0,
+            deleted: 1,
+          ),
+        ),
         const RunSkippedSymlinkEvent(path: 'link', onA: true),
         const RunConflictEvent(
           Conflict(
@@ -396,6 +482,7 @@ void main() {
       final decoded = await _renderAll(r, events);
 
       expect(decoded.map((d) => d['type']), [
+        'scanTally',
         'symlink',
         'conflict',
         'plan',

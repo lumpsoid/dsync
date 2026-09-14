@@ -1,10 +1,11 @@
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
 
 /// One line of a `RunController` run, mirroring the `--json` schema of SPEC
 /// §11.4: each subtype corresponds to one of that schema's `type` values
-/// (`replicas`, `plan`, `action`, `conflict`, `symlink`, `progress`,
-/// `result`, `summary`, `error`).
+/// (`replicas`, `plan`, `action`, `conflict`, `symlink`, `scanTally`,
+/// `progress`, `result`, `summary`, `error`).
 /// A head decides how to render each event; `RunController` only decides
 /// what happened and when — no CLI-specific concept (TTY, argparse, prompt
 /// UI) lives here.
@@ -48,6 +49,29 @@ class RunSkippedSymlinkEvent extends RunEvent {
   final bool onA;
 
   const RunSkippedSymlinkEvent({required this.path, required this.onA});
+}
+
+/// Each side's [ScanReasonTally] (SPEC §5.2, §11.4, task 1fd42b): how many
+/// paths that side's scan resolved through each of §5.2's branches.
+/// Emitted once, right after both scans complete (`RunController._runLocked`,
+/// alongside the [RunSkippedSymlinkEvent]s the same scans produced) and
+/// before reconciliation — the plan hasn't happened yet, but the work this
+/// reports already has.
+///
+/// A path that scans unchanged produces neither a [RunActionEvent] nor a
+/// [RunConflictEvent] — no other event describes it at all — so this is the
+/// only place [ScanReasonTally.metadataMatched] (the fast path) versus
+/// [ScanReasonTally.hashMatched] (a rehash that found nothing had changed)
+/// ever reaches a head. See [ScanReasonTally]'s own doc comment for why that
+/// distinction is worth a whole event rather than a field tacked onto
+/// [RunSummaryEvent] or [RunReplicasEvent] — it is per-side and has nothing
+/// to do with the exit code the former feeds, and it does not exist yet when
+/// the latter is emitted.
+class RunScanTallyEvent extends RunEvent {
+  final ScanReasonTally tallyA;
+  final ScanReasonTally tallyB;
+
+  const RunScanTallyEvent({required this.tallyA, required this.tallyB});
 }
 
 /// One path the `Reconciler` could not resolve on its own (SPEC §6:
