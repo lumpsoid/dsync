@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
@@ -48,6 +49,36 @@ void main() {
       expect(entry.reason, ScanReason.created);
       expect(entry.hash, hashOf('hello'));
       expect(entry.size, 5);
+    });
+
+    test('a file on disk is never silence, archive or no archive — the crux '
+        'task 6a967f\'s one-sided tombstone rule depends on', () async {
+      // SPEC §6's new tombstone rule reasons: a replica that still holds
+      // the file would report `created` even against a wiped archive, so
+      // if a replica ever goes silent about a path, the file is genuinely
+      // gone there. That premise only holds if this is true. Pinned with
+      // a real, never-created archive log — not just an empty in-memory
+      // `Archive` — because a wiped *state dir* (the log file itself
+      // absent, per SPEC §8.2's "a missing log is an empty archive") is
+      // exactly the scenario the rule is meant to also cover, not only
+      // the half-committed-delete bug.
+      await File('${tempDir.path}/a.txt').writeAsString('hello');
+      final store = JsonlArchiveStore(
+        File('${tempDir.path}/never-written.jsonl'),
+        header,
+      );
+      final archive = await store.load();
+      expect(archive.entries, isEmpty);
+
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archive,
+      )).entries;
+
+      final entry = entryFor(entries, 'a.txt');
+      expect(entry.status, ScanStatus.created);
+      expect(entry.reason, ScanReason.created);
+      expect(entries, hasLength(1)); // present, not silent
     });
 
     test(

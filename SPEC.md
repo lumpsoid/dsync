@@ -84,7 +84,7 @@ Done on the initiating side from the two status lists. Per path, with statuses o
 
 Additional rules:
 - **Same content, no transfer.** Whenever both sides currently hold the same hash, no bytes move; both archives are committed with the current state.
-- **A path one side has never seen.** The table assumes both replicas report a status for every path. A replica with neither the file nor an archive entry for it reports nothing at all — the normal state of a fresh replica being set up against an established one, and of any path that is new to this pair. Such a path is mirrored from whichever side has it, whatever status that side gives it, or dropped when that side has since deleted it too. It is not a conflict: treating it as one would make the first run against an empty directory conflict on every file.
+- **A path one side has never seen.** The table assumes both replicas report a status for every path. A replica with neither the file nor an archive entry for it reports nothing at all — the normal state of a fresh replica being set up against an established one, and of any path that is new to this pair. Such a path is mirrored from whichever side has it, whatever status that side gives it — or, when that side reports `deleted`, tombstoned on the side that still records it, so the two archives converge instead of drifting apart forever. Silence is what makes that safe: a replica that still had the file on disk would report `created` even against a wiped archive, so silence from one side plus a `deleted` report from the other means the path is gone everywhere. It is not a conflict: treating it as one would make the first run against an empty directory conflict on every file, and treating a still-pending deletion as one would ask the user to resolve a deletion that has already finished everywhere.
 - **Type mismatch.** A file at `P` on one side and a directory containing files at `P` on the other is a conflict on `P`.
 - **Conflicts are never auto-resolved.** They are presented to the user, who picks a direction or skips.
 - **Deletions are actions.** A propagated deletion appears in the plan like any other action and can be vetoed per item in interactive mode.
@@ -103,7 +103,11 @@ Actions are applied one path at a time. Copies before deletions is not required;
 4. Destination stats the final file and returns the resulting `size`, `mtime`, `mode`.
 
 ### 7.3 Archive commit per path
-After an action succeeds on both sides, **both** agents commit the entry for that path immediately. A crash between the two commits leaves one side's archive stale; on the next run that side reports the path as modified with the same hash as the other side, which resolves as commit-only (§6). No work is redone beyond one hash.
+After an action succeeds on both sides, **both** agents commit the entry for that path immediately. A crash between the two commits leaves one side's archive stale.
+
+For a copy, that self-heals: the stale side reports the path as modified with the same hash as the other side, which resolves as commit-only (§6). No work is redone beyond one hash.
+
+For a delete, the same crash does not self-heal the same way — there is no shared hash for the two sides to agree on. The side whose commit landed has no file and no archive entry left, so it reports nothing; the side whose commit was lost still holds its stale pre-delete entry, so it reports `deleted`. §6's "a path one side has never seen" rule is what closes this gap: silence from the landed side plus `deleted` from the stale side tombstones the stale side's entry, so the next run converges on both archives agreeing the path is gone, rather than leaving one side reporting a deletion that already finished everywhere.
 
 ### 7.4 Metadata
 - `mtime`: always propagated. If setting it fails, the write still succeeds; the actual mtime is what gets archived.

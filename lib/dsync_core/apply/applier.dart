@@ -94,8 +94,8 @@ class Applier {
           case ActionType.commitOnly:
             await _commitOnly(
               action.path,
-              a[action.path]!,
-              b[action.path]!,
+              a[action.path],
+              b[action.path],
               agentA,
               agentB,
             );
@@ -177,25 +177,34 @@ class Applier {
 
   /// No filesystem I/O (SPEC §6 "same content, no transfer"). Either both
   /// sides currently hold identical content, in which case each commits an
-  /// upsert built from its own scan entry, or both sides already have no
-  /// file and haven't recorded the tombstone yet, in which case both commit
-  /// a delete instead — an upsert would fail on the null fields.
+  /// upsert built from its own scan entry, or at least one side has nothing
+  /// to upsert — already deleted, or (the one-sided tombstone of §6's "a
+  /// path one side has never seen", task 6a967f) never scanned into [a]/[b]
+  /// at all because that side is silent about the path — in which case both
+  /// commit a delete instead of upserting the null fields.
+  ///
+  /// A `null` entry is treated exactly like an already-deleted one: it is
+  /// the silent side of a one-sided commit-only, where there was never an
+  /// archive entry or a file to begin with, so tombstoning it is a no-op
+  /// commit, redundant but harmless, and dropped by the next compaction
+  /// (SPEC §8.2) since this action lands in `applied`.
   Future<void> _commitOnly(
     String path,
-    ScanEntry entryA,
-    ScanEntry entryB,
+    ScanEntry? entryA,
+    ScanEntry? entryB,
     Agent agentA,
     Agent agentB,
   ) async {
-    if (entryA.status == ScanStatus.deleted &&
-        entryB.status == ScanStatus.deleted) {
+    final aDeleted = entryA == null || entryA.status == ScanStatus.deleted;
+    final bDeleted = entryB == null || entryB.status == ScanStatus.deleted;
+    if (aDeleted && bDeleted) {
       await agentA.archiveCommitDelete(path);
       await agentB.archiveCommitDelete(path);
       return;
     }
 
-    await agentA.archiveCommitUpsert(_ownEntry(path, entryA));
-    await agentB.archiveCommitUpsert(_ownEntry(path, entryB));
+    await agentA.archiveCommitUpsert(_ownEntry(path, entryA!));
+    await agentB.archiveCommitUpsert(_ownEntry(path, entryB!));
   }
 
   ArchiveEntry _ownEntry(String path, ScanEntry entry) => ArchiveEntry(

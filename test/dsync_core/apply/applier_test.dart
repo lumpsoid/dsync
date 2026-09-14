@@ -13,6 +13,7 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -336,6 +337,51 @@ void main() {
       expect(archiveA.entries.containsKey('gone.txt'), isFalse);
       expect(archiveB.entries.containsKey('gone.txt'), isFalse);
     });
+
+    test('one side never had an entry at all (the Reconciler\'s one-sided '
+        'tombstone, task 6a967f) still tombstones both archives instead of '
+        'throwing on the null lookup', () async {
+      // B still records the stale pre-delete entry; A has no entry for
+      // the path in its scan at all — not even a `ScanEntry.deleted` —
+      // exactly what `Reconciler._resolveCell`'s new one-sided branch
+      // hands `Applier`. `a['gone.txt']` is genuinely absent from the
+      // map built from `onA`, not just deleted, so this also exercises
+      // `apply()`'s null-tolerant lookup for `commitOnly` (the mechanical
+      // consequence the task called out: `a[action.path]!` used to throw
+      // here).
+      await agentB.archiveCommitUpsert(
+        const ArchiveEntry(
+          path: 'gone.txt',
+          size: 1,
+          mtime: 1,
+          mode: 420,
+          hash: 'was-here',
+        ),
+      );
+
+      final plan = Plan(
+        actions: [
+          const PlanAction(path: 'gone.txt', type: ActionType.commitOnly),
+        ],
+        conflicts: [],
+      );
+
+      final result = await Applier().apply(
+        plan,
+        const [],
+        [const ScanEntry.deleted('gone.txt')],
+        agentA,
+        agentB,
+      );
+
+      expect(result.failed, isEmpty);
+      expect(result.applied.single.type, ActionType.commitOnly);
+
+      final archiveA = await reloadA();
+      final archiveB = await reloadB();
+      expect(archiveA.entries.containsKey('gone.txt'), isFalse);
+      expect(archiveB.entries.containsKey('gone.txt'), isFalse);
+    });
   });
 
   group('failures', () {
@@ -502,6 +548,146 @@ void main() {
       },
       testOn: 'linux',
     );
+  });
+
+  group('convergence after a crashed delete (task 6a967f)', () {
+    test('a half-committed delete converges on the next run, a third run then '
+        'finds nothing to do, and recreating the path afterward is a clean '
+        'copy — not a conflict against the stale side', () async {
+      // 1. Both replicas start with the same file, archives seeded to
+      // match, as if already synced before this scenario begins.
+      final fileA = File('${replicaADir.path}/f')..writeAsStringSync('hello');
+      final fileB = File('${replicaBDir.path}/f')..writeAsStringSync('hello');
+      final statA0 = await fileA.stat();
+      final statB0 = await fileB.stat();
+      await agentA.archiveCommitUpsert(
+        ArchiveEntry(
+          path: 'f',
+          size: statA0.size,
+          mtime: statA0.modified.microsecondsSinceEpoch,
+          mode: statA0.mode & 0xFFF,
+          hash: 'baseline-hash',
+        ),
+      );
+      await agentB.archiveCommitUpsert(
+        ArchiveEntry(
+          path: 'f',
+          size: statB0.size,
+          mtime: statB0.modified.microsecondsSinceEpoch,
+          mode: statB0.mode & 0xFFF,
+          hash: 'baseline-hash',
+        ),
+      );
+
+      // 2. A real user deletion lands only on A; B is untouched. A's next
+      // scan will report `deleted` (archived, file gone); B's will report
+      // `unchanged` (fast path).
+      await fileA.delete();
+
+      // --- "Crash" run: a real deleteOnB, interrupted between the two
+      // archive commits (SPEC §7.3). -----------------------------------
+
+      final scanA1 = (await agentA.scan(RuleSet())).entries;
+      final scanB1 = (await agentB.scan(RuleSet())).entries;
+      expect(
+        scanA1.singleWhere((e) => e.path == 'f').status,
+        ScanStatus.deleted,
+      );
+      expect(
+        scanB1.singleWhere((e) => e.path == 'f').status,
+        ScanStatus.unchanged,
+      );
+
+      final plan1 = Reconciler().reconcile(scanA1, scanB1);
+      expect(plan1.conflicts, isEmpty);
+      expect(plan1.actions, hasLength(1));
+      expect(plan1.actions.single.type, ActionType.deleteOnB);
+
+      // Applier._delete commits agentA's tombstone first, agentB's second
+      // (SPEC §7.3), regardless of which side physically holds the file.
+      // Wrapping only agentB's archiveCommitDelete simulates a crash that
+      // lands A's commit durably (and the real deletion of B's file,
+      // which happens before either commit) while B's own commit is lost.
+      final crashingB = _CrashingDeleteAgent(agentB, crashOn: {'f'});
+      final crashResult = await Applier().apply(
+        plan1,
+        scanA1,
+        scanB1,
+        agentA,
+        crashingB,
+      );
+      expect(crashResult.applied, isEmpty);
+      expect(crashResult.failed, hasLength(1));
+      expect(crashResult.failed.single.path, 'f');
+
+      // Sanity-check the half-committed state the bug report describes:
+      // B's file and A's archive entry are both genuinely gone; only B's
+      // archive is left stale.
+      expect(await File('${replicaBDir.path}/f').exists(), isFalse);
+      expect((await reloadA()).entries.containsKey('f'), isFalse);
+      expect((await reloadB()).entries['f']?.hash, 'baseline-hash');
+
+      // --- Repair run: this is what task 6a967f fixes. Before the fix,
+      // A is silent (no entry at all) and B still reports `deleted`
+      // forever — the Reconciler's old one-sided branch did nothing. ---
+
+      final scanA2 = (await agentA.scan(RuleSet())).entries;
+      final scanB2 = (await agentB.scan(RuleSet())).entries;
+      expect(scanA2.where((e) => e.path == 'f'), isEmpty);
+      expect(
+        scanB2.singleWhere((e) => e.path == 'f').status,
+        ScanStatus.deleted,
+      );
+
+      final plan2 = Reconciler().reconcile(scanA2, scanB2);
+      expect(plan2.conflicts, isEmpty);
+      expect(plan2.actions, hasLength(1));
+      expect(plan2.actions.single.type, ActionType.commitOnly);
+
+      final repairResult = await Applier().apply(
+        plan2,
+        scanA2,
+        scanB2,
+        agentA,
+        agentB,
+      );
+      expect(repairResult.failed, isEmpty);
+      expect(repairResult.applied.single.type, ActionType.commitOnly);
+
+      // Both archives now agree the path is gone.
+      expect((await reloadA()).entries.containsKey('f'), isFalse);
+      expect((await reloadB()).entries.containsKey('f'), isFalse);
+
+      // --- Third run: nothing left to converge. ---------------------
+
+      final scanA3 = (await agentA.scan(RuleSet())).entries;
+      final scanB3 = (await agentB.scan(RuleSet())).entries;
+      final plan3 = Reconciler().reconcile(scanA3, scanB3);
+      expect(plan3.actions, isEmpty);
+      expect(plan3.conflicts, isEmpty);
+
+      // --- The user-visible symptom is gone: recreating the path is a
+      // clean copy, not a conflict against the stale `deleted` side. ---
+
+      File('${replicaBDir.path}/f').writeAsStringSync('recreated');
+
+      final scanA4 = (await agentA.scan(RuleSet())).entries;
+      final scanB4 = (await agentB.scan(RuleSet())).entries;
+      final plan4 = Reconciler().reconcile(scanA4, scanB4);
+      expect(plan4.conflicts, isEmpty);
+      expect(plan4.actions, hasLength(1));
+      expect(plan4.actions.single.type, ActionType.copyBtoA);
+
+      final recreateResult = await Applier().apply(
+        plan4,
+        scanA4,
+        scanB4,
+        agentA,
+        agentB,
+      );
+      expect(recreateResult.failed, isEmpty);
+      expect(await File('${replicaADir.path}/f').readAsString(), 'recreated');
+    }, testOn: 'linux');
   });
 
   group('onAction callback (task e9f31c)', () {

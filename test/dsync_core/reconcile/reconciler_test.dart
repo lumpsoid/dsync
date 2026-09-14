@@ -83,12 +83,22 @@ void main() {
       expect(actionFor(plan, 'f'), ActionType.commitOnly);
     });
 
-    test('unchanged / deleted deletes on A', () {
+    test('unchanged / deleted deletes on A — the deletion-propagation guard: '
+        'A still holds the file (unchanged, not absent), so this is not the '
+        'null-entry tombstone case and must still delete, not commit-only', () {
+      // Task 6a967f's new rule only fires when a side is silent (no
+      // entry at all). Here both sides report — A is `unchanged`, not
+      // missing — so the deletion must still propagate to A. Sweeping
+      // this into the tombstone rule would delete an archive entry for a
+      // file that still exists on disk, which is exactly the data loss
+      // the rejected "collect it at compaction" alternative would have
+      // caused.
       final plan = reconciler.reconcile(
         [entry('f', ScanStatus.unchanged)],
         [entry('f', ScanStatus.deleted)],
       );
       expect(actionFor(plan, 'f'), ActionType.deleteOnA);
+      expect(plan.conflicts, isEmpty);
     });
   });
 
@@ -166,12 +176,19 @@ void main() {
   });
 
   group('deleted row', () {
-    test('deleted / unchanged deletes on B', () {
+    test('deleted / unchanged deletes on B — the deletion-propagation guard, '
+        'mirrored: B still holds the file, so this must still delete, not '
+        'commit-only', () {
+      // Mirror of the "unchanged / deleted deletes on A" guard above:
+      // both sides report here (B is `unchanged`, not silent), so the
+      // one-sided tombstone rule (task 6a967f) never applies and the
+      // deletion must still propagate.
       final plan = reconciler.reconcile(
         [entry('f', ScanStatus.deleted)],
         [entry('f', ScanStatus.unchanged)],
       );
       expect(actionFor(plan, 'f'), ActionType.deleteOnB);
+      expect(plan.conflicts, isEmpty);
     });
 
     test('deleted / created conflicts', () {
@@ -210,9 +227,39 @@ void main() {
       expect(actionFor(plan, 'f'), ActionType.copyBtoA);
     });
 
-    test('deleted on A, never known on B, does nothing', () {
+    test('deleted on A, never known on B, tombstones A instead of doing '
+        'nothing', () {
+      // Task 6a967f. B's silence — no archive entry, no file — is what
+      // makes this safe: a B that still had the file would have reported
+      // `created`, never silence. So this is the path gone everywhere, and
+      // leaving it alone (the old behaviour) would never let A's stale
+      // `deleted` entry converge, and would conflict if the path were ever
+      // recreated (SPEC §6).
       final plan = reconciler.reconcile([entry('f', ScanStatus.deleted)], []);
-      expect(plan.actions, isEmpty);
+      expect(actionFor(plan, 'f'), ActionType.commitOnly);
+      expect(plan.conflicts, isEmpty);
+    });
+
+    test('deleted on B, never known on A, tombstones B instead of doing '
+        'nothing', () {
+      // Same as above, mirrored — the rule doesn't care which side is
+      // silent.
+      final plan = reconciler.reconcile([], [entry('f', ScanStatus.deleted)]);
+      expect(actionFor(plan, 'f'), ActionType.commitOnly);
+      expect(plan.conflicts, isEmpty);
+    });
+
+    test('unchanged on A, never known on B, still copies to B', () {
+      // Regression guard: the new deleted-side tombstone must not swallow
+      // the ordinary mirror case for any other status.
+      final plan = reconciler.reconcile([entry('f', ScanStatus.unchanged)], []);
+      expect(actionFor(plan, 'f'), ActionType.copyAtoB);
+      expect(plan.conflicts, isEmpty);
+    });
+
+    test('unchanged on B, never known on A, still copies to A', () {
+      final plan = reconciler.reconcile([], [entry('f', ScanStatus.unchanged)]);
+      expect(actionFor(plan, 'f'), ActionType.copyBtoA);
       expect(plan.conflicts, isEmpty);
     });
 
@@ -263,14 +310,22 @@ void main() {
       expect(plan.conflicts, isEmpty);
     });
 
-    test('a file that used to exist where a directory now stands is not a mismatch', () {
+    test('a file that used to exist where a directory now stands is not a '
+        'mismatch, and A\'s stale tombstone for it converges too', () {
       // f was a file on A, archived; A has since deleted it and B has
-      // since created a directory with real content at the same path.
+      // since created a directory with real content at the same path. B
+      // has never had `shared` as a file — no archive entry, no file at
+      // that exact path — so it is "silent" about it in exactly the
+      // sense task 6a967f's rule cares about: A's stale `deleted` record
+      // for `shared` now also gets tombstoned, on top of not being a
+      // type mismatch.
       final plan = reconciler.reconcile(
         [entry('shared', ScanStatus.deleted)],
         [entry('shared/inner.txt', ScanStatus.created)],
       );
       expect(plan.conflicts, isEmpty);
+      expect(actionFor(plan, 'shared'), ActionType.commitOnly);
+      expect(actionFor(plan, 'shared/inner.txt'), ActionType.copyBtoA);
     });
   });
 

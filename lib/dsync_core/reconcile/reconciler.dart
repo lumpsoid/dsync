@@ -49,8 +49,9 @@ class Reconciler {
 /// A `null` entry means that side's scan has no record of the path at all —
 /// no archive entry and no file. The SPEC §6 table assumes both sides report
 /// a status, so this case is covered by §6's "a path one side has never seen"
-/// rule instead: mirror whatever the other side has, or do nothing when that
-/// side has since deleted it too.
+/// rule instead: mirror whatever the other side has, or — when that side
+/// reports `deleted` — tombstone the side still recording it, so the two
+/// archives converge instead of drifting forever (task 6a967f).
 void _resolveCell(
   String path,
   ScanEntry? entryA,
@@ -65,7 +66,16 @@ void _resolveCell(
 
   if (entryA == null || entryB == null) {
     final present = entryA ?? entryB!;
-    if (present.status == ScanStatus.deleted) return;
+    if (present.status == ScanStatus.deleted) {
+      // The other side is silent: no archive entry and no file. A replica
+      // that still had the file on disk would report `created` even with a
+      // wiped archive — it would never be silent. So silence here plus a
+      // `deleted` entry there means the path is gone everywhere, and a
+      // commit-only tombstones the side still recording it instead of
+      // leaving the two archives to disagree forever (task 6a967f).
+      act(ActionType.commitOnly);
+      return;
+    }
     act(
       entryA == null ? ActionType.copyBtoA : ActionType.copyAtoB,
       bytes: _transferBytes(present),
