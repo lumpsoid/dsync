@@ -42,14 +42,14 @@ class SyncCommand extends Command<int> {
     try {
       options = CliOptions(
         target: SyncTarget.fromPositionals(results.rest),
-        dryRun: results.flag('dry-run'),
-        batch: results.flag('batch'),
-        json: results.flag('json'),
-        ignore: results.multiOption('ignore'),
-        verbose: results.flag('verbose'),
-        quiet: results.flag('quiet'),
-        warnSizeRaw: results.option('warn-size'),
-        jobsRaw: results.option('jobs'),
+        dryRun: results.flag(CommonSyncFlags.flagDryRun),
+        batch: results.flag(CommonSyncFlags.flagBatch),
+        json: results.flag(CommonSyncFlags.flagJson),
+        ignore: results.multiOption(CommonSyncFlags.multiOptionIgnore),
+        verbose: results.flag(CommonSyncFlags.flagVerbose),
+        quiet: results.flag(CommonSyncFlags.flagQuiet),
+        warnSizeRaw: results.option(CommonSyncFlags.optionWarnSize),
+        jobsRaw: results.option(CommonSyncFlags.optionJobs),
       );
     } on CliOptionsError catch (error) {
       usageException(error.message);

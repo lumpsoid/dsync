@@ -56,9 +56,14 @@ class AgentCommand extends Command<int> {
       'Serve one replica over the framed protocol (SPEC §4.2). Started by '
       'ssh on the remote host — not run directly by a person.';
 
+  /// Name of the `--stdio` flag (SPEC §11.1, §11.2). Local to this command —
+  /// only `AgentCommand` registers or reads it — so it lives here rather
+  /// than beside `addCommonSyncFlags` (task 4fce5d).
+  static const flagStdio = 'stdio';
+
   AgentCommand() {
     argParser.addFlag(
-      'stdio',
+      flagStdio,
       negatable: false,
       help:
           'Speak the protocol over stdin/stdout. Required: no other '
@@ -68,7 +73,7 @@ class AgentCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    if (!argResults!.flag('stdio')) {
+    if (!argResults!.flag(flagStdio)) {
       usageException(
         'dsync agent requires --stdio; no other transport is implemented '
         'yet (SPEC §16).',

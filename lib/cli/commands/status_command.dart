@@ -43,13 +43,13 @@ class StatusCommand extends Command<int> {
       options = CliOptions(
         target: ProfileTarget.fromStatusPositionals(results.rest),
         dryRun: true,
-        batch: results.flag('batch'),
-        json: results.flag('json'),
-        ignore: results.multiOption('ignore'),
-        verbose: results.flag('verbose'),
-        quiet: results.flag('quiet'),
-        warnSizeRaw: results.option('warn-size'),
-        jobsRaw: results.option('jobs'),
+        batch: results.flag(CommonSyncFlags.flagBatch),
+        json: results.flag(CommonSyncFlags.flagJson),
+        ignore: results.multiOption(CommonSyncFlags.multiOptionIgnore),
+        verbose: results.flag(CommonSyncFlags.flagVerbose),
+        quiet: results.flag(CommonSyncFlags.flagQuiet),
+        warnSizeRaw: results.option(CommonSyncFlags.optionWarnSize),
+        jobsRaw: results.option(CommonSyncFlags.optionJobs),
       );
     } on CliOptionsError catch (error) {
       usageException(error.message);
