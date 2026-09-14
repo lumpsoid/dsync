@@ -13,6 +13,7 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
 import 'package:test/test.dart';
 
@@ -154,15 +155,168 @@ void main() {
           presenter: (plan) async => plan.actions,
         ).run().toList();
 
-        final skipped = events.whereType<RunSkippedSymlinkEvent>().toList();
+        final skipped = events.whereType<RunSkippedPathEvent>().toList();
         expect(
-          skipped.map((e) => (e.path, e.onA)),
-          containsAll([('link-a.txt', true), ('link-b.txt', false)]),
+          skipped.map((e) => (e.skipped.path, e.skipped.reason, e.onA)),
+          containsAll([
+            ('link-a.txt', SkippedReason.symlink, true),
+            ('link-b.txt', SkippedReason.symlink, false),
+          ]),
         );
         expect(
           events.indexOf(skipped.first),
           lessThan(events.indexWhere((e) => e is RunPlanEvent)),
         );
+      },
+      testOn: 'linux',
+    );
+
+    test(
+      'an unreadable file on one side does not abort the run: everything '
+      'else syncs, the path is reported, and the summary counts it '
+      'separately from a user-declined skip (SPEC §5, task 37bf4f)',
+      () async {
+        await File('${replicaADir.path}/ok.txt').writeAsString('hello');
+        await File('${replicaADir.path}/locked.txt').writeAsString('secret');
+        addTearDown(
+          () => Process.run('chmod', ['644', '${replicaADir.path}/locked.txt']),
+        );
+        await Process.run('chmod', ['000', '${replicaADir.path}/locked.txt']);
+        try {
+          await File('${replicaADir.path}/locked.txt').readAsBytes();
+          markTestSkipped('running as root: chmod 000 does not deny reads');
+          return;
+        } on FileSystemException {
+          // Good — the lock took, so the scan will actually hit EACCES.
+        }
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        // The whole point: the readable file synced anyway.
+        expect(
+          await File('${replicaBDir.path}/ok.txt').readAsString(),
+          'hello',
+        );
+        expect(File('${replicaBDir.path}/locked.txt').existsSync(), isFalse);
+
+        final unreadable = events.whereType<RunSkippedPathEvent>().where(
+          (e) => e.skipped.reason == SkippedReason.unreadable,
+        );
+        expect(unreadable.map((e) => (e.skipped.path, e.onA)), [
+          ('locked.txt', true),
+        ]);
+
+        final summary = events.whereType<RunSummaryEvent>().single;
+        expect(summary.appliedCount, 1);
+        expect(summary.unreadableCount, 1);
+        // Not folded in: nothing was proposed and declined.
+        expect(summary.skippedCount, 0);
+        expect(summary.failedCount, 0);
+
+        await expectLocksFree();
+      },
+      testOn: 'linux',
+    );
+
+    test(
+      'a locally-edited file that the scan cannot read is NOT overwritten '
+      'by the other replica\'s copy (SPEC §5, task 37bf4f). The unreadable '
+      'side reports nothing for it, and SPEC §6 reads silence as "this '
+      'side has never seen it" — i.e. mirror it from the other side. That '
+      'is the right reading for a path that is genuinely absent and the '
+      'wrong one here, so the reconciler is told which paths went unread.',
+      () async {
+        final locked = File('${replicaADir.path}/f.txt');
+        await locked.writeAsString('original');
+        await File('${replicaADir.path}/other.txt').writeAsString('keepme');
+
+        // Run 1: both sides agree, so both archives know f.txt.
+        await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+        expect(
+          await File('${replicaBDir.path}/f.txt').readAsString(),
+          'original',
+        );
+
+        // Run 2: A edits f.txt and it becomes unreadable before the scan.
+        await locked.writeAsString('MY LOCAL EDIT');
+        addTearDown(() => Process.run('chmod', ['644', locked.path]));
+        await Process.run('chmod', ['000', locked.path]);
+        try {
+          await locked.readAsBytes();
+          markTestSkipped('running as root: chmod 000 does not deny reads');
+          return;
+        } on FileSystemException {
+          // Good — the lock took.
+        }
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        final plan = events.whereType<RunPlanEvent>().single.plan;
+        expect(plan.actions.map((a) => a.path), isNot(contains('f.txt')));
+        expect(plan.conflicts.map((c) => c.path), isNot(contains('f.txt')));
+
+        await Process.run('chmod', ['644', locked.path]);
+        expect(await locked.readAsString(), 'MY LOCAL EDIT');
+
+        final summary = events.whereType<RunSummaryEvent>().single;
+        expect(summary.unreadableCount, 1);
+        expect(summary.failedCount, 0);
+      },
+      testOn: 'linux',
+    );
+
+    test(
+      'an unreadable directory does not propagate a deletion of what it '
+      'hid: the walk never got to look, so the files beneath it are '
+      'neither reported deleted nor re-copied back over it (SPEC §5, §6)',
+      () async {
+        await Directory('${replicaADir.path}/sub').create();
+        await File('${replicaADir.path}/sub/inner.txt').writeAsString('inner');
+
+        await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+        expect(File('${replicaBDir.path}/sub/inner.txt').existsSync(), isTrue);
+
+        addTearDown(
+          () => Process.run('chmod', ['755', '${replicaADir.path}/sub']),
+        );
+        await Process.run('chmod', ['000', '${replicaADir.path}/sub']);
+        try {
+          await Directory('${replicaADir.path}/sub').list().toList();
+          markTestSkipped('running as root: chmod 000 does not deny listing');
+          return;
+        } on FileSystemException {
+          // Good — the lock took.
+        }
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        expect(events.whereType<RunPlanEvent>().single.plan.actions, isEmpty);
+        // The one outcome that would be data loss rather than a failed sync.
+        expect(File('${replicaBDir.path}/sub/inner.txt').existsSync(), isTrue);
+
+        final summary = events.whereType<RunSummaryEvent>().single;
+        expect(summary.unreadableCount, 1);
+        expect(summary.failedCount, 0);
       },
       testOn: 'linux',
     );

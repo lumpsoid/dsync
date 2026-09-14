@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 
 /// Run-level facts about one replica side, known before the run starts —
 /// resolved by whatever already computes them (`resolveArchiveLogPath`,
@@ -69,7 +70,7 @@ class ReplicaDiagnostics {
 /// shows (task e9b4b6, DECIDED):
 /// - [Verbosity.quiet] — the summary line and any error. Nothing else.
 /// - [Verbosity.normal] — run header (via [_renderReplicas], below), plan
-///   table, conflicts, skipped-symlink notes, progress, summary.
+///   table, conflicts, skipped-path notes, progress, summary.
 /// - [Verbosity.verbose] — everything [Verbosity.normal] shows, plus (via
 ///   [renderPreamble]) the effective ignore/follow rules and each side's
 ///   resolved archive/lock paths and ssh argv, (per-path, on
@@ -214,8 +215,8 @@ class HumanRenderer {
       // doc comment.
       case RunScanTallyEvent e:
         if (verbosity == Verbosity.verbose) _renderScanTally(e);
-      case RunSkippedSymlinkEvent e:
-        if (verbosity != Verbosity.quiet) _renderSkippedSymlink(e);
+      case RunSkippedPathEvent e:
+        if (verbosity != Verbosity.quiet) _renderSkippedPath(e);
       case RunConflictEvent e:
         if (verbosity != Verbosity.quiet) _renderConflict(e);
       case RunPlanEvent e:
@@ -355,12 +356,27 @@ class HumanRenderer {
     );
   }
 
-  /// SPEC §5.1: a symlink the scan skipped rather than followed. [onA] says
-  /// which replica it was found on; there is no third value to distinguish
-  /// "both", since each side reports its own list independently.
-  void _renderSkippedSymlink(RunSkippedSymlinkEvent event) {
+  /// SPEC §5.1 and §5: a path the scan reported instead of giving it a
+  /// status. [RunSkippedPathEvent.onA] says which replica it was found on.
+  ///
+  /// One line shape per [SkippedReason], not one shared "skipped" line: they
+  /// mean different things to the person reading. A symlink line is the tool
+  /// confirming it did what §9's rules said; an unreadable line is a file
+  /// that did *not* sync and that the user has to go fix, so it says so
+  /// outright rather than leaving them to infer it from the word "skipped".
+  /// That is the whole point of reporting it — silence is how someone ends up
+  /// believing a file is synced when it never was.
+  void _renderSkippedPath(RunSkippedPathEvent event) {
     final side = event.onA ? 'A' : 'B';
-    out.writeln('symlink  $side  ${event.path}  (skipped, not followed)');
+    final skipped = event.skipped;
+    switch (skipped.reason) {
+      case SkippedReason.symlink:
+        out.writeln('symlink  $side  ${skipped.path}  (skipped, not followed)');
+      case SkippedReason.unreadable:
+        final detail = skipped.detail;
+        final note = detail == null ? 'not synced' : '$detail — not synced';
+        out.writeln('unreadable  $side  ${skipped.path}  ($note)');
+    }
   }
 
   /// SPEC §6: a path the `Reconciler` could not resolve on its own. Shows
@@ -458,16 +474,22 @@ class HumanRenderer {
     out.writeln('  [${event.completed}/${event.total}]');
   }
 
-  /// SPEC §11.4 summary — applied / skipped / conflicts / failed — and SPEC
-  /// §11.5's exit-code inputs, printed as a single line so a cron job can
-  /// log one line per run (task e9b4b6 DECIDED, quiet level). Always shown,
-  /// regardless of [verbosity].
+  /// SPEC §11.4 summary — applied / skipped / conflicts / failed /
+  /// unreadable — and SPEC §11.5's exit-code inputs, printed as a single line
+  /// so a cron job can log one line per run (task e9b4b6 DECIDED, quiet
+  /// level). Always shown, regardless of [verbosity].
+  ///
+  /// `unreadable` is the one count here that carries at [Verbosity.quiet]
+  /// what the per-path lines cannot (task 37bf4f): those are silenced, so
+  /// without it a quiet run that failed to read half the tree would look
+  /// identical to one that read all of it.
   void _renderSummary(RunSummaryEvent event) {
     out.writeln(
       'summary: applied=${event.appliedCount} '
       'skipped=${event.skippedCount} '
       'conflicts=${event.conflictCount} '
-      'failed=${event.failedCount}',
+      'failed=${event.failedCount} '
+      'unreadable=${event.unreadableCount}',
     );
   }
 

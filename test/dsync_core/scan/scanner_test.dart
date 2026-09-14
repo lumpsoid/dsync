@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:test/test.dart';
 
@@ -319,7 +320,7 @@ void main() {
       );
 
       // SPEC §5.1: symlinks are skipped *and reported*.
-      expect(result.skippedSymlinks, ['link.txt']);
+      expect(result.skippedPaths.map((s) => s.path), ['link.txt']);
     }, testOn: 'linux');
 
     test('a followed link that is broken is reported as skipped', () async {
@@ -334,7 +335,7 @@ void main() {
 
       // The user asked to follow this one, so saying nothing about it would
       // be the worst possible answer.
-      expect(result.skippedSymlinks, ['link.txt']);
+      expect(result.skippedPaths.map((s) => s.path), ['link.txt']);
     }, testOn: 'linux');
 
     test('a followed link pointing at an ancestor terminates', () async {
@@ -351,7 +352,7 @@ void main() {
           .timeout(const Duration(seconds: 20));
 
       expect(result.entries.map((e) => e.path), contains('sub/a.txt'));
-      expect(result.skippedSymlinks, contains('sub/up'));
+      expect(result.skippedPaths.map((s) => s.path), contains('sub/up'));
     }, testOn: 'linux');
 
     test('a followed link pointing sideways is still scanned', () async {
@@ -367,7 +368,7 @@ void main() {
 
       // Not a cycle: the walk is not inside `real` when it follows the link.
       expect(result.entries.map((e) => e.path), contains('alias/a.txt'));
-      expect(result.skippedSymlinks, isEmpty);
+      expect(result.skippedPaths, isEmpty);
     }, testOn: 'linux');
 
     test('a followed link is not reported as skipped', () async {
@@ -381,7 +382,7 @@ void main() {
         rules: RuleSet(follow: ['link.txt']),
       );
 
-      expect(result.skippedSymlinks, isEmpty);
+      expect(result.skippedPaths, isEmpty);
     }, testOn: 'linux');
 
     test(
@@ -517,5 +518,212 @@ void main() {
         expect(entryFor(entries, 'f$i.txt').hash, hashOf('content $i'));
       }
     });
+  });
+
+  group('unreadable paths (SPEC §5, task 37bf4f)', () {
+    /// Drops every permission bit, and registers a tear-down that puts them
+    /// back — a chmod-000 directory cannot be removed recursively, so without
+    /// this the shared `tearDown` fails and takes unrelated tests with it.
+    Future<void> lockDown(String path, {required String restore}) async {
+      addTearDown(() => Process.run('chmod', [restore, path]));
+      final result = await Process.run('chmod', ['000', path]);
+      expect(result.exitCode, 0, reason: 'chmod 000 $path: ${result.stderr}');
+    }
+
+    /// chmod 000 does not stop root, and a container or CI runner may well be
+    /// running as root — so these tests check whether the lock actually took
+    /// rather than assuming EACCES, and skip instead of failing when it did
+    /// not. A failure here would otherwise say "the scanner is broken" when
+    /// what happened is "this process can read anything".
+    Future<bool> stillReadable(Future<void> Function() read) async {
+      try {
+        await read();
+        return true;
+      } on FileSystemException {
+        return false;
+      }
+    }
+
+    test('an unreadable file is reported and the rest of the tree still '
+        'scans — one locked file does not abort the run', () async {
+      await File('${tempDir.path}/ok.txt').writeAsString('hello');
+      await File('${tempDir.path}/locked.txt').writeAsString('secret');
+      await lockDown('${tempDir.path}/locked.txt', restore: '644');
+      if (await stillReadable(
+        () => File('${tempDir.path}/locked.txt').readAsBytes(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny reads');
+        return;
+      }
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      expect(result.entries.map((e) => e.path), ['ok.txt']);
+      expect(result.skippedPaths.map((s) => s.path), ['locked.txt']);
+      expect(result.skippedPaths.single.reason, SkippedReason.unreadable);
+      expect(result.skippedPaths.single.detail, 'Permission denied');
+      expect(result.unreadableCount, 1);
+    }, testOn: 'linux');
+
+    test('an unreadable directory is reported and its siblings still '
+        'scan', () async {
+      await File('${tempDir.path}/ok.txt').writeAsString('hello');
+      await Directory('${tempDir.path}/sub').create();
+      await File('${tempDir.path}/sub/inner.txt').writeAsString('inner');
+      await lockDown('${tempDir.path}/sub', restore: '755');
+      if (await stillReadable(
+        () => Directory('${tempDir.path}/sub').list().toList(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny listing');
+        return;
+      }
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      expect(result.entries.map((e) => e.path), ['ok.txt']);
+      expect(result.skippedPaths.map((s) => s.path), ['sub']);
+      expect(result.skippedPaths.single.reason, SkippedReason.unreadable);
+      expect(result.unreadableCount, 1);
+    }, testOn: 'linux');
+
+    test('an archive entry under an unreadable directory is NOT reported '
+        'deleted — the walk never got to look, and reporting it would '
+        'propagate a deletion the user never made (SPEC §5, §6)', () async {
+      await Directory('${tempDir.path}/sub').create();
+      await File('${tempDir.path}/sub/inner.txt').writeAsString('inner');
+      await lockDown('${tempDir.path}/sub', restore: '755');
+      if (await stillReadable(
+        () => Directory('${tempDir.path}/sub').list().toList(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny listing');
+        return;
+      }
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({
+          'sub/inner.txt': ArchiveEntry(
+            path: 'sub/inner.txt',
+            size: 5,
+            mtime: 1,
+            mode: 0x1A4,
+            hash: hashOf('inner'),
+          ),
+        }),
+      );
+
+      expect(result.entries, isEmpty);
+    }, testOn: 'linux');
+
+    test('an archive entry outside the unreadable directory is still '
+        'reported deleted — the guard is scoped to what was unread, not a '
+        'blanket amnesty on the whole scan', () async {
+      await Directory('${tempDir.path}/sub').create();
+      await lockDown('${tempDir.path}/sub', restore: '755');
+      if (await stillReadable(
+        () => Directory('${tempDir.path}/sub').list().toList(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny listing');
+        return;
+      }
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({
+          'gone.txt': ArchiveEntry(
+            path: 'gone.txt',
+            size: 1,
+            mtime: 1,
+            mode: 0x1A4,
+            hash: hashOf('x'),
+          ),
+        }),
+      );
+
+      expect(entryFor(result.entries, 'gone.txt').status, ScanStatus.deleted);
+    }, testOn: 'linux');
+
+    test('an unreadable file with an archive entry is not reported deleted '
+        'either — it is on disk, the scan just could not read it', () async {
+      await File('${tempDir.path}/locked.txt').writeAsString('changed');
+      await lockDown('${tempDir.path}/locked.txt', restore: '644');
+      if (await stillReadable(
+        () => File('${tempDir.path}/locked.txt').readAsBytes(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny reads');
+        return;
+      }
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        // Size and mtime that cannot match, so the fast path has to give up
+        // and reach the read that fails.
+        archive: archiveOf({
+          'locked.txt': ArchiveEntry(
+            path: 'locked.txt',
+            size: 1,
+            mtime: 1,
+            mode: 0x1A4,
+            hash: hashOf('original'),
+          ),
+        }),
+      );
+
+      expect(result.entries, isEmpty);
+      expect(result.skippedPaths.single.reason, SkippedReason.unreadable);
+    }, testOn: 'linux');
+
+    test('an unreadable replica root is fatal, not a per-path skip: there '
+        'is no tree left to sync, and an empty report would invite '
+        'mirroring the whole other replica into it (SPEC §5)', () async {
+      final root = await Directory('${tempDir.path}/root').create();
+      await lockDown(root.path, restore: '755');
+      if (await stillReadable(() => root.list().toList())) {
+        markTestSkipped('running as root: chmod 000 does not deny listing');
+        return;
+      }
+
+      expect(
+        Scanner().scan(rootPath: root.path, archive: archiveOf({})),
+        throwsA(isA<FileSystemException>()),
+      );
+    }, testOn: 'linux');
+
+    test('a symlink and an unreadable path travel in one list, told apart '
+        'by their reason', () async {
+      await File('${tempDir.path}/target.txt').writeAsString('hello');
+      await Link('${tempDir.path}/link.txt')
+          .create('${tempDir.path}/target.txt');
+      await File('${tempDir.path}/locked.txt').writeAsString('secret');
+      await lockDown('${tempDir.path}/locked.txt', restore: '644');
+      if (await stillReadable(
+        () => File('${tempDir.path}/locked.txt').readAsBytes(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny reads');
+        return;
+      }
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      expect(
+        result.skippedPaths.map((s) => (s.path, s.reason)),
+        containsAll([
+          ('link.txt', SkippedReason.symlink),
+          ('locked.txt', SkippedReason.unreadable),
+        ]),
+      );
+      // Only the failure counts toward SPEC §11.5's exit 1; a skipped
+      // symlink is the tool obeying §9 and happens on every run.
+      expect(result.unreadableCount, 1);
+    }, testOn: 'linux');
   });
 }

@@ -7,7 +7,23 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 
 /// The protocol version this build speaks (SPEC §4.2). Bumped whenever the
 /// wire format changes in a way older and newer builds can't both handle.
-const protocolVersion = 1;
+///
+/// The rule this codebase has settled on, after several changes that did not
+/// bump it (`hello`'s last field addition, `scanEntryToJson`'s `reason`):
+/// **adding** an optional field does not bump, because a peer that omits it
+/// decodes to the same absence it would have had anyway — the older build
+/// simply cannot serve the newer operation. **Renaming or repurposing** a
+/// field does, because both directions then decode successfully and silently
+/// wrong: the key the peer sent is not the key that is read, so the value is
+/// dropped with no error anywhere.
+///
+/// Bumped to 2 by task 37bf4f, the first change of the second kind: `scan`'s
+/// reply renamed `skippedSymlinks` (a list of paths) to `skippedPaths` (a
+/// list of objects carrying a reason, SPEC §5.1). A version-1 agent paired
+/// with this build would report no skipped symlinks at all rather than fail,
+/// which is precisely the surprise §5.1 exists to prevent — better to refuse
+/// the pairing outright (SPEC §11.5 exit 3).
+const protocolVersion = 2;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this
 /// build's [protocolVersion] as a control frame, then reads the peer's.

@@ -59,6 +59,12 @@ class RunOutcome {
   /// exactly the "no summary and no error" case a caller gets from a crash
   /// that didn't even produce a [RunErrorEvent].
   ///
+  /// task 37bf4f: a path either scan could not read joins the exit-1 branch,
+  /// not exit 2 or 3. Exit 2 is for an *action* that failed, and an
+  /// unreadable path never became one; exit 3 says the run could not be
+  /// trusted to finish, and it did — everything else synced. What is left is
+  /// exactly §11.5's exit 1, "completed, but some paths were skipped".
+  ///
   /// task cb7abd, DECIDED: `status` and `--dry-run` get no special case
   /// here. A dry run proposes actions and applies none, so every proposed
   /// action reaches [RunSummaryEvent.skippedCount] and this function falls
@@ -70,7 +76,11 @@ class RunOutcome {
     final summary = this.summary;
     if (error != null || summary == null) return 3;
     if (summary.failedCount > 0) return 2;
-    if (summary.skippedCount > 0 || summary.conflictCount > 0) return 1;
+    if (summary.skippedCount > 0 ||
+        summary.conflictCount > 0 ||
+        summary.unreadableCount > 0) {
+      return 1;
+    }
     return 0;
   }
 }

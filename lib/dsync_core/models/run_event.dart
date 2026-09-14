@@ -1,6 +1,7 @@
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 
 /// One line of a `RunController` run, mirroring the `--json` schema of SPEC
 /// §11.4: each subtype corresponds to one of that schema's `type` values
@@ -40,21 +41,30 @@ class RunPlanEvent extends RunEvent {
   const RunPlanEvent(this.plan);
 }
 
-/// A symlink the scan did not follow (SPEC §5.1: symlinks are "skipped and
-/// reported"). Emitted for each side before reconciliation, since a link that
-/// is silently absent from a sync is the kind of surprise this tool exists to
-/// avoid. [onA] says which replica it was found on.
-class RunSkippedSymlinkEvent extends RunEvent {
-  final String path;
+/// A path the scan walked past without a status: a symlink it did not follow
+/// (SPEC §5.1: symlinks are "skipped and reported") or one it could not read
+/// (SPEC §5's per-path failure rule). Emitted for each side before
+/// reconciliation, since a path silently absent from a sync is the kind of
+/// surprise this tool exists to avoid. [onA] says which replica it was found
+/// on; there is no third value for "both", since each side reports its own
+/// list independently.
+///
+/// One event carrying [SkippedPath.reason] rather than one subtype per
+/// reason, matching how [RunResultEvent] carries success and failure and how
+/// `ScanEntry` carries all five of SPEC §5.2's branches: the two shapes are
+/// identical, and [SkippedReason] is an enum, so every switch over it stays
+/// exhaustive either way.
+class RunSkippedPathEvent extends RunEvent {
+  final SkippedPath skipped;
   final bool onA;
 
-  const RunSkippedSymlinkEvent({required this.path, required this.onA});
+  const RunSkippedPathEvent({required this.skipped, required this.onA});
 }
 
 /// Each side's [ScanReasonTally] (SPEC §5.2, §11.4, task 1fd42b): how many
 /// paths that side's scan resolved through each of §5.2's branches.
 /// Emitted once, right after both scans complete (`RunController._runLocked`,
-/// alongside the [RunSkippedSymlinkEvent]s the same scans produced) and
+/// alongside the [RunSkippedPathEvent]s the same scans produced) and
 /// before reconciliation — the plan hasn't happened yet, but the work this
 /// reports already has.
 ///
@@ -125,7 +135,8 @@ class RunResultEvent extends RunEvent {
 /// Aggregate counts once a run has finished applying (SPEC §11.4). Exit-code
 /// selection (SPEC §11.5) is out of scope here — a head derives it from
 /// these counts, and every input it needs is here: exit 1 is
-/// `skippedCount > 0 || conflictCount > 0`, exit 2 is `failedCount > 0`.
+/// `skippedCount > 0 || conflictCount > 0 || unreadableCount > 0`, exit 2 is
+/// `failedCount > 0`.
 class RunSummaryEvent extends RunEvent {
   final int appliedCount;
   final int failedCount;
@@ -136,11 +147,26 @@ class RunSummaryEvent extends RunEvent {
   /// skip — only a path the plan proposed and the run did not touch.
   final int skippedCount;
 
+  /// Paths either scan could not read (SPEC §5), summed across both sides.
+  ///
+  /// Its own count rather than folded into [skippedCount] (task 37bf4f): that
+  /// one means "the user was offered this and declined", and an unreadable
+  /// path was never offered — it never reached the plan at all. Both feed
+  /// exit 1, so folding would have been free arithmetic, but it would have
+  /// made `skipped=3` in the summary a number that answers no single
+  /// question.
+  ///
+  /// Skipped *symlinks* are deliberately not counted here. They are the tool
+  /// doing what §9's rules told it to, identically on every run; counting
+  /// them would put any tree containing a symlink permanently on exit 1.
+  final int unreadableCount;
+
   const RunSummaryEvent({
     required this.appliedCount,
     required this.failedCount,
     required this.conflictCount,
     required this.skippedCount,
+    required this.unreadableCount,
   });
 }
 

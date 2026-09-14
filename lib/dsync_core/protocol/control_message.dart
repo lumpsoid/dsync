@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 
@@ -177,15 +178,33 @@ Stream<List<int>> readByteStream(StreamIterator<Frame> frames) async* {
 
 Map<String, dynamic> scanResultToJson(ScanResult result) => {
   'entries': result.entries.map(scanEntryToJson).toList(),
-  'skippedSymlinks': result.skippedSymlinks,
+  'skippedPaths': result.skippedPaths.map(skippedPathToJson).toList(),
 };
 
 ScanResult scanResultFromJson(Map<String, dynamic> json) => ScanResult(
   entries: (json['entries'] as List)
       .map((e) => scanEntryFromJson(e as Map<String, dynamic>))
       .toList(),
-  skippedSymlinks: (json['skippedSymlinks'] as List? ?? const [])
-      .cast<String>(),
+  skippedPaths: (json['skippedPaths'] as List? ?? const [])
+      .map((e) => skippedPathFromJson(e as Map<String, dynamic>))
+      .toList(),
+);
+
+/// One [SkippedPath] (SPEC §5, §5.1), as it appears in a `scan` reply's
+/// `skippedPaths` list. [SkippedPath.detail] is omitted when null, matching
+/// this file's null-omission convention — it is meaningful for
+/// [SkippedReason.unreadable] and has nothing to say for
+/// [SkippedReason.symlink].
+Map<String, dynamic> skippedPathToJson(SkippedPath skipped) => {
+  'path': skipped.path,
+  'reason': skipped.reason.name,
+  if (skipped.detail != null) 'detail': skipped.detail,
+};
+
+SkippedPath skippedPathFromJson(Map<String, dynamic> json) => SkippedPath(
+  path: json['path'] as String,
+  reason: SkippedReason.values.byName(json['reason'] as String),
+  detail: json['detail'] as String?,
 );
 
 /// Encodes [entry] with [ScanEntry.reason], not the coarser [ScanEntry.status]
@@ -193,10 +212,12 @@ ScanResult scanResultFromJson(Map<String, dynamic> json) => ScanResult(
 /// entry's state (see its doc comment), so it is the one fact this wire
 /// format needs; re-deriving [ScanStatus] after decode via [ScanEntry.status]
 /// can never disagree with it, the way sending both independently could.
-/// [protocolVersion] was not bumped for this (SPEC §4.2): nothing is
-/// deployed, matching the precedent set by `hello`'s own last field
-/// addition, so an agent built before this field existed cannot serve a
-/// `scan` request, but nothing older is out there to break.
+/// [protocolVersion] was not bumped for this (SPEC §4.2): an added field is
+/// absent either way to a peer that does not know it, so an agent built
+/// before this field existed cannot serve a `scan` request but nothing
+/// decodes silently wrong. See [protocolVersion]'s own doc comment for where
+/// that stops being true — task 37bf4f's rename of this same reply's
+/// `skippedSymlinks` is the change that did bump it.
 Map<String, dynamic> scanEntryToJson(ScanEntry entry) => {
   'path': entry.path,
   'reason': entry.reason.name,

@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:test/test.dart';
 
 /// A synchronous fake [IOSink] backed by a [StringBuffer], so a test reads
@@ -114,7 +115,12 @@ void main() {
       final r = _Rendered(verbosity: Verbosity.quiet);
       r.renderer.render(_conflict);
       r.renderer.render(_plan);
-      r.renderer.render(const RunSkippedSymlinkEvent(path: 'link', onA: true));
+      r.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('link'),
+          onA: true,
+        ),
+      );
       r.renderer.render(
         const RunActionEvent(
           PlanAction(path: 'a.txt', type: ActionType.copyAtoB),
@@ -130,6 +136,7 @@ void main() {
           failedCount: 0,
           conflictCount: 1,
           skippedCount: 0,
+          unreadableCount: 0,
         ),
       );
 
@@ -156,6 +163,32 @@ void main() {
 
       expect(r.out.buffer.toString(), isEmpty);
       expect(r.err.buffer.toString(), contains('boom'));
+    });
+
+    test('the summary still carries the unreadable count (task 37bf4f): the '
+        'per-path lines are silenced here, so without it a quiet run that '
+        'failed to read half the tree would look like one that read all '
+        'of it', () {
+      final r = _Rendered(verbosity: Verbosity.quiet);
+      r.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.unreadable('locked.txt', 'Permission denied'),
+          onA: true,
+        ),
+      );
+      r.renderer.render(
+        const RunSummaryEvent(
+          appliedCount: 1,
+          failedCount: 0,
+          conflictCount: 0,
+          skippedCount: 0,
+          unreadableCount: 1,
+        ),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, isNot(contains('locked.txt')));
+      expect(output, contains('unreadable=1'));
     });
   });
 
@@ -190,10 +223,16 @@ void main() {
     test('renders a skipped symlink for each side (SPEC §5.1)', () {
       final r = _Rendered();
       r.renderer.render(
-        const RunSkippedSymlinkEvent(path: 'on-a-link', onA: true),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('on-a-link'),
+          onA: true,
+        ),
       );
       r.renderer.render(
-        const RunSkippedSymlinkEvent(path: 'on-b-link', onA: false),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('on-b-link'),
+          onA: false,
+        ),
       );
 
       final output = r.out.buffer.toString();
@@ -201,14 +240,56 @@ void main() {
       expect(output, contains('on-b-link'));
     });
 
+    test('an unreadable path says outright that it did not sync, and why '
+        '(SPEC §5, task 37bf4f) — a user who reads "skipped" and moves on '
+        'is a user who believes a file synced when it never did', () {
+      final r = _Rendered();
+      r.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.unreadable('locked.txt', 'Permission denied'),
+          onA: true,
+        ),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('locked.txt'));
+      expect(output, contains('Permission denied'));
+      expect(output, contains('not synced'));
+    });
+
+    test('an unreadable path does not read as a skipped symlink: they are '
+        'different outcomes and the line says which', () {
+      final symlink = _Rendered();
+      symlink.renderer.render(
+        const RunSkippedPathEvent(skipped: SkippedPath.symlink('p'), onA: true),
+      );
+      final unreadable = _Rendered();
+      unreadable.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.unreadable('p', 'Permission denied'),
+          onA: true,
+        ),
+      );
+
+      expect(symlink.out.buffer.toString(), contains('symlink'));
+      expect(unreadable.out.buffer.toString(), contains('unreadable'));
+      expect(unreadable.out.buffer.toString(), isNot(contains('symlink')));
+    });
+
     test('distinguishes which side a skipped symlink was found on', () {
       final onA = _Rendered();
       onA.renderer.render(
-        const RunSkippedSymlinkEvent(path: 'link', onA: true),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('link'),
+          onA: true,
+        ),
       );
       final onB = _Rendered();
       onB.renderer.render(
-        const RunSkippedSymlinkEvent(path: 'link', onA: false),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('link'),
+          onA: false,
+        ),
       );
 
       expect(
@@ -259,14 +340,35 @@ void main() {
           failedCount: 1,
           conflictCount: 2,
           skippedCount: 4,
+          unreadableCount: 5,
         ),
       );
 
       final output = r.out.buffer.toString();
-      expect(output, contains('3'));
-      expect(output, contains('1'));
-      expect(output, contains('2'));
-      expect(output, contains('4'));
+      expect(output, contains('applied=3'));
+      expect(output, contains('failed=1'));
+      expect(output, contains('conflicts=2'));
+      expect(output, contains('skipped=4'));
+      expect(output, contains('unreadable=5'));
+    });
+
+    test('unreadable is its own count, not folded into skipped (task '
+        '37bf4f): "skipped" means the user was offered this and declined, '
+        'and an unreadable path was never offered', () {
+      final r = _Rendered();
+      r.renderer.render(
+        const RunSummaryEvent(
+          appliedCount: 0,
+          failedCount: 0,
+          conflictCount: 0,
+          skippedCount: 0,
+          unreadableCount: 2,
+        ),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('skipped=0'));
+      expect(output, contains('unreadable=2'));
     });
   });
 
@@ -432,7 +534,12 @@ void main() {
       final r = _Rendered(verbosity: Verbosity.verbose);
       r.renderer.render(_conflict);
       r.renderer.render(_plan);
-      r.renderer.render(const RunSkippedSymlinkEvent(path: 'link', onA: true));
+      r.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('link'),
+          onA: true,
+        ),
+      );
 
       final output = r.out.buffer.toString();
       expect(output, contains('c.txt'));

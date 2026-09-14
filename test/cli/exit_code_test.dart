@@ -9,11 +9,13 @@ RunSummaryEvent _summary({
   int failed = 0,
   int conflicts = 0,
   int skipped = 0,
+  int unreadable = 0,
 }) => RunSummaryEvent(
   appliedCount: applied,
   failedCount: failed,
   conflictCount: conflicts,
   skippedCount: skipped,
+  unreadableCount: unreadable,
 );
 
 void main() {
@@ -75,6 +77,28 @@ void main() {
         summary: _summary(applied: 4, conflicts: 1, skipped: 2),
       );
       expect(outcome.exitCode, 1);
+    });
+
+    test('unreadable paths only -> 1 (task 37bf4f): everything the scan '
+        'could read synced, so the run completed -- but a path it could '
+        'not read did not sync, which is exactly what exit 1 says', () {
+      final outcome = RunOutcome(summary: _summary(applied: 4, unreadable: 1));
+      expect(outcome.exitCode, 1);
+    });
+
+    test('unreadable paths do NOT become exit 2 (task 37bf4f): exit 2 is for '
+        'an action that failed, and an unreadable path never became one -- '
+        'it was dropped before the plan existed', () {
+      final outcome = RunOutcome(summary: _summary(applied: 4, unreadable: 3));
+      expect(outcome.exitCode, isNot(2));
+    });
+
+    test('a failed action and an unreadable path together -> 2 (2 wins '
+        'over 1, same as any other exit-1 input)', () {
+      final outcome = RunOutcome(
+        summary: _summary(applied: 1, failed: 1, unreadable: 1),
+      );
+      expect(outcome.exitCode, 2);
     });
 
     test('everything applied, no skips, no conflicts, no failures -> 0', () {

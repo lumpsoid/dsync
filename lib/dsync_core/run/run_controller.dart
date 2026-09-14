@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
+import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 
 /// Decides which of a [Plan]'s proposed actions actually run (SPEC §11.3).
@@ -143,14 +144,24 @@ class RunController {
       tallyB: scans[1].reasonTally,
     );
 
-    for (final path in scans[0].skippedSymlinks) {
-      yield RunSkippedSymlinkEvent(path: path, onA: true);
+    for (final skipped in scans[0].skippedPaths) {
+      yield RunSkippedPathEvent(skipped: skipped, onA: true);
     }
-    for (final path in scans[1].skippedSymlinks) {
-      yield RunSkippedSymlinkEvent(path: path, onA: false);
+    for (final skipped in scans[1].skippedPaths) {
+      yield RunSkippedPathEvent(skipped: skipped, onA: false);
     }
 
-    final plan = _reconciler.reconcile(onA, onB);
+    // Both sides' unreadable paths, not each side's own: a path only one
+    // replica failed to read still cannot be reconciled, because the §6 table
+    // needs a status from both (task 37bf4f).
+    final plan = _reconciler.reconcile(
+      onA,
+      onB,
+      unreadable: UnreadablePaths.from([
+        ...scans[0].skippedPaths,
+        ...scans[1].skippedPaths,
+      ]),
+    );
 
     for (final conflict in plan.conflicts) {
       yield RunConflictEvent(conflict);
@@ -239,6 +250,11 @@ class RunController {
       skippedCount: plan.actions
           .where((action) => !keptPaths.contains(action.path))
           .length,
+      // Summed across both sides rather than reported per side: the summary
+      // is what SPEC §11.5 reads for the exit code, and "did anything go
+      // unread" is one question. Which side each path was on is already on
+      // its own RunSkippedPathEvent, above.
+      unreadableCount: scans[0].unreadableCount + scans[1].unreadableCount,
     );
   }
 }

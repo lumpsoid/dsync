@@ -6,6 +6,8 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
+import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
 
 /// Scans a replica's file tree and compares it against its own archive
@@ -39,6 +41,15 @@ class Scanner {
   /// [rules] is a parameter rather than construction state because the rules
   /// belong to the run, not to the host: they come from the initiator's
   /// profile and are handed to whichever replica is scanning (SPEC §9).
+  ///
+  /// A path this scan cannot read is recorded in [ScanResult.skippedPaths]
+  /// and the walk continues (SPEC §5's per-path failure rule, mirroring
+  /// §7.6's for the apply phase) — one locked file does not cost the user the
+  /// whole run. The replica *root* is the exception: if that cannot be
+  /// listed, the failure is thrown, which a caller turns into SPEC §11.5's
+  /// exit 3. There is no tree left to sync, and reporting an empty one would
+  /// invite mirroring the entire other replica into a directory this host
+  /// cannot even read.
   Future<ScanResult> scan({
     required String rootPath,
     required Archive archive,
@@ -50,17 +61,28 @@ class Scanner {
     // a link pointing at one of its own ancestors from recursing forever.
     final root = await Directory(rootPath).resolveSymbolicLinks();
     await _walk(Directory(root), '', context);
-    final hashed = await _hashAll(context.pendingHash);
+    final hashed = await _hashAll(context);
+    // Only complete now — the walk's directory failures plus the read
+    // failures `_hashAll` just appended.
+    final unreadable = UnreadablePaths.from(context.skipped);
 
     return ScanResult(
       entries: [
         ...context.fastPath,
         ...hashed,
         for (final path in archive.entries.keys)
-          if (!context.seen.contains(path) && !context.rules.ignores(path))
+          if (!context.seen.contains(path) &&
+              !context.rules.ignores(path) &&
+              // An archive entry under a directory the walk could not list is
+              // not evidence the file is gone — the scan never got to look.
+              // Reporting it `deleted` would propagate a deletion the user
+              // never made to the other replica (SPEC §6's table), which is
+              // the one way an unreadable path could destroy data rather than
+              // merely fail to sync.
+              !unreadable.covers(path))
             ScanEntry.deleted(path),
       ],
-      skippedSymlinks: context.skippedSymlinks,
+      skippedPaths: context.skipped,
     );
   }
 
@@ -82,8 +104,23 @@ class Scanner {
     String relativePrefix,
     _ScanContext context,
   ) async {
-    final children = await dir.list(followLinks: false).toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
+    final List<FileSystemEntity> children;
+    try {
+      children = await dir.list(followLinks: false).toList();
+    } on FileSystemException catch (error) {
+      // An unreadable replica root is fatal, not per-path: see [scan]'s doc
+      // comment. Only the root reaches here with an empty prefix — every
+      // recursive call passes the child's own relative path.
+      if (relativePrefix.isEmpty) rethrow;
+      context.skipped.add(
+        SkippedPath.unreadable(
+          relativePrefix,
+          describeFileSystemFailure(error),
+        ),
+      );
+      return;
+    }
+    children.sort((a, b) => a.path.compareTo(b.path));
 
     for (final child in children) {
       final name = child.path.split('/').last;
@@ -108,7 +145,7 @@ class Scanner {
             // SPEC §5.1: skipped *and reported* — a link silently missing
             // from a sync is exactly the kind of surprise this tool is
             // supposed to avoid.
-            context.skippedSymlinks.add(relativePath);
+            context.skipped.add(SkippedPath.symlink(relativePath));
           }
         default:
           break;
@@ -127,7 +164,7 @@ class Scanner {
     } on FileSystemException {
       // Broken link: nothing to scan, but the user asked to follow it, so
       // saying nothing would be the worst answer.
-      context.skippedSymlinks.add(relativePath);
+      context.skipped.add(SkippedPath.symlink(relativePath));
       return;
     }
 
@@ -136,14 +173,14 @@ class Scanner {
         if (context.openDirs.contains(target)) {
           // The link points at a directory this walk is already inside, so
           // following it would descend through itself without end.
-          context.skippedSymlinks.add(relativePath);
+          context.skipped.add(SkippedPath.symlink(relativePath));
           return;
         }
         await _walk(Directory(target), relativePath, context);
       case FileSystemEntityType.file:
         await _visitFile(File(target), relativePath, context);
       default:
-        context.skippedSymlinks.add(relativePath);
+        context.skipped.add(SkippedPath.symlink(relativePath));
     }
   }
 
@@ -188,25 +225,62 @@ class Scanner {
     );
   }
 
-  /// Hashes every candidate with at most [jobs] concurrent isolates.
-  Future<List<ScanEntry>> _hashAll(List<_HashCandidate> candidates) async {
+  /// Hashes every [_ScanContext.pendingHash] candidate with at most [jobs]
+  /// concurrent isolates.
+  ///
+  /// A candidate whose read fails — permission denied, or the file vanished
+  /// between the directory listing and the hash — yields no [ScanEntry] and
+  /// is recorded on [context] instead (SPEC §5's per-path failure rule). The
+  /// path stays in [_ScanContext.seen], so it is not then synthesised as
+  /// `deleted`: the scan knows the file was there, only not what is in it.
+  ///
+  /// Failures are collected into a slot-per-candidate array and appended
+  /// afterwards rather than pushed onto [context] from inside the workers.
+  /// The workers interleave at every `await`, so pushing directly would order
+  /// the report by whichever read happened to fail first; this keeps it in
+  /// walk order, the same order every other part of a scan reports in.
+  Future<List<ScanEntry>> _hashAll(_ScanContext context) async {
+    final candidates = context.pendingHash;
     if (candidates.isEmpty) return const [];
 
     final results = List<ScanEntry?>.filled(candidates.length, null);
+    final failures = List<SkippedPath?>.filled(candidates.length, null);
     var next = 0;
 
     Future<void> worker() async {
       while (next < candidates.length) {
         final index = next++;
-        results[index] = await candidates[index].hash();
+        final candidate = candidates[index];
+        try {
+          results[index] = await candidate.hash();
+        } on FileSystemException catch (error) {
+          failures[index] = SkippedPath.unreadable(
+            candidate.path,
+            describeFileSystemFailure(error),
+          );
+        }
       }
     }
 
     final workerCount = jobs.clamp(1, candidates.length);
     await Future.wait(List.generate(workerCount, (_) => worker()));
-    return results.cast<ScanEntry>();
+    context.skipped.addAll(failures.whereType<SkippedPath>());
+    return results.whereType<ScanEntry>().toList();
   }
 }
+
+/// The OS's own reason for a failed read, for [SkippedPath.detail] — "Permission
+/// denied", "No such file or directory" — rather than the whole
+/// [FileSystemException.toString], which leads with a Dart type name and
+/// repeats the absolute path the caller is already reporting.
+///
+/// The distinction it carries is the one a user cannot recover for
+/// themselves: a locked file is still there to inspect, while a file that
+/// vanished mid-scan is not, and "no such file or directory" against a path
+/// that plainly exists is the only clue that something rewrote it underneath
+/// the run.
+String describeFileSystemFailure(FileSystemException error) =>
+    error.osError?.message ?? error.message;
 
 /// Accumulates walk results so the recursive walk methods stay narrow.
 class _ScanContext {
@@ -220,7 +294,7 @@ class _ScanContext {
   final Set<String> openDirs = {};
 
   final List<ScanEntry> fastPath = [];
-  final List<String> skippedSymlinks = [];
+  final List<SkippedPath> skipped = [];
   final List<_HashCandidate> pendingHash = [];
 
   _ScanContext(this.archive, this.rules);

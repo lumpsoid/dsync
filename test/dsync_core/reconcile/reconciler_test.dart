@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:test/test.dart';
 
@@ -388,6 +389,66 @@ void main() {
         entry('a.txt', ScanStatus.created),
       ], []);
       expect(plan.actions.map((a) => a.path), ['a.txt', 'z.txt']);
+    });
+  });
+
+  group('unreadable paths (SPEC §5, task 37bf4f)', () {
+    test('a path one side could not read gets no action, even though the '
+        'other side reports it — §6 reads silence as "never seen", which '
+        'means "mirror it here", and that would overwrite a file the scan '
+        'was never able to look at', () {
+      final plan = reconciler.reconcile(
+        [], // A could not read f.txt, so it reports nothing for it
+        [entry('f.txt', ScanStatus.unchanged, hash: 'b')],
+        unreadable: const UnreadablePaths(['f.txt']),
+      );
+
+      expect(plan.actions, isEmpty);
+      expect(plan.conflicts, isEmpty);
+    });
+
+    test('nor a conflict: asking the user to choose between a side\'s '
+        'content and something the tool never managed to read is not a '
+        'choice they can make', () {
+      final plan = reconciler.reconcile(
+        [entry('f.txt', ScanStatus.modified, hash: 'a')],
+        [entry('f.txt', ScanStatus.modified, hash: 'b')],
+        unreadable: const UnreadablePaths(['f.txt']),
+      );
+
+      expect(plan.actions, isEmpty);
+      expect(plan.conflicts, isEmpty);
+    });
+
+    test('an unreadable directory covers everything beneath it: the scan '
+        'reports the directory, but what it hid was the files', () {
+      final plan = reconciler.reconcile([], [
+        entry('sub/inner.txt', ScanStatus.unchanged, hash: 'b'),
+      ], unreadable: const UnreadablePaths(['sub']));
+
+      expect(plan.actions, isEmpty);
+    });
+
+    test('a sibling whose name merely starts with an unreadable path is '
+        'still reconciled — prefix matching stops at the separator', () {
+      final plan = reconciler.reconcile([], [
+        entry('submarine.txt', ScanStatus.created, hash: 'b', size: 4),
+      ], unreadable: const UnreadablePaths(['sub']));
+
+      expect(plan.actions.map((a) => a.path), ['submarine.txt']);
+    });
+
+    test('every other path still reconciles normally — the exclusion is '
+        'scoped to what was unread, not a blanket stand-down', () {
+      final plan = reconciler.reconcile(
+        [entry('ok.txt', ScanStatus.created, hash: 'a', size: 5)],
+        [],
+        unreadable: const UnreadablePaths(['locked.txt']),
+      );
+
+      expect(plan.actions.map((a) => (a.path, a.type)), [
+        ('ok.txt', ActionType.copyAtoB),
+      ]);
     });
   });
 }

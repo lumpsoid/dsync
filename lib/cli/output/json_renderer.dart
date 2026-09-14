@@ -7,19 +7,22 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 
 /// Renders a `RunController` run as SPEC §11.4's `--json` stream: one JSON
 /// object per line on stdout, one line per [RunEvent], each carrying a
-/// `type` field naming which of the ten line shapes it is (`replicas`,
-/// `plan`, `action`, `conflict`, `symlink`, `scanTally`, `progress`,
-/// `result`, `summary`, `error`).
+/// `type` field naming which of the eleven line shapes it is (`replicas`,
+/// `plan`, `action`, `conflict`, `symlink`, `unreadable`, `scanTally`,
+/// `progress`, `result`, `summary`, `error`). [RunSkippedPathEvent] is the
+/// one event that maps to more than one of them — see [render]'s own case
+/// for why.
 ///
 /// `RunEvent` is a `sealed class`, so the switch in [render] is exhaustive:
 /// the compiler pointed at this file (and `HumanRenderer`) as exactly what
 /// task ee190c's new `RunReplicasEvent` needed to touch.
 ///
 /// This renderer never writes to [err] — every [RunEvent] SPEC §11.4's
-/// `--json` mode produces is one of the nine types above, all of which
+/// `--json` mode produces is one of the types above, all of which
 /// belong on stdout, so there is no human text of this renderer's own to
 /// divert ("Human text goes to stderr in this mode so stdout stays
 /// parseable"). [err] is still accepted, unused, as a constructor parameter
@@ -83,10 +86,20 @@ class JsonRenderer {
         'a': _scanReasonTallyToJson(tallyA),
         'b': _scanReasonTallyToJson(tallyB),
       },
-      RunSkippedSymlinkEvent(:final path, :final onA) => {
-        'type': 'symlink',
-        'path': path,
+      // One line *type* per SkippedReason, not one shared type with a
+      // `reason` field (task 37bf4f): SPEC §11.4 fixes the set of `type`
+      // values, and a consumer filtering for `symlink` is filtering for a
+      // thing that is normal on every run — silently widening that type to
+      // also mean "this file did not sync" would change what an existing
+      // filter matches. Adding `unreadable` alongside cannot.
+      RunSkippedPathEvent(:final skipped, :final onA) => {
+        'type': switch (skipped.reason) {
+          SkippedReason.symlink => 'symlink',
+          SkippedReason.unreadable => 'unreadable',
+        },
+        'path': skipped.path,
         'onA': onA,
+        if (skipped.detail != null) 'detail': skipped.detail,
       },
       RunConflictEvent(:final conflict) => {
         'type': 'conflict',
@@ -119,6 +132,7 @@ class JsonRenderer {
         :final failedCount,
         :final conflictCount,
         :final skippedCount,
+        :final unreadableCount,
       ) =>
         {
           'type': 'summary',
@@ -126,6 +140,7 @@ class JsonRenderer {
           'failedCount': failedCount,
           'conflictCount': conflictCount,
           'skippedCount': skippedCount,
+          'unreadableCount': unreadableCount,
         },
       RunErrorEvent(:final error) => {
         'type': 'error',

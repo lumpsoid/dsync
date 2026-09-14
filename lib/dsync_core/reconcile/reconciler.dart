@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 
 /// Turns two replicas' status lists into a [Plan] (SPEC §6).
 ///
@@ -7,7 +8,25 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 /// side has already compared itself against its own archive (SPEC §5); this
 /// only ever sees the two resulting status lists.
 class Reconciler {
-  Plan reconcile(List<ScanEntry> onA, List<ScanEntry> onB) {
+  /// [unreadable] is what neither list can express (SPEC §5, task 37bf4f): a
+  /// path a scan could not read reports no entry, and §6 reads the resulting
+  /// silence as "this side has never seen it" — a signal that means *mirror
+  /// it from the other side*. That is the right reading for a path that
+  /// genuinely is not there and the wrong one for a path that is, so the
+  /// paths behind it are excluded here rather than left to resolve as
+  /// something the scan never claimed. Without this, a locally-edited file
+  /// the scan could not read would be overwritten by the other replica's
+  /// copy — the run reporting "not synced" for a path it had just
+  /// overwritten.
+  ///
+  /// Defaults to [UnreadablePaths.none], which asserts something true and
+  /// ordinary — this scan read everything it walked — rather than standing in
+  /// for a fact the caller failed to supply.
+  Plan reconcile(
+    List<ScanEntry> onA,
+    List<ScanEntry> onB, {
+    UnreadablePaths unreadable = UnreadablePaths.none,
+  }) {
     final a = {for (final e in onA) e.path: e};
     final b = {for (final e in onB) e.path: e};
     final filesOnA = _presentPaths(a.values);
@@ -19,6 +38,12 @@ class Reconciler {
     final conflicts = <Conflict>[];
 
     for (final path in {...a.keys, ...b.keys}.toList()..sort()) {
+      // Neither this run nor the next can say anything true about a path a
+      // scan could not read, so it gets no action and no conflict — a
+      // conflict would ask the user to choose between a side's content and
+      // something the tool never managed to look at.
+      if (unreadable.covers(path)) continue;
+
       // A path beneath one that's a file on the other side is covered by
       // that ancestor's own type-mismatch conflict below — nothing more to
       // resolve about it until that conflict is settled.

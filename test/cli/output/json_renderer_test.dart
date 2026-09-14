@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:test/test.dart';
 
 /// An [IOSink] over an in-memory buffer, so a test reads what [JsonRenderer]
@@ -272,8 +273,14 @@ void main() {
       final r = _Rendered();
 
       final decoded = (await _renderAll(r, [
-        const RunSkippedSymlinkEvent(path: 'link', onA: true),
-        const RunSkippedSymlinkEvent(path: 'other-link', onA: false),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('link'),
+          onA: true,
+        ),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('other-link'),
+          onA: false,
+        ),
       ]));
 
       expect(decoded[0], {'type': 'symlink', 'path': 'link', 'onA': true});
@@ -281,6 +288,27 @@ void main() {
         'type': 'symlink',
         'path': 'other-link',
         'onA': false,
+      });
+    });
+
+    test('unreadable: its own type, not a widened `symlink` (task 37bf4f). '
+        'A consumer filtering for `symlink` is filtering for something '
+        'normal on every run; it must not silently start matching '
+        'failures too', () async {
+      final r = _Rendered();
+
+      final decoded = await _renderAll(r, [
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.unreadable('locked.txt', 'Permission denied'),
+          onA: false,
+        ),
+      ]);
+
+      expect(decoded.single, {
+        'type': 'unreadable',
+        'path': 'locked.txt',
+        'onA': false,
+        'detail': 'Permission denied',
       });
     });
 
@@ -399,13 +427,14 @@ void main() {
       expect(decoded['error'], Exception('disk full').toString());
     });
 
-    test('summary: the four counts', () async {
+    test('summary: the five counts', () async {
       final r = _Rendered();
       const event = RunSummaryEvent(
         appliedCount: 5,
         failedCount: 1,
         conflictCount: 2,
         skippedCount: 3,
+        unreadableCount: 4,
       );
 
       final decoded = (await _renderAll(r, [event])).single;
@@ -416,6 +445,7 @@ void main() {
         'failedCount': 1,
         'conflictCount': 2,
         'skippedCount': 3,
+        'unreadableCount': 4,
       });
     });
 
@@ -451,7 +481,10 @@ void main() {
             deleted: 1,
           ),
         ),
-        const RunSkippedSymlinkEvent(path: 'link', onA: true),
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.symlink('link'),
+          onA: true,
+        ),
         const RunConflictEvent(
           Conflict(
             path: 'c.txt',
@@ -475,6 +508,7 @@ void main() {
           failedCount: 0,
           conflictCount: 1,
           skippedCount: 0,
+          unreadableCount: 0,
         ),
         RunErrorEvent(StateError('fatal')),
       ];

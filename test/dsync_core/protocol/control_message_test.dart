@@ -8,6 +8,8 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -123,6 +125,36 @@ void main() {
         expect(decodedHashMatched.reason, ScanReason.hashMatched);
       },
     );
+  });
+
+  group('scanResultToJson / scanResultFromJson (task 37bf4f)', () {
+    test('round-trips both skip reasons, and the detail that only one of '
+        'them carries', () {
+      const result = ScanResult(
+        entries: [ScanEntry(path: 'a.txt', reason: ScanReason.created)],
+        skippedPaths: [
+          SkippedPath.symlink('link.txt'),
+          SkippedPath.unreadable('locked.txt', 'Permission denied'),
+        ],
+      );
+
+      final decoded = scanResultFromJson(scanResultToJson(result));
+
+      expect(decoded.entries.map((e) => e.path), ['a.txt']);
+      expect(decoded.skippedPaths.map((s) => (s.path, s.reason, s.detail)), [
+        ('link.txt', SkippedReason.symlink, null),
+        ('locked.txt', SkippedReason.unreadable, 'Permission denied'),
+      ]);
+      expect(decoded.unreadableCount, 1);
+    });
+
+    test('a peer that reports no skipped paths decodes to an empty list, '
+        'not a null', () {
+      final decoded = scanResultFromJson({'entries': <dynamic>[]});
+
+      expect(decoded.skippedPaths, isEmpty);
+      expect(decoded.unreadableCount, 0);
+    });
   });
 
   group('archiveEntryToJson / archiveEntryFromJson', () {

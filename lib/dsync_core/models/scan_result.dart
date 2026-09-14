@@ -1,20 +1,41 @@
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/skipped_path.dart';
+import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 
 /// Everything one replica's scan found (SPEC §5).
 ///
-/// [entries] is what reconciliation consumes. [skippedSymlinks] carries the
-/// rest of §5.1's requirement — symlinks are "skipped **and reported**" —
-/// which has nowhere to live in a [ScanEntry]: a skipped link has no status
+/// [entries] is what reconciliation consumes. [skippedPaths] carries the rest
+/// of §5.1's requirement — symlinks are "skipped **and reported**" — plus §5's
+/// per-path failure rule, neither of which has anywhere to live in a
+/// [ScanEntry]: a path the scan skipped or could not read has no status
 /// relative to the archive, and giving it one would drag it into the §6
 /// table, where every cell would have to say "do nothing".
 class ScanResult {
   final List<ScanEntry> entries;
 
-  /// Root-relative paths of symlinks the scan did not follow, because no
-  /// `follow` rule matched or because the link was broken (SPEC §5.1, §9).
-  final List<String> skippedSymlinks;
+  /// Root-relative paths the walk saw but produced no [ScanEntry] for —
+  /// unfollowed symlinks (SPEC §5.1, §9) and paths the scan could not read
+  /// (SPEC §5), each carrying its own [SkippedReason].
+  ///
+  /// One list rather than one per reason: both are the same category (see
+  /// [SkippedReason]'s own doc comment), and splitting them would duplicate
+  /// every consumer — the wire format, `RunController`'s loop, and both
+  /// renderers — for two shapes that differ only in a word.
+  final List<SkippedPath> skippedPaths;
 
-  const ScanResult({required this.entries, this.skippedSymlinks = const []});
+  const ScanResult({required this.entries, this.skippedPaths = const []});
+
+  /// Which of [skippedPaths] the scan could not read (SPEC §5) — the one
+  /// [SkippedReason] that both feeds SPEC §11.5's exit code and has to be
+  /// kept out of reconciliation.
+  ///
+  /// A getter here rather than something `RunController` derives, for the
+  /// same reason [reasonTally] is: [skippedPaths] is the only data the rule
+  /// needs (CLAUDE.md, "a rule about one entity's own fields").
+  UnreadablePaths get unreadable => UnreadablePaths.from(skippedPaths);
+
+  /// How many paths this side's scan could not read (SPEC §5, §11.5).
+  int get unreadableCount => unreadable.roots.length;
 
   /// How many of [entries] took each of SPEC §5.2's branches — the rule
   /// belongs here, not in `RunController` or a renderer, because [entries]
