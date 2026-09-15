@@ -1,3 +1,8 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dsync/dsync_core/identity/device_id.dart';
+
 /// This installation's long-lived cryptographic identity (SPEC §4.4) — the
 /// thing a peer pins when it pairs with us, and presents when it connects.
 ///
@@ -6,11 +11,6 @@
 /// `usePrivateKeyBytes` read PEM, and the certificate is also what travels in
 /// a pairing exchange. Holding parsed keys here would mean re-encoding at
 /// every use for no reader that wants them.
-///
-/// Carries no device id yet. What the id is — which hash of which field, and
-/// how it is rendered for a human — is still open (task 4ec17f), and inventing
-/// one here would make the first guess permanent by being the one already in
-/// the code.
 class DeviceIdentity {
   /// The self-signed X.509 certificate, PEM-encoded.
   ///
@@ -28,4 +28,25 @@ class DeviceIdentity {
     required this.certificatePem,
     required this.privateKeyPem,
   });
+
+  /// This identity's device id (SPEC §4.4): SHA-256 of the certificate's
+  /// `SubjectPublicKeyInfo`, lowercase hex in 4-character groups.
+  ///
+  /// Computed from [certificatePem] on every access through
+  /// [deviceIdFromCertificateDer] — the same function a paired peer's id goes
+  /// through — rather than cached at construction. There is exactly one path
+  /// from certificate bytes to id, so nothing here can hold an id that has
+  /// drifted from the certificate it was built from; asking a save/load
+  /// round trip for its id and asking the identity that was never written to
+  /// disk both answer through this same getter.
+  String get deviceId => deviceIdFromCertificateDer(_certificateDer);
+
+  /// The certificate's raw DER bytes, decoded out of [certificatePem].
+  Uint8List get _certificateDer => base64.decode(
+    certificatePem
+        .split(RegExp(r'\r?\n'))
+        .map((line) => line.trim())
+        .where((line) => !line.startsWith('-----') && line.isNotEmpty)
+        .join(),
+  );
 }
