@@ -33,12 +33,20 @@ CommandRunner<int> _runnerFor(Command<int> command) =>
 /// — a spawned `bin/dsync.dart` process has no flag for it.
 void main() {
   test(
-    'show prints a payload accept can redeem, pairing both stores',
+    'show prints a payload accept can redeem, pairing both stores, and '
+    'renders a QR to stderr when the terminal supports it (task e17997)',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
       addTearDown(() => tempDir.delete(recursive: true));
 
-      final serverEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/server'};
+      // `TERM` set to a real value, plus `hasTerminal` forced true below, so
+      // this run deterministically takes `qrTerminalSupported`'s "render a
+      // QR" branch rather than depending on whether the real test-runner
+      // process happens to have a terminal attached to its own stderr.
+      final serverEnvironment = {
+        'XDG_STATE_HOME': '${tempDir.path}/server',
+        'TERM': 'xterm-256color',
+      };
       final clientEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/client'};
 
       final showOut = BufferSink();
@@ -49,6 +57,7 @@ void main() {
         out: showOut.sink,
         err: showErr.sink,
         advertisableAddress: () async => '127.0.0.1',
+        hasTerminal: () => true,
       );
 
       // Not awaited: `show` blocks until one enrolment arrives, which is
@@ -86,6 +95,20 @@ void main() {
         reason: 'show said:\n${await showErr.contents()}',
       );
 
+      // SPEC §11.4, task e17997: stdout carries the payload line and nothing
+      // else — `dsync pair accept`/a wrapper script depends on that staying
+      // true now that stderr also carries a rendered QR.
+      expect((await showOut.contents()).trim(), payloadLine);
+
+      // The QR — human commentary, alongside the rest of it — is on stderr,
+      // never stdout, drawn with the half-block glyphs.
+      final showErrText = await showErr.contents();
+      expect(
+        showErrText,
+        anyOf(contains('▀'), contains('▄'), contains('█')),
+        reason: 'expected a rendered QR on stderr:\n$showErrText',
+      );
+
       // Both sides recorded each other, per SPEC §4.4's mutual pairing —
       // and each with an empty `agreedReplicaRoots`, the two-step rule:
       // pairing alone reaches nothing until `dsync pair grant` runs.
@@ -114,6 +137,65 @@ void main() {
       expect(onServer!.agreedReplicaRoots, isEmpty);
     },
   );
+
+  test('show falls back to a stated note, not a QR, on a terminal that is not '
+      'detected as supporting the half-block glyphs (task e17997)', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final serverEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/server'};
+    final clientEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/client'};
+
+    final showOut = BufferSink();
+    final showErr = BufferSink();
+    final showCommand = PairShowCommand(
+      environment: serverEnvironment,
+      platform: const LinuxStateDir(),
+      out: showOut.sink,
+      err: showErr.sink,
+      advertisableAddress: () async => '127.0.0.1',
+      hasTerminal: () => false,
+    );
+
+    final showExitCode = _runnerFor(showCommand).run(['show']);
+
+    final payloadLine = await _awaitLine(
+      showOut,
+      (line) => line.startsWith('dsync-pair:'),
+      diagnostics: showErr,
+    );
+
+    final acceptCommand = PairAcceptCommand(
+      environment: clientEnvironment,
+      platform: const LinuxStateDir(),
+      out: BufferSink().sink,
+      err: BufferSink().sink,
+    );
+    final acceptExitCode = await _runnerFor(acceptCommand)
+        .run(['accept', '--name', 'desktop', payloadLine]);
+
+    expect(acceptExitCode, 0);
+    expect(
+      await showExitCode,
+      0,
+      reason: 'show said:\n${await showErr.contents()}',
+    );
+
+    // Same stdout guarantee as the QR-supported case above — unaffected by
+    // which branch stderr took.
+    expect((await showOut.contents()).trim(), payloadLine);
+
+    final showErrText = await showErr.contents();
+    expect(
+      showErrText,
+      isNot(anyOf(contains('▀'), contains('▄'), contains('█'))),
+    );
+    expect(
+      showErrText,
+      contains('not detected as supporting'),
+      reason: 'expected the stated fallback note on stderr:\n$showErrText',
+    );
+  });
 }
 
 /// Polls [sink] until a line satisfying [matches] appears, the same way

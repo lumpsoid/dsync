@@ -9,9 +9,11 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:qr/qr.dart' show InputTooLongException;
 
 import '../agents/local_addresses.dart';
 import '../exit_code.dart';
+import '../output/qr_terminal_renderer.dart';
 
 /// `dsync pair show` (SPEC §4.4, §11.1, task bc68c7): generate a token, bind
 /// the enrolment listener, print this device's payload, and wait for one
@@ -25,26 +27,23 @@ import '../exit_code.dart';
 /// [_watchStopSignals] below, the same shape `AgentCommand._serveSocket`
 /// uses for the same reason on the replica listener).
 ///
-/// **Text only — no QR rendering here.** SPEC §4.4 names a QR image as one
-/// way to carry this payload, and a terminal *could* render one as block
-/// characters. This command deliberately does not:
-/// - A QR encoder is either a new pinned dependency (SPEC §3, which this
-///   project has stayed conservative about — see
-///   `self_signed_certificate.dart`'s own ~170-line-over-`basic_utils`
-///   reasoning for the same kind of tradeoff) or a few hundred lines of
-///   Reed-Solomon this task has no reason to own alongside the CLI wiring
-///   itself.
-/// - SPEC §4.4 calls text the *primary* path for the desktop-to-server case
-///   — neither end has a camera — which is exactly the case a CLI serves.
-///   Deferring the image is not deferring the common case.
-/// - The phone-to-desktop case that would want a rendered QR also needs the
-///   Flutter head, which is a skeleton today (SPEC §16). Deferring the
-///   rendering blocks nothing that currently exists.
+/// **Text on stdout, always; a QR on stderr, when the terminal can show
+/// one (task e17997).** SPEC §11.4 keeps stdout reserved for the parseable
+/// payload line — `dsync pair accept` and any wrapper script need exactly
+/// that line, unchanged, on every run — so the QR is additive on stderr,
+/// alongside the rest of this command's human commentary, never a
+/// replacement for the text. `qr_terminal_renderer.dart` is the encoder and
+/// the half-block terminal renderer (its own doc comment carries the
+/// dependency-vs-hand-roll reasoning); [qrTerminalSupported] decides whether
+/// this run's terminal can be assumed to render it, and this command prints
+/// a stated fallback line instead when it cannot, or when the payload is
+/// larger than a QR can carry ([InputTooLongException] — see that
+/// renderer's own doc comment for why that is checked at all).
 ///
-/// This leaves phone-to-desktop pairing genuinely unreachable from the CLI
-/// alone — worth saying plainly rather than leaving it looking complete.
-/// Follow-up filed: task e17997 ("cli: render dsync pair's payload as a QR
-/// in the terminal").
+/// The phone-to-desktop case a rendered QR unblocks still needs a camera to
+/// scan it, which today only exists on the Flutter head — a skeleton (SPEC
+/// §16) — so this is real but not urgent: nothing else currently reachable
+/// depends on it.
 ///
 /// **How this knows an enrolment happened.** [EnrolmentListener.enrolled]
 /// completes with the device it recorded — the listener saying so, rather
@@ -104,6 +103,13 @@ class PairShowCommand extends Command<int> {
   /// this machine's real network interfaces.
   final Future<String?> Function() advertisableAddress;
 
+  /// Whether [err] is a real terminal (task e17997) — the one piece of real
+  /// I/O [qrTerminalSupported] needs beyond [environment]'s already-injected
+  /// `TERM`, kept as its own overridable function for the same reason
+  /// [advertisableAddress] is: a test forces it either way instead of
+  /// depending on this process's real streams.
+  final bool Function() hasTerminal;
+
   PairShowCommand({
     required this.environment,
     required this.platform,
@@ -111,6 +117,7 @@ class PairShowCommand extends Command<int> {
     IOSink? err,
     this.port = 0,
     this.advertisableAddress = preferredAdvertisableAddress,
+    this.hasTerminal = stderrHasTerminal,
   }) : out = out ?? stdout,
        err = err ?? stderr;
 
@@ -180,13 +187,47 @@ class PairShowCommand extends Command<int> {
       // below goes to stderr (`agent_command.dart`'s `_serveSocket` gives
       // the same reasoning for its own startup line).
       out.writeln(payload.encode());
+
+      final qrSupported = qrTerminalSupported(
+        hasTerminal: hasTerminal(),
+        termEnvironmentVariable: environment['TERM'],
+      );
       err.writeln(
         'dsync pair show: this device is ${identity.deviceId}. Waiting up '
         'to ${defaultEnrolmentTokenTtl.inMinutes} minutes for one device to '
         'redeem the payload above — paste it into `dsync pair accept` on '
-        'the other device (no QR rendering yet; see task e17997). '
+        'the other device${qrSupported ? ', or scan the QR below' : ''}. '
         'Ctrl-C cancels.',
       );
+
+      // Additive, never instead of the stdout line above (SPEC §11.4,
+      // task e17997): a terminal detected as unable to render the half-block
+      // glyphs faithfully (see [qrTerminalSupported]'s own doc comment), or a
+      // payload too large for a QR to carry at all ([InputTooLongException]
+      // — see `qr_terminal_renderer.dart`'s own doc comment for why that is
+      // even checked), gets a stated fallback line instead of the symbol,
+      // never a failed command: the plain-text payload already printed above
+      // is enough to keep pairing working either way.
+      if (qrSupported) {
+        try {
+          err
+            ..writeln()
+            ..writeln(renderPairingQr(payload.encode()))
+            ..writeln();
+        } on InputTooLongException {
+          err.writeln(
+            'dsync pair show: this pairing payload is too large to render '
+            'as a QR — paste the payload line above into `dsync pair '
+            'accept` instead.',
+          );
+        }
+      } else {
+        err.writeln(
+          'dsync pair show: this terminal is not detected as supporting '
+          'the Unicode block characters a QR needs — paste the payload '
+          'line above into `dsync pair accept` instead.',
+        );
+      }
 
       // Four ways this wait ends, raced against each other. Nothing polls:
       // the listener reports the one enrolment it can ever accept, rather

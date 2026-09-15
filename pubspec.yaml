@@ -60,6 +60,17 @@ dependencies:
   # transitively, made direct now that `lib/` imports it itself.
   path: ^1.9.1
 
+  # Pinned, not a range (SPEC §3, same rationale as the other pins above):
+  # this is the QR *encoder* `dsync pair show`'s terminal renderer draws over
+  # (task e17997) — see that renderer's own doc comment
+  # (`lib/cli/output/qr_terminal_renderer.dart`) for why this is a dependency
+  # rather than the hand-roll `self_signed_certificate.dart` chose for the
+  # X.509 assembly next to it. Pure Dart, one transitive dependency (`meta`,
+  # already resolved into this project through `flutter` itself, so this adds
+  # nothing to the closure), no Flutter SDK dependency — it runs the same on
+  # every v1 target (SPEC §3) including the four with no `app` head.
+  qr: 4.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
