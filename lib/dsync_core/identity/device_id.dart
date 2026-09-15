@@ -1,7 +1,26 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:pointycastle/asn1.dart';
+
+/// The raw DER bytes framed inside a PEM-encoded certificate.
+///
+/// One definition of that framing, in the same file as the one derivation
+/// that consumes it. A certificate reaches this project as PEM in three
+/// places — our own identity, a paired peer's pin, and the pairing exchange
+/// — and every one of them needs the same bytes back out. Three copies of
+/// the same strip-and-decode is three chances for them to stop agreeing,
+/// which would show up as a device id that differs depending on which object
+/// was asked: exactly the failure [deviceIdFromCertificateDer] exists to
+/// make impossible.
+Uint8List certificateDerFromPem(String pem) => base64.decode(
+  pem
+      .split(RegExp(r'\r?\n'))
+      .map((line) => line.trim())
+      .where((line) => !line.startsWith('-----') && line.isNotEmpty)
+      .join(),
+);
 
 /// Derives a device id (SPEC §4.4) from a certificate's raw DER bytes:
 /// SHA-256 of its `SubjectPublicKeyInfo`, rendered as lowercase hex in

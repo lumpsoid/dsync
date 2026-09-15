@@ -1,0 +1,118 @@
+import 'dart:typed_data';
+
+import 'package:dsync/dsync_core/identity/device_id.dart';
+
+/// A host and port this installation last reached a paired device at (SPEC
+/// §4.4) — seeded from the QR at pairing time and overwritten on every
+/// successful connection.
+///
+/// Parsed at construction: [host] cannot be empty and [port] cannot be
+/// outside the range a socket could ever bind or connect to, so nothing
+/// downstream re-checks either.
+class PeerAddress {
+  /// SPEC §4.4: unprivileged, in the registered/user range rather than the
+  /// ephemeral one, and not shared with ssh, common dev servers, or
+  /// Syncthing. The listener's own bound port is `d0e960`'s to configure;
+  /// this is only the address book's fallback when a pairing does not say
+  /// otherwise.
+  static const defaultPort = 28771;
+
+  final String host;
+  final int port;
+
+  PeerAddress({required this.host, this.port = defaultPort}) {
+    if (host.trim().isEmpty) {
+      throw const FormatException('Empty host');
+    }
+    if (port < 1 || port > 65535) {
+      throw FormatException('Port out of range: $port');
+    }
+  }
+}
+
+/// One device this installation has paired with (SPEC §4.4): the certificate
+/// pinned for it, this host's own name for it, the replica roots it may
+/// reach, and where it was last reached.
+///
+/// **Immutable, no public setters.** Every field but [lastKnownAddress] is
+/// fixed for the life of a pairing — re-pointing a name at a new certificate,
+/// or granting a new root, is a new [PairedDevice] the store is handed, not a
+/// mutation of this one (SPEC §4.4's re-pairing case and task 83800f's grant
+/// are both call sites the store's `add` composes with, not something this
+/// class does to itself). [withLastKnownAddress] is the one exception, for
+/// the one field that changes on its own on every successful connection.
+class PairedDevice {
+  /// The peer's self-signed identity certificate, PEM-encoded.
+  ///
+  /// PEM, not DER, for the same reason `DeviceIdentity.certificatePem` is:
+  /// `SecurityContext.setTrustedCertificatesBytes` and
+  /// `setClientAuthoritiesBytes` — what `d0e960` installs a pin through — both
+  /// read PEM, and PEM is also the shape the certificate travels in across a
+  /// pairing exchange (the QR, task 65fbb7). [certificateDer] derives the
+  /// bytes `d0e960` compares `X509Certificate.der` against and [deviceId]
+  /// derives its hash the same way — both unambiguous, standard PEM framing,
+  /// the same derivation `DeviceIdentity` already does.
+  final String certificatePem;
+
+  /// This host's own label for the device (SPEC §4.4). Local, not agreed with
+  /// the peer, and unique only within this host's own paired set — enforced
+  /// by [PairedDeviceStore.add], not here: rejecting a collision needs to see
+  /// every other device, which only the store has loaded.
+  final String name;
+
+  /// The expanded replica roots (`Location.expandedPath`) this device may
+  /// serve (SPEC §4.4, task 83800f). A `hello` naming anything outside this
+  /// set is refused. Granting is local and additive only through a fresh
+  /// [PairedDevice] — nothing a peer sends over the wire ever changes its own
+  /// entry.
+  final Set<String> agreedReplicaRoots;
+
+  final DateTime pairedAt;
+
+  /// Where a connection to this device last succeeded (SPEC §4.4), seeded
+  /// from the QR at pairing time. See [withLastKnownAddress].
+  final PeerAddress lastKnownAddress;
+
+  PairedDevice({
+    required this.certificatePem,
+    required this.name,
+    required Set<String> agreedReplicaRoots,
+    required this.pairedAt,
+    required this.lastKnownAddress,
+  }) : agreedReplicaRoots = Set.unmodifiable(agreedReplicaRoots) {
+    if (name.trim().isEmpty) {
+      throw const FormatException('Empty device name');
+    }
+  }
+
+  /// This device's id (SPEC §4.4): SHA-256 of [certificatePem]'s
+  /// `SubjectPublicKeyInfo`, lowercase hex in 4-character groups.
+  ///
+  /// Computed from [certificatePem] on every access, through the one function
+  /// both our own identity's id and a peer's id go through
+  /// ([deviceIdFromCertificateDer]) — not cached, and not stored on disk
+  /// alongside the certificate, so there is exactly one source of truth and
+  /// nothing here can hold an id that has drifted from the certificate it was
+  /// built from.
+  String get deviceId => deviceIdFromCertificateDer(certificateDer);
+
+  /// [certificatePem] decoded to raw DER — what `d0e960` compares a live
+  /// `X509Certificate.der` against.
+  Uint8List get certificateDer => certificateDerFromPem(certificatePem);
+
+  /// Whether [rootPath] is one this device is agreed to reach — what a
+  /// `hello` handler checks a `ReplicaSpec`'s expanded root against (SPEC
+  /// §4.4).
+  bool servesRoot(String rootPath) => agreedReplicaRoots.contains(rootPath);
+
+  /// This device with [address] recorded as the last-known one, everything
+  /// else unchanged — what a successful connection calls
+  /// [PairedDeviceStore.recordConnection] to persist (SPEC §4.4).
+  PairedDevice withLastKnownAddress(PeerAddress address) => PairedDevice(
+    certificatePem: certificatePem,
+    name: name,
+    agreedReplicaRoots: agreedReplicaRoots,
+    pairedAt: pairedAt,
+    lastKnownAddress: address,
+  );
+}

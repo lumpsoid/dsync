@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/identity/device_id.dart';
@@ -39,14 +38,8 @@ class DeviceIdentity {
   /// drifted from the certificate it was built from; asking a save/load
   /// round trip for its id and asking the identity that was never written to
   /// disk both answer through this same getter.
-  String get deviceId => deviceIdFromCertificateDer(_certificateDer);
+  String get deviceId => deviceIdFromCertificateDer(certificateDer);
 
   /// The certificate's raw DER bytes, decoded out of [certificatePem].
-  Uint8List get _certificateDer => base64.decode(
-    certificatePem
-        .split(RegExp(r'\r?\n'))
-        .map((line) => line.trim())
-        .where((line) => !line.startsWith('-----') && line.isNotEmpty)
-        .join(),
-  );
+  Uint8List get certificateDer => certificateDerFromPem(certificatePem);
 }
