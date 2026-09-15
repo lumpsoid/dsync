@@ -123,6 +123,8 @@ class EnrolmentListener {
   final EnrolmentErrorHandler _onError;
   late final StreamSubscription<void> _connections;
 
+  final Completer<PairedDevice> _enrolled = Completer<PairedDevice>();
+
   bool _tokenConsumed = false;
 
   EnrolmentListener._(
@@ -177,6 +179,23 @@ class EnrolmentListener {
   /// [AgentListener.address] is (relevant for an ephemeral port 0, which
   /// tests use).
   String get address => '${_server.address.address}:${_server.port}';
+
+  /// Completes with the device recorded by the one enrolment this listener
+  /// can ever accept.
+  ///
+  /// Exactly one, by construction rather than by convention: the token is
+  /// burned on its first successful redemption, so no second connection can
+  /// reach [_pairedDeviceStore] however long this stays bound. That is what
+  /// lets this be a [Future] rather than a stream of events.
+  ///
+  /// **It completes on success and never otherwise** — a refused connection
+  /// goes to [EnrolmentErrorHandler], where a caller that cares can see it
+  /// without having its wait ended by a stranger's failed probe, which is
+  /// the distinction a one-shot pairing window needs. A caller therefore
+  /// races this against its own reason to stop — a signal, a deadline, the
+  /// token's own expiry — rather than awaiting it alone. `dsync pair show`
+  /// is the worked example.
+  Future<PairedDevice> get enrolled => _enrolled.future;
 
   /// Stops accepting, and releases the socket. A connection already
   /// mid-exchange is not waited for: each one is a single request and a
@@ -271,6 +290,10 @@ class EnrolmentListener {
       return EnrolmentRefused(e.toString());
     }
 
+    // After the store write, not before: [enrolled] promises a device that is
+    // actually recorded, so a caller woken by it can read the store back and
+    // find it there.
+    _enrolled.complete(device);
     return const EnrolmentAccepted();
   }
 

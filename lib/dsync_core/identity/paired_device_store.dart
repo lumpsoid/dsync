@@ -26,8 +26,9 @@ import 'package:dsync/dsync_core/temp_file.dart';
 /// mirrors `DeviceIdentityStore`: a concrete class over a real path.
 ///
 /// **Freshness: every method reads the file, nothing is cached.** [load],
-/// [byDeviceId], [byName], [add], [revoke] and [recordConnection] each open
-/// and parse [_file] fresh — there is no in-memory copy held across calls.
+/// [byDeviceId], [byName], [add], [revoke], [recordConnection] and [grant]
+/// each open and parse [_file] fresh — there is no in-memory copy held
+/// across calls.
 /// This is deliberate, not an oversight: SPEC §4.4 requires that
 /// "revocation... take effect for connections attempted after it", and a
 /// store that cached its devices in memory across a process's lifetime would
@@ -191,6 +192,30 @@ class PairedDeviceStore {
     final index = devices.indexWhere((d) => d.deviceId == deviceId);
     if (index == -1) throw PairedDeviceNotFoundException(deviceId);
     devices[index] = devices[index].withLastKnownAddress(address);
+    await _save(devices);
+  }
+
+  /// Grants the device pinned to [deviceId] an additional replica root —
+  /// pairing's second step (SPEC §4.4, task 83800f), and what `dsync pair
+  /// grant` (task bc68c7) calls. [rootPath] is expected already expanded
+  /// (`Location.expandedPath`), the same form
+  /// [PairedDevice.agreedReplicaRoots] is documented to hold; this does not
+  /// expand it itself.
+  ///
+  /// Same shape as [recordConnection]: read, replace the one entry
+  /// ([PairedDevice.withAdditionalRoot]), rewrite atomically. Deliberately
+  /// not [revoke] followed by [add] — that would lose [PairedDevice.pairedAt]
+  /// (a fresh [add] always stamps "now") and briefly leave the store with no
+  /// entry for the device between the two writes, neither of which this
+  /// method's single read-modify-write does. Throws
+  /// [PairedDeviceNotFoundException] if no device with that id is paired, the
+  /// same as [recordConnection] — a root cannot be granted to a pairing that
+  /// does not exist.
+  Future<void> grant(String deviceId, String rootPath) async {
+    final devices = await load();
+    final index = devices.indexWhere((d) => d.deviceId == deviceId);
+    if (index == -1) throw PairedDeviceNotFoundException(deviceId);
+    devices[index] = devices[index].withAdditionalRoot(rootPath);
     await _save(devices);
   }
 

@@ -358,6 +358,74 @@ void main() {
     });
   });
 
+  group('grant', () {
+    test('adds a root, everything else unchanged', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(agreedReplicaRoots: const {}));
+
+      await store.grant(deviceA().deviceId, '/home/me/notes');
+
+      final found = await store.byDeviceId(deviceA().deviceId);
+      expect(found!.agreedReplicaRoots, {'/home/me/notes'});
+      expect(found.name, deviceA().name);
+      expect(found.pairedAt, deviceA().pairedAt);
+      expect(found.lastKnownAddress.host, deviceA().lastKnownAddress.host);
+    });
+
+    test('is additive: an existing root is kept alongside a new one', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(agreedReplicaRoots: const {'/home/me/notes'}));
+
+      await store.grant(deviceA().deviceId, '/home/me/photos');
+
+      final found = await store.byDeviceId(deviceA().deviceId);
+      expect(found!.agreedReplicaRoots, {'/home/me/notes', '/home/me/photos'});
+    });
+
+    test('granting a root already agreed is idempotent', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(agreedReplicaRoots: const {'/home/me/notes'}));
+
+      await store.grant(deviceA().deviceId, '/home/me/notes');
+
+      final found = await store.byDeviceId(deviceA().deviceId);
+      expect(found!.agreedReplicaRoots, {'/home/me/notes'});
+    });
+
+    test('survives a reload', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(agreedReplicaRoots: const {}));
+
+      await store.grant(deviceA().deviceId, '/home/me/notes');
+
+      final reloaded = await PairedDeviceStore(storeFile()).load();
+      expect(reloaded.single.agreedReplicaRoots, {'/home/me/notes'});
+    });
+
+    test('never revoke-then-add: pairedAt is unchanged and the store is '
+        'never briefly empty of the device', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(agreedReplicaRoots: const {}));
+      await store.add(deviceB());
+
+      await store.grant(deviceA().deviceId, '/home/me/notes');
+
+      final reloaded = await PairedDeviceStore(storeFile()).load();
+      expect(reloaded, hasLength(2)); // deviceB was never touched.
+      final grantedA = reloaded.firstWhere((d) => d.name == 'phone');
+      expect(grantedA.pairedAt, deviceA().pairedAt);
+    });
+
+    test('throws for an unknown device id', () async {
+      final store = PairedDeviceStore(storeFile());
+
+      await expectLater(
+        store.grant('nope', '/home/me/notes'),
+        throwsA(isA<PairedDeviceNotFoundException>()),
+      );
+    });
+  });
+
   group('freshness', () {
     test(
       'a revocation made by a second store instance is visible to the first',

@@ -115,4 +115,22 @@ class PairedDevice {
     pairedAt: pairedAt,
     lastKnownAddress: address,
   );
+
+  /// This device with [rootPath] added to its agreed replica roots,
+  /// everything else unchanged — pairing's second step (SPEC §4.4, task
+  /// 83800f), what [PairedDeviceStore.grant] (task bc68c7) persists.
+  /// Additive and idempotent: a [rootPath] already in the set is not
+  /// duplicated, since it is a `Set` union, not an append.
+  ///
+  /// [rootPath] is expected already expanded (`Location.expandedPath`) — the
+  /// same form every existing entry in [agreedReplicaRoots] holds. This does
+  /// not expand it itself; the caller (`dsync pair grant`) does, the same way
+  /// `agent_command.dart`'s `_buildAgent` does for a `hello`'s root.
+  PairedDevice withAdditionalRoot(String rootPath) => PairedDevice(
+    certificatePem: certificatePem,
+    name: name,
+    agreedReplicaRoots: {...agreedReplicaRoots, rootPath},
+    pairedAt: pairedAt,
+    lastKnownAddress: lastKnownAddress,
+  );
 }

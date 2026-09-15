@@ -77,5 +77,25 @@ void main() {
       expect(moved.pairedAt, original.pairedAt);
       expect(moved.deviceId, original.deviceId);
     });
+
+    test('withAdditionalRoot adds a root, everything else unchanged', () {
+      final original = device(agreedReplicaRoots: {'/home/me/notes'});
+      final granted = original.withAdditionalRoot('/home/me/photos');
+
+      expect(granted.agreedReplicaRoots, {'/home/me/notes', '/home/me/photos'});
+      expect(granted.name, original.name);
+      expect(granted.certificatePem, original.certificatePem);
+      expect(granted.pairedAt, original.pairedAt);
+      expect(granted.lastKnownAddress.host, original.lastKnownAddress.host);
+      // The original is untouched — this is a new value, not a mutation.
+      expect(original.agreedReplicaRoots, {'/home/me/notes'});
+    });
+
+    test('withAdditionalRoot is idempotent for a root already agreed', () {
+      final original = device(agreedReplicaRoots: {'/home/me/notes'});
+      final granted = original.withAdditionalRoot('/home/me/notes');
+
+      expect(granted.agreedReplicaRoots, {'/home/me/notes'});
+    });
   });
 }

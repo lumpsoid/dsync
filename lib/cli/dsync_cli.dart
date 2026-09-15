@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 
 import 'commands/agent_command.dart';
+import 'commands/pair_command.dart';
 import 'commands/status_command.dart';
 import 'commands/sync_command.dart';
 import 'run/sync_runner.dart';
@@ -15,9 +16,10 @@ import 'run/sync_runner.dart';
 /// compiled binary and in-process end-to-end tests drive the CLI the same
 /// way, without either one spawning a child process.
 ///
-/// `sync`, `status`, and `agent` (SPEC §11.1) are all registered below (tasks
-/// 867af9 and e54d88). Any other command name is reported as unknown via
-/// [UsageException], the same path an unrecognized flag or argument takes.
+/// `sync`, `status`, `agent` (SPEC §11.1, tasks 867af9 and e54d88), and
+/// `pair` (task bc68c7) are all registered below. Any other command name is
+/// reported as unknown via [UsageException], the same path an unrecognized
+/// flag or argument takes.
 ///
 /// [environment] and [workingDirectory] default to the real process's own —
 /// `Platform.environment` and `Directory.current.path` — but are threaded
@@ -74,9 +76,11 @@ Future<int> runDsyncCli(
 /// same spirit as `RunController` in `dsync_core`: it doesn't decide
 /// anything itself, it only wires argv to whichever [Command] handles it.
 ///
-/// `sync`, `status`, and `agent` are all registered here (SPEC §11.1). Each
-/// flag in §11.2 belongs on the command(s) it applies to
-/// (`lib/cli/commands/common_flags.dart`), not here.
+/// `sync`, `status`, `agent`, and `pair` are all registered here (SPEC
+/// §11.1). Each flag in §11.2 belongs on the command(s) it applies to
+/// (`lib/cli/commands/common_flags.dart`), not here; `pair`'s own flags
+/// belong on its subcommands (`lib/cli/commands/pair_command.dart`) for the
+/// same reason.
 ///
 /// `CommandRunner<int>`, not `<void>`: `args`' generic parameter is exactly
 /// the return-value channel a [Command]'s `run()` hands back through
@@ -107,5 +111,6 @@ class DsyncCommandRunner extends CommandRunner<int> {
     addCommand(SyncCommand(runSync: runSync));
     addCommand(StatusCommand(runSync: runSync));
     addCommand(AgentCommand());
+    addCommand(PairCommand(environment: environment));
   }
 }
