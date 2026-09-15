@@ -19,6 +19,12 @@ class Reconciler {
   /// copy — the run reporting "not synced" for a path it had just
   /// overwritten.
   ///
+  /// Despite the name, also carries SPEC §16's case-fold collisions — see
+  /// [UnreadablePaths]'s own doc comment for why it covers more than paths
+  /// that were literally unreadable: a path that folds onto another on this
+  /// replica is exactly as untrustworthy to mirror from the other side as
+  /// one this scan simply could not read.
+  ///
   /// Defaults to [UnreadablePaths.none], which asserts something true and
   /// ordinary — this scan read everything it walked — rather than standing in
   /// for a fact the caller failed to supply.

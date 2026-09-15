@@ -268,6 +268,14 @@ class AgentCommand extends Command<int> {
   /// [LocalAgent]'s `isWindowsReplica` (SPEC §3, §7.4: no `chmod` on
   /// Windows) rides along on that same resolved `pathStyle` via
   /// `isWindowsPathStyle`, rather than a second read of its own.
+  ///
+  /// `Scanner`'s `foldKey` (SPEC §16) is the one fact here that is not a
+  /// second read of something already resolved: it is a property of *this*
+  /// replica's root, not of the host, so it is probed fresh via
+  /// `detectsCaseFolding(rootPath)` once `rootPath` itself is known below,
+  /// the same "ask this process's own real host" reasoning as `platform`
+  /// and `pathStyle`, just against the filesystem instead of
+  /// `Platform.operatingSystem`.
   Agent _buildAgent(ReplicaSpec spec) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);
@@ -288,7 +296,17 @@ class AgentCommand extends Command<int> {
         environment: Platform.environment,
         platform: hostStateDirPlatform(),
       ),
-      scanner: Scanner(jobs: spec.jobs, pathStyle: pathStyle),
+      scanner: Scanner(
+        jobs: spec.jobs,
+        pathStyle: pathStyle,
+        // SPEC §16: this process is the far end of the connection, so it
+        // probes its own replica root directly rather than trusting
+        // anything the initiator might claim about it — same reasoning as
+        // `pathStyle`/`platform` just above, and the same reason an OS
+        // check alone would be wrong (`detectsCaseFolding`'s own doc
+        // comment).
+        foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
+      ),
       archivePath: resolveArchiveLogPath(
         profileId: spec.profileId,
         side: spec.side,

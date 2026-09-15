@@ -94,7 +94,13 @@ import 'replica_unreachable_exception.dart';
 /// `LocalAgent` (below) also needs to know whether it can shell out to
 /// `chmod` at all (SPEC §3, §7.4: Windows cannot); that rides along on the
 /// same resolved [pathStyle] via `isWindowsPathStyle` rather than a second,
-/// independent read. [localAddressLookup] defaults to
+/// independent read. A local side's `Scanner` also needs to know whether
+/// *its own* filesystem folds case (SPEC §16) — unlike `pathStyle` and
+/// `platform`, that is not threaded in as a parameter here, because it is a
+/// property of the replica root, not of this process's host, and so cannot
+/// be known before [_resolveLocalSide] resolves that root; it is probed
+/// there instead, once, via `host_platform.dart`'s `detectsCaseFolding`.
+/// [localAddressLookup] defaults to
 /// [systemLocalAddresses] — the one piece of real I/O this
 /// needs — so a test can drive both localities without a network.
 /// [sshExecutable] is the `ssh` binary to spawn for a remote side
@@ -269,7 +275,14 @@ Future<_ResolvedSide> _resolveLocalSide({
       environment: environment,
       platform: platform,
     ),
-    scanner: Scanner(jobs: jobs, pathStyle: pathStyle),
+    scanner: Scanner(
+      jobs: jobs,
+      pathStyle: pathStyle,
+      // SPEC §16: this replica's own filesystem, probed once at connect
+      // time (`detectsCaseFolding`'s own doc comment says why an OS check
+      // alone would be wrong) rather than a second, independent read.
+      foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
+    ),
     // So this side's own `hello` (SPEC §4.2) reports it back as its
     // `ReplicaInfo.archivePath` — the authoritative value SPEC §11.4's run
     // header uses, in place of the label below.

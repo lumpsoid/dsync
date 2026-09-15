@@ -15,6 +15,7 @@ import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
+import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -370,6 +371,82 @@ void main() {
         expect(b.calls, contains('disconnect'));
       },
     );
+  });
+
+  group('case-folding collisions (SPEC §5.1, §16, task c51db6)', () {
+    test('two paths on A differing only in case are both reported and '
+        'excluded end to end, and the summary\'s unreadableCount — SPEC '
+        '§11.5\'s exit-1 signal — counts both, the same way it already '
+        'counts an unreadable path', () async {
+      await File('${replicaADir.path}/notes.txt').writeAsString('a');
+      await File('${replicaADir.path}/Notes.txt').writeAsString('b');
+
+      // A's own filesystem folds case (faked, since this host's real one
+      // does not — see `Scanner.foldKey`'s own doc comment); B's does not,
+      // proving this is asked per replica, not assumed for the whole run.
+      final foldingAgentA = LocalAgent(
+        rootPath: replicaADir.path,
+        archiveStore: JsonlArchiveStore(archiveLogA, headerA),
+        replicaLock: ReplicaLock(lockFileA),
+        scanner: Scanner(foldKey: (path) => path.toLowerCase()),
+      );
+
+      final events = await RunController(
+        agentA: foldingAgentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      // Neither side ever got a status for either path, so neither was
+      // proposed, let alone applied.
+      expect(File('${replicaBDir.path}/notes.txt').existsSync(), isFalse);
+      expect(File('${replicaBDir.path}/Notes.txt').existsSync(), isFalse);
+
+      final collisions = events.whereType<RunSkippedPathEvent>().where(
+        (e) => e.skipped.reason == SkippedReason.caseFoldCollision,
+      );
+      expect(collisions.map((e) => (e.skipped.path, e.onA)).toSet(), {
+        ('notes.txt', true),
+        ('Notes.txt', true),
+      });
+
+      final summary = events.whereType<RunSummaryEvent>().single;
+      expect(summary.appliedCount, 0);
+      expect(summary.failedCount, 0);
+      // Not folded into `skippedCount`: nothing was proposed and declined
+      // either — the same distinction SPEC §11.4 already draws for an
+      // unreadable path.
+      expect(summary.skippedCount, 0);
+      expect(summary.unreadableCount, 2);
+
+      await expectLocksFree();
+    }, testOn: 'linux');
+
+    test('unaffected when neither side folds case (the default): both '
+        'paths sync normally and nothing is reported', () async {
+      await File('${replicaADir.path}/notes.txt').writeAsString('a');
+      await File('${replicaADir.path}/Notes.txt').writeAsString('b');
+
+      final events = await RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      expect(File('${replicaBDir.path}/notes.txt').existsSync(), isTrue);
+      expect(File('${replicaBDir.path}/Notes.txt').existsSync(), isTrue);
+      expect(
+        events.whereType<RunSkippedPathEvent>().where(
+          (e) => e.skipped.reason == SkippedReason.caseFoldCollision,
+        ),
+        isEmpty,
+      );
+
+      final summary = events.whereType<RunSummaryEvent>().single;
+      expect(summary.unreadableCount, 0);
+
+      await expectLocksFree();
+    }, testOn: 'linux');
   });
 
   group('run header (RunReplicasEvent, task ee190c)', () {

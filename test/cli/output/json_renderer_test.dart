@@ -348,6 +348,30 @@ void main() {
       });
     });
 
+    test('caseFoldCollision: its own type too (SPEC §16, task c51db6), not '
+        'folded into `unreadable` — a consumer already filtering for '
+        '`unreadable` should not silently start matching a different '
+        'failure shape', () async {
+      final r = _Rendered();
+
+      final decoded = await _renderAll(r, [
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.caseFoldCollision(
+            'notes.txt',
+            'folds to the same path as "Notes.txt"',
+          ),
+          onA: true,
+        ),
+      ]);
+
+      expect(decoded.single, {
+        'type': 'caseFoldCollision',
+        'path': 'notes.txt',
+        'onA': true,
+        'detail': 'folds to the same path as "Notes.txt"',
+      });
+    });
+
     test('conflict: path and each side\'s status and reason', () async {
       final r = _Rendered();
       const event = RunConflictEvent(

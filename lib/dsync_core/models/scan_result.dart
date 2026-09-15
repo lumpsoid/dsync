@@ -25,16 +25,21 @@ class ScanResult {
 
   const ScanResult({required this.entries, this.skippedPaths = const []});
 
-  /// Which of [skippedPaths] the scan could not read (SPEC §5) — the one
-  /// [SkippedReason] that both feeds SPEC §11.5's exit code and has to be
-  /// kept out of reconciliation.
+  /// Which of [skippedPaths] this scan cannot stand behind a status for (SPEC
+  /// §5, §16) — every [SkippedReason] whose [SkippedReason.isFailure] is
+  /// true, which both feeds SPEC §11.5's exit code and has to be kept out of
+  /// reconciliation. Named for the reason this existed first
+  /// ([SkippedReason.unreadable]); see [UnreadablePaths]'s own doc comment
+  /// for why it was not renamed when [SkippedReason.caseFoldCollision]
+  /// joined it.
   ///
   /// A getter here rather than something `RunController` derives, for the
   /// same reason [reasonTally] is: [skippedPaths] is the only data the rule
   /// needs (CLAUDE.md, "a rule about one entity's own fields").
   UnreadablePaths get unreadable => UnreadablePaths.from(skippedPaths);
 
-  /// How many paths this side's scan could not read (SPEC §5, §11.5).
+  /// How many of [skippedPaths] this side's scan cannot stand behind a
+  /// status for (SPEC §5, §16, §11.5) — see [unreadable].
   int get unreadableCount => unreadable.roots.length;
 
   /// How many of [entries] took each of SPEC §5.2's branches — the rule

@@ -309,6 +309,25 @@ void main() {
       expect(unreadable.out.buffer.toString(), isNot(contains('symlink')));
     });
 
+    test('a case-fold collision says outright that it did not sync, and '
+        'which other path it collided with (SPEC §16, task c51db6)', () {
+      final r = _Rendered();
+      r.renderer.render(
+        const RunSkippedPathEvent(
+          skipped: SkippedPath.caseFoldCollision(
+            'notes.txt',
+            'folds to the same path as "Notes.txt"',
+          ),
+          onA: true,
+        ),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('notes.txt'));
+      expect(output, contains('Notes.txt'));
+      expect(output, contains('not synced'));
+    });
+
     test('distinguishes which side a skipped symlink was found on', () {
       final onA = _Rendered();
       onA.renderer.render(

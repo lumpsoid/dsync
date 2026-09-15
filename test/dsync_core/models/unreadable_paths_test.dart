@@ -34,6 +34,31 @@ void main() {
       expect(unreadable.covers('a-only.txt'), isTrue);
       expect(unreadable.covers('b-only.txt'), isTrue);
     });
+
+    test('also keeps case-fold collisions (SPEC §16, task c51db6): despite '
+        'the name, this is every SkippedReason.isFailure, not only '
+        'SkippedReason.unreadable — a path a scan cannot disambiguate is as '
+        'untrustworthy to reconcile as one it could not read', () {
+      final unreadable = UnreadablePaths.from(const [
+        SkippedPath.symlink('link.txt', 'no follow rule matched'),
+        SkippedPath.caseFoldCollision(
+          'notes.txt',
+          'folds to the same path as "Notes.txt"',
+        ),
+      ]);
+
+      expect(unreadable.roots, ['notes.txt']);
+      expect(unreadable.covers('notes.txt'), isTrue);
+      expect(unreadable.covers('link.txt'), isFalse);
+    });
+  });
+
+  group('SkippedReason.isFailure (SPEC §5.1, §11.5, §16)', () {
+    test('true for unreadable and caseFoldCollision, false for symlink', () {
+      expect(SkippedReason.symlink.isFailure, isFalse);
+      expect(SkippedReason.unreadable.isFailure, isTrue);
+      expect(SkippedReason.caseFoldCollision.isFailure, isTrue);
+    });
   });
 
   group('UnreadablePaths.covers', () {

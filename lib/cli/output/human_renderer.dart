@@ -367,16 +367,17 @@ class HumanRenderer {
   ///
   /// One line shape per [SkippedReason], not one shared "skipped" line: they
   /// mean different things to the person reading. A symlink line is the tool
-  /// confirming it did what §9's rules said; an unreadable line is a file
-  /// that did *not* sync and that the user has to go fix, so it says so
-  /// outright rather than leaving them to infer it from the word "skipped".
-  /// That is the whole point of reporting it — silence is how someone ends up
-  /// believing a file is synced when it never was.
+  /// confirming it did what §9's rules said; an unreadable or case-fold line
+  /// is a file that did *not* sync and that the user has to go fix, so both
+  /// say so outright rather than leaving the reader to infer it from the word
+  /// "skipped". That is the whole point of reporting it — silence is how
+  /// someone ends up believing a file is synced when it never was.
   ///
-  /// [SkippedPath.detail] goes on both, because on both it is the part the
-  /// reader cannot work out for themselves: "broken link" and "target is a
-  /// directory this walk is already inside" need different fixes, and only
-  /// the walk ever knew which it hit.
+  /// [SkippedPath.detail] goes on every line, because on every one it is the
+  /// part the reader cannot work out for themselves: "broken link", "target
+  /// is a directory this walk is already inside", and which other path a
+  /// case-fold collision was with, each need a different fix, and only the
+  /// walk ever knew which it hit.
   void _renderSkippedPath(RunSkippedPathEvent event) {
     final side = event.onA ? 'A' : 'B';
     final skipped = event.skipped;
@@ -386,6 +387,11 @@ class HumanRenderer {
       case SkippedReason.unreadable:
         out.writeln(
           'unreadable  $side  ${skipped.path}  '
+          '(${skipped.detail} — not synced)',
+        );
+      case SkippedReason.caseFoldCollision:
+        out.writeln(
+          'case-fold  $side  ${skipped.path}  '
           '(${skipped.detail} — not synced)',
         );
     }

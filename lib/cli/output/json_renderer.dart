@@ -11,11 +11,11 @@ import 'package:dsync/dsync_core/models/skipped_path.dart';
 
 /// Renders a `RunController` run as SPEC §11.4's `--json` stream: one JSON
 /// object per line on stdout, one line per [RunEvent], each carrying a
-/// `type` field naming which of the eleven line shapes it is (`replicas`,
-/// `plan`, `action`, `conflict`, `symlink`, `unreadable`, `scanTally`,
-/// `progress`, `result`, `summary`, `error`). [RunSkippedPathEvent] is the
-/// one event that maps to more than one of them — see [render]'s own case
-/// for why.
+/// `type` field naming which of the line shapes it is (`replicas`, `plan`,
+/// `action`, `conflict`, `symlink`, `unreadable`, `caseFoldCollision` (SPEC
+/// §16), `scanTally`, `progress`, `result`, `summary`, `error`).
+/// [RunSkippedPathEvent] is the one event that maps to more than one of them
+/// — see [render]'s own case for why.
 ///
 /// `RunEvent` is a `sealed class`, so the switch in [render] is exhaustive:
 /// the compiler pointed at this file (and `HumanRenderer`) as exactly what
@@ -91,11 +91,13 @@ class JsonRenderer {
       // values, and a consumer filtering for `symlink` is filtering for a
       // thing that is normal on every run — silently widening that type to
       // also mean "this file did not sync" would change what an existing
-      // filter matches. Adding `unreadable` alongside cannot.
+      // filter matches. Adding `unreadable` or `caseFoldCollision` (SPEC
+      // §16) alongside cannot.
       RunSkippedPathEvent(:final skipped, :final onA) => {
         'type': switch (skipped.reason) {
           SkippedReason.symlink => 'symlink',
           SkippedReason.unreadable => 'unreadable',
+          SkippedReason.caseFoldCollision => 'caseFoldCollision',
         },
         'path': skipped.path,
         'onA': onA,

@@ -71,5 +71,22 @@ void main() {
     test('a scan with nothing skipped counts zero', () {
       expect(const ScanResult(entries: []).unreadableCount, 0);
     });
+
+    test('also counts a case-fold collision (SPEC §16, task c51db6) — '
+        'despite the name, this is every failing SkippedReason, not only a '
+        'literally unreadable one', () {
+      const result = ScanResult(
+        entries: [],
+        skippedPaths: [
+          SkippedPath.symlink('link.txt', 'no follow rule matched'),
+          SkippedPath.caseFoldCollision(
+            'notes.txt',
+            'folds to the same path as "Notes.txt"',
+          ),
+        ],
+      );
+
+      expect(result.unreadableCount, 1);
+    });
   });
 }

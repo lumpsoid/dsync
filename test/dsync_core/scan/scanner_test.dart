@@ -829,4 +829,159 @@ void main() {
       expect(windowsEntries, contains('slash.txt'));
     }, testOn: 'linux');
   });
+
+  group('case-folding collisions (SPEC §5.1, §16, task c51db6)', () {
+    String lowercase(String path) => path.toLowerCase();
+
+    test('two live paths differing only in case are both reported and '
+        'excluded when foldKey says this replica folds case — a real '
+        'case-insensitive filesystem could never produce two such entries '
+        'from one directory listing, so a faked foldKey is how SPEC §16\'s '
+        'own acceptance bar is tested without one', () async {
+      await File('${tempDir.path}/notes.txt').writeAsString('a');
+      await File('${tempDir.path}/Notes.txt').writeAsString('b');
+
+      final result = await Scanner(foldKey: lowercase)
+          .scan(rootPath: tempDir.path, archive: archiveOf({}));
+
+      expect(result.entries, isEmpty);
+      expect(
+        result.skippedPaths.map((s) => (s.path, s.reason)),
+        containsAll([
+          ('notes.txt', SkippedReason.caseFoldCollision),
+          ('Notes.txt', SkippedReason.caseFoldCollision),
+        ]),
+      );
+      // SPEC §11.5: counts toward exit 1 the same way an unreadable path
+      // does.
+      expect(result.unreadableCount, 2);
+    });
+
+    test('unaffected with no foldKey (the default): a filesystem that does '
+        'not fold case gets both paths\' normal status and nothing '
+        'reported', () async {
+      await File('${tempDir.path}/notes.txt').writeAsString('a');
+      await File('${tempDir.path}/Notes.txt').writeAsString('b');
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      expect(
+        result.entries.map((e) => e.path),
+        containsAll(['notes.txt', 'Notes.txt']),
+      );
+      expect(
+        result.entries.every((e) => e.status == ScanStatus.created),
+        isTrue,
+      );
+      expect(result.skippedPaths, isEmpty);
+      expect(result.unreadableCount, 0);
+    });
+
+    test('a live path colliding with an archived-only entry is excluded on '
+        'both sides: the archived path is not reported deleted, and the '
+        'live path gets no status either — neither can be trusted, since '
+        'the scan cannot say whether this is a rename or two unrelated '
+        'paths landing on the one file this filesystem actually has', () async {
+      await File('${tempDir.path}/notes.txt').writeAsString('renamed');
+
+      final result = await Scanner(foldKey: lowercase).scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({
+          'Notes.txt': ArchiveEntry(
+            path: 'Notes.txt',
+            size: 3,
+            mtime: 1,
+            mode: 0x1A4,
+            hash: hashOf('old'),
+          ),
+        }),
+      );
+
+      expect(result.entries, isEmpty);
+      expect(
+        result.skippedPaths.map((s) => (s.path, s.reason)),
+        containsAll([
+          ('notes.txt', SkippedReason.caseFoldCollision),
+          ('Notes.txt', SkippedReason.caseFoldCollision),
+        ]),
+      );
+    });
+
+    test('detail names the other path in the collision, so the reader '
+        'knows what to go look at without re-deriving it', () async {
+      await File('${tempDir.path}/notes.txt').writeAsString('a');
+      await File('${tempDir.path}/Notes.txt').writeAsString('b');
+
+      final result = await Scanner(foldKey: lowercase)
+          .scan(rootPath: tempDir.path, archive: archiveOf({}));
+
+      final byPath = {for (final s in result.skippedPaths) s.path: s};
+      expect(byPath['notes.txt']!.detail, contains('Notes.txt'));
+      expect(byPath['Notes.txt']!.detail, contains('notes.txt'));
+    });
+
+    test('two archived-only paths colliding with each other, with nothing '
+        'live on disk, are left alone: SPEC §16 scopes the check to a '
+        'collision that could still land two writes on one file, and '
+        'neither archived-only path is ever going to be written to', () async {
+      final result = await Scanner(foldKey: lowercase).scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({
+          'notes.txt': const ArchiveEntry(
+            path: 'notes.txt',
+            size: 1,
+            mtime: 1,
+            mode: 0x1A4,
+            hash: 'x',
+          ),
+          'Notes.txt': const ArchiveEntry(
+            path: 'Notes.txt',
+            size: 1,
+            mtime: 1,
+            mode: 0x1A4,
+            hash: 'y',
+          ),
+        }),
+      );
+
+      expect(
+        result.entries.map((e) => e.path),
+        containsAll(['notes.txt', 'Notes.txt']),
+      );
+      expect(
+        result.entries.every((e) => e.status == ScanStatus.deleted),
+        isTrue,
+      );
+      expect(result.skippedPaths, isEmpty);
+    });
+
+    test('a collision group of three shares the report — every fold-alike '
+        'path is excluded, not just the first pair found', () async {
+      await File('${tempDir.path}/notes.txt').writeAsString('a');
+      await File('${tempDir.path}/Notes.txt').writeAsString('b');
+
+      final result = await Scanner(foldKey: lowercase).scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({
+          'NOTES.txt': const ArchiveEntry(
+            path: 'NOTES.txt',
+            size: 1,
+            mtime: 1,
+            mode: 0x1A4,
+            hash: 'z',
+          ),
+        }),
+      );
+
+      expect(result.entries, isEmpty);
+      expect(result.skippedPaths.map((s) => s.path).toSet(), {
+        'notes.txt',
+        'Notes.txt',
+        'NOTES.txt',
+      });
+    });
+  });
 }

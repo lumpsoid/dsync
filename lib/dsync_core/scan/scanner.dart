@@ -37,10 +37,37 @@ class Scanner {
   /// resolved once via `lib/cli/host_platform.dart`'s `hostPathStyle()`.
   final p.Context _pathContext;
 
+  /// How two paths are compared for SPEC §16's collision check: both map
+  /// through this to a key, and two different paths landing on the same key
+  /// is the collision — two live paths, or a live path and an archived one
+  /// (§5.1). `null` — the default — when this replica's filesystem does not
+  /// fold anything, so [scan] skips the check entirely rather than compute a
+  /// no-op key for every path it visits.
+  ///
+  /// A function rather than a `bool foldsCase`, so nothing case-specific is
+  /// baked into [scan] itself: v1 only ever supplies a case-folding
+  /// transform (`lib/cli/host_platform.dart`'s `caseFoldKeyFor`, built on
+  /// `path.toLowerCase()`), but SPEC §16 names Unicode normalization
+  /// (NFC/NFD) as the same shape of problem, deferred for the same reason
+  /// and expected to reuse this exact mechanism — a different transform
+  /// supplied here, not a second collision check grown alongside this one.
+  ///
+  /// Whether *this* replica's filesystem folds at all is resolved once, per
+  /// replica, at the CLI edge (`detectsCaseFolding`) by probing the
+  /// filesystem actually mounted at its root — never assumed from the host
+  /// OS, since a case-sensitive-formatted APFS volume or a case-insensitive
+  /// Linux mount each need the behaviour their filesystem actually has, not
+  /// their OS's default — and threaded down here as a plain value, the same
+  /// "resolved once, threaded down" shape the `pathStyle` constructor
+  /// parameter above already follows. A test can hand this any transform at
+  /// all, faking a filesystem that folds case without a real one to test
+  /// against (task a1d635's own acceptance bar).
+  final String Function(String path)? foldKey;
+
   // `pathStyle` can't default to `p.Style.posix` directly: `Style`'s own
   // constants are `static final`, not `const` (package:path resolves
   // `Style.platform` at load time), so the fallback is applied here instead.
-  Scanner({this.jobs = 4, p.Style? pathStyle})
+  Scanner({this.jobs = 4, p.Style? pathStyle, this.foldKey})
     : _pathContext = p.Context(style: pathStyle ?? p.Style.posix);
 
   /// Walks [rootPath] and returns one [ScanEntry] per path that is either
@@ -69,6 +96,17 @@ class Scanner {
   /// exit 3. There is no tree left to sync, and reporting an empty one would
   /// invite mirroring the entire other replica into a directory this host
   /// cannot even read.
+  ///
+  /// When [foldKey] is set, two live paths — or a live path and an archived
+  /// one — that map to the same key are reported in
+  /// [ScanResult.skippedPaths] and excluded here exactly the way an
+  /// unreadable path is (SPEC §5.1, §16): neither gets a [ScanEntry], so
+  /// neither is proposed for reconciliation, because the scan cannot say
+  /// which of the two a plan should treat as authoritative on a filesystem
+  /// that cannot actually tell them apart. Two archived paths colliding with
+  /// each other but with nothing live on disk are left alone — SPEC §16
+  /// scopes the check to a collision that could still land two writes on one
+  /// file, and neither archived-only path is going to be written to.
   Future<ScanResult> scan({
     required String rootPath,
     required Archive archive,
@@ -85,21 +123,48 @@ class Scanner {
     // failures `_hashAll` just appended.
     final unreadable = UnreadablePaths.from(context.skipped);
 
+    final deletedPaths = [
+      for (final path in archive.entries.keys)
+        if (!context.seen.contains(path) &&
+            !context.rules.ignores(path) &&
+            // An archive entry under a directory the walk could not list is
+            // not evidence the file is gone — the scan never got to look.
+            // Reporting it `deleted` would propagate a deletion the user
+            // never made to the other replica (SPEC §6's table), which is
+            // the one way an unreadable path could destroy data rather than
+            // merely fail to sync.
+            !unreadable.covers(path))
+          path,
+    ];
+
+    // SPEC §16: computed after `unreadable` above, and added to
+    // `context.skipped` only now, so this never feeds back into the
+    // `deletedPaths` filter it did not exist for yet.
+    final foldKey = this.foldKey;
+    final collisions = foldKey == null
+        ? const <String, List<String>>{}
+        : _foldCollisions(
+            live: context.seen,
+            archived: deletedPaths,
+            foldKey: foldKey,
+          );
+    final excludedByCollision = {
+      for (final group in collisions.values) ...group,
+    };
+    for (final group in collisions.values) {
+      for (final path in group) {
+        context.skipped.add(
+          SkippedPath.caseFoldCollision(path, _collisionDetail(path, group)),
+        );
+      }
+    }
+
     return ScanResult(
       entries: [
-        ...context.fastPath,
-        ...hashed,
-        for (final path in archive.entries.keys)
-          if (!context.seen.contains(path) &&
-              !context.rules.ignores(path) &&
-              // An archive entry under a directory the walk could not list is
-              // not evidence the file is gone — the scan never got to look.
-              // Reporting it `deleted` would propagate a deletion the user
-              // never made to the other replica (SPEC §6's table), which is
-              // the one way an unreadable path could destroy data rather than
-              // merely fail to sync.
-              !unreadable.covers(path))
-            ScanEntry.deleted(path),
+        ...context.fastPath.where((e) => !excludedByCollision.contains(e.path)),
+        ...hashed.where((e) => !excludedByCollision.contains(e.path)),
+        for (final path in deletedPaths)
+          if (!excludedByCollision.contains(path)) ScanEntry.deleted(path),
       ],
       skippedPaths: context.skipped,
     );
@@ -303,6 +368,39 @@ class Scanner {
     context.skipped.addAll(failures.whereType<SkippedPath>());
     return results.whereType<ScanEntry>().toList();
   }
+}
+
+/// Groups `live` ∪ `archived` by `foldKey`, keeping only the groups SPEC §16
+/// actually wants reported: two or more distinct paths sharing a key, at
+/// least one of them live. A group that is entirely archived is dropped —
+/// [Scanner.scan]'s own doc comment says why.
+///
+/// Pure and free of [Scanner] state, so it is testable — and re-testable for
+/// a future Unicode-normalization `foldKey` — with plain values, no scanner
+/// or filesystem involved (CLAUDE.md: "rules live with their data").
+Map<String, List<String>> _foldCollisions({
+  required Set<String> live,
+  required List<String> archived,
+  required String Function(String path) foldKey,
+}) {
+  final groups = <String, List<String>>{};
+  for (final path in {...live, ...archived}) {
+    (groups[foldKey(path)] ??= []).add(path);
+  }
+  groups.removeWhere(
+    (key, paths) => paths.length < 2 || !paths.any(live.contains),
+  );
+  return groups;
+}
+
+/// [SkippedPath.detail] for one member of a [_foldCollisions] `group`: which
+/// other path(s) it folds onto, so the reader knows what to go look at
+/// without having to work it out from [SkippedPath.path] alone.
+String _collisionDetail(String path, List<String> group) {
+  final others = [...group]
+    ..remove(path)
+    ..sort();
+  return 'folds to the same path as ${others.map((o) => '"$o"').join(', ')}';
 }
 
 /// The OS's own reason for a failed read, for [SkippedPath.detail] — "Permission

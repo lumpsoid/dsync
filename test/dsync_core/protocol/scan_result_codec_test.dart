@@ -115,6 +115,31 @@ void main() {
       },
     );
 
+    test('a case-fold collision (SPEC §16, task c51db6) survives the wire too, '
+        'and counts toward unreadableCount the same as a literally unreadable '
+        'path', () {
+      const result = ScanResult(
+        entries: [],
+        skippedPaths: [
+          SkippedPath.caseFoldCollision(
+            'notes.txt',
+            'folds to the same path as "Notes.txt"',
+          ),
+        ],
+      );
+
+      final decoded = _roundTrip(result);
+
+      expect(decoded.skippedPaths.map((s) => (s.path, s.reason, s.detail)), [
+        (
+          'notes.txt',
+          SkippedReason.caseFoldCollision,
+          'folds to the same path as "Notes.txt"',
+        ),
+      ]);
+      expect(decoded.unreadableCount, 1);
+    });
+
     test(
       'a result with no skipped paths decodes to an empty list, not a null',
       () {
