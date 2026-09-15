@@ -54,6 +54,12 @@ dependencies:
   # every platform the heads run on.
   pointycastle: 4.0.0
 
+  # Pure path-manipulation library (no I/O, no platform detection) used to
+  # split a native, OS-spelled path back into its last segment given an
+  # explicit `Style` (SPEC §3's read-side conversion) — already resolved
+  # transitively, made direct now that `lib/` imports it itself.
+  path: ^1.9.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

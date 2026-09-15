@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:path/path.dart' as p;
 
 import 'commands/agent_command.dart';
 import 'commands/pair_command.dart';
@@ -34,7 +35,11 @@ import 'run/sync_runner.dart';
 /// beyond `Platform.environment`, at the same single edge, so every
 /// `StateDirPlatform`-shaped parameter downstream ([SyncRunner], [PairCommand],
 /// every `pair` subcommand) can stay a plain value instead of re-deriving the
-/// host itself.
+/// host itself. [pathStyle] is the same shape again, defaulting to
+/// [hostPathStyle]'s real read of `Platform.operatingSystem` (SPEC §3's
+/// read-side path conversion) — the one other real read of it this process
+/// does, at the same edge, so [SyncRunner]'s own local-replica `Scanner`
+/// stays a plain value too.
 ///
 /// `sync` and `status` each return their own exit code from `Command<int>`'s
 /// own `run()` (`lib/cli/commands/sync_command.dart`, `status_command.dart`),
@@ -64,11 +69,13 @@ Future<int> runDsyncCli(
   Map<String, String>? environment,
   String? workingDirectory,
   StateDirPlatform? platform,
+  p.Style? pathStyle,
 }) async {
   final runner = DsyncCommandRunner(
     environment: environment ?? Platform.environment,
     workingDirectory: workingDirectory ?? Directory.current.path,
     platform: platform ?? hostStateDirPlatform(),
+    pathStyle: pathStyle ?? hostPathStyle(),
   );
   try {
     return await runner.run(argv) ?? 0;
@@ -110,6 +117,7 @@ class DsyncCommandRunner extends CommandRunner<int> {
     required Map<String, String> environment,
     required String workingDirectory,
     required StateDirPlatform platform,
+    required p.Style pathStyle,
   }) : super(
          'dsync',
          'Bidirectional file sync between two replicas. See SPEC.md.',
@@ -118,6 +126,7 @@ class DsyncCommandRunner extends CommandRunner<int> {
       environment: environment,
       workingDirectory: workingDirectory,
       platform: platform,
+      pathStyle: pathStyle,
     ).run;
 
     addCommand(SyncCommand(runSync: runSync));

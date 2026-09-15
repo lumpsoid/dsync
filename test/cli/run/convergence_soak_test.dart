@@ -11,6 +11,7 @@ import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import '../../support/real_ssh.dart';
@@ -320,6 +321,7 @@ Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
         sync: () => SyncRunner(
           environment: localEnvironment,
           platform: const LinuxStateDir(),
+          pathStyle: p.Style.posix,
           workingDirectory: tempDir.path,
           // No real lookup: the far side has to classify as remote (SPEC
           // §4.1) whatever this machine's interfaces say, or the run never

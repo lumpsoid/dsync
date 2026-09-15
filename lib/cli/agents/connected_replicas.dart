@@ -19,6 +19,7 @@ import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:path/path.dart' as p;
 
 import 'local_addresses.dart';
 import 'replica_unreachable_exception.dart';
@@ -83,16 +84,22 @@ import 'replica_unreachable_exception.dart';
 /// platform rule — required, not defaulted, for the reason `resolveStateDir`'s
 /// own callers all require it now: a default here would silently resolve
 /// every non-Linux host's archive, lock, device identity and paired-device
-/// store to the wrong directory. [localAddressLookup] defaults to
-/// [systemLocalAddresses] — the one piece of real I/O this needs — so a test
-/// can drive both localities without a network. [sshExecutable] is the `ssh`
-/// binary to spawn for a remote side (`SshChannel.connect`'s own
-/// `executable` parameter); overridable so a test can point it at a script
-/// that fails instead of a real remote host.
+/// store to the wrong directory. [pathStyle] is the same convention again,
+/// for SPEC §3's read-side path conversion: a local side's `Scanner` (below)
+/// needs to know whether *this* host's own filesystem paths are `/`- or
+/// `\`-spelled, the same "resolved once at the CLI edge, threaded down"
+/// shape `platform` already is — `lib/cli/host_platform.dart`'s
+/// `hostPathStyle()` is that resolution, for a real run. [localAddressLookup]
+/// defaults to [systemLocalAddresses] — the one piece of real I/O this
+/// needs — so a test can drive both localities without a network.
+/// [sshExecutable] is the `ssh` binary to spawn for a remote side
+/// (`SshChannel.connect`'s own `executable` parameter); overridable so a
+/// test can point it at a script that fails instead of a real remote host.
 Future<ConnectedReplicas> resolveReplicaAgents(
   EffectiveOptions options, {
   Map<String, String> environment = const {},
   required StateDirPlatform platform,
+  required p.Style pathStyle,
   Future<Set<String>> Function() localAddressLookup = systemLocalAddresses,
   String sshExecutable = 'ssh',
 }) async {
@@ -118,6 +125,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
     jobs: jobs,
     environment: environment,
     platform: platform,
+    pathStyle: pathStyle,
     localAddresses: localAddresses,
     sshExecutable: sshExecutable,
   );
@@ -132,6 +140,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
       jobs: jobs,
       environment: environment,
       platform: platform,
+      pathStyle: pathStyle,
       localAddresses: localAddresses,
       sshExecutable: sshExecutable,
     );
@@ -161,6 +170,7 @@ Future<_ResolvedSide> _resolveSide({
   required int jobs,
   required Map<String, String> environment,
   required StateDirPlatform platform,
+  required p.Style pathStyle,
   required Set<String> localAddresses,
   required String sshExecutable,
 }) {
@@ -185,6 +195,7 @@ Future<_ResolvedSide> _resolveSide({
       jobs: jobs,
       environment: environment,
       platform: platform,
+      pathStyle: pathStyle,
       archivePath: archivePath,
       lockPath: lockPath,
     ),
@@ -233,6 +244,7 @@ Future<_ResolvedSide> _resolveLocalSide({
   required int jobs,
   required Map<String, String> environment,
   required StateDirPlatform platform,
+  required p.Style pathStyle,
   required String archivePath,
   required String lockPath,
 }) async {
@@ -252,7 +264,7 @@ Future<_ResolvedSide> _resolveLocalSide({
       environment: environment,
       platform: platform,
     ),
-    scanner: Scanner(jobs: jobs),
+    scanner: Scanner(jobs: jobs, pathStyle: pathStyle),
     // So this side's own `hello` (SPEC §4.2) reports it back as its
     // `ReplicaInfo.archivePath` — the authoritative value SPEC §11.4's run
     // header uses, in place of the label below.

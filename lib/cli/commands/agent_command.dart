@@ -261,7 +261,10 @@ class AgentCommand extends Command<int> {
   /// `hostStateDirPlatform()` — the same single CLI-edge read
   /// `lib/cli/dsync_cli.dart`'s `runDsyncCli` does for `SyncRunner`'s side of
   /// a connection — rather than taking it as a constructor parameter the way
-  /// `environment` is not taken as one here either.
+  /// `environment` is not taken as one here either. `hostPathStyle()` (SPEC
+  /// §3's read-side path conversion) is the same story again: this is the
+  /// process that actually walks this replica's filesystem, so it reads its
+  /// own host's real path style rather than trusting the initiator's.
   Agent _buildAgent(ReplicaSpec spec) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);
@@ -281,7 +284,7 @@ class AgentCommand extends Command<int> {
         environment: Platform.environment,
         platform: hostStateDirPlatform(),
       ),
-      scanner: Scanner(jobs: spec.jobs),
+      scanner: Scanner(jobs: spec.jobs, pathStyle: hostPathStyle()),
       archivePath: resolveArchiveLogPath(
         profileId: spec.profileId,
         side: spec.side,

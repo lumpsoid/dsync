@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
@@ -773,6 +774,59 @@ void main() {
       // Only the failure counts toward SPEC §11.5's exit 1; a skipped
       // symlink is the tool obeying §9 and happens on every run.
       expect(result.unreadableCount, 1);
+    }, testOn: 'linux');
+  });
+
+  group('platform path style (SPEC §3, task a6efc7)', () {
+    test(
+      'a Windows-style path context produces relative paths identical in '
+      'shape to a Linux run over the same tree — every real path `dart:io` '
+      'hands back on this host is `/`-joined, and Windows style accepts `/` '
+      'as an alternate separator, so injecting it changes nothing here',
+      () async {
+        await Directory('${tempDir.path}/sub/dir').create(recursive: true);
+        await File('${tempDir.path}/a.txt').writeAsString('hello');
+        await File('${tempDir.path}/sub/dir/b.txt').writeAsString('nested');
+
+        final posixEntries = (await Scanner().scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+        )).entries.map((e) => e.path).toSet();
+
+        final windowsEntries = (await Scanner(pathStyle: p.Style.windows).scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+        )).entries.map((e) => e.path).toSet();
+
+        expect(windowsEntries, posixEntries);
+        expect(windowsEntries, {'a.txt', 'sub/dir/b.txt'});
+      },
+    );
+
+    test('the last path component is read using the injected style, not a '
+        'hard-coded `/`: a name containing a literal backslash is one whole '
+        'segment under the POSIX default and is split at the backslash under '
+        'Windows style — proof the separator is genuinely wired through, '
+        'simulable on this Linux host without a Windows one', () async {
+      // Illegal in a real Windows filename (`\` is reserved as its own
+      // separator there), but a perfectly ordinary byte in a Linux one —
+      // exactly what lets this stand in for "an OS-spelled path containing
+      // the target platform's separator" without a Windows host to
+      // produce one for real.
+      await File('${tempDir.path}/back\\slash.txt').writeAsString('x');
+
+      final posixEntries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      )).entries.map((e) => e.path);
+
+      final windowsEntries = (await Scanner(pathStyle: p.Style.windows).scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      )).entries.map((e) => e.path);
+
+      expect(posixEntries, contains('back\\slash.txt'));
+      expect(windowsEntries, contains('slash.txt'));
     }, testOn: 'linux');
   });
 }

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:path/path.dart' as p;
 
 /// Maps the real host this process is running on to a [StateDirPlatform]
 /// (SPEC §8.3) — the one place in the CLI head that reads `dart:io`'s
@@ -31,6 +32,34 @@ StateDirPlatform hostStateDirPlatform() {
       'No CLI state directory for host platform "$other" (SPEC §3): the '
       'five v1 targets are linux, macos, windows, android (Termux), and '
       'ios — and ios has no CLI head to reach this at all.',
+    ),
+  };
+}
+
+/// Maps the real host this process is running on to the `package:path`
+/// [p.Style] its filesystem paths are spelled in — the second (and only
+/// other) real read of `Platform.operatingSystem` this process does, at the
+/// same edge [hostStateDirPlatform] already reads it from (SPEC §3's
+/// read-side conversion: a scan's absolute, OS-spelled paths have to be
+/// turned back into the `/`-normalized, root-relative form the wire (§4.2)
+/// and the archive (§8.1) both assume). [Scanner] takes a [p.Style] as a
+/// plain constructor value rather than reading `Platform.pathSeparator`
+/// itself, the same way every `StateDirPlatform`-shaped parameter downstream
+/// of [hostStateDirPlatform] does — so a test can hand it a Windows-style
+/// path tree without a Windows host.
+///
+/// Android maps to [p.Style.posix] for the same reason it maps to
+/// [LinuxStateDir] above: Termux's `dart:io` sees a POSIX filesystem underneath
+/// it. iOS never reaches this function, for the reason [hostStateDirPlatform]'s
+/// own doc comment gives — there is no CLI head there to call it from.
+p.Style hostPathStyle() {
+  return switch (Platform.operatingSystem) {
+    'windows' => p.Style.windows,
+    'linux' || 'macos' || 'android' => p.Style.posix,
+    final other => throw StateError(
+      'No path style for host platform "$other" (SPEC §3): the five v1 '
+      'targets are linux, macos, windows, android (Termux), and ios — and '
+      'ios has no CLI head to reach this at all.',
     ),
   };
 }

@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
+import 'package:path/path.dart' as p;
 
 /// Scans a replica's file tree and compares it against its own archive
 /// (SPEC §5).
@@ -22,7 +23,25 @@ class Scanner {
   /// which belong to the run.
   final int jobs;
 
-  Scanner({this.jobs = 4});
+  /// How a child's own name is read back out of [FileSystemEntity.path]
+  /// (SPEC §3's read-side conversion) before [_walkChildren] rejoins it into
+  /// the `/`-normalized, root-relative form [ScanResult], the wire (§4.2) and
+  /// the archive (§8.1) all assume.
+  ///
+  /// A plain value rather than `dart:io`'s `Platform.pathSeparator` read
+  /// here — this file has no branch of its own for "which host," and a value
+  /// threaded in is what lets a test hand this a Windows-style path tree
+  /// without a Windows host. Defaults to [p.Style.posix], correct for every
+  /// platform this project can currently verify (Linux, macOS, Android); the
+  /// two real callers on a Windows host thread [p.Style.windows] in instead,
+  /// resolved once via `lib/cli/host_platform.dart`'s `hostPathStyle()`.
+  final p.Context _pathContext;
+
+  // `pathStyle` can't default to `p.Style.posix` directly: `Style`'s own
+  // constants are `static final`, not `const` (package:path resolves
+  // `Style.platform` at load time), so the fallback is applied here instead.
+  Scanner({this.jobs = 4, p.Style? pathStyle})
+    : _pathContext = p.Context(style: pathStyle ?? p.Style.posix);
 
   /// Walks [rootPath] and returns one [ScanEntry] per path that is either
   /// present on disk (and not ignored) or present in [archive] but now
@@ -123,7 +142,12 @@ class Scanner {
     children.sort((a, b) => a.path.compareTo(b.path));
 
     for (final child in children) {
-      final name = child.path.split('/').last;
+      // Platform-aware: `child.path` is OS-spelled (SPEC §3) — `\`-joined on
+      // Windows, `/`-joined everywhere else this project runs — while `name`
+      // and the `relativePath` built from it below must stay `/`-joined
+      // regardless, since the wire and the archive assume that on every
+      // platform.
+      final name = _pathContext.basename(child.path);
       final relativePath = relativePrefix.isEmpty
           ? name
           : '$relativePrefix/$name';

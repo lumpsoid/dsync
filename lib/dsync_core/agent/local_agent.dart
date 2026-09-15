@@ -220,6 +220,17 @@ class LocalAgent implements Agent {
 /// The parent of a root-relative path, or `null` when [path] is already
 /// top-level — i.e. there is no ancestor directory short of the root itself,
 /// which [LocalAgent.removeEmptyDirs] must never remove.
+///
+/// Deliberately still a literal `/` split, not a platform-aware one (SPEC
+/// §3): the only caller is [LocalAgent.removeEmptyDirs], whose own only
+/// caller (`Applier._delete`) passes it a [PlanAction.path] — a
+/// [ScanEntry.path] the reconciler carried through unchanged — which
+/// `Scanner._walkChildren` (task a6efc7) already normalized to `/`-joined
+/// before this ever runs, on every platform. Over the wire the same holds:
+/// `AgentServer` hands this the `path` a peer sent, and SPEC §4.2 requires
+/// that peer to have sent it `/`-joined already. [path] is consequently
+/// never OS-spelled here, so there is nothing for this function itself to
+/// convert.
 String? _parentOf(String path) {
   final lastSlash = path.lastIndexOf('/');
   return lastSlash == -1 ? null : path.substring(0, lastSlash);
@@ -236,6 +247,19 @@ String? _parentOf(String path) {
 /// means the request was malformed or hostile.
 ///
 /// Pure string logic, so it is testable without a filesystem.
+///
+/// **The write-side join stays a literal `/`, unverified on Windows (SPEC
+/// §3, task a6efc7).** `'$rootPath/$rootRelativePath'` is widely reported to
+/// resolve correctly against `dart:io`'s Windows filesystem APIs — Win32
+/// itself accepts `/` mixed with a native-separator root — but that has not
+/// been checked against a real Windows host by this project, and this
+/// function deliberately does not pick an answer on the strength of that
+/// report alone. Task a6efc7 fixed the *read* side (`Scanner._walkChildren`)
+/// with an injectable `package:path` `Style`; doing the same here — routing
+/// this join through a `Style`-aware `Context.join` — is the natural
+/// follow-up once a Windows host (or a trustworthy stand-in) exists to
+/// verify it against, the same open status §3 already gives the Android
+/// mtime question.
 String resolveWithinRoot(String rootPath, String rootRelativePath) {
   final segments = rootRelativePath.split('/');
   if (rootRelativePath.isEmpty ||

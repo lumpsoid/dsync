@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:path/path.dart' as p;
 
 import '../agents/connected_replicas.dart';
 import '../agents/local_addresses.dart';
@@ -78,6 +79,16 @@ class SyncRunner {
   /// wants to exercise.
   final StateDirPlatform platform;
 
+  /// How this host's own filesystem paths are spelled (SPEC §3's read-side
+  /// path conversion), threaded through for the same reason [platform] is:
+  /// `runDsyncCli` supplies the real host's answer (`hostPathStyle()`), a
+  /// test supplies whichever `package:path` `Style` it wants to exercise.
+  /// Only a local replica's own `Scanner` ever reads it
+  /// (`resolveReplicaAgents`) — a remote replica's agent process resolves
+  /// its own host's style independently, the same way it resolves its own
+  /// `platform` independently (`agent_command.dart`'s `_buildAgent`).
+  final p.Style pathStyle;
+
   /// The process's current working directory, for resolving a relative
   /// local ad-hoc path (see [EffectiveOptions.forAdHoc]'s doc comment).
   final String workingDirectory;
@@ -114,6 +125,7 @@ class SyncRunner {
   SyncRunner({
     required this.environment,
     required this.platform,
+    required this.pathStyle,
     required this.workingDirectory,
     this.localAddressLookup = systemLocalAddresses,
     this.sshExecutable = 'ssh',
@@ -193,6 +205,7 @@ class SyncRunner {
       effective,
       environment: environment,
       platform: platform,
+      pathStyle: pathStyle,
       localAddressLookup: sharedLocalAddressLookup,
       sshExecutable: sshExecutable,
     );
