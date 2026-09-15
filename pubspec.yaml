@@ -46,6 +46,14 @@ dependencies:
   args: 2.7.0
   toml: 0.18.0
 
+  # Pinned for the same reason, and more sharply: this builds the X.509
+  # identity certificate a paired peer is authenticated by (task 4ec17f), so
+  # a byte that differs between two hosts' builds is a handshake that fails
+  # rather than a rendering that looks odd. Pure Dart — its only `dart:ffi`
+  # import is an Argon2 implementation nothing here uses — so it carries to
+  # every platform the heads run on.
+  pointycastle: 4.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
