@@ -15,7 +15,7 @@ Working name: `dsync` (placeholder, rename freely).
 - Delta (partial-file) transfer.
 - Ownership, ACLs, extended attributes.
 - More than two replicas per run.
-- Any transport other than in-process or SSH.
+- A transport this project does not own the read loop of. In-process, ssh, and dsync's own socket transport in its two forms — unix-domain (§4.2) and paired TLS over the network (§4.4) — are what v0 speaks.
 
 ## 2. Concepts
 
