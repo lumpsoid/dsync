@@ -34,9 +34,16 @@ Working name: `dsync` (placeholder, rename freely).
 
 ## 3. Platforms and heads
 
-- Targets: Linux, Android.
-- Heads: `cli` (Linux; Android via Termux) and `app` (Flutter, Android). Both depend on `core`; `core` has no Flutter dependency.
-- Pinned Dart SDK version in `pubspec.yaml` of every package.
+- Targets: Linux, macOS, Windows, Android, iOS. All five are v1 (task a1d635) — not aspirational, and not free: each bullet below names the cost and whether it is paid now or named as a deferral, so nothing here becomes true by omission.
+- Heads: `cli` (Linux, macOS, Windows; Android via Termux) and `app` (Flutter; Android, iOS). Both depend on `core`; `core` has no Flutter dependency. iOS has no `cli` head and cannot get one: the platform grants no arbitrary process execution outside an app bundle, so `app` is the only way onto it.
+- Pinned Dart SDK version in `pubspec.yaml` of every package, on every target alike.
+- The crypto §4.4 is built on is already portable, and costs nothing here: `pointycastle` is pure Dart, depending on nothing beyond `collection` and `convert`, and the pinned SDK above is 3.13.3 everywhere. What follows is our own code, not the dependency graph.
+- **State directory is not XDG-only.** `resolveStateDir` (`lib/dsync_core/state_dir.dart`) today only knows `$XDG_STATE_HOME`, else `$HOME/.local/state` — right for Linux, absent on Windows (`%LOCALAPPDATA%`), and not the macOS convention (`~/Library/Application Support`). This is v1 and non-negotiable: §4.4's device identity, the paired-device store, the archive and its lock all live under it (§8.3), so nothing else works on those two platforms until it does.
+- **Root-relative paths stay `/`-normalized on the wire and in the archive, on every platform** — git does the same, and it is what keeps one archive portable between a Windows and a Linux replica. The conversion this requires at each filesystem boundary does not exist yet. `scan/scanner.dart` takes a child's own name by splitting the OS path on `/`, and `agent/local_agent.dart`'s `_parentOf` finds a path's parent the same way — both correct today because Linux, macOS and Android all use `/` natively, and both wrong the moment a Windows agent's `Directory.list()` hands back paths spelled with `\`. The direction that needs converting is the read side: turning a native, OS-spelled path *back* into the `/`-normalized form the scan result, the wire and the archive all expect. Whether the write side needs the same treatment — `resolveWithinRoot` joins a root-relative path onto `rootPath` with a literal `/`, and whether Windows' own filesystem APIs already tolerate that mixed with a native root or not — is for the follow-up task to verify rather than assume, the same way §3's Android mtime question already is.
+- **Mode bits (§7.4) do not exist on Windows.** `_applyMode` (`lib/dsync_core/agent/local_agent.dart`) shells out to `chmod`; Windows has no `chmod` to shell out to, and its model — ACLs — is not a stricter or laxer version of POSIX bits, so v1 does not attempt to translate one into the other. `mode` is simply absent there: `_applyMode` should recognize a Windows replica ahead of time rather than discover it empirically — today it spawns `chmod` for every file whose mode differs from what a fresh temp file already has, until the first spawn throws `ProcessException` and `_chmodUnavailable` latches, so a run's early files each pay a process-spawn cost that later files don't. The archive still needs to record whatever `FileStat.mode` actually reports on Windows, which §7.4's existing rule ("record the actual post-write state … rather than the intended one") already states in general terms — Windows is that rule's second occasion, not an exception to it.
+- **Case-insensitive filesystems are a correctness issue, not cosmetic, once macOS and Windows are targets.** APFS and NTFS are case-insensitive by default, as Android's external storage already is (below). §16 states the v1 policy and what it does not catch.
+- **Symlinks cost nothing here.** A `follow` rule (§5.1, §9) resolves an existing link and syncs its target's *content* as a plain file at the link's path; dsync does not create a symlink at the destination, on any platform — there is no symlink-creation call anywhere in `lib/`, only `Link(...).resolveSymbolicLinks()`, and only to read. Windows' privilege requirement for creating a symbolic link (Developer Mode or `SeCreateSymbolicLinkPrivilege`) gates an operation this project never performs, so it is not a v1 cost and not a deferral either — there is nothing here to defer.
+- **iOS is a target within its sandbox, not a general-purpose one.** A replica root is confined to the app's own container (`Documents/`, `Library/`, the rest of what the sandbox grants by default) plus whatever directories the user has separately granted through `UIDocumentPickerViewController` and kept reachable via a security-scoped bookmark. It cannot sync another app's data or an arbitrary path the way the other four targets can; that is a stated platform limitation, not a defect. The `app` head's location picker (still a skeleton, §16) has to be built against that constraint — offering the container and whatever the user has granted — not against a free-text path it cannot actually resolve.
 - Android note: Android's shared ("external") storage does not preserve POSIX permission bits and is case-insensitive. The engine must not fail when a metadata write is rejected (see §7.4), and must record the *actual* post-write state in the archive rather than the intended one. Whether mtime can be set on a given Android path is verified on the device early in development; the archive rule above keeps the engine correct either way.
 
 ## 4. Replica access
@@ -115,6 +122,7 @@ The replica **root** is the exception: if the root itself cannot be listed, that
 - Symlinks: skipped and reported, unless the path matches a `follow` rule (§9), in which case the link is resolved and the target is treated as if it were at the link's path. A `follow` link that is broken, whose target is neither a regular file nor a directory, or that points back into a directory the walk is already inside, is also reported as skipped. Reported paths travel alongside the status list and surface as `symlink` lines (§11.4); they are not status entries, since a skipped link has no state relative to the archive to reconcile.
 - Every reported path says *which* of those cases it was, not just that it was skipped. All four are one outcome to the tool — report it, plan nothing, leave the exit code alone — but not to the reader: a broken link and a link pointing back up its own tree need different fixes, and the walk is the only thing that ever knew which it saw.
 - Unreadable paths: reported the same way, as `unreadable` lines (§11.4), carrying the OS's own reason — "permission denied" and "no such file or directory" are what tell a locked file apart from one that vanished mid-scan, and the latter is not there to inspect afterwards. Unlike a skipped symlink, which is the tool obeying §9's rules and happens identically on every run, an unreadable path is a failure and counts toward exit 1.
+- Case-folding collisions (§16): on a replica whose filesystem folds case, two live paths — or a live path and an archived one — that fold to the same key are reported and excluded the same way an unreadable path is, rather than one silently overwriting the other, and count toward exit 1 (§11.5) for the same reason.
 - Hardlinks: treated as independent regular files.
 - Paths matching an `ignore` rule are not scanned.
 
@@ -172,7 +180,7 @@ For a delete, the same crash does not self-heal the same way — there is no sha
 
 ### 7.4 Metadata
 - `mtime`: always propagated. If setting it fails, the write still succeeds; the actual mtime is what gets archived.
-- Mode bits: propagated on a best-effort basis; failure is logged, not fatal.
+- Mode bits: propagated on a best-effort basis; failure is logged, not fatal. On a platform with no mode concept at all — Windows, per §3 — this degrades from "may fail" to "never attempted"; the archived value there is whatever `FileStat.mode` actually reports, the same "actual state, not the intended one" already true for Android's external storage.
 - Mode bits travel with content, never on their own. The fast path (§5.2) keys on size and mtime, so a file whose permissions changed and whose content did not scans as `unchanged` and gets no action. A mode-only difference between the replicas is therefore never detected and never repaired; it is corrected the next time that file's content changes. Detecting it would mean comparing the scanned mode against the archived one and adding a metadata-only action, which v0 does not have.
 - Ownership, xattrs: not touched.
 
@@ -194,13 +202,18 @@ Rationale: per-path durable commits (§7.3) without rewriting the whole file, no
 
 ### 8.3 Location
 - Linux: `$XDG_STATE_HOME/dsync/` (default `~/.local/state/dsync/`).
+- macOS: `~/Library/Application Support/dsync/` — the platform convention; macOS has no XDG variables to defer to.
+- Windows: `%LOCALAPPDATA%\dsync\`.
 - Android: the app's private files directory (Flutter head) or Termux's home (CLI head).
+- iOS: the app's own `Application Support` directory inside its sandbox (§3) — there is no CLI head to have a second answer.
+
+`resolveStateDir` (`lib/dsync_core/state_dir.dart`) is XDG-only today, which is right for Linux and wrong everywhere else above; the platform branch this table describes does not exist yet (§3's first follow-up). Every one of §4.4's device identity, the paired-device store, the per-replica archive and its lock lives under this directory, so nothing built on pairing or persistence works on macOS, Windows or iOS until it does.
 
 ## 9. Ignore and follow rules
 
 - Syntax: glob, matched against the root-relative path. Supported: `*`, `?`, `**`, character classes. No negation in v0.
 - `ignore` rules: matching paths are neither scanned nor deleted.
-- `follow` rules: matching symlinks are resolved (§5.1).
+- `follow` rules: matching symlinks are resolved (§5.1) and their target's content is synced as a plain file at the link's path; dsync never creates a symlink at the destination, on any platform, so Windows' privilege requirement for creating one (`SeCreateSymbolicLinkPrivilege`) never applies to v0's write path (§3).
 - Rules come from the profile file; `--ignore` may be repeated on the command line and is additive.
 
 ## 10. Size warning
@@ -247,7 +260,8 @@ Default is interactive: the plan is shown, conflicts first, then each proposed a
 ```
 0    all planned actions applied, no conflicts
 1    completed, but some paths were skipped (including paths the scan could
-     not read, §5) or are unresolved conflicts
+     not read, §5, or that collided on a case-insensitive filesystem, §5.1)
+     or are unresolved conflicts
 2    completed, but some actions failed
 3    fatal: bad arguments, cannot reach a replica, lock held, archive unreadable,
      protocol version mismatch
@@ -361,4 +375,4 @@ Override any of these before code starts:
 - Delta transfer (librsync via FFI or a Dart implementation).
 - Negated ignore patterns.
 - Ownership / xattr preservation.
-- Case-insensitivity and Unicode-normalization handling beyond "whatever the filesystem does".
+- Case-insensitivity is decided for v1, not fully closed by it (task a1d635; SPEC §3, §5.1). Detected per replica at scan time as a property of the filesystem actually mounted there — not assumed from the OS, since a case-sensitive-formatted APFS volume or a case-insensitive mount on Linux would otherwise get the wrong behavior. On a replica whose filesystem folds case, two live paths — or a live path and an archived one — that fold to the same key are reported and excluded the way §5.1 already excludes an unreadable path, rather than one silently overwriting the other. Refusing the whole run over one colliding pair was considered and rejected, for the same reason §5's per-path tolerance exists at all: one bad path should not cost the tree. This deferral used to cost nothing, because it applied only to Linux and Android, where it is either moot or, on Android's external storage, already a named exception (§3); it is not affordable now that APFS and NTFS are v1 targets (§3), which is why it is no longer a blanket deferral. What stays deferred: a same-run plan proposing two creates that differ only in case onto a replica where neither path exists yet — that replica's own scan finds nothing on disk or in its archive to collide with, so catching this needs the reconciler or apply phase to fold-check a plan's own paths against a destination known to be case-insensitive before either write lands, and that is not built. Unicode normalization (NFC/NFD converging to one file on a normalizing filesystem) is the same shape of problem for a different reason and gets the same treatment: deferred with the plan-level gap above, not separately, because whichever mechanism closes one closes both.
