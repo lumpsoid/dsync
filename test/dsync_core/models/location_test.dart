@@ -191,6 +191,72 @@ void main() {
     }
   });
 
+  group('Location.parse of the peer:// form (SPEC §2, §4.4)', () {
+    test('splits the device name from the replica path at the first colon', () {
+      final location = Location.parse('peer://phone:/sdcard/notes');
+      expect(location.deviceName, 'phone');
+      expect(location.path, '/sdcard/notes');
+      expect(location.scheme, LocationScheme.peer);
+      // Under the colon-before-slash rule of the schemeless form the same
+      // string is not a remote location at all.
+      expect(
+        Location.parse('phone:/sdcard/notes').scheme,
+        LocationScheme.inferred,
+      );
+    });
+
+    test('no user is split off — a device name may contain an @', () {
+      // There is no user to name: what decides whether this connects is
+      // whether the paired-device store still trusts the certificate this
+      // name resolves to (SPEC §4.4), so an `@` here is just a character in
+      // the name.
+      final location = Location.parse('peer://a@b:/srv/notes');
+      expect(location.user, isNull);
+      expect(location.deviceName, 'a@b');
+      expect(location.path, '/srv/notes');
+    });
+
+    test('only the first colon separates; the replica path keeps its own', () {
+      final location = Location.parse('peer://phone:/srv/log:old');
+      expect(location.deviceName, 'phone');
+      expect(location.path, '/srv/log:old');
+    });
+
+    test('a relative replica path is left for the far side to resolve', () {
+      expect(Location.parse('peer://phone:notes').path, 'notes');
+    });
+
+    test('a missing separator says which one is missing', () {
+      expect(
+        () => Location.parse('peer://phone'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'message',
+            contains('":"'),
+          ),
+        ),
+      );
+    });
+
+    test('deviceName is null for every other form', () {
+      expect(Location.parse('/abs/path').deviceName, isNull);
+      expect(Location.parse('me@phone:/notes').deviceName, isNull);
+      expect(Location.parse('ssh://phone:/notes').deviceName, isNull);
+      expect(Location.parse('unix:///run/d.sock:/notes').deviceName, isNull);
+    });
+
+    test('socketPath is null for a peer:// location', () {
+      expect(Location.parse('peer://phone:/srv/notes').socketPath, isNull);
+    });
+
+    for (final invalid in ['peer://', 'peer://:', 'peer://phone:']) {
+      test('rejects invalid location "$invalid"', () {
+        expect(() => Location.parse(invalid), throwsFormatException);
+      });
+    }
+  });
+
   group('Location.toString', () {
     for (final raw in [
       '/abs/path',
@@ -201,6 +267,7 @@ void main() {
       'ssh://phone:/sdcard/notes',
       'ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes',
       'unix:///run/user/1000/dsync.sock:/home/me/notes',
+      'peer://phone:/sdcard/notes',
     ]) {
       test('spells "$raw" back exactly as it was written', () {
         // The run header shows this before anything moves (SPEC §11.4), so a
@@ -296,6 +363,17 @@ void main() {
       expect(location.classify(), Locality.remote);
       expect(location.classify(localAddresses: {'127.0.0.1'}), Locality.remote);
     });
+
+    test('a peer:// location is remote — a device name has no address to '
+        'compare', () {
+      // SPEC §4.4: the name resolves through PairedDeviceStore, never
+      // through DNS or an address comparison, so there is nothing here
+      // honest enough to guess with even when the name coincides with a
+      // local address.
+      final location = Location.parse('peer://phone:/srv/notes');
+      expect(location.classify(), Locality.remote);
+      expect(location.classify(localAddresses: {'phone'}), Locality.remote);
+    });
   });
 
   group('Location.consultsLocalAddresses', () {
@@ -308,6 +386,10 @@ void main() {
       );
       expect(
         Location.parse('unix:///run/d.sock:/notes').consultsLocalAddresses,
+        isFalse,
+      );
+      expect(
+        Location.parse('peer://phone:/notes').consultsLocalAddresses,
         isFalse,
       );
     });

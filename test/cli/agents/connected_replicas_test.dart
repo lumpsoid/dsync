@@ -3,14 +3,21 @@ import 'dart:io';
 import 'package:dsync/cli/agents/connected_replicas.dart';
 import 'package:dsync/cli/agents/replica_unreachable_exception.dart';
 import 'package:dsync/cli/options/effective_options.dart';
+import 'package:dsync/dsync_core/agent/agent_listener.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/identity/device_identity_store.dart';
+import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
+import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/location.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -294,6 +301,259 @@ void main() {
         );
       },
     );
+  });
+
+  group('a peer:// replica (SPEC §2, §4.4)', () {
+    late DeviceIdentity remoteIdentity;
+    late PairedDeviceStore remotePairedDevices;
+
+    setUp(() async {
+      // The device this host is dialing — a stand-in for a paired phone or
+      // desktop, with its own identity and its own (separate) paired-device
+      // store, the same two-sided shape `agent_listener_secure_e2e_test.dart`
+      // sets up.
+      remoteIdentity = generateDeviceIdentity(commonName: 'dsync-remote');
+      remotePairedDevices = PairedDeviceStore(
+        File('${tempDir.path}/remote-paired-devices.json'),
+      );
+    });
+
+    // The identity `_resolvePeerSide` itself loads or creates — computed
+    // once so a test can register it as a trusted client on the remote side
+    // before binding (SPEC §4.4: `bindSecure`'s trust anchors are fixed at
+    // bind time), and get back the exact same one `resolveReplicaAgents`
+    // goes on to load.
+    Future<DeviceIdentity> ownIdentity() =>
+        DeviceIdentityStore.forStateDir(environment: stateEnv)
+            .loadOrCreate(commonName: 'test-initiator');
+
+    Future<AgentListener> bindRemoteListener() => AgentListener.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      ownIdentity: remoteIdentity,
+      pairedDeviceStore: remotePairedDevices,
+      // Never reached: `resolveReplicaAgents` only opens the transport and
+      // stops there (see its own doc comment) — `hello` is `RunController`'s
+      // to make, and none of these tests call it.
+      buildAgent: (spec) =>
+          throw UnimplementedError('resolveReplicaAgents never calls hello()'),
+      onSessionError: (_, _) {},
+    );
+
+    int portOf(AgentListener listener) {
+      final address = listener.address;
+      return int.parse(address.substring(address.lastIndexOf(':') + 1));
+    }
+
+    Future<void> pairLocally(String name, PeerAddress address) =>
+        PairedDeviceStore.forStateDir(environment: stateEnv).add(
+          PairedDevice(
+            certificatePem: remoteIdentity.certificatePem,
+            name: name,
+            agreedReplicaRoots: const {},
+            pairedAt: DateTime.utc(2026, 9, 15),
+            lastKnownAddress: address,
+          ),
+        );
+
+    test('an unpaired device name fails before any socket is opened, naming '
+        'the device and pointing at `dsync pair`', () async {
+      final rootA = await tempDir.createTemp('root-a');
+
+      await expectLater(
+        resolveReplicaAgents(
+          optionsFor(
+            Location.parse(rootA.path),
+            Location.parse('peer://phone:/sdcard/notes'),
+          ),
+          environment: stateEnv,
+          localAddressLookup: () => Future.error(
+            StateError(
+              'a peer:// location declares its own locality (SPEC §4.1)',
+            ),
+          ),
+        ).timeout(const Duration(seconds: 2)),
+        throwsA(
+          isA<ReplicaUnreachableException>()
+              .having((e) => e.side, 'side', 'b')
+              .having(
+                (e) => e.cause,
+                'cause',
+                isA<UnpairedDeviceException>().having(
+                  (e) => e.toString(),
+                  'toString()',
+                  allOf(contains('phone'), contains('dsync pair')),
+                ),
+              ),
+        ),
+      );
+    });
+
+    test('a paired device name dials its cached address, and a successful '
+        'connection is recorded back to the store', () async {
+      final rootA = await tempDir.createTemp('root-a');
+      final identity = await ownIdentity();
+      // The remote side has to trust *this* installation's certificate
+      // too — bindSecure requires a client certificate (SPEC §4.4).
+      await remotePairedDevices.add(
+        PairedDevice(
+          certificatePem: identity.certificatePem,
+          name: 'this-initiator',
+          agreedReplicaRoots: const {},
+          pairedAt: DateTime.utc(2026, 9, 15),
+          lastKnownAddress: PeerAddress(host: '127.0.0.1'),
+        ),
+      );
+
+      final listener = await bindRemoteListener();
+      addTearDown(listener.close);
+      final port = portOf(listener);
+      await pairLocally('phone', PeerAddress(host: '127.0.0.1', port: port));
+
+      final storeFile = File(
+        '${resolveStateDir(stateEnv)}/paired-devices.json',
+      );
+      // A write only `recordConnection` (or another store mutation this
+      // test never calls again) could produce — the decisive half of "a
+      // successful connection updates the cached address", since the
+      // address value alone is the same before and after by construction
+      // (it is exactly what got dialed).
+      final beforeConnect = storeFile.statSync().modified;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final result = await resolveReplicaAgents(
+        optionsFor(
+          Location.parse(rootA.path),
+          Location.parse('peer://phone:/srv/notes'),
+        ),
+        environment: stateEnv,
+        localAddressLookup: () => Future.error(
+          StateError(
+            'a peer:// location declares its own locality (SPEC §4.1)',
+          ),
+        ),
+      );
+
+      expect(result.agentB, isA<RemoteAgent>());
+      expect(result.diagnosticsB.locality, Locality.remote);
+      expect(result.diagnosticsB.location.deviceName, 'phone');
+      // No argv reached this replica — same as a unix:// side.
+      expect(result.diagnosticsB.sshArgs, isNull);
+
+      expect(
+        storeFile.statSync().modified.isAfter(beforeConnect),
+        isTrue,
+        reason:
+            'recordConnection should have rewritten the store after '
+            'the connection succeeded',
+      );
+      final recorded = await PairedDeviceStore.forStateDir(
+        environment: stateEnv,
+      ).byName('phone');
+      expect(recorded, isNotNull);
+      expect(recorded!.lastKnownAddress.host, '127.0.0.1');
+      expect(recorded.lastKnownAddress.port, port);
+
+      await result.agentA.disconnect();
+      await result.agentB.disconnect();
+    });
+
+    test('a paired device whose cached address refuses the connection reports '
+        'that address, not a generic failure', () async {
+      final rootA = await tempDir.createTemp('root-a');
+      await ownIdentity();
+
+      // A port nothing is listening on: bound and released immediately,
+      // so it is available for the OS to hand straight back out and,
+      // for the moment this test dials it, has nothing behind it.
+      final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final deadPort = probe.port;
+      await probe.close();
+      await pairLocally(
+        'phone',
+        PeerAddress(host: '127.0.0.1', port: deadPort),
+      );
+
+      await expectLater(
+        resolveReplicaAgents(
+          optionsFor(
+            Location.parse(rootA.path),
+            Location.parse('peer://phone:/srv/notes'),
+          ),
+          environment: stateEnv,
+          localAddressLookup: () => Future.error(
+            StateError(
+              'a peer:// location declares its own locality (SPEC §4.1)',
+            ),
+          ),
+        ),
+        throwsA(
+          isA<ReplicaUnreachableException>()
+              .having((e) => e.side, 'side', 'b')
+              .having(
+                (e) => e.cause,
+                'cause',
+                isA<PeerAddressUnreachableException>()
+                    .having((e) => e.deviceName, 'deviceName', 'phone')
+                    .having((e) => e.address.port, 'address.port', deadPort)
+                    .having(
+                      (e) => e.toString(),
+                      'toString()',
+                      allOf(contains('phone'), contains('127.0.0.1:$deadPort')),
+                    ),
+              ),
+        ),
+      );
+    });
+
+    test('a cached address that accepts the connection but never answers fails '
+        'within a bound, rather than hanging on a handshake that never '
+        'completes', () async {
+      final rootA = await tempDir.createTemp('root-a');
+      await ownIdentity();
+
+      // Accepts the TCP connection and then does nothing — no TLS
+      // ServerHello, ever. What a black-holed address looks like to the
+      // handshake, without depending on real network routing to produce
+      // it.
+      final blackHole = await ServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(blackHole.close);
+      blackHole.listen((socket) => addTearDown(socket.destroy));
+      await pairLocally(
+        'phone',
+        PeerAddress(host: '127.0.0.1', port: blackHole.port),
+      );
+
+      await expectLater(
+        resolveReplicaAgents(
+          optionsFor(
+            Location.parse(rootA.path),
+            Location.parse('peer://phone:/srv/notes'),
+          ),
+          environment: stateEnv,
+          localAddressLookup: () => Future.error(
+            StateError(
+              'a peer:// location declares its own locality (SPEC §4.1)',
+            ),
+          ),
+          // A generous outer bound: this fails the test on an actual hang
+          // rather than letting one wedge the suite — the same shape
+          // `ssh_channel_test.dart`'s own shutdown-grace assertion uses.
+        ).timeout(const Duration(seconds: 20)),
+        throwsA(
+          isA<ReplicaUnreachableException>()
+              .having((e) => e.side, 'side', 'b')
+              .having(
+                (e) => e.cause,
+                'cause',
+                isA<PeerAddressUnreachableException>(),
+              ),
+        ),
+      );
+    });
   });
 
   group('unreachable replica', () {

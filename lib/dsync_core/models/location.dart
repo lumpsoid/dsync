@@ -22,7 +22,14 @@ enum LocationScheme {
   /// `unix://<socket-path>:<replica-path>` — everything between the scheme
   /// and the first `:` is the path of a unix socket a `dsync agent --listen`
   /// is already bound to (SPEC §2, §4.2).
-  unix('unix://');
+  unix('unix://'),
+
+  /// `peer://<device-name>:<replica-path>` — everything between the scheme
+  /// and the first `:` is this host's own label for a device it has paired
+  /// with, not a host and not an address; it resolves through
+  /// `PairedDeviceStore` at the moment of connection, never through DNS
+  /// (SPEC §2, §4.4).
+  peer('peer://');
 
   const LocationScheme(this.prefix);
 
@@ -32,8 +39,8 @@ enum LocationScheme {
 }
 
 /// A parsed replica location: a local path, `user@host:path`,
-/// `ssh://[user@]destination:path`, or `unix://<socket-path>:<replica-path>`
-/// (SPEC §2).
+/// `ssh://[user@]destination:path`, `unix://<socket-path>:<replica-path>`,
+/// or `peer://<device-name>:<replica-path>` (SPEC §2).
 ///
 /// Parsed at construction — [FormatException] is thrown for anything else,
 /// so an invalid location can never exist downstream.
@@ -48,7 +55,10 @@ class Location {
   ///   destination: a `~/.ssh/config` alias, `unix/run/ssh-unix-local/socket`,
   ///   `.host`, a name that means something only to ssh;
   /// - [LocationScheme.unix] — the filesystem path of the socket to connect
-  ///   to, also reachable as [socketPath].
+  ///   to, also reachable as [socketPath];
+  /// - [LocationScheme.peer] — this host's own label for a paired device,
+  ///   resolved through `PairedDeviceStore.byName` at the moment of
+  ///   connection (SPEC §4.4), also reachable as [deviceName].
   ///
   /// One field rather than one per scheme: every non-local location has
   /// exactly one "where", and [scheme] already says how to read it. A second
@@ -82,7 +92,8 @@ class Location {
   /// transport reaches plenty that are not — `ssh` a config alias or a
   /// socket-activated sshd, a listening agent a filesystem path. A
   /// [LocationScheme] prefix is the way out, and nothing about what follows
-  /// one is inferred here. See [_parseSshDestination] and [_parseUnixSocket].
+  /// one is inferred here. See [_parseSshDestination], [_parseUnixSocket] and
+  /// [_parsePeerLocation].
   factory Location.parse(String raw) {
     if (raw.isEmpty) throw FormatException('Empty location', raw);
     if (raw.startsWith(LocationScheme.ssh.prefix)) {
@@ -90,6 +101,9 @@ class Location {
     }
     if (raw.startsWith(LocationScheme.unix.prefix)) {
       return _parseUnixSocket(raw);
+    }
+    if (raw.startsWith(LocationScheme.peer.prefix)) {
+      return _parsePeerLocation(raw);
     }
 
     final colonIndex = raw.indexOf(':');
@@ -202,9 +216,55 @@ class Location {
     );
   }
 
+  /// Splits `peer://<device-name>:<replica-path>`.
+  ///
+  /// The same first-colon rule [_parseUnixSocket] uses, and for the same
+  /// reason again: what precedes the colon here is not a hostname-shaped
+  /// destination at all, it is this host's own label for a paired device,
+  /// resolved through `PairedDeviceStore.byName` at the moment of connection
+  /// (SPEC §2, §4.4) — never through DNS, and never cached, so a revocation
+  /// takes effect on the next connection rather than the next restart. A
+  /// device name containing a `:` is therefore not addressable, the same
+  /// limit an `ssh://` destination and a `unix://` socket path already carry.
+  ///
+  /// No `user@` is split off, for the same reason [_parseUnixSocket] splits
+  /// none: there is no user to name. What decides whether the connection is
+  /// made is whether the paired-device store still trusts the certificate
+  /// this name currently resolves to, which is the store's answer and not a
+  /// credential anyone types — so an `@` anywhere in the name is just a
+  /// character in it.
+  static Location _parsePeerLocation(String raw) {
+    final rest = raw.substring(LocationScheme.peer.prefix.length);
+    final separator = rest.indexOf(':');
+    if (separator == -1) {
+      throw FormatException(
+        '"${LocationScheme.peer.prefix}" needs a ":" between the device '
+        'name and the replica path, as in '
+        '"${LocationScheme.peer.prefix}phone:/sdcard/notes"',
+        raw,
+      );
+    }
+
+    final deviceName = rest.substring(0, separator);
+    final path = rest.substring(separator + 1);
+    if (deviceName.isEmpty || path.isEmpty) {
+      throw FormatException('Invalid location', raw);
+    }
+    return Location._(
+      host: deviceName,
+      path: path,
+      scheme: LocationScheme.peer,
+    );
+  }
+
   /// The unix socket a `dsync agent --listen` is serving this replica on, or
   /// `null` when this location is not a `unix://` one (SPEC §2, §4.2).
   String? get socketPath => scheme == LocationScheme.unix ? host : null;
+
+  /// This host's own label for the paired device a `peer://` location names
+  /// (SPEC §2, §4.4), or `null` when this location is not a `peer://` one —
+  /// what `PairedDeviceStore.byName` resolves at the moment of connection.
+  String? get deviceName => scheme == LocationScheme.peer ? host : null;
 
   /// [path] with a leading `~` replaced by `HOME` from [environment].
   ///

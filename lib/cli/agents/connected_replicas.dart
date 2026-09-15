@@ -1,11 +1,16 @@
+import 'dart:io';
+
 import 'package:dsync/cli/options/effective_options.dart';
 import 'package:dsync/cli/output/human_renderer.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/identity/device_identity_store.dart';
+import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
@@ -185,6 +190,15 @@ Future<_ResolvedSide> _resolveSide({
         archivePath: archivePath,
         lockPath: lockPath,
       ),
+      LocationScheme.peer => _resolvePeerSide(
+        side: side,
+        location: location,
+        profileId: profileId,
+        jobs: jobs,
+        environment: environment,
+        archivePath: archivePath,
+        lockPath: lockPath,
+      ),
       LocationScheme.ssh || LocationScheme.inferred => _resolveSshSide(
         side: side,
         location: location,
@@ -346,6 +360,163 @@ Future<_ResolvedSide> _resolveSocketSide({
       // path is already in `location`, which the run header prints as typed.
     ),
   );
+}
+
+/// Connects to a paired device's secure listener over mutual TLS (SPEC §2,
+/// §4.4) — the network transport that leaves the machine.
+///
+/// Takes no [SshAccess], for the same reason [_resolveSocketSide] does not:
+/// there is no argv to pass options to and nothing to start on the far side,
+/// because the connection is already authenticated by the pairing and the
+/// far side is already running (SPEC §11.2).
+///
+/// **Resolution happens here, once, at connection time — never cached.**
+/// [PairedDeviceStore.byName] is read fresh on every call (see that class's
+/// own doc comment on freshness), so a device unpaired since the last run is
+/// found unpaired now rather than trusted on the strength of a stale lookup.
+/// Nothing under `dsync_core/protocol/` is handed the store or a device
+/// name; only the resolved certificate and address ever reach
+/// [SocketChannel.connectSecure] (task 088e69's own scope: that constructor
+/// and everything under `dsync_core/protocol/` stay untouched).
+///
+/// **Two distinct failures, deliberately not collapsed into one (SPEC
+/// §4.4).** [byName] returning `null` means this host never paired with
+/// that name at all — [UnpairedDeviceException] is thrown before any socket
+/// is opened, so a typo in a device name costs nothing but a lookup. A name
+/// that resolves is dialed at its cached [PairedDevice.lastKnownAddress];
+/// when that address does not answer, [PeerAddressUnreachableException]
+/// reports the address actually tried rather than the address that would
+/// have been guessed from the name. [_peerConnectTimeout] bounds that dial —
+/// [SocketChannel.connectSecure] passes no timeout of its own to
+/// `SecureSocket.connect`, and an address that silently drops packets
+/// (rather than refusing the connection outright) would otherwise hang for
+/// however long the OS's own TCP retry budget is.
+///
+/// A successful dial's address is recorded via
+/// [PairedDeviceStore.recordConnection] before this returns — SPEC §4.4's
+/// last-known-address cache is only useful if something writes to it, and
+/// this is the one code path that knows a connection to this device just
+/// worked.
+Future<_ResolvedSide> _resolvePeerSide({
+  required String side,
+  required Location location,
+  required String profileId,
+  required int jobs,
+  required Map<String, String> environment,
+  required String archivePath,
+  required String lockPath,
+}) async {
+  // Locality.remote via LocationScheme.peer guarantees a device name is set.
+  final deviceName = location.deviceName!;
+
+  final pairedDeviceStore = PairedDeviceStore.forStateDir(
+    environment: environment,
+  );
+  final device = await pairedDeviceStore.byName(deviceName);
+  if (device == null) {
+    throw ReplicaUnreachableException(
+      side: side,
+      cause: UnpairedDeviceException(deviceName),
+    );
+  }
+
+  // The client credential mutual TLS requires (SPEC §4.4) — the same
+  // identity `dsync pair show`/`accept` load or generate, keyed by the same
+  // state directory `environment` resolves.
+  final ownIdentity = await DeviceIdentityStore.forStateDir(
+    environment: environment,
+  ).loadOrCreate(commonName: Platform.localHostname);
+
+  final address = device.lastKnownAddress;
+  final SocketChannel channel;
+  try {
+    channel = await SocketChannel.connectSecure(
+      address.host,
+      address.port,
+      expectedPeerCertificateDer: device.certificateDer,
+      ownIdentity: ownIdentity,
+    ).timeout(_peerConnectTimeout);
+  } catch (error) {
+    throw ReplicaUnreachableException(
+      side: side,
+      cause: PeerAddressUnreachableException(
+        deviceName: deviceName,
+        address: address,
+        cause: error,
+      ),
+    );
+  }
+
+  await pairedDeviceStore.recordConnection(device.deviceId, address);
+
+  final agent = _DiagnosedRemoteAgent(
+    channel: channel,
+    spec: _specFor(
+      location: location,
+      profileId: profileId,
+      side: side,
+      jobs: jobs,
+    ),
+    side: side,
+  );
+
+  return (
+    agent: agent,
+    diagnostics: ReplicaDiagnostics(
+      archivePath: archivePath,
+      lockPath: lockPath,
+      location: location,
+      locality: Locality.remote,
+      // No argv reached this replica either — same reason as a unix://
+      // side, and the device name is already in `location`.
+    ),
+  );
+}
+
+/// SPEC §4.4: bounds [SocketChannel.connectSecure]'s dial against a paired
+/// device's cached address, so an address that no longer answers fails
+/// within a bounded time rather than hanging on a socket that may never
+/// respond — see [_resolvePeerSide]'s own doc comment.
+const _peerConnectTimeout = Duration(seconds: 10);
+
+/// Thrown by [_resolvePeerSide] when a `peer://` location names a device
+/// with no entry in the paired-device store (SPEC §4.4): dsync never had a
+/// certificate to trust for that name, so this is thrown before any socket
+/// is opened. Distinct from [PeerAddressUnreachableException] — a paired
+/// name whose cached address does not answer — because the fix is
+/// different: this one means pairing has to happen first.
+class UnpairedDeviceException implements Exception {
+  final String deviceName;
+
+  const UnpairedDeviceException(this.deviceName);
+
+  @override
+  String toString() =>
+      'No pairing for "$deviceName". Run `dsync pair` to pair this host '
+      'with it first.';
+}
+
+/// Thrown by [_resolvePeerSide] when a `peer://` location names a paired
+/// device whose last-known address (SPEC §4.4) did not answer within
+/// [_peerConnectTimeout]. Distinct from [UnpairedDeviceException]: the store
+/// trusts this device, and the address it holds simply did not work this
+/// time — the signal that a manual re-entry, not a fresh pairing, is what is
+/// needed next.
+class PeerAddressUnreachableException implements Exception {
+  final String deviceName;
+  final PeerAddress address;
+  final Object cause;
+
+  const PeerAddressUnreachableException({
+    required this.deviceName,
+    required this.address,
+    required this.cause,
+  });
+
+  @override
+  String toString() =>
+      'Could not reach "$deviceName" at its last known address '
+      '${address.host}:${address.port}: $cause';
 }
 
 /// The [ReplicaSpec] a remote side's `hello` carries (SPEC §4.2), identical

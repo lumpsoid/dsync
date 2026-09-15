@@ -287,6 +287,7 @@ class HumanRenderer {
         ? 'local'
         : switch (diagnostics.location.scheme) {
             LocationScheme.unix => 'socket',
+            LocationScheme.peer => 'peer',
             LocationScheme.ssh || LocationScheme.inferred => 'ssh',
           };
     // `Location.toString` spells a location back the way SPEC §2 writes it,

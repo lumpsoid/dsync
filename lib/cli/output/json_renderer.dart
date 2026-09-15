@@ -214,25 +214,26 @@ Map<String, dynamic> _replicaSideToJson(
 };
 
 /// [location] exactly as resolved into this side (no expansion, no
-/// canonicalization) — `path`, plus whichever of `host`/`user`/`socket` SPEC
-/// §2's form it was written in actually has.
+/// canonicalization) — `path`, plus whichever of `host`/`user`/`socket`/`peer`
+/// SPEC §2's form it was written in actually has.
 ///
-/// A `unix://` replica reports `socket`, not `host`: the two are the same
-/// field on [Location] (see its doc comment — one "where" per location, read
-/// according to the scheme), but they are not the same fact, and a consumer
-/// that reads `host` expecting something it could connect to over the network
-/// would be told a filesystem path. The key that is present is what says
-/// which kind of destination this is, the same way SPEC §11.4's other lines
-/// omit a key rather than emit a null.
-Map<String, dynamic> _locationToJson(Location location) =>
-    switch (location.scheme) {
-      LocationScheme.unix => {
-        'path': location.path,
-        'socket': location.socketPath,
-      },
-      LocationScheme.ssh || LocationScheme.inferred => {
-        'path': location.path,
-        if (location.host != null) 'host': location.host,
-        if (location.user != null) 'user': location.user,
-      },
-    };
+/// A `unix://` replica reports `socket`, and a `peer://` one reports `peer`,
+/// neither as `host`: all three are the same field on [Location] (see its doc
+/// comment — one "where" per location, read according to the scheme), but
+/// they are not the same fact, and a consumer that reads `host` expecting
+/// something it could connect to over the network would be told a filesystem
+/// path for one and a device name resolved through the paired-device store
+/// for the other. The key that is present is what says which kind of
+/// destination this is, the same way SPEC §11.4's other lines omit a key
+/// rather than emit a null.
+Map<String, dynamic> _locationToJson(
+  Location location,
+) => switch (location.scheme) {
+  LocationScheme.unix => {'path': location.path, 'socket': location.socketPath},
+  LocationScheme.peer => {'path': location.path, 'peer': location.deviceName},
+  LocationScheme.ssh || LocationScheme.inferred => {
+    'path': location.path,
+    if (location.host != null) 'host': location.host,
+    if (location.user != null) 'user': location.user,
+  },
+};
