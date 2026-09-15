@@ -149,30 +149,56 @@ class AgentCommand extends Command<int> {
   /// whole of this transport's access control and the moment the person
   /// choosing the path can still choose a better one.
   Future<int> _serveSocket(String socketPath) async {
-    final listener = await AgentListener.bindUnix(
-      socketPath,
-      buildAgent: _buildAgent,
-      // A failed session is this process's only chance to say so — the peer
-      // has already been told over the wire, and there is nobody watching an
-      // exit code that is not coming.
-      onSessionError: (error, _) => stderr.writeln('dsync agent: $error'),
-    );
-    stderr.writeln(
-      'dsync agent: listening on ${listener.address}. Anyone who can open '
-      'this socket can read, write and delete in the replicas served '
-      'through it, with no further authentication (SPEC §4.2).',
-    );
-
+    // Watched *before* the socket is bound, and deliberately so.
+    // `ProcessSignal.watch()` is what displaces a signal's default
+    // disposition, and until it has run a SIGTERM kills this process
+    // outright. Binding first left a window between the socket file existing
+    // — which is what anything supervising this waits for, since it is the
+    // first observable sign the agent is up — and the signal being trapped
+    // at all. A signal landing in that window is the one case that leaves a
+    // socket file behind, which is precisely the litter
+    // `AgentListener._clearStaleSocket` then has to clear for the next
+    // agent. Watching first makes the window not exist rather than making it
+    // small.
+    final signals = _watchStopSignals();
     try {
-      return await _awaitSignal();
+      final listener = await AgentListener.bindUnix(
+        socketPath,
+        buildAgent: _buildAgent,
+        // A failed session is this process's only chance to say so — the peer
+        // has already been told over the wire, and there is nobody watching an
+        // exit code that is not coming.
+        onSessionError: (error, _) => stderr.writeln('dsync agent: $error'),
+      );
+      stderr.writeln(
+        'dsync agent: listening on ${listener.address}. Anyone who can open '
+        'this socket can read, write and delete in the replicas served '
+        'through it, with no further authentication (SPEC §4.2).',
+      );
+
+      try {
+        return await signals.code;
+      } finally {
+        await listener.close();
+        await stderr.flush();
+      }
     } finally {
-      await listener.close();
-      await stderr.flush();
+      await signals.cancel();
     }
   }
 
-  /// Completes with the exit code for the signal that ends this listener
-  /// (SPEC §11.5): 130 for SIGINT, 143 for SIGTERM.
+  /// Starts trapping the two signals that end a listener and hands back both
+  /// halves separately: `code` completes with the exit code for whichever
+  /// arrives (SPEC §11.5 — 130 for SIGINT, 143 for SIGTERM), and `cancel`
+  /// releases the watches.
+  ///
+  /// Split in two because *when* the watching starts matters and when the
+  /// waiting starts does not. The caller has to be trapping signals before it
+  /// binds anything, so that there is no instant where the socket exists and
+  /// the signal that would clean it up still kills this process outright; but
+  /// it can only usefully await the result afterwards. A single
+  /// watch-and-await call cannot do both, which is what left the window this
+  /// shape closes.
   ///
   /// A signal is a listener's *ordinary* way out, not an interruption of work
   /// in progress — there is no EOF to end it the way `--stdio` has, and no
@@ -183,13 +209,13 @@ class AgentCommand extends Command<int> {
   /// [AgentListener.close] running, and so the socket file not being left
   /// behind.
   ///
-  /// Both subscriptions are cancelled on the way out, including the one that
-  /// did not fire. A `ProcessSignal` subscription left alive keeps this
-  /// process's event loop non-empty, and `bin/dsync.dart` returns an exit
-  /// code rather than calling `exit()` — so a stray watcher is the difference
-  /// between this command ending and this command appearing to hang after it
-  /// has already done everything.
-  Future<int> _awaitSignal() async {
+  /// `cancel` releases both subscriptions, including the one that did not
+  /// fire, and the caller owes it on every path. A `ProcessSignal`
+  /// subscription left alive keeps this process's event loop non-empty, and
+  /// `bin/dsync.dart` returns an exit code rather than calling `exit()` — so
+  /// a stray watcher is the difference between this command ending and this
+  /// command appearing to hang after it has already done everything.
+  ({Future<int> code, Future<void> Function() cancel}) _watchStopSignals() {
     final stopped = Completer<int>();
     void stop(int exitCode) {
       if (!stopped.isCompleted) stopped.complete(exitCode);
@@ -199,13 +225,14 @@ class AgentCommand extends Command<int> {
       ProcessSignal.sigint.watch().listen((_) => stop(sigintExitCode)),
       ProcessSignal.sigterm.watch().listen((_) => stop(sigtermExitCode)),
     ];
-    try {
-      return await stopped.future;
-    } finally {
-      for (final subscription in subscriptions) {
-        await subscription.cancel();
-      }
-    }
+    return (
+      code: stopped.future,
+      cancel: () async {
+        for (final subscription in subscriptions) {
+          await subscription.cancel();
+        }
+      },
+    );
   }
 
   /// Builds the [LocalAgent] that serves the replica [spec] identifies (SPEC
