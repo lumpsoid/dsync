@@ -63,7 +63,25 @@ class AgentServer {
       final spec = replicaSpecFromJson(
         request.params['replica'] as Map<String, dynamic>,
       );
-      final agent = buildAgent(spec);
+      // Unguarded until SPEC §4.4: `buildAgent` could not fail before a
+      // paired network transport gave it something to reject. Now it can —
+      // `AgentListener.bindSecure` hands this a connection-scoped `buildAgent`
+      // that checks the caller's agreed replica roots before delegating to
+      // the head's own — so a rejection is caught here and answered the same
+      // way `_dispatch` answers every other failed operation, rather than
+      // propagating past this method with no reply ever sent. This is the
+      // one change task `d0e960` is allowed to make above `Channel`, and it
+      // is deliberately only around `buildAgent`: a failing `hello` keeps
+      // propagating exactly as it always has, because nothing asked for that
+      // to change and widening the guard would quietly convert every
+      // agent-construction failure into a reply instead of a failed session.
+      final Agent agent;
+      try {
+        agent = buildAgent(spec);
+      } catch (error) {
+        await _reply(channel, AgentFailure('$error'));
+        return;
+      }
       final info = await agent.hello();
       await _reply(channel, AgentSuccess(replicaInfoToJson(info)));
 
