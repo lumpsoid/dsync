@@ -93,8 +93,8 @@ DeviceIdentity generateDeviceIdentity({
   ]);
 
   return DeviceIdentity(
-    certificatePem: _pem('CERTIFICATE', certificate.encode()),
-    privateKeyPem: _pem('PRIVATE KEY', _pkcs8(privateKey, publicKey)),
+    certificatePem: pemEncode('CERTIFICATE', certificate.encode()),
+    privateKeyPem: pemEncode('PRIVATE KEY', _pkcs8(privateKey, publicKey)),
   );
 }
 
@@ -262,7 +262,17 @@ Uint8List _fixedLength(BigInt value, int length) {
   return out;
 }
 
-String _pem(String label, Uint8List der) {
+/// Wraps [der] as PEM under [label]: `-----BEGIN $label-----`, the base64
+/// body at 64 characters a line, `-----END $label-----`.
+///
+/// Exported for `enrolment_client.dart` (task 65fbb7): `PairingPayload`
+/// carries a peer's certificate as DER (see that file's doc comment on why),
+/// and the one place that DER needs to become PEM again is where it is
+/// stored as a `PairedDevice.certificatePem` — every other model in this
+/// project holds a certificate as PEM. That is assembly, the same direction
+/// this file already works in for its own two PEM blocks, not the parsing
+/// this file's own doc comment says it will never do.
+String pemEncode(String label, Uint8List der) {
   final body = base64.encode(der);
   final lines = <String>[];
   for (var i = 0; i < body.length; i += 64) {
