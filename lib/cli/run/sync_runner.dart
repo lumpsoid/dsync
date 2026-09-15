@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 import '../agents/connected_replicas.dart';
 import '../agents/local_addresses.dart';
@@ -69,6 +70,14 @@ class SyncRunner {
   /// [EffectiveOptions], and [resolveReplicaAgents] already use.
   final Map<String, String> environment;
 
+  /// Which SPEC §8.3 rule resolves a replica's state directory (archive,
+  /// lock, and — for a `peer://` side — the device identity and
+  /// paired-device store), threaded through for the same reason
+  /// [environment] is: `runDsyncCli` supplies the real host's answer
+  /// (`hostStateDirPlatform()`), a test supplies whichever of the five it
+  /// wants to exercise.
+  final StateDirPlatform platform;
+
   /// The process's current working directory, for resolving a relative
   /// local ad-hoc path (see [EffectiveOptions.forAdHoc]'s doc comment).
   final String workingDirectory;
@@ -104,6 +113,7 @@ class SyncRunner {
 
   SyncRunner({
     required this.environment,
+    required this.platform,
     required this.workingDirectory,
     this.localAddressLookup = systemLocalAddresses,
     this.sshExecutable = 'ssh',
@@ -182,6 +192,7 @@ class SyncRunner {
     final connected = await resolveReplicaAgents(
       effective,
       environment: environment,
+      platform: platform,
       localAddressLookup: sharedLocalAddressLookup,
       sshExecutable: sshExecutable,
     );

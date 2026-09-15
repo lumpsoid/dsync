@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -394,6 +395,7 @@ void main() {
         profileId: 'notes',
         side: 'a',
         environment: {'XDG_STATE_HOME': '/custom/state'},
+        platform: const LinuxStateDir(),
       );
       expect(path.path, '/custom/state/dsync/notes-a.jsonl');
     });
@@ -403,6 +405,7 @@ void main() {
         profileId: 'notes',
         side: 'b',
         environment: {'HOME': '/home/me'},
+        platform: const LinuxStateDir(),
       );
       expect(path.path, '/home/me/.local/state/dsync/notes-b.jsonl');
     });
@@ -415,6 +418,7 @@ void main() {
         side: 'a',
         rootPath: '/home/me/notes',
         environment: {'XDG_STATE_HOME': '/custom/state'},
+        platform: const LinuxStateDir(),
       );
       final header = store.snapshot().header;
       expect(header.profileId, 'notes');

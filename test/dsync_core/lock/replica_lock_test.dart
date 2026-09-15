@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -89,6 +90,7 @@ void main(List<String> args) async {
         profileId: 'notes',
         side: 'a',
         environment: {'XDG_STATE_HOME': '/custom/state'},
+        platform: const LinuxStateDir(),
       );
       expect(path.path, '/custom/state/dsync/notes-a.lock');
     });
@@ -98,6 +100,7 @@ void main(List<String> args) async {
         profileId: 'notes',
         side: 'b',
         environment: {'HOME': '/home/me'},
+        platform: const LinuxStateDir(),
       );
       expect(path.path, '/home/me/.local/state/dsync/notes-b.lock');
     });
@@ -109,6 +112,7 @@ void main(List<String> args) async {
         profileId: 'notes',
         side: 'a',
         environment: {'XDG_STATE_HOME': '/custom/state'},
+        platform: const LinuxStateDir(),
       );
       expect(lock.path, '/custom/state/dsync/notes-a.lock');
     });

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:dsync/cli/commands/pair_accept_command.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 import '../../support/buffer_sink.dart';
@@ -45,6 +46,7 @@ void main() {
       () async {
         final command = PairAcceptCommand(
           environment: environment,
+          platform: const LinuxStateDir(),
           out: BufferSink().sink,
           err: BufferSink().sink,
         );
@@ -70,6 +72,7 @@ void main() {
       () async {
         final command = PairAcceptCommand(
           environment: environment,
+          platform: const LinuxStateDir(),
           out: BufferSink().sink,
           err: BufferSink().sink,
         );
@@ -91,6 +94,7 @@ void main() {
     test('needs --name: naming is a deliberate operator choice', () async {
       final command = PairAcceptCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: BufferSink().sink,
         err: BufferSink().sink,
       );
@@ -104,6 +108,7 @@ void main() {
     test('needs exactly one positional argument', () async {
       final command = PairAcceptCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: BufferSink().sink,
         err: BufferSink().sink,
       );

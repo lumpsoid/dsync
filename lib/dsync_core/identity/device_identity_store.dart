@@ -56,10 +56,15 @@ class DeviceIdentityStore {
   DeviceIdentityStore(this._stateDir);
 
   /// Resolves the standard identity location under the state directory
-  /// (SPEC §8.3, §4.4). See [resolveStateDir].
+  /// (SPEC §8.3, §4.4). See [resolveStateDir]. [platform] is required, not
+  /// defaulted: every caller states which of SPEC §8.3's rules it means
+  /// rather than silently getting Linux's — see
+  /// `lib/cli/host_platform.dart` for where the CLI head's real answer
+  /// comes from.
   factory DeviceIdentityStore.forStateDir({
     Map<String, String> environment = const {},
-  }) => DeviceIdentityStore(Directory(resolveStateDir(environment)));
+    required StateDirPlatform platform,
+  }) => DeviceIdentityStore(Directory(resolveStateDir(environment, platform)));
 
   File get _certificateFile => File('${_stateDir.path}/identity.crt');
   File get _privateKeyFile => File('${_stateDir.path}/identity.key');

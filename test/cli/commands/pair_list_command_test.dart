@@ -6,6 +6,7 @@ import 'package:dsync/cli/commands/pair_list_command.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 import '../../support/buffer_sink.dart';
@@ -33,6 +34,7 @@ void main() {
       final err = BufferSink();
       final command = PairListCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: out.sink,
         err: err.sink,
       );
@@ -45,7 +47,10 @@ void main() {
     });
 
     test('human mode lists name, device id, address and roots', () async {
-      final store = PairedDeviceStore.forStateDir(environment: environment);
+      final store = PairedDeviceStore.forStateDir(
+        environment: environment,
+        platform: const LinuxStateDir(),
+      );
       final certificatePem = generateDeviceIdentity(commonName: 'phone')
           .certificatePem;
       final device = PairedDevice(
@@ -60,6 +65,7 @@ void main() {
       final out = BufferSink();
       final command = PairListCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: out.sink,
         err: BufferSink().sink,
       );
@@ -77,7 +83,10 @@ void main() {
     test(
       '--json emits one decodable JSON object per device on stdout',
       () async {
-        final store = PairedDeviceStore.forStateDir(environment: environment);
+        final store = PairedDeviceStore.forStateDir(
+          environment: environment,
+          platform: const LinuxStateDir(),
+        );
         final certA = generateDeviceIdentity(commonName: 'phone')
             .certificatePem;
         final certB = generateDeviceIdentity(commonName: 'laptop')
@@ -104,6 +113,7 @@ void main() {
         final out = BufferSink();
         final command = PairListCommand(
           environment: environment,
+          platform: const LinuxStateDir(),
           out: out.sink,
           err: BufferSink().sink,
         );
@@ -142,6 +152,7 @@ void main() {
     test('rejects a stray positional argument', () async {
       final command = PairListCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: BufferSink().sink,
         err: BufferSink().sink,
       );

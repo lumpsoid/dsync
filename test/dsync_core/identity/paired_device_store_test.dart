@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 /// Covers `PairedDeviceStore` (SPEC §4.4) against real temporary directories
@@ -450,6 +451,7 @@ void main() {
     test('resolves the standard path under XDG_STATE_HOME', () async {
       final store = PairedDeviceStore.forStateDir(
         environment: {'XDG_STATE_HOME': tempDir.path},
+        platform: const LinuxStateDir(),
       );
 
       await store.add(deviceA());

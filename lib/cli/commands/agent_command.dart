@@ -14,6 +14,7 @@ import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
 import '../exit_code.dart';
+import '../host_platform.dart';
 
 /// `dsync agent` (SPEC §11.1, §4.2, §11.3): the far end of a remote run, in
 /// one of its two transports.
@@ -253,6 +254,14 @@ class AgentCommand extends Command<int> {
   /// §11.4's run header, task ee190c) — the one thing the initiator cannot
   /// resolve for itself about a remote side (see
   /// `lib/cli/agents/connected_replicas.dart`'s doc comment).
+  ///
+  /// Same reasoning for `platform` (SPEC §8.3): this process is the far end
+  /// of a remote run, never handed one by an initiator that may disagree
+  /// with it about the host, so it reads its own real one via
+  /// `hostStateDirPlatform()` — the same single CLI-edge read
+  /// `lib/cli/dsync_cli.dart`'s `runDsyncCli` does for `SyncRunner`'s side of
+  /// a connection — rather than taking it as a constructor parameter the way
+  /// `environment` is not taken as one here either.
   Agent _buildAgent(ReplicaSpec spec) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);
@@ -264,17 +273,20 @@ class AgentCommand extends Command<int> {
         side: spec.side,
         rootPath: rootPath,
         environment: Platform.environment,
+        platform: hostStateDirPlatform(),
       ),
       replicaLock: ReplicaLock.forProfile(
         profileId: spec.profileId,
         side: spec.side,
         environment: Platform.environment,
+        platform: hostStateDirPlatform(),
       ),
       scanner: Scanner(jobs: spec.jobs),
       archivePath: resolveArchiveLogPath(
         profileId: spec.profileId,
         side: spec.side,
         environment: Platform.environment,
+        platform: hostStateDirPlatform(),
       ).path,
     );
   }

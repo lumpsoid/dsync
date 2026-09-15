@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/identity/enrolment_client.dart';
 import 'package:dsync/dsync_core/identity/enrolment_message.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 /// `dsync pair accept <payload>` (SPEC §4.4, §11.1, task bc68c7) — the other
 /// side of `dsync pair show`: decode the pasted or scanned payload, run
@@ -48,12 +49,17 @@ class PairAcceptCommand extends Command<int> {
   static const _optionAs = 'as';
 
   final Map<String, String> environment;
+  final StateDirPlatform platform;
   final IOSink out;
   final IOSink err;
 
-  PairAcceptCommand({required this.environment, IOSink? out, IOSink? err})
-    : out = out ?? stdout,
-      err = err ?? stderr {
+  PairAcceptCommand({
+    required this.environment,
+    required this.platform,
+    IOSink? out,
+    IOSink? err,
+  }) : out = out ?? stdout,
+       err = err ?? stderr {
     argParser
       ..addOption(
         _optionName,
@@ -103,9 +109,11 @@ class PairAcceptCommand extends Command<int> {
 
     final identity = await DeviceIdentityStore.forStateDir(
       environment: environment,
+      platform: platform,
     ).loadOrCreate(commonName: Platform.localHostname);
     final pairedDeviceStore = PairedDeviceStore.forStateDir(
       environment: environment,
+      platform: platform,
     );
 
     try {

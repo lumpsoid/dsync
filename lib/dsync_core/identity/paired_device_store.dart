@@ -81,11 +81,16 @@ class PairedDeviceStore {
   PairedDeviceStore(this._file);
 
   /// Resolves the standard paired-device store location under the state
-  /// directory (SPEC §8.3, §4.4). See [resolveStateDir].
+  /// directory (SPEC §8.3, §4.4). See [resolveStateDir]. [platform] is
+  /// required, not defaulted: every caller states which of SPEC §8.3's rules
+  /// it means rather than silently getting Linux's — see
+  /// `lib/cli/host_platform.dart` for where the CLI head's real answer
+  /// comes from.
   factory PairedDeviceStore.forStateDir({
     Map<String, String> environment = const {},
+    required StateDirPlatform platform,
   }) => PairedDeviceStore(
-    File('${resolveStateDir(environment)}/paired-devices.json'),
+    File('${resolveStateDir(environment, platform)}/paired-devices.json'),
   );
 
   /// Every currently paired device, freshly read from disk. `[]` when

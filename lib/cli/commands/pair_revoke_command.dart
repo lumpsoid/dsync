@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 /// `dsync pair revoke <name>` (SPEC §4.4, §11.1, task bc68c7).
 ///
@@ -25,12 +26,17 @@ class PairRevokeCommand extends Command<int> {
       'same command.';
 
   final Map<String, String> environment;
+  final StateDirPlatform platform;
   final IOSink out;
   final IOSink err;
 
-  PairRevokeCommand({required this.environment, IOSink? out, IOSink? err})
-    : out = out ?? stdout,
-      err = err ?? stderr;
+  PairRevokeCommand({
+    required this.environment,
+    required this.platform,
+    IOSink? out,
+    IOSink? err,
+  }) : out = out ?? stdout,
+       err = err ?? stderr;
 
   @override
   Future<int> run() async {
@@ -43,7 +49,10 @@ class PairRevokeCommand extends Command<int> {
     }
     final name = rest.single;
 
-    final store = PairedDeviceStore.forStateDir(environment: environment);
+    final store = PairedDeviceStore.forStateDir(
+      environment: environment,
+      platform: platform,
+    );
     final device = await store.byName(name);
     if (device == null) {
       // SPEC §11.5: fatal — the caller asked to revoke a specific device and

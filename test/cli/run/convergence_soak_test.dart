@@ -10,6 +10,7 @@ import 'package:dsync/cli/run/sync_runner.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 import '../../support/real_ssh.dart';
@@ -122,6 +123,7 @@ Future<void> main() async {
             profileId: effective.profileId,
             side: 'a',
             environment: environment,
+            platform: const LinuxStateDir(),
           ),
         ),
         b: _Replica(
@@ -132,6 +134,7 @@ Future<void> main() async {
             profileId: effective.profileId,
             side: 'b',
             environment: environment,
+            platform: const LinuxStateDir(),
           ),
         ),
         sync: () => runDsyncCli(
@@ -297,6 +300,7 @@ Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
             profileId: effective.profileId,
             side: 'a',
             environment: localEnvironment,
+            platform: const LinuxStateDir(),
           ),
         ),
         b: _Replica(
@@ -307,6 +311,7 @@ Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
             profileId: effective.profileId,
             side: 'b',
             environment: {'XDG_STATE_HOME': remoteStateHome},
+            platform: const LinuxStateDir(),
           ),
         ),
         // A fresh runner per round, so each round is its own session — which
@@ -314,6 +319,7 @@ Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
         // down show up as the next round failing to connect.
         sync: () => SyncRunner(
           environment: localEnvironment,
+          platform: const LinuxStateDir(),
           workingDirectory: tempDir.path,
           // No real lookup: the far side has to classify as remote (SPEC
           // §4.1) whatever this machine's interfaces say, or the run never

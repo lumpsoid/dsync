@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 import 'pair_accept_command.dart';
 import 'pair_grant_command.dart';
@@ -33,11 +34,12 @@ import 'pair_show_command.dart';
 ///   consequently always two steps; the second is not yet named as a
 ///   command (`bc68c7`'s ... to expose)" — this is that command).
 ///
-/// [environment] is threaded through to every subcommand exactly as
-/// `DsyncCommandRunner` threads it into `SyncRunner` — each subcommand
-/// resolves its own `DeviceIdentityStore`/`PairedDeviceStore` from it rather
-/// than from `Platform.environment` directly, so a test can point a pairing
-/// operation at an isolated `XDG_STATE_HOME` (the same convention
+/// [environment] and [platform] are threaded through to every subcommand
+/// exactly as `DsyncCommandRunner` threads them into `SyncRunner` — each
+/// subcommand resolves its own `DeviceIdentityStore`/`PairedDeviceStore` from
+/// them rather than from `Platform.environment`/`Platform.operatingSystem`
+/// directly, so a test can point a pairing operation at an isolated
+/// `XDG_STATE_HOME` and a chosen platform (the same convention
 /// `PairedDeviceStore.forStateDir`/`DeviceIdentityStore.forStateDir` already
 /// support). [out]/[err] default to the real [stdout]/[stderr] and are
 /// threaded the same way, for the same reason `JsonRenderer` takes them as
@@ -55,23 +57,49 @@ class PairCommand extends Command<int> {
 
   PairCommand({
     required Map<String, String> environment,
+    required StateDirPlatform platform,
     IOSink? out,
     IOSink? err,
   }) {
     addSubcommand(
-      PairShowCommand(environment: environment, out: out, err: err),
+      PairShowCommand(
+        environment: environment,
+        platform: platform,
+        out: out,
+        err: err,
+      ),
     );
     addSubcommand(
-      PairAcceptCommand(environment: environment, out: out, err: err),
+      PairAcceptCommand(
+        environment: environment,
+        platform: platform,
+        out: out,
+        err: err,
+      ),
     );
     addSubcommand(
-      PairListCommand(environment: environment, out: out, err: err),
+      PairListCommand(
+        environment: environment,
+        platform: platform,
+        out: out,
+        err: err,
+      ),
     );
     addSubcommand(
-      PairRevokeCommand(environment: environment, out: out, err: err),
+      PairRevokeCommand(
+        environment: environment,
+        platform: platform,
+        out: out,
+        err: err,
+      ),
     );
     addSubcommand(
-      PairGrantCommand(environment: environment, out: out, err: err),
+      PairGrantCommand(
+        environment: environment,
+        platform: platform,
+        out: out,
+        err: err,
+      ),
     );
   }
 }

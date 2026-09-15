@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 /// Covers the acceptance criteria task `3dae08` states explicitly: the
@@ -137,6 +138,7 @@ void main() {
     test('resolves the standard path under XDG_STATE_HOME', () async {
       final store = DeviceIdentityStore.forStateDir(
         environment: {'XDG_STATE_HOME': tempDir.path},
+        platform: const LinuxStateDir(),
       );
 
       await store.loadOrCreate(commonName: 'dsync-test');

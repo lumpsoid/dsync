@@ -1,11 +1,13 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 import 'commands/agent_command.dart';
 import 'commands/pair_command.dart';
 import 'commands/status_command.dart';
 import 'commands/sync_command.dart';
+import 'host_platform.dart';
 import 'run/sync_runner.dart';
 
 /// Parses [argv] and runs the requested dsync command, returning the
@@ -26,7 +28,13 @@ import 'run/sync_runner.dart';
 /// through as parameters rather than read from those globals directly deep
 /// inside [SyncRunner], so an end-to-end test can point a `sync`/`status`
 /// invocation at an isolated `XDG_STATE_HOME`/`XDG_CONFIG_HOME` and a fixed
-/// working directory without touching this process's real ones.
+/// working directory without touching this process's real ones. [platform]
+/// follows the same shape, defaulting to [hostStateDirPlatform]'s real read
+/// of `Platform.operatingSystem` — the one other real read this process does
+/// beyond `Platform.environment`, at the same single edge, so every
+/// `StateDirPlatform`-shaped parameter downstream ([SyncRunner], [PairCommand],
+/// every `pair` subcommand) can stay a plain value instead of re-deriving the
+/// host itself.
 ///
 /// `sync` and `status` each return their own exit code from `Command<int>`'s
 /// own `run()` (`lib/cli/commands/sync_command.dart`, `status_command.dart`),
@@ -55,10 +63,12 @@ Future<int> runDsyncCli(
   List<String> argv, {
   Map<String, String>? environment,
   String? workingDirectory,
+  StateDirPlatform? platform,
 }) async {
   final runner = DsyncCommandRunner(
     environment: environment ?? Platform.environment,
     workingDirectory: workingDirectory ?? Directory.current.path,
+    platform: platform ?? hostStateDirPlatform(),
   );
   try {
     return await runner.run(argv) ?? 0;
@@ -99,6 +109,7 @@ class DsyncCommandRunner extends CommandRunner<int> {
   DsyncCommandRunner({
     required Map<String, String> environment,
     required String workingDirectory,
+    required StateDirPlatform platform,
   }) : super(
          'dsync',
          'Bidirectional file sync between two replicas. See SPEC.md.',
@@ -106,11 +117,12 @@ class DsyncCommandRunner extends CommandRunner<int> {
     final runSync = SyncRunner(
       environment: environment,
       workingDirectory: workingDirectory,
+      platform: platform,
     ).run;
 
     addCommand(SyncCommand(runSync: runSync));
     addCommand(StatusCommand(runSync: runSync));
     addCommand(AgentCommand());
-    addCommand(PairCommand(environment: environment));
+    addCommand(PairCommand(environment: environment, platform: platform));
   }
 }

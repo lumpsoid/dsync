@@ -19,17 +19,21 @@ class ReplicaLock {
 
   /// Resolves the standard per-replica lock path (SPEC §4.3, §8.3):
   /// `$XDG_STATE_HOME/dsync/<profileId>-<side>.lock`, defaulting
-  /// `XDG_STATE_HOME` to `~/.local/state` when unset.
+  /// `XDG_STATE_HOME` to `~/.local/state` when unset. [platform] is required,
+  /// not defaulted: every caller states which of SPEC §8.3's rules it means
+  /// rather than silently getting Linux's — see [resolveLockPath].
   factory ReplicaLock.forProfile({
     required String profileId,
     required String side,
     Map<String, String> environment = const {},
+    required StateDirPlatform platform,
   }) {
     return ReplicaLock(
       resolveLockPath(
         profileId: profileId,
         side: side,
         environment: environment,
+        platform: platform,
       ),
     );
   }
@@ -72,11 +76,19 @@ class ReplicaLockHeldException implements Exception {
 }
 
 /// The standard per-replica lock path (SPEC §4.3, §8.3):
-/// `<state dir>/<profileId>-<side>.lock`. See [resolveStateDir].
+/// `<state dir>/<profileId>-<side>.lock`. See [resolveStateDir]. [platform]
+/// is required, not defaulted: a hardcoded default here would silently
+/// resolve the wrong directory on every platform but the one it names, which
+/// is worse than a compile error naming every caller that owes one — see
+/// `lib/cli/host_platform.dart` for where the CLI head's real answer comes
+/// from.
 File resolveLockPath({
   required String profileId,
   required String side,
   Map<String, String> environment = const {},
+  required StateDirPlatform platform,
 }) {
-  return File('${resolveStateDir(environment)}/$profileId-$side.lock');
+  return File(
+    '${resolveStateDir(environment, platform)}/$profileId-$side.lock',
+  );
 }

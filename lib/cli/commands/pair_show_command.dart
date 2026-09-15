@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/identity/enrolment_message.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 import '../agents/local_addresses.dart';
 import '../exit_code.dart';
@@ -84,6 +85,7 @@ class PairShowCommand extends Command<int> {
   static const _tokenRejectedReason = 'Enrolment token rejected.';
 
   final Map<String, String> environment;
+  final StateDirPlatform platform;
   final IOSink out;
   final IOSink err;
 
@@ -104,6 +106,7 @@ class PairShowCommand extends Command<int> {
 
   PairShowCommand({
     required this.environment,
+    required this.platform,
     IOSink? out,
     IOSink? err,
     this.port = 0,
@@ -119,9 +122,11 @@ class PairShowCommand extends Command<int> {
 
     final identity = await DeviceIdentityStore.forStateDir(
       environment: environment,
+      platform: platform,
     ).loadOrCreate(commonName: Platform.localHostname);
     final pairedDeviceStore = PairedDeviceStore.forStateDir(
       environment: environment,
+      platform: platform,
     );
 
     final token = generateEnrolmentToken();

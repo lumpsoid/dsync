@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 /// `dsync pair list` (SPEC §4.4, §11.1, §11.4, task bc68c7) — every device
 /// this installation has paired with. Read-only: this is the one `pair`
@@ -24,12 +25,17 @@ class PairListCommand extends Command<int> {
   static const _flagJson = 'json';
 
   final Map<String, String> environment;
+  final StateDirPlatform platform;
   final IOSink out;
   final IOSink err;
 
-  PairListCommand({required this.environment, IOSink? out, IOSink? err})
-    : out = out ?? stdout,
-      err = err ?? stderr {
+  PairListCommand({
+    required this.environment,
+    required this.platform,
+    IOSink? out,
+    IOSink? err,
+  }) : out = out ?? stdout,
+       err = err ?? stderr {
     argParser.addFlag(
       _flagJson,
       negatable: false,
@@ -45,6 +51,7 @@ class PairListCommand extends Command<int> {
 
     final devices = await PairedDeviceStore.forStateDir(
       environment: environment,
+      platform: platform,
     ).load();
 
     if (argResults!.flag(_flagJson)) {

@@ -5,6 +5,7 @@ import 'package:dsync/cli/commands/pair_grant_command.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 import '../../support/buffer_sink.dart';
@@ -26,7 +27,10 @@ void main() {
         'XDG_STATE_HOME': tempDir.path,
         'HOME': '${tempDir.path}/home',
       };
-      store = PairedDeviceStore.forStateDir(environment: environment);
+      store = PairedDeviceStore.forStateDir(
+        environment: environment,
+        platform: const LinuxStateDir(),
+      );
       device = PairedDevice(
         certificatePem: generateDeviceIdentity(commonName: 'phone')
             .certificatePem,
@@ -48,6 +52,7 @@ void main() {
         final out = BufferSink();
         final command = PairGrantCommand(
           environment: environment,
+          platform: const LinuxStateDir(),
           out: out.sink,
           err: BufferSink().sink,
         );
@@ -62,6 +67,7 @@ void main() {
         // contract (`PairedDeviceStore`'s class doc comment).
         final reloaded = await PairedDeviceStore.forStateDir(
           environment: environment,
+          platform: const LinuxStateDir(),
         ).load();
         expect(reloaded, hasLength(1));
         expect(reloaded.single.agreedReplicaRoots, {'/home/me/notes'});
@@ -75,6 +81,7 @@ void main() {
       () async {
         final command = PairGrantCommand(
           environment: environment,
+          platform: const LinuxStateDir(),
           out: BufferSink().sink,
           err: BufferSink().sink,
         );
@@ -94,6 +101,7 @@ void main() {
       final err = BufferSink();
       final command = PairGrantCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: BufferSink().sink,
         err: err.sink,
       );
@@ -111,6 +119,7 @@ void main() {
       await store.grant(device.deviceId, '/home/me/notes');
       final command = PairGrantCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: BufferSink().sink,
         err: BufferSink().sink,
       );
@@ -126,6 +135,7 @@ void main() {
     test('needs exactly two arguments', () async {
       PairGrantCommand freshCommand() => PairGrantCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: BufferSink().sink,
         err: BufferSink().sink,
       );

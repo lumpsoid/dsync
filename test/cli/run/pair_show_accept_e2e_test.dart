@@ -6,6 +6,7 @@ import 'package:dsync/cli/commands/pair_accept_command.dart';
 import 'package:dsync/cli/commands/pair_show_command.dart';
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 import '../../support/buffer_sink.dart';
@@ -44,6 +45,7 @@ void main() {
       final showErr = BufferSink();
       final showCommand = PairShowCommand(
         environment: serverEnvironment,
+        platform: const LinuxStateDir(),
         out: showOut.sink,
         err: showErr.sink,
         advertisableAddress: () async => '127.0.0.1',
@@ -65,6 +67,7 @@ void main() {
       final acceptErr = BufferSink();
       final acceptCommand = PairAcceptCommand(
         environment: clientEnvironment,
+        platform: const LinuxStateDir(),
         out: acceptOut.sink,
         err: acceptErr.sink,
       );
@@ -88,13 +91,16 @@ void main() {
       // pairing alone reaches nothing until `dsync pair grant` runs.
       final serverIdentity = await DeviceIdentityStore.forStateDir(
         environment: serverEnvironment,
+        platform: const LinuxStateDir(),
       ).loadOrCreate(commonName: 'server');
       final clientIdentity = await DeviceIdentityStore.forStateDir(
         environment: clientEnvironment,
+        platform: const LinuxStateDir(),
       ).loadOrCreate(commonName: 'client');
 
       final onClient = await PairedDeviceStore.forStateDir(
         environment: clientEnvironment,
+        platform: const LinuxStateDir(),
       ).byName('desktop');
       expect(onClient, isNotNull);
       expect(onClient!.deviceId, serverIdentity.deviceId);
@@ -102,6 +108,7 @@ void main() {
 
       final onServer = await PairedDeviceStore.forStateDir(
         environment: serverEnvironment,
+        platform: const LinuxStateDir(),
       ).byDeviceId(clientIdentity.deviceId);
       expect(onServer, isNotNull);
       expect(onServer!.agreedReplicaRoots, isEmpty);

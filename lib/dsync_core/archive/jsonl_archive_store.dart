@@ -51,18 +51,22 @@ class JsonlArchiveStore implements ArchiveStore {
 
   /// Resolves the standard per-replica log location (SPEC §8.1, §8.3):
   /// `$XDG_STATE_HOME/dsync/<profileId>-<side>.jsonl`, defaulting
-  /// `XDG_STATE_HOME` to `~/.local/state` when unset.
+  /// `XDG_STATE_HOME` to `~/.local/state` when unset. [platform] is required,
+  /// not defaulted: every caller states which of SPEC §8.3's rules it means
+  /// rather than silently getting Linux's — see [resolveArchiveLogPath].
   factory JsonlArchiveStore.forProfile({
     required String profileId,
     required String side,
     required String rootPath,
     Map<String, String> environment = const {},
+    required StateDirPlatform platform,
   }) {
     return JsonlArchiveStore(
       resolveArchiveLogPath(
         profileId: profileId,
         side: side,
         environment: environment,
+        platform: platform,
       ),
       ArchiveHeader(
         schemaVersion: schemaVersion,
@@ -264,11 +268,19 @@ class JsonlArchiveStore implements ArchiveStore {
 }
 
 /// The standard per-replica archive log path (SPEC §8.1, §8.3):
-/// `<state dir>/<profileId>-<side>.jsonl`. See [resolveStateDir].
+/// `<state dir>/<profileId>-<side>.jsonl`. See [resolveStateDir]. [platform]
+/// is required, not defaulted: a hardcoded default here would silently
+/// resolve the wrong directory on every platform but the one it names, which
+/// is worse than a compile error naming every caller that owes one — see
+/// `lib/cli/host_platform.dart` for where the CLI head's real answer comes
+/// from.
 File resolveArchiveLogPath({
   required String profileId,
   required String side,
   Map<String, String> environment = const {},
+  required StateDirPlatform platform,
 }) {
-  return File('${resolveStateDir(environment)}/$profileId-$side.jsonl');
+  return File(
+    '${resolveStateDir(environment, platform)}/$profileId-$side.jsonl',
+  );
 }

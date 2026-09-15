@@ -18,6 +18,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 import 'local_addresses.dart';
 import 'replica_unreachable_exception.dart';
@@ -78,7 +79,11 @@ import 'replica_unreachable_exception.dart';
 ///
 /// [environment] is a parameter rather than read from the process, matching
 /// this codebase's convention (`resolveStateDir`, `JsonlArchiveStore.forProfile`,
-/// `EffectiveOptions`). [localAddressLookup] defaults to
+/// `EffectiveOptions`). [platform] is the same convention for SPEC §8.3's
+/// platform rule — required, not defaulted, for the reason `resolveStateDir`'s
+/// own callers all require it now: a default here would silently resolve
+/// every non-Linux host's archive, lock, device identity and paired-device
+/// store to the wrong directory. [localAddressLookup] defaults to
 /// [systemLocalAddresses] — the one piece of real I/O this needs — so a test
 /// can drive both localities without a network. [sshExecutable] is the `ssh`
 /// binary to spawn for a remote side (`SshChannel.connect`'s own
@@ -87,6 +92,7 @@ import 'replica_unreachable_exception.dart';
 Future<ConnectedReplicas> resolveReplicaAgents(
   EffectiveOptions options, {
   Map<String, String> environment = const {},
+  required StateDirPlatform platform,
   Future<Set<String>> Function() localAddressLookup = systemLocalAddresses,
   String sshExecutable = 'ssh',
 }) async {
@@ -111,6 +117,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
     profileId: options.profileId,
     jobs: jobs,
     environment: environment,
+    platform: platform,
     localAddresses: localAddresses,
     sshExecutable: sshExecutable,
   );
@@ -124,6 +131,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
       profileId: options.profileId,
       jobs: jobs,
       environment: environment,
+      platform: platform,
       localAddresses: localAddresses,
       sshExecutable: sshExecutable,
     );
@@ -152,6 +160,7 @@ Future<_ResolvedSide> _resolveSide({
   required String profileId,
   required int jobs,
   required Map<String, String> environment,
+  required StateDirPlatform platform,
   required Set<String> localAddresses,
   required String sshExecutable,
 }) {
@@ -159,11 +168,13 @@ Future<_ResolvedSide> _resolveSide({
     profileId: profileId,
     side: side,
     environment: environment,
+    platform: platform,
   ).path;
   final lockPath = resolveLockPath(
     profileId: profileId,
     side: side,
     environment: environment,
+    platform: platform,
   ).path;
 
   return switch (location.classify(localAddresses: localAddresses)) {
@@ -173,6 +184,7 @@ Future<_ResolvedSide> _resolveSide({
       profileId: profileId,
       jobs: jobs,
       environment: environment,
+      platform: platform,
       archivePath: archivePath,
       lockPath: lockPath,
     ),
@@ -196,6 +208,7 @@ Future<_ResolvedSide> _resolveSide({
         profileId: profileId,
         jobs: jobs,
         environment: environment,
+        platform: platform,
         archivePath: archivePath,
         lockPath: lockPath,
       ),
@@ -219,6 +232,7 @@ Future<_ResolvedSide> _resolveLocalSide({
   required String profileId,
   required int jobs,
   required Map<String, String> environment,
+  required StateDirPlatform platform,
   required String archivePath,
   required String lockPath,
 }) async {
@@ -230,11 +244,13 @@ Future<_ResolvedSide> _resolveLocalSide({
       side: side,
       rootPath: rootPath,
       environment: environment,
+      platform: platform,
     ),
     replicaLock: ReplicaLock.forProfile(
       profileId: profileId,
       side: side,
       environment: environment,
+      platform: platform,
     ),
     scanner: Scanner(jobs: jobs),
     // So this side's own `hello` (SPEC §4.2) reports it back as its
@@ -403,6 +419,7 @@ Future<_ResolvedSide> _resolvePeerSide({
   required String profileId,
   required int jobs,
   required Map<String, String> environment,
+  required StateDirPlatform platform,
   required String archivePath,
   required String lockPath,
 }) async {
@@ -411,6 +428,7 @@ Future<_ResolvedSide> _resolvePeerSide({
 
   final pairedDeviceStore = PairedDeviceStore.forStateDir(
     environment: environment,
+    platform: platform,
   );
   final device = await pairedDeviceStore.byName(deviceName);
   if (device == null) {
@@ -422,9 +440,10 @@ Future<_ResolvedSide> _resolvePeerSide({
 
   // The client credential mutual TLS requires (SPEC §4.4) — the same
   // identity `dsync pair show`/`accept` load or generate, keyed by the same
-  // state directory `environment` resolves.
+  // state directory `environment`/`platform` resolves.
   final ownIdentity = await DeviceIdentityStore.forStateDir(
     environment: environment,
+    platform: platform,
   ).loadOrCreate(commonName: Platform.localHostname);
 
   final address = device.lastKnownAddress;

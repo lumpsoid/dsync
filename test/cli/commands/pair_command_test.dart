@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:dsync/cli/commands/pair_command.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 /// [PairCommand] is a branch command (SPEC §4.4, §11.1, task bc68c7) — see
@@ -28,11 +29,18 @@ void main() {
     });
 
     CommandRunner<int> buildRunner() =>
-        CommandRunner<int>('dsync', 'test runner')
-          ..addCommand(PairCommand(environment: environment));
+        CommandRunner<int>('dsync', 'test runner')..addCommand(
+          PairCommand(
+            environment: environment,
+            platform: const LinuxStateDir(),
+          ),
+        );
 
     test('registers all five subcommands from SPEC §4.4', () {
-      final pair = PairCommand(environment: environment);
+      final pair = PairCommand(
+        environment: environment,
+        platform: const LinuxStateDir(),
+      );
       expect(
         pair.subcommands.keys,
         containsAll(['show', 'accept', 'list', 'revoke', 'grant']),

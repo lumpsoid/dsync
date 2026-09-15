@@ -4,6 +4,7 @@ import 'package:dsync/cli/options/cli_options.dart';
 import 'package:dsync/cli/options/sync_target.dart';
 import 'package:dsync/cli/presenter/interactive_presenter.dart';
 import 'package:dsync/cli/run/sync_runner.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 /// A synchronous, in-memory stand-in for [IOSink], so the legend and
@@ -66,6 +67,7 @@ void main() {
     SyncRunner runnerScripted(List<String> script) {
       return SyncRunner(
         environment: environment,
+        platform: const LinuxStateDir(),
         workingDirectory: tempDir.path,
         buildInteractivePresenter: () => InteractivePresenter(
           lines: Stream.fromIterable(script),

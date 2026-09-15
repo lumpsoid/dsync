@@ -16,6 +16,7 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 /// Drives the real `dsync agent --stdio` command as a child process, over
@@ -112,6 +113,7 @@ void main() {
           profileId: 'agent-stdio-test',
           side: 'a',
           environment: {'XDG_STATE_HOME': stateHome.path},
+          platform: const LinuxStateDir(),
         ).path,
       );
 

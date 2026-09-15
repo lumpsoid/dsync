@@ -65,6 +65,7 @@ void main() {
       final result = await resolveReplicaAgents(
         optionsFor(Location.parse(rootA.path), Location.parse(rootB.path)),
         environment: environment,
+        platform: const LinuxStateDir(),
         // Never consulted: neither location has a host, so classify()
         // never needs this — proof nothing here reaches for the network.
         localAddressLookup: () => Future.error(
@@ -102,6 +103,7 @@ void main() {
           profileId: 'test-profile',
           side: 'a',
           environment: environment,
+          platform: const LinuxStateDir(),
         ).path,
       );
       expect(
@@ -110,6 +112,7 @@ void main() {
           profileId: 'test-profile',
           side: 'b',
           environment: environment,
+          platform: const LinuxStateDir(),
         ).path,
       );
       expect(
@@ -118,6 +121,7 @@ void main() {
           profileId: 'test-profile',
           side: 'a',
           environment: environment,
+          platform: const LinuxStateDir(),
         ).path,
       );
       expect(
@@ -126,6 +130,7 @@ void main() {
           profileId: 'test-profile',
           side: 'b',
           environment: environment,
+          platform: const LinuxStateDir(),
         ).path,
       );
     });
@@ -143,6 +148,7 @@ void main() {
             Location.parse(rootB.path),
           ),
           environment: stateEnv,
+          platform: const LinuxStateDir(),
           localAddressLookup: () async => {'this-host'},
         );
 
@@ -168,6 +174,7 @@ void main() {
             Location.parse('me@foreign-host:/sdcard/notes'),
           ),
           environment: stateEnv,
+          platform: const LinuxStateDir(),
           localAddressLookup: () async => {'this-host'},
           // Never actually spoken to (this test never calls `hello`); it
           // only has to exist so `Process.start` succeeds.
@@ -207,6 +214,7 @@ void main() {
           ),
         ),
         environment: stateEnv,
+        platform: const LinuxStateDir(),
         // Says the destination is this machine. The plain form would run
         // it in-process on that answer; the ssh:// form does not ask.
         localAddressLookup: () async => {'unix/run/ssh-unix-local/socket'},
@@ -253,6 +261,7 @@ void main() {
           sshB: const SshAccess(options: ['-i', 'key'], command: 'elsewhere'),
         ),
         environment: stateEnv,
+        platform: const LinuxStateDir(),
         localAddressLookup: () => Future.error(
           StateError(
             'a unix:// location declares its own '
@@ -289,6 +298,7 @@ void main() {
               Location.parse('unix://$stale:/srv/notes'),
             ),
             environment: stateEnv,
+            platform: const LinuxStateDir(),
           ),
           throwsA(
             isA<ReplicaUnreachableException>()
@@ -323,9 +333,10 @@ void main() {
     // before binding (SPEC §4.4: `bindSecure`'s trust anchors are fixed at
     // bind time), and get back the exact same one `resolveReplicaAgents`
     // goes on to load.
-    Future<DeviceIdentity> ownIdentity() =>
-        DeviceIdentityStore.forStateDir(environment: stateEnv)
-            .loadOrCreate(commonName: 'test-initiator');
+    Future<DeviceIdentity> ownIdentity() => DeviceIdentityStore.forStateDir(
+      environment: stateEnv,
+      platform: const LinuxStateDir(),
+    ).loadOrCreate(commonName: 'test-initiator');
 
     Future<AgentListener> bindRemoteListener() => AgentListener.bindSecure(
       InternetAddress.loopbackIPv4,
@@ -346,7 +357,10 @@ void main() {
     }
 
     Future<void> pairLocally(String name, PeerAddress address) =>
-        PairedDeviceStore.forStateDir(environment: stateEnv).add(
+        PairedDeviceStore.forStateDir(
+          environment: stateEnv,
+          platform: const LinuxStateDir(),
+        ).add(
           PairedDevice(
             certificatePem: remoteIdentity.certificatePem,
             name: name,
@@ -367,6 +381,7 @@ void main() {
             Location.parse('peer://phone:/sdcard/notes'),
           ),
           environment: stateEnv,
+          platform: const LinuxStateDir(),
           localAddressLookup: () => Future.error(
             StateError(
               'a peer:// location declares its own locality (SPEC §4.1)',
@@ -411,7 +426,7 @@ void main() {
       await pairLocally('phone', PeerAddress(host: '127.0.0.1', port: port));
 
       final storeFile = File(
-        '${resolveStateDir(stateEnv)}/paired-devices.json',
+        '${resolveStateDir(stateEnv, const LinuxStateDir())}/paired-devices.json',
       );
       // A write only `recordConnection` (or another store mutation this
       // test never calls again) could produce — the decisive half of "a
@@ -427,6 +442,7 @@ void main() {
           Location.parse('peer://phone:/srv/notes'),
         ),
         environment: stateEnv,
+        platform: const LinuxStateDir(),
         localAddressLookup: () => Future.error(
           StateError(
             'a peer:// location declares its own locality (SPEC §4.1)',
@@ -449,6 +465,7 @@ void main() {
       );
       final recorded = await PairedDeviceStore.forStateDir(
         environment: stateEnv,
+        platform: const LinuxStateDir(),
       ).byName('phone');
       expect(recorded, isNotNull);
       expect(recorded!.lastKnownAddress.host, '127.0.0.1');
@@ -481,6 +498,7 @@ void main() {
             Location.parse('peer://phone:/srv/notes'),
           ),
           environment: stateEnv,
+          platform: const LinuxStateDir(),
           localAddressLookup: () => Future.error(
             StateError(
               'a peer:// location declares its own locality (SPEC §4.1)',
@@ -534,6 +552,7 @@ void main() {
             Location.parse('peer://phone:/srv/notes'),
           ),
           environment: stateEnv,
+          platform: const LinuxStateDir(),
           localAddressLookup: () => Future.error(
             StateError(
               'a peer:// location declares its own locality (SPEC §4.1)',
@@ -594,6 +613,7 @@ void main() {
           Location.parse('me@foreign-host:/sdcard/notes'),
         ),
         environment: stateEnv,
+        platform: const LinuxStateDir(),
         localAddressLookup: () async => {},
         sshExecutable: script.path,
       );
@@ -635,6 +655,7 @@ void main() {
           Location.parse('me@foreign-host:/sdcard/notes'),
         ),
         environment: stateEnv,
+        platform: const LinuxStateDir(),
         localAddressLookup: () async => {},
         sshExecutable: script.path,
       );
@@ -672,6 +693,7 @@ void main() {
               Location.parse('me@foreign-host:/sdcard/notes'),
             ),
             environment: stateEnv,
+            platform: const LinuxStateDir(),
             localAddressLookup: () async => {},
             sshExecutable: '${tempDir.path}/no-such-executable',
           ),
@@ -708,7 +730,8 @@ void main() {
               Location.parse('me@side-a-host:/notes'),
               Location.parse('~/notes'),
             ),
-            environment: stateEnv, // has no HOME: side b's expandedPath throws
+            environment: stateEnv,
+            platform: const LinuxStateDir(), // has no HOME: side b's expandedPath throws
             localAddressLookup: () async => {},
             sshExecutable: script.path,
           ),

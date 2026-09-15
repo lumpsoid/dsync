@@ -5,6 +5,7 @@ import 'package:dsync/cli/commands/pair_revoke_command.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 import '../../support/buffer_sink.dart';
@@ -25,7 +26,10 @@ void main() {
         'dsync_pair_revoke_test_',
       );
       environment = {'XDG_STATE_HOME': tempDir.path};
-      store = PairedDeviceStore.forStateDir(environment: environment);
+      store = PairedDeviceStore.forStateDir(
+        environment: environment,
+        platform: const LinuxStateDir(),
+      );
       device = PairedDevice(
         certificatePem: generateDeviceIdentity(commonName: 'phone')
             .certificatePem,
@@ -45,6 +49,7 @@ void main() {
       final out = BufferSink();
       final command = PairRevokeCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: out.sink,
         err: BufferSink().sink,
       );
@@ -62,6 +67,7 @@ void main() {
         final err = BufferSink();
         final command = PairRevokeCommand(
           environment: environment,
+          platform: const LinuxStateDir(),
           out: BufferSink().sink,
           err: err.sink,
         );
@@ -81,6 +87,7 @@ void main() {
     test('needs exactly one argument', () async {
       PairRevokeCommand freshCommand() => PairRevokeCommand(
         environment: environment,
+        platform: const LinuxStateDir(),
         out: BufferSink().sink,
         err: BufferSink().sink,
       );
