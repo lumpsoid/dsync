@@ -272,15 +272,27 @@ class HumanRenderer {
     }
   }
 
+  /// One side of the run header: where this replica is, and how it is being
+  /// reached.
+  ///
+  /// The transport is read off the location's own [LocationScheme] rather
+  /// than inferred from [ReplicaDiagnostics.locality], which only says
+  /// local-or-not and would have gone on saying `ssh` for a socket replica.
+  /// That is not the re-derivation [ReplicaDiagnostics.locality]'s own doc
+  /// comment warns against: a scheme is a fact the user typed, not a
+  /// diagnostic that happens to correlate.
   void _renderReplicaRow(String side, ReplicaDiagnostics? diagnostics) {
     if (diagnostics == null) return;
-    final locality = diagnostics.locality == Locality.inProcess
+    final transport = diagnostics.locality == Locality.inProcess
         ? 'local'
-        : 'ssh';
+        : switch (diagnostics.location.scheme) {
+            LocationScheme.unix => 'socket',
+            LocationScheme.ssh || LocationScheme.inferred => 'ssh',
+          };
     // `Location.toString` spells a location back the way SPEC §2 writes it,
     // unexpanded and uncanonicalized, so a mistyped one reads as the mistake
-    // it is — including the `ssh://` prefix that decided this row says `ssh`.
-    out.writeln('$side  ${diagnostics.location}  $locality');
+    // it is — including the scheme prefix that decided what this row says.
+    out.writeln('$side  ${diagnostics.location}  $transport');
   }
 
   /// One shared "last synced" line when both sides agree to the minute,

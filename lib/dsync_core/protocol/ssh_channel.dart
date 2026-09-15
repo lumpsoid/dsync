@@ -10,7 +10,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 ///
 /// [host] is handed to ssh exactly as given and is never examined here — it
 /// may be a hostname, a `~/.ssh/config` alias, or a socket destination like
-/// `unix/run/ssh-unix-local/socket` (see `Location.sshScheme`). Resolving it
+/// `unix/run/ssh-unix-local/socket` (see `LocationScheme.ssh`). Resolving it
 /// is ssh's job, and duplicating any part of that resolution is how this
 /// tool would come to disagree with the connection it just opened.
 ///
@@ -40,8 +40,10 @@ List<String> sshArgsFor({
 /// Spawns the system `ssh` binary and wraps its stdin/stdout as the byte
 /// stream; `ssh`'s stderr is not part of the protocol and is surfaced
 /// separately on [stderrLines] for diagnostics. Kept behind the [Channel]
-/// interface so a Dart SSH client or a socket can replace it later, for the
-/// Flutter head (SPEC §16).
+/// interface, which is what let `SocketChannel` join it rather than replace
+/// it — a head with no system `ssh` to spawn has a transport of its own now
+/// (SPEC §4.2), and this one is still the right answer wherever ssh already
+/// works.
 class SshChannel implements Channel {
   /// How many stderr lines are kept for [recentStderr]. Bounded so a chatty
   /// remote cannot grow this without limit over a long run.

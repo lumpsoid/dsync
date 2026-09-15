@@ -1,35 +1,74 @@
 /// Where a [Location]'s agent runs, per SPEC §4.1.
 enum Locality { inProcess, remote }
 
-/// A parsed replica location: a local path, `user@host:path`, or
-/// `ssh://[user@]destination:path` (SPEC §2).
+/// How a [Location] names the transport that reaches its replica (SPEC §2,
+/// §4.2).
+///
+/// A scheme is an explicit "hands off, this one is for that transport": it
+/// takes the destination out of the colon-before-slash rule that can only
+/// describe hostname-shaped strings, and it takes locality out of inference
+/// (see [Location.classify]). Which is why only the schemeless form ever
+/// consults this machine's addresses.
+enum LocationScheme {
+  /// No scheme: a bare local path, or `user@host:path`. The only form whose
+  /// locality is inferred (SPEC §4.1), and the only one whose remote case is
+  /// reached over `ssh` without having said so.
+  inferred(''),
+
+  /// `ssh://[user@]destination:path` — everything between the scheme and the
+  /// first `:` is handed to `ssh` as its destination, verbatim (SPEC §2).
+  ssh('ssh://'),
+
+  /// `unix://<socket-path>:<replica-path>` — everything between the scheme
+  /// and the first `:` is the path of a unix socket a `dsync agent --listen`
+  /// is already bound to (SPEC §2, §4.2).
+  unix('unix://');
+
+  const LocationScheme(this.prefix);
+
+  /// The literal prefix a location of this scheme is written with — empty
+  /// for [inferred], which has none.
+  final String prefix;
+}
+
+/// A parsed replica location: a local path, `user@host:path`,
+/// `ssh://[user@]destination:path`, or `unix://<socket-path>:<replica-path>`
+/// (SPEC §2).
 ///
 /// Parsed at construction — [FormatException] is thrown for anything else,
 /// so an invalid location can never exist downstream.
 class Location {
-  /// The prefix that hands the destination to `ssh` unexamined (SPEC §2).
-  static const sshScheme = 'ssh://';
-
   final String? user;
 
-  /// The host, or — under [explicitSsh] — whatever `ssh` is to be given as
-  /// its destination: a `~/.ssh/config` alias, `unix/run/ssh-unix-local/socket`,
-  /// `.host`, a name that means something only to ssh.
+  /// Where the agent for this location is, in whatever terms [scheme] means
+  /// it:
+  /// - [LocationScheme.inferred] — the host, compared against this machine's
+  ///   own addresses by [classify];
+  /// - [LocationScheme.ssh] — whatever `ssh` is to be given as its
+  ///   destination: a `~/.ssh/config` alias, `unix/run/ssh-unix-local/socket`,
+  ///   `.host`, a name that means something only to ssh;
+  /// - [LocationScheme.unix] — the filesystem path of the socket to connect
+  ///   to, also reachable as [socketPath].
+  ///
+  /// One field rather than one per scheme: every non-local location has
+  /// exactly one "where", and [scheme] already says how to read it. A second
+  /// nullable field per transport would make "both set" and "neither set"
+  /// representable and meaningless.
+  ///
+  /// `null` only for a bare local path, which is what [classify] reads as
+  /// in-process.
   final String? host;
 
   final String path;
 
-  /// Whether this location was written in the [sshScheme] form, which says
-  /// "this one is for ssh, hands off": [host] is then ssh's own destination
-  /// rather than a hostname inferred from the shape of the string, and
-  /// [classify] stops inferring locality from it (SPEC §4.1).
-  final bool explicitSsh;
+  /// Which of SPEC §2's forms this location was written in.
+  final LocationScheme scheme;
 
   const Location._({
     this.user,
     this.host,
     required this.path,
-    this.explicitSsh = false,
+    this.scheme = LocationScheme.inferred,
   });
 
   /// Splits [raw] into its parts.
@@ -39,13 +78,19 @@ class Location {
   /// be a local path while `phone:/sdcard/notes` is a remote one, and it is
   /// why a bare `notes` is a relative path rather than a host with no path.
   ///
-  /// That rule can only describe destinations shaped like a hostname, and
-  /// `ssh` reaches plenty that are not. [sshScheme] is the way out: everything
-  /// ssh would accept is addressable through it, and nothing about it is
-  /// inferred here. See [_parseSshDestination].
+  /// That rule can only describe destinations shaped like a hostname, and a
+  /// transport reaches plenty that are not — `ssh` a config alias or a
+  /// socket-activated sshd, a listening agent a filesystem path. A
+  /// [LocationScheme] prefix is the way out, and nothing about what follows
+  /// one is inferred here. See [_parseSshDestination] and [_parseUnixSocket].
   factory Location.parse(String raw) {
     if (raw.isEmpty) throw FormatException('Empty location', raw);
-    if (raw.startsWith(sshScheme)) return _parseSshDestination(raw);
+    if (raw.startsWith(LocationScheme.ssh.prefix)) {
+      return _parseSshDestination(raw);
+    }
+    if (raw.startsWith(LocationScheme.unix.prefix)) {
+      return _parseUnixSocket(raw);
+    }
 
     final colonIndex = raw.indexOf(':');
     final slashIndex = raw.indexOf('/');
@@ -87,12 +132,13 @@ class Location {
   /// both forms — and since [toString] and `sshArgsFor` put it straight back,
   /// the destination ssh is handed is the one that was typed.
   static Location _parseSshDestination(String raw) {
-    final rest = raw.substring(sshScheme.length);
+    final rest = raw.substring(LocationScheme.ssh.prefix.length);
     final separator = rest.indexOf(':');
     if (separator == -1) {
       throw FormatException(
-        '"$sshScheme" needs a ":" between the ssh destination and the path, '
-        'as in "${sshScheme}alias:/srv/notes"',
+        '"${LocationScheme.ssh.prefix}" needs a ":" between the ssh '
+        'destination and the path, as in '
+        '"${LocationScheme.ssh.prefix}alias:/srv/notes"',
         raw,
       );
     }
@@ -105,8 +151,60 @@ class Location {
     if (host.isEmpty || path.isEmpty || (user != null && user.isEmpty)) {
       throw FormatException('Invalid location', raw);
     }
-    return Location._(user: user, host: host, path: path, explicitSsh: true);
+    return Location._(
+      user: user,
+      host: host,
+      path: path,
+      scheme: LocationScheme.ssh,
+    );
   }
+
+  /// Splits `unix://<socket-path>:<replica-path>`.
+  ///
+  /// The same first-colon rule [_parseSshDestination] uses, for the same
+  /// reason and then some: both halves here are filesystem paths full of
+  /// slashes, so a `/` could not possibly separate them. A socket path that
+  /// itself contains a `:` is therefore not addressable — the same limit the
+  /// `ssh://` destination has had since SPEC §2, and the price of one rule
+  /// instead of two.
+  ///
+  /// No `user@` is split off, unlike [_parseSshDestination]: there is no user
+  /// to name. Connecting is gated by whether this process can open the socket
+  /// at all, which is the filesystem's answer and not a credential anyone
+  /// types (SPEC §4.2) — so an `@` anywhere in the socket path is just a
+  /// character in a path.
+  ///
+  /// The socket path is used exactly as written, with no `~` or `$VAR`
+  /// expansion: a shell already expands an unquoted `~`, and the paths this
+  /// form is for (`$XDG_RUNTIME_DIR/...`) are absolute. A profile (SPEC §12)
+  /// has to spell it out.
+  static Location _parseUnixSocket(String raw) {
+    final rest = raw.substring(LocationScheme.unix.prefix.length);
+    final separator = rest.indexOf(':');
+    if (separator == -1) {
+      throw FormatException(
+        '"${LocationScheme.unix.prefix}" needs a ":" between the socket path '
+        'and the replica path, as in '
+        '"${LocationScheme.unix.prefix}/run/user/1000/dsync.sock:/srv/notes"',
+        raw,
+      );
+    }
+
+    final socketPath = rest.substring(0, separator);
+    final path = rest.substring(separator + 1);
+    if (socketPath.isEmpty || path.isEmpty) {
+      throw FormatException('Invalid location', raw);
+    }
+    return Location._(
+      host: socketPath,
+      path: path,
+      scheme: LocationScheme.unix,
+    );
+  }
+
+  /// The unix socket a `dsync agent --listen` is serving this replica on, or
+  /// `null` when this location is not a `unix://` one (SPEC §2, §4.2).
+  String? get socketPath => scheme == LocationScheme.unix ? host : null;
 
   /// [path] with a leading `~` replaced by `HOME` from [environment].
   ///
@@ -130,15 +228,16 @@ class Location {
   /// Fetching that set is I/O and is the caller's job; this method only
   /// decides from facts already in hand.
   ///
-  /// An [explicitSsh] location is remote by declaration, and no address is
-  /// consulted for it. Inference is exactly what the form opts out of: a
+  /// A location with a [scheme] is remote by declaration, and no address is
+  /// consulted for it. Inference is exactly what a scheme opts out of: an ssh
   /// config alias can point anywhere — including back at this machine — and
-  /// a unix socket or a `.host` name has no address to compare at all, so
-  /// there is nothing here honest enough to guess with. It also makes
-  /// "reach this machine through its own ssh" a thing a user can ask for,
+  /// neither an ssh unix destination, a `.host` name, nor a socket path has
+  /// an address to compare at all, so there is nothing here honest enough to
+  /// guess with. It also makes "reach this machine through its own ssh"
+  /// — or through a listening agent of its own — a thing a user can ask for,
   /// rather than something quietly turned back into an in-process run.
   Locality classify({Set<String> localAddresses = const {}}) {
-    if (explicitSsh) return Locality.remote;
+    if (scheme != LocationScheme.inferred) return Locality.remote;
     final host = this.host;
     if (host == null || host == 'localhost' || localAddresses.contains(host)) {
       return Locality.inProcess;
@@ -148,11 +247,12 @@ class Location {
 
   /// Whether [classify] has anything to ask [localAddresses] about.
   ///
-  /// False for a bare local path (no host to compare) and for an
-  /// [explicitSsh] destination (remote whatever the answer). Callers check
-  /// this before paying for the one piece of real I/O the decision would
-  /// otherwise cost — `systemLocalAddresses`, and so `NetworkInterface.list()`.
-  bool get consultsLocalAddresses => host != null && !explicitSsh;
+  /// False for a bare local path (no host to compare) and for any location
+  /// with a [scheme] (remote whatever the answer). Callers check this before
+  /// paying for the one piece of real I/O the decision would otherwise cost —
+  /// `systemLocalAddresses`, and so `NetworkInterface.list()`.
+  bool get consultsLocalAddresses =>
+      host != null && scheme == LocationScheme.inferred;
 
   /// This location as SPEC §2 spells it, in the form it was parsed from and
   /// with nothing expanded or canonicalized — so a run header showing it
@@ -162,7 +262,6 @@ class Location {
   String toString() {
     final host = this.host;
     if (host == null) return path;
-    final scheme = explicitSsh ? sshScheme : '';
-    return '$scheme${user == null ? '' : '$user@'}$host:$path';
+    return '${scheme.prefix}${user == null ? '' : '$user@'}$host:$path';
   }
 }

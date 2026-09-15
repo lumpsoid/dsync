@@ -19,9 +19,10 @@ Working name: `dsync` (placeholder, rename freely).
 
 ## 2. Concepts
 
-- **Replica** — a directory tree at a location. A location is a local path, `user@host:path`, or `ssh://[user@]destination:path`.
+- **Replica** — a directory tree at a location. A location is a local path, `user@host:path`, `ssh://[user@]destination:path`, or `unix://<socket-path>:<replica-path>`.
   - The first two are told apart by ssh's and rsync's own rule: a colon separates a host from a path only when it comes before the first `/`. That keeps `./log:old` a local path, and it is why `notes` is a relative path rather than a host.
   - That rule can only describe a destination shaped like a hostname, and `ssh` reaches plenty that are not: a `~/.ssh/config` `Host` alias, a `.host` name, `unix/run/ssh-unix-local/socket` for a socket-activated sshd. `ssh://` means "this one is for ssh, hands off": everything between the scheme and the first `:` is handed to `ssh` as its destination, verbatim, slashes included — which is why the colon separates it from the path and a `/` cannot.
+  - `unix://` is the same shape for the transport that needs no `ssh` at all: everything between the scheme and the first `:` is the filesystem path of a socket a `dsync agent --listen` is already bound to (§4.2). Both halves are full of slashes, so only a colon could separate them. No `user@` is split off — there is no user to name, because what decides whether the connection is made is whether the process can open the socket, which is the filesystem's answer. A socket path containing a `:` is not addressable, the same limit an `ssh://` destination has.
 
 
 - **Root** — the top directory of a replica. All paths are relative to the root.
@@ -42,19 +43,26 @@ Working name: `dsync` (placeholder, rename freely).
 ### 4.1 Location resolution
 A location `user@host:path` is resolved before the run. If `host` is `localhost`, an address of this machine, or absent, the agent runs **in-process**. Otherwise the agent runs as a **remote process**. Both cases use the same `Agent` interface; the caller does not know which one it got.
 
-An `ssh://` location (§2) is **remote by declaration**, and no address is consulted for it. Inference is what the form opts out of: a config alias can point anywhere, including back at this machine, and a unix socket or a `.host` name has no address to compare at all — there is nothing honest to guess with. Asking `ssh -G <destination>` what ssh itself resolved was the alternative considered; it was rejected as a process spawn and a second parser per remote side that still could not answer for the shapes that motivated the form. It also follows that reaching *this* machine through its own `ssh` is a thing a user can ask for, rather than something quietly turned back into an in-process run.
+A location written with a scheme — `ssh://` or `unix://` (§2) — is **remote by declaration**, and no address is consulted for it. Inference is what the form opts out of: a config alias can point anywhere, including back at this machine, and a unix socket or a `.host` name has no address to compare at all — there is nothing honest to guess with. Asking `ssh -G <destination>` what ssh itself resolved was the alternative considered; it was rejected as a process spawn and a second parser per remote side that still could not answer for the shapes that motivated the form. It also follows that reaching *this* machine through its own `ssh` is a thing a user can ask for, rather than something quietly turned back into an in-process run.
 
 ### 4.2 Remote agent
-- The same binary is installed on the remote host and started as `dsync agent --stdio` over `ssh`.
-- v0 transport: spawn the system `ssh` executable. The channel is a bidirectional byte stream; the transport is behind a `Channel` interface so a Dart SSH client or a plain socket can replace `ssh` later (needed for the Flutter head, which cannot rely on a system `ssh` binary — deferred).
+The channel is a bidirectional byte stream behind a `Channel` interface, and the same protocol runs over every transport. Two exist.
+
+**Over ssh.**
+- The same binary is installed on the remote host and started as `dsync agent --stdio` over `ssh`, by spawning the system `ssh` executable. That session serves exactly one replica and ends when its input closes.
 - The destination is handed to `ssh` exactly as the location gave it and is never resolved, rewritten, or probed here. Whatever `ssh` accepts as its destination argument, dsync addresses.
+
+**Over a socket.** `dsync agent --listen <socket path>` binds a unix socket and serves it, reached by a `unix://` location (§2). It is dsync's own transport: no system binary, which is what a head that cannot rely on one needs (§3, §16), and the read loop and buffering are this project's to tune rather than a borrowed library's.
+- A listener outlives a session. It stays up, accepting until the process is signalled, and serves connections concurrently — one `AgentServer` per connection, which holds no state between them. Two sessions against the *same* replica are already handled by §4.3's lock; two against different replicas have nothing to contend over. A session that fails is reported and closed; it does not take the listener down, unlike `--stdio`, where the process *is* the session.
+- The socket file is unlinked when the listener closes. One left behind by an agent that was killed outright is cleared on the next start, after connecting to it proves nothing is listening there.
+- **It authenticates nobody.** `hello` names the root path and the agent is rooted wherever it says, which over ssh is harmless because the connection was already authenticated as that user. Here the only gate is the filesystem: on Linux, a connect is refused if the process cannot open the socket. That is why this transport is unix-domain and local by construction. A socket that leaves the machine needs authentication and encryption of its own, and does not have them yet (§16).
 - Two things about a remote replica are configurable **per replica**, since SPEC §4.1 allows a pair of two remotes and two hosts need not agree on either: the **options** passed to `ssh` before the destination (`-p`, `-i`, `-o …`), and the **command** that starts the agent on the far side, which defaults to the bare word `dsync` resolved on the remote *non-interactive* PATH. Both come from the profile (§12) and the command line (§11.2). `~/.ssh/config` already answers port, identity, user and proxy command per destination and remains the better place for them; the options exist for what it cannot say, and for a one-off.
 - Protocol: framed messages over the stream. Frame = 1 byte type + 4 byte big-endian length + payload. Type `0` = UTF-8 JSON control message, type `1` = raw file bytes. First exchange is a version handshake; mismatched protocol versions abort the run.
 - Agent operations: `hello`, `lock`, `unlock`, `scan`, `readFile` (streamed), `writeFile` (streamed, temp + rename, set mtime/mode), `delete`, `removeEmptyDirs`, `archiveCommit`.
 - `hello` carries the replica this connection should serve (root path — unexpanded — profile id, side, job count) and replies with that replica's archive last-commit time (or `null`), since the initiator cannot `stat` an archive on the remote host.
 
 ### 4.3 Locking
-Each agent takes a lock file in its state directory for the replica before scanning and releases it at exit. A held lock aborts the run with a fatal error.
+Each agent takes a lock file in its state directory for the replica before scanning and releases it at exit. A held lock aborts the run with a fatal error. This is what makes a listener (§4.2) safe to serve concurrently: two sessions reaching for the same replica meet the same lock a second `dsync` process would.
 
 ## 5. Scan and change detection
 
@@ -171,9 +179,12 @@ Optional `warn_size_bytes` in the profile (`--warn-size` flag). If the total byt
 dsync sync <profile> [flags]      # the main one-shot run
 dsync sync <locA> <locB> [flags]  # ad-hoc, no profile
 dsync agent --stdio               # started by ssh on the remote host
+dsync agent --listen <socket>     # bind a unix socket and serve it (§4.2)
 dsync status <profile>            # scan + reconcile + print plan, apply nothing
 ```
 `status` is `sync --dry-run` under a friendlier name.
+
+`agent` needs exactly one transport, and neither is a default: they are not two spellings of the same thing — `--stdio` serves one session and ends with its input, `--listen` outlives any number of sessions — so a bare `dsync agent` is a usage error rather than a guess, and naming both is a usage error rather than a silent precedence rule. `--listen` ends on SIGINT or SIGTERM (§11.5's 130 / 143), which is what lets it unlink its socket on the way out.
 
 ### 11.2 Flags
 ```
@@ -189,7 +200,7 @@ dsync status <profile>            # scan + reconcile + print plan, apply nothing
 --remote-dsync <cmd>  the command that starts the agent on the far side
 --verbose / --quiet
 ```
-`--ssh-option` and `--remote-dsync` apply to every remote replica of the run. The value that reaches a replica is per replica (§4.2); a run whose two remotes need *different* values is what a profile's `[ssh.a]`/`[ssh.b]` is for.
+`--ssh-option` and `--remote-dsync` apply to every remote replica of the run *that is reached over ssh*. The value that reaches a replica is per replica (§4.2); a run whose two remotes need *different* values is what a profile's `[ssh.a]`/`[ssh.b]` is for. Neither has anything to say to a `unix://` replica — there is no argv to pass options to, and nothing to start on the far side, because the listener is already running — so a run that names both is not an error; they simply do not apply there.
 
 ### 11.3 Interactivity
 Default is interactive: the plan is shown, conflicts first, then each proposed action; the user accepts, skips, or picks a direction per item, or accepts all remaining. `--batch` skips the prompts for non-conflicts. With `--batch`, conflicts are never resolved automatically.
@@ -213,6 +224,12 @@ When both 1 and 2 apply, 2 wins. 130/143 are deliberately outside the 0-3
 scheme: they say what the user did, not what the run did, so they win over
 any of 0-3 rather than being ranked against them — folding an interrupt into
 3 would have retry logic retrying a run the user asked to stop.
+
+`dsync agent --listen` reports 130/143 too, although a signal is its
+*ordinary* way out rather than an interruption: there is no input to close
+and no run to have got partway through, and 128 + signal is what a shell
+reports for a program that does not trap them at all. Trapping them buys the
+socket being unlinked (§4.2), not a different code.
 
 ## 12. Profile file
 
@@ -257,9 +274,10 @@ lib/
 `dsync_core/`. `app/` will do the same for the Flutter head.
 
 The `dsync_core` boundary exposes: `Location`, `Agent` (+ `LocalAgent`,
-`RemoteAgent`), `Channel`, `Scanner`, `Reconciler`, `Plan`, `Applier`,
-`ArchiveStore`, `RuleSet`, and a `RunController` that drives a run and emits
-events the heads render.
+`RemoteAgent`), `Channel` (+ `AgentListener`, the far end of the socket
+transport), `Scanner`, `Reconciler`, `Plan`, `Applier`, `ArchiveStore`,
+`RuleSet`, and a `RunController` that drives a run and emits events the heads
+render.
 
 At v1 (or whenever the ergonomics of one package start to hurt), each top-level
 folder becomes its own package — `dsync_core`, `dsync_cli`, `dsync_app` — with
@@ -285,7 +303,7 @@ Override any of these before code starts:
 ## 16. Deferred
 
 - Flutter head beyond a skeleton that compiles against `core`.
-- Transport for the Flutter head (Dart SSH client or a TCP listener mode of the agent).
+- A transport that leaves the machine. §4.2's socket transport is unix-domain and local by construction, which is what lets the filesystem be its whole access control. The same `Channel` and the same listener over TCP is a small change; what is not is everything a unix socket did not have to answer — authentication, encryption, and what a phone-to-desktop pairing looks like. A Dart SSH client was considered for this and rejected: the transport is the hot path on a phone, and a borrowed implementation puts the read loop, the buffering and the framing inside a library this project cannot tune.
 - Watch mode.
 - Delta transfer (librsync via FFI or a Dart implementation).
 - Negated ignore patterns.

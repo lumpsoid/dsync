@@ -223,6 +223,79 @@ void main() {
     });
   });
 
+  group('a unix:// replica (SPEC §2, §4.2)', () {
+    test('resolves to a RemoteAgent over the socket, with no ssh argv to '
+        'show', () async {
+      final rootA = await tempDir.createTemp('root-a');
+      final socketPath = '${tempDir.path}/agent.sock';
+      // Only has to accept the connection: `resolveReplicaAgents` opens the
+      // transport and stops there — `hello` is `RunController`'s to make.
+      // The ssh tests point `sshExecutable` at `/usr/bin/true` for the same
+      // reason.
+      final server = await ServerSocket.bind(
+        InternetAddress(socketPath, type: InternetAddressType.unix),
+        0,
+      );
+      addTearDown(server.close);
+
+      final result = await resolveReplicaAgents(
+        optionsFor(
+          Location.parse(rootA.path),
+          Location.parse('unix://$socketPath:/srv/notes'),
+          // Would reach an ssh side; this one has no argv to reach.
+          sshB: const SshAccess(options: ['-i', 'key'], command: 'elsewhere'),
+        ),
+        environment: stateEnv,
+        localAddressLookup: () => Future.error(
+          StateError(
+            'a unix:// location declares its own '
+            'locality (SPEC §4.1)',
+          ),
+        ),
+      );
+
+      expect(result.agentB, isA<RemoteAgent>());
+      expect(result.diagnosticsB.locality, Locality.remote);
+      expect(result.diagnosticsB.location.socketPath, socketPath);
+      // Nothing was spawned and no argv reached this replica, so there is
+      // none to show — and the run's ssh flags did not invent one.
+      expect(result.diagnosticsB.sshArgs, isNull);
+
+      await result.agentA.disconnect();
+      await result.agentB.disconnect();
+    });
+
+    test(
+      'a socket with no agent behind it is an unreachable replica',
+      () async {
+        // The shape a killed agent leaves: the inode is still there, so this
+        // is a refused connection rather than a missing file (SPEC §11.5,
+        // exit 3 either way).
+        final rootA = await tempDir.createTemp('root-a');
+        final stale = '${tempDir.path}/stale.sock';
+        await File(stale).writeAsString('');
+
+        await expectLater(
+          resolveReplicaAgents(
+            optionsFor(
+              Location.parse(rootA.path),
+              Location.parse('unix://$stale:/srv/notes'),
+            ),
+            environment: stateEnv,
+          ),
+          throwsA(
+            isA<ReplicaUnreachableException>()
+                .having((error) => error.side, 'side', 'b')
+                .having((error) => error.cause, 'cause', isA<SocketException>())
+                // No second stream to quote: a socket says why in the
+                // exception itself.
+                .having((error) => error.stderr, 'stderr', isEmpty),
+          ),
+        );
+      },
+    );
+  });
+
   group('unreachable replica', () {
     Future<File> writeFailingSshScript(String stderrLine) async {
       final script = File('${tempDir.path}/fake-ssh.sh');

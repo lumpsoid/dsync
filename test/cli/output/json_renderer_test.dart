@@ -137,6 +137,33 @@ void main() {
         expect(raw, isNot(contains('never deleted')));
       });
 
+      test('a unix:// side reports a socket, never a host', () async {
+        // The two are the same field on `Location` but not the same fact: a
+        // consumer reading `host` expecting something it could reach over
+        // the network would be handed a filesystem path.
+        final r = _Rendered(
+          profileId: 'notes',
+          diagnosticsA: localDiagnostics,
+          diagnosticsB: ReplicaDiagnostics(
+            archivePath: '/state/notes-b.jsonl',
+            lockPath: '/state/notes-b.lock',
+            location: Location.parse('unix:///run/dsync.sock:/srv/notes'),
+            locality: Locality.remote,
+          ),
+        );
+        final event = const RunReplicasEvent(
+          infoA: ReplicaInfo(),
+          infoB: ReplicaInfo(),
+        );
+
+        final decoded = (await _renderAll(r, [event])).single;
+
+        expect(decoded['b'], {
+          'location': {'path': '/srv/notes', 'socket': '/run/dsync.sock'},
+          'locality': 'remote',
+        });
+      });
+
       test('firstSync is false once both sides have committed', () async {
         final r = _Rendered();
         final event = RunReplicasEvent(

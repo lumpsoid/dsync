@@ -25,15 +25,28 @@ dsync sync <profile>              # the main one-shot run
 dsync sync <locA> <locB>          # ad-hoc, no profile
 dsync status <profile>            # scan + reconcile + print plan, apply nothing
 dsync agent --stdio               # started by ssh on the remote host
+dsync agent --listen <socket>     # bind a unix socket and serve it
 ```
 
-A location is a local path, `user@host:path`, or `ssh://[user@]destination:path`;
-in an ad-hoc pair the local one comes first. The `ssh://` form hands everything
-up to the first `:` to `ssh` as its destination, unexamined — a `~/.ssh/config`
-alias, `unix/run/ssh-unix-local/socket`, anything ssh accepts — and is always
-remote, even when it leads back to this machine (SPEC §4.1). `--ssh-option`
-passes an argv word to ssh itself, and `--remote-dsync` names the command that
-starts the agent on the far side when the bare `dsync` is not on its PATH.
+A location is a local path, `user@host:path`, `ssh://[user@]destination:path`,
+or `unix://<socket path>:<replica path>`; in an ad-hoc pair the local one comes
+first. Either scheme is always remote, even when it leads back to this machine
+(SPEC §4.1).
+
+The `ssh://` form hands everything up to the first `:` to `ssh` as its
+destination, unexamined — a `~/.ssh/config` alias,
+`unix/run/ssh-unix-local/socket`, anything ssh accepts. `--ssh-option` passes an
+argv word to ssh itself, and `--remote-dsync` names the command that starts the
+agent on the far side when the bare `dsync` is not on its PATH.
+
+The `unix://` form reaches a `dsync agent --listen` already bound to that
+socket — dsync's own transport, with no system binary under it. It stays up
+across sessions and ends on Ctrl-C, unlinking its socket. **It authenticates
+nobody:** anyone who can open the socket can read, write and delete in the
+replicas served through it, so keep it in a directory only you can enter, such
+as `$XDG_RUNTIME_DIR`. That is why this transport is unix-domain and local
+only; a socket that leaves the machine is deferred, along with the
+authentication it would need (SPEC §16).
 
 Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
 archives and locks in `$XDG_STATE_HOME/dsync/` (SPEC §8.3).

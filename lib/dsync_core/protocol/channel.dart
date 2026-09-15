@@ -3,9 +3,9 @@
 ///
 /// `RemoteAgent` and the agent server handler exchange framed protocol bytes
 /// over this interface without knowing whether the other end is reached via
-/// the system `ssh` binary, an in-memory pair (for tests), or — later — a
-/// Dart SSH client or a socket (SPEC §16). Interface only — see the SSH and
-/// in-memory `Channel` tasks for implementations.
+/// the system `ssh` binary, a socket, or an in-memory pair (for tests).
+/// Interface only — see `SshChannel`, `SocketChannel`, `StdioChannel` and
+/// `InMemoryChannel` for the implementations.
 abstract class Channel {
   /// Bytes arriving from the other end, in the order sent.
   ///

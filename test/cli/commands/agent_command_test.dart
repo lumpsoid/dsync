@@ -12,17 +12,53 @@ CommandRunner<int> buildRunner(AgentCommand command) =>
 
 void main() {
   group('AgentCommand', () {
-    // Actually driving `run()` past this point opens a real [StdioChannel]
-    // over this test process's own stdin/stdout — exercised instead by
-    // spawning a real child process (test/cli/commands/agent_stdio_test.dart)
-    // rather than here, since running it in-process would read/write this
-    // test runner's own stdio.
-    test('dsync agent without --stdio is a usage error (SPEC §16: no other '
-        'transport exists yet)', () async {
+    // Actually driving `run()` past this point opens something real — a
+    // [StdioChannel] over this test process's own stdin/stdout, or a bound
+    // socket that outlives every session. Both are exercised by spawning a
+    // real child process instead (test/cli/commands/agent_stdio_test.dart,
+    // test/cli/run/unix_socket_e2e_test.dart); what is left here is the one
+    // thing that decides *before* either opens.
+    test(
+      'dsync agent with no transport is a usage error (SPEC §11.1)',
+      () async {
+        // Neither transport is a default: one serves a single session over
+        // this process's stdio, the other outlives any number of sessions, so
+        // there is nothing to guess at.
+        final command = AgentCommand();
+        await expectLater(
+          buildRunner(command).run(['agent']),
+          throwsA(isA<UsageException>()),
+        );
+      },
+    );
+
+    test('dsync agent with both transports is a usage error', () async {
+      // Rejected rather than resolved by a precedence rule nobody would be
+      // able to predict: --listen names a socket that would silently never
+      // be bound, or stdio that would silently never be read.
       final command = AgentCommand();
       await expectLater(
-        buildRunner(command).run(['agent']),
+        buildRunner(command)
+            .run(['agent', '--stdio', '--listen', '/run/dsync.sock']),
         throwsA(isA<UsageException>()),
+      );
+    });
+
+    test('--listen needs a socket path', () async {
+      // An option, not a flag: there is no default path to fall back to, so
+      // the argument parser rejects a bare `--listen` before `run()` is ever
+      // reached (`CommandRunner` reports that as a usage error like any
+      // other).
+      final command = AgentCommand();
+      await expectLater(
+        buildRunner(command).run(['agent', '--listen']),
+        throwsA(
+          isA<UsageException>().having(
+            (error) => error.message,
+            'message',
+            contains('Missing argument'),
+          ),
+        ),
       );
     });
 

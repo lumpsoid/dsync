@@ -6,12 +6,17 @@ import 'package:dsync/dsync_core/models/run_event.dart';
 /// already reads as "killed by signal N", and folding an interrupt into exit
 /// 3 would have retry logic retrying a run the user asked to stop — 1 and 2
 /// both assert "completed, but ..." and an interrupted run did not complete.
-///
-/// SIGTERM's own 143 needs no constant or code here: this process never
-/// traps SIGTERM (task fc661b scopes the new handling to SIGINT only), so
-/// the kernel's default disposition kills it, and 128+15 is already what a
-/// shell reports for that on its own.
 const sigintExitCode = 130;
+
+/// SPEC §11.5's 143, for the one command that traps SIGTERM:
+/// `dsync agent --listen` (`lib/cli/commands/agent_command.dart`).
+///
+/// A `sync` run does not trap it — task fc661b scoped its handling to SIGINT,
+/// and the kernel's default disposition already produces 143 for a run killed
+/// that way. A listener has to, because a signal is the only thing that ends
+/// one: trapping it is what lets the socket file be unlinked on the way out,
+/// and the code it reports is the same 128+15 the untrapped case would have.
+const sigtermExitCode = 143;
 
 /// One `RunController` run, reduced to nothing more than SPEC §11.5 needs to
 /// pick an exit code: whether a [RunSummaryEvent] was seen, whether a

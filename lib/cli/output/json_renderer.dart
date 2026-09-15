@@ -214,10 +214,25 @@ Map<String, dynamic> _replicaSideToJson(
 };
 
 /// [location] exactly as resolved into this side (no expansion, no
-/// canonicalization) — `path`, plus `host`/`user` when this is not a bare
-/// local path (SPEC §2).
-Map<String, dynamic> _locationToJson(Location location) => {
-  'path': location.path,
-  if (location.host != null) 'host': location.host,
-  if (location.user != null) 'user': location.user,
-};
+/// canonicalization) — `path`, plus whichever of `host`/`user`/`socket` SPEC
+/// §2's form it was written in actually has.
+///
+/// A `unix://` replica reports `socket`, not `host`: the two are the same
+/// field on [Location] (see its doc comment — one "where" per location, read
+/// according to the scheme), but they are not the same fact, and a consumer
+/// that reads `host` expecting something it could connect to over the network
+/// would be told a filesystem path. The key that is present is what says
+/// which kind of destination this is, the same way SPEC §11.4's other lines
+/// omit a key rather than emit a null.
+Map<String, dynamic> _locationToJson(Location location) =>
+    switch (location.scheme) {
+      LocationScheme.unix => {
+        'path': location.path,
+        'socket': location.socketPath,
+      },
+      LocationScheme.ssh || LocationScheme.inferred => {
+        'path': location.path,
+        if (location.host != null) 'host': location.host,
+        if (location.user != null) 'user': location.user,
+      },
+    };

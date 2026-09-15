@@ -6,9 +6,10 @@ import 'package:flutter/material.dart';
 /// Its only job today is to exist and to compile against `dsync_core`, which
 /// is what keeps the core free of any Flutter dependency honest: if something
 /// head-specific ever leaked into `dsync_core/`, this file is where it would
-/// show up as a dependency cycle. The real UI arrives with the transport the
-/// Flutter head needs (SPEC §16) — it cannot rely on a system `ssh` binary,
-/// so there is nothing to drive a run with yet.
+/// show up as a dependency cycle. The transport this head needs — one that
+/// does not rely on a system `ssh` binary — now exists as `SocketChannel` and
+/// `AgentListener` (SPEC §4.2), but only over a unix socket, so there is
+/// still nothing here that could reach a desktop from a phone (SPEC §16).
 class DsyncApp extends StatelessWidget {
   const DsyncApp({super.key});
 

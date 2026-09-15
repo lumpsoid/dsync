@@ -484,6 +484,30 @@ void main() {
       expect(output, contains('3 day(s) ago'));
     });
 
+    test('a unix:// side is labelled by its transport, not as ssh', () {
+      // The row says how this replica is being reached, and a socket side is
+      // reached by nothing ssh has anything to do with — locality alone
+      // ("remote") could not tell the two apart.
+      final r = _Rendered(
+        diagnosticsA: localDiagnostics,
+        diagnosticsB: ReplicaDiagnostics(
+          archivePath: '/state/notes-b.jsonl',
+          lockPath: '/state/notes-b.lock',
+          location: Location.parse('unix:///run/dsync.sock:/srv/notes'),
+          locality: Locality.remote,
+        ),
+        profileId: 'notes',
+        now: () => fixedNow,
+      );
+      r.renderer.render(
+        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('unix:///run/dsync.sock:/srv/notes  socket'));
+      expect(output, isNot(contains('ssh')));
+    });
+
     test('a true first sync (both sides empty) says so and carries the '
         'warning note', () {
       final r = _Rendered(profileId: 'notes');

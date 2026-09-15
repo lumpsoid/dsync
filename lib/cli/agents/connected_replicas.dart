@@ -9,6 +9,8 @@ import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
+import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
@@ -34,11 +36,22 @@ import 'replica_unreachable_exception.dart';
 /// either).
 ///
 /// Lives in `lib/cli/` rather than `lib/dsync_core/`: choosing the system
-/// `ssh` binary is a CLI decision — the Flutter head will reach a remote
-/// replica through a different `Channel` (a Dart SSH client or a socket,
-/// SPEC §4.2, §16), not by spawning a process — so this belongs to the head,
-/// not the core. It moves to `dsync_core` the day the Flutter head would
-/// otherwise have to copy this file to get its own agents.
+/// `ssh` binary is a CLI decision — a Flutter head reaches a remote replica
+/// through a different `Channel` (a socket, SPEC §4.2), not by spawning a
+/// process — so this belongs to the head, not the core. It moves to
+/// `dsync_core` the day the Flutter head would otherwise have to copy this
+/// file to get its own agents.
+///
+/// The socket transport was expected to be that day and turned out not to be,
+/// which is worth recording rather than leaving as a trigger that quietly
+/// stopped meaning anything. What a head needs in order to reach a listening
+/// agent is `SocketChannel` and `RemoteAgent`, both already in `dsync_core`
+/// and both reached in a handful of lines below. What it does *not* need is
+/// anything else this function does: fold an [EffectiveOptions] built out of
+/// a TOML profile and argv, key an archive and a lock by side, and assemble
+/// the [ReplicaDiagnostics] two CLI renderers read. Moving the whole of it
+/// would drag those two head types into the core to serve a head that does
+/// not have them. The trigger stands as written.
 ///
 /// A location's side (`a`/`b`) is resolved in the order [EffectiveOptions]
 /// already assigned and is never reordered here — the archive is keyed by
@@ -158,16 +171,31 @@ Future<_ResolvedSide> _resolveSide({
       archivePath: archivePath,
       lockPath: lockPath,
     ),
-    Locality.remote => _resolveRemoteSide(
-      side: side,
-      location: location,
-      access: access,
-      profileId: profileId,
-      jobs: jobs,
-      sshExecutable: sshExecutable,
-      archivePath: archivePath,
-      lockPath: lockPath,
-    ),
+    // Which transport a remote side is reached through is the location's own
+    // declaration, not a second inference: SPEC §2's schemes exist to say it
+    // outright. `LocationScheme.inferred` reaching ssh is the one carried
+    // over from before there was a second transport to choose — `user@host:p`
+    // has meant "over ssh" since SPEC §4.2's first line.
+    Locality.remote => switch (location.scheme) {
+      LocationScheme.unix => _resolveSocketSide(
+        side: side,
+        location: location,
+        profileId: profileId,
+        jobs: jobs,
+        archivePath: archivePath,
+        lockPath: lockPath,
+      ),
+      LocationScheme.ssh || LocationScheme.inferred => _resolveSshSide(
+        side: side,
+        location: location,
+        access: access,
+        profileId: profileId,
+        jobs: jobs,
+        sshExecutable: sshExecutable,
+        archivePath: archivePath,
+        lockPath: lockPath,
+      ),
+    },
   };
 }
 
@@ -212,7 +240,7 @@ Future<_ResolvedSide> _resolveLocalSide({
   );
 }
 
-Future<_ResolvedSide> _resolveRemoteSide({
+Future<_ResolvedSide> _resolveSshSide({
   required String side,
   required Location location,
   required SshAccess access,
@@ -241,15 +269,14 @@ Future<_ResolvedSide> _resolveRemoteSide({
 
   final agent = _DiagnosedRemoteAgent(
     channel: channel,
-    spec: ReplicaSpec(
-      // Unexpanded — the far end resolves `~`/env vars in its own
-      // environment (SPEC §4.2, `ReplicaSpec.rootPath`).
-      rootPath: location.path,
+    spec: _specFor(
+      location: location,
       profileId: profileId,
       side: side,
       jobs: jobs,
     ),
     side: side,
+    transportDiagnostics: () => channel.recentStderr,
   );
 
   return (
@@ -264,6 +291,81 @@ Future<_ResolvedSide> _resolveRemoteSide({
   );
 }
 
+/// Connects to the `dsync agent --listen` already bound to this location's
+/// socket (SPEC §2, §4.2).
+///
+/// Takes no [SshAccess]: neither half of it has anything to say here. There
+/// is no argv to pass options to, and nothing starts the far side — it is
+/// already running, which is the point of a listener. A run that names
+/// `--ssh-option`/`--remote-dsync` and a `unix://` replica is not an error;
+/// those flags simply apply to "every remote replica of this run" (SPEC
+/// §11.2) that is reached over ssh, and this one is not.
+///
+/// A connection that cannot be made — nothing listening, a stale socket file,
+/// a directory this user cannot enter — is the same "cannot reach a replica"
+/// as a failed ssh session (SPEC §11.5 exit 3), reported the same way. The
+/// [SocketException] carries the reason itself, so there is no second stream
+/// of diagnostics to attach: see [_DiagnosedRemoteAgent.transportDiagnostics].
+Future<_ResolvedSide> _resolveSocketSide({
+  required String side,
+  required Location location,
+  required String profileId,
+  required int jobs,
+  required String archivePath,
+  required String lockPath,
+}) async {
+  // Locality.remote via LocationScheme.unix guarantees a socket path is set.
+  final socketPath = location.socketPath!;
+
+  final SocketChannel channel;
+  try {
+    channel = await SocketChannel.connectUnix(socketPath);
+  } catch (error) {
+    throw ReplicaUnreachableException(side: side, cause: error);
+  }
+
+  final agent = _DiagnosedRemoteAgent(
+    channel: channel,
+    spec: _specFor(
+      location: location,
+      profileId: profileId,
+      side: side,
+      jobs: jobs,
+    ),
+    side: side,
+  );
+
+  return (
+    agent: agent,
+    diagnostics: ReplicaDiagnostics(
+      archivePath: archivePath,
+      lockPath: lockPath,
+      location: location,
+      locality: Locality.remote,
+      // No argv reached this replica, so there is none to show. The socket
+      // path is already in `location`, which the run header prints as typed.
+    ),
+  );
+}
+
+/// The [ReplicaSpec] a remote side's `hello` carries (SPEC §4.2), identical
+/// whatever transport got there: which tree, on whose behalf, as which side,
+/// with how much hash parallelism.
+ReplicaSpec _specFor({
+  required Location location,
+  required String profileId,
+  required String side,
+  required int jobs,
+}) => ReplicaSpec(
+  // Unexpanded — the far end resolves `~`/env vars in its own environment
+  // (SPEC §4.2, `ReplicaSpec.rootPath`). True over a socket too: the two ends
+  // may share a machine and still be different users.
+  rootPath: location.path,
+  profileId: profileId,
+  side: side,
+  jobs: jobs,
+);
+
 Future<void> _disconnectQuietly(Agent agent) async {
   try {
     await agent.disconnect();
@@ -274,25 +376,39 @@ Future<void> _disconnectQuietly(Agent agent) async {
 }
 
 /// A [RemoteAgent] whose [hello] failures are rewritten as
-/// [ReplicaUnreachableException], naming [_side] and carrying [_channel]'s
-/// [SshChannel.recentStderr].
+/// [ReplicaUnreachableException], naming [_side] and carrying whatever the
+/// transport itself has to say (see [_transportDiagnostics]).
 ///
 /// The real protocol connect — the version handshake plus the `hello`
 /// exchange (SPEC §4.2) — happens on `RunController`'s own schedule, not
-/// here: [resolveReplicaAgents] only spawns the transport. This wraps that
+/// here: [resolveReplicaAgents] only opens the transport. This wraps that
 /// later call instead of making one of its own, because [RemoteAgent.hello]
 /// is a one-shot handshake: a second call over the same connection would
 /// send a second version frame the peer has no reason to expect, breaking
 /// the session for both sides.
 class _DiagnosedRemoteAgent extends RemoteAgent {
-  final SshChannel _channel;
   final String _side;
 
+  /// The lines the transport wrote *outside* the protocol stream, read when
+  /// a failure needs them rather than captured up front — for ssh,
+  /// `SshChannel.recentStderr`, which is where "Permission denied
+  /// (publickey)" arrives and the single most useful thing to show.
+  ///
+  /// Defaults to nothing, which is the honest answer for a socket rather than
+  /// a gap in it: a socket has no second stream at all. A connection that
+  /// cannot be made is a [SocketException] carrying its own reason, and a
+  /// peer not speaking the protocol is caught by the handshake, which quotes
+  /// what it sent (task b67387).
+  final List<String> Function() _transportDiagnostics;
+
   _DiagnosedRemoteAgent({
-    required this._channel,
+    required Channel channel,
     required ReplicaSpec spec,
     required this._side,
-  }) : super(_channel, spec);
+    this._transportDiagnostics = _noTransportDiagnostics,
+  }) : super(channel, spec);
+
+  static List<String> _noTransportDiagnostics() => const [];
 
   @override
   Future<ReplicaInfo> hello() async {
@@ -302,7 +418,7 @@ class _DiagnosedRemoteAgent extends RemoteAgent {
       throw ReplicaUnreachableException(
         side: _side,
         cause: error,
-        stderr: _channel.recentStderr,
+        stderr: _transportDiagnostics(),
       );
     }
   }

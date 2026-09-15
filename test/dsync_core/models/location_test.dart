@@ -76,7 +76,7 @@ void main() {
       expect(location.user, 'qq');
       expect(location.host, 'unix/run/ssh-unix-local/socket');
       expect(location.path, '/tmp/notes');
-      expect(location.explicitSsh, isTrue);
+      expect(location.scheme, LocationScheme.ssh);
       expect(
         Location.parse('unix/run/ssh-unix-local/socket:/tmp/notes').host,
         isNull,
@@ -88,7 +88,7 @@ void main() {
       expect(location.user, isNull);
       expect(location.host, 'phone');
       expect(location.path, '/sdcard/notes');
-      expect(location.explicitSsh, isTrue);
+      expect(location.scheme, LocationScheme.ssh);
     });
 
     test('only the first colon separates; the path keeps its own', () {
@@ -129,6 +129,68 @@ void main() {
     }
   });
 
+  group('Location.parse of the unix:// form (SPEC §2)', () {
+    test('splits the socket path from the replica path at the first colon', () {
+      final location = Location.parse(
+        'unix:///run/user/1000/dsync.sock:/home/me/notes',
+      );
+      expect(location.socketPath, '/run/user/1000/dsync.sock');
+      expect(location.path, '/home/me/notes');
+      expect(location.scheme, LocationScheme.unix);
+      // Both halves are full of slashes, so only a colon could have
+      // separated them — and under the colon-before-slash rule of the
+      // schemeless form the same string is not a remote location at all.
+      expect(Location.parse('/run/dsync.sock:/home/me/notes').host, isNull);
+    });
+
+    test('no user is split off — a socket path may contain an @', () {
+      // There is no user to name: what decides whether this connects is
+      // whether the process can open the socket (SPEC §4.2), so an `@` here
+      // is just a character in a path.
+      final location = Location.parse('unix:///run/a@b.sock:/srv/notes');
+      expect(location.user, isNull);
+      expect(location.socketPath, '/run/a@b.sock');
+      expect(location.path, '/srv/notes');
+    });
+
+    test('only the first colon separates; the replica path keeps its own', () {
+      final location = Location.parse('unix:///run/d.sock:/srv/log:old');
+      expect(location.socketPath, '/run/d.sock');
+      expect(location.path, '/srv/log:old');
+    });
+
+    test('a relative replica path is left for the far side to resolve', () {
+      // The listening agent expands it in its own environment, which may be
+      // a different user's even on the same machine.
+      expect(Location.parse('unix:///run/d.sock:notes').path, 'notes');
+    });
+
+    test('a missing separator says which one is missing', () {
+      expect(
+        () => Location.parse('unix:///run/d.sock'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'message',
+            contains('":"'),
+          ),
+        ),
+      );
+    });
+
+    test('socketPath is null for every other form', () {
+      expect(Location.parse('/abs/path').socketPath, isNull);
+      expect(Location.parse('me@phone:/notes').socketPath, isNull);
+      expect(Location.parse('ssh://phone:/notes').socketPath, isNull);
+    });
+
+    for (final invalid in ['unix://', 'unix://:', 'unix:///run/d.sock:']) {
+      test('rejects invalid location "$invalid"', () {
+        expect(() => Location.parse(invalid), throwsFormatException);
+      });
+    }
+  });
+
   group('Location.toString', () {
     for (final raw in [
       '/abs/path',
@@ -138,6 +200,7 @@ void main() {
       'me@phone:/sdcard/notes',
       'ssh://phone:/sdcard/notes',
       'ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes',
+      'unix:///run/user/1000/dsync.sock:/home/me/notes',
     ]) {
       test('spells "$raw" back exactly as it was written', () {
         // The run header shows this before anything moves (SPEC §11.4), so a
@@ -222,6 +285,17 @@ void main() {
         Locality.remote,
       );
     });
+
+    test('a unix:// location is remote although the socket is right here', () {
+      // The agent is another process — one that may be another user, with
+      // another environment and another state directory — so "remote" is
+      // about which process owns the filesystem access (SPEC §4.1), not
+      // about which machine it is on. A socket path has no address to
+      // compare anyway.
+      final location = Location.parse('unix:///run/d.sock:/srv/notes');
+      expect(location.classify(), Locality.remote);
+      expect(location.classify(localAddresses: {'127.0.0.1'}), Locality.remote);
+    });
   });
 
   group('Location.consultsLocalAddresses', () {
@@ -230,6 +304,10 @@ void main() {
       expect(Location.parse('phone:/notes').consultsLocalAddresses, isTrue);
       expect(
         Location.parse('ssh://phone:/notes').consultsLocalAddresses,
+        isFalse,
+      );
+      expect(
+        Location.parse('unix:///run/d.sock:/notes').consultsLocalAddresses,
         isFalse,
       );
     });
