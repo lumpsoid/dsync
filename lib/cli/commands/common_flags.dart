@@ -14,6 +14,8 @@ class CommonSyncFlags {
   static const multiOptionIgnore = 'ignore';
   static const optionWarnSize = 'warn-size';
   static const optionJobs = 'jobs';
+  static const multiOptionSshOption = 'ssh-option';
+  static const optionRemoteDsync = 'remote-dsync';
   static const flagVerbose = 'verbose';
   static const flagQuiet = 'quiet';
 }
@@ -59,6 +61,22 @@ void addCommonSyncFlags(ArgParser parser, {bool includeDryRun = true}) {
       help: 'Size in bytes to warn above.',
     )
     ..addOption(CommonSyncFlags.optionJobs, help: 'Hash parallelism.')
+    ..addMultiOption(
+      CommonSyncFlags.multiOptionSshOption,
+      help:
+          'One option for ssh itself, before the destination, e.g. '
+          '--ssh-option=-p --ssh-option=2222. Repeatable — one argv word '
+          'each, since an option value may contain spaces. Additive to the '
+          "profile's [ssh.a]/[ssh.b]; applies to every remote replica of "
+          'this run.',
+    )
+    ..addOption(
+      CommonSyncFlags.optionRemoteDsync,
+      help:
+          'The command that starts the agent on the far side. Default: '
+          '"dsync", resolved on the remote non-interactive PATH. Applies to '
+          'every remote replica of this run.',
+    )
     ..addFlag(
       CommonSyncFlags.flagVerbose,
       negatable: false,

@@ -11,6 +11,8 @@ void main() {
     bool batch = false,
     bool json = false,
     List<String> ignore = const [],
+    List<String> sshOptions = const [],
+    String? remoteCommand,
     bool verbose = false,
     bool quiet = false,
     String? warnSizeRaw,
@@ -22,6 +24,8 @@ void main() {
       batch: batch,
       json: json,
       ignore: ignore,
+      sshOptions: sshOptions,
+      remoteCommand: remoteCommand,
       verbose: verbose,
       quiet: quiet,
       warnSizeRaw: warnSizeRaw,
@@ -38,7 +42,46 @@ void main() {
       expect(options.ignore, isEmpty);
       expect(options.warnSizeBytes, isNull);
       expect(options.jobs, isNull);
+      expect(options.sshOptions, isEmpty);
+      expect(options.remoteCommand, isNull);
       expect(options.verbosity, Verbosity.normal);
+    });
+
+    test('--ssh-option keeps every value, in order (SPEC §4.2)', () {
+      // One argv word per flag: an option value may contain spaces, so
+      // nothing here splits or reorders what was typed.
+      final options = build(
+        sshOptions: const ['-i', '~/.ssh/id_ssshd', '-o', 'BatchMode=yes'],
+      );
+
+      expect(options.sshOptions, [
+        '-i',
+        '~/.ssh/id_ssshd',
+        '-o',
+        'BatchMode=yes',
+      ]);
+    });
+
+    test('an empty --ssh-option is rejected', () {
+      // It would reach ssh as an empty argv word, which ssh reads as a
+      // second destination — a failure a long way from the flag.
+      expect(
+        () => build(sshOptions: const ['-p', '']),
+        throwsA(isA<CliOptionsError>()),
+      );
+    });
+
+    test('an empty --remote-dsync is rejected', () {
+      expect(() => build(remoteCommand: ''), throwsA(isA<CliOptionsError>()));
+    });
+
+    test('--remote-dsync is null when absent, so a profile\'s own command '
+        'survives the merge', () {
+      expect(build().remoteCommand, isNull);
+      expect(
+        build(remoteCommand: '/opt/bin/dsync').remoteCommand,
+        '/opt/bin/dsync',
+      );
     });
 
     test('--verbose with --quiet is rejected', () {

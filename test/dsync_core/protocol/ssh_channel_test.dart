@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:test/test.dart';
 
@@ -26,12 +27,32 @@ void main() {
       ]);
     });
 
-    test('places extraArgs before -T so they read as ssh options', () {
-      expect(sshArgsFor(host: 'example.com', extraArgs: ['-p', '2222']), [
-        '-p',
-        '2222',
+    test('places the access options before -T, where ssh reads its own', () {
+      expect(
+        sshArgsFor(
+          host: 'example.com',
+          access: const SshAccess(options: ['-p', '2222']),
+        ),
+        ['-p', '2222', '-T', 'example.com', 'dsync', 'agent', '--stdio'],
+      );
+    });
+
+    test('puts the access command where the bare `dsync` goes', () {
+      expect(
+        sshArgsFor(
+          host: 'example.com',
+          access: const SshAccess(command: '/opt/bin/dsync'),
+        ),
+        ['-T', 'example.com', '/opt/bin/dsync', 'agent', '--stdio'],
+      );
+    });
+
+    test('hands a destination with slashes in it to ssh unexamined', () {
+      // A socket-activated sshd (SPEC §2, §4.2): nothing here may treat the
+      // `/` as a path separator, or split, quote, or resolve any of it.
+      expect(sshArgsFor(host: 'unix/run/ssh-unix-local/socket', user: 'me'), [
         '-T',
-        'example.com',
+        'me@unix/run/ssh-unix-local/socket',
         'dsync',
         'agent',
         '--stdio',
@@ -81,6 +102,27 @@ exec cat
       },
       testOn: 'linux',
     );
+
+    test('spawns with the access options and remote command', () async {
+      final channel = await SshChannel.connect(
+        host: 'unix/run/ssh-unix-local/socket',
+        user: 'me',
+        access: const SshAccess(
+          options: ['-i', '/keys/id_x'],
+          command: 'XDG_STATE_HOME=/tmp/s /opt/bin/dsync',
+        ),
+        executable: await fakeSsh(),
+      );
+
+      final line = await channel.stderrLines.first;
+
+      expect(
+        line,
+        'args: -i /keys/id_x -T me@unix/run/ssh-unix-local/socket '
+        'XDG_STATE_HOME=/tmp/s /opt/bin/dsync agent --stdio',
+      );
+      await channel.close();
+    }, testOn: 'linux');
 
     test('wraps child stdin/stdout as the Channel byte stream', () async {
       final channel = await SshChannel.connect(

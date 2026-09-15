@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/models/location.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/cli/profile/profile_loader.dart';
 import 'package:test/test.dart';
 
@@ -89,7 +90,109 @@ b = "/b"
       expect(profile.rules.followPatterns, isEmpty);
       expect(profile.warnSizeBytes, isNull);
       expect(profile.jobs, isNull);
+      expect(profile.sshA.options, isEmpty);
+      expect(profile.sshA.command, SshAccess.defaultCommand);
+      expect(profile.sshB.options, isEmpty);
+      expect(profile.sshB.command, SshAccess.defaultCommand);
     });
+
+    test('[ssh.a] and [ssh.b] configure each side on its own '
+        '(SPEC §4.2, §12)', () async {
+      await writeProfile('two-remotes', '''
+[replicas]
+a = "ssh://work:/srv/notes"
+b = "ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes"
+
+[ssh.a]
+options = ["-p", "2222"]
+
+[ssh.b]
+options = ["-i", "~/.ssh/id_ssshd"]
+command = "/home/qq/.local/bin/dsync"
+''');
+
+      final profile = await loadProfile('two-remotes', environment: env());
+
+      expect(profile.sshA.options, ['-p', '2222']);
+      // Unset on this side, so the bare word on the remote PATH stands.
+      expect(profile.sshA.command, SshAccess.defaultCommand);
+      expect(profile.sshB.options, ['-i', '~/.ssh/id_ssshd']);
+      expect(profile.sshB.command, '/home/qq/.local/bin/dsync');
+    });
+
+    test('an unknown key under [ssh.b] is fatal', () async {
+      await writeProfile('typo', '''
+[replicas]
+a = "/a"
+b = "ssh://phone:/b"
+
+[ssh.b]
+optoins = ["-p", "2222"]
+''');
+
+      expect(
+        () => loadProfile('typo', environment: env()),
+        throwsA(
+          isA<ProfileUnknownKeyException>().having(
+            (error) => error.key,
+            'key',
+            'ssh.b.optoins',
+          ),
+        ),
+      );
+    });
+
+    test('an unknown side under [ssh] is fatal', () async {
+      await writeProfile('side', '''
+[replicas]
+a = "/a"
+b = "ssh://phone:/b"
+
+[ssh.c]
+options = ["-p", "2222"]
+''');
+
+      expect(
+        () => loadProfile('side', environment: env()),
+        throwsA(
+          isA<ProfileUnknownKeyException>().having(
+            (error) => error.key,
+            'key',
+            'ssh.c',
+          ),
+        ),
+      );
+    });
+
+    for (final (label, table, key) in [
+      ('an empty ssh command', 'command = ""', 'ssh.b.command'),
+      ('an empty ssh option', 'options = ["-p", ""]', 'ssh.b.options'),
+    ]) {
+      test('$label is fatal, named by its key', () async {
+        // Both would otherwise reach ssh as an argv word and fail there —
+        // an empty option reads as a second destination, an empty command as
+        // a remote shell line starting with `agent`.
+        await writeProfile('empty', '''
+[replicas]
+a = "/a"
+b = "ssh://phone:/b"
+
+[ssh.b]
+$table
+''');
+
+        expect(
+          () => loadProfile('empty', environment: env()),
+          throwsA(
+            isA<ProfileInvalidValueException>().having(
+              (error) => error.key,
+              'key',
+              key,
+            ),
+          ),
+        );
+      });
+    }
 
     test(
       'the order replicas appear in the file has no effect on which is a '

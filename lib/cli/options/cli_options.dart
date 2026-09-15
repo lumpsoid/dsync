@@ -29,6 +29,23 @@ class CliOptions {
 
   final int? warnSizeBytes;
   final int? jobs;
+
+  /// `--ssh-option` values, in the order they were given, additive to
+  /// whatever a profile's `[ssh.a]`/`[ssh.b]` contributes (SPEC §4.2) — see
+  /// [SshAccess.withFlags].
+  ///
+  /// One list for the run rather than one per side: a replica the flag is
+  /// meant for is named right there on the command line, and a run with two
+  /// remotes that need *different* options is what a profile is for. The
+  /// value that reaches a replica is still per replica — this is folded into
+  /// each side's own [SshAccess] by [EffectiveOptions].
+  final List<String> sshOptions;
+
+  /// `--remote-dsync`, or `null` when the flag is absent — which is what
+  /// lets a profile's own `command` survive a run that does not mention one
+  /// (SPEC §12). See [sshOptions] for why it is one value for the run.
+  final String? remoteCommand;
+
   final Verbosity verbosity;
 
   /// Builds and validates in one step.
@@ -44,6 +61,8 @@ class CliOptions {
     required this.batch,
     required this.json,
     this.ignore = const [],
+    this.sshOptions = const [],
+    this.remoteCommand,
     required bool verbose,
     required bool quiet,
     String? warnSizeRaw,
@@ -51,6 +70,18 @@ class CliOptions {
   }) : verbosity = Verbosity.resolve(verbose: verbose, quiet: quiet),
        warnSizeBytes = _parseWarnSize(warnSizeRaw),
        jobs = _parseJobs(jobsRaw) {
+    // An empty string in either would reach ssh as an argv word: an empty
+    // option reads as a second destination, an empty command as a remote
+    // shell line starting with `agent`. Both fail a long way from the flag
+    // that caused them (SPEC §11.5, exit 3 either way), so they are rejected
+    // here, where the flag can be named.
+    if (sshOptions.any((option) => option.isEmpty)) {
+      throw const CliOptionsError('--ssh-option cannot be empty');
+    }
+    final command = remoteCommand;
+    if (command != null && command.isEmpty) {
+      throw const CliOptionsError('--remote-dsync cannot be empty');
+    }
     if (batch && dryRun) {
       throw const CliOptionsError(
         '--batch cannot be combined with --dry-run (or with status, which '

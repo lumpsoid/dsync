@@ -11,6 +11,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:test/test.dart';
@@ -158,6 +159,57 @@ void main() {
       expect(backing.compacted, isTrue);
     });
   });
+
+  group('disconnect', () {
+    test('lets go of the channel\'s input, not just its output', () async {
+      // The frame stream is read through a `StreamIterator`, which holds its
+      // subscription *paused* between reads. On a real `SshChannel` that
+      // subscription is on the ssh process's stdout pipe, and a paused
+      // subscription keeps that file descriptor registered with the event
+      // loop — so a CLI run that had finished everything sat there forever
+      // instead of exiting, with `close()` alone not enough to release it.
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final watched = _WatchedInputChannel(clientChannel);
+      unawaited(AgentServer().serve(serverChannel, (_) => _FakeAgent()));
+      final agent = RemoteAgent(watched, _testSpec);
+      await agent.hello();
+      expect(
+        watched.inputHasListener,
+        isTrue,
+        reason: 'nothing is being asserted unless a read really is in place',
+      );
+
+      await agent.disconnect();
+
+      expect(watched.inputHasListener, isFalse);
+    });
+  });
+}
+
+/// A [Channel] that reports whether anyone is still listening to its
+/// [input] — the one fact about `disconnect` no other seam exposes.
+///
+/// Wraps a real [InMemoryChannel] end rather than faking the protocol: the
+/// agent on the other side has to answer a `hello` for there to be a live
+/// subscription to ask about in the first place.
+class _WatchedInputChannel implements Channel {
+  final Channel _inner;
+  final StreamController<List<int>> _input = StreamController();
+
+  _WatchedInputChannel(this._inner) {
+    _input.onListen = () => _input.addStream(_inner.input);
+  }
+
+  bool get inputHasListener => _input.hasListener;
+
+  @override
+  Stream<List<int>> get input => _input.stream;
+
+  @override
+  Future<void> send(List<int> bytes) => _inner.send(bytes);
+
+  @override
+  Future<void> close() => _inner.close();
 }
 
 /// A minimal in-memory [Agent] fake — just enough to be driven through

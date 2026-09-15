@@ -2,15 +2,17 @@ import 'dart:io';
 
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:toml/toml.dart';
 
 import 'profile.dart';
 
 /// The tables a profile file may have (SPEC §12). Anything else at the top
 /// level is rejected by [loadProfile] — see [ProfileUnknownKeyException].
-const _knownTables = {'replicas', 'rules', 'options'};
+const _knownTables = {'replicas', 'rules', 'options', 'ssh'};
 
-/// The keys `[replicas]` may have.
+/// The keys `[replicas]` may have — and, since `[ssh]` is keyed by the same
+/// two replica sides (SPEC §8.1), the keys it may have too.
 const _knownReplicaKeys = {'a', 'b'};
 
 /// The keys `[rules]` may have.
@@ -18,6 +20,9 @@ const _knownRuleKeys = {'ignore', 'follow'};
 
 /// The keys `[options]` may have.
 const _knownOptionKeys = {'warn_size_bytes', 'jobs'};
+
+/// The keys an `[ssh.a]` / `[ssh.b]` table may have (SPEC §4.2).
+const _knownSshKeys = {'options', 'command'};
 
 /// Loads and validates the profile named [name] (SPEC §12).
 ///
@@ -70,6 +75,9 @@ Future<Profile> loadProfile(
   final options = _tableOf(table, 'options');
   _checkKnownKeys(file.path, options, _knownOptionKeys, prefix: 'options');
 
+  final ssh = _tableOf(table, 'ssh');
+  _checkKnownKeys(file.path, ssh, _knownReplicaKeys, prefix: 'ssh');
+
   return Profile(
     name: name,
     a: a,
@@ -77,6 +85,8 @@ Future<Profile> loadProfile(
     rules: rules,
     warnSizeBytes: options['warn_size_bytes'] as int?,
     jobs: options['jobs'] as int?,
+    sshA: _sshAccess(file.path, ssh, 'a'),
+    sshB: _sshAccess(file.path, ssh, 'b'),
   );
 }
 
@@ -148,6 +158,42 @@ Location _requireReplica(
   return Location.parse(value);
 }
 
+/// Reads `[ssh.<side>]` as an [SshAccess] (SPEC §4.2, §12), or the default
+/// access when the profile has no such table.
+///
+/// An empty string in either key is rejected rather than carried: an empty
+/// option becomes an argv word ssh reads as a destination, and an empty
+/// command becomes a remote shell line that starts with `agent`. Both fail
+/// far from the profile that caused them, which is the whole argument for
+/// catching them here, where the key can be named.
+SshAccess _sshAccess(String path, Map<String, dynamic> ssh, String side) {
+  final table = _tableOf(ssh, side);
+  _checkKnownKeys(path, table, _knownSshKeys, prefix: 'ssh.$side');
+
+  final options = _stringList(table, 'options');
+  if (options.any((option) => option.isEmpty)) {
+    throw ProfileInvalidValueException(
+      path,
+      'ssh.$side.options',
+      'an option is the empty string',
+    );
+  }
+
+  final command = table['command'] as String?;
+  if (command != null && command.isEmpty) {
+    throw ProfileInvalidValueException(
+      path,
+      'ssh.$side.command',
+      'it is empty',
+    );
+  }
+
+  return SshAccess(
+    options: options,
+    command: command ?? SshAccess.defaultCommand,
+  );
+}
+
 /// Reads `table[key]` as a `List<String>`, or an empty list when absent —
 /// `ignore` and `follow` are both optional (SPEC §9).
 List<String> _stringList(Map<String, dynamic> table, String key) {
@@ -191,6 +237,21 @@ class ProfileMissingReplicaException implements Exception {
   @override
   String toString() =>
       'Profile at $path is missing replica "$replica" in [replicas]';
+}
+
+/// Thrown by [loadProfile] when a key SPEC §12 does define carries a value
+/// it cannot use — fatal (SPEC §11.5, exit 3). Distinct from
+/// [ProfileFormatException], which is TOML the parser rejected: this is
+/// valid TOML saying something the tool has no reading for.
+class ProfileInvalidValueException implements Exception {
+  final String path;
+  final String key;
+  final String reason;
+
+  const ProfileInvalidValueException(this.path, this.key, this.reason);
+
+  @override
+  String toString() => 'Profile at $path has an invalid $key: $reason';
 }
 
 /// Thrown by [loadProfile] when the profile has a table or key that SPEC §12

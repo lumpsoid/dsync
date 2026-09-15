@@ -65,6 +65,88 @@ void main() {
     }
   });
 
+  group('Location.parse of the ssh:// form (SPEC §2)', () {
+    test('a destination containing slashes is one destination, not a path', () {
+      // The shape this form exists for: a socket-activated sshd, addressed
+      // the way ssh itself addresses it. Under the colon-before-slash rule
+      // the same string is a local directory of that name.
+      final location = Location.parse(
+        'ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes',
+      );
+      expect(location.user, 'qq');
+      expect(location.host, 'unix/run/ssh-unix-local/socket');
+      expect(location.path, '/tmp/notes');
+      expect(location.explicitSsh, isTrue);
+      expect(
+        Location.parse('unix/run/ssh-unix-local/socket:/tmp/notes').host,
+        isNull,
+      );
+    });
+
+    test('a bare alias needs no user', () {
+      final location = Location.parse('ssh://phone:/sdcard/notes');
+      expect(location.user, isNull);
+      expect(location.host, 'phone');
+      expect(location.path, '/sdcard/notes');
+      expect(location.explicitSsh, isTrue);
+    });
+
+    test('only the first colon separates; the path keeps its own', () {
+      final location = Location.parse('ssh://alias:/srv/log:old');
+      expect(location.host, 'alias');
+      expect(location.path, '/srv/log:old');
+    });
+
+    test('a relative remote path is left for the far side to resolve', () {
+      expect(Location.parse('ssh://alias:notes').path, 'notes');
+    });
+
+    test('a missing separator says which one is missing', () {
+      // Loudly, because the whole point of the form is that a remote
+      // destination never quietly becomes something else.
+      expect(
+        () => Location.parse('ssh://alias/srv/notes'),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'message',
+            contains('":"'),
+          ),
+        ),
+      );
+    });
+
+    for (final invalid in [
+      'ssh://',
+      'ssh://:',
+      'ssh://alias:',
+      'ssh://:/path',
+      'ssh://@alias:/path',
+    ]) {
+      test('rejects invalid location "$invalid"', () {
+        expect(() => Location.parse(invalid), throwsFormatException);
+      });
+    }
+  });
+
+  group('Location.toString', () {
+    for (final raw in [
+      '/abs/path',
+      'notes',
+      './log:old',
+      'phone:/sdcard/notes',
+      'me@phone:/sdcard/notes',
+      'ssh://phone:/sdcard/notes',
+      'ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes',
+    ]) {
+      test('spells "$raw" back exactly as it was written', () {
+        // The run header shows this before anything moves (SPEC §11.4), so a
+        // location that round-trips is what makes a mistyped one visible.
+        expect(Location.parse(raw).toString(), raw);
+      });
+    }
+  });
+
   group('Location.expandedPath', () {
     test('expands a leading ~ from HOME', () {
       expect(
@@ -123,6 +205,32 @@ void main() {
       expect(
         location.classify(localAddresses: {'192.168.1.10'}),
         Locality.remote,
+      );
+    });
+
+    test('an ssh:// destination is remote even when it is this machine', () {
+      // SPEC §4.1: the form declares remoteness rather than leaving it to be
+      // inferred, which is what makes "reach this machine through its own
+      // ssh" expressible at all.
+      final location = Location.parse('ssh://192.168.1.10:/abs/path');
+      expect(
+        location.classify(localAddresses: {'192.168.1.10'}),
+        Locality.remote,
+      );
+      expect(
+        Location.parse('ssh://localhost:/abs/path').classify(),
+        Locality.remote,
+      );
+    });
+  });
+
+  group('Location.consultsLocalAddresses', () {
+    test('only a host this tool would have to recognize needs the set', () {
+      expect(Location.parse('/abs/path').consultsLocalAddresses, isFalse);
+      expect(Location.parse('phone:/notes').consultsLocalAddresses, isTrue);
+      expect(
+        Location.parse('ssh://phone:/notes').consultsLocalAddresses,
+        isFalse,
       );
     });
   });

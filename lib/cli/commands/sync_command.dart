@@ -46,6 +46,8 @@ class SyncCommand extends Command<int> {
         batch: results.flag(CommonSyncFlags.flagBatch),
         json: results.flag(CommonSyncFlags.flagJson),
         ignore: results.multiOption(CommonSyncFlags.multiOptionIgnore),
+        sshOptions: results.multiOption(CommonSyncFlags.multiOptionSshOption),
+        remoteCommand: results.option(CommonSyncFlags.optionRemoteDsync),
         verbose: results.flag(CommonSyncFlags.flagVerbose),
         quiet: results.flag(CommonSyncFlags.flagQuiet),
         warnSizeRaw: results.option(CommonSyncFlags.optionWarnSize),

@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dsync/cli/profile/profile.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 
 import 'cli_options.dart';
 import 'cli_options_error.dart';
@@ -58,6 +59,15 @@ class EffectiveOptions {
   /// name for [forProfile], or `adhoc-<16 hex>` for [forAdHoc].
   final String profileId;
 
+  /// How the ssh transport reaches replica [a] when it is remote (SPEC
+  /// §4.2): the profile's `[ssh.a]` with this run's `--ssh-option` /
+  /// `--remote-dsync` folded in (SPEC §12), or those flags alone for an
+  /// ad-hoc pair. Unused for a side that runs in-process (SPEC §4.1).
+  final SshAccess sshA;
+
+  /// How the ssh transport reaches replica [b] — see [sshA].
+  final SshAccess sshB;
+
   const EffectiveOptions({
     required this.a,
     required this.b,
@@ -65,6 +75,8 @@ class EffectiveOptions {
     required this.warnSizeBytes,
     required this.jobs,
     required this.profileId,
+    required this.sshA,
+    required this.sshB,
   });
 
   /// Merges a loaded [profile] with [options] (SPEC §12).
@@ -115,6 +127,17 @@ class EffectiveOptions {
       warnSizeBytes: options.warnSizeBytes ?? profile.warnSizeBytes,
       jobs: options.jobs ?? profile.jobs,
       profileId: profile.name,
+      // Each side keeps its own `[ssh.a]`/`[ssh.b]`, since two hosts need
+      // not agree on which key opens them or where `dsync` lives; the flags
+      // are one run's worth and reach both (see [CliOptions.sshOptions]).
+      sshA: profile.sshA.withFlags(
+        options: options.sshOptions,
+        command: options.remoteCommand,
+      ),
+      sshB: profile.sshB.withFlags(
+        options: options.sshOptions,
+        command: options.remoteCommand,
+      ),
     );
   }
 
@@ -218,6 +241,14 @@ class EffectiveOptions {
     final canonicalSideA = aIsSideA ? canonicalA : canonicalB;
     final canonicalSideB = aIsSideA ? canonicalB : canonicalA;
 
+    // No profile to carry a per-side `[ssh.a]`/`[ssh.b]`, so both sides get
+    // the run's flags and nothing else — which is also why the canonical
+    // reordering above cannot mismatch them: the two are identical.
+    final access = SshAccess(
+      options: options.sshOptions,
+      command: options.remoteCommand ?? SshAccess.defaultCommand,
+    );
+
     return EffectiveOptions(
       a: sideA,
       b: sideB,
@@ -225,6 +256,8 @@ class EffectiveOptions {
       warnSizeBytes: options.warnSizeBytes,
       jobs: options.jobs,
       profileId: _adHocProfileId(canonicalSideA, canonicalSideB),
+      sshA: access,
+      sshB: access,
     );
   }
 }
@@ -234,6 +267,13 @@ class EffectiveOptions {
 /// order — joined by a NUL byte, truncated to the first 16 hex characters.
 /// A NUL cannot occur in a POSIX path, so no two distinct pairs can collide
 /// by the separator landing in a different place than intended.
+///
+/// Only the two locations go in. Neither the `ssh://` spelling nor the
+/// [SshAccess] reaching a side is part of a replica's identity: how a tree
+/// is reached says nothing about which tree it is, and an id that moved
+/// because a run added `-v` — or because the same pair was written
+/// `host:/p` once and `ssh://host:/p` the next time — would hand that run a
+/// fresh, empty archive and silently re-mirror everything (SPEC §5.2).
 String _adHocProfileId(String canonicalSideA, String canonicalSideB) {
   final joined = '$canonicalSideA $canonicalSideB';
   final digest = sha256.convert(utf8.encode(joined));

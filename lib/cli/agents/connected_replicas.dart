@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
@@ -71,11 +72,12 @@ Future<ConnectedReplicas> resolveReplicaAgents(
   Future<Set<String>> Function() localAddressLookup = systemLocalAddresses,
   String sshExecutable = 'ssh',
 }) async {
-  // Skipped entirely when neither location names a host at all — the only
-  // shape `classify` ever actually consults it for — so two plain local
-  // paths never pay for `NetworkInterface.list()`, real I/O this run has no
-  // use for.
-  final needsLocalAddresses = options.a.host != null || options.b.host != null;
+  // Skipped entirely when neither location gives `classify` anything to ask
+  // about — a plain local path, or an `ssh://` destination that is remote by
+  // declaration (SPEC §4.1) — so those runs never pay for
+  // `NetworkInterface.list()`, real I/O they have no use for.
+  final needsLocalAddresses =
+      options.a.consultsLocalAddresses || options.b.consultsLocalAddresses;
   final localAddresses = needsLocalAddresses
       ? await localAddressLookup()
       : const <String>{};
@@ -87,6 +89,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
   final sideA = await _resolveSide(
     side: 'a',
     location: options.a,
+    access: options.sshA,
     profileId: options.profileId,
     jobs: jobs,
     environment: environment,
@@ -99,6 +102,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
     sideB = await _resolveSide(
       side: 'b',
       location: options.b,
+      access: options.sshB,
       profileId: options.profileId,
       jobs: jobs,
       environment: environment,
@@ -126,6 +130,7 @@ typedef _ResolvedSide = ({Agent agent, ReplicaDiagnostics diagnostics});
 Future<_ResolvedSide> _resolveSide({
   required String side,
   required Location location,
+  required SshAccess access,
   required String profileId,
   required int jobs,
   required Map<String, String> environment,
@@ -156,6 +161,7 @@ Future<_ResolvedSide> _resolveSide({
     Locality.remote => _resolveRemoteSide(
       side: side,
       location: location,
+      access: access,
       profileId: profileId,
       jobs: jobs,
       sshExecutable: sshExecutable,
@@ -209,6 +215,7 @@ Future<_ResolvedSide> _resolveLocalSide({
 Future<_ResolvedSide> _resolveRemoteSide({
   required String side,
   required Location location,
+  required SshAccess access,
   required String profileId,
   required int jobs,
   required String sshExecutable,
@@ -223,6 +230,7 @@ Future<_ResolvedSide> _resolveRemoteSide({
     channel = await SshChannel.connect(
       host: host,
       user: user,
+      access: access,
       executable: sshExecutable,
     );
   } catch (error) {
@@ -251,7 +259,7 @@ Future<_ResolvedSide> _resolveRemoteSide({
       lockPath: lockPath,
       location: location,
       locality: Locality.remote,
-      sshArgs: sshArgsFor(host: host, user: user),
+      sshArgs: sshArgsFor(host: host, user: user, access: access),
     ),
   );
 }

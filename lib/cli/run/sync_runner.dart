@@ -164,7 +164,8 @@ class SyncRunner {
         sharedLocalAddressLookup = localAddressLookup;
       case AdHocTarget():
         final needsLocalAddresses =
-            target.locationA.host != null || target.locationB.host != null;
+            target.locationA.consultsLocalAddresses ||
+            target.locationB.consultsLocalAddresses;
         final localAddresses = needsLocalAddresses
             ? await localAddressLookup()
             : const <String>{};

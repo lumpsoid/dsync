@@ -277,7 +277,10 @@ class HumanRenderer {
     final locality = diagnostics.locality == Locality.inProcess
         ? 'local'
         : 'ssh';
-    out.writeln('$side  ${_formatLocation(diagnostics.location)}  $locality');
+    // `Location.toString` spells a location back the way SPEC §2 writes it,
+    // unexpanded and uncanonicalized, so a mistyped one reads as the mistake
+    // it is — including the `ssh://` prefix that decided this row says `ssh`.
+    out.writeln('$side  ${diagnostics.location}  $locality');
   }
 
   /// One shared "last synced" line when both sides agree to the minute,
@@ -306,16 +309,6 @@ class HumanRenderer {
       '  never deleted — there is no way yet to tell a new file from a '
       'deleted one.',
     );
-  }
-
-  /// [location] exactly as typed/configured (no expansion, no
-  /// canonicalization) — `user@host:path`, `host:path`, or a bare local
-  /// `path`, matching the grammar `Location.parse` accepts (SPEC §2).
-  String _formatLocation(Location location) {
-    final host = location.host;
-    if (host == null) return location.path;
-    final user = location.user;
-    return '${user == null ? '' : '$user@'}$host:${location.path}';
   }
 
   String _formatTimestamp(DateTime time) {

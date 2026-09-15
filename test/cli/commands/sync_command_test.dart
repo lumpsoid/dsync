@@ -81,6 +81,28 @@ void main() {
       expect(options.warnSizeBytes, 1024);
     });
 
+    test('the ssh flags parse onto the options object (SPEC §4.2)', () async {
+      final runSync = _RecordingRunSync();
+      final command = SyncCommand(runSync: runSync.call);
+      // `=` rather than a space, since every value here starts with `-` or
+      // is one argv word of an option that does.
+      await buildRunner(command).run([
+        'sync',
+        '~/notes',
+        'ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes',
+        '--ssh-option=-i',
+        '--ssh-option=~/.ssh/id_ssshd',
+        '--remote-dsync=/home/qq/.local/bin/dsync',
+      ]);
+
+      final options = runSync.captured!;
+      expect(options.sshOptions, ['-i', '~/.ssh/id_ssshd']);
+      expect(options.remoteCommand, '/home/qq/.local/bin/dsync');
+      final target = options.target as AdHocTarget;
+      expect(target.locationB.host, 'unix/run/ssh-unix-local/socket');
+      expect(target.locationB.path, '/tmp/notes');
+    });
+
     test(
       'the exit code SyncRunner.run resolves is returned unchanged',
       () async {

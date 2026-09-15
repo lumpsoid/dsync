@@ -9,7 +9,10 @@ import 'package:dsync/cli/options/sync_target.dart';
 import 'package:dsync/cli/run/sync_runner.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:test/test.dart';
+
+import '../../support/real_ssh.dart';
 
 /// task 185c8f: the interleaving nothing else in the suite reaches.
 ///
@@ -74,7 +77,7 @@ import 'package:test/test.dart';
 /// and macOS filesystem does. On a one-second-granularity filesystem SPEC
 /// §5.2's fast path would legitimately miss a same-size rewrite, and this
 /// would fail for that rather than for a bug.
-void main() {
+Future<void> main() async {
   final rounds = _intFromEnvironment(_roundsVariable, 12);
   final seed = _intFromEnvironment(_seedVariable, Random().nextInt(1 << 32));
 
@@ -153,7 +156,7 @@ void main() {
     );
   });
 
-  _remoteSoakGroup(rounds: rounds, seed: seed);
+  await _remoteSoakGroup(rounds: rounds, seed: seed);
 }
 
 /// The same soak against a real remote agent (SPEC §4.2) — task 185c8f: "the
@@ -165,16 +168,37 @@ void main() {
 /// streamed over stdio rather than copied on one filesystem — is soaked as
 /// hard as the local half, round after round.
 ///
-/// The far side is reached through the `ssh` stand-in
-/// `output_and_remote_e2e_test.dart` already uses: a script that ignores
-/// ssh's arguments and execs this file's own compiled binary. Nothing about
+/// By default the far side is reached through the `ssh` stand-in
+/// `output_and_remote_e2e_test.dart` also uses: a script that ignores ssh's
+/// arguments and execs this file's own compiled binary. Nothing about
 /// convergence is specific to ssh being ssh — `real_ssh_e2e_test.dart` proves
-/// that once, against a real sshd, and can only run on a machine that has
-/// one. Gating a soak on that would leave the less proven code path soaked
-/// nowhere, so this runs everywhere instead.
-void _remoteSoakGroup({required int rounds, required int seed}) {
-  group('convergence soak over $rounds rounds, against a remote agent (SPEC '
-      '§4.2)', () {
+/// that once, against a real sshd, and only a machine that has one can run
+/// it. Gating a soak on that would leave the less proven code path soaked
+/// nowhere, so this runs everywhere.
+///
+/// task 50de3d: setting `DSYNC_SSH_DESTINATION` ([RealSsh]) points the same
+/// rounds at a real ssh session instead — every round then opens and tears
+/// down a real connection, which is slower and is why it is not the default.
+/// The two modes differ only in how the far side is reached; everything
+/// below the transport is the same soak either way.
+Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
+  // Only when asked: a probe costs a connection attempt, and the default
+  // suite has no reason to spend one.
+  final probe = RealSsh.isConfigured ? await RealSsh.probe() : null;
+  if (probe is SshUnavailable) {
+    // Named, not silently ignored: a machine that asked for real ssh and
+    // quietly got the stand-in would report a soak it did not run.
+    throw StateError(
+      '${RealSsh.destinationVariable} is set, but: ${probe.reason}',
+    );
+  }
+  final ssh = probe as SshAvailable?;
+  final transport = ssh == null
+      ? 'an `ssh` stand-in'
+      : 'real ssh to "${ssh.destination}"';
+
+  group('convergence soak over $rounds rounds, against a remote agent over '
+      '$transport (SPEC §4.2)', () {
     late Directory binDir;
     late String binaryPath;
 
@@ -210,22 +234,46 @@ void _remoteSoakGroup({required int rounds, required int seed}) {
       // The far side's own state directory. `SshChannel.connect` never
       // threads an environment to the process it spawns — on a real
       // connection the remote host's login environment fills that role — so
-      // the stand-in exports it before exec'ing the agent, and without it the
-      // "remote" side would read and write this machine's real dsync state.
+      // the stand-in exports it before exec'ing the agent (and the real-ssh
+      // mode puts it in the remote command `--remote-dsync` names). Without
+      // it the "remote" side would read and write this machine's real dsync
+      // state.
       final remoteStateHome = '${tempDir.path}/remote-state';
-      final sshStandIn = File('${tempDir.path}/fake-ssh.sh');
-      await sshStandIn.writeAsString(
-        '#!/bin/sh\n'
-        'export XDG_STATE_HOME="$remoteStateHome"\n'
-        'exec "$binaryPath" agent --stdio\n',
-      );
-      await Process.run('chmod', ['+x', sshStandIn.path]);
 
-      final target = AdHocTarget.parse(
-        localRoot.path,
-        'me@fake-remote-host:${remoteRoot.path}',
+      // The only difference between the two modes: which executable is
+      // spawned, how the far side is addressed, and what runs over there.
+      final String sshExecutable;
+      final String remoteLocation;
+      final List<String> sshOptions;
+      final String remoteCommand;
+      if (ssh == null) {
+        final sshStandIn = File('${tempDir.path}/fake-ssh.sh');
+        await sshStandIn.writeAsString(
+          '#!/bin/sh\n'
+          'export XDG_STATE_HOME="$remoteStateHome"\n'
+          'exec "$binaryPath" agent --stdio\n',
+        );
+        await Process.run('chmod', ['+x', sshStandIn.path]);
+        sshExecutable = sshStandIn.path;
+        remoteLocation = 'me@fake-remote-host:${remoteRoot.path}';
+        sshOptions = const [];
+        remoteCommand = SshAccess.defaultCommand; // The stand-in ignores it.
+      } else {
+        sshExecutable = 'ssh';
+        remoteLocation = ssh.locationFor(remoteRoot.path);
+        sshOptions = ssh.options;
+        remoteCommand = ssh.remoteCommandFor(
+          binary: binaryPath,
+          stateHome: remoteStateHome,
+        );
+      }
+
+      final target = AdHocTarget.parse(localRoot.path, remoteLocation);
+      final options = _batchOptions(
+        target,
+        sshOptions: sshOptions,
+        remoteCommand: remoteCommand,
       );
-      final options = _batchOptions(target);
       final effective = EffectiveOptions.forAdHoc(
         target,
         options,
@@ -267,11 +315,12 @@ void _remoteSoakGroup({required int rounds, required int seed}) {
         sync: () => SyncRunner(
           environment: localEnvironment,
           workingDirectory: tempDir.path,
-          // No real lookup: `fake-remote-host` has to classify as remote
-          // (SPEC §4.1) whatever this machine's interfaces say, or the run
-          // never takes the agent path at all.
+          // No real lookup: the far side has to classify as remote (SPEC
+          // §4.1) whatever this machine's interfaces say, or the run never
+          // takes the agent path at all. The `ssh://` form says so itself;
+          // `fake-remote-host` needs the empty set to say it.
           localAddressLookup: () async => const {},
-          sshExecutable: sshStandIn.path,
+          sshExecutable: sshExecutable,
         ).run(options),
       );
     });
@@ -303,11 +352,17 @@ String _reproduceHint(int seed) =>
 /// The flags every soak run uses: apply everything non-conflicting without
 /// asking (SPEC §11.3), and print nothing but the summary line, since a
 /// couple of hundred rounds of plan tables is not output anyone reads.
-CliOptions _batchOptions(SyncTarget target) => CliOptions(
+CliOptions _batchOptions(
+  SyncTarget target, {
+  List<String> sshOptions = const [],
+  String? remoteCommand,
+}) => CliOptions(
   target: target,
   dryRun: false,
   batch: true,
   json: false,
+  sshOptions: sshOptions,
+  remoteCommand: remoteCommand,
   verbose: false,
   quiet: true,
 );

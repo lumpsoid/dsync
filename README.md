@@ -27,9 +27,16 @@ dsync status <profile>            # scan + reconcile + print plan, apply nothing
 dsync agent --stdio               # started by ssh on the remote host
 ```
 
-A location is a local path or `user@host:path`; in an ad-hoc pair the local
-one comes first. Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml`
-(SPEC §12), archives and locks in `$XDG_STATE_HOME/dsync/` (SPEC §8.3).
+A location is a local path, `user@host:path`, or `ssh://[user@]destination:path`;
+in an ad-hoc pair the local one comes first. The `ssh://` form hands everything
+up to the first `:` to `ssh` as its destination, unexamined — a `~/.ssh/config`
+alias, `unix/run/ssh-unix-local/socket`, anything ssh accepts — and is always
+remote, even when it leads back to this machine (SPEC §4.1). `--ssh-option`
+passes an argv word to ssh itself, and `--remote-dsync` names the command that
+starts the agent on the far side when the bare `dsync` is not on its PATH.
+
+Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
+archives and locks in `$XDG_STATE_HOME/dsync/` (SPEC §8.3).
 
 Every run prints a header naming both replicas and when the pair last synced,
 before anything moves. `--dry-run` and `status` show the plan and apply

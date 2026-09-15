@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 
 /// A parsed profile (SPEC §12): the two replicas a sync run pairs, the rules
 /// that apply to it, and its optional size-warning and job-count options.
@@ -38,6 +39,16 @@ class Profile {
   /// `[options] jobs`, or `null` when the profile does not set it.
   final int? jobs;
 
+  /// `[ssh.a]` (SPEC §4.2, §12): how the ssh transport reaches replica [a]
+  /// when it is remote, or the default access when the profile says nothing.
+  /// Ignored for a replica that runs in-process (SPEC §4.1) — a profile may
+  /// carry one for a side that is local on this machine and remote from the
+  /// other end of the pair.
+  final SshAccess sshA;
+
+  /// `[ssh.b]` — see [sshA].
+  final SshAccess sshB;
+
   const Profile({
     required this.name,
     required this.a,
@@ -45,5 +56,7 @@ class Profile {
     required this.rules,
     this.warnSizeBytes,
     this.jobs,
+    this.sshA = const SshAccess(),
+    this.sshB = const SshAccess(),
   });
 }

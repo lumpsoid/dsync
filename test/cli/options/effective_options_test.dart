@@ -5,6 +5,7 @@ import 'package:dsync/cli/options/sync_target.dart';
 import 'package:dsync/cli/profile/profile.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -13,6 +14,8 @@ void main() {
   CliOptions optionsWith({
     SyncTarget? target,
     List<String> ignore = const [],
+    List<String> sshOptions = const [],
+    String? remoteCommand,
     String? warnSizeRaw,
     String? jobsRaw,
   }) {
@@ -22,6 +25,8 @@ void main() {
       batch: false,
       json: false,
       ignore: ignore,
+      sshOptions: sshOptions,
+      remoteCommand: remoteCommand,
       verbose: false,
       quiet: false,
       warnSizeRaw: warnSizeRaw,
@@ -38,6 +43,51 @@ void main() {
       warnSizeBytes: 500,
       jobs: 2,
     );
+
+    test('each side keeps its own [ssh.a]/[ssh.b], and the run\'s flags reach '
+        'both (SPEC §4.2, §12)', () {
+      final twoRemotes = Profile(
+        name: 'both',
+        a: Location.parse('ssh://work:/srv/notes'),
+        b: Location.parse('ssh://phone:/sdcard/notes'),
+        rules: RuleSet(),
+        sshA: const SshAccess(options: ['-p', '2222']),
+        sshB: const SshAccess(
+          options: ['-i', '/keys/id_phone'],
+          command: '/opt/bin/dsync',
+        ),
+      );
+
+      final effective = EffectiveOptions.forProfile(
+        twoRemotes,
+        optionsWith(sshOptions: const ['-v']),
+      );
+
+      // Additive, per side: neither host's identity or port is dropped to
+      // make room for the flag.
+      expect(effective.sshA.options, ['-p', '2222', '-v']);
+      expect(effective.sshB.options, ['-i', '/keys/id_phone', '-v']);
+      expect(effective.sshA.command, SshAccess.defaultCommand);
+      expect(effective.sshB.command, '/opt/bin/dsync');
+    });
+
+    test('--remote-dsync overrides every side\'s profile command', () {
+      final withCommand = Profile(
+        name: 'both',
+        a: Location.parse('ssh://work:/srv/notes'),
+        b: Location.parse('ssh://phone:/sdcard/notes'),
+        rules: RuleSet(),
+        sshB: const SshAccess(command: '/opt/bin/dsync'),
+      );
+
+      final effective = EffectiveOptions.forProfile(
+        withCommand,
+        optionsWith(remoteCommand: '/tmp/build/dsync'),
+      );
+
+      expect(effective.sshA.command, '/tmp/build/dsync');
+      expect(effective.sshB.command, '/tmp/build/dsync');
+    });
 
     test('a flag beats the profile for warn_size_bytes', () {
       final options = optionsWith(warnSizeRaw: '999');
@@ -130,6 +180,57 @@ void main() {
       expect(effectiveForward.a.path, '/home/me/a');
       expect(effectiveForward.b.path, '/home/me/b');
       expect(effectiveForward.profileId, startsWith('adhoc-'));
+    });
+
+    test('both sides get the run\'s ssh flags — there is no profile to '
+        'differ from', () {
+      final target = AdHocTarget.parse('/home/me/a', 'ssh://phone:/sdcard/b');
+
+      final effective = EffectiveOptions.forAdHoc(
+        target,
+        optionsWith(
+          sshOptions: const ['-i', '/keys/id_x'],
+          remoteCommand: '/opt/bin/dsync',
+        ),
+      );
+
+      for (final access in [effective.sshA, effective.sshB]) {
+        expect(access.options, ['-i', '/keys/id_x']);
+        expect(access.command, '/opt/bin/dsync');
+      }
+    });
+
+    test('how a replica is reached is not part of its identity', () {
+      // SPEC §5.2, §8.1: the archive keyed by this id *is* change detection,
+      // so a run that added an ssh option must not get a fresh, empty one.
+      final target = AdHocTarget.parse('/home/me/a', 'ssh://phone:/sdcard/b');
+
+      final plain = EffectiveOptions.forAdHoc(target, optionsWith());
+      final withAccess = EffectiveOptions.forAdHoc(
+        target,
+        optionsWith(sshOptions: const ['-v'], remoteCommand: '/opt/bin/dsync'),
+      );
+
+      expect(plain.profileId, withAccess.profileId);
+    });
+
+    test('an ssh:// side is remote whatever this machine\'s addresses say, '
+        'so the local path is still A', () {
+      // SPEC §4.1: the plain form would classify in-process here and take
+      // the A slot away from the genuinely local path.
+      final target = AdHocTarget.parse(
+        '/home/me/notes',
+        'ssh://192.168.1.10:/srv/notes',
+      );
+
+      final effective = EffectiveOptions.forAdHoc(
+        target,
+        optionsWith(),
+        localAddresses: {'192.168.1.10'},
+      );
+
+      expect(effective.a.path, '/home/me/notes');
+      expect(effective.b.host, '192.168.1.10');
     });
 
     test('a mixed pair keeps the local side as A', () {

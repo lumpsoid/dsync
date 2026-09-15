@@ -174,6 +174,15 @@ class RemoteAgent implements Agent {
     final release = await _acquireWire();
     try {
       await _channel.close();
+      // [_frames] holds its subscription to [Channel.input] *paused* between
+      // `moveNext()` calls — that is how a `StreamIterator` works — and a
+      // paused subscription on a pipe keeps the file descriptor registered
+      // with the event loop whatever the peer does with its end. Closing the
+      // channel is not enough to release it: a CLI run over a real ssh
+      // session printed its summary, exited `RunController`, and then sat
+      // there forever with nothing left to do. Cancelling is what lets the
+      // process exit.
+      await _frames.cancel();
     } finally {
       release();
     }

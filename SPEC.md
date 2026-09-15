@@ -19,7 +19,11 @@ Working name: `dsync` (placeholder, rename freely).
 
 ## 2. Concepts
 
-- **Replica** — a directory tree at a location. A location is either a local path or `user@host:path`.
+- **Replica** — a directory tree at a location. A location is a local path, `user@host:path`, or `ssh://[user@]destination:path`.
+  - The first two are told apart by ssh's and rsync's own rule: a colon separates a host from a path only when it comes before the first `/`. That keeps `./log:old` a local path, and it is why `notes` is a relative path rather than a host.
+  - That rule can only describe a destination shaped like a hostname, and `ssh` reaches plenty that are not: a `~/.ssh/config` `Host` alias, a `.host` name, `unix/run/ssh-unix-local/socket` for a socket-activated sshd. `ssh://` means "this one is for ssh, hands off": everything between the scheme and the first `:` is handed to `ssh` as its destination, verbatim, slashes included — which is why the colon separates it from the path and a `/` cannot.
+
+
 - **Root** — the top directory of a replica. All paths are relative to the root.
 - **Profile** — a named pair of replicas plus options (ignore rules, thresholds). Lives in a TOML file.
 - **Agent** — the component that has direct filesystem access to one replica. Every replica is accessed through an agent, whether local or remote.
@@ -38,9 +42,13 @@ Working name: `dsync` (placeholder, rename freely).
 ### 4.1 Location resolution
 A location `user@host:path` is resolved before the run. If `host` is `localhost`, an address of this machine, or absent, the agent runs **in-process**. Otherwise the agent runs as a **remote process**. Both cases use the same `Agent` interface; the caller does not know which one it got.
 
+An `ssh://` location (§2) is **remote by declaration**, and no address is consulted for it. Inference is what the form opts out of: a config alias can point anywhere, including back at this machine, and a unix socket or a `.host` name has no address to compare at all — there is nothing honest to guess with. Asking `ssh -G <destination>` what ssh itself resolved was the alternative considered; it was rejected as a process spawn and a second parser per remote side that still could not answer for the shapes that motivated the form. It also follows that reaching *this* machine through its own `ssh` is a thing a user can ask for, rather than something quietly turned back into an in-process run.
+
 ### 4.2 Remote agent
 - The same binary is installed on the remote host and started as `dsync agent --stdio` over `ssh`.
 - v0 transport: spawn the system `ssh` executable. The channel is a bidirectional byte stream; the transport is behind a `Channel` interface so a Dart SSH client or a plain socket can replace `ssh` later (needed for the Flutter head, which cannot rely on a system `ssh` binary — deferred).
+- The destination is handed to `ssh` exactly as the location gave it and is never resolved, rewritten, or probed here. Whatever `ssh` accepts as its destination argument, dsync addresses.
+- Two things about a remote replica are configurable **per replica**, since SPEC §4.1 allows a pair of two remotes and two hosts need not agree on either: the **options** passed to `ssh` before the destination (`-p`, `-i`, `-o …`), and the **command** that starts the agent on the far side, which defaults to the bare word `dsync` resolved on the remote *non-interactive* PATH. Both come from the profile (§12) and the command line (§11.2). `~/.ssh/config` already answers port, identity, user and proxy command per destination and remains the better place for them; the options exist for what it cannot say, and for a one-off.
 - Protocol: framed messages over the stream. Frame = 1 byte type + 4 byte big-endian length + payload. Type `0` = UTF-8 JSON control message, type `1` = raw file bytes. First exchange is a version handshake; mismatched protocol versions abort the run.
 - Agent operations: `hello`, `lock`, `unlock`, `scan`, `readFile` (streamed), `writeFile` (streamed, temp + rename, set mtime/mode), `delete`, `removeEmptyDirs`, `archiveCommit`.
 - `hello` carries the replica this connection should serve (root path — unexpanded — profile id, side, job count) and replies with that replica's archive last-commit time (or `null`), since the initiator cannot `stat` an archive on the remote host.
@@ -176,8 +184,12 @@ dsync status <profile>            # scan + reconcile + print plan, apply nothing
 --ignore <glob>       additive to profile
 --warn-size <bytes>
 --jobs <n>            hash parallelism
+--ssh-option <arg>    one argv word for ssh itself, before the destination;
+                      repeatable, additive to the profile
+--remote-dsync <cmd>  the command that starts the agent on the far side
 --verbose / --quiet
 ```
+`--ssh-option` and `--remote-dsync` apply to every remote replica of the run. The value that reaches a replica is per replica (§4.2); a run whose two remotes need *different* values is what a profile's `[ssh.a]`/`[ssh.b]` is for.
 
 ### 11.3 Interactivity
 Default is interactive: the plan is shown, conflicts first, then each proposed action; the user accepts, skips, or picks a direction per item, or accepts all remaining. `--batch` skips the prompts for non-conflicts. With `--batch`, conflicts are never resolved automatically.
@@ -218,8 +230,14 @@ follow = ["shared"]
 [options]
 warn_size_bytes = 500_000_000
 jobs = 4
+
+[ssh.b]
+options = ["-i", "~/.ssh/id_phone"]
+command = "/data/data/com.termux/files/usr/bin/dsync"
 ```
-Command-line flags override profile options. `ignore` is additive.
+Command-line flags override profile options. `ignore` is additive, and so is `--ssh-option`, for the same reason: a profile's `-i` is what makes the connection work at all, and a `--ssh-option` typed once to debug a run must not silently drop it. Where the same ssh option is given twice, ssh's own precedence decides.
+
+`[ssh.a]` and `[ssh.b]` are keyed by the replica side they configure (§4.2), both optional, as is either key within them. They are ignored for a side that runs in-process — a profile may carry one for a replica that is local on this machine and remote from the other end of the pair.
 
 ## 13. Project layout
 

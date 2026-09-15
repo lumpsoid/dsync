@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
 
@@ -32,6 +33,8 @@ void main() {
     Location a,
     Location b, {
     String profileId = 'test-profile',
+    SshAccess sshA = const SshAccess(),
+    SshAccess sshB = const SshAccess(),
   }) {
     return EffectiveOptions(
       a: a,
@@ -40,6 +43,8 @@ void main() {
       warnSizeBytes: null,
       jobs: null,
       profileId: profileId,
+      sshA: sshA,
+      sshB: sshB,
     );
   }
 
@@ -177,6 +182,45 @@ void main() {
         await result.agentB.disconnect();
       },
     );
+
+    test('an ssh:// destination resolves remote even when it is an address of '
+        'this machine, and its access reaches the argv', () async {
+      // SPEC §4.1, §4.2: the pair this task exists for — a destination
+      // ssh knows how to reach, a key that is not a default identity, and
+      // a `dsync` the remote non-interactive PATH does not have.
+      final rootA = await tempDir.createTemp('root-a');
+
+      final result = await resolveReplicaAgents(
+        optionsFor(
+          Location.parse(rootA.path),
+          Location.parse('ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes'),
+          sshB: const SshAccess(
+            options: ['-i', '~/.ssh/id_ssshd'],
+            command: '/home/qq/.local/bin/dsync',
+          ),
+        ),
+        environment: stateEnv,
+        // Says the destination is this machine. The plain form would run
+        // it in-process on that answer; the ssh:// form does not ask.
+        localAddressLookup: () async => {'unix/run/ssh-unix-local/socket'},
+        sshExecutable: '/usr/bin/true',
+      );
+
+      expect(result.agentB, isA<RemoteAgent>());
+      expect(result.diagnosticsB.locality, Locality.remote);
+      expect(result.diagnosticsB.sshArgs, [
+        '-i',
+        '~/.ssh/id_ssshd',
+        '-T',
+        'qq@unix/run/ssh-unix-local/socket',
+        '/home/qq/.local/bin/dsync',
+        'agent',
+        '--stdio',
+      ]);
+
+      await result.agentA.disconnect();
+      await result.agentB.disconnect();
+    });
   });
 
   group('unreachable replica', () {

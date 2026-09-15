@@ -2,10 +2,21 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 
 /// The argv passed to the `ssh` executable to reach [host] and start the
 /// remote agent (SPEC §4.2).
+///
+/// [host] is handed to ssh exactly as given and is never examined here — it
+/// may be a hostname, a `~/.ssh/config` alias, or a socket destination like
+/// `unix/run/ssh-unix-local/socket` (see `Location.sshScheme`). Resolving it
+/// is ssh's job, and duplicating any part of that resolution is how this
+/// tool would come to disagree with the connection it just opened.
+///
+/// [SshAccess.options] go before the destination, where ssh reads its own
+/// options; [SshAccess.command] takes the place of the bare `dsync`, for a
+/// far side that keeps it somewhere the non-interactive PATH does not reach.
 ///
 /// `-T` disables pseudo-terminal allocation: the connection carries the
 /// framed binary protocol (SPEC §4.2), and a pty would echo input and
@@ -13,12 +24,12 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 List<String> sshArgsFor({
   required String host,
   String? user,
-  List<String> extraArgs = const [],
+  SshAccess access = const SshAccess(),
 }) => [
-  ...extraArgs,
+  ...access.options,
   '-T',
   user == null ? host : '$user@$host',
-  'dsync',
+  access.command,
   'agent',
   '--stdio',
 ];
@@ -70,18 +81,18 @@ class SshChannel implements Channel {
   /// nothing to report but a closed channel.
   List<String> get recentStderr => List.unmodifiable(_recentStderr);
 
-  /// Spawns `ssh` to reach [host] (as [user], if given) and starts
-  /// `dsync agent --stdio` there. [extraArgs] are inserted before the
-  /// destination, e.g. `-p`/`-i`. [executable] is overridable for tests.
+  /// Spawns `ssh` to reach [host] (as [user], if given) and starts the agent
+  /// there, per [access] — see [sshArgsFor]. [executable] is overridable for
+  /// tests.
   static Future<SshChannel> connect({
     required String host,
     String? user,
-    List<String> extraArgs = const [],
+    SshAccess access = const SshAccess(),
     String executable = 'ssh',
   }) async {
     final process = await Process.start(
       executable,
-      sshArgsFor(host: host, user: user, extraArgs: extraArgs),
+      sshArgsFor(host: host, user: user, access: access),
     );
     return SshChannel._(process);
   }
