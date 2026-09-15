@@ -63,3 +63,28 @@ p.Style hostPathStyle() {
     ),
   };
 }
+
+/// Whether [pathStyle] is the one [hostPathStyle] ever maps to a Windows
+/// host — not a third real read of `Platform.operatingSystem`, but a pure
+/// function of the [p.Style] value [hostPathStyle] already resolved once at
+/// this same edge, for the platform fact `_applyMode` needs (SPEC §3,
+/// §7.4): Windows has no `chmod` to shell out to and no POSIX
+/// permission-bit model to translate one into — ACLs are a different shape,
+/// not a stricter or laxer version of the same one — so v1 does not attempt
+/// a translation; `mode` is simply absent on a Windows replica.
+///
+/// `LocalAgent` takes the result as a plain `isWindowsReplica` value rather
+/// than reading `Platform.operatingSystem` (or even `p.Style`) itself, the
+/// same "resolved once, threaded down" shape [hostPathStyle] already
+/// follows — so a test can make `_applyMode` recognize a Windows replica
+/// ahead of time without a Windows host, and without paying the
+/// process-spawn attempt a stock Windows host would otherwise guarantee
+/// fails once per differing-mode file until `_chmodUnavailable` latches.
+///
+/// A second, independent read of `Platform.operatingSystem` for this same
+/// fact was deliberately not added: every v1 target's path style already
+/// determines it (Windows is `/`-and-`\`-spelled and has no `chmod`; the
+/// other four are `/`-spelled and do), so a second switch over the same
+/// five branches would only be able to drift from [hostPathStyle]'s, never
+/// usefully disagree with it.
+bool isWindowsPathStyle(p.Style pathStyle) => pathStyle == p.Style.windows;

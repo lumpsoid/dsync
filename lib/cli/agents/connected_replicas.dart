@@ -21,6 +21,7 @@ import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:path/path.dart' as p;
 
+import '../host_platform.dart';
 import 'local_addresses.dart';
 import 'replica_unreachable_exception.dart';
 
@@ -89,8 +90,12 @@ import 'replica_unreachable_exception.dart';
 /// needs to know whether *this* host's own filesystem paths are `/`- or
 /// `\`-spelled, the same "resolved once at the CLI edge, threaded down"
 /// shape `platform` already is — `lib/cli/host_platform.dart`'s
-/// `hostPathStyle()` is that resolution, for a real run. [localAddressLookup]
-/// defaults to [systemLocalAddresses] — the one piece of real I/O this
+/// `hostPathStyle()` is that resolution, for a real run. A local side's
+/// `LocalAgent` (below) also needs to know whether it can shell out to
+/// `chmod` at all (SPEC §3, §7.4: Windows cannot); that rides along on the
+/// same resolved [pathStyle] via `isWindowsPathStyle` rather than a second,
+/// independent read. [localAddressLookup] defaults to
+/// [systemLocalAddresses] — the one piece of real I/O this
 /// needs — so a test can drive both localities without a network.
 /// [sshExecutable] is the `ssh` binary to spawn for a remote side
 /// (`SshChannel.connect`'s own `executable` parameter); overridable so a
@@ -269,6 +274,11 @@ Future<_ResolvedSide> _resolveLocalSide({
     // `ReplicaInfo.archivePath` — the authoritative value SPEC §11.4's run
     // header uses, in place of the label below.
     archivePath: archivePath,
+    // SPEC §3, §7.4: no `chmod` on Windows. Derived from the same
+    // `pathStyle` already resolved for this side rather than a second,
+    // independent platform read — see `isWindowsPathStyle`'s own doc
+    // comment for why that is safe.
+    isWindowsReplica: isWindowsPathStyle(pathStyle),
   );
 
   return (

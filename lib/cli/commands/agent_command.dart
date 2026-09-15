@@ -264,10 +264,14 @@ class AgentCommand extends Command<int> {
   /// `environment` is not taken as one here either. `hostPathStyle()` (SPEC
   /// §3's read-side path conversion) is the same story again: this is the
   /// process that actually walks this replica's filesystem, so it reads its
-  /// own host's real path style rather than trusting the initiator's.
+  /// own host's real path style rather than trusting the initiator's — and
+  /// [LocalAgent]'s `isWindowsReplica` (SPEC §3, §7.4: no `chmod` on
+  /// Windows) rides along on that same resolved `pathStyle` via
+  /// `isWindowsPathStyle`, rather than a second read of its own.
   Agent _buildAgent(ReplicaSpec spec) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);
+    final pathStyle = hostPathStyle();
 
     return LocalAgent(
       rootPath: rootPath,
@@ -284,13 +288,14 @@ class AgentCommand extends Command<int> {
         environment: Platform.environment,
         platform: hostStateDirPlatform(),
       ),
-      scanner: Scanner(jobs: spec.jobs, pathStyle: hostPathStyle()),
+      scanner: Scanner(jobs: spec.jobs, pathStyle: pathStyle),
       archivePath: resolveArchiveLogPath(
         profileId: spec.profileId,
         side: spec.side,
         environment: Platform.environment,
         platform: hostStateDirPlatform(),
       ).path,
+      isWindowsReplica: isWindowsPathStyle(pathStyle),
     );
   }
 }

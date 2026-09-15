@@ -298,6 +298,116 @@ void main() {
     });
   });
 
+  group('mode propagation across platforms (SPEC §3, §7.4)', () {
+    /// A stand-in for `chmod`: touches [marker] when invoked, then exits 0
+    /// — the same "record what a fake executable actually did" technique
+    /// `ssh_channel_test.dart`'s `fakeSsh` uses for `ssh`, so a test can
+    /// tell whether `_applyMode` spawned anything without reaching into
+    /// `dart:io` internals.
+    Future<String> fakeChmod(File marker) async {
+      final script = File('${tempDir.path}/fake-chmod');
+      await script.writeAsString('''
+#!/bin/sh
+touch "${marker.path}"
+exit 0
+''');
+      await Process.run('chmod', ['+x', script.path]);
+      return script.path;
+    }
+
+    test(
+      'a Windows replica never spawns chmod, even when the mode differs',
+      () async {
+        final marker = File('${tempDir.path}/chmod-ran');
+        final windowsAgent = LocalAgent(
+          rootPath: replicaDir.path,
+          archiveStore: archiveStore,
+          replicaLock: replicaLock,
+          isWindowsReplica: true,
+          chmodExecutable: await fakeChmod(marker),
+        );
+
+        // 0o600 differs from the default a fresh file gets under the usual
+        // umask — exactly the case that used to pay a spawn attempt
+        // guaranteed to fail, once per file, before the first one threw
+        // `ProcessException` and `_chmodUnavailable` latched.
+        await windowsAgent.writeFile(
+          'a.txt',
+          Stream.value(utf8.encode('hello')),
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+          mode: 384,
+        );
+
+        expect(await marker.exists(), isFalse);
+      },
+      testOn: 'linux',
+    );
+
+    test('sanity check: the same fake chmod DOES run for a non-Windows '
+        'replica given the same differing mode', () async {
+      final marker = File('${tempDir.path}/chmod-ran');
+      final posixAgent = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        chmodExecutable: await fakeChmod(marker),
+      );
+
+      await posixAgent.writeFile(
+        'a.txt',
+        Stream.value(utf8.encode('hello')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 384,
+      );
+
+      // Without this, the Windows test above would prove nothing: it
+      // would pass just as well if the marker technique itself never
+      // worked. This confirms the same mode, on a replica the
+      // constructor was not told is Windows, does reach a spawn.
+      expect(await marker.exists(), isTrue);
+    }, testOn: 'linux');
+
+    test('a host that genuinely lacks chmod for some other reason still '
+        'succeeds, recording whatever mode actually landed rather than the '
+        'one that was asked for (SPEC §7.4) — the pre-existing '
+        '_chmodUnavailable fallback, unchanged', () async {
+      final missingChmodAgent = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        // A path Process.run cannot start at all (ENOENT), deterministically
+        // forcing the same ProcessException a host truly missing `chmod`
+        // would throw, without touching this host's real PATH or its real
+        // chmod.
+        chmodExecutable: '${tempDir.path}/no-such-chmod-binary',
+      );
+
+      final first = await missingChmodAgent.writeFile(
+        'a.txt',
+        Stream.value(utf8.encode('hello')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 384,
+      );
+
+      expect(await File('${replicaDir.path}/a.txt').readAsString(), 'hello');
+      // The requested mode was never actually applied, and nothing here
+      // pretends otherwise.
+      expect(first.mode, isNot(384));
+
+      // The latch (SPEC §7.4's degrade-gracefully story) persists across
+      // calls: a second write, with another differing mode, still
+      // succeeds rather than repeating a failure.
+      final second = await missingChmodAgent.writeFile(
+        'b.txt',
+        Stream.value(utf8.encode('world')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 448, // 0o700
+      );
+      expect(await File('${replicaDir.path}/b.txt').readAsString(), 'world');
+      expect(second.mode, isNot(448));
+    }, testOn: 'linux');
+  });
+
   group('leftover scratch files', () {
     test('a scratch file from a crashed write is not scanned', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');

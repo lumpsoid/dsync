@@ -31,21 +31,52 @@ class LocalAgent implements Agent {
   /// (most tests) have no reason to supply it.
   final String? archivePath;
 
-  /// Set once `chmod` has turned out not to exist on this host. See
-  /// [_applyMode].
-  bool _chmodUnavailable = false;
+  /// Set once `chmod` is known not to work on this host. See [_applyMode].
+  ///
+  /// Starts however [isWindowsReplica] says: `true` skips straight to the
+  /// no-op path from the very first call, since a Windows replica's lack of
+  /// `chmod` (SPEC §3, §7.4) is known ahead of time rather than something to
+  /// discover by paying one guaranteed-to-fail process spawn per
+  /// differing-mode file. It can still *become* `true` on a non-Windows host
+  /// too, the same way it always could: a spawn throwing `ProcessException`
+  /// for some other reason latches it there instead (SPEC §3 already flags
+  /// Android's external storage as a place metadata writes can be
+  /// rejected). Either way, [_applyMode] treats it identically.
+  bool _chmodUnavailable;
+
+  /// The `chmod` executable [_applyMode] shells out to. A plain value
+  /// rather than the literal `'chmod'` inline, so a test can point it at a
+  /// binary guaranteed not to exist and deterministically exercise the
+  /// `ProcessException` fallback [_chmodUnavailable] latches on, without
+  /// touching this host's real `PATH` — the same "overridable for tests"
+  /// shape `SshChannel.connect`'s own `executable` parameter already uses,
+  /// for the same reason.
+  final String chmodExecutable;
 
   /// Distinguishes this agent's scratch files from each other. See
   /// [tempPathFor].
   int _nextTempSequence = 0;
 
+  /// [isWindowsReplica] recognizes a Windows replica ahead of time (SPEC
+  /// §3, §7.4) rather than [_applyMode] discovering it empirically — see
+  /// that field's own doc comment. A plain value rather than a
+  /// `Platform.operatingSystem` (or `Platform.isWindows`) read here: this
+  /// class never reads the real host itself, the same convention every
+  /// other CLI-edge-resolved value in this codebase follows (`platform`,
+  /// `pathStyle` — see `lib/cli/host_platform.dart`). The real answer, for a
+  /// real run, is `lib/cli/host_platform.dart`'s `isWindowsPathStyle`, fed
+  /// the same `pathStyle` already threaded down to this replica's
+  /// [Scanner].
   LocalAgent({
     required this.rootPath,
     required this.archiveStore,
     required this.replicaLock,
     Scanner? scanner,
     this.archivePath,
-  }) : scanner = scanner ?? Scanner();
+    bool isWindowsReplica = false,
+    this.chmodExecutable = 'chmod',
+  }) : scanner = scanner ?? Scanner(),
+       _chmodUnavailable = isWindowsReplica;
 
   @override
   Future<ReplicaInfo> hello() async {
@@ -155,6 +186,27 @@ class LocalAgent implements Agent {
     return FileMetadata(
       size: stat.size,
       mtime: stat.modified.microsecondsSinceEpoch,
+      // Recorded as-is, on every platform including Windows (SPEC §7.4:
+      // "record the actual post-write state ... rather than the intended
+      // one") — never suppressed or special-cased here.
+      //
+      // What that value actually *means* on a Windows-written file is not
+      // something this project has verified against a real Windows host
+      // running its pinned SDK (SPEC §3's own open status, the same one the
+      // Android mtime question already carries). What is documented: the
+      // Dart SDK's own Windows `dart:io` implementation
+      // (`AttributesToStatMode` in `runtime/bin/file_win.cc`) does not
+      // return a POSIX permission set read off the filesystem — it derives
+      // a pseudo-mode from `GetFileAttributesW`, largely tied to the
+      // read-only attribute: read is always set; write is set unless
+      // `FILE_ATTRIBUTE_READONLY`; execute is set for directories and for a
+      // handful of executable extensions; and owner bits are copied into
+      // group and other. So the archived `mode` for a Windows replica is
+      // expected to be one of a small, low-cardinality set of values keyed
+      // mostly to one attribute bit, not a meaningful permission set — but
+      // that expectation is documented behavior, not a verified one, and
+      // nothing here acts on it beyond recording whatever this call
+      // actually returns.
       mode: stat.mode & 0xFFF,
     );
   }
@@ -162,12 +214,17 @@ class LocalAgent implements Agent {
   /// Sets [file]'s permission bits, best-effort (SPEC §7.4).
   ///
   /// Dart has no chmod, so this shells out — which costs a process spawn, on
-  /// a path that runs once per copied file. Two things keep that off the
+  /// a path that runs once per copied file. Three things keep that off the
   /// common case: a freshly created file usually already carries the mode
-  /// being asked for, which a stat settles far more cheaply than a spawn; and
-  /// a host without a `chmod` at all (SPEC §3 flags Android storage as a
-  /// place metadata writes can be rejected) is discovered once instead of
-  /// once per file.
+  /// being asked for, which a stat settles far more cheaply than a spawn;
+  /// a replica the constructor already knows is on Windows never reaches
+  /// the spawn at all — Windows has no `chmod` and no POSIX permission-bit
+  /// model to translate one into, so [_chmodUnavailable] starts `true`
+  /// there instead of this method discovering the same fact empirically,
+  /// once, at the cost of a process-spawn attempt guaranteed to fail; and a
+  /// host lacking `chmod` for some other reason (SPEC §3 flags Android
+  /// storage as a place metadata writes can be rejected) is still
+  /// discovered once instead of once per file, the same way it always was.
   Future<void> _applyMode(File file, int mode) async {
     if (_chmodUnavailable) return;
 
@@ -175,7 +232,7 @@ class LocalAgent implements Agent {
     if (current.mode & 0xFFF == mode) return;
 
     try {
-      await Process.run('chmod', [mode.toRadixString(8), file.path]);
+      await Process.run(chmodExecutable, [mode.toRadixString(8), file.path]);
     } on ProcessException {
       _chmodUnavailable = true;
     }
