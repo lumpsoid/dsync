@@ -95,6 +95,91 @@ void main() {
       expect(frames.single.payload, isEmpty);
     });
 
+    test('a decoded payload survives the chunks that follow it', () async {
+      // The decoder buffers into one array it keeps reusing, and a fileBytes
+      // payload outlives the decode loop — `Applier` streams it into the
+      // destination's `writeFile` — so a payload has to be copied out of that
+      // buffer, not handed out as a view onto it. Here the second frame is
+      // written over exactly the bytes the first one's payload came from.
+      final first = codec.encode(
+        Frame(type: FrameType.fileBytes, payload: [1, 2, 3, 4]),
+      );
+      final second = codec.encode(
+        Frame(type: FrameType.fileBytes, payload: [9, 9, 9, 9]),
+      );
+
+      final frames = await codec
+          .decode(Stream.fromIterable([first, second]))
+          .toList();
+
+      expect(frames.first.payload, [1, 2, 3, 4]);
+      expect(frames.last.payload, [9, 9, 9, 9]);
+    });
+
+    test('decodes a long run of frames that never line up with the chunks '
+        'carrying them', () async {
+      // Every chunk here leaves a partial frame buffered, so the decoder's
+      // buffer is reused across all 300 of them — the undecoded tail slides
+      // back to the front instead of the buffer growing with the stream.
+      final payloads = [
+        for (var i = 0; i < 300; i++) List.filled(i % 17 + 1, i % 256),
+      ];
+      final wire = BytesBuilder();
+      for (final payload in payloads) {
+        wire.add(
+          codec.encode(Frame(type: FrameType.control, payload: payload)),
+        );
+      }
+      final encoded = wire.takeBytes();
+
+      Stream<List<int>> chunked() async* {
+        for (var i = 0; i < encoded.length; i += 37) {
+          final end = i + 37;
+          yield Uint8List.sublistView(
+            encoded,
+            i,
+            end > encoded.length ? encoded.length : end,
+          );
+        }
+      }
+
+      final frames = await codec.decode(chunked()).toList();
+
+      expect(frames.map((f) => f.payload), payloads);
+    });
+
+    test('decodes a multi-megabyte frame in linear time', () async {
+      // A `scan` result crosses the wire as one control frame — ~189 bytes per
+      // entry, so 18 MiB for a 100k-file replica. When each arriving chunk
+      // re-copied the whole buffer, 8 MiB of it took ~10 s (and 16 MiB took
+      // 34 s, peaking near a gigabyte); with a buffer that grows in place it
+      // is ~50 ms. A one-second bound is far under the first and far over the
+      // second, on a slow machine included.
+      const payloadLength = 8 * 1024 * 1024;
+      const chunkLength = 64 * 1024;
+      final encoded = codec.encode(
+        Frame(type: FrameType.control, payload: Uint8List(payloadLength)),
+      );
+
+      Stream<List<int>> chunked() async* {
+        for (var i = 0; i < encoded.length; i += chunkLength) {
+          final end = i + chunkLength;
+          yield Uint8List.sublistView(
+            encoded,
+            i,
+            end > encoded.length ? encoded.length : end,
+          );
+        }
+      }
+
+      final watch = Stopwatch()..start();
+      final frames = await codec.decode(chunked()).toList();
+      watch.stop();
+
+      expect(frames.single.payload, hasLength(payloadLength));
+      expect(watch.elapsed, lessThan(const Duration(seconds: 1)));
+    });
+
     test('throws FrameDecodeException on an unknown type byte', () async {
       final bad = Uint8List.fromList([2, 0, 0, 0, 0]);
 

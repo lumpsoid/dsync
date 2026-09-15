@@ -27,25 +27,23 @@ class FrameCodec {
   /// buffering across chunk boundaries since a chunk need not align with a
   /// frame boundary.
   Stream<Frame> decode(Stream<List<int>> input) async* {
-    var pending = Uint8List(0);
+    final pending = _PendingBytes();
     await for (final chunk in input) {
-      pending = Uint8List.fromList([...pending, ...chunk]);
-      var decoded = _tryDecodeOne(pending);
-      while (decoded != null) {
-        yield decoded.$1;
-        pending = pending.sublist(decoded.$2);
-        decoded = _tryDecodeOne(pending);
+      pending.add(chunk);
+      var frame = _tryDecodeOne(pending);
+      while (frame != null) {
+        yield frame;
+        frame = _tryDecodeOne(pending);
       }
     }
   }
 
-  /// Decodes the one frame starting at the front of [bytes], if [bytes]
-  /// holds a complete frame yet. Returns the frame and how many bytes it
-  /// consumed, so the caller can advance past it.
+  /// Decodes the one frame at the front of [pending] and advances [pending]
+  /// past it, if a complete frame is buffered yet.
   ///
-  /// Throws [FrameDecodeException] when [bytes] is not this protocol at all.
-  (Frame, int)? _tryDecodeOne(Uint8List bytes) {
-    if (bytes.length < _headerLength) return null;
+  /// Throws [FrameDecodeException] when [pending] is not this protocol at all.
+  Frame? _tryDecodeOne(_PendingBytes pending) {
+    if (pending.length < _headerLength) return null;
 
     // Checked before the length field below, not after it. A stream that is
     // not this protocol reads its four length bytes out of whatever text
@@ -53,21 +51,23 @@ class FrameCodec {
     // 1.7 GB payload — and waiting for bytes that will never come means the
     // failure never surfaces at all. The five bytes already in hand are
     // enough to know nobody is speaking this protocol.
-    final type = _typeForByte(bytes[0]);
+    final type = _typeForByte(pending[0]);
     if (type == null) {
-      throw FrameDecodeException('Unknown frame type byte: ${bytes[0]}', bytes);
+      throw FrameDecodeException(
+        'Unknown frame type byte: ${pending[0]}',
+        pending.undecoded,
+      );
     }
 
-    final length = ByteData.sublistView(
-      bytes,
-      1,
-      _headerLength,
-    ).getUint32(0, Endian.big);
-    final end = _headerLength + length;
-    if (bytes.length < end) return null;
+    final end = _headerLength + pending.uint32At(1);
+    if (pending.length < end) return null;
 
-    final frame = Frame(type: type, payload: bytes.sublist(_headerLength, end));
-    return (frame, end);
+    // Copied out rather than viewed: [_PendingBytes] overwrites these bytes
+    // as later chunks arrive, while a `fileBytes` payload outlives the decode
+    // loop — `Applier` streams it into the destination's `writeFile`.
+    final payload = pending.copyRange(_headerLength, end);
+    pending.skip(end);
+    return Frame(type: type, payload: payload);
   }
 
   int _byteForType(FrameType type) => switch (type) {
@@ -84,6 +84,89 @@ class FrameCodec {
   };
 }
 
+/// The bytes [FrameCodec.decode] has received but not yet turned into frames.
+///
+/// One buffer, reused: a chunk is appended with a single `setRange`, and
+/// decoding a frame advances a start offset rather than re-copying what
+/// follows it. The obvious way to write this instead — rebuilding the buffer
+/// per chunk with `Uint8List.fromList([...pending, ...chunk])` — copies every
+/// buffered byte once per arriving chunk, which is O(n²) for a frame spanning
+/// n bytes of ~64 KiB chunks. That is not academic: `scan` returns a whole
+/// replica's listing as one control frame, ~189 bytes per entry, so a
+/// 100k-file replica sends 18 MiB in a single frame. Decoding 16 MiB that way
+/// measured 34 s and ~800 MiB of transient memory, against 60 ms and ~50 MiB
+/// here.
+class _PendingBytes {
+  /// Where the buffer starts before doubling takes over.
+  static const _initialCapacity = 1024;
+
+  Uint8List _bytes = Uint8List(0);
+  int _start = 0;
+  int _end = 0;
+
+  /// How many undecoded bytes are buffered.
+  int get length => _end - _start;
+
+  /// The undecoded byte at [index], counted from the first one.
+  int operator [](int index) => _bytes[_start + index];
+
+  /// A view of every undecoded byte, valid only until the next [add] — for
+  /// [FrameDecodeException], which copies what it keeps.
+  Uint8List get undecoded => Uint8List.sublistView(_bytes, _start, _end);
+
+  /// The big-endian uint32 at [offset] in the undecoded bytes, read in place.
+  int uint32At(int offset) => ByteData.sublistView(
+    _bytes,
+    _start + offset,
+    _start + offset + 4,
+  ).getUint32(0, Endian.big);
+
+  /// A copy of the undecoded bytes in `[start, end)`, owned by the caller and
+  /// so safe to outlive the buffer's next [add].
+  Uint8List copyRange(int start, int end) =>
+      _bytes.sublist(_start + start, _start + end);
+
+  /// Buffers [chunk] after the bytes already waiting.
+  void add(List<int> chunk) {
+    _reserve(chunk.length);
+    _bytes.setRange(_end, _end + chunk.length, chunk);
+    _end += chunk.length;
+  }
+
+  /// Drops the first [count] undecoded bytes.
+  void skip(int count) {
+    _start += count;
+    if (_start == _end) {
+      _start = 0;
+      _end = 0;
+    }
+  }
+
+  /// Makes room for [extra] bytes past the buffered ones, sliding what is
+  /// undecoded back to the front and doubling the buffer only when the room a
+  /// decoded frame left behind is not enough.
+  void _reserve(int extra) {
+    if (_bytes.length - _end >= extra) return;
+
+    final undecodedLength = length;
+    if (_bytes.length - undecodedLength >= extra) {
+      _bytes.setRange(0, undecodedLength, _bytes, _start);
+    } else {
+      var capacity = _bytes.length < _initialCapacity
+          ? _initialCapacity
+          : _bytes.length;
+      while (capacity - undecodedLength < extra) {
+        capacity *= 2;
+      }
+      final grown = Uint8List(capacity);
+      grown.setRange(0, undecodedLength, _bytes, _start);
+      _bytes = grown;
+    }
+    _start = 0;
+    _end = undecodedLength;
+  }
+}
+
 /// Thrown by [FrameCodec.decode] when the byte stream is not this protocol's
 /// frames (SPEC §4.2).
 ///
@@ -95,7 +178,8 @@ class FrameCodec {
 ///
 /// [received] is capped, with [truncated] set when more had arrived, so a
 /// failure part-way through a file transfer cannot pin a whole chunk of file
-/// bytes alive inside an exception.
+/// bytes alive inside an exception. It is always copied, never a view: the
+/// decoder hands over a window onto the buffer it goes on reusing.
 class FrameDecodeException implements Exception {
   /// Enough to recognize a login banner or an error page, and no more.
   static const _bytesKept = 256;
@@ -109,9 +193,10 @@ class FrameDecodeException implements Exception {
   final bool truncated;
 
   FrameDecodeException(this.message, Uint8List received)
-    : received = received.length > _bytesKept
-          ? received.sublist(0, _bytesKept)
-          : received,
+    : received = received.sublist(
+        0,
+        received.length > _bytesKept ? _bytesKept : received.length,
+      ),
       truncated = received.length > _bytesKept;
 
   @override
