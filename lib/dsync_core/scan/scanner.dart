@@ -34,7 +34,8 @@ class Scanner {
   /// without a Windows host. Defaults to [p.Style.posix], correct for every
   /// platform this project can currently verify (Linux, macOS, Android); the
   /// two real callers on a Windows host thread [p.Style.windows] in instead,
-  /// resolved once via `lib/cli/host_platform.dart`'s `hostPathStyle()`.
+  /// resolved once via `lib/cli/host_platform.dart`'s
+  /// `HostPlatform.pathStyle`.
   final p.Context _pathContext;
 
   /// How two paths are compared for SPEC §16's collision check: both map

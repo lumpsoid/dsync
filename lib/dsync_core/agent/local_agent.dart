@@ -62,11 +62,11 @@ class LocalAgent implements Agent {
   /// that field's own doc comment. A plain value rather than a
   /// `Platform.operatingSystem` (or `Platform.isWindows`) read here: this
   /// class never reads the real host itself, the same convention every
-  /// other CLI-edge-resolved value in this codebase follows (`platform`,
-  /// `pathStyle` — see `lib/cli/host_platform.dart`). The real answer, for a
-  /// real run, is `lib/cli/host_platform.dart`'s `isWindowsPathStyle`, fed
-  /// the same `pathStyle` already threaded down to this replica's
-  /// [Scanner].
+  /// other CLI-edge-resolved value in this codebase follows. The real
+  /// answer, for a real run, is `lib/cli/host_platform.dart`'s
+  /// `HostPlatform.isWindowsReplica`, resolved once at the CLI edge as one
+  /// property of the same value that also carries this replica's
+  /// [Scanner.pathStyle] and state-directory rule.
   LocalAgent({
     required this.rootPath,
     required this.archiveStore,

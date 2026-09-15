@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dsync/cli/agents/connected_replicas.dart';
 import 'package:dsync/cli/agents/replica_unreachable_exception.dart';
+import 'package:dsync/cli/host_platform.dart';
 import 'package:dsync/cli/options/effective_options.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
@@ -18,7 +19,6 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
@@ -66,8 +66,7 @@ void main() {
       final result = await resolveReplicaAgents(
         optionsFor(Location.parse(rootA.path), Location.parse(rootB.path)),
         environment: environment,
-        platform: const LinuxStateDir(),
-        pathStyle: p.Style.posix,
+        platform: const LinuxHost(),
         // Never consulted: neither location has a host, so classify()
         // never needs this — proof nothing here reaches for the network.
         localAddressLookup: () => Future.error(
@@ -150,8 +149,7 @@ void main() {
             Location.parse(rootB.path),
           ),
           environment: stateEnv,
-          platform: const LinuxStateDir(),
-          pathStyle: p.Style.posix,
+          platform: const LinuxHost(),
           localAddressLookup: () async => {'this-host'},
         );
 
@@ -177,8 +175,7 @@ void main() {
             Location.parse('me@foreign-host:/sdcard/notes'),
           ),
           environment: stateEnv,
-          platform: const LinuxStateDir(),
-          pathStyle: p.Style.posix,
+          platform: const LinuxHost(),
           localAddressLookup: () async => {'this-host'},
           // Never actually spoken to (this test never calls `hello`); it
           // only has to exist so `Process.start` succeeds.
@@ -218,8 +215,7 @@ void main() {
           ),
         ),
         environment: stateEnv,
-        platform: const LinuxStateDir(),
-        pathStyle: p.Style.posix,
+        platform: const LinuxHost(),
         // Says the destination is this machine. The plain form would run
         // it in-process on that answer; the ssh:// form does not ask.
         localAddressLookup: () async => {'unix/run/ssh-unix-local/socket'},
@@ -266,8 +262,7 @@ void main() {
           sshB: const SshAccess(options: ['-i', 'key'], command: 'elsewhere'),
         ),
         environment: stateEnv,
-        platform: const LinuxStateDir(),
-        pathStyle: p.Style.posix,
+        platform: const LinuxHost(),
         localAddressLookup: () => Future.error(
           StateError(
             'a unix:// location declares its own '
@@ -304,8 +299,7 @@ void main() {
               Location.parse('unix://$stale:/srv/notes'),
             ),
             environment: stateEnv,
-            platform: const LinuxStateDir(),
-            pathStyle: p.Style.posix,
+            platform: const LinuxHost(),
           ),
           throwsA(
             isA<ReplicaUnreachableException>()
@@ -388,8 +382,7 @@ void main() {
             Location.parse('peer://phone:/sdcard/notes'),
           ),
           environment: stateEnv,
-          platform: const LinuxStateDir(),
-          pathStyle: p.Style.posix,
+          platform: const LinuxHost(),
           localAddressLookup: () => Future.error(
             StateError(
               'a peer:// location declares its own locality (SPEC §4.1)',
@@ -450,8 +443,7 @@ void main() {
           Location.parse('peer://phone:/srv/notes'),
         ),
         environment: stateEnv,
-        platform: const LinuxStateDir(),
-        pathStyle: p.Style.posix,
+        platform: const LinuxHost(),
         localAddressLookup: () => Future.error(
           StateError(
             'a peer:// location declares its own locality (SPEC §4.1)',
@@ -507,8 +499,7 @@ void main() {
             Location.parse('peer://phone:/srv/notes'),
           ),
           environment: stateEnv,
-          platform: const LinuxStateDir(),
-          pathStyle: p.Style.posix,
+          platform: const LinuxHost(),
           localAddressLookup: () => Future.error(
             StateError(
               'a peer:// location declares its own locality (SPEC §4.1)',
@@ -562,8 +553,7 @@ void main() {
             Location.parse('peer://phone:/srv/notes'),
           ),
           environment: stateEnv,
-          platform: const LinuxStateDir(),
-          pathStyle: p.Style.posix,
+          platform: const LinuxHost(),
           localAddressLookup: () => Future.error(
             StateError(
               'a peer:// location declares its own locality (SPEC §4.1)',
@@ -624,8 +614,7 @@ void main() {
           Location.parse('me@foreign-host:/sdcard/notes'),
         ),
         environment: stateEnv,
-        platform: const LinuxStateDir(),
-        pathStyle: p.Style.posix,
+        platform: const LinuxHost(),
         localAddressLookup: () async => {},
         sshExecutable: script.path,
       );
@@ -667,8 +656,7 @@ void main() {
           Location.parse('me@foreign-host:/sdcard/notes'),
         ),
         environment: stateEnv,
-        platform: const LinuxStateDir(),
-        pathStyle: p.Style.posix,
+        platform: const LinuxHost(),
         localAddressLookup: () async => {},
         sshExecutable: script.path,
       );
@@ -706,8 +694,7 @@ void main() {
               Location.parse('me@foreign-host:/sdcard/notes'),
             ),
             environment: stateEnv,
-            platform: const LinuxStateDir(),
-            pathStyle: p.Style.posix,
+            platform: const LinuxHost(),
             localAddressLookup: () async => {},
             sshExecutable: '${tempDir.path}/no-such-executable',
           ),
@@ -745,8 +732,8 @@ void main() {
               Location.parse('~/notes'),
             ),
             environment: stateEnv,
-            platform: const LinuxStateDir(), // has no HOME: side b's expandedPath throws
-            pathStyle: p.Style.posix,
+            platform:
+                const LinuxHost(), // has no HOME: side b's expandedPath throws
             localAddressLookup: () async => {},
             sshExecutable: script.path,
           ),

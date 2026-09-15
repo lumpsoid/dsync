@@ -1,8 +1,6 @@
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
-import 'package:dsync/dsync_core/state_dir.dart';
-import 'package:path/path.dart' as p;
 
 import 'commands/agent_command.dart';
 import 'commands/pair_command.dart';
@@ -30,16 +28,16 @@ import 'run/sync_runner.dart';
 /// inside [SyncRunner], so an end-to-end test can point a `sync`/`status`
 /// invocation at an isolated `XDG_STATE_HOME`/`XDG_CONFIG_HOME` and a fixed
 /// working directory without touching this process's real ones. [platform]
-/// follows the same shape, defaulting to [hostStateDirPlatform]'s real read
-/// of `Platform.operatingSystem` — the one other real read this process does
-/// beyond `Platform.environment`, at the same single edge, so every
-/// `StateDirPlatform`-shaped parameter downstream ([SyncRunner], [PairCommand],
-/// every `pair` subcommand) can stay a plain value instead of re-deriving the
-/// host itself. [pathStyle] is the same shape again, defaulting to
-/// [hostPathStyle]'s real read of `Platform.operatingSystem` (SPEC §3's
-/// read-side path conversion) — the one other real read of it this process
-/// does, at the same edge, so [SyncRunner]'s own local-replica `Scanner`
-/// stays a plain value too.
+/// follows the same shape, defaulting to [hostPlatform]'s real read of
+/// `Platform.operatingSystem` — the one other real read this process does
+/// beyond `Platform.environment`, at the same single edge — so every
+/// [HostPlatform]-shaped parameter downstream ([SyncRunner],
+/// [resolveReplicaAgents], and — via its `stateDirPlatform` — [PairCommand]
+/// and every `pair` subcommand) can stay a plain value instead of re-deriving
+/// the host itself. One value carries the SPEC §8.3 state-directory rule, the
+/// SPEC §3 read-side path style, and SPEC §7.4's `chmod`-availability fact all
+/// at once (see [HostPlatform]'s own doc comment for why they belong on the
+/// same sum type rather than threaded beside each other).
 ///
 /// `sync` and `status` each return their own exit code from `Command<int>`'s
 /// own `run()` (`lib/cli/commands/sync_command.dart`, `status_command.dart`),
@@ -68,14 +66,12 @@ Future<int> runDsyncCli(
   List<String> argv, {
   Map<String, String>? environment,
   String? workingDirectory,
-  StateDirPlatform? platform,
-  p.Style? pathStyle,
+  HostPlatform? platform,
 }) async {
   final runner = DsyncCommandRunner(
     environment: environment ?? Platform.environment,
     workingDirectory: workingDirectory ?? Directory.current.path,
-    platform: platform ?? hostStateDirPlatform(),
-    pathStyle: pathStyle ?? hostPathStyle(),
+    platform: platform ?? hostPlatform(),
   );
   try {
     return await runner.run(argv) ?? 0;
@@ -116,8 +112,7 @@ class DsyncCommandRunner extends CommandRunner<int> {
   DsyncCommandRunner({
     required Map<String, String> environment,
     required String workingDirectory,
-    required StateDirPlatform platform,
-    required p.Style pathStyle,
+    required HostPlatform platform,
   }) : super(
          'dsync',
          'Bidirectional file sync between two replicas. See SPEC.md.',
@@ -126,12 +121,20 @@ class DsyncCommandRunner extends CommandRunner<int> {
       environment: environment,
       workingDirectory: workingDirectory,
       platform: platform,
-      pathStyle: pathStyle,
     ).run;
 
     addCommand(SyncCommand(runSync: runSync));
     addCommand(StatusCommand(runSync: runSync));
     addCommand(AgentCommand());
-    addCommand(PairCommand(environment: environment, platform: platform));
+    // `PairCommand` only needs SPEC §8.3's state-directory rule — no path
+    // style, no `chmod`-availability. Extract exactly that fact here rather
+    // than handing the whole [HostPlatform] on, so the pair-subcommand tree
+    // keeps its narrower dependency.
+    addCommand(
+      PairCommand(
+        environment: environment,
+        platform: platform.stateDirPlatform,
+      ),
+    );
   }
 }

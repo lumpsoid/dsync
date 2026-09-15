@@ -4,11 +4,10 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/cli/host_platform.dart';
 import 'package:dsync/cli/options/cli_options.dart';
 import 'package:dsync/cli/options/sync_target.dart';
 import 'package:dsync/cli/run/sync_runner.dart';
-import 'package:dsync/dsync_core/state_dir.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 /// task 67d911, points 2 and 4. Both groups below need the real compiled
@@ -184,8 +183,7 @@ void main() {
     /// reconciling, applying, archiving — is exactly what runs here.
     SyncRunner remoteRunner() => SyncRunner(
       environment: localEnvironment,
-      platform: const LinuxStateDir(),
-      pathStyle: p.Style.posix,
+      platform: const LinuxHost(),
       workingDirectory: remoteTempDir.path,
       // No real network lookup: the fake host below must classify as
       // remote (SPEC §4.1) regardless of this machine's actual

@@ -255,31 +255,31 @@ class AgentCommand extends Command<int> {
   /// resolve for itself about a remote side (see
   /// `lib/cli/agents/connected_replicas.dart`'s doc comment).
   ///
-  /// Same reasoning for `platform` (SPEC §8.3): this process is the far end
-  /// of a remote run, never handed one by an initiator that may disagree
-  /// with it about the host, so it reads its own real one via
-  /// `hostStateDirPlatform()` — the same single CLI-edge read
-  /// `lib/cli/dsync_cli.dart`'s `runDsyncCli` does for `SyncRunner`'s side of
-  /// a connection — rather than taking it as a constructor parameter the way
-  /// `environment` is not taken as one here either. `hostPathStyle()` (SPEC
-  /// §3's read-side path conversion) is the same story again: this is the
-  /// process that actually walks this replica's filesystem, so it reads its
-  /// own host's real path style rather than trusting the initiator's — and
-  /// [LocalAgent]'s `isWindowsReplica` (SPEC §3, §7.4: no `chmod` on
-  /// Windows) rides along on that same resolved `pathStyle` via
-  /// `isWindowsPathStyle`, rather than a second read of its own.
+  /// Same reasoning for `platform` (SPEC §3, §8.3, §7.4): this process is
+  /// the far end of a remote run, never handed a host by an initiator that
+  /// may disagree with it, so it reads its own real one via `hostPlatform()`
+  /// — the same single CLI-edge read `lib/cli/dsync_cli.dart`'s `runDsyncCli`
+  /// does for `SyncRunner`'s side of a connection — rather than taking it as
+  /// a constructor parameter the way `environment` is not taken as one here
+  /// either. One [HostPlatform] value answers all three host-derived facts
+  /// this needs: SPEC §8.3's state-directory rule for archive/lock resolution,
+  /// SPEC §3's path style (this is the process that actually walks this
+  /// replica's filesystem, so it reads its own host's real spelling rather
+  /// than trusting the initiator's), and SPEC §7.4's `chmod`-availability
+  /// for [LocalAgent]'s `isWindowsReplica`. See [HostPlatform]'s own doc
+  /// comment for why they belong on the same sum type rather than three
+  /// values that must agree.
   ///
-  /// `Scanner`'s `foldKey` (SPEC §16) is the one fact here that is not a
-  /// second read of something already resolved: it is a property of *this*
-  /// replica's root, not of the host, so it is probed fresh via
-  /// `detectsCaseFolding(rootPath)` once `rootPath` itself is known below,
-  /// the same "ask this process's own real host" reasoning as `platform`
-  /// and `pathStyle`, just against the filesystem instead of
-  /// `Platform.operatingSystem`.
+  /// `Scanner`'s `foldKey` (SPEC §16) is the one fact here that is not read
+  /// off [HostPlatform]: it is a property of *this* replica's root, not of
+  /// the host, so it is probed fresh via `detectsCaseFolding(rootPath)` once
+  /// `rootPath` itself is known below, the same "ask this process's own
+  /// real host" reasoning as `platform`, just against the filesystem instead
+  /// of `Platform.operatingSystem`.
   Agent _buildAgent(ReplicaSpec spec) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);
-    final pathStyle = hostPathStyle();
+    final platform = hostPlatform();
 
     return LocalAgent(
       rootPath: rootPath,
@@ -288,32 +288,31 @@ class AgentCommand extends Command<int> {
         side: spec.side,
         rootPath: rootPath,
         environment: Platform.environment,
-        platform: hostStateDirPlatform(),
+        platform: platform.stateDirPlatform,
       ),
       replicaLock: ReplicaLock.forProfile(
         profileId: spec.profileId,
         side: spec.side,
         environment: Platform.environment,
-        platform: hostStateDirPlatform(),
+        platform: platform.stateDirPlatform,
       ),
       scanner: Scanner(
         jobs: spec.jobs,
-        pathStyle: pathStyle,
+        pathStyle: platform.pathStyle,
         // SPEC §16: this process is the far end of the connection, so it
         // probes its own replica root directly rather than trusting
         // anything the initiator might claim about it — same reasoning as
-        // `pathStyle`/`platform` just above, and the same reason an OS
-        // check alone would be wrong (`detectsCaseFolding`'s own doc
-        // comment).
+        // `platform` just above, and the same reason an OS check alone
+        // would be wrong (`detectsCaseFolding`'s own doc comment).
         foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
       ),
       archivePath: resolveArchiveLogPath(
         profileId: spec.profileId,
         side: spec.side,
         environment: Platform.environment,
-        platform: hostStateDirPlatform(),
+        platform: platform.stateDirPlatform,
       ).path,
-      isWindowsReplica: isWindowsPathStyle(pathStyle),
+      isWindowsReplica: platform.isWindowsReplica,
     );
   }
 }

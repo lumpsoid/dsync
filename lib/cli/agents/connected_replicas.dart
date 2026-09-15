@@ -18,8 +18,6 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
-import 'package:dsync/dsync_core/state_dir.dart';
-import 'package:path/path.dart' as p;
 
 import '../host_platform.dart';
 import 'local_addresses.dart';
@@ -81,36 +79,35 @@ import 'replica_unreachable_exception.dart';
 ///
 /// [environment] is a parameter rather than read from the process, matching
 /// this codebase's convention (`resolveStateDir`, `JsonlArchiveStore.forProfile`,
-/// `EffectiveOptions`). [platform] is the same convention for SPEC §8.3's
-/// platform rule — required, not defaulted, for the reason `resolveStateDir`'s
-/// own callers all require it now: a default here would silently resolve
-/// every non-Linux host's archive, lock, device identity and paired-device
-/// store to the wrong directory. [pathStyle] is the same convention again,
-/// for SPEC §3's read-side path conversion: a local side's `Scanner` (below)
-/// needs to know whether *this* host's own filesystem paths are `/`- or
-/// `\`-spelled, the same "resolved once at the CLI edge, threaded down"
-/// shape `platform` already is — `lib/cli/host_platform.dart`'s
-/// `hostPathStyle()` is that resolution, for a real run. A local side's
-/// `LocalAgent` (below) also needs to know whether it can shell out to
-/// `chmod` at all (SPEC §3, §7.4: Windows cannot); that rides along on the
-/// same resolved [pathStyle] via `isWindowsPathStyle` rather than a second,
-/// independent read. A local side's `Scanner` also needs to know whether
-/// *its own* filesystem folds case (SPEC §16) — unlike `pathStyle` and
-/// `platform`, that is not threaded in as a parameter here, because it is a
-/// property of the replica root, not of this process's host, and so cannot
-/// be known before [_resolveLocalSide] resolves that root; it is probed
-/// there instead, once, via `host_platform.dart`'s `detectsCaseFolding`.
-/// [localAddressLookup] defaults to
-/// [systemLocalAddresses] — the one piece of real I/O this
-/// needs — so a test can drive both localities without a network.
-/// [sshExecutable] is the `ssh` binary to spawn for a remote side
+/// `EffectiveOptions`). [platform] is the same convention for the three
+/// host-derived facts this needs — SPEC §8.3's state-directory rule (archive,
+/// lock, device identity and paired-device store), SPEC §3's read-side path
+/// style (a local side's `Scanner`, below), and SPEC §3/§7.4's
+/// `chmod`-availability (a local side's `LocalAgent`, below) — all rolled
+/// into one [HostPlatform] value rather than threaded as three that must
+/// agree (see [HostPlatform]'s own doc comment). Required, not defaulted,
+/// for the same reason `resolveStateDir`'s callers all require it: a wrong
+/// default would silently resolve every non-Linux host's state to the wrong
+/// directory, and — now that path style and `chmod`-availability ride along
+/// too — silently mis-spell filesystem paths and skip `chmod` on non-Windows
+/// hosts (or attempt one on Windows) in the bargain.
+///
+/// A local side's `Scanner` also needs to know whether *its own* filesystem
+/// folds case (SPEC §16) — unlike the three above, that is not carried on
+/// [platform] because it is a property of the replica root, not of this
+/// process's host, and so cannot be known before [_resolveLocalSide]
+/// resolves that root; it is probed there instead, once, via
+/// `host_platform.dart`'s `detectsCaseFolding`.
+///
+/// [localAddressLookup] defaults to [systemLocalAddresses] — the one piece
+/// of real I/O this needs — so a test can drive both localities without a
+/// network. [sshExecutable] is the `ssh` binary to spawn for a remote side
 /// (`SshChannel.connect`'s own `executable` parameter); overridable so a
 /// test can point it at a script that fails instead of a real remote host.
 Future<ConnectedReplicas> resolveReplicaAgents(
   EffectiveOptions options, {
   Map<String, String> environment = const {},
-  required StateDirPlatform platform,
-  required p.Style pathStyle,
+  required HostPlatform platform,
   Future<Set<String>> Function() localAddressLookup = systemLocalAddresses,
   String sshExecutable = 'ssh',
 }) async {
@@ -136,7 +133,6 @@ Future<ConnectedReplicas> resolveReplicaAgents(
     jobs: jobs,
     environment: environment,
     platform: platform,
-    pathStyle: pathStyle,
     localAddresses: localAddresses,
     sshExecutable: sshExecutable,
   );
@@ -151,7 +147,6 @@ Future<ConnectedReplicas> resolveReplicaAgents(
       jobs: jobs,
       environment: environment,
       platform: platform,
-      pathStyle: pathStyle,
       localAddresses: localAddresses,
       sshExecutable: sshExecutable,
     );
@@ -180,8 +175,7 @@ Future<_ResolvedSide> _resolveSide({
   required String profileId,
   required int jobs,
   required Map<String, String> environment,
-  required StateDirPlatform platform,
-  required p.Style pathStyle,
+  required HostPlatform platform,
   required Set<String> localAddresses,
   required String sshExecutable,
 }) {
@@ -189,13 +183,13 @@ Future<_ResolvedSide> _resolveSide({
     profileId: profileId,
     side: side,
     environment: environment,
-    platform: platform,
+    platform: platform.stateDirPlatform,
   ).path;
   final lockPath = resolveLockPath(
     profileId: profileId,
     side: side,
     environment: environment,
-    platform: platform,
+    platform: platform.stateDirPlatform,
   ).path;
 
   return switch (location.classify(localAddresses: localAddresses)) {
@@ -206,7 +200,6 @@ Future<_ResolvedSide> _resolveSide({
       jobs: jobs,
       environment: environment,
       platform: platform,
-      pathStyle: pathStyle,
       archivePath: archivePath,
       lockPath: lockPath,
     ),
@@ -254,8 +247,7 @@ Future<_ResolvedSide> _resolveLocalSide({
   required String profileId,
   required int jobs,
   required Map<String, String> environment,
-  required StateDirPlatform platform,
-  required p.Style pathStyle,
+  required HostPlatform platform,
   required String archivePath,
   required String lockPath,
 }) async {
@@ -267,17 +259,17 @@ Future<_ResolvedSide> _resolveLocalSide({
       side: side,
       rootPath: rootPath,
       environment: environment,
-      platform: platform,
+      platform: platform.stateDirPlatform,
     ),
     replicaLock: ReplicaLock.forProfile(
       profileId: profileId,
       side: side,
       environment: environment,
-      platform: platform,
+      platform: platform.stateDirPlatform,
     ),
     scanner: Scanner(
       jobs: jobs,
-      pathStyle: pathStyle,
+      pathStyle: platform.pathStyle,
       // SPEC §16: this replica's own filesystem, probed once at connect
       // time (`detectsCaseFolding`'s own doc comment says why an OS check
       // alone would be wrong) rather than a second, independent read.
@@ -287,11 +279,11 @@ Future<_ResolvedSide> _resolveLocalSide({
     // `ReplicaInfo.archivePath` — the authoritative value SPEC §11.4's run
     // header uses, in place of the label below.
     archivePath: archivePath,
-    // SPEC §3, §7.4: no `chmod` on Windows. Derived from the same
-    // `pathStyle` already resolved for this side rather than a second,
-    // independent platform read — see `isWindowsPathStyle`'s own doc
-    // comment for why that is safe.
-    isWindowsReplica: isWindowsPathStyle(pathStyle),
+    // SPEC §3, §7.4: no `chmod` on Windows. Read off the same [HostPlatform]
+    // case already resolved for this side, so a Windows state directory
+    // paired with a POSIX path style is unrepresentable rather than merely
+    // undocumented (see [HostPlatform]'s own doc comment).
+    isWindowsReplica: platform.isWindowsReplica,
   );
 
   return (
@@ -454,7 +446,7 @@ Future<_ResolvedSide> _resolvePeerSide({
   required String profileId,
   required int jobs,
   required Map<String, String> environment,
-  required StateDirPlatform platform,
+  required HostPlatform platform,
   required String archivePath,
   required String lockPath,
 }) async {
@@ -463,7 +455,7 @@ Future<_ResolvedSide> _resolvePeerSide({
 
   final pairedDeviceStore = PairedDeviceStore.forStateDir(
     environment: environment,
-    platform: platform,
+    platform: platform.stateDirPlatform,
   );
   final device = await pairedDeviceStore.byName(deviceName);
   if (device == null) {
@@ -478,7 +470,7 @@ Future<_ResolvedSide> _resolvePeerSide({
   // state directory `environment`/`platform` resolves.
   final ownIdentity = await DeviceIdentityStore.forStateDir(
     environment: environment,
-    platform: platform,
+    platform: platform.stateDirPlatform,
   ).loadOrCreate(commonName: Platform.localHostname);
 
   final address = device.lastKnownAddress;

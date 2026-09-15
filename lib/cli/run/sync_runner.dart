@@ -4,12 +4,11 @@ import 'dart:io';
 
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
-import 'package:dsync/dsync_core/state_dir.dart';
-import 'package:path/path.dart' as p;
 
 import '../agents/connected_replicas.dart';
 import '../agents/local_addresses.dart';
 import '../exit_code.dart';
+import '../host_platform.dart';
 import '../options/cli_options.dart';
 import '../options/effective_options.dart';
 import '../options/sync_target.dart';
@@ -71,23 +70,20 @@ class SyncRunner {
   /// [EffectiveOptions], and [resolveReplicaAgents] already use.
   final Map<String, String> environment;
 
-  /// Which SPEC §8.3 rule resolves a replica's state directory (archive,
-  /// lock, and — for a `peer://` side — the device identity and
-  /// paired-device store), threaded through for the same reason
-  /// [environment] is: `runDsyncCli` supplies the real host's answer
-  /// (`hostStateDirPlatform()`), a test supplies whichever of the five it
-  /// wants to exercise.
-  final StateDirPlatform platform;
-
-  /// How this host's own filesystem paths are spelled (SPEC §3's read-side
-  /// path conversion), threaded through for the same reason [platform] is:
-  /// `runDsyncCli` supplies the real host's answer (`hostPathStyle()`), a
-  /// test supplies whichever `package:path` `Style` it wants to exercise.
-  /// Only a local replica's own `Scanner` ever reads it
-  /// (`resolveReplicaAgents`) — a remote replica's agent process resolves
-  /// its own host's style independently, the same way it resolves its own
-  /// `platform` independently (`agent_command.dart`'s `_buildAgent`).
-  final p.Style pathStyle;
+  /// Which of the v1 targets (SPEC §3) this initiating process is running on,
+  /// threaded through for the same reason [environment] is: `runDsyncCli`
+  /// supplies the real host's answer (`hostPlatform()`), a test supplies
+  /// whichever CLI case it wants to exercise. One value carries all three of
+  /// SPEC §8.3's state-directory rule (archive, lock, and — for a `peer://`
+  /// side — the device identity and paired-device store), SPEC §3's read-side
+  /// path style (which a local replica's `Scanner` reads —
+  /// `resolveReplicaAgents`), and SPEC §7.4's `chmod`-availability fact
+  /// (which a local replica's `LocalAgent` reads there too) — see
+  /// [HostPlatform]'s own doc comment for why they belong on the same sum
+  /// type. A remote replica's agent process resolves *its* host independently
+  /// (`agent_command.dart`'s `_buildAgent`), for the same reason it resolves
+  /// its own environment independently.
+  final HostPlatform platform;
 
   /// The process's current working directory, for resolving a relative
   /// local ad-hoc path (see [EffectiveOptions.forAdHoc]'s doc comment).
@@ -125,7 +121,6 @@ class SyncRunner {
   SyncRunner({
     required this.environment,
     required this.platform,
-    required this.pathStyle,
     required this.workingDirectory,
     this.localAddressLookup = systemLocalAddresses,
     this.sshExecutable = 'ssh',
@@ -205,7 +200,6 @@ class SyncRunner {
       effective,
       environment: environment,
       platform: platform,
-      pathStyle: pathStyle,
       localAddressLookup: sharedLocalAddressLookup,
       sshExecutable: sshExecutable,
     );
