@@ -132,9 +132,9 @@ void main() {
       () async {
         // Round-trips a real scan through commit and back so the second scan
         // takes SPEC §5.2 step 1 on the *remote* side — proving
-        // ScanEntry.reason (task 8a3ff1) isn't lost crossing
-        // scanEntryToJson/scanEntryFromJson the way a value only computed
-        // for the in-process case would be.
+        // ScanEntry.reason (task 8a3ff1) isn't lost crossing the scan
+        // payload's encoding the way a value only computed for the
+        // in-process case would be.
         await File('${replicaDir.path}/a.txt').writeAsString('hello');
         final firstScan = (await remote.scan(RuleSet())).entries
             .firstWhere((e) => e.path == 'a.txt');

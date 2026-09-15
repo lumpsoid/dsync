@@ -57,7 +57,7 @@ The channel is a bidirectional byte stream behind a `Channel` interface, and the
 - The socket file is unlinked when the listener closes. One left behind by an agent that was killed outright is cleared on the next start, after connecting to it proves nothing is listening there.
 - **It authenticates nobody.** `hello` names the root path and the agent is rooted wherever it says, which over ssh is harmless because the connection was already authenticated as that user. Here the only gate is the filesystem: on Linux, a connect is refused if the process cannot open the socket. That is why this transport is unix-domain and local by construction. A socket that leaves the machine needs authentication and encryption of its own, and does not have them yet (§16).
 - Two things about a remote replica are configurable **per replica**, since SPEC §4.1 allows a pair of two remotes and two hosts need not agree on either: the **options** passed to `ssh` before the destination (`-p`, `-i`, `-o …`), and the **command** that starts the agent on the far side, which defaults to the bare word `dsync` resolved on the remote *non-interactive* PATH. Both come from the profile (§12) and the command line (§11.2). `~/.ssh/config` already answers port, identity, user and proxy command per destination and remains the better place for them; the options exist for what it cannot say, and for a one-off.
-- Protocol: framed messages over the stream. Frame = 1 byte type + 4 byte big-endian length + payload. Type `0` = UTF-8 JSON control message, type `1` = raw file bytes. First exchange is a version handshake; mismatched protocol versions abort the run.
+- Protocol: framed messages over the stream. Frame = 1 byte type + 4 byte big-endian length + payload. Type `0` = UTF-8 JSON control message, type `1` = raw file bytes, type `2` = a successful `scan` reply in the binary encoding of §15.3. A *failed* `scan` is a type `0` error like any other operation's, so the type byte is what distinguishes them. First exchange is a version handshake; mismatched protocol versions abort the run.
 - Agent operations: `hello`, `lock`, `unlock`, `scan`, `readFile` (streamed), `writeFile` (streamed, temp + rename, set mtime/mode), `delete`, `removeEmptyDirs`, `archiveCommit`.
 - `hello` carries the replica this connection should serve (root path — unexpanded — profile id, side, job count) and replies with that replica's archive last-commit time (or `null`), since the initiator cannot `stat` an archive on the remote host.
 
@@ -295,7 +295,22 @@ the same boundaries already enforced by the folder split.
 Override any of these before code starts:
 1. **Symlinks**: skipped unless matched by a `follow` rule; hardlinks treated as plain files.
 2. **Archive format**: JSON Lines append log with compaction, behind an interface. Alternative: SQLite via `package:sqlite3` (adds a native dependency on both hosts).
-3. **Protocol encoding**: length-prefixed JSON frames. Alternative: MessagePack (`package:msgpack_dart`), same framing.
+3. **Protocol encoding**: length-prefixed JSON frames, *except* a successful `scan` reply, which is a hand-rolled binary payload in its own frame type (§4.2). Settled with measurements rather than left as a default; MessagePack (`package:msgpack_dart`) was the alternative and was not taken.
+
+   Measured on a 100k-entry `scan` result, two-level paths, a unique SHA-256 each:
+
+   | encoding | wire bytes | decode | peak RSS |
+   |---|---|---|---|
+   | JSON | 17.2 MiB | 162 ms | 320 MiB |
+   | binary | 7.2 MiB | 47 ms | 223 MiB |
+
+   `scan` is the only message worth this: it returns the whole replica's listing in one frame, so its size is the size of the tree, while every other operation carries one path or nothing. Those stay JSON — a second encoding for them would be code to maintain in exchange for bytes nobody can measure.
+
+   **Hand-rolled rather than MessagePack** because the win here is the layout, not the syntax. MessagePack would still hand back a boxed map per entry and would still spell the hash as text; it also adds a pinned dependency to every host (§3), which is a real cost for a format this project can write in 200 lines.
+
+   **The hash travels as raw bytes but stays a hex `String` in the model.** Halving its wire size (64 characters → 32 bytes) is where most of the 10 MiB comes from. Holding those bytes in `ScanEntry`/`ArchiveEntry` instead was measured too and rejected: it would take a further ~30 ms off a remote scan while adding ~10 ms to *every* archive load, since §8.2's log stays hex so it stays inspectable. That is ~20 ms net on a 100k-file remote run and a small loss on a local one, in exchange for changing two models, the scanner, the reconciler and the archive store.
+
+   Task 9551c4 recorded a 6× decode win for bytes-in-the-model. It did not reproduce: that measurement's hex-rebuilding decoder grew each hash through a `StringBuffer`, and filling a code-unit list for `String.fromCharCodes` recovers almost all of the difference without touching the model.
 4. **Exit codes**: as in §11.5, mirroring Unison's four-level scheme.
 5. **Profile format**: TOML.
 6. **mtime comparison**: exact equality of microsecond values. If a target filesystem turns out to round mtimes, the archive stores the rounded value it reads back, so the next run's fast path still matches.

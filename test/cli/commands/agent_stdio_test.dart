@@ -4,13 +4,16 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
@@ -76,7 +79,7 @@ void main() {
 
       final process = await startAgent();
       final channel = StdioChannel(
-        input: process.stdout,
+        input: process.stdout.cast<Uint8List>(),
         output: process.stdin,
       );
       final frames = StreamIterator(FrameCodec().decode(channel.input));
@@ -118,12 +121,12 @@ void main() {
         ),
       );
       await frames.moveNext();
-      final scanReply = AgentResult.fromFrame(frames.current);
-      expect(scanReply, isA<AgentSuccess>());
-      final entries = ((scanReply as AgentSuccess).data['entries'] as List)
-          .cast<Map<String, dynamic>>();
-      expect(entries.single['path'], 'a.txt');
-      expect(entries.single['reason'], 'created');
+      // A successful scan comes back as its own frame type, not a control
+      // frame (SPEC §15.3, task 9551c4).
+      expect(frames.current.type, FrameType.scanResult);
+      final entries = decodeScanResult(frames.current.payload).entries;
+      expect(entries.single.path, 'a.txt');
+      expect(entries.single.reason, ScanReason.created);
 
       await process.stdin.close();
       final exitCode = await process.exitCode.timeout(
@@ -141,7 +144,9 @@ void main() {
         // The agent sends its own version frame before it has seen ours
         // (SPEC §4.2), so read that off the wire, then reply with a version
         // it cannot speak.
-        final frames = StreamIterator(FrameCodec().decode(process.stdout));
+        final frames = StreamIterator(
+          FrameCodec().decode(process.stdout.cast<Uint8List>()),
+        );
         await frames.moveNext();
 
         process.stdin.add(

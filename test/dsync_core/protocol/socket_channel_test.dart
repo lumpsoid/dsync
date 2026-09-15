@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:test/test.dart';
@@ -44,8 +45,8 @@ void main() {
     final channel = await SocketChannel.connectUnix(socketPath);
     final received = channel.input.expand((chunk) => chunk).take(6).toList();
 
-    await channel.send([1, 2, 3]);
-    await channel.send([4, 5, 6]);
+    await channel.send(Uint8List.fromList([1, 2, 3]));
+    await channel.send(Uint8List.fromList([4, 5, 6]));
 
     // Chunk boundaries carry no meaning (`Channel.input`), so this asserts
     // the byte sequence rather than how it arrived split.
@@ -63,7 +64,7 @@ void main() {
     });
 
     final channel = await SocketChannel.connectUnix(socketPath);
-    await channel.send([1]);
+    await channel.send(Uint8List.fromList([1]));
     await channel.close();
 
     await expectLater(peerSawEof.future, completes);

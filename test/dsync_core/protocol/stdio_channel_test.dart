@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:test/test.dart';
@@ -14,8 +15,8 @@ void main() {
     test('input surfaces exactly what the injected stream produces', () async {
       final channel = StdioChannel(
         input: Stream.fromIterable([
-          [1, 2, 3],
-          [4, 5],
+          Uint8List.fromList([1, 2, 3]),
+          Uint8List.fromList([4, 5]),
         ]),
         output: IOSink(StreamController<List<int>>().sink),
       );
@@ -37,7 +38,7 @@ void main() {
         output: IOSink(controller.sink),
       );
 
-      await channel.send([9, 8, 7]);
+      await channel.send(Uint8List.fromList([9, 8, 7]));
 
       expect(received, [9, 8, 7]);
     });
@@ -51,8 +52,8 @@ void main() {
         output: IOSink(controller.sink),
       );
 
-      await channel.send([1]);
-      await channel.send([2]);
+      await channel.send(Uint8List.fromList([1]));
+      await channel.send(Uint8List.fromList([2]));
 
       expect(received, [1, 2]);
     });

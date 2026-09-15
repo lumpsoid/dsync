@@ -26,7 +26,7 @@ class FrameCodec {
   /// Decodes a stream of raw byte chunks into the [Frame]s they contain,
   /// buffering across chunk boundaries since a chunk need not align with a
   /// frame boundary.
-  Stream<Frame> decode(Stream<List<int>> input) async* {
+  Stream<Frame> decode(Stream<Uint8List> input) async* {
     final pending = _PendingBytes();
     await for (final chunk in input) {
       pending.add(chunk);
@@ -73,6 +73,7 @@ class FrameCodec {
   int _byteForType(FrameType type) => switch (type) {
     FrameType.control => 0,
     FrameType.fileBytes => 1,
+    FrameType.scanResult => 2,
   };
 
   /// The frame type [byte] names, or `null` if it names none — reported by
@@ -80,6 +81,7 @@ class FrameCodec {
   FrameType? _typeForByte(int byte) => switch (byte) {
     0 => FrameType.control,
     1 => FrameType.fileBytes,
+    2 => FrameType.scanResult,
     _ => null,
   };
 }
@@ -127,7 +129,11 @@ class _PendingBytes {
       _bytes.sublist(_start + start, _start + end);
 
   /// Buffers [chunk] after the bytes already waiting.
-  void add(List<int> chunk) {
+  ///
+  /// [Uint8List], not `List<int>`, so the `setRange` below is the typed-data
+  /// `memmove` rather than the element-at-a-time fallback a boxed list falls
+  /// to — see `Channel`, which is where the type comes from.
+  void add(Uint8List chunk) {
     _reserve(chunk.length);
     _bytes.setRange(_end, _end + chunk.length, chunk);
     _end += chunk.length;

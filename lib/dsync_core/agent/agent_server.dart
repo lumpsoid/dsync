@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 
 /// The remote end of the framed protocol (SPEC §4.2): performs the version
@@ -99,7 +100,18 @@ class AgentServer {
           final result = await agent.scan(
             ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
           );
-          await _reply(channel, AgentSuccess(scanResultToJson(result)));
+          // The one reply that is not a control frame (SPEC §15.3). A failure
+          // still is: the `catch` below answers with an `AgentFailure`, which
+          // is what lets `RemoteAgent.scan` tell the two apart by frame type
+          // without the encoding having to carry an ok/error flag of its own.
+          await channel.send(
+            FrameCodec().encode(
+              Frame(
+                type: FrameType.scanResult,
+                payload: encodeScanResult(result),
+              ),
+            ),
+          );
         case 'readFile':
           await sendByteStream(
             channel,

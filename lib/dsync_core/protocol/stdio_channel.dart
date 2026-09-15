@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/protocol/channel.dart';
 
@@ -19,7 +20,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 /// belong on stderr, the same reasoning as SPEC §11.4's human text under
 /// `--json`.
 class StdioChannel implements Channel {
-  final Stream<List<int>> _input;
+  final Stream<Uint8List> _input;
   final IOSink _output;
 
   /// [input] and [output] default to this process's real stdin/stdout;
@@ -27,15 +28,17 @@ class StdioChannel implements Channel {
   /// either — the process-level behavior (nothing else reaches the real
   /// stdout) is instead proven by driving a real child process over pipes
   /// (see `test/cli/commands/`).
-  StdioChannel({Stream<List<int>>? input, IOSink? output})
-    : _input = input ?? stdin,
+  /// [stdin] is declared `Stream<List<int>>` but emits [Uint8List]; see
+  /// `SshChannel.input` for why the cast is worth making.
+  StdioChannel({Stream<Uint8List>? input, IOSink? output})
+    : _input = input ?? stdin.cast<Uint8List>(),
       _output = output ?? stdout;
 
   @override
-  Stream<List<int>> get input => _input;
+  Stream<Uint8List> get input => _input;
 
   @override
-  Future<void> send(List<int> bytes) async {
+  Future<void> send(Uint8List bytes) async {
     _output.add(bytes);
     await _output.flush();
   }

@@ -9,11 +9,14 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// wire format changes in a way older and newer builds can't both handle.
 ///
 /// Still 1, and every wire change so far has left it there — `hello`'s last
-/// field addition, `scanEntryToJson`'s `reason`, task 37bf4f renaming
-/// `scan`'s `skippedSymlinks` to `skippedPaths`. A version exists to protect
-/// pairs that cannot be upgraded together, and there are none: no stable
-/// release, no users, no deployed agent. Bumping now would only make this
-/// build refuse yesterday's build of itself.
+/// field addition, `scanEntryToJson`'s `reason`, task 37bf4f renaming `scan`'s
+/// `skippedSymlinks` to `skippedPaths`, and task 9551c4 respelling a
+/// successful `scan` reply as the binary `FrameType.scanResult` (SPEC §15.3).
+/// A version exists to protect pairs that cannot be upgraded together, and
+/// there are none: no stable release, no users, no deployed agent — the only
+/// thing that ever speaks this protocol to itself is the test suite, which is
+/// built from this tree. Bumping now would only make this build refuse
+/// yesterday's build of itself.
 ///
 /// What a bump is *for*, when there is finally something to protect:
 /// **adding** an optional field does not need one, because a peer that omits
@@ -23,6 +26,12 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// that is read, so the value is dropped with no error anywhere. 37bf4f's
 /// rename is the first change of that second kind; the next one after the
 /// first release is the one that has to bump.
+///
+/// **Respelling a payload** — 9551c4 — is a third kind, and is the *least*
+/// in need of a version, not the most: JSON and this protocol's binary cannot
+/// be mistaken for each other, so a mismatched pair fails loudly at the first
+/// `scan` whatever this constant says. A bump would improve that failure's
+/// wording, nothing else, and only for a pair that does not exist yet.
 const protocolVersion = 1;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this

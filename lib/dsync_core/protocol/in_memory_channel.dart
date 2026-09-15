@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/protocol/channel.dart';
 
@@ -9,24 +10,24 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 /// code path as SSH, without a network — the testing seam for protocol
 /// round-trip tests.
 class InMemoryChannel implements Channel {
-  final StreamController<List<int>> _outbox;
+  final StreamController<Uint8List> _outbox;
   @override
-  final Stream<List<int>> input;
+  final Stream<Uint8List> input;
 
   InMemoryChannel._(this._outbox, this.input);
 
   /// Creates two ends of the same in-memory connection: bytes [Channel.send]
   /// on one arrive on the other's [Channel.input], and vice versa.
   static (Channel, Channel) pair() {
-    final aToB = StreamController<List<int>>();
-    final bToA = StreamController<List<int>>();
+    final aToB = StreamController<Uint8List>();
+    final bToA = StreamController<Uint8List>();
     final a = InMemoryChannel._(aToB, bToA.stream);
     final b = InMemoryChannel._(bToA, aToB.stream);
     return (a, b);
   }
 
   @override
-  Future<void> send(List<int> bytes) async {
+  Future<void> send(Uint8List bytes) async {
     _outbox.add(bytes);
   }
 

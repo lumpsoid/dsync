@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -100,10 +101,15 @@ class SshChannel implements Channel {
   }
 
   @override
-  Stream<List<int>> get input => _process.stdout;
+  /// `Process.stdout` is declared `Stream<List<int>>` but emits [Uint8List] —
+  /// it is a pipe, and the VM reads pipes into typed data. The cast is one
+  /// type check per chunk, not per byte, and it is what lets `FrameCodec`
+  /// buffer with a `memmove` (see [Channel]).
+  @override
+  Stream<Uint8List> get input => _process.stdout.cast<Uint8List>();
 
   @override
-  Future<void> send(List<int> bytes) async {
+  Future<void> send(Uint8List bytes) async {
     _process.stdin.add(bytes);
     await _process.stdin.flush();
   }

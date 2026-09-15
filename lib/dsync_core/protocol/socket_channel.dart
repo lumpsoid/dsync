@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/protocol/channel.dart';
 
@@ -42,10 +43,10 @@ class SocketChannel implements Channel {
   }
 
   @override
-  Stream<List<int>> get input => _socket;
+  Stream<Uint8List> get input => _socket;
 
   @override
-  Future<void> send(List<int> bytes) async {
+  Future<void> send(Uint8List bytes) async {
     _socket.add(bytes);
     await _socket.flush();
   }

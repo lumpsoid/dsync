@@ -11,6 +11,7 @@ import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 
 /// [Agent] implementation that drives a replica over a [Channel] by
@@ -73,11 +74,32 @@ class RemoteAgent implements Agent {
   @override
   Future<void> unlock() => _call('unlock');
 
+  /// The one operation whose success does not come back as a control frame
+  /// (SPEC §15.3): a `scan` reply is `FrameType.scanResult`, the binary
+  /// encoding in `scan_result_codec.dart`. A *failure* is still an
+  /// `AgentFailure` control frame, so the frame type is what tells the two
+  /// apart — which is why this cannot go through [_call].
   @override
   Future<ScanResult> scan(RuleSet rules) async {
-    return scanResultFromJson(
-      await _call('scan', {'rules': ruleSetToJson(rules)}),
-    );
+    final release = await _acquireWire();
+    try {
+      await _send(AgentRequest('scan', {'rules': ruleSetToJson(rules)}));
+      if (!await _frames.moveNext()) {
+        throw StateError('Channel closed before a response arrived');
+      }
+      final frame = _frames.current;
+      if (frame.type == FrameType.scanResult) {
+        return decodeScanResult(frame.payload);
+      }
+      throw switch (AgentResult.fromFrame(frame)) {
+        AgentFailure(:final error) => AgentOperationException(error),
+        AgentSuccess() => StateError(
+          'Peer answered scan with a success control frame, not a scan result',
+        ),
+      };
+    } finally {
+      release();
+    }
   }
 
   /// Streams the file, and guarantees the shared frame stream is left

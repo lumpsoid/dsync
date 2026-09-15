@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
@@ -78,7 +79,10 @@ void main() {
           size: 1,
           mtime: 1,
           mode: 420,
-          hash: 'h',
+          // A real hex digest, not a placeholder: the scan payload carries
+          // the hash as the bytes it spells (SPEC §15.3), so a `hash` that is
+          // not hex is refused at the encoder.
+          hash: 'deadbeef',
         ),
       ];
 
@@ -86,7 +90,7 @@ void main() {
 
       expect(entries.single.path, 'a.txt');
       expect(entries.single.status, ScanStatus.created);
-      expect(entries.single.hash, 'h');
+      expect(entries.single.hash, 'deadbeef');
     });
   });
 
@@ -194,7 +198,7 @@ void main() {
 /// subscription to ask about in the first place.
 class _WatchedInputChannel implements Channel {
   final Channel _inner;
-  final StreamController<List<int>> _input = StreamController();
+  final StreamController<Uint8List> _input = StreamController();
 
   _WatchedInputChannel(this._inner) {
     _input.onListen = () => _input.addStream(_inner.input);
@@ -203,10 +207,10 @@ class _WatchedInputChannel implements Channel {
   bool get inputHasListener => _input.hasListener;
 
   @override
-  Stream<List<int>> get input => _input.stream;
+  Stream<Uint8List> get input => _input.stream;
 
   @override
-  Future<void> send(List<int> bytes) => _inner.send(bytes);
+  Future<void> send(Uint8List bytes) => _inner.send(bytes);
 
   @override
   Future<void> close() => _inner.close();

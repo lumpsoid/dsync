@@ -73,7 +73,9 @@ void main() {
         Frame(type: FrameType.fileBytes, payload: [2, 3]),
       );
 
-      final frames = await codec.decode(Stream.value([...f1, ...f2])).toList();
+      final frames = await codec
+          .decode(Stream.value(Uint8List.fromList([...f1, ...f2])))
+          .toList();
 
       expect(frames.map((f) => f.type), [
         FrameType.control,
@@ -132,7 +134,7 @@ void main() {
       }
       final encoded = wire.takeBytes();
 
-      Stream<List<int>> chunked() async* {
+      Stream<Uint8List> chunked() async* {
         for (var i = 0; i < encoded.length; i += 37) {
           final end = i + 37;
           yield Uint8List.sublistView(
@@ -161,7 +163,7 @@ void main() {
         Frame(type: FrameType.control, payload: Uint8List(payloadLength)),
       );
 
-      Stream<List<int>> chunked() async* {
+      Stream<Uint8List> chunked() async* {
         for (var i = 0; i < encoded.length; i += chunkLength) {
           final end = i + chunkLength;
           yield Uint8List.sublistView(
@@ -181,17 +183,29 @@ void main() {
     });
 
     test('throws FrameDecodeException on an unknown type byte', () async {
-      final bad = Uint8List.fromList([2, 0, 0, 0, 0]);
+      // 3, not 2: 2 became `FrameType.scanResult` with task 9551c4.
+      final bad = Uint8List.fromList([3, 0, 0, 0, 0]);
 
       await expectLater(
         codec.decode(Stream.value(bad)).toList(),
         throwsA(
           isA<FrameDecodeException>()
-              .having((e) => e.message, 'message', contains('2'))
-              .having((e) => e.received, 'received', [2, 0, 0, 0, 0])
+              .having((e) => e.message, 'message', contains('3'))
+              .having((e) => e.received, 'received', [3, 0, 0, 0, 0])
               .having((e) => e.truncated, 'truncated', isFalse),
         ),
       );
+    });
+
+    test('decodes a scanResult frame (task 9551c4)', () async {
+      final encoded = codec.encode(
+        Frame(type: FrameType.scanResult, payload: [7, 8]),
+      );
+
+      final frames = await codec.decode(Stream.value(encoded)).toList();
+
+      expect(frames.single.type, FrameType.scanResult);
+      expect(frames.single.payload, [7, 8]);
     });
 
     test('fails on the header rather than waiting out the bogus length a '

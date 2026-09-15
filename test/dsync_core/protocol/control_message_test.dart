@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
@@ -7,9 +8,6 @@ import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:dsync/dsync_core/models/scan_entry.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
-import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -53,126 +51,6 @@ void main() {
 
       expect(decoded, isA<AgentFailure>());
       expect((decoded as AgentFailure).error, 'replica lock held');
-    });
-  });
-
-  group('scanEntryToJson / scanEntryFromJson', () {
-    test('round-trips a fully populated entry', () {
-      const entry = ScanEntry(
-        path: 'a.txt',
-        reason: ScanReason.modified,
-        size: 5,
-        mtime: 123,
-        mode: 420,
-        hash: 'deadbeef',
-      );
-
-      final decoded = scanEntryFromJson(scanEntryToJson(entry));
-
-      expect(decoded.path, entry.path);
-      expect(decoded.status, entry.status);
-      expect(decoded.reason, entry.reason);
-      expect(decoded.size, entry.size);
-      expect(decoded.mtime, entry.mtime);
-      expect(decoded.mode, entry.mode);
-      expect(decoded.hash, entry.hash);
-    });
-
-    test('round-trips a deleted entry with null fields', () {
-      const entry = ScanEntry.deleted('a.txt');
-
-      final decoded = scanEntryFromJson(scanEntryToJson(entry));
-
-      expect(decoded.status, ScanStatus.deleted);
-      expect(decoded.reason, ScanReason.deleted);
-      expect(decoded.size, isNull);
-      expect(decoded.mtime, isNull);
-      expect(decoded.mode, isNull);
-      expect(decoded.hash, isNull);
-    });
-
-    test(
-      "round-trips the two reasons behind ScanStatus.unchanged distinctly "
-      '(SPEC §5.2: metadata match vs. a rehash that confirmed the content)',
-      () {
-        const metadataMatched = ScanEntry(
-          path: 'a.txt',
-          reason: ScanReason.metadataMatched,
-          size: 5,
-          mtime: 123,
-          mode: 420,
-          hash: 'deadbeef',
-        );
-        const hashMatched = ScanEntry(
-          path: 'a.txt',
-          reason: ScanReason.hashMatched,
-          size: 5,
-          mtime: 123,
-          mode: 420,
-          hash: 'deadbeef',
-        );
-
-        final decodedMetadataMatched = scanEntryFromJson(
-          scanEntryToJson(metadataMatched),
-        );
-        final decodedHashMatched = scanEntryFromJson(
-          scanEntryToJson(hashMatched),
-        );
-
-        expect(decodedMetadataMatched.status, ScanStatus.unchanged);
-        expect(decodedMetadataMatched.reason, ScanReason.metadataMatched);
-        expect(decodedHashMatched.status, ScanStatus.unchanged);
-        expect(decodedHashMatched.reason, ScanReason.hashMatched);
-      },
-    );
-  });
-
-  group('scanResultToJson / scanResultFromJson (task 37bf4f)', () {
-    test('round-trips both skip reasons, each with its own detail', () {
-      const result = ScanResult(
-        entries: [ScanEntry(path: 'a.txt', reason: ScanReason.created)],
-        skippedPaths: [
-          SkippedPath.symlink('link.txt', 'broken link'),
-          SkippedPath.unreadable('locked.txt', 'Permission denied'),
-        ],
-      );
-
-      final decoded = scanResultFromJson(scanResultToJson(result));
-
-      expect(decoded.entries.map((e) => e.path), ['a.txt']);
-      expect(decoded.skippedPaths.map((s) => (s.path, s.reason, s.detail)), [
-        ('link.txt', SkippedReason.symlink, 'broken link'),
-        ('locked.txt', SkippedReason.unreadable, 'Permission denied'),
-      ]);
-      expect(decoded.unreadableCount, 1);
-    });
-
-    test('a symlink\'s detail survives the wire, so which of SPEC §5.1\'s '
-        'cases the walk saw reaches the initiator from a remote replica — '
-        'the information this task stopped discarding', () {
-      final decoded = skippedPathFromJson(
-        skippedPathToJson(
-          const SkippedPath.symlink(
-            'up',
-            'target is a directory this walk is already inside',
-          ),
-        ),
-      );
-
-      expect(decoded.reason, SkippedReason.symlink);
-      expect(
-        decoded.detail,
-        'target is a directory this walk is already '
-        'inside',
-      );
-    });
-
-    test('a peer that reports no skipped paths decodes to an empty list, '
-        'not a null', () {
-      final decoded = scanResultFromJson({'entries': <dynamic>[]});
-
-      expect(decoded.skippedPaths, isEmpty);
-      expect(decoded.unreadableCount, 0);
     });
   });
 
@@ -347,8 +225,8 @@ StreamIterator<Frame> _frameIterator(Channel channel) =>
     StreamIterator(FrameCodec().decode(channel.input));
 
 (Channel, Channel) _pairedChannels() {
-  final aToB = StreamController<List<int>>();
-  final bToA = StreamController<List<int>>();
+  final aToB = StreamController<Uint8List>();
+  final bToA = StreamController<Uint8List>();
   final a = _FakeChannel(outbox: aToB, input: bToA.stream);
   final b = _FakeChannel(outbox: bToA, input: aToB.stream);
   return (a, b);
@@ -358,14 +236,14 @@ StreamIterator<Frame> _frameIterator(Channel channel) =>
 /// drive the protocol helpers in isolation. The real shared in-memory
 /// `Channel` (SPEC §14) is a separate task; this one stays test-local.
 class _FakeChannel implements Channel {
-  final StreamController<List<int>> outbox;
+  final StreamController<Uint8List> outbox;
   @override
-  final Stream<List<int>> input;
+  final Stream<Uint8List> input;
 
   _FakeChannel({required this.outbox, required this.input});
 
   @override
-  Future<void> send(List<int> bytes) async {
+  Future<void> send(Uint8List bytes) async {
     outbox.add(bytes);
   }
 

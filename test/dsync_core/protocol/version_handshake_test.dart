@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -65,7 +66,9 @@ void main() {
     test('renders unprintable bytes rather than letting the peer drive the '
         'terminal', () async {
       final (a, b) = _pairedChannels();
-      await b.send([...utf8.encode('hi\x1b[2Jthere'), 0x07]);
+      await b.send(
+        Uint8List.fromList([...utf8.encode('hi\x1b[2Jthere'), 0x07]),
+      );
 
       await expectLater(
         performVersionHandshake(a, _frameIterator(a)),
@@ -102,9 +105,9 @@ void main() {
     test(
       'throws StateError when the channel closes before anything arrives',
       () async {
-        final controller = StreamController<List<int>>();
+        final controller = StreamController<Uint8List>();
         final channel = _FakeChannel(
-          outbox: StreamController<List<int>>(),
+          outbox: StreamController<Uint8List>(),
           input: controller.stream,
         );
         final frames = _frameIterator(channel);
@@ -123,8 +126,8 @@ StreamIterator<Frame> _frameIterator(Channel channel) =>
     StreamIterator(FrameCodec().decode(channel.input));
 
 (Channel, Channel) _pairedChannels() {
-  final aToB = StreamController<List<int>>();
-  final bToA = StreamController<List<int>>();
+  final aToB = StreamController<Uint8List>();
+  final bToA = StreamController<Uint8List>();
   final a = _FakeChannel(outbox: aToB, input: bToA.stream);
   final b = _FakeChannel(outbox: bToA, input: aToB.stream);
   return (a, b);
@@ -134,14 +137,14 @@ StreamIterator<Frame> _frameIterator(Channel channel) =>
 /// drive [performVersionHandshake] in isolation. The real shared in-memory
 /// `Channel` (SPEC §14) is a separate task; this one stays test-local.
 class _FakeChannel implements Channel {
-  final StreamController<List<int>> outbox;
+  final StreamController<Uint8List> outbox;
   @override
-  final Stream<List<int>> input;
+  final Stream<Uint8List> input;
 
   _FakeChannel({required this.outbox, required this.input});
 
   @override
-  Future<void> send(List<int> bytes) async {
+  Future<void> send(Uint8List bytes) async {
     outbox.add(bytes);
   }
 

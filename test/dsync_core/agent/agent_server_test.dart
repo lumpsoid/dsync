@@ -15,6 +15,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
+import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
 
@@ -60,6 +61,20 @@ void main() {
     return AgentResult.fromFrame(clientFrames.current);
   }
 
+  /// `scan` alone, because its success is a `FrameType.scanResult` frame
+  /// rather than a control frame (SPEC §15.3) — [call] would try to read it
+  /// as JSON.
+  Future<ScanResult> callScan(RuleSet rules) async {
+    await client.send(
+      FrameCodec().encode(
+        AgentRequest('scan', {'rules': ruleSetToJson(rules)}).toFrame(),
+      ),
+    );
+    await clientFrames.moveNext();
+    expect(clientFrames.current.type, FrameType.scanResult);
+    return decodeScanResult(clientFrames.current.payload);
+  }
+
   group('lock / unlock', () {
     test('dispatch to the agent and reply success', () async {
       expect(await call('lock'), isA<AgentSuccess>());
@@ -79,26 +94,43 @@ void main() {
           size: 1,
           mtime: 1,
           mode: 420,
-          hash: 'h',
+          hash: 'deadbeef',
         ),
       ];
 
-      final result = await call('scan', {
-        'rules': ruleSetToJson(RuleSet()),
-      }) as AgentSuccess;
+      final entries = (await callScan(RuleSet())).entries;
 
-      final entries = (result.data['entries'] as List)
-          .cast<Map<String, dynamic>>();
-      expect(entries.single['path'], 'a.txt');
-      expect(entries.single['reason'], 'created');
+      expect(entries.single.path, 'a.txt');
+      expect(entries.single.reason, ScanReason.created);
+      expect(entries.single.hash, 'deadbeef');
+    });
+
+    test('reports a failed scan as a control frame, not a scan result — the '
+        'frame type is what tells the two apart (SPEC §15.3)', () async {
+      agent.scanFailure = Exception('permission denied');
+
+      await client.send(
+        FrameCodec().encode(
+          AgentRequest('scan', {'rules': ruleSetToJson(RuleSet())}).toFrame(),
+        ),
+      );
+      await clientFrames.moveNext();
+
+      expect(clientFrames.current.type, FrameType.control);
+      expect(
+        AgentResult.fromFrame(clientFrames.current),
+        isA<AgentFailure>().having(
+          (f) => f.error,
+          'error',
+          contains('permission denied'),
+        ),
+      );
     });
 
     test("hands the request's rules to the agent", () async {
       agent.scanResult = [];
 
-      await call('scan', {
-        'rules': ruleSetToJson(RuleSet(ignore: ['*.tmp'])),
-      });
+      await callScan(RuleSet(ignore: ['*.tmp']));
 
       // The rules come from the initiator's profile (SPEC §9), so the server
       // must pass through what it was sent rather than scanning by its own.
@@ -329,6 +361,7 @@ void main() {
 class _FakeAgent implements Agent {
   bool locked = false;
   List<ScanEntry> scanResult = [];
+  Object? scanFailure;
   RuleSet? lastScanRules;
   final Map<String, List<int>> fileContents = {};
   final Map<String, ArchiveEntry> archive = {};
@@ -353,6 +386,8 @@ class _FakeAgent implements Agent {
   @override
   Future<ScanResult> scan(RuleSet rules) async {
     lastScanRules = rules;
+    final failure = scanFailure;
+    if (failure != null) throw failure;
     return ScanResult(entries: scanResult);
   }
 
