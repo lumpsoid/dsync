@@ -26,6 +26,11 @@ dsync sync <locA> <locB>          # ad-hoc, no profile
 dsync status <profile>            # scan + reconcile + print plan, apply nothing
 dsync agent --stdio               # started by ssh on the remote host
 dsync agent --listen <socket>     # bind a unix socket and serve it
+dsync pair show                   # show this device's payload, wait for a peer
+dsync pair accept <payload>       # pair with the device that payload came from
+dsync pair list                   # paired devices; --json for a script
+dsync pair grant <name> <path>    # let a paired device reach a replica root
+dsync pair revoke <name>          # stop trusting it
 ```
 
 A location is a local path, `user@host:path`, `ssh://[user@]destination:path`,
@@ -48,8 +53,32 @@ as `$XDG_RUNTIME_DIR`. That is why this transport is unix-domain and local
 only; a socket that leaves the machine is deferred, along with the
 authentication it would need (SPEC §16).
 
+## Pairing
+
+Two devices that have never met cannot talk. `dsync pair show` prints a payload
+— this device's certificate, an address, and a single-use token good for five
+minutes — and waits; `dsync pair accept <payload>` on the other device redeems
+it. That payload is the trust anchor, so there is no "an unknown device wants
+to connect, accept?" prompt anywhere: a device that was not paired out of band
+is refused during the TLS handshake, before it reaches the version handshake,
+`hello`, or any frame parser (SPEC §4.4).
+
+Pairing a device and authorizing it are two steps. A freshly paired device is
+trusted and can reach **nothing** until `dsync pair grant <name> <path>` says
+which replica roots it may serve. `dsync pair revoke` takes it back, and takes
+effect on the next connection attempt.
+
+**Not yet reachable from a sync.** The transport and the pairing work, but
+there is no way to *write down* a paired peer as a replica location yet — the
+`peer://<device-name>:<path>` form SPEC §2 describes is not implemented. Until
+it is, pairing sets up trust that only code can use. `dsync pair show` also
+prints its payload as text rather than a QR, which is the primary path for a
+desktop-to-server pair (neither end has a camera) but leaves phone-to-desktop
+waiting on both the QR rendering and the Flutter head.
+
 Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
-archives and locks in `$XDG_STATE_HOME/dsync/` (SPEC §8.3).
+archives, locks, this device's identity and the paired-device set in
+`$XDG_STATE_HOME/dsync/` (SPEC §8.3).
 
 Every run prints a header naming both replicas and when the pair last synced,
 before anything moves. `--dry-run` and `status` show the plan and apply
