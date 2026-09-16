@@ -1,8 +1,285 @@
 import 'package:flutter/foundation.dart';
 
+/// Where the run stands. Sealed, for the reason `PairOutcome` and
+/// `AppBootstrap` give: a phase with the wrong payload — "finished" with no
+/// counts, "stopped" with no number — cannot be constructed, and the page
+/// switches over every case.
+sealed class SyncRunPhase {
+  const SyncRunPhase();
+}
+
+/// `SyncRunController.start` has not been called.
+final class SyncRunIdle extends SyncRunPhase {
+  const SyncRunIdle();
+}
+
+/// `ReplicaConnector.connect` is in flight: no `RunEvent` can have arrived.
+final class SyncRunConnecting extends SyncRunPhase {
+  const SyncRunConnecting();
+}
+
+/// Both sides are connected and `RunController.run()` is being listened
+/// to; the other fields fill in as its events arrive.
+final class SyncRunRunning extends SyncRunPhase {
+  const SyncRunRunning();
+}
+
+/// The stream ended with a `RunSummaryEvent` (SPEC §11.4). The five counts
+/// are carried as five numbers: [skipped] is "offered and declined" and
+/// [unreadable] is "never reached the plan at all" — two questions, so two
+/// numbers, exactly as `RunSummaryEvent.unreadableCount`'s doc comment
+/// keeps them apart.
+final class SyncRunFinished extends SyncRunPhase {
+  const SyncRunFinished({
+    required this.applied,
+    required this.skipped,
+    required this.conflicts,
+    required this.failed,
+    required this.unreadable,
+  });
+
+  final int applied;
+  final int skipped;
+  final int conflicts;
+  final int failed;
+  final int unreadable;
+}
+
+/// The user stopped the run. **This is not "cancelled".** Stopping means
+/// `SyncRunController` stopped listening to `RunController.run()`, which
+/// suspends its apply loop at an action boundary — the loop is a
+/// one-at-a-time handoff, so the action whose result was last reported is
+/// fully applied and committed on both sides (SPEC §7.3 makes it durable),
+/// and the next one never starts. [completedActions] is how many that was.
+/// The page's wording says so; "cancelled" would imply nothing happened,
+/// which is false.
+final class SyncRunStopped extends SyncRunPhase {
+  const SyncRunStopped({required this.completedActions});
+
+  final int completedActions;
+}
+
+/// The run ended without a summary: a `ReplicaConnectFailure` (SPEC §4.4)
+/// before any event, or a `RunErrorEvent` — always the stream's last event.
+/// [message] is the whole line to show.
+final class SyncRunFailed extends SyncRunPhase {
+  const SyncRunFailed(this.message);
+
+  final String message;
+}
+
+/// SPEC §11.4's run header, rendered: the two locations and what the tool
+/// already knows about the pair. [history] is "last synced ..." or "first
+/// sync of this pair ..."; [firstSyncWarning] is SPEC §6's "a path one side
+/// has never seen" note, present only when either side has no archive —
+/// the flag is the data, the warning is its rendering, and the asymmetric
+/// case (one side has history) is worded differently from both-empty
+/// because only it is likely a mistake rather than an expected first run.
+final class SyncRunHeader {
+  const SyncRunHeader({
+    required this.localRoot,
+    required this.remoteRoot,
+    required this.deviceName,
+    required this.history,
+    required this.firstSyncWarning,
+  });
+
+  final String localRoot;
+  final String remoteRoot;
+  final String deviceName;
+  final String history;
+  final String? firstSyncWarning;
+}
+
+/// One side's `ScanReasonTally` (SPEC §5.2), as five numbers. `metadata`
+/// and `hash` both stay: a path that scans unchanged appears nowhere else
+/// in the run, and which of the two branches resolved it is the only thing
+/// the tally is for.
+final class SyncRunScanSide {
+  const SyncRunScanSide({
+    required this.metadataMatched,
+    required this.hashMatched,
+    required this.modified,
+    required this.created,
+    required this.deleted,
+  });
+
+  final int metadataMatched;
+  final int hashMatched;
+  final int modified;
+  final int created;
+  final int deleted;
+
+  int get total => metadataMatched + hashMatched + modified + created + deleted;
+}
+
+final class SyncRunScanTally {
+  const SyncRunScanTally({required this.local, required this.remote});
+
+  final SyncRunScanSide local;
+  final SyncRunScanSide remote;
+}
+
+/// One `Conflict` (SPEC §6), rendered: each side's status word, or "no
+/// record" for a side that has never seen the path.
+final class SyncRunConflictRow {
+  const SyncRunConflictRow({
+    required this.path,
+    required this.local,
+    required this.remote,
+  });
+
+  final String path;
+  final String local;
+  final String remote;
+}
+
+/// One `PlanAction`, rendered: what it does, in words, and how many bytes
+/// it moves.
+final class SyncRunPlanRow {
+  const SyncRunPlanRow({
+    required this.path,
+    required this.action,
+    required this.bytes,
+  });
+
+  final String path;
+  final String action;
+  final int bytes;
+}
+
+/// One `RunResultEvent`: [error] is `null` when the action applied.
+final class SyncRunResultRow {
+  const SyncRunResultRow({
+    required this.path,
+    required this.action,
+    required this.error,
+  });
+
+  final String path;
+  final String action;
+  final String? error;
+}
+
+/// `RunProgressEvent`, verbatim: [completed] of [total] kept actions.
+final class SyncRunProgress {
+  const SyncRunProgress({required this.completed, required this.total});
+
+  final int completed;
+  final int total;
+}
+
 /// The rendered values of the Run page: a `dsync_core` run's `RunEvent`s as
-/// something a widget can display (SPEC §9).
+/// something a widget can display (SPEC §9, §11.4).
 ///
 /// Holds only what the page displays — see the view-state role in
-/// `app_scope.dart`. Its fields land with the page itself.
-class SyncRunViewState extends ChangeNotifier {}
+/// `app_scope.dart`: strings, ints and sealed cases, never a `RunEvent`, a
+/// `Plan` or a `Conflict`. `SyncRunController` folds the stream into these
+/// fields in the order SPEC §11.4 fixes — header, scan tally, skipped and
+/// unreadable paths, conflicts, plan, per-action results, summary — and
+/// each field is the rendering of the event that fills it. It is many
+/// fields because it is one view of one run; what it is not is a set of
+/// flags that must agree: the run's phase is one sealed value.
+class SyncRunViewState extends ChangeNotifier {
+  SyncRunPhase _phase = const SyncRunIdle();
+  bool _dryRun = false;
+  SyncRunHeader? _header;
+  SyncRunScanTally? _scanTally;
+  List<String> _skippedSymlinks = const [];
+  List<String> _unreadablePaths = const [];
+  List<SyncRunConflictRow> _conflicts = const [];
+  List<SyncRunPlanRow> _plan = const [];
+  int _bytesToTransfer = 0;
+  List<SyncRunResultRow> _results = const [];
+  SyncRunProgress? _progress;
+
+  SyncRunPhase get phase => _phase;
+
+  /// SPEC §11.3 `--dry-run`: the plan is shown and nothing is applied, so
+  /// the page labels the empty apply section as intended, not as a failure.
+  bool get dryRun => _dryRun;
+
+  /// `null` until the `RunReplicasEvent` — the first event of any run that
+  /// got past `hello`.
+  SyncRunHeader? get header => _header;
+
+  /// `null` until both scans have completed.
+  SyncRunScanTally? get scanTally => _scanTally;
+
+  /// Symlinks the scan did not follow (SPEC §5.1), one line each, with the
+  /// side and the scan's own reason. Not failures: the tool obeying §9.
+  List<String> get skippedSymlinks => _skippedSymlinks;
+
+  /// Paths a side could not read, or could not tell apart from another
+  /// (SPEC §5, §16), one line each. Failures: excluded from the plan and
+  /// counted in [SyncRunFinished.unreadable].
+  List<String> get unreadablePaths => _unreadablePaths;
+
+  List<SyncRunConflictRow> get conflicts => _conflicts;
+
+  /// The reconciled plan (SPEC §6), before the presenter decides.
+  List<SyncRunPlanRow> get plan => _plan;
+
+  int get bytesToTransfer => _bytesToTransfer;
+
+  /// Each applied action's outcome, in the order they ran.
+  List<SyncRunResultRow> get results => _results;
+
+  SyncRunProgress? get progress => _progress;
+
+  /// Starts a run's rendering from nothing but its mode. `SyncRunController`
+  /// only.
+  void recordStart({required bool dryRun}) {
+    _dryRun = dryRun;
+    _phase = const SyncRunConnecting();
+    notifyListeners();
+  }
+
+  /// Moves the phase. `SyncRunController` only.
+  void recordPhase(SyncRunPhase phase) {
+    _phase = phase;
+    notifyListeners();
+  }
+
+  void recordHeader(SyncRunHeader header) {
+    _header = header;
+    notifyListeners();
+  }
+
+  void recordScanTally(SyncRunScanTally tally) {
+    _scanTally = tally;
+    notifyListeners();
+  }
+
+  void recordSkippedSymlink(String line) {
+    _skippedSymlinks = List.unmodifiable([..._skippedSymlinks, line]);
+    notifyListeners();
+  }
+
+  void recordUnreadablePath(String line) {
+    _unreadablePaths = List.unmodifiable([..._unreadablePaths, line]);
+    notifyListeners();
+  }
+
+  void recordConflict(SyncRunConflictRow row) {
+    _conflicts = List.unmodifiable([..._conflicts, row]);
+    notifyListeners();
+  }
+
+  /// Replaces the plan at once — one notification for one `RunPlanEvent`.
+  void recordPlan(List<SyncRunPlanRow> rows, {required int bytesToTransfer}) {
+    _plan = List.unmodifiable(rows);
+    _bytesToTransfer = bytesToTransfer;
+    notifyListeners();
+  }
+
+  void recordResult(SyncRunResultRow row) {
+    _results = List.unmodifiable([..._results, row]);
+    notifyListeners();
+  }
+
+  void recordProgress(SyncRunProgress progress) {
+    _progress = progress;
+    notifyListeners();
+  }
+}
