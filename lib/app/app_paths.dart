@@ -37,8 +37,11 @@ class AppPaths {
   /// other branch; an empty [baseDir] is refused by `core` at construction
   /// (`ArgumentError`) rather than resolving to a bare `/dsync`.
   AppPaths(String baseDir)
-    : stateDir = resolveStateDir(const {}, HostSuppliedStateDir(baseDir)),
+    : _baseDir = baseDir,
+      stateDir = resolveStateDir(const {}, HostSuppliedStateDir(baseDir)),
       configDir = resolveConfigDir(const {}, HostSuppliedConfigDir(baseDir));
+
+  final String _baseDir;
 
   /// The single place the head touches the plugin: asks the platform for
   /// its application support directory and hands the answer to the plain
@@ -53,4 +56,13 @@ class AppPaths {
   /// Where user configuration would be read from (SPEC §12). See the class
   /// doc comment for why it has no reader yet.
   final String configDir;
+
+  /// The [StateDirPlatform] case this head is, for `core`'s `forProfile`
+  /// factories (`JsonlArchiveStore`, `ReplicaLock`), which resolve the state
+  /// dir themselves from an environment map and a platform. Built over the
+  /// *base* dir, not [stateDir]: `resolveStateDir` joins `dsync` onto
+  /// whatever it is handed, so passing the already-resolved [stateDir] here
+  /// would land every archive under `<base>/dsync/dsync`. Mirrors
+  /// `HostPlatform.stateDirPlatform` in the CLI.
+  StateDirPlatform get stateDirPlatform => HostSuppliedStateDir(_baseDir);
 }

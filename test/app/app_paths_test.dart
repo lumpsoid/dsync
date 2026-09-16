@@ -1,4 +1,6 @@
 import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
 /// `AppPaths` is a value built from an injected base dir: nothing here calls
@@ -27,6 +29,31 @@ void main() {
       final paths = AppPaths('/base');
 
       expect(paths.configDir, paths.stateDir);
+    });
+
+    test('stateDirPlatform is the HostSuppliedStateDir case over the base', () {
+      final paths = AppPaths('/base');
+
+      expect(paths.stateDirPlatform, isA<HostSuppliedStateDir>());
+      expect((paths.stateDirPlatform as HostSuppliedStateDir).baseDir, '/base');
+    });
+
+    test('an archive path resolved through stateDirPlatform lands under '
+        'stateDir', () {
+      // The positive control against the double-`/dsync` bug: had the getter
+      // been built over the resolved `stateDir` rather than the base,
+      // `resolveStateDir` would join `dsync` a second time and the archive
+      // would land in `<base>/dsync/dsync/`.
+      final paths = AppPaths('/base');
+
+      final archive = resolveArchiveLogPath(
+        profileId: 'p',
+        side: 'a',
+        platform: paths.stateDirPlatform,
+      );
+
+      expect(archive.path, '${paths.stateDir}/p-a.jsonl');
+      expect(archive.path, isNot(contains('/dsync/dsync')));
     });
 
     test('an empty base dir is refused at construction', () {
