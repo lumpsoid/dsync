@@ -1,4 +1,5 @@
 import 'app_controller.dart';
+import 'app_paths.dart';
 
 /// # How the Flutter head is put together
 ///
@@ -117,7 +118,7 @@ abstract base class Scope<C> {
 /// `AppState`. Every feature scope's default factory reaches this for the
 /// dependencies its controller borrows from the application.
 final class AppScope extends Scope<AppController> {
-  AppScope() : super(AppController.new);
+  AppScope() : super(() => AppController(AppPaths.forThisDevice));
 }
 
 /// The single application scope. A page or a feature scope reaches the

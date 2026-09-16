@@ -1,4 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:test/test.dart';
 
@@ -73,7 +74,8 @@ void main() {
     });
 
     test('a pinned controller is what every later read sees', () {
-      final fake = AppController();
+      // Paths are injected so the fake never reaches `path_provider`.
+      final fake = AppController(() async => AppPaths('/fake'));
       appScope.setController(fake);
       expect(identical(appScope.controller, fake), isTrue);
     });

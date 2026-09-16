@@ -71,6 +71,32 @@ dependencies:
   # every v1 target (SPEC §3) including the four with no `app` head.
   qr: 4.0.0
 
+  # Pinned, not a range (SPEC §3, same rationale as the other pins above),
+  # and this one is the odd dependency out: it is a platform-channel plugin,
+  # not pure Dart. Its Dart side is a single call
+  # (`getApplicationSupportDirectory`) the Flutter head makes at one edge
+  # (`lib/app/app_paths.dart`) to learn the base directory that
+  # `HostSuppliedStateDir` / `HostSuppliedConfigDir` exist to be handed
+  # (SPEC §8.3, §12); its native side is the Android and iOS code that
+  # actually answers. So the pin fixes the native half too: a range here
+  # would let two builds of the head resolve different plugin
+  # implementations, and a directory that moves between builds is a device
+  # identity — and every pairing recorded against it — that is no longer
+  # found, not a cosmetic difference. `dsync_core/` never imports it
+  # (SPEC §3); only the app head does.
+  path_provider: 2.1.6
+  # The iOS/macOS half of `path_provider` above, pinned one step below its
+  # current release on purpose, and named here rather than left to resolve
+  # because a caret would take that step. 2.6.0 swapped the plugin-based
+  # implementation for direct FFI through `objective_c`, and `objective_c`
+  # carries a Dart *build hook* — which `dart compile exe`, the way the CLI
+  # binary is built (`test/support/dsync_binary.dart`), refuses outright
+  # ("does not support build hooks, use `dart build`"). Merely being in the
+  # package graph is enough to trip it; the CLI never imports either. 2.5.1
+  # is the last plugin-based release, and until the CLI's build moves to
+  # `dart build` this pin is what keeps one pubspec serving both heads.
+  path_provider_foundation: 2.5.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
