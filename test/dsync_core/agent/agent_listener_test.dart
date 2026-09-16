@@ -26,6 +26,7 @@ void main() {
   late Directory tempDir;
   late String socketPath;
   late List<Object> sessionErrors;
+  late Map<String, _TrackingReplicaLock> locks;
 
   const header = ArchiveHeader(
     schemaVersion: 1,
@@ -44,6 +45,7 @@ void main() {
     tempDir = await Directory.systemTemp.createTemp('dsync_agent_listener_');
     socketPath = '${tempDir.path}/agent.sock';
     sessionErrors = [];
+    locks = {};
   });
 
   tearDown(() async {
@@ -63,7 +65,13 @@ void main() {
           File('${tempDir.path}/${spec.side}.jsonl'),
           header,
         ),
-        replicaLock: ReplicaLock(File('${tempDir.path}/${spec.side}.lock')),
+        // One lock per replica, shared across every session for that side —
+        // which is what the real thing is: a lock on one file, held by this
+        // one agent process however many clients it serves.
+        replicaLock: locks.putIfAbsent(
+          spec.side,
+          () => _TrackingReplicaLock(File('${tempDir.path}/${spec.side}.lock')),
+        ),
       );
     }
 
@@ -121,6 +129,48 @@ void main() {
       await second.disconnect();
     },
   );
+
+  test(
+    'a client that drops without unlocking does not leave the replica locked '
+    'for the life of the agent',
+    () async {
+      // Under `--stdio` the process is the session, so the OS drops the lock
+      // when it exits. A listener outlives its sessions, so nothing but the
+      // session's own teardown can release what a dead client left held —
+      // and every later `dsync sync` against that replica would fail exit 3
+      // (SPEC §4.3, §11.5) until the agent was restarted.
+      final listener = await bind();
+      addTearDown(listener.close);
+
+      final first = await connect();
+      await first.hello();
+      await first.lock();
+      await first.disconnect(); // Killed mid-run: no `unlock` is ever sent.
+
+      // The server notices the closed socket on its own schedule, which is
+      // not the client's `disconnect`.
+      await _waitUntil(() => locks['a']?.held == false);
+
+      final second = await connect();
+      await second.hello();
+      await expectLater(second.lock(), completes);
+      await second.unlock();
+      await second.disconnect();
+      expect(sessionErrors, isEmpty);
+    },
+  );
+
+  test('a session that never locked ends cleanly', () async {
+    final listener = await bind();
+    addTearDown(listener.close);
+
+    final agent = await connect();
+    await agent.hello();
+    await agent.disconnect();
+
+    await _waitUntil(() => locks['a']?.held == false);
+    expect(sessionErrors, isEmpty);
+  });
 
   test('two sessions are served at once', () async {
     // Nothing here serializes them: SPEC §4.3's lock already covers the only
@@ -211,4 +261,43 @@ void main() {
       await agent.disconnect();
     });
   });
+}
+
+/// Polls [condition] until it holds, failing the test if it never does.
+Future<void> _waitUntil(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Condition never held: the replica lock was never released');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
+/// A [ReplicaLock] that also refuses a second `acquire` from within this
+/// process.
+///
+/// The real one cannot: `dart:io`'s file lock is an fcntl record lock, which
+/// never conflicts with a second handle in the same process — the
+/// `ReplicaLock` suite has to spawn a whole second process to observe
+/// contention. Here the listener and every session it serves share one
+/// process, so this stands in for what the OS would tell a second `dsync`
+/// run on the same host.
+class _TrackingReplicaLock extends ReplicaLock {
+  _TrackingReplicaLock(super.lockFile);
+
+  bool held = false;
+
+  @override
+  Future<void> acquire() async {
+    if (held) throw ReplicaLockHeldException(path);
+    await super.acquire();
+    held = true;
+  }
+
+  @override
+  Future<void> release() async {
+    await super.release();
+    held = false;
+  }
 }

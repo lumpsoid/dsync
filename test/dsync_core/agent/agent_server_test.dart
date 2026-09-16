@@ -354,12 +354,81 @@ void main() {
       await expectLater(serveFuture, completes);
     });
   });
+
+  // The lock a session takes is held by the *agent process*, which under
+  // `--listen` and `--serve` outlives the session (SPEC §4.2, §4.3). So
+  // ending the session has to release it: only the peer's `unlock` op ever
+  // did, and a client that dies between `lock` and `unlock` would otherwise
+  // leave the replica locked until the agent is restarted.
+  group('session teardown', () {
+    /// A session past its `hello` prologue, returning the fake it serves, the
+    /// client end, and `serve`'s own future.
+    Future<(_FakeAgent, Channel, Future<void>)> session() async {
+      final (client, server) = InMemoryChannel.pair();
+      final clientFrames = StreamIterator(FrameCodec().decode(client.input));
+      final agent = _FakeAgent();
+      final serveFuture = AgentServer().serve(server, (_) => agent);
+      await performVersionHandshake(client, clientFrames);
+      await client.send(
+        FrameCodec().encode(
+          AgentRequest('hello', {
+            'replica': replicaSpecToJson(_testSpec),
+          }).toFrame(),
+        ),
+      );
+      await clientFrames.moveNext();
+      await clientFrames.cancel();
+      return (agent, client, serveFuture);
+    }
+
+    Future<void> send(Channel client, String op) =>
+        client.send(FrameCodec().encode(AgentRequest(op).toFrame()));
+
+    test('releases the lock a client dropped without unlocking', () async {
+      final (agent, client, serveFuture) = await session();
+      await send(client, 'lock');
+      await pumpEventQueue();
+      expect(agent.locked, isTrue);
+
+      await client.close();
+      await expectLater(serveFuture, completes);
+      expect(agent.locked, isFalse);
+    });
+
+    test('a session that never locked tears down without error', () async {
+      final (agent, client, serveFuture) = await session();
+
+      await client.close();
+      await expectLater(serveFuture, completes);
+      expect(agent.locked, isFalse);
+    });
+
+    test(
+      'a session that unlocked explicitly tears down without error',
+      () async {
+        final (agent, client, serveFuture) = await session();
+        await send(client, 'lock');
+        await send(client, 'unlock');
+        await pumpEventQueue();
+        expect(agent.unlockCalls, 1);
+
+        await client.close();
+        await expectLater(serveFuture, completes);
+        // The redundant release is the normal case, not an error: every
+        // well-behaved client unlocks, and `ReplicaLock.release` is a no-op
+        // the second time.
+        expect(agent.unlockCalls, 2);
+        expect(agent.locked, isFalse);
+      },
+    );
+  });
 }
 
 /// A minimal in-memory [Agent] fake — just enough to drive [AgentServer]'s
 /// dispatch logic without a real filesystem or archive.
 class _FakeAgent implements Agent {
   bool locked = false;
+  int unlockCalls = 0;
   List<ScanEntry> scanResult = [];
   Object? scanFailure;
   RuleSet? lastScanRules;
@@ -380,6 +449,7 @@ class _FakeAgent implements Agent {
 
   @override
   Future<void> unlock() async {
+    unlockCalls++;
     locked = false;
   }
 

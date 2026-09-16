@@ -23,8 +23,8 @@ class AgentServer {
   /// callback rather than an interface — nothing here has a second
   /// implementation, the same reason `RunController`'s `Presenter` typedef is
   /// a callback rather than an interface — and requiring it as a prologue
-  /// means this method never holds a nullable or `late` [Agent]: by the time
-  /// the dispatch loop starts, one already exists.
+  /// means the dispatch loop never holds a nullable or `late` [Agent]: by
+  /// the time it starts, one already exists.
   ///
   /// A first frame that is not `hello` ends the session with an
   /// [AgentFailure] reply rather than dispatching against no agent at all.
@@ -42,6 +42,14 @@ class AgentServer {
     // subscription that keeps that process's event loop non-empty: the
     // caller may need the process to actually exit once `serve` is done with
     // it, and it can't while something is still listening for more input.
+
+    // Holds the session's agent once `hello` has built one, so the `finally`
+    // can release this replica's lock (SPEC §4.3) whatever ends the session.
+    // Nothing else would: only an `unlock` op releases it, and under
+    // `--listen` or `--serve` the process outlives the session, so a client
+    // that dies between `lock` and `unlock` would leave the replica locked
+    // for the life of the agent.
+    Agent? sessionAgent;
     try {
       await performVersionHandshake(channel, frames);
 
@@ -82,6 +90,7 @@ class AgentServer {
         await _reply(channel, AgentFailure('$error'));
         return;
       }
+      sessionAgent = agent;
       final info = await agent.hello();
       await _reply(channel, AgentSuccess(replicaInfoToJson(info)));
 
@@ -90,6 +99,11 @@ class AgentServer {
       }
     } finally {
       await frames.cancel();
+      // Tolerant by construction: `unlock` on a lock this session never took,
+      // or already released, is the ordinary case — `--stdio` and every
+      // well-behaved client release explicitly — and `ReplicaLock.release` is
+      // a no-op for both.
+      await sessionAgent?.unlock();
     }
   }
 
