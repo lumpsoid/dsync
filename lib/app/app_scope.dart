@@ -118,7 +118,8 @@ abstract base class Scope<C> {
 /// `AppState`. Every feature scope's default factory reaches this for the
 /// dependencies its controller borrows from the application.
 final class AppScope extends Scope<AppController> {
-  AppScope() : super(() => AppController(AppPaths.forThisDevice));
+  AppScope()
+    : super(() => AppController(AppPaths.forThisDevice, now: DateTime.now));
 }
 
 /// The single application scope. A page or a feature scope reaches the
