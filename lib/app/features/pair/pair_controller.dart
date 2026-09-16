@@ -53,10 +53,11 @@ class PairController {
   /// and asking it to record this device as [proposedName] (SPEC §4.4: each
   /// side names the other for itself, so the two need not agree).
   ///
-  /// The one entry point for a payload however it arrived. The text field
-  /// calls it with what was pasted; the camera (a later input method on the
-  /// same page) calls it with what was scanned, undecoded — decoding and
-  /// validation happen here and nowhere else.
+  /// The entry point for a payload however it arrived. The text field calls
+  /// it with what was pasted; [onPayloadScanned] — the camera's entry point,
+  /// which adds only the guard a repeating source needs — calls it with what
+  /// was scanned, undecoded. Decoding and validation happen here and nowhere
+  /// else.
   ///
   /// Names are validated first, without touching the payload: an empty
   /// name is a field error, not an outcome — the outcome goes back to idle
@@ -172,6 +173,51 @@ class PairController {
       return;
     }
     state.recordOutcome(const PairSucceeded());
+  }
+
+  /// The other input method of this page: a payload the camera read off the
+  /// QR that `dsync pair show` prints beside that line.
+  ///
+  /// The scanner does no decoding and no validation — it hands the code's
+  /// text over as it stands — so [raw] goes to [submitPayload] exactly as a
+  /// pasted line would: one implementation of the exchange, one set of
+  /// rendered messages, whoever produced the text. The two names come from
+  /// the page because the fields holding them are the widgets'
+  /// ([PairViewState] keeps only what the page displays).
+  ///
+  /// **The guard is what this method adds, and it is not optional.**
+  /// `MobileScanner` reports every frame the code is in view, so one code in
+  /// front of one camera is many calls to this method per second, each
+  /// carrying the same payload — and the enrolment token inside it is
+  /// single-use, burned by the desktop on its first successful redemption
+  /// (SPEC §4.4). A repeat would therefore be refused by the far end, and the
+  /// user would be shown [EnrolmentRefusedException]'s line — "the desktop
+  /// refused this pairing" — over a pairing that had in fact just succeeded,
+  /// with a template that tells them to run `dsync pair show` again. So a
+  /// scan is ignored while an exchange is in flight and once one has
+  /// succeeded. That is a read of [state]'s own [PairOutcome] rather than a
+  /// second flag beside it: [PairSubmitting] is the first case and
+  /// [PairSucceeded] the second, and a flag kept in step with them would be
+  /// one more thing that can drift.
+  ///
+  /// A *failed* attempt is not ignored: the outcome is [PairFailed] again by
+  /// then, so pointing the camera at a fresh code after a refusal works, and
+  /// a scan whose names have not been filled in is answered with the field
+  /// errors exactly as the paste path is. The paste path needs none of this:
+  /// its button is disabled while an exchange is in flight, where the camera
+  /// keeps firing whether one is running or not.
+  Future<void> onPayloadScanned(
+    String raw, {
+    required String localName,
+    required String proposedName,
+  }) async {
+    final outcome = state.outcome;
+    if (outcome is PairSubmitting || outcome is PairSucceeded) return;
+    await submitPayload(
+      payloadText: raw,
+      localName: localName,
+      proposedName: proposedName,
+    );
   }
 
   void dispose() => state.dispose();

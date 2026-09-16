@@ -79,7 +79,11 @@ class _BootstrapGate extends StatelessWidget {
     final navigator = Navigator.of(context);
     return navigator.push(
       MaterialPageRoute<void>(
-        builder: (_) => PairPage(onPaired: navigator.pop),
+        // The camera is named here, the way a scope names the real
+        // `enrolWithPeer`: the page takes it as a dependency and a widget
+        // test hands it a fake (`PairScanner`).
+        builder: (_) =>
+            PairPage(onPaired: navigator.pop, scanner: QrScanner.new),
       ),
     );
   }

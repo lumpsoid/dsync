@@ -7,8 +7,9 @@
 /// difference that both ends run in-process, as the pairing test does:
 /// nothing here needs the far side to outlive a command, so a child process
 /// would buy only the machinery of one. The head's side is exactly what
-/// its pages call — `PairController.submitPayload` with the real
-/// `enrolWithPeer`, then `SyncRunController.start` with the real `dialPeer`
+/// its pages call — `PairController.submitPayload` (or `onPayloadScanned`,
+/// the camera's entry point into it) with the real `enrolWithPeer`, then
+/// `SyncRunController.start` with the real `dialPeer`
 /// — and the desktop's side is the two `core` listeners the CLI wraps, over
 /// their own identity and paired-device store in a second state directory.
 ///
@@ -68,6 +69,9 @@ void main() {
   late int agentPort;
   late int enrolmentPort;
   late DeviceIdentity phoneIdentity;
+  late PairingPayload pairingPayload;
+  late PairController pair;
+  late EnrolmentListener enrolment;
 
   setUpAll(() {
     // One key pair for the desktop across every test: the identity is not
@@ -119,7 +123,7 @@ void main() {
     // enrolment listener — `dsync pair show`'s half, minus the printing.
     final token = generateEnrolmentToken();
     final enrolmentErrors = <Object>[];
-    final enrolment = await EnrolmentListener.bind(
+    enrolment = await EnrolmentListener.bind(
       InternetAddress.loopbackIPv4,
       0,
       ownIdentity: desktopIdentity,
@@ -129,33 +133,33 @@ void main() {
       onError: (error, _) => enrolmentErrors.add(error),
     );
     enrolmentPort = _portOf(enrolment.address);
-    final payload = PairingPayload(
+    pairingPayload = PairingPayload(
       certificateDer: certificateDerFromPem(desktopIdentity.certificatePem),
       address: PeerAddress(host: '127.0.0.1', port: enrolmentPort),
       token: token,
     );
-    final pair = PairController(app, enrol: enrolWithPeer);
-    try {
-      await pair
-          .submitPayload(
-            payloadText: payload.encode(),
-            localName: 'desktop',
-            proposedName: 'phone',
-          )
-          .timeout(_startupDeadline);
-      final outcome = pair.state.outcome;
-      expect(
-        outcome,
-        isA<PairSucceeded>(),
-        reason:
-            'pairing did not succeed: '
-            '${outcome is PairFailed ? outcome.message : outcome}; '
-            'listener said: $enrolmentErrors',
-      );
-    } finally {
-      pair.dispose();
-      await enrolment.close();
-    }
+    // Both stay up past this setUp: the pairing round below is what the rest
+    // of this file drives from, and the scan case is about what a *second*
+    // call on the same controller — the page's, which lives as long as the
+    // pairing does — must not do, with the listener that already spent this
+    // payload's token still able to answer it.
+    pair = PairController(app, enrol: enrolWithPeer);
+    await pair
+        .submitPayload(
+          payloadText: pairingPayload.encode(),
+          localName: 'desktop',
+          proposedName: 'phone',
+        )
+        .timeout(_startupDeadline);
+    final outcome = pair.state.outcome;
+    expect(
+      outcome,
+      isA<PairSucceeded>(),
+      reason:
+          'pairing did not succeed: '
+          '${outcome is PairFailed ? outcome.message : outcome}; '
+          'listener said: $enrolmentErrors',
+    );
     phoneIdentity = await app.loadOrCreateIdentity();
 
     // `dsync agent --serve`'s half: the same identity the payload pinned,
@@ -172,7 +176,9 @@ void main() {
   });
 
   tearDown(() async {
+    await enrolment.close();
     await agent.close();
+    pair.dispose();
     app.dispose();
     await tempDir.delete(recursive: true);
   });
@@ -254,6 +260,41 @@ void main() {
 
     // `submitPayload`'s last step: the Devices page already shows it.
     expect(app.state.devices.map((row) => row.name), ['desktop']);
+  });
+
+  test('the same code scanned again, its token already burned, is dropped '
+      'rather than refused (SPEC §4.4)', () async {
+    // The premise is the desktop's own, and it is live: this payload's token
+    // was spent by the round in `setUp`, and the listener that spent it is
+    // still listening. So an unguarded repeat gets exactly what the task
+    // named — a connection, and an `EnrolmentRefusedException` back — and
+    // the Pair page would go from "paired" to "the desktop refused this
+    // pairing" while the camera kept firing at the code that had just
+    // worked. What the guard has to make true instead: nothing starts.
+    final seen = <PairOutcome>[];
+    pair.state.addListener(() => seen.add(pair.state.outcome));
+
+    await pair
+        .onPayloadScanned(
+          pairingPayload.encode(),
+          localName: 'desktop',
+          proposedName: 'phone',
+        )
+        .timeout(_startupDeadline);
+
+    expect(
+      pair.state.outcome,
+      isA<PairSucceeded>(),
+      reason: 'a repeat scan was dialled: ${seen.join(' -> ')}',
+    );
+    expect(
+      seen,
+      isEmpty,
+      reason: 'a repeat scan must be dropped before it starts, not dialled',
+    );
+    // Still one entry on the desktop's side: the repeat never reached the
+    // store, as a refused second redemption could not have added one either.
+    expect((await desktopStore.load()).length, 1);
   });
 
   test('a granted root syncs both ways over loopback TLS, and the address '

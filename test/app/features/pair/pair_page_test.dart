@@ -70,8 +70,56 @@ void main() {
   tearDown(() => controller.dispose());
   tearDown(() => tempDir.delete(recursive: true));
 
-  Future<void> pumpPage(WidgetTester tester) =>
-      tester.pumpWidget(MaterialApp(home: PairPage(onPaired: () => paired++)));
+  /// The page's camera, as a test hands it over. The default fails loudly,
+  /// because the page mounts the camera only when the user asks for it: a
+  /// page that built it anyway would be reaching a platform channel no test
+  /// host answers, and this says so instead.
+  Widget noCameraAskedFor(ValueChanged<String> onScanned) =>
+      fail('the page mounted its camera in a test that did not ask for one');
+
+  /// A camera stand-in: one button that fires [raw] through whatever the
+  /// page handed it. Reading a code and passing the text on is the whole of
+  /// what this page asks of a scanner.
+  PairScanner scanning(String raw) =>
+      (onScanned) => TextButton(
+        onPressed: () => onScanned(raw),
+        child: const Text('scan'),
+      );
+
+  Future<void> pumpPage(WidgetTester tester, {PairScanner? scanner}) async {
+    // Tall enough to hold the whole form. On the default 800x600 surface the
+    // camera note and the scan button push the last two fields out of the
+    // viewport, and a `ListView` does not build what it cannot show — so a
+    // test would be asserting against a page the user cannot see either, or
+    // scrolling its way around a layout question it is not about.
+    tester.view.physicalSize = const Size(900, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PairPage(
+          onPaired: () => paired++,
+          scanner: scanner ?? noCameraAskedFor,
+        ),
+      ),
+    );
+  }
+
+  /// Taps [target] under real time and waits for the page to leave, which is
+  /// the only signal that the submit it started has finished: the work behind
+  /// it is real I/O (the identity is generated into the temp dir), and that
+  /// never completes under the fake clock a widget test body runs on.
+  /// Bounded so a regression fails rather than hangs.
+  Future<void> tapAndLeave(WidgetTester tester, Finder target) async {
+    await tester.runAsync(() async {
+      await tester.tap(target);
+      final deadline = Stopwatch()..start();
+      while (paired == 0 && deadline.elapsed < const Duration(seconds: 20)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    });
+    await tester.pump();
+  }
 
   testWidgets('idle: three fields, the instruction, and an enabled button', (
     tester,
@@ -82,6 +130,9 @@ void main() {
     expect(find.byKey(const Key('pair-local-name')), findsOneWidget);
     expect(find.byKey(const Key('pair-proposed-name')), findsOneWidget);
     expect(find.textContaining('dsync pair show'), findsOneWidget);
+    // The camera is offered, not mounted: the button is what asks for it.
+    expect(find.byKey(const Key('pair-show-camera')), findsOneWidget);
+    expect(find.text('scan'), findsNothing);
     expect(
       tester.widget<FilledButton>(find.byType(FilledButton)).enabled,
       isTrue,
@@ -99,6 +150,14 @@ void main() {
 
     expect(
       tester.widget<FilledButton>(find.byType(FilledButton)).enabled,
+      isFalse,
+    );
+    // Asking for the camera waits for the exchange too: two submissions
+    // racing over one payload is what the controller's guard exists for.
+    expect(
+      tester
+          .widget<TextButton>(find.byKey(const Key('pair-show-camera')))
+          .enabled,
       isFalse,
     );
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
@@ -196,22 +255,122 @@ void main() {
       // The text fields have scrollables of their own; the list's is first.
       scrollable: find.byType(Scrollable).first,
     );
-    // Real work runs here — the identity is generated into the temp dir —
-    // which never completes under the fake clock a widget test body runs
-    // on, so the tap that starts it and the wait for it both go under
-    // `runAsync`, where time is real. Bounded so a regression fails rather
-    // than hangs.
-    await tester.runAsync(() async {
-      await tester.tap(find.byType(FilledButton));
-      final deadline = Stopwatch()..start();
-      while (paired == 0 && deadline.elapsed < const Duration(seconds: 20)) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
-    });
-    await tester.pump();
+    await tapAndLeave(tester, find.byType(FilledButton));
 
     expect(enrolCalls, 1);
     expect(controller.state.outcome, isA<PairSucceeded>());
+    expect(paired, 1);
+  });
+
+  testWidgets('asking for the camera mounts it, and putting it away unmounts '
+      'it', (tester) async {
+    var built = 0;
+    await pumpPage(
+      tester,
+      scanner: (onScanned) {
+        built++;
+        return scanning('scanned')(onScanned);
+      },
+    );
+    expect(built, 0);
+
+    await tester.tap(find.byKey(const Key('pair-show-camera')));
+    await tester.pump();
+
+    expect(built, 1);
+    expect(find.text('scan'), findsOneWidget);
+    expect(find.byKey(const Key('pair-hide-camera')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('pair-hide-camera')));
+    await tester.pump();
+
+    expect(find.text('scan'), findsNothing);
+    expect(find.byKey(const Key('pair-show-camera')), findsOneWidget);
+  });
+
+  testWidgets('a scan reaches the controller and leaves through onPaired, '
+      'once', (tester) async {
+    await pumpPage(tester, scanner: scanning(payloadText));
+
+    await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
+    await tester.enterText(
+      find.byKey(const Key('pair-proposed-name')),
+      'phone',
+    );
+    await tester.tap(find.byKey(const Key('pair-show-camera')));
+    await tester.pump();
+    await tapAndLeave(tester, find.text('scan'));
+
+    expect(enrolCalls, 1);
+    expect(controller.state.outcome, isA<PairSucceeded>());
+    expect(paired, 1);
+    // The text that was read is in the field, so a refused scan can be seen
+    // next to the reason it was refused.
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('pair-payload')))
+          .controller
+          ?.text,
+      payloadText,
+    );
+  });
+
+  testWidgets('a scan with no names is a field error, and starts no exchange', (
+    tester,
+  ) async {
+    await pumpPage(tester, scanner: scanning(payloadText));
+    await tester.tap(find.byKey(const Key('pair-show-camera')));
+    await tester.pump();
+
+    await tester.tap(find.text('scan'));
+    await tester.pump();
+
+    expect(controller.state.localNameError, isNotNull);
+    expect(find.text(controller.state.localNameError!), findsOneWidget);
+    expect(enrolCalls, 0);
+    expect(paired, 0);
+  });
+
+  testWidgets('a camera that will not start says so, and the paste field still '
+      'pairs', (tester) async {
+    await pumpPage(
+      tester,
+      // What a builder hands back when there is no camera to show — the
+      // page's fake of `QrScanner`'s own note.
+      scanner: (onScanned) => const Text(
+        'This build has no camera access, so the QR code cannot be '
+        'scanned. Paste the `dsync-pair:v1:` line instead.',
+      ),
+    );
+    await tester.tap(find.byKey(const Key('pair-show-camera')));
+    await tester.pump();
+
+    // The camera area says why, and nothing else on the page changed: the
+    // page is not blocked on it.
+    expect(find.textContaining('no camera'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('pair-payload'))).enabled,
+      isTrue,
+    );
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).enabled,
+      isTrue,
+    );
+
+    await tester.enterText(find.byKey(const Key('pair-payload')), payloadText);
+    await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
+    await tester.enterText(
+      find.byKey(const Key('pair-proposed-name')),
+      'phone',
+    );
+    await tester.scrollUntilVisible(
+      find.byType(FilledButton),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tapAndLeave(tester, find.byType(FilledButton));
+
+    expect(enrolCalls, 1);
     expect(paired, 1);
   });
 }

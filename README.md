@@ -10,13 +10,14 @@ behaviour, and every module's doc comments reference its section numbers.
 ## Status
 
 v0, in development. The core engine, the CLI and the Flutter head are
-implemented; the head pairs by pasted text, not by camera (SPEC §16).
+implemented; the head pairs by pasting the payload line or by scanning the QR
+beside it (SPEC §4.4).
 
 | Area | State |
 |---|---|
 | `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
 | `lib/cli/` — args, profile, prompts, output | implemented |
-| `lib/app/` — Flutter head: devices, pair, run setup, run | implemented; no QR scanner yet (SPEC §16) |
+| `lib/app/` — Flutter head: devices, pair, run setup, run | implemented |
 
 ## Using it
 
@@ -72,7 +73,7 @@ A paired peer is a replica location: `peer://<device-name>:<path>` (SPEC §2)
 against a `dsync agent --serve` on that device. `dsync pair show` prints its
 payload as a text line on stdout and, when the terminal can show one, as a QR
 on stderr; the text is what a desktop-to-server pair exchanges (neither end
-has a camera) and what the Flutter head takes today (below).
+has a camera), and the Flutter head takes either form (below).
 
 Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
 archives, locks, this device's identity and the paired-device set in
@@ -122,8 +123,9 @@ replica itself. From nothing to a first sync:
 
 1. On the desktop, `dsync pair show`. It prints a `dsync-pair:v1:…` line and
    waits five minutes for the peer.
-2. In the app, open **Pair a device**, paste that line, name the desktop, and
-   pair. There is no QR scanner yet (SPEC §16); the text is the whole payload.
+2. In the app, open **Pair a device** and either paste that line or tap
+   **Scan the QR code with the camera** and point the phone at the code on the
+   desktop's terminal. Name the desktop, then pair.
 3. On the desktop, `dsync pair grant <app-name> <root>` for the folder the app
    may reach. Pairing and granting are two steps (SPEC §4.4): without this the
    run is refused, and the app cannot grant itself anything.
@@ -141,5 +143,6 @@ records the new address and later runs use it.
 **Android release builds reach the network.** `android/app/src/main/AndroidManifest.xml`
 declares the `INTERNET` permission — Flutter provides it only to the `debug`
 and `profile` source sets, so its absence there made every connect work under
-`flutter run` and fail in a release build. The `CAMERA` permission the QR
-scanner (SPEC §16) needs is declared there too.
+`flutter run` and fail in a release build. The `CAMERA` permission the Pair
+page's scanner reads through is declared there too, and `NSCameraUsageDescription`
+is the iOS half of the same pair (SPEC §4.4).

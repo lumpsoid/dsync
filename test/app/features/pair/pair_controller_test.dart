@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -321,5 +322,183 @@ void main() {
       expect(seen.whereType<PairSubmitting>(), hasLength(1));
       expect(seen.last, isA<PairFailed>());
     });
+  });
+
+  /// The camera's entry point, over the same fakes: `onPayloadScanned` is
+  /// `submitPayload` plus the guard a source that fires on every frame needs,
+  /// so each case here is either "it is the same path" or "the repeat was
+  /// dropped", and never a second implementation of the exchange.
+  group('a payload from the camera', () {
+    Future<void> scan({
+      String? payloadText,
+      String localName = 'desktop',
+      String proposedName = 'phone',
+    }) => controller.onPayloadScanned(
+      payloadText ?? payload().encode(),
+      localName: localName,
+      proposedName: proposedName,
+    );
+
+    test('redeems through the same path the pasted line takes', () async {
+      PairingPayload? seenPayload;
+      String? seenLocal;
+      enrol =
+          ({
+            required payload,
+            required ownIdentity,
+            required proposedName,
+            required localName,
+            required pairedDeviceStore,
+          }) async {
+            seenPayload = payload;
+            seenLocal = localName;
+            await pairedDeviceStore.add(
+              PairedDevice(
+                certificatePem: desktopCertificatePem,
+                name: localName,
+                agreedReplicaRoots: const {},
+                pairedAt: DateTime.utc(2026, 9, 16),
+                lastKnownAddress: payload.address,
+              ),
+            );
+          };
+
+      await scan(localName: ' my desktop ', proposedName: ' my phone ');
+
+      expect(seenLocal, 'my desktop');
+      expect(seenPayload?.address.port, 28771);
+      expect(controller.state.outcome, isA<PairSucceeded>());
+      expect(app.state.devices.map((d) => d.name), ['my desktop']);
+    });
+
+    test('a scan while one is in flight starts no second exchange', () async {
+      final started = Completer<void>();
+      final release = Completer<void>();
+      var calls = 0;
+      enrol =
+          ({
+            required payload,
+            required ownIdentity,
+            required proposedName,
+            required localName,
+            required pairedDeviceStore,
+          }) async {
+            calls++;
+            started.complete();
+            await release.future;
+          };
+
+      final first = scan();
+      await started.future;
+      expect(controller.state.outcome, isA<PairSubmitting>());
+
+      // The camera keeps reporting the same code while the exchange runs;
+      // a second attempt would carry a token the desktop has just burned.
+      await scan();
+      expect(calls, 1);
+
+      release.complete();
+      await first;
+      expect(controller.state.outcome, isA<PairSucceeded>());
+    });
+
+    test('a scan of an already-paired payload does not dial again', () async {
+      var calls = 0;
+      enrol =
+          ({
+            required payload,
+            required ownIdentity,
+            required proposedName,
+            required localName,
+            required pairedDeviceStore,
+          }) async {
+            calls++;
+          };
+
+      await scan();
+      expect(controller.state.outcome, isA<PairSucceeded>());
+      expect(calls, 1);
+
+      // Every frame after the successful one: dropped before anything
+      // starts, so the far end's refusal of the burned token is never even
+      // provoked — which is what "ignored" has to mean to be worth anything.
+      final seen = <PairOutcome>[];
+      controller.state.addListener(() => seen.add(controller.state.outcome));
+
+      await scan();
+
+      expect(calls, 1);
+      expect(seen, isEmpty);
+    });
+
+    test('a refusal does not latch: a later scan is submitted', () async {
+      enrolThrows(const EnrolmentRefusedException('token expired at 11:21'));
+      await scan();
+      expect(
+        (controller.state.outcome as PairFailed).message,
+        contains('token expired at 11:21'),
+      );
+
+      // A fresh code after a refusal is exactly the retry the rendered
+      // message asks for, so the guard must not be holding it back.
+      var calls = 0;
+      enrol =
+          ({
+            required payload,
+            required ownIdentity,
+            required proposedName,
+            required localName,
+            required pairedDeviceStore,
+          }) async {
+            calls++;
+          };
+      await scan();
+
+      expect(calls, 1);
+      expect(controller.state.outcome, isA<PairSucceeded>());
+    });
+
+    test(
+      'a scan with no names is a field error, like the paste path',
+      () async {
+        var called = false;
+        enrol = ({
+          required payload,
+          required ownIdentity,
+          required proposedName,
+          required localName,
+          required pairedDeviceStore,
+        }) async => called = true;
+
+        await scan(localName: '   ');
+
+        expect(controller.state.localNameError, isNotNull);
+        expect(controller.state.proposedNameError, isNull);
+        expect(controller.state.outcome, isA<PairIdle>());
+        expect(called, isFalse);
+      },
+    );
+
+    test(
+      'scanned text that is not a payload is refused by the same decode',
+      () async {
+        var called = false;
+        enrol = ({
+          required payload,
+          required ownIdentity,
+          required proposedName,
+          required localName,
+          required pairedDeviceStore,
+        }) async => called = true;
+
+        await scan(payloadText: 'https://example.com/not-a-payload');
+
+        expect(
+          (controller.state.outcome as PairFailed).message,
+          contains('Not a dsync pairing payload'),
+        );
+        expect(called, isFalse);
+      },
+    );
   });
 }

@@ -71,6 +71,20 @@ dependencies:
   # every v1 target (SPEC §3) including the four with no `app` head.
   qr: 4.0.0
 
+  # The QR *decoder* the Pair page scans a `dsync pair show` code with — the
+  # camera as a second input method beside the pasted text (SPEC §16). Not to
+  # be confused with `qr` above, which is the *encoder* the CLI renders
+  # `dsync pair show`'s terminal symbol with: one turns a payload into a
+  # symbol, the other turns a symbol back into a payload, and neither
+  # replaces the other. Pinned for the same reason as everything else here
+  # (§3), plus the one below: this is a platform-channel plugin, so the pin
+  # fixes the Android, iOS and macOS code that opens the camera, not only the
+  # Dart call `lib/app/features/pair/` makes. Its Dart side reaches the
+  # camera through `MobileScanner`; `dsync_core/` never imports it, and
+  # neither does `lib/cli/`, so the four v1 targets with no `app` head are
+  # untouched (§3).
+  mobile_scanner: 7.4.2
+
   # Pinned, not a range (SPEC §3, same rationale as the other pins above),
   # and this one is the odd dependency out: it is a platform-channel plugin,
   # not pure Dart. Its Dart side is a single call

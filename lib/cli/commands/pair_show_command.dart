@@ -40,10 +40,11 @@ import '../stop_signals.dart';
 /// larger than a QR can carry ([InputTooLongException] — see that
 /// renderer's own doc comment for why that is checked at all).
 ///
-/// The phone-to-desktop case a rendered QR unblocks still needs a camera to
-/// scan it, which today only exists on the Flutter head — a skeleton (SPEC
-/// §16) — so this is real but not urgent: nothing else currently reachable
-/// depends on it.
+/// The phone-to-desktop case a rendered QR unblocks is the Flutter head's:
+/// its Pair page reads the symbol with the camera and redeems the same
+/// payload a pasted line would (SPEC §4.4). The CLI's own two ends need no
+/// camera at all — they exchange the text above — so the symbol is additive
+/// on every count, and printing it is never something a pairing depends on.
 ///
 /// **How this knows an enrolment happened.** [EnrolmentListener.enrolled]
 /// completes with the device it recorded — the listener saying so, rather
