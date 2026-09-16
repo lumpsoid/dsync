@@ -275,6 +275,9 @@ Future<_ResolvedSide> _resolveLocalSide({
       // alone would be wrong) rather than a second, independent read.
       foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
     ),
+    // SPEC §3's write-side conversion: the same style the scanner reads
+    // paths back with, so a Windows host joins with `\` on both sides.
+    pathStyle: platform.pathStyle,
     // So this side's own `hello` (SPEC §4.2) reports it back as its
     // `ReplicaInfo.archivePath` — the authoritative value SPEC §11.4's run
     // header uses, in place of the label below.

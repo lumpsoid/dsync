@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
+import 'package:path/path.dart' as p;
 
 /// [Agent] implementation over the real filesystem (SPEC §4.1).
 ///
@@ -22,6 +23,15 @@ class LocalAgent implements Agent {
   final ArchiveStore archiveStore;
   final ReplicaLock replicaLock;
   final Scanner scanner;
+
+  /// How a `/`-normalized root-relative path is joined back onto [rootPath]
+  /// for every filesystem call this agent makes (SPEC §3's write-side
+  /// conversion, the mirror of [Scanner]'s read-side one) — see
+  /// [resolveWithinRoot]. Same shape as `Scanner.pathStyle`: a plain value
+  /// threaded in rather than a `Platform.pathSeparator` read here, defaulted
+  /// to [p.Style.posix], with the two real callers on a Windows host
+  /// threading [p.Style.windows] in via `HostPlatform.pathStyle`.
+  final p.Style _pathStyle;
 
   /// This replica's resolved archive log path, reported back in [hello]'s
   /// [ReplicaInfo] (SPEC §11.4's run header, task ee190c). Optional because
@@ -67,6 +77,10 @@ class LocalAgent implements Agent {
   /// `HostPlatform.isWindowsReplica`, resolved once at the CLI edge as one
   /// property of the same value that also carries this replica's
   /// [Scanner.pathStyle] and state-directory rule.
+  ///
+  /// `pathStyle` can't default to `p.Style.posix` directly, for the reason
+  /// [Scanner]'s constructor gives: `Style`'s constants are `static final`,
+  /// not `const`, so the fallback is applied here instead.
   LocalAgent({
     required this.rootPath,
     required this.archiveStore,
@@ -75,8 +89,10 @@ class LocalAgent implements Agent {
     this.archivePath,
     bool isWindowsReplica = false,
     this.chmodExecutable = 'chmod',
+    p.Style? pathStyle,
   }) : scanner = scanner ?? Scanner(),
-       _chmodUnavailable = isWindowsReplica;
+       _chmodUnavailable = isWindowsReplica,
+       _pathStyle = pathStyle ?? p.Style.posix;
 
   @override
   Future<ReplicaInfo> hello() async {
@@ -271,7 +287,7 @@ class LocalAgent implements Agent {
   Future<void> disconnect() async {}
 
   String _absolute(String relativePath) =>
-      resolveWithinRoot(rootPath, relativePath);
+      resolveWithinRoot(rootPath, relativePath, pathStyle: _pathStyle);
 }
 
 /// The parent of a root-relative path, or `null` when [path] is already
@@ -288,6 +304,12 @@ class LocalAgent implements Agent {
 /// that peer to have sent it `/`-joined already. [path] is consequently
 /// never OS-spelled here, so there is nothing for this function itself to
 /// convert.
+///
+/// That stays true now that [resolveWithinRoot] emits a native-spelled
+/// (`\`-joined, on Windows) absolute path: `removeEmptyDirs` walks *up* on
+/// the root-relative form — this function's output is fed straight back
+/// into itself and into `_absolute`, never the other way round — so a native
+/// path is produced fresh from each ancestor and never handed back here.
 String? _parentOf(String path) {
   final lastSlash = path.lastIndexOf('/');
   return lastSlash == -1 ? null : path.substring(0, lastSlash);
@@ -305,26 +327,31 @@ String? _parentOf(String path) {
 ///
 /// Pure string logic, so it is testable without a filesystem.
 ///
-/// **The write-side join stays a literal `/`, unverified on Windows (SPEC
-/// §3, task a6efc7).** `'$rootPath/$rootRelativePath'` is widely reported to
-/// resolve correctly against `dart:io`'s Windows filesystem APIs — Win32
-/// itself accepts `/` mixed with a native-separator root — but that has not
-/// been checked against a real Windows host by this project, and this
-/// function deliberately does not pick an answer on the strength of that
-/// report alone. Task a6efc7 fixed the *read* side (`Scanner._walkChildren`)
-/// with an injectable `package:path` `Style`; doing the same here — routing
-/// this join through a `Style`-aware `Context.join` — is the natural
-/// follow-up once a Windows host (or a trustworthy stand-in) exists to
-/// verify it against, the same open status §3 already gives the Android
-/// mtime question.
-String resolveWithinRoot(String rootPath, String rootRelativePath) {
+/// The escape checks run on the `/`-normalized form [rootRelativePath]
+/// always arrives in (SPEC §4.2): split on `/`, reject empty, a leading `/`,
+/// and any `..` segment. Only the final join is platform-aware — the
+/// write-side half of SPEC §3's conversion, the mirror of the read side
+/// `Scanner._walkChildren` already does (task a6efc7) — routing the segments
+/// through a `package:path` `Context` in [pathStyle] rather than gluing them
+/// on with a literal `/`. Win32 does tolerate `/` mixed with a native root,
+/// so the literal was not a known crash; but it left the one Windows path
+/// that depended on an API tolerance rather than on this project's own code,
+/// and the extended-length `\\?\` prefix is exactly where that tolerance
+/// is absent. `pathStyle` defaults to [p.Style.posix] for the same
+/// non-`const` reason [Scanner]'s does; [LocalAgent] threads its own in.
+String resolveWithinRoot(
+  String rootPath,
+  String rootRelativePath, {
+  p.Style? pathStyle,
+}) {
   final segments = rootRelativePath.split('/');
   if (rootRelativePath.isEmpty ||
       rootRelativePath.startsWith('/') ||
       segments.contains('..')) {
     throw PathEscapesRootException(root: rootPath, path: rootRelativePath);
   }
-  return '$rootPath/$rootRelativePath';
+  final context = p.Context(style: pathStyle ?? p.Style.posix);
+  return context.joinAll([rootPath, ...segments]);
 }
 
 /// Thrown when a peer asks an agent to act on a path outside its replica

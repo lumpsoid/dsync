@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
@@ -555,6 +556,33 @@ exit 0
 
     test('a file literally named ".." is not a thing, but "..x" is', () {
       expect(resolveWithinRoot('/root', '..x'), '/root/..x');
+    });
+
+    group('with a Windows path style (SPEC §3, write side)', () {
+      test('joins the /-normalized path onto a native root with \\', () {
+        expect(
+          resolveWithinRoot(r'C:\root', 'a/b.txt', pathStyle: p.Style.windows),
+          r'C:\root\a\b.txt',
+        );
+      });
+
+      test('the escape checks are unchanged', () {
+        for (final path in ['', '/a.txt', '../x', 'a/b/../../../etc']) {
+          expect(
+            () =>
+                resolveWithinRoot(r'C:\root', path, pathStyle: p.Style.windows),
+            throwsA(isA<PathEscapesRootException>()),
+            reason: path,
+          );
+        }
+      });
+
+      test('an explicit posix style is byte-identical to the default', () {
+        expect(
+          resolveWithinRoot('/root', 'a/b/c.txt', pathStyle: p.Style.posix),
+          '/root/a/b/c.txt',
+        );
+      });
     });
   });
 

@@ -432,6 +432,9 @@ class AgentCommand extends Command<int> {
         // would be wrong (`detectsCaseFolding`'s own doc comment).
         foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
       ),
+      // SPEC §3's write-side conversion: the same style the scanner reads
+      // paths back with, so a Windows host joins with `\` on both sides.
+      pathStyle: platform.pathStyle,
       archivePath: resolveArchiveLogPath(
         profileId: spec.profileId,
         side: spec.side,
