@@ -235,6 +235,7 @@ dsync pair accept <payload>       # redeem another device's payload; record it a
 dsync pair list [--json]          # this host's paired devices
 dsync pair revoke <name>          # forget a device, locally (§4.4)
 dsync pair grant <name> <root>    # authorize a paired device for a replica root here (§4.4)
+dsync pair renew                  # re-issue this host's certificate under its existing key (§4.4)
 ```
 `status` is `sync --dry-run` under a friendlier name. `pair` alone, with no subcommand, is a usage error.
 
