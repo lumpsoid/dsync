@@ -219,6 +219,54 @@ void main() {
       },
     );
 
+    test(
+      'a device paired after the agent started syncs without a restart',
+      () async {
+        // SPEC §4.4: the far end rebuilds its trust anchors from the store
+        // per accepted connection, so a pairing made while `--serve` is
+        // already up is honoured on the next attempt. Same shape as the
+        // stranger case above — its own identity and store, the desktop
+        // pinned locally — except that the far end is told about it, after
+        // the fact.
+        final lateEnvironment = {
+          'XDG_STATE_HOME': '${tempDir.path}/late-state',
+        };
+        final lateIdentity = await _identityStore(lateEnvironment)
+            .loadOrCreate(commonName: 'late-phone');
+        final desktop = await _pairedDevices(localEnvironment)
+            .byName('desktop');
+        await _pairedDevices(lateEnvironment).add(desktop!);
+        await _pairedDevices(remoteEnvironment).add(
+          PairedDevice(
+            certificatePem: lateIdentity.certificatePem,
+            name: 'late-phone',
+            agreedReplicaRoots: {remoteRoot.path},
+            pairedAt: DateTime.utc(2026, 9, 16),
+            lastKnownAddress: PeerAddress(host: '127.0.0.1'),
+          ),
+        );
+        final lateRoot = await Directory('${tempDir.path}/late').create();
+        await File('${lateRoot.path}/late.txt').writeAsString('paired late');
+
+        final exitCode = await runDsyncCli(
+          [
+            'sync',
+            lateRoot.path,
+            'peer://desktop:${remoteRoot.path}',
+            '--batch',
+          ],
+          environment: lateEnvironment,
+          workingDirectory: tempDir.path,
+        );
+
+        expect(exitCode, 0, reason: 'agent said:\n$agentOutput');
+        expect(
+          await File('${remoteRoot.path}/late.txt').readAsString(),
+          'paired late',
+        );
+      },
+    );
+
     // Not Windows: there is no SIGTERM to trap there, so `kill` terminates
     // the process outright and 143 — a shell's "ended by signal 15" — is
     // not an exit code the platform can produce.

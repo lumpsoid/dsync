@@ -101,11 +101,10 @@ import 'package:test/test.dart';
 /// It also exercises the allowlist SPEC §4.4 requires on top of pairing
 /// itself: [PairedDeviceStore.add] alone grants a device no replica roots at
 /// all, so the positive case calls [PairedDeviceStore.grant] — deliberately
-/// *after* [AgentListener.bindSecure] has already bound, to demonstrate the
-/// asymmetry [AgentListener.bindSecure]'s own doc comment describes: the
-/// trust anchors are fixed at bind time, but the allowlist is re-read fresh
-/// on every connection, so granting a root to an already-paired device takes
-/// effect without restarting the listener. Alongside it, a paired peer whose
+/// *after* [AgentListener.bindSecure] has already bound, to demonstrate that
+/// the allowlist, like the trust anchors, is re-read fresh on every
+/// connection, so granting a root to an already-paired device takes effect
+/// without restarting the listener. Alongside it, a paired peer whose
 /// root was never granted gets the refusal SPEC §4.4 asks for: one
 /// indistinguishable [AgentOperationException], never a hint about whether
 /// the path it asked for exists.
@@ -283,8 +282,7 @@ void main() {
     });
 
     test('a device paired and then revoked gets nothing back, and buildAgent '
-        'is never invoked for it — even though the bind-time trust anchors '
-        'still remember its certificate', () async {
+        'is never invoked for it', () async {
       final revoked = generateDeviceIdentity(commonName: 'dsync-revoked');
       await store.add(
         pairedDeviceFor(revoked, name: 'revoked-phone', roots: {'/x'}),
@@ -292,13 +290,9 @@ void main() {
       final listener = await bind();
       addTearDown(listener.close);
 
-      // Revoked after bind, so `bindSecure`'s own SecurityContext still
-      // trusts this certificate at the TLS layer — the fresh
-      // PairedDeviceStore lookup inside `_resolvePeer` is what has to
-      // catch this, and it is the one negative case here where the
-      // connection briefly exists as a live TLS session before being
-      // torn down, rather than being refused during the handshake
-      // itself.
+      // Revoked after bind: the next accept rebuilds its SecurityContext
+      // from the store as it is now, so this certificate is refused during
+      // the handshake itself, the same as a stranger's.
       await store.revoke(deviceIdFromCertificateDer(revoked.certificateDer));
 
       final received = await attemptAndCaptureBytes(revoked, listener);
@@ -321,8 +315,7 @@ void main() {
         // Paired with no roots at all yet — SPEC §4.4's allowlist is a
         // second, separate decision from trust (see `bindSecure`'s own doc
         // comment), and this proves that by exercising both halves: pairing
-        // has to happen before bind (trust anchors are fixed then), but
-        // granting a root does not.
+        // is done before bind, granting a root after it.
         await store.add(pairedDeviceFor(phone, name: 'phone'));
 
         final listener = await bind();
@@ -330,8 +323,7 @@ void main() {
 
         // Granted after the listener is already up: the allowlist check in
         // `_resolvePeer`/`_authorizedBuildAgent` re-reads the store fresh on
-        // every connection, unlike the trust anchors baked into the
-        // SecurityContext at bind time.
+        // every connection.
         await store.grant(
           deviceIdFromCertificateDer(phone.certificateDer),
           remoteRoot.path,

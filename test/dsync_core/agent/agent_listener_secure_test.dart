@@ -35,11 +35,13 @@ import 'package:test/test.dart';
 /// What is asserted here is everything a *network* listener owes that
 /// [AgentListener.bindUnix] gets from the filesystem for free: a stranger's
 /// certificate is refused during the handshake itself and does not take the
-/// listener down with it; a certificate BoringSSL still trusts from a stale
-/// bind-time context is refused anyway once the fresh paired-device check
-/// runs; a malformed certificate is a refusal, not a crash; and a `hello`
-/// naming a root outside the agreed set gets one indistinguishable
-/// `AgentFailure`, never a reply that narrows down why.
+/// listener down with it; the trust anchors are rebuilt per connection, so a
+/// device paired after bind connects, a device revoked after bind is refused
+/// at its next handshake, and a session live across both is untouched; an
+/// empty store refuses with a message naming the fix; a malformed
+/// certificate is a refusal, not a crash; and a `hello` naming a root outside
+/// the agreed set gets one indistinguishable `AgentFailure`, never a reply
+/// that narrows down why.
 void main() {
   late Directory tempDir;
   late DeviceIdentity serverIdentity;
@@ -207,8 +209,8 @@ void main() {
     await agent.disconnect();
   });
 
-  test('a revoked peer is refused even though the bind-time trust anchors '
-      'still remember it', () async {
+  test('a peer revoked after bind is refused on its next attempt, at the '
+      'handshake', () async {
     final revoked = generateDeviceIdentity(commonName: 'dsync-revoked');
     final stillPaired = generateDeviceIdentity(
       commonName: 'dsync-still-paired',
@@ -226,22 +228,130 @@ void main() {
     final listener = await bind();
     addTearDown(listener.close);
 
-    // Revoked *after* bind: the `SecurityContext` `bindSecure` built still
-    // trusts this certificate, which is exactly the staleness the class
-    // doc comment describes. The fresh `PairedDeviceStore` check inside
-    // `_resolvePeer` is what actually enforces the revocation.
+    // Proven reachable first, so the refusal below is the revocation's
+    // doing and not some other defect in the pairing.
+    final before = await connectAs(revoked, listener, rootPath: allowedRoot);
+    await expectLater(before.hello(), completes);
+    await before.disconnect();
+
+    // Revoked *after* bind: the next accept builds its `SecurityContext`
+    // from the store as it is now, so this certificate is no longer a trust
+    // anchor and BoringSSL refuses it during the handshake itself — the same
+    // treatment a stranger gets, not a session that is torn down later.
     await store.revoke(deviceIdFromCertificateDer(revoked.certificateDer));
 
     final clientSawFailure = await attemptAndObserveFailure(revoked, listener);
 
     expect(clientSawFailure, isTrue);
     expect(sessionErrors, isNotEmpty);
+    expect(sessionErrors.single, isA<HandshakeException>());
 
-    // The listener survives, and a device that is still actually paired —
-    // trusted at bind time and never revoked — is still served.
+    // The listener survives, and a device that is still actually paired is
+    // still served.
     final agent = await connectAs(stillPaired, listener, rootPath: allowedRoot);
     await expectLater(agent.hello(), completes);
     await agent.disconnect();
+  });
+
+  test('a peer paired after bind connects on its next attempt, with no '
+      'restart', () async {
+    final first = generateDeviceIdentity(commonName: 'dsync-first');
+    await store.add(
+      pairedDeviceFor(first, name: 'first-phone', roots: {allowedRoot}),
+    );
+    final listener = await bind();
+    addTearDown(listener.close);
+
+    // Not yet paired: refused during the handshake, exactly like a stranger,
+    // which is what proves the pairing below is what changes the answer.
+    final newcomer = generateDeviceIdentity(commonName: 'dsync-newcomer');
+    expect(await attemptAndObserveFailure(newcomer, listener), isTrue);
+    expect(sessionErrors, isNotEmpty);
+    sessionErrors.clear();
+
+    await store.add(
+      pairedDeviceFor(newcomer, name: 'newcomer-phone', roots: {allowedRoot}),
+    );
+
+    final agent = await connectAs(newcomer, listener, rootPath: allowedRoot);
+    await expectLater(agent.hello(), completes);
+    await agent.disconnect();
+    expect(sessionErrors, isEmpty);
+  });
+
+  test(
+    'a live session survives a pairing and a revocation made under it',
+    () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      final doomed = generateDeviceIdentity(commonName: 'dsync-doomed');
+      final newcomer = generateDeviceIdentity(commonName: 'dsync-newcomer');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      await store.add(
+        pairedDeviceFor(doomed, name: 'doomed', roots: {allowedRoot}),
+      );
+      final listener = await bind();
+      addTearDown(listener.close);
+
+      // A session in flight, holding the replica lock, before the store
+      // changes underneath it.
+      final live = await connectAs(phone, listener, rootPath: allowedRoot);
+      await live.hello();
+      await live.lock();
+
+      await store.add(
+        pairedDeviceFor(newcomer, name: 'newcomer', roots: {allowedRoot}),
+      );
+      await store.revoke(deviceIdFromCertificateDer(doomed.certificateDer));
+
+      // The session's own upgraded socket is untouched by either change:
+      // nothing was rebound, so there was nothing to drain.
+      final result = await live.scan(RuleSet());
+      expect(result.entries, isEmpty);
+      await live.unlock();
+      await live.disconnect();
+      expect(sessionErrors, isEmpty);
+
+      // And both changes are honoured by the very next attempts, each on its
+      // own connection.
+      final fresh = await connectAs(
+        newcomer,
+        listener,
+        rootPath: allowedRoot,
+        side: 'b',
+      );
+      await expectLater(fresh.hello(), completes);
+      await fresh.disconnect();
+      expect(await attemptAndObserveFailure(doomed, listener), isTrue);
+      expect(sessionErrors.single, isA<HandshakeException>());
+    },
+  );
+
+  test('with nothing paired, a connection is refused with a message naming '
+      'the fix, and pairing afterwards is enough', () async {
+    // Binds with an empty store — an agent that has never paired anything
+    // still listens, it just refuses everyone (SPEC §4.4).
+    final listener = await bind();
+    addTearDown(listener.close);
+
+    final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+    expect(await attemptAndObserveFailure(phone, listener), isTrue);
+    // Refused at the handshake like a stranger would be, but reported for
+    // what it is — not as BoringSSL's opaque CERTIFICATE_VERIFY_FAILED from
+    // a context with no anchors at all.
+    expect(sessionErrors.single, isA<NoPairedDevicesException>());
+    expect(sessionErrors.single.toString(), contains('no devices are paired'));
+    sessionErrors.clear();
+
+    await store.add(
+      pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+    );
+
+    final agent = await connectAs(phone, listener, rootPath: allowedRoot);
+    await expectLater(agent.hello(), completes);
+    await agent.disconnect();
+    expect(sessionErrors, isEmpty);
   });
 
   test(

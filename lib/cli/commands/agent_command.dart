@@ -264,12 +264,12 @@ class AgentCommand extends Command<int> {
   /// another machine. What limits who gets in is not the bind address but
   /// the TLS handshake, which an unpaired peer never completes.
   ///
-  /// The startup line says one thing `--listen`'s does not: that a device
-  /// paired *after* this bound cannot connect until this is restarted. That
-  /// is [AgentListener.bindSecure]'s documented trade — trust anchors are
-  /// fixed at bind time, the paired set is re-read per connection — and the
-  /// moment to say so is when the operator can still see it, not when a
-  /// freshly paired phone's first sync is refused with no explanation.
+  /// The startup line says one thing `--listen`'s does not: that pairing,
+  /// granting and revoking take effect on the next connection, with no
+  /// restart. That is [AgentListener.bindSecure]'s design — the paired set is
+  /// re-read, and the TLS trust anchors rebuilt from it, per accepted
+  /// connection — and the moment to say so is when the operator can still
+  /// see it, before a freshly paired phone's first sync.
   Future<int> _serveNetwork(int port) async {
     final environment = Platform.environment;
     final platform = hostPlatform().stateDirPlatform;
@@ -299,8 +299,8 @@ class AgentCommand extends Command<int> {
       stderr.writeln(
         'dsync agent: serving paired devices on ${listener.address} '
         '(SPEC §4.4). Only devices in `dsync pair list` can connect, each to '
-        'the roots `dsync pair grant` gave it. A device paired after this '
-        'started cannot connect until this agent is restarted.',
+        'the roots `dsync pair grant` gave it. Pairing, granting and '
+        'revoking take effect on the next connection, without a restart.',
       );
 
       try {
