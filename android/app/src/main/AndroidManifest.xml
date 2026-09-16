@@ -6,6 +6,16 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- CAMERA is for the QR scanner on the Pair page. -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- MANAGE_EXTERNAL_STORAGE is what lets a user-picked replica root be
+         read and written through `dart:io` (task eb35c3). The folder picker's
+         own grant is scoped to the `content://` tree URI it returns, not to
+         the path that URI converts to, and `Scanner` and `LocalAgent` open
+         paths; on targetSdk 30+ nothing but All-files access makes a folder
+         outside the app's own container openable that way. Granted on a
+         Settings screen rather than a dialog, so it is requested explicitly
+         and a refusal leaves the app-private documents directory as the
+         replica root that needs no grant. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
     <application
         android:label="dsync"
         android:name="${applicationName}"

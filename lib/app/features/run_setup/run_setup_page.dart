@@ -63,6 +63,26 @@ class _RunSetupPageState extends State<RunSetupPage> {
     if (_controller.state.newFolderError == null) _newFolder.clear();
   }
 
+  /// A refused folder is a snackbar, not a line in the form: it never became
+  /// one of the choices, so there is no field it belongs under. The action
+  /// is the way out — the OS page where access to all files is granted.
+  Future<void> _pickFolder() async {
+    await _controller.pickLocalFolder();
+    if (!mounted) return;
+    final refusal = _controller.state.folderAccessError;
+    if (refusal == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(refusal),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: 'Settings',
+          onPressed: _controller.openAccessSettings,
+        ),
+      ),
+    );
+  }
+
   Future<void> _start() async {
     await _controller.start(
       remoteRoot: _remoteRoot.text,
@@ -99,6 +119,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
             remoteRoot: _remoteRoot,
             address: _address,
             onCreateFolder: _createFolder,
+            onPickFolder: _pickFolder,
             onStart: _start,
           ),
         },
@@ -116,6 +137,7 @@ class _RunSetupForm extends StatelessWidget {
     required this.remoteRoot,
     required this.address,
     required this.onCreateFolder,
+    required this.onPickFolder,
     required this.onStart,
   });
 
@@ -126,6 +148,7 @@ class _RunSetupForm extends StatelessWidget {
   final TextEditingController remoteRoot;
   final TextEditingController address;
   final VoidCallback onCreateFolder;
+  final VoidCallback onPickFolder;
   final VoidCallback onStart;
 
   @override
@@ -149,7 +172,7 @@ class _RunSetupForm extends StatelessWidget {
         InputDecorator(
           decoration: InputDecoration(
             labelText: 'Folder',
-            helperText: "A folder in this app's documents.",
+            helperText: "A folder in this app's documents, or one you pick.",
             errorText: state.localFolderError,
           ),
           child: DropdownButton<String>(
@@ -160,9 +183,22 @@ class _RunSetupForm extends StatelessWidget {
             hint: const Text('Pick a folder'),
             items: [
               for (final folder in state.localFolders)
-                DropdownMenuItem(value: folder, child: Text(folder)),
+                DropdownMenuItem(
+                  value: folder.path,
+                  child: Text(folder.label, overflow: TextOverflow.ellipsis),
+                ),
             ],
             onChanged: starting ? null : controller.selectLocalFolder,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            key: const Key('run-setup-pick-folder'),
+            onPressed: starting ? null : onPickFolder,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('Pick a folder on this device'),
           ),
         ),
         const SizedBox(height: 8),

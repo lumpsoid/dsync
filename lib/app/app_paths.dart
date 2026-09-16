@@ -33,8 +33,11 @@ import 'package:path_provider/path_provider.dart';
 /// it needs one.
 ///
 /// [documentsDir] is the third directory, and the one user data lives in:
-/// the only place this head can put a local replica. See
-/// `RunSetupController` for the scoped-storage decision that makes it so.
+/// where this head creates a local replica that needs no OS grant. It is not
+/// the only place one can be — `RunSetupController` also takes a folder the
+/// user chooses through the platform chooser, once a `dart:io` probe has
+/// proved this head can read and write it — but it is the place that always
+/// works, and the fallback offered when a chosen folder is refused.
 class AppPaths {
   /// Composes both `core` directories from [baseDir], the platform's
   /// application support directory. `core` joins `dsync` onto it, the same
@@ -60,8 +63,9 @@ class AppPaths {
 
   /// The platform's application documents directory — app-private on
   /// Android, the app's own `Documents` on iOS. Where local replica folders
-  /// are created (SPEC §16 keeps SAF out of v1); distinct from [stateDir]
-  /// so a user's synced files never sit beside the identity and archives.
+  /// are created when the user does not pick one elsewhere; distinct from
+  /// [stateDir] so a user's synced files never sit beside the identity and
+  /// archives.
   final String documentsDir;
 
   /// Where the device identity, the paired-device store, and the archives

@@ -14,6 +14,8 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../support/fake_folder_picker.dart';
+
 /// Rendering tests for the Run setup page, driven the way the scope
 /// contract in `app_scope.dart` intends: the controllers are pinned with
 /// `setController` and the page is pumped directly. The page's `initState`
@@ -24,6 +26,7 @@ void main() {
   late Directory tempDir;
   late AppController app;
   late RunSetupController controller;
+  late FakeFolderPicker picker;
   late PairedDevice desktop;
   late String certA;
   final started = <RunRequest>[];
@@ -39,7 +42,8 @@ void main() {
           AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
       now: DateTime.now,
     );
-    controller = RunSetupController(app);
+    picker = FakeFolderPicker();
+    controller = RunSetupController(app, picker: picker);
     desktop = PairedDevice(
       certificatePem: certA,
       name: 'desktop',
@@ -61,6 +65,24 @@ void main() {
   tearDown(() => controller.dispose());
   tearDown(() => tempDir.delete(recursive: true));
 
+  /// Waits, in real time, for the controller to stop writing: the view state
+  /// has to go quiet, not merely reach the case a test is about. `load`
+  /// keeps going after it records the peer — it lists the folders and
+  /// derives the dry-run default — and a write that lands after the test has
+  /// finished hits a disposed view state, which fails whichever test is
+  /// running by then. Bounded, so a regression fails rather than hangs.
+  Future<void> settle() async {
+    var quiet = 0;
+    void restart() => quiet = 0;
+    controller.state.addListener(restart);
+    final deadline = Stopwatch()..start();
+    while (quiet < 5 && deadline.elapsed < const Duration(seconds: 20)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      quiet++;
+    }
+    controller.state.removeListener(restart);
+  }
+
   /// Pumps the page for [deviceId] and waits, in real time, for `load` to
   /// finish. Bounded so a regression fails rather than hangs. The viewport
   /// is made tall enough for the whole form: a `ListView` builds only what
@@ -79,11 +101,17 @@ void main() {
           ),
         ),
       );
-      final deadline = Stopwatch()..start();
-      while (controller.state.peer is RunSetupPeerLoading &&
-          deadline.elapsed < const Duration(seconds: 20)) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
+      await settle();
+    });
+    await tester.pump();
+  }
+
+  /// Taps the pick button and lets the chooser, the probe and the grant —
+  /// all real async work — finish.
+  Future<void> pickFolder(WidgetTester tester) async {
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('run-setup-pick-folder')));
+      await settle();
     });
     await tester.pump();
   }
@@ -102,9 +130,7 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(find.byKey(const Key('run-setup-start')), findsNothing);
     // Let `load` finish before the tree is torn down.
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 200)),
-    );
+    await tester.runAsync(settle);
   });
 
   testWidgets('missing: the message instead of the form', (tester) async {
@@ -124,6 +150,7 @@ void main() {
       'run-setup-local-folder',
       'run-setup-new-folder',
       'run-setup-create-folder',
+      'run-setup-pick-folder',
       'run-setup-remote-root',
       'run-setup-address',
       'run-setup-dry-run',
@@ -162,13 +189,51 @@ void main() {
     expect(find.text('Pick a folder'), findsOneWidget);
 
     controller.state.recordLocalFolders(const [
-      'notes',
-      'photos',
-    ], selected: 'photos');
+      LocalFolderChoice(path: '/documents/notes', label: 'notes'),
+      LocalFolderChoice(path: '/sdcard/photos', label: '/sdcard/photos'),
+    ], selected: '/sdcard/photos');
     await tester.pump();
 
-    expect(find.text('photos'), findsOneWidget);
+    expect(find.text('/sdcard/photos'), findsOneWidget);
     expect(find.text('Pick a folder'), findsNothing);
+  });
+
+  testWidgets('the pick button offers the folder the chooser returned', (
+    tester,
+  ) async {
+    final picked = '${tempDir.path}/elsewhere/camera';
+    Directory(picked).createSync(recursive: true);
+    picker.onPick = () => picked;
+    await pumpLoaded(tester);
+
+    await pickFolder(tester);
+
+    expect(picker.pickCount, 1);
+    expect(find.text(picked), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('a folder the head cannot use is a snackbar with a way to fix '
+      'it, and the form is untouched', (tester) async {
+    picker.onPick = () => '${tempDir.path}/elsewhere/no-such-tree';
+    await pumpLoaded(tester);
+
+    await pickFolder(tester);
+
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.textContaining('no-such-tree'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+    expect(
+      find.text('Pick a folder'),
+      findsOneWidget,
+      reason: 'nothing chosen',
+    );
+
+    // The snackbar is still sliding in; its action is not hittable until
+    // that animation has run.
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.text('Settings'));
+    expect(picker.openSettingsCount, 1);
   });
 
   testWidgets('field errors render under their own field', (tester) async {

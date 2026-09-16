@@ -12,6 +12,8 @@ import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:test/test.dart';
 
+import '../../../support/fake_folder_picker.dart';
+
 /// The Run setup controller over a real `AppController` and a real
 /// `PairedDeviceStore` in a temporary directory — the setup
 /// `devices_controller_test.dart` uses — with the documents directory a
@@ -22,6 +24,7 @@ void main() {
   late Directory tempDir;
   late AppController app;
   late RunSetupController controller;
+  late FakeFolderPicker picker;
   late String certA;
   late PairedDevice desktop;
 
@@ -36,7 +39,8 @@ void main() {
           AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
       now: DateTime.now,
     );
-    controller = RunSetupController(app);
+    picker = FakeFolderPicker();
+    controller = RunSetupController(app, picker: picker);
     desktop = PairedDevice(
       certificatePem: certA,
       name: 'desktop',
@@ -78,6 +82,9 @@ void main() {
       platform: paths.stateDirPlatform,
     );
   }
+
+  List<String> labels() =>
+      controller.state.localFolders.map((f) => f.label).toList();
 
   List<RunRequest> requests() => [
     if (controller.state.outcome case RunSetupStarted(:final request)) request,
@@ -127,21 +134,21 @@ void main() {
 
       await loadDesktop();
 
-      expect(controller.state.localFolders, ['alpha', 'zeta']);
+      expect(labels(), ['alpha', 'zeta']);
       expect(controller.state.selectedLocalFolder, isNull);
     });
 
     test('lists nothing but still creates the documents dir', () async {
       await loadDesktop();
 
-      expect(controller.state.localFolders, isEmpty);
+      expect(labels(), isEmpty);
       expect(Directory(documents()).existsSync(), isTrue);
     });
 
     test('a second load starts a fresh visit', () async {
       Directory('${documents()}/notes').createSync(recursive: true);
       await loadDesktop();
-      await controller.selectLocalFolder('notes');
+      await controller.selectLocalFolder('${documents()}/notes');
       controller.setDryRun(false);
       await controller.start(remoteRoot: '', address: '');
       expect(controller.state.remoteRootError, isNotNull);
@@ -161,7 +168,7 @@ void main() {
       await controller.createLocalFolder('   ');
 
       expect(controller.state.newFolderError, isNotNull);
-      expect(controller.state.localFolders, isEmpty);
+      expect(labels(), isEmpty);
     });
 
     test('refuses a separator and the dot names', () async {
@@ -171,7 +178,7 @@ void main() {
         await controller.createLocalFolder(name);
         expect(controller.state.newFolderError, isNotNull, reason: name);
       }
-      expect(controller.state.localFolders, isEmpty);
+      expect(labels(), isEmpty);
     });
 
     test('creates the folder under the documents dir, lists it, selects it '
@@ -183,9 +190,122 @@ void main() {
       await controller.createLocalFolder(' notes ');
 
       expect(Directory('${documents()}/notes').existsSync(), isTrue);
-      expect(controller.state.localFolders, ['notes']);
-      expect(controller.state.selectedLocalFolder, 'notes');
+      expect(labels(), ['notes']);
+      expect(controller.state.selectedLocalFolder, '${documents()}/notes');
       expect(controller.state.newFolderError, isNull);
+    });
+  });
+
+  group('pickLocalFolder', () {
+    /// A folder outside the documents directory, as the platform chooser
+    /// would hand one over.
+    String elsewhere(String name) => '${tempDir.path}/elsewhere/$name';
+
+    test('a dismissed chooser changes nothing', () async {
+      await loadDesktop();
+      await controller.createLocalFolder('notes');
+
+      await controller.pickLocalFolder();
+
+      expect(picker.pickCount, 1);
+      expect(picker.requestAccessCount, 0);
+      expect(labels(), ['notes']);
+      expect(controller.state.selectedLocalFolder, '${documents()}/notes');
+      expect(controller.state.folderAccessError, isNull);
+    });
+
+    test('a folder it can read and write is listed by path, selected, and '
+        'left without probe leftovers', () async {
+      await loadDesktop();
+      final picked = elsewhere('camera');
+      Directory(picked).createSync(recursive: true);
+      picker.onPick = () => picked;
+
+      await controller.pickLocalFolder();
+
+      expect(controller.state.folderAccessError, isNull);
+      expect(labels(), [picked]);
+      expect(controller.state.selectedLocalFolder, picked);
+      expect(picker.requestAccessCount, 0, reason: 'the probe already passed');
+      expect(Directory(picked).listSync(), isEmpty);
+    });
+
+    test('a folder it cannot use: refused with a line, not listed, and the '
+        'grant asked for once', () async {
+      await loadDesktop();
+      await controller.createLocalFolder('notes');
+      final picked = elsewhere('no-such-tree');
+      picker.onPick = () => picked;
+
+      await controller.pickLocalFolder();
+
+      expect(controller.state.folderAccessError, contains(picked));
+      expect(picker.requestAccessCount, 1);
+      expect(labels(), ['notes'], reason: 'the refused folder is not offered');
+      expect(controller.state.selectedLocalFolder, '${documents()}/notes');
+    });
+
+    test(
+      'a folder the grant makes usable is probed again and accepted',
+      () async {
+        await loadDesktop();
+        final picked = elsewhere('sdcard');
+        picker.onPick = () => picked;
+        picker.onRequestAccess = () async {
+          Directory(picked).createSync(recursive: true);
+          return true;
+        };
+
+        await controller.pickLocalFolder();
+
+        expect(controller.state.folderAccessError, isNull);
+        expect(picker.requestAccessCount, 1);
+        expect(controller.state.selectedLocalFolder, picked);
+      },
+    );
+
+    test('a chooser that throws is a line, not a crash', () async {
+      await loadDesktop();
+      picker.onPick = () => throw StateError('no activity');
+
+      await controller.pickLocalFolder();
+
+      expect(controller.state.folderAccessError, contains('no activity'));
+      expect(labels(), isEmpty);
+    });
+
+    test(
+      'a picked folder under the documents dir is listed once, by name',
+      () async {
+        await loadDesktop();
+        await controller.createLocalFolder('notes');
+        picker.onPick = () => '${documents()}/notes';
+
+        await controller.pickLocalFolder();
+
+        expect(labels(), ['notes']);
+        expect(controller.state.selectedLocalFolder, '${documents()}/notes');
+      },
+    );
+
+    test('a second load drops the folders picked in the last visit', () async {
+      await loadDesktop();
+      final picked = elsewhere('camera');
+      Directory(picked).createSync(recursive: true);
+      picker.onPick = () => picked;
+      await controller.pickLocalFolder();
+      expect(labels(), [picked]);
+
+      await controller.load(desktop.deviceId);
+
+      expect(labels(), isEmpty);
+      expect(controller.state.selectedLocalFolder, isNull);
+    });
+
+    test('openAccessSettings goes to the platform', () async {
+      await controller.openAccessSettings();
+
+      expect(picker.openSettingsCount, 1);
     });
   });
 
@@ -367,7 +487,7 @@ void main() {
       await controller.remoteRootChanged('~/notes');
       expect(controller.state.dryRun, isTrue, reason: 'photos is selected');
 
-      await controller.selectLocalFolder('notes');
+      await controller.selectLocalFolder('${documents()}/notes');
       expect(controller.state.dryRun, isFalse, reason: 'positive control');
 
       await controller.remoteRootChanged('~/other');

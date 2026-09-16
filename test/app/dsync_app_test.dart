@@ -19,6 +19,8 @@ import 'package:dsync/app/paired_device_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/fake_folder_picker.dart';
+
 /// The entrypoint's wiring: the bootstrap gate renders each `AppBootstrap`
 /// case, and a tap on Devices lands on the route this file promised. Driven
 /// the way the scope contract in `app_scope.dart` intends — every scope
@@ -51,7 +53,7 @@ void main() {
         required pairedDeviceStore,
       }) => throw StateError('no enrolment in this test'),
     );
-    runSetup = RunSetupController(app);
+    runSetup = RunSetupController(app, picker: FakeFolderPicker());
     appScope.setController(app);
     devicesScope.setController(devices);
     pairScope.setController(pair);

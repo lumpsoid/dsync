@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import '../../app_controller.dart';
 import '../../run_request.dart';
 import '../run/replica_connector.dart';
+import 'folder_picker.dart';
 import 'run_setup_view_state.dart';
 
 /// Input methods of the Run setup page: building the two locations a run
@@ -19,21 +20,38 @@ import 'run_setup_view_state.dart';
 /// opens no socket: [start] validates and builds a [RunRequest] — the only
 /// place one is constructed — and the Run feature is what connects.
 ///
-/// **The local side is a folder under the app's documents directory, and
-/// nothing else.** `Scanner` and `LocalAgent` are plain `dart:io`, and on
-/// Android scoped storage that reaches app-private storage and nothing
-/// further: what a user grants through the Storage Access Framework is a
-/// content URI, not a path `dart:io` can open, so no folder picker could
-/// hand this head something the scanner could read. The minimal head
-/// therefore restricts the local replica to a directory directly under
-/// `AppPaths.documentsDir` — created on demand ([createLocalFolder]) and
-/// listed for selection ([load]) — which both platforms let `dart:io` read
-/// and write without a grant. SAF stays the separate, larger task SPEC §16
-/// defers: it needs a `Scanner`/`Agent` implementation over a content-URI
-/// tree, which is `dsync_core` work, not a head concern. The same restriction
-/// is what makes the local path safe to use unexpanded: it is absolute by
-/// construction, so `Location.expandedPath` — which throws when `HOME` is
-/// unset, as it is on a mobile head — is never called here.
+/// **The local side is any folder this head can prove it can read and
+/// write.** Two ways in: a directory under `AppPaths.documentsDir`, created
+/// on demand ([createLocalFolder]) and listed for selection ([load]), which
+/// needs no grant on either platform; or one the user chooses through the
+/// platform's own folder chooser ([pickLocalFolder]), which is how a replica
+/// lands somewhere a file manager can also see — on Android the documents
+/// directory is app-private, so it alone would confine every sync to files
+/// the user cannot otherwise reach.
+///
+/// A picked folder is *probed*, not trusted: [pickLocalFolder] lists it and
+/// writes and deletes one entry in it before offering it as a choice. The
+/// probe is plain `dart:io`, which is exactly what `Scanner` and
+/// `LocalAgent` scan and write a replica with, so a folder that passes it is
+/// scannable by construction and a folder that fails it is refused here —
+/// with a line the page raises as a snackbar — rather than mid-run. That is
+/// also why the head asks the filesystem rather than a permission API: on
+/// Android the chooser's own grant covers the `content://` tree URI it
+/// returns and *not* the path that URI converts to, which is openable only
+/// under All-files access (`MANAGE_EXTERNAL_STORAGE`, declared in
+/// `android/app/src/main/AndroidManifest.xml`), so a failed probe is met by
+/// asking for that grant once (`FolderPicker.requestAccess`) and probing
+/// again. Paths that convert to no filesystem at all — the Downloads
+/// provider, a cloud document provider — simply fail the probe, which is the
+/// refusal working.
+///
+/// Either way the local root is an absolute path, so it is safe to use
+/// unexpanded: `Location.expandedPath` — which throws when `HOME` is unset,
+/// as it is on a mobile head — is never called here.
+///
+/// A picked folder lasts the visit. Nothing persists it across a restart
+/// yet; that belongs with the saved-profile work, which has to store a
+/// replica root anyway.
 ///
 /// **The remote root is sent exactly as typed, never expanded.** The desktop
 /// resolves `~` in its own environment (`ReplicaSpec.rootPath`,
@@ -69,9 +87,14 @@ import 'run_setup_view_state.dart';
 /// connected") would be wrong for a second folder pair against the same
 /// desktop, which is a first sync with SPEC's first-sync semantics.
 class RunSetupController {
-  RunSetupController(this.app);
+  RunSetupController(this.app, {required this.picker});
 
   final AppController app;
+
+  /// The platform folder chooser and its grant. A dependency rather than a
+  /// direct plugin call, per the controller role in `app_scope.dart`: a test
+  /// hands over a fake that returns a path in a temp directory.
+  final FolderPicker picker;
 
   /// The view state this controller renders into; owned here, disposed here.
   final RunSetupViewState state = RunSetupViewState();
@@ -80,6 +103,10 @@ class RunSetupController {
   String _remoteRoot = '';
   bool _dryRunChosen = false;
   int _dryRunDerivation = 0;
+
+  /// The folders picked through the chooser this visit, in the order they
+  /// were picked. Reset by [load], like every other per-visit choice.
+  final List<String> _pickedRoots = [];
 
   /// Reads the device the Devices page handed over by id — the destination
   /// loads what it needs — and lists the folders that can be a local
@@ -91,8 +118,10 @@ class RunSetupController {
   Future<void> load(String deviceId) async {
     _dryRunChosen = false;
     _remoteRoot = '';
+    _pickedRoots.clear();
     state.recordFieldErrors(localFolder: null, remoteRoot: null, address: null);
     state.recordNewFolderError(null);
+    state.recordFolderAccessError(null);
     state.recordOutcome(const RunSetupIdle());
     state.recordPeer(const RunSetupPeerLoading());
     final device = await (await app.pairedDevices).byDeviceId(deviceId);
@@ -121,12 +150,56 @@ class RunSetupController {
     await _deriveDryRunDefault();
   }
 
-  /// Picks [name] from `RunSetupViewState.localFolders`, or nothing.
-  Future<void> selectLocalFolder(String? name) async {
-    state.recordLocalFolders(state.localFolders, selected: name);
+  /// Picks [path] from `RunSetupViewState.localFolders`, or nothing.
+  Future<void> selectLocalFolder(String? path) async {
+    state.recordLocalFolders(state.localFolders, selected: path);
     state.recordOutcome(const RunSetupIdle());
     await _deriveDryRunDefault();
   }
+
+  /// Opens the platform folder chooser and, if the user picks a folder,
+  /// proves this head can read and write it before offering it as a replica
+  /// root and selecting it.
+  ///
+  /// A dismissed chooser changes nothing. A folder that fails the probe —
+  /// even after the grant the probe's failure prompts for — is not added:
+  /// `RunSetupViewState.folderAccessError` carries the reason and the page
+  /// raises it, with the way to fix it, over a form that still holds
+  /// whatever was selected before. See the class doc comment for why the
+  /// verdict is a filesystem probe rather than a permission check.
+  Future<void> pickLocalFolder() async {
+    state.recordFolderAccessError(null);
+    final String? picked;
+    try {
+      picked = await picker.pick();
+    } catch (error) {
+      // A platform channel that fails is not a folder the user chose badly.
+      state.recordFolderAccessError(
+        'Could not open the folder chooser: '
+        '$error',
+      );
+      return;
+    }
+    if (picked == null) return;
+
+    var refusal = await _accessRefusal(picked);
+    if (refusal != null && await picker.requestAccess()) {
+      refusal = await _accessRefusal(picked);
+    }
+    if (refusal != null) {
+      state.recordFolderAccessError(refusal);
+      return;
+    }
+
+    if (!_pickedRoots.contains(picked)) _pickedRoots.add(picked);
+    await _listLocalFolders(selected: picked);
+    state.recordOutcome(const RunSetupIdle());
+    await _deriveDryRunDefault();
+  }
+
+  /// Opens the OS settings page that grants access to folders outside the
+  /// app's own container — what the page's snackbar offers after a refusal.
+  Future<void> openAccessSettings() => picker.openSettings();
 
   /// Creates `<documentsDir>/<name>` and selects it. [name] is one path
   /// segment — no separator, not `.` or `..` — because the folder must sit
@@ -152,7 +225,7 @@ class RunSetupController {
       return;
     }
     state.recordNewFolderError(null);
-    await _listLocalFolders(selected: folder);
+    await _listLocalFolders(selected: p.join(paths.documentsDir, folder));
     state.recordOutcome(const RunSetupIdle());
     await _deriveDryRunDefault();
   }
@@ -199,7 +272,7 @@ class RunSetupController {
       return;
     }
 
-    final folder = state.selectedLocalFolder;
+    final localRootPath = state.selectedLocalFolder;
     final remote = remoteRoot.trim();
     PeerAddress? addressOverride;
     String? addressError;
@@ -208,21 +281,23 @@ class RunSetupController {
     } on FormatException catch (e) {
       addressError = e.message;
     }
-    final localFolderError = folder == null ? _localFolderRequired : null;
+    final localFolderError = localRootPath == null
+        ? _localFolderRequired
+        : null;
     final remoteRootError = _remoteRootError(remote);
     state.recordFieldErrors(
       localFolder: localFolderError,
       remoteRoot: remoteRootError,
       address: addressError,
     );
-    if (folder == null || remoteRootError != null || addressError != null) {
+    if (localRootPath == null ||
+        remoteRootError != null ||
+        addressError != null) {
       state.recordOutcome(const RunSetupIdle());
       return;
     }
 
     state.recordOutcome(const RunSetupStarting());
-    final paths = await app.paths;
-    final localRootPath = p.join(paths.documentsDir, folder);
     try {
       // On demand: a folder listed a moment ago may have been removed by a
       // file manager since, and a missing local root is not a run.
@@ -250,17 +325,44 @@ class RunSetupController {
     );
   }
 
+  /// The documents directory's own folders, by name, then this visit's
+  /// picked ones, by whole path. A picked folder that happens to sit under
+  /// the documents directory is listed once, as its name.
   Future<void> _listLocalFolders({required String? selected}) async {
     final documents = Directory((await app.paths).documentsDir);
     await documents.create(recursive: true);
-    final names = [
+    final own = [
       await for (final entry in documents.list(followLinks: false))
-        if (entry is Directory) p.basename(entry.path),
-    ]..sort();
+        if (entry is Directory)
+          LocalFolderChoice(path: entry.path, label: p.basename(entry.path)),
+    ]..sort((a, b) => a.label.compareTo(b.label));
+    final paths = own.map((choice) => choice.path).toSet();
+    final choices = [
+      ...own,
+      for (final root in _pickedRoots)
+        if (paths.add(root)) LocalFolderChoice(path: root, label: root),
+    ];
     state.recordLocalFolders(
-      names,
-      selected: names.contains(selected) ? selected : null,
+      choices,
+      selected: paths.contains(selected) ? selected : null,
     );
+  }
+
+  /// Why [path] cannot be a replica root, or `null` when it can: it lists,
+  /// and one entry can be written and removed in it. The same `dart:io` a
+  /// run would use — see the class doc comment.
+  Future<String?> _accessRefusal(String path) async {
+    final probe = File(p.join(path, '.dsync-access-probe'));
+    try {
+      await Directory(path).list(followLinks: false).take(1).toList();
+      await probe.writeAsString('');
+      await probe.delete();
+      return null;
+    } on FileSystemException catch (e) {
+      return 'dsync cannot use $path: ${e.osError?.message ?? e.message}. '
+          'Grant it access to all files, or pick a folder in the app\'s own '
+          'documents instead.';
+    }
   }
 
   /// Re-derives the dry-run default from the current triple, unless the
@@ -270,16 +372,16 @@ class RunSetupController {
     if (_dryRunChosen) return;
     final derivation = ++_dryRunDerivation;
     final peerDeviceId = _peerDeviceId;
-    final folder = state.selectedLocalFolder;
+    final localRootPath = state.selectedLocalFolder;
     final remote = _remoteRoot.trim();
-    if (peerDeviceId == null || folder == null || remote.isEmpty) {
+    if (peerDeviceId == null || localRootPath == null || remote.isEmpty) {
       state.recordDryRun(true);
       return;
     }
     final paths = await app.paths;
     final archive = resolveArchiveLogPath(
       profileId: ReplicaConnector.profileIdFor(
-        localRootPath: p.join(paths.documentsDir, folder),
+        localRootPath: localRootPath,
         peerDeviceId: peerDeviceId,
         remoteRootPath: remote,
       ),

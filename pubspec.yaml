@@ -85,6 +85,32 @@ dependencies:
   # untouched (§3).
   mobile_scanner: 7.4.2
 
+  # The platform directory picker the Run setup page offers for a local
+  # replica root outside the app's own container (task eb35c3). Pinned for
+  # the same reason `mobile_scanner` above is: it is a platform-channel
+  # plugin, so the pin fixes the native code that launches
+  # `ACTION_OPEN_DOCUMENT_TREE` and converts the tree URI it returns into a
+  # path, which is the half of this that decides whether `dart:io` has
+  # anything openable to probe. `dsync_core/` never imports it, and neither
+  # does `lib/cli/`.
+  file_picker: 13.1.0
+
+  # Requests the one permission that makes a picked path openable through
+  # `dart:io` on targetSdk 30+ — Android's All-files access
+  # (`MANAGE_EXTERNAL_STORAGE`, declared in
+  # `android/app/src/main/AndroidManifest.xml`). The picker's own grant
+  # covers the `content://` tree URI, not the path; `Scanner` and
+  # `LocalAgent` open paths. Pinned for the same platform-channel reason as
+  # the plugins above: the native side is what actually shows the Settings
+  # screen and reports what the user chose there.
+  # 12.0.1, not 13.x: `permission_handler_android` 14 compiles against
+  # Android SDK 37, which the Android Gradle plugin this project builds with
+  # (9.1.0) will not compile an app against, so a 13.x pin fails
+  # `checkDebugAarMetadata` before any Dart runs. 12.0.1's Android half
+  # compiles against 36 and the API used here (`manageExternalStorage`,
+  # `storage`, `openAppSettings`) is identical.
+  permission_handler: 12.0.1
+
   # Pinned, not a range (SPEC §3, same rationale as the other pins above),
   # and this one is the odd dependency out: it is a platform-channel plugin,
   # not pure Dart. Its Dart side is a single call
