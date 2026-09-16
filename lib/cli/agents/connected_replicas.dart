@@ -18,6 +18,7 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
@@ -540,7 +541,14 @@ Future<_ResolvedSide> _resolvePeerSide({
   ];
 
   final agent = _DiagnosedRemoteAgent(
-    channel: channel,
+    // The only transport wrapped in an idle deadline (SPEC §4.2, §4.4):
+    // `_peerConnectTimeout` above bounds the dial and the TLS handshake, and
+    // until now nothing bounded the session after it — a peer that stopped
+    // sending without closing the socket left this run waiting in
+    // `moveNext()` with no exit code, no summary and no output. See
+    // `IdleDeadlineChannel` for why this is `peer://`'s problem and not
+    // `unix://`'s or `ssh://`'s.
+    channel: IdleDeadlineChannel(channel, peer: deviceName),
     spec: _specFor(
       location: location,
       profileId: profileId,

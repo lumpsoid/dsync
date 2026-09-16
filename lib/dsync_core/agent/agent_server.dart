@@ -53,10 +53,11 @@ class AgentServer {
     try {
       await performVersionHandshake(channel, frames);
 
-      if (!await frames.moveNext()) {
+      final helloFrame = await nextMeaningfulFrame(frames);
+      if (helloFrame == null) {
         throw StateError('Channel closed before hello arrived');
       }
-      final request = AgentRequest.fromFrame(frames.current);
+      final request = AgentRequest.fromFrame(helloFrame);
       if (request.op != 'hello') {
         await _reply(
           channel,
@@ -94,8 +95,17 @@ class AgentServer {
       final info = await agent.hello();
       await _reply(channel, AgentSuccess(replicaInfoToJson(info)));
 
-      while (await frames.moveNext()) {
-        await _dispatch(channel, frames, agent, frames.current);
+      // Through [nextMeaningfulFrame] rather than `frames.moveNext()`
+      // directly: a heartbeat tick is not an operation — it carries no `op`
+      // to decode, and answering one with `AgentFailure('unknown op')` would
+      // put a reply the peer never asked for where its next real answer
+      // belongs (SPEC §4.2).
+      for (
+        var frame = await nextMeaningfulFrame(frames);
+        frame != null;
+        frame = await nextMeaningfulFrame(frames)
+      ) {
+        await _dispatch(channel, frames, agent, frame);
       }
     } finally {
       await frames.cancel();

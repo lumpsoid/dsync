@@ -11,6 +11,8 @@ import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
+import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 
 /// What [AgentListener] does with a session that ended by throwing — a
@@ -289,7 +291,7 @@ class AgentListener {
   /// caught here or it surfaces as an unhandled asynchronous error with no
   /// session to attribute it to.
   Future<void> _serve(
-    SocketChannel channel,
+    Channel channel,
     Agent Function(ReplicaSpec spec) buildAgent,
   ) async {
     try {
@@ -434,8 +436,15 @@ class AgentListener {
       socket.destroy();
       return;
     }
+    // The one transport that gets an idle deadline (SPEC §4.2, §4.4): both
+    // ends are dsync on a raw TCP socket with nobody else watching, so a
+    // client that sleeps or loses its network leaves this session wedged in
+    // `moveNext()` forever — and with it the replica lock the `finally` in
+    // `AgentServer.serve` would otherwise release. `bindUnix` above is left
+    // bare deliberately: a same-machine client that dies has its socket
+    // closed by the kernel, so that reader already gets EOF.
     await _serve(
-      SocketChannel(socket),
+      IdleDeadlineChannel(SocketChannel(socket), peer: device.name),
       _authorizedBuildAgent(device, buildAgent, environment),
     );
   }

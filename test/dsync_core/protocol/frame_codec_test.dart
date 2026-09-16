@@ -183,18 +183,30 @@ void main() {
     });
 
     test('throws FrameDecodeException on an unknown type byte', () async {
-      // 3, not 2: 2 became `FrameType.scanResult` with task 9551c4.
-      final bad = Uint8List.fromList([3, 0, 0, 0, 0]);
+      // 4, not 3: 2 became `FrameType.scanResult` with task 9551c4 and 3
+      // became `FrameType.heartbeat` with task 40812e.
+      final bad = Uint8List.fromList([4, 0, 0, 0, 0]);
 
       await expectLater(
         codec.decode(Stream.value(bad)).toList(),
         throwsA(
           isA<FrameDecodeException>()
-              .having((e) => e.message, 'message', contains('3'))
-              .having((e) => e.received, 'received', [3, 0, 0, 0, 0])
+              .having((e) => e.message, 'message', contains('4'))
+              .having((e) => e.received, 'received', [4, 0, 0, 0, 0])
               .having((e) => e.truncated, 'truncated', isFalse),
         ),
       );
+    });
+
+    test('round-trips a heartbeat frame (task 40812e)', () async {
+      final encoded = codec.encode(
+        const Frame(type: FrameType.heartbeat, payload: []),
+      );
+
+      final frames = await codec.decode(Stream.value(encoded)).toList();
+
+      expect(frames.single.type, FrameType.heartbeat);
+      expect(frames.single.payload, isEmpty);
     });
 
     test('decodes a scanResult frame (task 9551c4)', () async {

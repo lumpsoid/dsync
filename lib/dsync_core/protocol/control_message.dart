@@ -127,6 +127,28 @@ class AgentOperationException implements Exception {
   String toString() => 'Remote agent operation failed: $message';
 }
 
+/// The next frame off [frames] that means something, or `null` if the stream
+/// ended first — every [FrameType.heartbeat] tick in between is dropped
+/// (SPEC §4.2).
+///
+/// Every positional read of a shared frame stream goes through here, because
+/// a tick can land between *any* two frames: `IdleDeadlineChannel` sends one
+/// whenever its side has been quiet for a moment, with no idea what the
+/// other end is in the middle of. A reader that took the next frame literally
+/// would read a tick as the version frame, the `hello`, the reply it was
+/// waiting for, or an operation to dispatch.
+///
+/// `null` rather than a throw at the end of the stream: a closed channel
+/// means something different to each caller — "before the version handshake
+/// completed", "before hello arrived", "before a response arrived", or simply
+/// the ordinary end of a session — and only the caller can say which.
+Future<Frame?> nextMeaningfulFrame(StreamIterator<Frame> frames) async {
+  while (await frames.moveNext()) {
+    if (frames.current.type != FrameType.heartbeat) return frames.current;
+  }
+  return null;
+}
+
 /// Sends [data] over [channel] as `fileBytes` frames (SPEC §4.2), one per
 /// chunk, terminated by an empty `fileBytes` frame so the receiver learns the
 /// stream ended without needing its length up front. Never buffers more than
@@ -162,10 +184,14 @@ Future<void> sendByteStream(Channel channel, Stream<List<int>> data) async {
 /// channel closes mid-stream.
 Stream<List<int>> readByteStream(StreamIterator<Frame> frames) async* {
   while (true) {
-    if (!await frames.moveNext()) {
+    // Through [nextMeaningfulFrame] for the reason that function gives, and
+    // sharply here: a tick landing mid-transfer would be counted as file
+    // bytes if it were read literally, and its empty payload reads exactly
+    // like the terminator that ends the file.
+    final frame = await nextMeaningfulFrame(frames);
+    if (frame == null) {
       throw StateError('Channel closed mid-stream');
     }
-    final frame = frames.current;
     if (frame.type == FrameType.control) {
       throw switch (AgentResult.fromFrame(frame)) {
         AgentFailure(:final error) => AgentOperationException(error),

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 
 /// The protocol version this build speaks (SPEC §4.2). Bumped whenever the
@@ -10,8 +11,9 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 ///
 /// Still 1, and every wire change so far has left it there — `hello`'s last
 /// field addition, `scanEntryToJson`'s `reason`, task 37bf4f renaming `scan`'s
-/// `skippedSymlinks` to `skippedPaths`, and task 9551c4 respelling a
-/// successful `scan` reply as the binary `FrameType.scanResult` (SPEC §15.3).
+/// `skippedSymlinks` to `skippedPaths`, task 9551c4 respelling a
+/// successful `scan` reply as the binary `FrameType.scanResult` (SPEC §15.3),
+/// and task 40812e adding `FrameType.heartbeat`.
 /// A version exists to protect pairs that cannot be upgraded together, and
 /// there are none: no stable release, no users, no deployed agent — the only
 /// thing that ever speaks this protocol to itself is the test suite, which is
@@ -32,6 +34,14 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// be mistaken for each other, so a mismatched pair fails loudly at the first
 /// `scan` whatever this constant says. A bump would improve that failure's
 /// wording, nothing else, and only for a pair that does not exist yet.
+///
+/// **Adding a frame type** — 40812e — is a fourth kind, and the one that
+/// most looks like it owes a bump: an older peer meeting a
+/// `FrameType.heartbeat` type byte does not ignore it, it throws
+/// [FrameDecodeException] and takes the session down. It is still not one,
+/// for the same reason as the rest — the pair it would protect is the pair
+/// that does not exist — and SPEC §4.4 now says so itself rather than being
+/// left asserting a rule this deliberately departs from.
 const protocolVersion = 1;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this
@@ -54,9 +64,9 @@ Future<void> performVersionHandshake(
 ) async {
   await channel.send(FrameCodec().encode(_versionFrame(protocolVersion)));
 
-  final bool replied;
+  final Frame? reply;
   try {
-    replied = await frames.moveNext();
+    reply = await nextMeaningfulFrame(frames);
   } on FrameDecodeException catch (error) {
     // Rewritten here and nowhere else, deliberately. These are the first
     // bytes of a fresh connection, so undecodable ones mean nobody is
@@ -70,10 +80,10 @@ Future<void> performVersionHandshake(
       truncated: error.truncated,
     );
   }
-  if (!replied) {
+  if (reply == null) {
     throw StateError('Channel closed before version handshake completed');
   }
-  final remoteVersion = _versionFromFrame(frames.current);
+  final remoteVersion = _versionFromFrame(reply);
   if (remoteVersion != protocolVersion) {
     throw ProtocolVersionMismatchException(
       local: protocolVersion,

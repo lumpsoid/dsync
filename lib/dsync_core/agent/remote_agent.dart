@@ -84,10 +84,7 @@ class RemoteAgent implements Agent {
     final release = await _acquireWire();
     try {
       await _send(AgentRequest('scan', {'rules': ruleSetToJson(rules)}));
-      if (!await _frames.moveNext()) {
-        throw StateError('Channel closed before a response arrived');
-      }
-      final frame = _frames.current;
+      final frame = await _nextReplyFrame();
       if (frame.type == FrameType.scanResult) {
         return decodeScanResult(frame.payload);
       }
@@ -226,11 +223,14 @@ class RemoteAgent implements Agent {
   Future<void> _send(AgentRequest request) =>
       _channel.send(FrameCodec().encode(request.toFrame()));
 
+  /// The answer to the request just sent — [nextMeaningfulFrame], with the
+  /// meaning this caller gives a channel that closed instead.
+  Future<Frame> _nextReplyFrame() async =>
+      await nextMeaningfulFrame(_frames) ??
+      (throw StateError('Channel closed before a response arrived'));
+
   Future<Map<String, dynamic>> _awaitResult() async {
-    if (!await _frames.moveNext()) {
-      throw StateError('Channel closed before a response arrived');
-    }
-    return switch (AgentResult.fromFrame(_frames.current)) {
+    return switch (AgentResult.fromFrame(await _nextReplyFrame())) {
       AgentSuccess(:final data) => data,
       AgentFailure(:final error) => throw AgentOperationException(error),
     };

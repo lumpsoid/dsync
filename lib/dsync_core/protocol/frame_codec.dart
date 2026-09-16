@@ -74,6 +74,7 @@ class FrameCodec {
     FrameType.control => 0,
     FrameType.fileBytes => 1,
     FrameType.scanResult => 2,
+    FrameType.heartbeat => 3,
   };
 
   /// The frame type [byte] names, or `null` if it names none — reported by
@@ -82,6 +83,7 @@ class FrameCodec {
     0 => FrameType.control,
     1 => FrameType.fileBytes,
     2 => FrameType.scanResult,
+    3 => FrameType.heartbeat,
     _ => null,
   };
 }
