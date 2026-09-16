@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 import 'pair_accept_command.dart';
 import 'pair_grant_command.dart';
 import 'pair_list_command.dart';
+import 'pair_renew_command.dart';
 import 'pair_revoke_command.dart';
 import 'pair_show_command.dart';
 
@@ -87,6 +88,14 @@ class PairCommand extends Command<int> {
     );
     addSubcommand(
       PairRevokeCommand(
+        environment: environment,
+        platform: platform,
+        out: out,
+        err: err,
+      ),
+    );
+    addSubcommand(
+      PairRenewCommand(
         environment: environment,
         platform: platform,
         out: out,

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
+import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 
@@ -52,14 +54,18 @@ class SocketChannel implements Channel {
   /// counterpart.
   ///
   /// [onBadCertificate] is the pinning hook: it returns `true` only when the
-  /// certificate the far end presents is byte-for-byte
-  /// [expectedPeerCertificateDer], the one certificate this connection was
-  /// dialed to reach. That is a narrowing check layered *after* BoringSSL's
-  /// own verification of the handshake, not a replacement for it (SPEC §4.4)
-  /// — [context] carries no trusted issuers of its own, so nothing here would
-  /// verify at all without this hook returning `true`, and it returns `true`
-  /// for exactly one certificate. A same-subject, different-key impostor is
-  /// refused even though nothing about its shape looks wrong.
+  /// certificate the far end presents carries the public key this connection
+  /// was dialed to reach — its device id ([deviceIdFromCertificateDer], the
+  /// SHA-256 of its `SubjectPublicKeyInfo`) equals [expectedPeerDeviceId] —
+  /// and has not expired at [now]. Pinning the key rather than the
+  /// certificate's bytes is what lets a peer renew its certificate under the
+  /// same key (`dsync pair renew`, SPEC §4.4) without every device that
+  /// pinned it having to pair again; a same-subject, different-key impostor
+  /// is still refused, since the key is what is compared. That is a
+  /// narrowing check layered *after* BoringSSL's own verification of the
+  /// handshake, not a replacement for it — [context] carries no trusted
+  /// issuers of its own, so nothing here would verify at all without this
+  /// hook returning `true`, and it returns `true` for exactly one key.
   ///
   /// [ownIdentity] presents this installation's own certificate and key as
   /// the client credential mutual TLS requires (SPEC §4.4); [context] trusts
@@ -69,16 +75,21 @@ class SocketChannel implements Channel {
   ///
   /// Plain values deliberately: the caller — a `peer://` location resolution,
   /// task 088e69 — looks a device up in `PairedDeviceStore` and hands this
-  /// the address, the certificate to pin, and this host's own identity.
-  /// Nothing under `dsync_core/protocol/` needs to know what a paired device
-  /// or a profile is, the same as everywhere else in this file.
+  /// the address, the id to pin, and this host's own identity. Nothing under
+  /// `dsync_core/protocol/` needs to know what a paired device or a profile
+  /// is, the same as everywhere else in this file. [now] is the clock the
+  /// expiry check reads, injectable so a test can present a certificate
+  /// that has expired without waiting for it to.
   ///
-  /// Throws [HandshakeException] when the peer's certificate does not match
-  /// the pin, and [SocketException] when nothing answers at [host]:[port] —
-  /// see [connectUnix]'s doc comment for what a killed agent looks like on a
-  /// transport where that distinction is meaningful. **Trap:** under TLS 1.3
-  /// a client can finish its own side of the handshake before the server has
-  /// validated *this* side's certificate, so a rejection driven by the
+  /// Throws [PeerCertificateExpiredException] when the peer presented the
+  /// right key on a certificate past its `notAfter` — the one refusal whose
+  /// fix is on the far end (`dsync pair renew` there), so it is told apart
+  /// from a plain [HandshakeException], thrown when the certificate does not
+  /// match the pin; [SocketException] when nothing answers at [host]:[port]
+  /// — see [connectUnix]'s doc comment for what a killed agent looks like on
+  /// a transport where that distinction is meaningful. **Trap:** under TLS
+  /// 1.3 a client can finish its own side of the handshake before the server
+  /// has validated *this* side's certificate, so a rejection driven by the
   /// server's own pinning check does not necessarily throw here at all — see
   /// `AgentListener`'s class doc comment and
   /// `test/dsync_core/identity/self_signed_certificate_test.dart`'s "an
@@ -86,21 +97,44 @@ class SocketChannel implements Channel {
   static Future<SocketChannel> connectSecure(
     String host,
     int port, {
-    required Uint8List expectedPeerCertificateDer,
+    required String expectedPeerDeviceId,
     required DeviceIdentity ownIdentity,
+    DateTime? now,
   }) async {
     final context = SecurityContext(withTrustedRoots: false)
       ..useCertificateChainBytes(utf8.encode(ownIdentity.certificatePem))
       ..usePrivateKeyBytes(utf8.encode(ownIdentity.privateKeyPem));
-    final socket = await SecureSocket.connect(
-      host,
-      port,
-      context: context,
-      onBadCertificate: (certificate) =>
-          _sameBytes(certificate.der, expectedPeerCertificateDer),
-    );
-    return SocketChannel(socket);
+    var expired = false;
+    try {
+      final socket = await SecureSocket.connect(
+        host,
+        port,
+        context: context,
+        onBadCertificate: (certificate) {
+          if (!_carriesDeviceId(certificate, expectedPeerDeviceId)) {
+            return false;
+          }
+          expired = certificateIsExpired(
+            certificate.der,
+            now: now ?? DateTime.now(),
+          );
+          return !expired;
+        },
+      );
+      return SocketChannel(socket);
+    } on HandshakeException {
+      if (expired) throw PeerCertificateExpiredException(expectedPeerDeviceId);
+      rethrow;
+    }
   }
+
+  /// The certificate the far end presented, once [connectSecure] accepted
+  /// it — what a caller that pinned an older certificate for the same key
+  /// stores in its place (SPEC §4.4, renewal). `null` on any other transport.
+  X509Certificate? get peerCertificate => switch (_socket) {
+    SecureSocket s => s.peerCertificate,
+    _ => null,
+  };
 
   @override
   Stream<Uint8List> get input => _socket;
@@ -131,13 +165,32 @@ class SocketChannel implements Channel {
   }
 }
 
-/// Byte-exact equality — what [SocketChannel.connectSecure]'s pin actually
-/// checks. `Uint8List` and `X509Certificate.der` do not override `==`, so
-/// this is content, not identity.
-bool _sameBytes(List<int> a, List<int> b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
+/// Whether [certificate]'s public key hashes to [deviceId] — what
+/// [SocketChannel.connectSecure]'s pin actually checks. A certificate shaped
+/// unlike this project's own generator's makes [deviceIdFromCertificateDer]
+/// throw, and that is a refusal, not an error to surface.
+bool _carriesDeviceId(X509Certificate certificate, String deviceId) {
+  try {
+    return deviceIdFromCertificateDer(certificate.der) == deviceId;
+  } catch (_) {
+    return false;
   }
-  return true;
+}
+
+/// Thrown by [SocketChannel.connectSecure] when the peer presented the
+/// pinned key on a certificate that has expired. Distinct from a plain
+/// [HandshakeException] because the fix is different and on the other
+/// machine: that peer runs `dsync pair renew`, and nothing here needs to be
+/// re-paired.
+class PeerCertificateExpiredException implements Exception {
+  /// How the peer is known to the caller: its device id here, its paired
+  /// name once `connected_replicas.dart` rethrows it for a human.
+  final String peer;
+
+  const PeerCertificateExpiredException(this.peer);
+
+  @override
+  String toString() =>
+      'The certificate presented by "$peer" has expired. Run '
+      '`dsync pair renew` on that device; no re-pairing is needed.';
 }

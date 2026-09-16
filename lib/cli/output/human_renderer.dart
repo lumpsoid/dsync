@@ -48,12 +48,19 @@ class ReplicaDiagnostics {
   /// `sshArgsFor` never produces — the absence itself is what says "local".
   final List<String>? sshArgs;
 
+  /// What the run header should say about this side before the plan, over
+  /// and above where it is: today, SPEC §4.4's certificate-expiry warnings
+  /// for a `peer://` side — this host's own certificate and the peer's —
+  /// each one line. Empty for every other transport.
+  final List<String> notes;
+
   const ReplicaDiagnostics({
     required this.archivePath,
     required this.lockPath,
     required this.location,
     required this.locality,
     this.sshArgs,
+    this.notes = const [],
   });
 }
 
@@ -294,6 +301,9 @@ class HumanRenderer {
     // unexpanded and uncanonicalized, so a mistyped one reads as the mistake
     // it is — including the scheme prefix that decided what this row says.
     out.writeln('$side  ${diagnostics.location}  $transport');
+    for (final note in diagnostics.notes) {
+      out.writeln('   $note');
+    }
   }
 
   /// One shared "last synced" line when both sides agree to the minute,

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:pointycastle/asn1.dart';
@@ -87,6 +88,49 @@ void main() {
 
       expect(certificates, hasLength(5));
       expect(keys, hasLength(5));
+    });
+  });
+
+  group('renewDeviceIdentity', () {
+    test('keeps the private key, the common name and the device id, and '
+        'issues a fresh certificate', () {
+      final original = generateDeviceIdentity(
+        commonName: 'dsync-renew',
+        now: DateTime.utc(2026, 1, 1),
+      );
+      final renewed = renewDeviceIdentity(
+        original,
+        now: DateTime.utc(2027, 1, 1),
+      );
+
+      expect(renewed.privateKeyPem, original.privateKeyPem);
+      expect(renewed.deviceId, original.deviceId);
+      expect(renewed.certificatePem, isNot(original.certificatePem));
+      expect(
+        certificateCommonNameFromDer(renewed.certificateDer),
+        'dsync-renew',
+      );
+      final validity = certificateValidityFromDer(renewed.certificateDer);
+      expect(
+        validity.notBefore,
+        DateTime.utc(2027, 1, 1).subtract(certificateBackdate),
+      );
+      expect(
+        validity.notAfter,
+        DateTime.utc(2027, 1, 1).add(defaultCertificateValidity),
+      );
+    });
+
+    test('the renewed certificate is one dart:io accepts with the old key', () {
+      final renewed = renewDeviceIdentity(
+        generateDeviceIdentity(commonName: 'dsync-renew'),
+      );
+      expect(
+        () => SecurityContext(withTrustedRoots: false)
+          ..useCertificateChainBytes(utf8.encode(renewed.certificatePem))
+          ..usePrivateKeyBytes(utf8.encode(renewed.privateKeyPem)),
+        returnsNormally,
+      );
     });
   });
 

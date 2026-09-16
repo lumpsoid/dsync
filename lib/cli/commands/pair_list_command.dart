@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
+import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
@@ -29,11 +31,16 @@ class PairListCommand extends Command<int> {
   final IOSink out;
   final IOSink err;
 
+  /// The clock the expiry warnings read (SPEC §4.4); injectable so a test
+  /// can stand at a date of its choosing.
+  final DateTime Function() now;
+
   PairListCommand({
     required this.environment,
     required this.platform,
     IOSink? out,
     IOSink? err,
+    this.now = DateTime.now,
   }) : out = out ?? stdout,
        err = err ?? stderr {
     argParser.addFlag(
@@ -72,7 +79,39 @@ class PairListCommand extends Command<int> {
         );
       }
     }
+    await _warnOfExpiry(devices);
     return 0; // SPEC §11.5: listing never fails on its own account.
+  }
+
+  /// SPEC §4.4's expiry warning, for this host's own certificate and each
+  /// paired peer's, on stderr in both modes: human text that must not land
+  /// in a `--json` stream (§11.4), and a warning rather than a fact of the
+  /// list in the other. Own identity read only if one exists — listing on a
+  /// host that has never paired should not mint an identity as a side
+  /// effect.
+  Future<void> _warnOfExpiry(List<PairedDevice> devices) async {
+    final at = now();
+    final ownStore = DeviceIdentityStore.forStateDir(
+      environment: environment,
+      platform: platform,
+    );
+    final warnings = [
+      if (await ownStore.exists())
+        certificateExpiryWithin(
+          (await ownStore.loadOrCreate(commonName: 'unused')).certificateDer,
+          owner: CertificateExpiry.thisHost,
+          now: at,
+        ),
+      for (final device in devices)
+        certificateExpiryWithin(
+          device.certificateDer,
+          owner: device.name,
+          now: at,
+        ),
+    ];
+    for (final warning in warnings) {
+      if (warning != null) err.writeln('warning: ${warning.message}');
+    }
   }
 }
 

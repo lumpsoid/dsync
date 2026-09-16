@@ -6,6 +6,9 @@ import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/agent/agent_listener.dart'
+    show OwnCertificateExpiredException;
+import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
@@ -476,15 +479,32 @@ Future<_ResolvedSide> _resolvePeerSide({
     platform: platform.stateDirPlatform,
   ).loadOrCreate(commonName: Platform.localHostname);
 
+  final now = DateTime.now();
+  // Our own certificate is the one thing the far end's BoringSSL will refuse
+  // outright with nothing this side can read back (SPEC §4.4), so it is
+  // checked here, by name, before a socket is opened.
+  if (certificateIsExpired(ownIdentity.certificateDer, now: now)) {
+    throw ReplicaUnreachableException(
+      side: side,
+      cause: const OwnCertificateExpiredException(),
+    );
+  }
+
   final address = device.lastKnownAddress;
   final SocketChannel channel;
   try {
     channel = await SocketChannel.connectSecure(
       address.host,
       address.port,
-      expectedPeerCertificateDer: device.certificateDer,
+      expectedPeerDeviceId: device.deviceId,
       ownIdentity: ownIdentity,
+      now: now,
     ).timeout(_peerConnectTimeout);
+  } on PeerCertificateExpiredException {
+    throw ReplicaUnreachableException(
+      side: side,
+      cause: PeerCertificateExpiredException(deviceName),
+    );
   } catch (error) {
     throw ReplicaUnreachableException(
       side: side,
@@ -497,6 +517,27 @@ Future<_ResolvedSide> _resolvePeerSide({
   }
 
   await pairedDeviceStore.recordConnection(device.deviceId, address);
+  // A peer that renewed its certificate under the pinned key (SPEC §4.4)
+  // presents bytes the store has not seen. They are what this host installs
+  // as that device's trust anchor when it is the one serving, so they are
+  // stored now, on the one code path that has just verified they carry the
+  // pinned key.
+  final presented = channel.peerCertificate;
+  if (presented != null && presented.pem != device.certificatePem) {
+    await pairedDeviceStore.recordCertificate(device.deviceId, presented.pem);
+  }
+  final notes = [
+    for (final expiry in [
+      certificateExpiryWithin(
+        ownIdentity.certificateDer,
+        owner: CertificateExpiry.thisHost,
+        now: now,
+      ),
+      if (presented != null)
+        certificateExpiryWithin(presented.der, owner: deviceName, now: now),
+    ])
+      if (expiry != null) expiry.message,
+  ];
 
   final agent = _DiagnosedRemoteAgent(
     channel: channel,
@@ -518,6 +559,7 @@ Future<_ResolvedSide> _resolvePeerSide({
       locality: Locality.remote,
       // No argv reached this replica either — same reason as a unix://
       // side, and the device name is already in `location`.
+      notes: notes,
     ),
   );
 }

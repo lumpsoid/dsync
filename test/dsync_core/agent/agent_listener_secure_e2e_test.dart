@@ -345,7 +345,7 @@ void main() {
         final channel = await SocketChannel.connectSecure(
           InternetAddress.loopbackIPv4.address,
           portOf(listener),
-          expectedPeerCertificateDer: serverIdentity.certificateDer,
+          expectedPeerDeviceId: serverIdentity.deviceId,
           ownIdentity: phone,
         );
         final agentB = RemoteAgent(
@@ -441,7 +441,7 @@ void main() {
         final channel = await SocketChannel.connectSecure(
           InternetAddress.loopbackIPv4.address,
           portOf(listener),
-          expectedPeerCertificateDer: serverIdentity.certificateDer,
+          expectedPeerDeviceId: serverIdentity.deviceId,
           ownIdentity: phone,
         );
         final agent = RemoteAgent(

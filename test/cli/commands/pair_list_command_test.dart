@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:dsync/cli/commands/pair_list_command.dart';
+import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
@@ -161,6 +162,68 @@ void main() {
         buildRunner(command).run(['list', 'bogus']),
         throwsA(isA<UsageException>()),
       );
+    });
+
+    test('warns on stderr about certificates inside the expiry window, own '
+        'and paired, in both modes', () async {
+      final issued = DateTime.utc(2026, 1, 1);
+      final store = PairedDeviceStore.forStateDir(
+        environment: environment,
+        platform: const LinuxStateDir(),
+      );
+      await store.add(
+        PairedDevice(
+          certificatePem: generateDeviceIdentity(
+            commonName: 'phone',
+            now: issued,
+            validFor: const Duration(days: 10),
+          ).certificatePem,
+          name: 'phone',
+          agreedReplicaRoots: const {},
+          pairedAt: issued,
+          lastKnownAddress: PeerAddress(host: '192.168.1.5'),
+        ),
+      );
+      await store.add(
+        PairedDevice(
+          certificatePem: generateDeviceIdentity(
+            commonName: 'laptop',
+            now: issued,
+          ).certificatePem,
+          name: 'laptop',
+          agreedReplicaRoots: const {},
+          pairedAt: issued,
+          lastKnownAddress: PeerAddress(host: '192.168.1.9'),
+        ),
+      );
+      await DeviceIdentityStore.forStateDir(
+        environment: environment,
+        platform: const LinuxStateDir(),
+      ).loadOrCreate(commonName: 'host');
+
+      for (final args in [
+        ['list'],
+        ['list', '--json'],
+      ]) {
+        final out = BufferSink();
+        final err = BufferSink();
+        final exitCode = await buildRunner(
+          PairListCommand(
+            environment: environment,
+            platform: const LinuxStateDir(),
+            out: out.sink,
+            err: err.sink,
+            now: () => issued.add(const Duration(days: 12)),
+          ),
+        ).run(args);
+
+        expect(exitCode, 0);
+        final warnings = await err.contents();
+        expect(warnings, contains('certificate for phone expired 2 days ago'));
+        expect(warnings, isNot(contains('laptop')));
+        expect(warnings, isNot(contains('this host')));
+        expect(await out.contents(), isNot(contains('certificate for')));
+      }
     });
   });
 }

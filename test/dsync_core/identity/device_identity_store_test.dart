@@ -147,4 +147,32 @@ void main() {
       expect(await File('${tempDir.path}/dsync/identity.key').exists(), isTrue);
     });
   });
+
+  group('renew', () {
+    test(
+      'rewrites the certificate under the same key and id, in place',
+      () async {
+        final store = DeviceIdentityStore(tempDir);
+        final original = await store.loadOrCreate(commonName: 'dsync-test');
+
+        final renewed = await store.renew(now: DateTime.utc(2030, 1, 1));
+        final reloaded = await store.loadOrCreate(commonName: 'ignored');
+
+        expect(renewed.deviceId, original.deviceId);
+        expect(reloaded.certificatePem, renewed.certificatePem);
+        expect(reloaded.privateKeyPem, original.privateKeyPem);
+        expect(reloaded.certificatePem, isNot(original.certificatePem));
+        expect(
+          tempDir.listSync().map((e) => e.path.split('/').last),
+          unorderedEquals(['identity.crt', 'identity.key']),
+        );
+      },
+    );
+
+    test('refuses when there is no identity to renew', () async {
+      final store = DeviceIdentityStore(tempDir);
+      await File('${tempDir.path}/identity.key').writeAsString('half');
+      expect(store.renew(), throwsA(isA<DeviceIdentityIncompleteException>()));
+    });
+  });
 }

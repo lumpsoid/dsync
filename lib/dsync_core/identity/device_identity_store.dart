@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
+import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
@@ -69,6 +70,10 @@ class DeviceIdentityStore {
   File get _certificateFile => File('${_stateDir.path}/identity.crt');
   File get _privateKeyFile => File('${_stateDir.path}/identity.key');
 
+  /// Whether an identity has been generated here — both files present.
+  Future<bool> exists() async =>
+      await _certificateFile.exists() && await _privateKeyFile.exists();
+
   /// Loads the persisted identity, generating and writing one first if the
   /// state directory holds none yet. [commonName] is used only for that
   /// first generation (see [generateDeviceIdentity]) — an identity that
@@ -98,6 +103,23 @@ class DeviceIdentityStore {
     await _certificateFile.writeAsString(identity.certificatePem, flush: true);
     await _writePrivateKey(identity.privateKeyPem);
     return identity;
+  }
+
+  /// Re-issues the persisted certificate under the persisted private key
+  /// (`dsync pair renew`, SPEC §4.4) and returns the renewed identity. The
+  /// key file is untouched — that is the whole point, the device id stays
+  /// — and the certificate is written to a scratch path and renamed over
+  /// the old one, so a crash mid-write leaves the old certificate, never a
+  /// truncated one. Throws [DeviceIdentityIncompleteException] via
+  /// [loadOrCreate] when there is nothing to renew; [now] is injectable for
+  /// the same reason [renewDeviceIdentity]'s is.
+  Future<DeviceIdentity> renew({DateTime? now}) async {
+    final existing = await loadOrCreate(commonName: 'unused');
+    final renewed = renewDeviceIdentity(existing, now: now);
+    final scratch = File(tempPathFor(_certificateFile.path, 0));
+    await scratch.writeAsString(renewed.certificatePem, flush: true);
+    await scratch.rename(_certificateFile.path);
+    return renewed;
   }
 
   /// Writes the private key, then best-effort restricts it to owner

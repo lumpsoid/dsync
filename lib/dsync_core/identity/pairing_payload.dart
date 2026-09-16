@@ -34,9 +34,9 @@ const _version = 1;
 /// without a live listener to present it to (`EnrolmentListener`) — what
 /// keeps pairing safe is that gate, not keeping this payload's bytes hidden.
 class PairingPayload {
-  /// The enrolling host's identity certificate, as raw DER — the exact bytes
-  /// `SocketChannel.connectSecure`'s `expectedPeerCertificateDer` pins
-  /// against, the same derivation [PairedDevice.certificateDer] and
+  /// The enrolling host's identity certificate, as raw DER — what becomes
+  /// the trust anchor a `peer://` dial and `AgentListener.bindSecure`
+  /// install, the same derivation [PairedDevice.certificateDer] and
   /// `DeviceIdentity.certificateDer` use. Carried as DER rather than PEM: PEM
   /// is itself base64 text, and this whole payload is base64 again below —
   /// encoding a PEM string here would base64 the certificate twice for no

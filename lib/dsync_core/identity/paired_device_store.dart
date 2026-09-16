@@ -200,6 +200,30 @@ class PairedDeviceStore {
     await _save(devices);
   }
 
+  /// Replaces the certificate on file for the device pinned to [deviceId]
+  /// with [certificatePem] — the renewal write SPEC §4.4 describes: a peer
+  /// that presented a certificate carrying the pinned key but different
+  /// bytes has renewed, and the bytes on file are what this host installs
+  /// as a trust anchor when *it* is the server, so they have to follow.
+  /// Refused, as a [PairedDeviceCollisionException], when [certificatePem]
+  /// carries a different key: that is not a renewal but another device, and
+  /// the pin must not move. Same read-replace-rewrite shape as
+  /// [recordConnection].
+  Future<void> recordCertificate(String deviceId, String certificatePem) async {
+    final devices = await load();
+    final index = devices.indexWhere((d) => d.deviceId == deviceId);
+    if (index == -1) throw PairedDeviceNotFoundException(deviceId);
+    final renewed = devices[index].withCertificatePem(certificatePem);
+    if (renewed.deviceId != deviceId) {
+      throw PairedDeviceCollisionException(
+        'certificate offered for $deviceId carries a different key '
+        '(${renewed.deviceId})',
+      );
+    }
+    devices[index] = renewed;
+    await _save(devices);
+  }
+
   /// Grants the device pinned to [deviceId] an additional replica root —
   /// pairing's second step (SPEC §4.4, task 83800f), and what `dsync pair
   /// grant` (task bc68c7) calls. [rootPath] is expected already expanded

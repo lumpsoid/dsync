@@ -126,6 +126,18 @@ class PairedDevice {
   /// same form every existing entry in [agreedReplicaRoots] holds. This does
   /// not expand it itself; the caller (`dsync pair grant`) does, the same way
   /// `agent_command.dart`'s `_buildAgent` does for a `hello`'s root.
+  /// This device with a renewed [certificatePem] — one carrying the same
+  /// public key, so the same [deviceId] — everything else unchanged; what a
+  /// connection that met a renewed certificate calls
+  /// [PairedDeviceStore.recordCertificate] to persist (SPEC §4.4).
+  PairedDevice withCertificatePem(String pem) => PairedDevice(
+    certificatePem: pem,
+    name: name,
+    agreedReplicaRoots: agreedReplicaRoots,
+    pairedAt: pairedAt,
+    lastKnownAddress: lastKnownAddress,
+  );
+
   PairedDevice withAdditionalRoot(String rootPath) => PairedDevice(
     certificatePem: certificatePem,
     name: name,

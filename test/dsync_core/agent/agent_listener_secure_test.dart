@@ -105,7 +105,7 @@ void main() {
     final channel = await SocketChannel.connectSecure(
       InternetAddress.loopbackIPv4.address,
       portOf(listener),
-      expectedPeerCertificateDer: serverIdentity.certificateDer,
+      expectedPeerDeviceId: serverIdentity.deviceId,
       ownIdentity: identity,
     );
     return RemoteAgent(
@@ -161,6 +161,169 @@ void main() {
     pairedAt: DateTime.utc(2026, 9, 15),
     lastKnownAddress: PeerAddress(host: '127.0.0.1'),
   );
+
+  group('renewal (SPEC §4.4: the pin is the key, not the bytes)', () {
+    test('a client that pinned the old server certificate accepts a renewed '
+        'one, and stores it', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      final renewedServer = renewDeviceIdentity(serverIdentity);
+      final listener = await AgentListener.bindSecure(
+        InternetAddress.loopbackIPv4,
+        0,
+        ownIdentity: renewedServer,
+        pairedDeviceStore: store,
+        buildAgent: buildAgent,
+        onSessionError: (error, _) => sessionErrors.add(error),
+      );
+      addTearDown(listener.close);
+
+      // `connectAs` pins `serverIdentity.deviceId` — the id the *old*
+      // certificate had — and the renewed one carries the same key.
+      final agent = await connectAs(phone, listener, rootPath: allowedRoot);
+      await expectLater(agent.hello(), completes);
+      await agent.disconnect();
+      expect(sessionErrors, isEmpty);
+    });
+
+    test('a server anchored on the old client certificate refuses a renewed '
+        'client until it has stored the new bytes', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      final renewedPhone = renewDeviceIdentity(phone);
+      final listener = await bind();
+      addTearDown(listener.close);
+
+      // BoringSSL treats a self-signed leaf as trusted only when the trust
+      // store holds those exact bytes; a renewed certificate is not chained
+      // to its predecessor by name and key. This is the limitation the
+      // renewal design records: the far end learns the bytes by dialing us.
+      expect(await attemptAndObserveFailure(renewedPhone, listener), isTrue);
+      expect(sessionErrors.single, isA<HandshakeException>());
+      sessionErrors.clear();
+
+      await store.recordCertificate(
+        phone.deviceId,
+        renewedPhone.certificatePem,
+      );
+      final agent = await connectAs(
+        renewedPhone,
+        listener,
+        rootPath: allowedRoot,
+      );
+      await expectLater(agent.hello(), completes);
+      await agent.disconnect();
+      expect(sessionErrors, isEmpty);
+    });
+
+    test('an impostor with the same common name and another key is refused '
+        'on both sides', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      final impostor = generateDeviceIdentity(commonName: 'dsync-phone');
+      expect(impostor.deviceId, isNot(phone.deviceId));
+      final listener = await bind();
+      addTearDown(listener.close);
+
+      expect(await attemptAndObserveFailure(impostor, listener), isTrue);
+      expect(sessionErrors.single, isA<HandshakeException>());
+
+      // And the client side: a server presenting the pinned name under
+      // another key is refused by `connectSecure`'s own pin.
+      final impostorServer = generateDeviceIdentity(
+        commonName: 'dsync-desktop',
+      );
+      final raw = await SecureServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+        _serverOnlyContext(impostorServer),
+      );
+      addTearDown(raw.close);
+      raw.listen((_) {}, onError: (Object _) {});
+      await expectLater(
+        SocketChannel.connectSecure(
+          InternetAddress.loopbackIPv4.address,
+          raw.port,
+          expectedPeerDeviceId: serverIdentity.deviceId,
+          ownIdentity: phone,
+        ),
+        throwsA(isA<HandshakeException>()),
+      );
+    });
+
+    test('an expired server certificate is refused by name, pointing at '
+        'pair renew', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      final expiredServer = generateDeviceIdentity(
+        commonName: 'dsync-desktop',
+        now: DateTime.utc(2020, 1, 1),
+        validFor: const Duration(days: 1),
+      );
+      final raw = await SecureServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+        _serverOnlyContext(expiredServer),
+      );
+      addTearDown(raw.close);
+      raw.listen((_) {}, onError: (Object _) {});
+
+      await expectLater(
+        SocketChannel.connectSecure(
+          InternetAddress.loopbackIPv4.address,
+          raw.port,
+          expectedPeerDeviceId: expiredServer.deviceId,
+          ownIdentity: phone,
+        ),
+        throwsA(
+          isA<PeerCertificateExpiredException>().having(
+            (e) => e.toString(),
+            'message',
+            contains('dsync pair renew'),
+          ),
+        ),
+      );
+    });
+
+    test('a listener whose own certificate has expired reports that, not '
+        'a bare handshake error', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      final expiredServer = generateDeviceIdentity(
+        commonName: 'dsync-desktop',
+        now: DateTime.utc(2020, 1, 1),
+        validFor: const Duration(days: 1),
+      );
+      final listener = await AgentListener.bindSecure(
+        InternetAddress.loopbackIPv4,
+        0,
+        ownIdentity: expiredServer,
+        pairedDeviceStore: store,
+        buildAgent: buildAgent,
+        onSessionError: (error, _) => sessionErrors.add(error),
+      );
+      addTearDown(listener.close);
+
+      await expectLater(
+        SocketChannel.connectSecure(
+          InternetAddress.loopbackIPv4.address,
+          portOf(listener),
+          expectedPeerDeviceId: expiredServer.deviceId,
+          ownIdentity: phone,
+        ),
+        throwsA(isA<PeerCertificateExpiredException>()),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(sessionErrors.single, isA<OwnCertificateExpiredException>());
+    });
+  });
 
   test('a paired peer connects and its session is served', () async {
     final phone = generateDeviceIdentity(commonName: 'dsync-phone');
@@ -484,7 +647,7 @@ void main() {
         SocketChannel.connectSecure(
           InternetAddress.loopbackIPv4.address,
           server.port,
-          expectedPeerCertificateDer: serverIdentity.certificateDer,
+          expectedPeerDeviceId: serverIdentity.deviceId,
           ownIdentity: ownIdentity,
         ),
         throwsA(isA<HandshakeException>()),

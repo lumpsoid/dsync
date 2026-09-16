@@ -10,7 +10,10 @@
 ///
 /// It is deliberately capable of exactly one shape: EC P-256, ECDSA-with-
 /// SHA-256, version 3, one common name, two extensions. It cannot parse a
-/// certificate and will never be asked to. `basic_utils` does this in one call
+/// certificate and will never be asked to — the fields renewal reads back
+/// out of one live in `certificate_fields.dart`, the device id in
+/// `device_id.dart`. The one thing it does read back is its own PKCS#8
+/// private key, for [renewDeviceIdentity]. `basic_utils` does this in one call
 /// and was the alternative; it reaches the same place through `http`,
 /// `json_annotation`, `logging` and `archive`, and this is ~170 lines with no
 /// surface beyond what it needs (task 4ec17f).
@@ -26,9 +29,21 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/identity/certificate_fields.dart';
+import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:pointycastle/asn1.dart';
 import 'package:pointycastle/export.dart';
+
+/// How far back a certificate's `notBefore` sits from the moment it is
+/// issued (SPEC §4.4): two hosts that disagree about the time by a few
+/// minutes must not decide the other's brand-new certificate is not valid
+/// yet, which is a failure that looks like a pairing bug and is not one. A
+/// renewed certificate gets the same margin, for the same reason.
+const certificateBackdate = Duration(hours: 1);
+
+/// How long a freshly generated or renewed certificate is valid for.
+const defaultCertificateValidity = Duration(days: 3650);
 
 /// Generates a fresh keypair and a self-signed certificate over it.
 ///
@@ -37,41 +52,101 @@ import 'package:pointycastle/export.dart';
 /// defaults to Fortuna seeded from the platform's entropy. [now] is the clock,
 /// injectable for the same reason.
 ///
-/// [commonName] is cosmetic: pairing pins the certificate's bytes, not its
-/// subject. It exists so a human reading `openssl x509 -text` or a paired
+/// [commonName] is cosmetic: pairing pins the certificate's public key, not
+/// its subject. It exists so a human reading `openssl x509 -text` or a paired
 /// device list sees something other than a blank.
 DeviceIdentity generateDeviceIdentity({
   required String commonName,
   SecureRandom? random,
   DateTime? now,
-  Duration validFor = const Duration(days: 3650),
+  Duration validFor = defaultCertificateValidity,
 }) {
   final rng = random ?? _seededFortuna();
+  return _assembleIdentity(
+    keyPair: generateDeviceKeyPair(rng),
+    commonName: commonName,
+    random: rng,
+    now: now,
+    validFor: validFor,
+  );
+}
 
+/// Re-issues [existing]'s certificate under [existing]'s own private key
+/// (`dsync pair renew`, SPEC §4.4): same key, same common name, a fresh
+/// serial and a fresh validity window starting [certificateBackdate] before
+/// [now]. The device id is the hash of the `SubjectPublicKeyInfo` and the
+/// key is unchanged, so the renewed identity keeps [existing]'s id — a peer
+/// that pins the key rather than the bytes keeps trusting it with no
+/// re-pairing.
+///
+/// The private key is the one thing this reads back rather than makes: the
+/// PKCS#8 [_pkcs8] wrote, decoded to the scalar it was built from. The
+/// common name is read off the existing certificate so that renewal changes
+/// nothing a human would notice in `openssl x509 -text` besides the serial
+/// and the dates. [random] and [now] are injectable exactly as on
+/// [generateDeviceIdentity].
+DeviceIdentity renewDeviceIdentity(
+  DeviceIdentity existing, {
+  SecureRandom? random,
+  DateTime? now,
+  Duration validFor = defaultCertificateValidity,
+}) {
+  final rng = random ?? _seededFortuna();
+  return _assembleIdentity(
+    keyPair: _keyPairFromPkcs8Pem(existing.privateKeyPem),
+    commonName: certificateCommonNameFromDer(existing.certificateDer),
+    random: rng,
+    now: now,
+    validFor: validFor,
+  );
+}
+
+/// A fresh EC P-256 keypair — the half of an identity that generation makes
+/// and renewal keeps.
+AsymmetricKeyPair<ECPublicKey, ECPrivateKey> generateDeviceKeyPair(
+  SecureRandom random,
+) {
   final keyGen = ECKeyGenerator()
     ..init(
-      ParametersWithRandom(ECKeyGeneratorParameters(ECCurve_prime256v1()), rng),
+      ParametersWithRandom(
+        ECKeyGeneratorParameters(ECCurve_prime256v1()),
+        random,
+      ),
     );
   final pair = keyGen.generateKeyPair();
-  final publicKey = pair.publicKey;
-  final privateKey = pair.privateKey;
+  return AsymmetricKeyPair(pair.publicKey, pair.privateKey);
+}
+
+/// The certificate half: assembles and self-signs a certificate over
+/// [keyPair], and pairs it with the key as PKCS#8. Shared by
+/// [generateDeviceIdentity] and [renewDeviceIdentity]; the only difference
+/// between the two is where [keyPair] came from.
+DeviceIdentity _assembleIdentity({
+  required AsymmetricKeyPair<ECPublicKey, ECPrivateKey> keyPair,
+  required String commonName,
+  required SecureRandom random,
+  required DateTime? now,
+  required Duration validFor,
+}) {
+  final publicKey = keyPair.publicKey;
+  final privateKey = keyPair.privateKey;
 
   final issued = (now ?? DateTime.now()).toUtc();
   final tbs = _tbsCertificate(
-    serial: _randomSerial(rng),
+    serial: _randomSerial(random),
     commonName: commonName,
     publicKey: publicKey,
-    // Backdated an hour: two hosts that disagree about the time by a few
-    // minutes must not decide the other's brand-new certificate is not valid
-    // yet, which is a failure that looks like a pairing bug and is not one.
-    notBefore: issued.subtract(const Duration(hours: 1)),
+    notBefore: issued.subtract(certificateBackdate),
     notAfter: issued.add(validFor),
   );
 
   final signer = ECDSASigner(SHA256Digest(), HMac(SHA256Digest(), 64))
     ..init(
       true,
-      ParametersWithRandom(PrivateKeyParameter<ECPrivateKey>(privateKey), rng),
+      ParametersWithRandom(
+        PrivateKeyParameter<ECPrivateKey>(privateKey),
+        random,
+      ),
     );
   final signature = signer.generateSignature(tbs.encode()) as ECSignature;
 
@@ -96,6 +171,38 @@ DeviceIdentity generateDeviceIdentity({
     certificatePem: pemEncode('CERTIFICATE', certificate.encode()),
     privateKeyPem: pemEncode('PRIVATE KEY', _pkcs8(privateKey, publicKey)),
   );
+}
+
+/// The inverse of [_pkcs8]: the scalar back out of the one PKCS#8 shape this
+/// file writes. `PrivateKeyInfo` is `SEQUENCE { version, AlgorithmIdentifier,
+/// OCTET STRING privateKey }`, and the octet string holds an SEC1
+/// `ECPrivateKey`: `SEQUENCE { version 1, OCTET STRING d, [1] BIT STRING
+/// publicKey }`. The public point is recomputed as `d·G` rather than read
+/// from the optional `[1]`, so a key file whose embedded point disagreed
+/// with its scalar could not yield a certificate the key cannot sign for.
+AsymmetricKeyPair<ECPublicKey, ECPrivateKey> _keyPairFromPkcs8Pem(String pem) {
+  final privateKeyInfo =
+      ASN1Parser(certificateDerFromPem(pem)).nextObject() as ASN1Sequence;
+  final ecPrivateKeyOctets = privateKeyInfo.elements![2] as ASN1OctetString;
+  final ecPrivateKey =
+      ASN1Parser(ecPrivateKeyOctets.valueBytes).nextObject() as ASN1Sequence;
+  final dOctets = ecPrivateKey.elements![1] as ASN1OctetString;
+  final d = _bigIntFromBytes(dOctets.valueBytes!);
+
+  final domain = ECCurve_prime256v1();
+  return AsymmetricKeyPair(
+    ECPublicKey(domain.G * d, domain),
+    ECPrivateKey(d, domain),
+  );
+}
+
+/// [bytes] as an unsigned big-endian integer — the inverse of [_fixedLength].
+BigInt _bigIntFromBytes(Uint8List bytes) {
+  var value = BigInt.zero;
+  for (final byte in bytes) {
+    value = (value << 8) | BigInt.from(byte);
+  }
+  return value;
 }
 
 /// The `TBSCertificate` — every field that the signature covers.

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
+import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
@@ -82,7 +83,7 @@ typedef SessionErrorHandler = void Function(
 /// [bindSecure] also pass [SessionErrorHandler] as the `onError` of their own
 /// `listen` call, for the failures a server socket can raise on its own. A
 /// certificate BoringSSL *does* accept — a currently paired device's —
-/// reaches [bindSecure]'s own connection handler, where the exact-bytes pin
+/// reaches [bindSecure]'s own connection handler, where the key pin
 /// check can still refuse it, deliberately, without ever starting a session
 /// (see [bindSecure]'s doc comment on the two layers).
 class AgentListener {
@@ -173,9 +174,9 @@ class AgentListener {
   /// can only pass that verification by standing in as its own trust anchor —
   /// which is why every identity certificate this project generates is
   /// `cA: TRUE` (see `generateDeviceIdentity`). Pinning is layered on top of
-  /// that verification as a second, narrower check — [_resolvePeer] compares
-  /// the exact DER a peer presented against the exact bytes [pairedDeviceStore]
-  /// has on file for it — never instead of it: a same-subject impostor
+  /// that verification as a second, narrower check — [_resolvePeer] resolves
+  /// the public key a peer presented, as its device id, to the entry
+  /// [pairedDeviceStore] has on file for it — never instead of it: a same-subject impostor
   /// certificate would fail BoringSSL's own verification already, since it is
   /// not itself a trusted issuer, but the narrowing step is what tells one
   /// currently paired device's certificate apart from another's.
@@ -359,8 +360,21 @@ class AgentListener {
         requireClientCertificate: true,
       );
     } catch (error, stackTrace) {
+      // Two failures whose cause is known before the peer said anything are
+      // reported as that cause rather than as BoringSSL's opaque handshake
+      // error: nothing paired, and this listener's own certificate expired
+      // (SPEC §4.4) — the peer refused it, and the fix is `dsync pair
+      // renew` here, not on the far end.
+      final ownExpired = certificateIsExpired(
+        ownIdentity.certificateDer,
+        now: DateTime.now(),
+      );
       _onSessionError(
-        devices.isEmpty ? const NoPairedDevicesException() : error,
+        devices.isEmpty
+            ? const NoPairedDevicesException()
+            : ownExpired
+            ? const OwnCertificateExpiredException()
+            : error,
         stackTrace,
       );
       return;
@@ -438,9 +452,9 @@ class AgentListener {
   /// accept time never gets here — it is refused during the handshake and
   /// reported by [_upgradeAndServe] instead (see the class doc comment). This
   /// method's own [PairedDeviceStore.byDeviceId] lookup reads the store
-  /// again rather than reusing the accept-time list: the exact-bytes pin
-  /// check below is a separate decision from trust, and keeping its read
-  /// separate is what keeps it one.
+  /// again rather than reusing the accept-time list: the key pin below is
+  /// a separate decision from trust, and keeping its read separate is what
+  /// keeps it one.
   ///
   /// [deviceIdFromCertificateDer] throws on a certificate shaped unlike the
   /// ones this project's own generator produces; caught here, because a
@@ -460,15 +474,12 @@ class AgentListener {
       return null;
     }
 
-    final device = await pairedDeviceStore.byDeviceId(deviceId);
-    if (device == null) return null;
     // The narrowing step SPEC §4.4 asks for on top of BoringSSL's own
-    // verification (see [bindSecure]'s doc comment): the device id alone
-    // hashes only the public key, so this additionally confirms the exact
-    // certificate bytes this store has pinned for that id, not merely a
-    // certificate that happens to carry the same key.
-    if (!_sameBytes(certificate.der, device.certificateDer)) return null;
-    return device;
+    // verification (see [bindSecure]'s doc comment): the pin is the public
+    // key — the device id hashes exactly that — not the certificate's
+    // bytes, so a certificate renewed under a paired key resolves to its
+    // device and a same-subject certificate under another key does not.
+    return pairedDeviceStore.byDeviceId(deviceId);
   }
 
   /// Wraps [buildAgent] with the allowlist check SPEC §4.4 requires before a
@@ -540,18 +551,6 @@ class AgentListener {
   }
 }
 
-/// Byte-exact equality — the narrowing step [AgentListener._resolvePeer]
-/// layers on top of BoringSSL's own verification (SPEC §4.4). `Uint8List`
-/// and `X509Certificate.der` do not override `==`, so this is content, not
-/// identity.
-bool _sameBytes(List<int> a, List<int> b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
-}
-
 /// Thrown by [AgentListener.bindUnix] when a live agent is already listening
 /// on that socket — fatal for the caller (SPEC §11.5 exit 3), and never an
 /// invitation to take the socket over: the agent holding it is serving
@@ -601,6 +600,18 @@ class UnrecognizedPeerException implements Exception {
   String toString() =>
       'Refused a peer whose certificate did not resolve to a currently '
       'paired device.';
+}
+
+/// Reported by [AgentListener.bindSecure] for a handshake that failed while
+/// this listener's own certificate is past its `notAfter` (SPEC §4.4). Named
+/// so the operator is told which side to renew.
+class OwnCertificateExpiredException implements Exception {
+  const OwnCertificateExpiredException();
+
+  @override
+  String toString() =>
+      "This host's own certificate has expired, so paired devices refuse "
+      'its handshake. Run `dsync pair renew` here; no re-pairing is needed.';
 }
 
 /// Reported to [SessionErrorHandler] by [AgentListener.bindSecure] when a
