@@ -48,6 +48,43 @@ void main() {
     });
   });
 
+  group('hostPlatformFor — every v1 target, from a plain string (SPEC §3)', () {
+    test('linux', () {
+      expect(hostPlatformFor('linux'), isA<LinuxHost>());
+    });
+
+    test('macos', () {
+      expect(hostPlatformFor('macos'), isA<MacOsHost>());
+    });
+
+    test('windows', () {
+      expect(hostPlatformFor('windows'), isA<WindowsHost>());
+    });
+
+    test('android maps to the Linux case — Termux sets HOME the same way a '
+        'desktop Linux session does, and shares its path style and chmod', () {
+      expect(hostPlatformFor('android'), isA<LinuxHost>());
+    });
+
+    test('ios throws rather than picking a branch: it has no CLI head at all, '
+        'so reaching here means that constraint stopped holding', () {
+      expect(() => hostPlatformFor('ios'), throwsA(isA<StateError>()));
+    });
+
+    test('an unknown platform throws, naming the five v1 targets', () {
+      expect(
+        () => hostPlatformFor('fuchsia'),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('five v1 targets'),
+          ),
+        ),
+      );
+    });
+  });
+
   group('detectsCaseFolding (SPEC §3, §16, task c51db6)', () {
     late Directory tempDir;
 

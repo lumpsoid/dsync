@@ -118,8 +118,14 @@ class WindowsHost extends HostPlatform {
 /// reaching this function with `Platform.operatingSystem == 'ios'` would mean
 /// that constraint had somehow stopped holding, which is a bug worth failing
 /// loudly for rather than a platform worth silently picking a branch for.
-HostPlatform hostPlatform() {
-  return switch (Platform.operatingSystem) {
+HostPlatform hostPlatform() => hostPlatformFor(Platform.operatingSystem);
+
+/// The mapping itself, over a plain [operatingSystem] string rather than the
+/// real host — split out from [hostPlatform] so every v1 target's branch can
+/// be exercised from a test on any one of them. [hostPlatform] is the only
+/// production caller, and passes the real `Platform.operatingSystem`.
+HostPlatform hostPlatformFor(String operatingSystem) {
+  return switch (operatingSystem) {
     'linux' || 'android' => const LinuxHost(),
     'macos' => const MacOsHost(),
     'windows' => const WindowsHost(),
