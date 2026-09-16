@@ -16,8 +16,8 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
-import '../exit_code.dart';
 import '../host_platform.dart';
+import '../stop_signals.dart';
 
 /// `dsync agent` (SPEC §11.1, §4.2, §4.4, §11.3): the far end of a remote
 /// run, in one of its three transports.
@@ -336,30 +336,16 @@ class AgentCommand extends Command<int> {
   /// [AgentListener.close] running, and so the socket file not being left
   /// behind.
   ///
-  /// `cancel` releases both subscriptions, including the one that did not
-  /// fire, and the caller owes it on every path. A `ProcessSignal`
-  /// subscription left alive keeps this process's event loop non-empty, and
-  /// `bin/dsync.dart` returns an exit code rather than calling `exit()` — so
-  /// a stray watcher is the difference between this command ending and this
-  /// command appearing to hang after it has already done everything.
+  /// `cancel` releases the watches, including the one that did not fire,
+  /// and the caller owes it on every path — see `watchStopSignals`
+  /// (`lib/cli/stop_signals.dart`, task 7ba6b5) for why, and for the one
+  /// host-specific fact (Windows cannot trap SIGTERM) it keeps out of here.
   ({Future<int> code, Future<void> Function() cancel}) _watchStopSignals() {
     final stopped = Completer<int>();
-    void stop(int exitCode) {
-      if (!stopped.isCompleted) stopped.complete(exitCode);
-    }
-
-    final subscriptions = [
-      ProcessSignal.sigint.watch().listen((_) => stop(sigintExitCode)),
-      ProcessSignal.sigterm.watch().listen((_) => stop(sigtermExitCode)),
-    ];
-    return (
-      code: stopped.future,
-      cancel: () async {
-        for (final subscription in subscriptions) {
-          await subscription.cancel();
-        }
-      },
-    );
+    final subscription = watchStopSignals().listen((signal) {
+      if (!stopped.isCompleted) stopped.complete(signal.exitCode);
+    });
+    return (code: stopped.future, cancel: subscription.cancel);
   }
 
   /// Builds the [LocalAgent] that serves the replica [spec] identifies (SPEC

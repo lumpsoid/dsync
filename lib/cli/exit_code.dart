@@ -1,27 +1,55 @@
 import 'package:dsync/dsync_core/models/run_event.dart';
 
 /// SPEC §11.5: 128 + signal number — the exit code for a run [RunOutcome]
-/// reports as [RunOutcome.interrupted], deliberately outside the 0-3 scheme
+/// reports as interrupted by SIGINT, deliberately outside the 0-3 scheme
 /// below (task fc661b, DECIDED). 128+N is what every shell and CI system
 /// already reads as "killed by signal N", and folding an interrupt into exit
 /// 3 would have retry logic retrying a run the user asked to stop — 1 and 2
 /// both assert "completed, but ..." and an interrupted run did not complete.
 const sigintExitCode = 130;
 
-/// SPEC §11.5's 143, for the one command that traps SIGTERM:
-/// `dsync agent --listen` (`lib/cli/commands/agent_command.dart`).
+/// SPEC §11.5's 143, for a process that traps SIGTERM: `dsync agent
+/// --listen`/`--serve` and `dsync pair show`, where a signal is the ordinary
+/// way out, and — since task 7ba6b5 — a `sync`/`status` run, where it is an
+/// interruption handled exactly like SIGINT.
 ///
-/// A `sync` run does not trap it — task fc661b scoped its handling to SIGINT,
-/// and the kernel's default disposition already produces 143 for a run killed
-/// that way. A listener has to, because a signal is the only thing that ends
-/// one: trapping it is what lets the socket file be unlinked on the way out,
-/// and the code it reports is the same 128+15 the untrapped case would have.
+/// task fc661b originally scoped a run's handling to SIGINT and left SIGTERM
+/// to the kernel's default disposition, which also reports 143 — but that
+/// disposition kills the process wherever it happens to be, mid-copy
+/// included. Data was never at risk (temp-plus-rename, per-line fsync); what
+/// was lost is the per-path commit for the action in flight, the end-of-run
+/// summary, and a clean close of the far agent's stream. For anything
+/// scheduled — a systemd unit, a `timeout`, a cron job's supervisor — SIGTERM
+/// is the *normal* stop signal, so the run now traps it too, with the same
+/// stop-at-the-next-boundary semantics. The code is the same 128+15 the
+/// untrapped case would have reported.
 const sigtermExitCode = 143;
+
+/// The two signals that stop a dsync process, each carrying SPEC §11.5's
+/// exit code and the name a human-readable "interrupted (...)" line prints.
+///
+/// A plain enum so that `InterruptGuard` and [RunOutcome] — both kept free of
+/// `dart:io` so they test on plain values — can say *which* signal arrived
+/// without naming `ProcessSignal`. `lib/cli/stop_signals.dart` is where each
+/// one is mapped to its real `ProcessSignal.watch()`, and where the one
+/// host-specific fact (Windows cannot trap SIGTERM) lives.
+enum StopSignal {
+  sigint(exitCode: sigintExitCode, label: 'SIGINT'),
+  sigterm(exitCode: sigtermExitCode, label: 'SIGTERM');
+
+  const StopSignal({required this.exitCode, required this.label});
+
+  /// SPEC §11.5's 128 + signal number.
+  final int exitCode;
+
+  /// The conventional upper-case name, for messages.
+  final String label;
+}
 
 /// One `RunController` run, reduced to nothing more than SPEC §11.5 needs to
 /// pick an exit code: whether a [RunSummaryEvent] was seen, whether a
-/// [RunErrorEvent] was seen, and whether the run was interrupted by SIGINT
-/// (task fc661b). A run emits at most one of each of [summary]/[error] —
+/// [RunErrorEvent] was seen, and which [StopSignal] interrupted the run, if
+/// any (task fc661b; SIGTERM since task 7ba6b5). A run emits at most one of each of [summary]/[error] —
 /// [RunErrorEvent] is documented as "always the last event on the stream;
 /// nothing follows it" — but this type does not assume that; [exitCode]
 /// resolves every combination explicitly, including the two a well-behaved
@@ -34,14 +62,17 @@ class RunOutcome {
   final RunSummaryEvent? summary;
   final RunErrorEvent? error;
 
-  /// Whether a SIGINT was received at any point during this run (task
-  /// fc661b, DECIDED) — threaded in by the caller rather than derived from
-  /// [summary]/[error], since a run that happened to finish applying before
-  /// the interrupt took effect still counts: the signal is what the user
-  /// asked for, whatever the run itself went on to report.
-  final bool interrupted;
+  /// The first [StopSignal] received at any point during this run, or
+  /// `null` when none was (task fc661b, DECIDED) — threaded in by the caller
+  /// rather than derived from [summary]/[error], since a run that happened
+  /// to finish applying before the interrupt took effect still counts: the
+  /// signal is what the user asked for, whatever the run itself went on to
+  /// report. The *first* one, because that is the one that decided the exit
+  /// code; a second signal of the other kind exits the process before this
+  /// is ever built.
+  final StopSignal? interruptedBy;
 
-  const RunOutcome({this.summary, this.error, this.interrupted = false});
+  const RunOutcome({this.summary, this.error, this.interruptedBy});
 
   /// SPEC §11.5's scheme, mirroring Unison, plus task fc661b's DECIDED
   /// addition:
@@ -52,10 +83,11 @@ class RunOutcome {
   /// 3    fatal: bad arguments, cannot reach a replica, lock held, archive
   ///      unreadable, protocol version mismatch
   /// 130  interrupted by SIGINT (128 + 2)
+  /// 143  interrupted by SIGTERM (128 + 15)
   /// ```
   /// "When both 1 and 2 apply, 2 wins" — checked in that order below.
   ///
-  /// [interrupted] wins outright, ahead of even [error]: it says what the
+  /// [interruptedBy] wins outright, ahead of even [error]: it says what the
   /// *user* did, not what the run did, so it is not one more outcome to rank
   /// against the other three — it pre-empts them. [error] wins next: a run
   /// that reported a [RunErrorEvent] ended before it could be trusted to
@@ -77,7 +109,8 @@ class RunOutcome {
   /// the whole point of running `dsync status` from a cron job or a shell
   /// prompt.
   int get exitCode {
-    if (interrupted) return sigintExitCode;
+    final interruptedBy = this.interruptedBy;
+    if (interruptedBy != null) return interruptedBy.exitCode;
     final summary = this.summary;
     if (error != null || summary == null) return 3;
     if (summary.failedCount > 0) return 2;

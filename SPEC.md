@@ -274,6 +274,18 @@ scheme: they say what the user did, not what the run did, so they win over
 any of 0-3 rather than being ranked against them — folding an interrupt into
 3 would have retry logic retrying a run the user asked to stop.
 
+A `sync`/`status` run traps both signals the same way: the first one stops
+the run at the next action boundary — the action in flight finishes, both
+sides commit its archive entry (§7.3), and the summary is printed — and a
+second one, of either kind, exits at once. Whichever arrived first picks the
+code. SIGTERM is trapped, rather than left to the kernel's default (which
+also reports 143), because for a scheduled run — a systemd stop, a
+`timeout`, a supervisor's kill — it is the *normal* stop signal, and an
+untrapped one lands wherever the process happens to be, mid-copy included:
+the data is safe either way, but one side's archive can end a commit behind
+with nothing reported. On Windows, where there is no SIGTERM to trap, only
+SIGINT is watched.
+
 `dsync agent --listen` reports 130/143 too, although a signal is its
 *ordinary* way out rather than an interruption: there is no input to close
 and no run to have got partway through, and 128 + signal is what a shell

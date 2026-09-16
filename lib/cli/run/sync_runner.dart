@@ -18,6 +18,7 @@ import '../presenter/batch_presenter.dart';
 import '../presenter/dry_run_presenter.dart';
 import '../presenter/interactive_presenter.dart';
 import '../profile/profile_loader.dart';
+import '../stop_signals.dart';
 import 'interrupt_guard.dart';
 
 /// The run step `SyncCommand` and `StatusCommand`
@@ -40,7 +41,8 @@ typedef RunSync = Future<int> Function(CliOptions options);
 /// The one owner of a `sync`/`status` run's ordering (SPEC §11; CLAUDE.md
 /// "One owner for cross-module ordering"): resolve the target → connect both
 /// replica agents → pick a presenter and a renderer → drive
-/// `RunController.run()`, watching for SIGINT alongside it (task fc661b) →
+/// `RunController.run()`, watching for SIGINT/SIGTERM alongside it (tasks
+/// fc661b, 7ba6b5) →
 /// resolve the exit code (SPEC §11.5).
 ///
 /// A concrete, single-implementation class with no interface, in the same
@@ -152,10 +154,14 @@ class SyncRunner {
   /// at the next action boundary — task e9f31c made every `RunEvent` one of
   /// those, by giving `Applier.apply` a per-action callback, so the check
   /// below is just [InterruptGuard.requested] — and always forces the exit
-  /// code to [sigintExitCode] regardless of what [RunOutcome] would
-  /// otherwise say, since the signal describes what the *user* did, not what
-  /// the run did. A second SIGINT skips all of this and calls `exit`
-  /// directly.
+  /// code to the signal's own (SPEC §11.5) regardless of what [RunOutcome]
+  /// would otherwise say, since the signal describes what the *user* did,
+  /// not what the run did. task 7ba6b5: SIGTERM is trapped the same way,
+  /// with 143 in place of 130 — for a scheduled run it is the normal stop
+  /// signal, and leaving it to the kernel meant dying mid-copy with the
+  /// per-path commit and the summary both lost. Whichever signal arrives
+  /// first picks the code; a second signal of either kind skips all of this
+  /// and calls `exit` directly.
   Future<int> run(CliOptions options) async {
     final target = options.target;
 
@@ -246,22 +252,26 @@ class SyncRunner {
     }
 
     // task fc661b: a SIGINT stops the run between actions rather than
-    // mid-copy. The one real signal subscription lives here, scoped to this
-    // run — `dsync agent --stdio` (`AgentCommand`) never calls `SyncRunner`,
-    // so it never installs one; it already exits cleanly on the EOF killing
-    // its `ssh` gives it.
+    // mid-copy; task 7ba6b5: so does a SIGTERM. The one real signal
+    // subscription lives here, scoped to this run, via the same
+    // `watchStopSignals` `AgentCommand` uses (which is also what keeps the
+    // Windows no-SIGTERM guard in one place) — `dsync agent --stdio` never
+    // calls `SyncRunner`, so it never installs one; it already exits
+    // cleanly on the EOF killing its `ssh` gives it.
     final interrupt = InterruptGuard();
-    late final StreamSubscription<ProcessSignal> sigintSubscription;
-    sigintSubscription = ProcessSignal.sigint.watch().listen((_) {
-      // A second SIGINT "exits immediately" (task fc661b): whatever grace
+    final signalSubscription = watchStopSignals().listen((signal) {
+      // A second signal "exits immediately" (task fc661b): whatever grace
       // the first one bought — reaching the next safe point below — is over,
       // so this skips straight past `RunController.run()`'s own unlock/
       // disconnect `finally` blocks. That is fine: SPEC's own correction
       // that this task opens with is exactly why — the OS drops the file
       // lock when this process dies by any means, and `ssh` dying gives the
       // remote side's lock the same fate.
-      if (interrupt.receiveSignal() == InterruptResponse.exitImmediately) {
-        exit(sigintExitCode);
+      switch (interrupt.receiveSignal(signal)) {
+        case StopGracefully():
+          break;
+        case ExitImmediately(:final exitCode):
+          exit(exitCode);
       }
     });
 
@@ -295,7 +305,7 @@ class SyncRunner {
         if (interrupt.requested) break;
       }
     } finally {
-      await sigintSubscription.cancel();
+      await signalSubscription.cancel();
     }
 
     // task fc661b: report what was applied before stopping, rather than
@@ -307,25 +317,25 @@ class SyncRunner {
     // through apply, after at least one `RunResultEvent` but before the
     // summary — `appliedAny` is what tells that apart from "never got to
     // apply at all".
-    if (interrupt.requested) {
+    final interruptedBy = interrupt.interruptedBy;
+    if (interruptedBy != null) {
+      final by = 'interrupted (${interruptedBy.label})';
       stderr.writeln(switch ((summary != null, appliedAny)) {
         (true, _) =>
-          'interrupted (SIGINT); this run had already finished applying '
+          '$by; this run had already finished applying '
               '— see summary above.',
         (false, true) =>
-          'interrupted (SIGINT) partway through applying — see the '
+          '$by partway through applying — see the '
               'results above for what already landed; the rest of the '
               'plan was not attempted.',
-        (false, false) =>
-          'interrupted (SIGINT) before applying any '
-              'changes.',
+        (false, false) => '$by before applying any changes.',
       });
     }
 
     return RunOutcome(
       summary: summary,
       error: error,
-      interrupted: interrupt.requested,
+      interruptedBy: interruptedBy,
     ).exitCode;
   }
 

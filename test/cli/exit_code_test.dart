@@ -124,9 +124,22 @@ void main() {
 
     group('interrupted (task fc661b, DECIDED)', () {
       test('interrupted with no summary and no error -> 130, not 3', () {
-        const outcome = RunOutcome(interrupted: true);
+        const outcome = RunOutcome(interruptedBy: StopSignal.sigint);
         expect(outcome.exitCode, sigintExitCode);
         expect(outcome.exitCode, 130);
+      });
+
+      test('interrupted by SIGTERM -> 143, the same way (task 7ba6b5)', () {
+        const outcome = RunOutcome(interruptedBy: StopSignal.sigterm);
+        expect(outcome.exitCode, sigtermExitCode);
+        expect(outcome.exitCode, 143);
+        expect(
+          RunOutcome(
+            summary: _summary(applied: 2, failed: 1),
+            interruptedBy: StopSignal.sigterm,
+          ).exitCode,
+          143,
+        );
       });
 
       test(
@@ -134,7 +147,7 @@ void main() {
         () {
           final outcome = RunOutcome(
             summary: _summary(applied: 7),
-            interrupted: true,
+            interruptedBy: StopSignal.sigint,
           );
           expect(outcome.exitCode, 130);
         },
@@ -144,7 +157,7 @@ void main() {
           'otherwise be 2', () {
         final outcome = RunOutcome(
           summary: _summary(applied: 2, failed: 1),
-          interrupted: true,
+          interruptedBy: StopSignal.sigint,
         );
         expect(outcome.exitCode, 130);
       });
@@ -153,7 +166,7 @@ void main() {
           'otherwise be 3', () {
         final outcome = RunOutcome(
           error: RunErrorEvent('boom'),
-          interrupted: true,
+          interruptedBy: StopSignal.sigint,
         );
         expect(outcome.exitCode, 130);
       });

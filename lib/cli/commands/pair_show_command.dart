@@ -12,8 +12,8 @@ import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:qr/qr.dart' show InputTooLongException;
 
 import '../agents/local_addresses.dart';
-import '../exit_code.dart';
 import '../output/qr_terminal_renderer.dart';
+import '../stop_signals.dart';
 
 /// `dsync pair show` (SPEC §4.4, §11.1, task bc68c7): generate a token, bind
 /// the enrolment listener, print this device's payload, and wait for one
@@ -274,31 +274,19 @@ class PairShowCommand extends Command<int> {
   }
 
   /// Starts trapping SIGINT/SIGTERM, in the same shape
-  /// `AgentCommand._watchStopSignals` does — kept as its own small copy
-  /// here rather than shared, since the two commands otherwise depend on
-  /// nothing of each other's and six lines of duplication is cheaper than a
-  /// new shared module for one caller on each side.
+  /// `AgentCommand._watchStopSignals` does, over the same `watchStopSignals`
+  /// (`lib/cli/stop_signals.dart`) — shared since task 7ba6b5 gave it a third
+  /// caller (`SyncRunner`) and one host-specific guard worth keeping in one
+  /// place.
   ///
   /// `code` completes with the exit code for whichever signal arrives first
-  /// (SPEC §11.5 — 130 for SIGINT, 143 for SIGTERM); `cancel` releases both
+  /// (SPEC §11.5 — 130 for SIGINT, 143 for SIGTERM); `cancel` releases the
   /// watches, and the caller owes it on every path.
   ({Future<int> code, Future<void> Function() cancel}) _watchStopSignals() {
     final stopped = Completer<int>();
-    void stop(int exitCode) {
-      if (!stopped.isCompleted) stopped.complete(exitCode);
-    }
-
-    final subscriptions = [
-      ProcessSignal.sigint.watch().listen((_) => stop(sigintExitCode)),
-      ProcessSignal.sigterm.watch().listen((_) => stop(sigtermExitCode)),
-    ];
-    return (
-      code: stopped.future,
-      cancel: () async {
-        for (final subscription in subscriptions) {
-          await subscription.cancel();
-        }
-      },
-    );
+    final subscription = watchStopSignals().listen((signal) {
+      if (!stopped.isCompleted) stopped.complete(signal.exitCode);
+    });
+    return (code: stopped.future, cancel: subscription.cancel);
   }
 }
