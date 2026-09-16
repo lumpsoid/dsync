@@ -1,4 +1,5 @@
-@TestOn('linux')
+/// Not Windows: `dart:io` has no unix-domain sockets there.
+@TestOn('!windows')
 library;
 
 import 'dart:io';

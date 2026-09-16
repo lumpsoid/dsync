@@ -15,7 +15,6 @@
 /// environment (SPEC §8.3), find each other from a command line with nothing
 /// but a device name — and that a device the far end never paired is refused
 /// below `Channel` (SPEC §4.4) rather than reaching `hello`.
-@TestOn('linux')
 library;
 
 import 'dart:convert';
@@ -220,10 +219,13 @@ void main() {
       },
     );
 
+    // Not Windows: there is no SIGTERM to trap there, so `kill` terminates
+    // the process outright and 143 — a shell's "ended by signal 15" — is
+    // not an exit code the platform can produce.
     test('SIGTERM ends the listener with exit code 143', () async {
       agent.kill(ProcessSignal.sigterm);
       expect(await agent.exitCode.timeout(_startupDeadline), 143);
-    });
+    }, testOn: '!windows');
   });
 }
 

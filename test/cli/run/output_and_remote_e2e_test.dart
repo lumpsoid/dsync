@@ -1,4 +1,6 @@
-@TestOn('linux')
+/// Not Windows: the remote half below stands in for `ssh` with a `#!/bin/sh`
+/// script made executable by `chmod`, neither of which exists there.
+@TestOn('!windows')
 library;
 
 import 'dart:convert';

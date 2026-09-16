@@ -206,10 +206,11 @@ class LocalAgent implements Agent {
       // "record the actual post-write state ... rather than the intended
       // one") — never suppressed or special-cased here.
       //
-      // What that value actually *means* on a Windows-written file is not
-      // something this project has verified against a real Windows host
-      // running its pinned SDK (SPEC §3's own open status, the same one the
-      // Android mtime question already carries). What is documented: the
+      // CI runs this write on a real Windows host with the pinned SDK
+      // (SPEC §3), so the call itself is exercised there; what the value it
+      // records actually *means* on a Windows-written file is asserted by no
+      // test, on the same footing as the Android mtime question SPEC §3
+      // carries. What is documented: the
       // Dart SDK's own Windows `dart:io` implementation
       // (`AttributesToStatMode` in `runtime/bin/file_win.cc`) does not
       // return a POSIX permission set read off the filesystem — it derives

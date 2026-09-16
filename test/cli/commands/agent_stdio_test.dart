@@ -1,4 +1,3 @@
-@TestOn('linux')
 library;
 
 import 'dart:async';

@@ -1,4 +1,8 @@
-@TestOn('linux')
+/// Not Windows: `Process.kill(ProcessSignal.sigint)` cannot deliver a
+/// SIGINT to a child there — Windows has no signal to deliver, and Dart's
+/// `kill` falls back to terminating the process outright, which is not the
+/// trap this suite exists to prove. Every other CI host (SPEC §3) runs it.
+@TestOn('!windows')
 library;
 
 import 'dart:async';

@@ -35,7 +35,13 @@
 /// required on its non-interactive PATH: this compiles the binary under
 /// test and points the run at *that*, which also stops the far end writing
 /// its archive into the real state directory of whoever ran the suite.
-@TestOn('linux')
+///
+/// Not Windows: `remoteCommandFor` prefixes the far end's command with a
+/// `VAR=value` assignment for a POSIX login shell, and `XDG_STATE_HOME` is
+/// not where a Windows agent keeps its state (SPEC §8.3). macOS is not
+/// excluded here — a runner without an sshd fails [RealSsh.probe] and skips
+/// with that reason, the same way a Linux box without one does.
+@TestOn('!windows')
 library;
 
 import 'dart:convert';

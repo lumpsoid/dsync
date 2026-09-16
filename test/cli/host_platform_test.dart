@@ -96,14 +96,17 @@ void main() {
       await tempDir.delete(recursive: true);
     });
 
-    test('false on this host\'s real filesystem: every CI and dev box this '
-        'project runs its test suite on is case-sensitive, so this is the '
-        'one answer a probe against a real, unfaked directory can assert '
-        'without a case-insensitive volume to test against', () {
-      expect(detectsCaseFolding(tempDir.path), isFalse);
+    test('answers for this host\'s real filesystem: folding on macOS and '
+        'Windows, whose default volumes (APFS, NTFS) are case-insensitive, '
+        'and none on Linux — the one probe against a real, unfaked directory '
+        'CI runs on all three (SPEC §3)', () {
+      expect(
+        detectsCaseFolding(tempDir.path),
+        Platform.isMacOS || Platform.isWindows,
+      );
     });
 
-    test('leaves no marker file behind on a case-sensitive filesystem', () {
+    test('leaves no marker file behind, whichever answer it found', () {
       detectsCaseFolding(tempDir.path);
 
       expect(tempDir.listSync(), isEmpty);

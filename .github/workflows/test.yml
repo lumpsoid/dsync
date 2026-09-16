@@ -1,0 +1,64 @@
+# The whole suite on every desktop v1 target (SPEC §3). macOS and Windows have
+# no other machine running these tests, so this matrix is where their answers
+# to the platform questions §3 raises — mode bits, `chmod`, path spelling,
+# case folding — are actually observed rather than reasoned about.
+#
+# Flutter is pinned to the release whose bundled Dart is exactly the
+# `sdk: 3.13.3` pubspec.yaml pins (3.47.3 and 3.47.4 both ship it; this is
+# the later one). `dart pub get` needs a Flutter SDK even for the `dart test`
+# job, because pubspec.yaml depends on `flutter` from the SDK, so that job
+# installs the same toolchain and differs only in which host runs the suite:
+# `dart`, not `flutter_tester` (see test/support/dsync_binary.dart).
+name: test
+
+on:
+  push:
+    branches: [trunk]
+  pull_request:
+
+env:
+  FLUTTER_VERSION: 3.47.4
+
+jobs:
+  flutter-test:
+    name: flutter test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          # Caches the SDK and the pub cache, keyed on pubspec.lock.
+          cache: true
+
+      - run: flutter --version
+
+      - run: flutter pub get
+
+      - run: dart analyze
+
+      - run: flutter test
+
+  dart-test:
+    name: dart test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: dart --version
+
+      - run: dart pub get
+
+      - run: dart test

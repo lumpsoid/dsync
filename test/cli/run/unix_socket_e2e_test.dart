@@ -20,7 +20,10 @@
 /// was given, the far end resolving *its own* state directory from *its own*
 /// environment (SPEC §8.3) rather than the initiator's, and the signal that
 /// ends a listener leaving no socket file behind (SPEC §11.5).
-@TestOn('linux')
+///
+/// Not Windows: `dart:io` has no unix-domain sockets there, and the listener
+/// is ended with a POSIX signal. Every other CI host (SPEC §3) runs it.
+@TestOn('!windows')
 library;
 
 import 'dart:convert';

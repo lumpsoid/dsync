@@ -202,6 +202,9 @@ Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
       ? 'an `ssh` stand-in'
       : 'real ssh to "${ssh.destination}"';
 
+  // Not Windows: the stand-in is a `#!/bin/sh` script made executable by
+  // `chmod`, and real ssh's far end is addressed with a POSIX `VAR=value`
+  // prefix — see `real_ssh_e2e_test.dart`. The local soak above runs there.
   group('convergence soak over $rounds rounds, against a remote agent over '
       '$transport (SPEC §4.2)', () {
     late String binaryPath;
@@ -326,7 +329,7 @@ Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
       printOnFailure(_reproduceHint(seed));
       await soak.run(rounds);
     }, timeout: Timeout(Duration(seconds: 120 + 20 * rounds)));
-  });
+  }, testOn: '!windows');
 }
 
 /// `DSYNC_SOAK_ROUNDS`: how many rounds each soak runs. The committed default
