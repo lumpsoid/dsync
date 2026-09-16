@@ -7,9 +7,11 @@ import 'package:flutter/material.dart';
 /// is what keeps the core free of any Flutter dependency honest: if something
 /// head-specific ever leaked into `dsync_core/`, this file is where it would
 /// show up as a dependency cycle. The transport this head needs — one that
-/// does not rely on a system `ssh` binary — now exists as `SocketChannel` and
-/// `AgentListener` (SPEC §4.2), but only over a unix socket, so there is
-/// still nothing here that could reach a desktop from a phone (SPEC §16).
+/// does not rely on a system `ssh` binary and leaves the machine — now
+/// exists end to end (SPEC §4.4): `SocketChannel.connectSecure` reaches a
+/// `dsync agent --serve` on a desktop, pinned to the pairing `dsync pair`
+/// records. What is still missing here is this head's own side of that
+/// pairing — a camera, a QR scanner, a paired-device list (SPEC §16).
 class DsyncApp extends StatelessWidget {
   const DsyncApp({super.key});
 

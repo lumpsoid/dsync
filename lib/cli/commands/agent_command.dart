@@ -7,8 +7,11 @@ import 'package:dsync/dsync_core/agent/agent_listener.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/identity/device_identity_store.dart';
+import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
@@ -16,8 +19,8 @@ import 'package:dsync/dsync_core/scan/scanner.dart';
 import '../exit_code.dart';
 import '../host_platform.dart';
 
-/// `dsync agent` (SPEC §11.1, §4.2, §11.3): the far end of a remote run, in
-/// one of its two transports.
+/// `dsync agent` (SPEC §11.1, §4.2, §4.4, §11.3): the far end of a remote
+/// run, in one of its three transports.
 ///
 /// - `--stdio` speaks the protocol over this process's own stdin/stdout. Not
 ///   something a person types: `ssh` starts it on the replica's own host
@@ -26,13 +29,21 @@ import '../host_platform.dart';
 /// - `--listen <socket path>` binds a unix socket and serves every connection
 ///   that arrives on it, until the process is signalled. This one *is* typed
 ///   by a person, or started by whatever supervises it, and it is how a head
-///   with no system `ssh` to spawn reaches a replica at all (SPEC §16).
+///   with no system `ssh` to spawn reaches a replica on the same machine.
+/// - `--serve` binds the paired network transport (SPEC §4.4) on every
+///   interface, port [PeerAddress.defaultPort] unless `--port` says
+///   otherwise, and serves every *paired* device that connects until the
+///   process is signalled. This is the one a phone reaches (SPEC §16): the
+///   socket leaves the machine, so the filesystem cannot gate it and mutual
+///   TLS pinned to `dsync pair`'s store does instead — see
+///   [AgentListener.bindSecure] for both layers of that gate.
 ///
-/// Exactly one of the two, and neither has a default. They are not
-/// alternative spellings of the same thing — one ends with its input, the
-/// other outlives any number of sessions — so `dsync agent` on its own is a
-/// usage error rather than a silent guess at which was meant, and naming both
-/// is a usage error rather than a silent precedence rule.
+/// Exactly one of the three, and none has a default. They are not
+/// alternative spellings of the same thing — `--stdio` ends with its input,
+/// the other two outlive any number of sessions, and `--listen` and `--serve`
+/// differ in who may connect — so `dsync agent` on its own is a usage error
+/// rather than a silent guess at which was meant, and naming two is a usage
+/// error rather than a silent precedence rule.
 ///
 /// **`--stdio`.** [_serveStdio] builds a [StdioChannel] over this process's
 /// real stdin/stdout and hands it to [AgentServer.serve] with [_buildAgent]
@@ -60,12 +71,13 @@ import '../host_platform.dart';
 /// a different command. A missing or doubled transport flag below stays a
 /// genuine usage error and keeps [usageException].
 ///
-/// **`--listen`.** [_serveSocket] hands the same [_buildAgent] to an
-/// [AgentListener], which is where every decision about accepting, session
-/// isolation and stale sockets lives. What is left here is the one thing a
-/// listener needs that a `--stdio` session does not: something to end it.
-/// There is no input to close, so the ordinary way out is a signal — see
-/// [_awaitSignal].
+/// **`--listen` and `--serve`.** [_serveSocket] and [_serveNetwork] hand the
+/// same [_buildAgent] to an [AgentListener], which is where every decision
+/// about accepting, session isolation, stale sockets and — for `--serve` —
+/// which device is on the wire and which roots it may name lives. What is
+/// left here is the one thing a listener needs that a `--stdio` session does
+/// not: something to end it. There is no input to close, so the ordinary way
+/// out is a signal — see [_watchStopSignals].
 class AgentCommand extends Command<int> {
   @override
   final name = 'agent';
@@ -73,13 +85,16 @@ class AgentCommand extends Command<int> {
   @override
   final description =
       'Serve replicas over the framed protocol (SPEC §4.2), over stdio '
-      '(started by ssh on the remote host) or on a unix socket.';
+      '(started by ssh on the remote host), on a unix socket, or to paired '
+      'devices over the network (SPEC §4.4).';
 
   /// Names of this command's own flags (SPEC §11.1, §11.2). Local to this
   /// command — only [AgentCommand] registers or reads them — so they live
   /// here rather than beside `addCommonSyncFlags` (task 4fce5d).
   static const flagStdio = 'stdio';
   static const optionListen = 'listen';
+  static const flagServe = 'serve';
+  static const optionPort = 'port';
 
   AgentCommand() {
     argParser
@@ -100,6 +115,26 @@ class AgentCommand extends Command<int> {
             'Anyone who can open the socket gets unauthenticated access to '
             'the replicas served through it, so put it in a directory only '
             'you can enter, such as \$XDG_RUNTIME_DIR.',
+      )
+      ..addFlag(
+        flagServe,
+        negatable: false,
+        help:
+            'Serve paired devices over the network until this process is '
+            'signalled (SPEC §4.4). Only a device in `dsync pair list` can '
+            'connect, and only to the roots `dsync pair grant` gave it. '
+            'Reached with a "peer://<device name>:<replica path>" location '
+            '(SPEC §2).',
+      )
+      ..addOption(
+        optionPort,
+        valueHelp: 'port',
+        // Not `defaultsTo`: a `--port` given without `--serve` is a usage
+        // error below, and a default value would make that indistinguishable
+        // from no `--port` at all.
+        help:
+            'The port --serve binds. Defaults to ${PeerAddress.defaultPort}; '
+            'a second agent on the same host needs a different one.',
       );
   }
 
@@ -107,22 +142,47 @@ class AgentCommand extends Command<int> {
   Future<int> run() async {
     final stdio = argResults!.flag(flagStdio);
     final socketPath = argResults!.option(optionListen);
+    final serve = argResults!.flag(flagServe);
+    final portArgument = argResults!.option(optionPort);
 
-    if (stdio && socketPath != null) {
+    final transports = [
+      if (stdio) '--stdio',
+      if (socketPath != null) '--listen',
+      if (serve) '--serve',
+    ];
+    if (transports.length > 1) {
       usageException(
-        'dsync agent takes --stdio or --listen, not both: one serves a '
-        'single session over this process\'s stdio, the other outlives any '
-        'number of sessions.',
+        'dsync agent takes one transport, not ${transports.join(' and ')}: '
+        '--stdio serves a single session over this process\'s stdio, '
+        '--listen and --serve each outlive any number of sessions, and only '
+        '--serve authenticates who connects.',
       );
     }
-    if (!stdio && socketPath == null) {
+    if (transports.isEmpty) {
       usageException(
-        'dsync agent needs a transport: --stdio (what ssh starts) or '
-        '--listen <socket path>.',
+        'dsync agent needs a transport: --stdio (what ssh starts), '
+        '--listen <socket path>, or --serve.',
       );
     }
+    if (portArgument != null && !serve) {
+      usageException('--port only means something with --serve.');
+    }
 
-    return stdio ? _serveStdio() : _serveSocket(socketPath!);
+    if (stdio) return _serveStdio();
+    if (socketPath != null) return _serveSocket(socketPath);
+    return _serveNetwork(_parsePort(portArgument));
+  }
+
+  /// `--port`'s value as a bindable port, or the SPEC §4.4 default when it
+  /// was not given. A value that is not a port is a usage error, the same
+  /// bucket as a `--listen` with no path: caught before anything is bound.
+  int _parsePort(String? argument) {
+    if (argument == null) return PeerAddress.defaultPort;
+    final port = int.tryParse(argument);
+    if (port == null || port < 0 || port > 65535) {
+      usageException('--port needs a number from 0 to 65535, not "$argument".');
+    }
+    return port;
   }
 
   Future<int> _serveStdio() async {
@@ -175,6 +235,72 @@ class AgentCommand extends Command<int> {
         'dsync agent: listening on ${listener.address}. Anyone who can open '
         'this socket can read, write and delete in the replicas served '
         'through it, with no further authentication (SPEC §4.2).',
+      );
+
+      try {
+        return await signals.code;
+      } finally {
+        await listener.close();
+        await stderr.flush();
+      }
+    } finally {
+      await signals.cancel();
+    }
+  }
+
+  /// Binds the paired network transport on every IPv4 interface at [port]
+  /// and serves it until a signal arrives (SPEC §4.4).
+  ///
+  /// This host's own identity and paired-device store are resolved from this
+  /// process's own environment and host (SPEC §8.3), the same way
+  /// [_buildAgent] resolves an archive — and the same way `dsync pair show`
+  /// resolves the identity it advertises, so the certificate a peer pinned
+  /// at pairing time is the one this listener presents. `loadOrCreate`
+  /// rather than `load`: an agent that has never paired anything still binds
+  /// — it just refuses everyone — and creating the identity here means a
+  /// `dsync pair show` run later advertises the certificate already in use.
+  ///
+  /// Every interface, not loopback: the point of this transport is a peer on
+  /// another machine. What limits who gets in is not the bind address but
+  /// the TLS handshake, which an unpaired peer never completes.
+  ///
+  /// The startup line says one thing `--listen`'s does not: that a device
+  /// paired *after* this bound cannot connect until this is restarted. That
+  /// is [AgentListener.bindSecure]'s documented trade — trust anchors are
+  /// fixed at bind time, the paired set is re-read per connection — and the
+  /// moment to say so is when the operator can still see it, not when a
+  /// freshly paired phone's first sync is refused with no explanation.
+  Future<int> _serveNetwork(int port) async {
+    final environment = Platform.environment;
+    final platform = hostPlatform().stateDirPlatform;
+
+    // Watched before binding, for the same reason `_serveSocket` does: a
+    // port has no file to litter, but the exit code for a signal that lands
+    // between bind and trap would still be the untrapped default rather
+    // than SPEC §11.5's.
+    final signals = _watchStopSignals();
+    try {
+      final identity = await DeviceIdentityStore.forStateDir(
+        environment: environment,
+        platform: platform,
+      ).loadOrCreate(commonName: Platform.localHostname);
+      final listener = await AgentListener.bindSecure(
+        InternetAddress.anyIPv4,
+        port,
+        ownIdentity: identity,
+        pairedDeviceStore: PairedDeviceStore.forStateDir(
+          environment: environment,
+          platform: platform,
+        ),
+        buildAgent: _buildAgent,
+        onSessionError: (error, _) => stderr.writeln('dsync agent: $error'),
+        environment: environment,
+      );
+      stderr.writeln(
+        'dsync agent: serving paired devices on ${listener.address} '
+        '(SPEC §4.4). Only devices in `dsync pair list` can connect, each to '
+        'the roots `dsync pair grant` gave it. A device paired after this '
+        'started cannot connect until this agent is restarted.',
       );
 
       try {

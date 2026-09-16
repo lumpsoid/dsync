@@ -44,6 +44,58 @@ void main() {
       );
     });
 
+    test(
+      'dsync agent --serve with either other transport is a usage error',
+      () async {
+        // Same reasoning as above, and one more: --listen and --serve differ
+        // in who may connect, so a precedence rule would silently pick an
+        // access control the operator did not ask for.
+        for (final argv in [
+          ['agent', '--serve', '--stdio'],
+          ['agent', '--serve', '--listen', '/run/dsync.sock'],
+        ]) {
+          await expectLater(
+            buildRunner(AgentCommand()).run(argv),
+            throwsA(isA<UsageException>()),
+            reason: argv.join(' '),
+          );
+        }
+      },
+    );
+
+    test('--port without --serve is a usage error', () async {
+      // A port is --serve's to bind and nothing else's; accepting it beside
+      // --listen would mean silently ignoring it.
+      await expectLater(
+        buildRunner(AgentCommand())
+            .run(['agent', '--listen', '/run/dsync.sock', '--port', '28771']),
+        throwsA(
+          isA<UsageException>().having(
+            (error) => error.message,
+            'message',
+            contains('--port only means something with --serve'),
+          ),
+        ),
+      );
+    });
+
+    test('--port that is not a port is a usage error', () async {
+      // Caught before anything is bound, the same bucket as a bare --listen.
+      for (final port in ['x', '-1', '65536']) {
+        await expectLater(
+          buildRunner(AgentCommand()).run(['agent', '--serve', '--port', port]),
+          throwsA(
+            isA<UsageException>().having(
+              (error) => error.message,
+              'message',
+              contains('--port needs a number from 0 to 65535'),
+            ),
+          ),
+          reason: port,
+        );
+      }
+    });
+
     test('--listen needs a socket path', () async {
       // An option, not a flag: there is no default path to fall back to, so
       // the argument parser rejects a bare `--listen` before `run()` is ever
