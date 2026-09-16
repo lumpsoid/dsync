@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 
 /// The real Dart CLI, which is **not** `Platform.resolvedExecutable` when the
 /// test host is `flutter test`.
@@ -51,6 +52,17 @@ String _basename(String path) => path.split(Platform.pathSeparator).last;
 const _relativeBinaryPath = 'build/dsync_test/dsync';
 const _lockPath = 'build/dsync_test/.compile.lock';
 
+/// Exists while one isolate of this process is compiling — see
+/// [dsyncTestBinary].
+const _claimPath = 'build/dsync_test/.compiling';
+
+/// How old a claim may be before it is presumed abandoned. A compile takes
+/// ~6s here and well under a minute on a loaded CI runner.
+const _claimTimeout = Duration(minutes: 2);
+
+/// How often a waiting isolate re-checks for a fresh binary.
+const _claimPollInterval = Duration(milliseconds: 250);
+
 /// The binary path, absolute. Several call sites hand `Process.run` a
 /// `workingDirectory` inside the replica under test, against which a relative
 /// path to this binary would not resolve.
@@ -73,32 +85,98 @@ String get _binaryPath =>
 /// internally, asked cheaply enough (a directory walk, no process spawn) to be
 /// worth asking before paying for a ~6s compile that a `flutter test` rerun
 /// over untouched sources would otherwise repeat seven times.
+///
+/// Under `dart test` the suites are isolates of *one* process, and the lock
+/// above does nothing there: a POSIX `fcntl` lock is owned by the process, so
+/// a second isolate taking it succeeds at once. Two more guards cover that
+/// host, and cost nothing under `flutter test` where the lock already
+/// serialises everything:
+///
+/// - Only one isolate compiles at a time. Whoever creates [_claimPath]
+///   exclusively — an atomic create-if-absent — is the compiler; the rest
+///   poll until the binary is fresh. A claim left behind by a run killed
+///   mid-compile is not honoured past [_claimTimeout], so a stale one costs
+///   one wait, not a hang; a compile genuinely slower than that on a loaded
+///   machine gets a second, duplicate compile, which the next point makes
+///   harmless.
+/// - Nothing ever opens [_binaryPath] itself for writing. Writing into a
+///   file another suite is already executing is refused by the kernel with
+///   `ETXTBSY` ("Text file busy"), failing both the compile and any spawn
+///   that overlaps it. So the compiler is pointed at a path private to this
+///   isolate, and the finished artifact is renamed onto [_binaryPath] — an
+///   atomic replace that leaves a process already running the old file on
+///   the old inode.
 Future<String> dsyncTestBinary() async {
   await Directory('build/dsync_test').create(recursive: true);
 
   final lockFile = File(_lockPath).openSync(mode: FileMode.write);
   await lockFile.lock(FileLock.blockingExclusive);
   try {
-    if (await _isFresh()) return _binaryPath;
-
-    final compile = await Process.run(dartExecutable, [
-      'compile',
-      'exe',
-      'bin/dsync.dart',
-      '-o',
-      _binaryPath,
-    ]);
-    if (compile.exitCode != 0) {
-      throw StateError(
-        'failed to compile bin/dsync.dart with "$dartExecutable":\n'
-        '${compile.stderr}',
-      );
+    while (!await _isFresh()) {
+      if (await _claimCompile()) {
+        try {
+          await _compile();
+        } finally {
+          try {
+            await File(_claimPath).delete();
+          } on FileSystemException {
+            // Already removed by a waiter that presumed this compile
+            // abandoned (see [_claimCompile]); nothing left to release.
+          }
+        }
+      } else {
+        await Future<void>.delayed(_claimPollInterval);
+      }
     }
     return _binaryPath;
   } finally {
     await lockFile.unlock();
     await lockFile.close();
   }
+}
+
+/// Takes the compile claim if nobody holds a live one. `true` means this
+/// isolate compiles.
+Future<bool> _claimCompile() async {
+  final claim = File(_claimPath);
+  if (claim.existsSync()) {
+    final age = DateTime.now().difference(claim.lastModifiedSync());
+    if (age < _claimTimeout) return false;
+    // Abandoned. Whoever deletes it first goes on to race for a fresh
+    // claim; losing that race is the ordinary `false` below.
+    try {
+      claim.deleteSync();
+    } on FileSystemException {
+      return false;
+    }
+  }
+  try {
+    await claim.create(exclusive: true);
+    return true;
+  } on FileSystemException {
+    return false;
+  }
+}
+
+/// Compiles into an isolate-private staging path, then renames it onto
+/// [_binaryPath].
+Future<void> _compile() async {
+  final staging = File('$_binaryPath.$pid-${Isolate.current.hashCode}');
+  final compile = await Process.run(dartExecutable, [
+    'compile',
+    'exe',
+    'bin/dsync.dart',
+    '-o',
+    staging.path,
+  ]);
+  if (compile.exitCode != 0) {
+    if (await staging.exists()) await staging.delete();
+    throw StateError(
+      'failed to compile bin/dsync.dart with "$dartExecutable":\n'
+      '${compile.stderr}',
+    );
+  }
+  await staging.rename(_binaryPath);
 }
 
 /// Whether the built binary is newer than every source that goes into it.
