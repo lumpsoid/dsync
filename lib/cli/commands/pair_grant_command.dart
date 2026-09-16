@@ -6,11 +6,9 @@ import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
 /// `dsync pair grant <name> <path>` (SPEC §4.4, §11.1, task bc68c7) —
-/// pairing's second step, and the command SPEC §4.4 names as not yet having
-/// one: "Pairing a device and authorizing it for a path are consequently
-/// always two steps; the second is not yet named as a command (`bc68c7`'s
-/// ... to expose), but the store it writes to is settled here." This is
-/// that command.
+/// pairing's second step. SPEC §4.4: pairing a device and authorizing it
+/// for a path are always two steps; `pair accept`/`pair show` do the first,
+/// this command does the second, and both write [PairedDeviceStore].
 ///
 /// `<path>` is expanded the same way `agent_command.dart`'s `_buildAgent`
 /// expands a `hello`'s root — [Location.parse] then [Location.expandedPath]
