@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dsync/dsync_core/config_dir.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:path/path.dart' as p;
 
@@ -41,6 +42,13 @@ sealed class HostPlatform {
   /// Which SPEC §8.3 rule [resolveStateDir] applies for this host.
   StateDirPlatform get stateDirPlatform;
 
+  /// Which SPEC §12 rule [resolveConfigDir] applies for this host — where
+  /// named profiles live. A second axis beside [stateDirPlatform], not the
+  /// same one, because Linux and Windows keep config and state in different
+  /// directories (`XDG_CONFIG_HOME` vs `XDG_STATE_HOME`, `APPDATA` vs
+  /// `LOCALAPPDATA`); only macOS collapses the two.
+  ConfigDirPlatform get configDirPlatform;
+
   /// How this host's own filesystem paths are spelled (SPEC §3's read-side
   /// path conversion) — the `package:path` [p.Style] a local replica's
   /// `Scanner` (`lib/dsync_core/scan/scanner.dart`) uses to read a child's
@@ -72,14 +80,17 @@ class LinuxHost extends HostPlatform {
   StateDirPlatform get stateDirPlatform => const LinuxStateDir();
 
   @override
+  ConfigDirPlatform get configDirPlatform => const LinuxConfigDir();
+
+  @override
   p.Style get pathStyle => p.Style.posix;
 
   @override
   bool get isWindowsReplica => false;
 }
 
-/// macOS: `~/Library/Application Support/dsync` (SPEC §8.3), POSIX paths,
-/// `chmod` available.
+/// macOS: `~/Library/Application Support/dsync` for both state (SPEC §8.3)
+/// and config (SPEC §12), POSIX paths, `chmod` available.
 class MacOsHost extends HostPlatform {
   const MacOsHost();
 
@@ -87,19 +98,26 @@ class MacOsHost extends HostPlatform {
   StateDirPlatform get stateDirPlatform => const MacOsStateDir();
 
   @override
+  ConfigDirPlatform get configDirPlatform => const MacOsConfigDir();
+
+  @override
   p.Style get pathStyle => p.Style.posix;
 
   @override
   bool get isWindowsReplica => false;
 }
 
-/// Windows: `%LOCALAPPDATA%\dsync` (SPEC §8.3), Windows-spelled paths, no
-/// `chmod` to shell out to (SPEC §3/§7.4).
+/// Windows: `%LOCALAPPDATA%\dsync` for state (SPEC §8.3), `%APPDATA%\dsync`
+/// for config (SPEC §12), Windows-spelled paths, no `chmod` to shell out to
+/// (SPEC §3/§7.4).
 class WindowsHost extends HostPlatform {
   const WindowsHost();
 
   @override
   StateDirPlatform get stateDirPlatform => const WindowsStateDir();
+
+  @override
+  ConfigDirPlatform get configDirPlatform => const WindowsConfigDir();
 
   @override
   p.Style get pathStyle => p.Style.windows;

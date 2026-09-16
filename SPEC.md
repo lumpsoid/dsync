@@ -282,7 +282,11 @@ socket being unlinked (§4.2), not a different code.
 
 ## 12. Profile file
 
-TOML, parsed with `package:toml`. Location: `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (Linux), app config dir (Android).
+TOML, parsed with `package:toml`. Location: `profiles/<name>.toml` under the config directory, which — like the state directory (§8.3) — is resolved per platform by `resolveConfigDir` (`lib/dsync_core/config_dir.dart`):
+- Linux: `$XDG_CONFIG_HOME/dsync/` (default `~/.config/dsync/`); Termux CLI head unchanged.
+- macOS: `~/Library/Application Support/dsync/` — the same directory as §8.3's state; macOS has no config/state split.
+- Windows: `%APPDATA%\dsync\` — the roaming profile, distinct from §8.3's `%LOCALAPPDATA%` state.
+- Android (Flutter head) and iOS: the app's own config dir, handed in resolved by the app head, as §8.3 does for state.
 
 ```toml
 [replicas]

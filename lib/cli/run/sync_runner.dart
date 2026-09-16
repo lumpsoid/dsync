@@ -171,7 +171,11 @@ class SyncRunner {
     final Future<Set<String>> Function() sharedLocalAddressLookup;
     switch (target) {
       case ProfileTarget(:final name):
-        final profile = await loadProfile(name, environment: environment);
+        final profile = await loadProfile(
+          name,
+          environment: environment,
+          platform: platform.configDirPlatform,
+        );
         effective = EffectiveOptions.forProfile(
           profile,
           options,

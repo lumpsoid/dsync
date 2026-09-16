@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dsync/dsync_core/config_dir.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
@@ -26,12 +27,12 @@ const _knownSshKeys = {'options', 'command'};
 
 /// Loads and validates the profile named [name] (SPEC §12).
 ///
-/// Reads `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml`, defaulting
-/// `XDG_CONFIG_HOME` to `~/.config` when unset — see [resolveProfilePath].
-/// [environment] is taken as a parameter rather than read from
-/// `Platform.environment`, the same convention `resolveStateDir` and
-/// `JsonlArchiveStore.forProfile` use, so this stays testable on plain
-/// values.
+/// Reads `<config dir>/profiles/<name>.toml`, where the config dir is
+/// [resolveConfigDir]'s answer for [platform] — see [resolveProfilePath].
+/// [environment] and [platform] are taken as parameters rather than read
+/// from `Platform.environment` / `Platform.operatingSystem`, the same
+/// convention `resolveStateDir` and `JsonlArchiveStore.forProfile` use, so
+/// this stays testable on plain values.
 ///
 /// A missing file, unparseable TOML, a missing `a` or `b` replica, or an
 /// unknown table or key anywhere in the file is fatal (SPEC §11.5, exit 3):
@@ -45,8 +46,13 @@ const _knownSshKeys = {'options', 'command'};
 Future<Profile> loadProfile(
   String name, {
   Map<String, String> environment = const {},
+  required ConfigDirPlatform platform,
 }) async {
-  final file = resolveProfilePath(name, environment: environment);
+  final file = resolveProfilePath(
+    name,
+    environment: environment,
+    platform: platform,
+  );
   if (!await file.exists()) {
     throw ProfileNotFoundException(file.path);
   }
@@ -90,29 +96,19 @@ Future<Profile> loadProfile(
   );
 }
 
-/// The standard profile file location (SPEC §12):
-/// `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml`, defaulting
-/// `XDG_CONFIG_HOME` to `~/.config` when unset. Mirrors [resolveStateDir]'s
-/// handling of `XDG_STATE_HOME` — with neither `XDG_CONFIG_HOME` nor `HOME`
-/// set there is no sane answer, so this throws rather than interpolating a
-/// null into a path.
+/// The standard profile file location (SPEC §12): `profiles/<name>.toml`
+/// under the per-platform config dir [resolveConfigDir] resolves for
+/// [platform] — `$XDG_CONFIG_HOME/dsync` on Linux, `~/Library/Application
+/// Support/dsync` on macOS, `%APPDATA%\dsync` on Windows. The platform
+/// branching, and the loud failure on a missing variable, both live there;
+/// this only appends the profile's own relative path.
 File resolveProfilePath(
   String name, {
   Map<String, String> environment = const {},
+  required ConfigDirPlatform platform,
 }) {
-  final configHome = environment['XDG_CONFIG_HOME'];
-  if (configHome != null && configHome.isNotEmpty) {
-    return File('$configHome/dsync/profiles/$name.toml');
-  }
-
-  final home = environment['HOME'];
-  if (home == null || home.isEmpty) {
-    throw StateError(
-      'Cannot locate the dsync config directory: neither XDG_CONFIG_HOME nor '
-      'HOME is set',
-    );
-  }
-  return File('$home/.config/dsync/profiles/$name.toml');
+  final configDir = resolveConfigDir(environment, platform);
+  return File('$configDir/profiles/$name.toml');
 }
 
 /// The sub-table at [key], or an empty table when [table] has no such key —

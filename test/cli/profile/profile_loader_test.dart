@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dsync/dsync_core/config_dir.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/cli/profile/profile_loader.dart';
@@ -41,7 +42,11 @@ warn_size_bytes = 500_000_000
 jobs = 4
 ''');
 
-      final profile = await loadProfile('notes', environment: env());
+      final profile = await loadProfile(
+        'notes',
+        environment: env(),
+        platform: const LinuxConfigDir(),
+      );
 
       expect(profile.name, 'notes');
       expect(profile.a.path, '/home/me/notes');
@@ -71,6 +76,7 @@ jobs = 4
       final profile = await loadProfile(
         'notes',
         environment: {'HOME': home.path},
+        platform: const LinuxConfigDir(),
       );
 
       expect(profile.a.path, '/a');
@@ -84,7 +90,11 @@ a = "/a"
 b = "/b"
 ''');
 
-      final profile = await loadProfile('minimal', environment: env());
+      final profile = await loadProfile(
+        'minimal',
+        environment: env(),
+        platform: const LinuxConfigDir(),
+      );
 
       expect(profile.rules.ignorePatterns, isEmpty);
       expect(profile.rules.followPatterns, isEmpty);
@@ -111,7 +121,11 @@ options = ["-i", "~/.ssh/id_ssshd"]
 command = "/home/qq/.local/bin/dsync"
 ''');
 
-      final profile = await loadProfile('two-remotes', environment: env());
+      final profile = await loadProfile(
+        'two-remotes',
+        environment: env(),
+        platform: const LinuxConfigDir(),
+      );
 
       expect(profile.sshA.options, ['-p', '2222']);
       // Unset on this side, so the bare word on the remote PATH stands.
@@ -131,7 +145,11 @@ optoins = ["-p", "2222"]
 ''');
 
       expect(
-        () => loadProfile('typo', environment: env()),
+        () => loadProfile(
+          'typo',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(
           isA<ProfileUnknownKeyException>().having(
             (error) => error.key,
@@ -153,7 +171,11 @@ options = ["-p", "2222"]
 ''');
 
       expect(
-        () => loadProfile('side', environment: env()),
+        () => loadProfile(
+          'side',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(
           isA<ProfileUnknownKeyException>().having(
             (error) => error.key,
@@ -182,7 +204,11 @@ $table
 ''');
 
         expect(
-          () => loadProfile('empty', environment: env()),
+          () => loadProfile(
+            'empty',
+            environment: env(),
+            platform: const LinuxConfigDir(),
+          ),
           throwsA(
             isA<ProfileInvalidValueException>().having(
               (error) => error.key,
@@ -204,7 +230,11 @@ b = "/local/notes"
 a = "me@phone:/sdcard/notes"
 ''');
 
-        final profile = await loadProfile('remote-first', environment: env());
+        final profile = await loadProfile(
+          'remote-first',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        );
 
         expect(profile.a.host, 'phone');
         expect(profile.b.path, '/local/notes');
@@ -213,7 +243,11 @@ a = "me@phone:/sdcard/notes"
 
     test('a missing profile file is fatal', () async {
       expect(
-        () => loadProfile('does-not-exist', environment: env()),
+        () => loadProfile(
+          'does-not-exist',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileNotFoundException>()),
       );
     });
@@ -222,7 +256,11 @@ a = "me@phone:/sdcard/notes"
       await writeProfile('broken', '[replicas\na = "/a"\n');
 
       expect(
-        () => loadProfile('broken', environment: env()),
+        () => loadProfile(
+          'broken',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileFormatException>()),
       );
     });
@@ -239,7 +277,11 @@ b = "/d"
 ''');
 
       expect(
-        () => loadProfile('redefined', environment: env()),
+        () => loadProfile(
+          'redefined',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileFormatException>()),
       );
     });
@@ -251,7 +293,11 @@ a = "/a"
 ''');
 
       expect(
-        () => loadProfile('one-sided', environment: env()),
+        () => loadProfile(
+          'one-sided',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileMissingReplicaException>()),
       );
     });
@@ -263,7 +309,11 @@ jobs = 2
 ''');
 
       expect(
-        () => loadProfile('no-replicas', environment: env()),
+        () => loadProfile(
+          'no-replicas',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileMissingReplicaException>()),
       );
     });
@@ -279,7 +329,11 @@ a = "/c"
 ''');
 
       expect(
-        () => loadProfile('typo-table', environment: env()),
+        () => loadProfile(
+          'typo-table',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileUnknownKeyException>()),
       );
     });
@@ -293,7 +347,11 @@ c = "/c"
 ''');
 
       expect(
-        () => loadProfile('typo-replicas', environment: env()),
+        () => loadProfile(
+          'typo-replicas',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileUnknownKeyException>()),
       );
     });
@@ -310,7 +368,11 @@ ignroe = ["**/.git"]
 ''');
 
       expect(
-        () => loadProfile('typo-rules', environment: env()),
+        () => loadProfile(
+          'typo-rules',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileUnknownKeyException>()),
       );
     });
@@ -326,32 +388,60 @@ wrn_size_bytes = 100
 ''');
 
       expect(
-        () => loadProfile('typo-options', environment: env()),
+        () => loadProfile(
+          'typo-options',
+          environment: env(),
+          platform: const LinuxConfigDir(),
+        ),
         throwsA(isA<ProfileUnknownKeyException>()),
       );
     });
   });
 
   group('resolveProfilePath', () {
-    test('uses XDG_CONFIG_HOME when set', () {
+    // The per-platform branching itself is resolveConfigDir's, covered in
+    // test/dsync_core/config_dir_test.dart; these check the profile's own
+    // relative path is appended to whichever directory it answers.
+    test('appends profiles/<name>.toml to the Linux config dir', () {
       final path = resolveProfilePath(
         'notes',
         environment: {'XDG_CONFIG_HOME': '/xdg'},
+        platform: const LinuxConfigDir(),
       );
       expect(path.path, '/xdg/dsync/profiles/notes.toml');
     });
 
-    test('falls back to HOME/.config when XDG_CONFIG_HOME is unset', () {
+    test('appends profiles/<name>.toml to the macOS config dir', () {
       final path = resolveProfilePath(
         'notes',
-        environment: {'HOME': '/home/me'},
+        environment: {'HOME': '/Users/me'},
+        platform: const MacOsConfigDir(),
       );
-      expect(path.path, '/home/me/.config/dsync/profiles/notes.toml');
+      expect(
+        path.path,
+        '/Users/me/Library/Application Support/dsync/profiles/notes.toml',
+      );
     });
 
-    test('throws when neither is set', () {
+    test('appends profiles/<name>.toml to the Windows config dir', () {
+      final path = resolveProfilePath(
+        'notes',
+        environment: {'APPDATA': r'C:\Users\me\AppData\Roaming'},
+        platform: const WindowsConfigDir(),
+      );
       expect(
-        () => resolveProfilePath('notes', environment: const {}),
+        path.path,
+        r'C:\Users\me\AppData\Roaming/dsync/profiles/notes.toml',
+      );
+    });
+
+    test('propagates a missing-variable failure unchanged', () {
+      expect(
+        () => resolveProfilePath(
+          'notes',
+          environment: const {},
+          platform: const LinuxConfigDir(),
+        ),
         throwsStateError,
       );
     });
@@ -365,7 +455,11 @@ a = "notes"
 b = "host:/remote/notes"
 ''');
 
-      final profile = await loadProfile('loc', environment: env());
+      final profile = await loadProfile(
+        'loc',
+        environment: env(),
+        platform: const LinuxConfigDir(),
+      );
 
       expect(profile.a, isA<Location>());
       expect(profile.a.path, 'notes');
