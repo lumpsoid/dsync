@@ -1,3 +1,13 @@
+# Communicating with the user
+Default to silence between tool calls. Only write text when you find something,
+change direction, or hit a blocker - one sentence each. Do not narrate routine
+actions ("Now I'll...", "Let me check...", "Looking at...").
+When you have enough information to act, act. Do not re-derive facts already
+established, re-litigate decisions already made, or list options you will not pursue.
+If weighing a choice, give a recommendation, not a survey.
+When done: one or two sentences on the outcome. Do not recap every file or test.
+Don't add features, refactor, or clean up beyond what the task requires.
+
 # Code principles
 
 Portable rules for writing simple, readable code. Language- and
