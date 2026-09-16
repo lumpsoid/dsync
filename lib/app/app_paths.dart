@@ -31,12 +31,18 @@ import 'package:path_provider/path_provider.dart';
 /// (SPEC §12) — and is landed anyway so the pair stays symmetric with the
 /// state dir and the head is not left to re-derive it, differently, the day
 /// it needs one.
+///
+/// [documentsDir] is the third directory, and the one user data lives in:
+/// the only place this head can put a local replica. See
+/// `RunSetupController` for the scoped-storage decision that makes it so.
 class AppPaths {
-  /// Composes both directories from [baseDir], the platform's application
-  /// support directory. `core` joins `dsync` onto it, the same as every
-  /// other branch; an empty [baseDir] is refused by `core` at construction
-  /// (`ArgumentError`) rather than resolving to a bare `/dsync`.
-  AppPaths(String baseDir)
+  /// Composes both `core` directories from [baseDir], the platform's
+  /// application support directory. `core` joins `dsync` onto it, the same
+  /// as every other branch; an empty [baseDir] is refused by `core` at
+  /// construction (`ArgumentError`) rather than resolving to a bare
+  /// `/dsync`. [documentsDir] is carried as handed over: replica folders go
+  /// directly under it, and nothing of `dsync`'s own is written there.
+  AppPaths(String baseDir, {required this.documentsDir})
     : _baseDir = baseDir,
       stateDir = resolveStateDir(const {}, HostSuppliedStateDir(baseDir)),
       configDir = resolveConfigDir(const {}, HostSuppliedConfigDir(baseDir));
@@ -44,10 +50,19 @@ class AppPaths {
   final String _baseDir;
 
   /// The single place the head touches the plugin: asks the platform for
-  /// its application support directory and hands the answer to the plain
-  /// constructor. Requires a Flutter binding, so it is production-only.
-  static Future<AppPaths> forThisDevice() async =>
-      AppPaths((await getApplicationSupportDirectory()).path);
+  /// its application support and documents directories and hands the
+  /// answers to the plain constructor. Requires a Flutter binding, so it is
+  /// production-only.
+  static Future<AppPaths> forThisDevice() async => AppPaths(
+    (await getApplicationSupportDirectory()).path,
+    documentsDir: (await getApplicationDocumentsDirectory()).path,
+  );
+
+  /// The platform's application documents directory — app-private on
+  /// Android, the app's own `Documents` on iOS. Where local replica folders
+  /// are created (SPEC §16 keeps SAF out of v1); distinct from [stateDir]
+  /// so a user's synced files never sit beside the identity and archives.
+  final String documentsDir;
 
   /// Where the device identity, the paired-device store, and the archives
   /// and their locks live (SPEC §8.3).

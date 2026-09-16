@@ -11,13 +11,16 @@ import 'package:test/test.dart';
 void main() {
   group('AppPaths', () {
     test('composes the state dir through HostSuppliedStateDir', () {
-      final paths = AppPaths('/data/user/0/app/files');
+      final paths = AppPaths('/data/user/0/app/files', documentsDir: '/docs');
 
       expect(paths.stateDir, '/data/user/0/app/files/dsync');
     });
 
     test('composes the config dir through HostSuppliedConfigDir', () {
-      final paths = AppPaths('/var/mobile/Application Support');
+      final paths = AppPaths(
+        '/var/mobile/Application Support',
+        documentsDir: '/docs',
+      );
 
       expect(paths.configDir, '/var/mobile/Application Support/dsync');
     });
@@ -26,13 +29,13 @@ void main() {
       // Both HostSupplied* branches join `dsync` onto the same base: a
       // mobile host has one app-private directory, not a config/state
       // split to honour (the macOS case in `config_dir.dart`, same shape).
-      final paths = AppPaths('/base');
+      final paths = AppPaths('/base', documentsDir: '/docs');
 
       expect(paths.configDir, paths.stateDir);
     });
 
     test('stateDirPlatform is the HostSuppliedStateDir case over the base', () {
-      final paths = AppPaths('/base');
+      final paths = AppPaths('/base', documentsDir: '/docs');
 
       expect(paths.stateDirPlatform, isA<HostSuppliedStateDir>());
       expect((paths.stateDirPlatform as HostSuppliedStateDir).baseDir, '/base');
@@ -44,7 +47,7 @@ void main() {
       // been built over the resolved `stateDir` rather than the base,
       // `resolveStateDir` would join `dsync` a second time and the archive
       // would land in `<base>/dsync/dsync/`.
-      final paths = AppPaths('/base');
+      final paths = AppPaths('/base', documentsDir: '/docs');
 
       final archive = resolveArchiveLogPath(
         profileId: 'p',
@@ -59,7 +62,17 @@ void main() {
     test('an empty base dir is refused at construction', () {
       // `core` refuses it (`ArgumentError`) rather than resolving to a bare
       // `/dsync`; the head must not have wrapped that check away.
-      expect(() => AppPaths(''), throwsArgumentError);
+      expect(() => AppPaths('', documentsDir: '/docs'), throwsArgumentError);
+    });
+
+    test('documentsDir is carried as handed over, outside the state dir', () {
+      // Replica folders go straight under the platform's documents
+      // directory: nothing joins `dsync` onto it, and it is not derived from
+      // the base dir — the two are separate platform answers.
+      final paths = AppPaths('/base', documentsDir: '/data/app/app_flutter');
+
+      expect(paths.documentsDir, '/data/app/app_flutter');
+      expect(paths.documentsDir, isNot(startsWith(paths.stateDir)));
     });
   });
 }

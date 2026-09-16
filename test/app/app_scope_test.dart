@@ -76,7 +76,7 @@ void main() {
     test('a pinned controller is what every later read sees', () {
       // Paths are injected so the fake never reaches `path_provider`.
       final fake = AppController(
-        () async => AppPaths('/fake'),
+        () async => AppPaths('/fake', documentsDir: '/fake/documents'),
         now: DateTime.now,
       );
       appScope.setController(fake);

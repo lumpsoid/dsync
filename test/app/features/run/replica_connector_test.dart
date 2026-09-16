@@ -33,7 +33,11 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('replica_connector_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    app = AppController(
+      () async =>
+          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+      now: DateTime.now,
+    );
     dials = [];
     // Each test swaps `dial` before connecting; a test that forgets gets a
     // loud failure rather than a silent success.
@@ -238,7 +242,8 @@ void main() {
         // expired certificate: the connector reads `app.now`.
         app.dispose();
         app = AppController(
-          () async => AppPaths(tempDir.path),
+          () async =>
+              AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
           now: () => DateTime.now().add(const Duration(days: 365 * 20)),
         );
         dial = answering();

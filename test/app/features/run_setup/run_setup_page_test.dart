@@ -1,0 +1,337 @@
+import 'dart:io';
+
+import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
+import 'package:dsync/app/features/run_setup/run_setup_page.dart';
+import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
+import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
+import 'package:dsync/app/run_request.dart';
+import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+/// Rendering tests for the Run setup page, driven the way the scope
+/// contract in `app_scope.dart` intends: the controllers are pinned with
+/// `setController` and the page is pumped directly. The page's `initState`
+/// calls `load`, which reads the store and lists the documents dir — real
+/// I/O, so every test first waits for it under `runAsync`, then writes the
+/// case it is about into the view state as the controller would.
+void main() {
+  late Directory tempDir;
+  late AppController app;
+  late RunSetupController controller;
+  late PairedDevice desktop;
+  late String certA;
+  final started = <RunRequest>[];
+
+  setUpAll(() {
+    certA = generateDeviceIdentity(commonName: 'desktop').certificatePem;
+  });
+
+  setUp(() async {
+    tempDir = await Directory.systemTemp.createTemp('run_setup_page_test');
+    app = AppController(
+      () async =>
+          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+      now: DateTime.now,
+    );
+    controller = RunSetupController(app);
+    desktop = PairedDevice(
+      certificatePem: certA,
+      name: 'desktop',
+      agreedReplicaRoots: const {'/home/me/notes'},
+      pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
+      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
+    );
+    await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
+        .add(desktop);
+    appScope.setController(app);
+    runSetupScope.setController(controller);
+    started.clear();
+  });
+
+  // Scopes are process-global: reset both so a pin cannot leak into the
+  // next test.
+  tearDown(appScope.reset);
+  tearDown(runSetupScope.reset);
+  tearDown(() => controller.dispose());
+  tearDown(() => tempDir.delete(recursive: true));
+
+  /// Pumps the page for [deviceId] and waits, in real time, for `load` to
+  /// finish. Bounded so a regression fails rather than hangs. The viewport
+  /// is made tall enough for the whole form: a `ListView` builds only what
+  /// is on screen, and the button is last.
+  Future<void> pumpLoaded(WidgetTester tester, {String? deviceId}) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RunSetupPage(
+            deviceId: deviceId ?? desktop.deviceId,
+            onStart: started.add,
+          ),
+        ),
+      );
+      final deadline = Stopwatch()..start();
+      while (controller.state.peer is RunSetupPeerLoading &&
+          deadline.elapsed < const Duration(seconds: 20)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    });
+    await tester.pump();
+  }
+
+  bool startEnabled(WidgetTester tester) => tester
+      .widget<FilledButton>(find.byKey(const Key('run-setup-start')))
+      .enabled;
+
+  testWidgets('loading: a progress indicator and no form', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RunSetupPage(deviceId: desktop.deviceId, onStart: started.add),
+      ),
+    );
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byKey(const Key('run-setup-start')), findsNothing);
+    // Let `load` finish before the tree is torn down.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 200)),
+    );
+  });
+
+  testWidgets('missing: the message instead of the form', (tester) async {
+    await pumpLoaded(tester, deviceId: 'dead:beef');
+
+    expect(find.textContaining('dead:beef'), findsOneWidget);
+    expect(find.byKey(const Key('run-setup-start')), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets('loaded: the device name, every field, the switch on, and an '
+      'enabled button', (tester) async {
+    await pumpLoaded(tester);
+
+    expect(find.text('Sync with desktop'), findsOneWidget);
+    for (final key in const [
+      'run-setup-local-folder',
+      'run-setup-new-folder',
+      'run-setup-create-folder',
+      'run-setup-remote-root',
+      'run-setup-address',
+      'run-setup-dry-run',
+    ]) {
+      expect(find.byKey(Key(key)), findsOneWidget, reason: key);
+    }
+    expect(
+      tester
+          .widget<SwitchListTile>(find.byKey(const Key('run-setup-dry-run')))
+          .value,
+      isTrue,
+    );
+    expect(startEnabled(tester), isTrue);
+    expect(find.textContaining('dsync pair grant'), findsOneWidget);
+    expect(find.textContaining('has not granted this device'), findsNothing);
+  });
+
+  testWidgets('the grant hint replaces the remote root helper', (tester) async {
+    await pumpLoaded(tester);
+
+    controller.state.recordPeer(
+      const RunSetupPeerLoaded(
+        name: 'desktop',
+        grantHint: 'desktop has not granted this device any replica root yet.',
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('has not granted this device'), findsOneWidget);
+  });
+
+  testWidgets('folders are listed and the selection follows the view state', (
+    tester,
+  ) async {
+    await pumpLoaded(tester);
+    expect(find.text('Pick a folder'), findsOneWidget);
+
+    controller.state.recordLocalFolders(const [
+      'notes',
+      'photos',
+    ], selected: 'photos');
+    await tester.pump();
+
+    expect(find.text('photos'), findsOneWidget);
+    expect(find.text('Pick a folder'), findsNothing);
+  });
+
+  testWidgets('field errors render under their own field', (tester) async {
+    await pumpLoaded(tester);
+    expect(find.text('folder missing'), findsNothing);
+
+    controller.state.recordFieldErrors(
+      localFolder: 'folder missing',
+      remoteRoot: 'remote missing',
+      address: null,
+    );
+    controller.state.recordNewFolderError('bad name');
+    await tester.pump();
+
+    expect(find.text('folder missing'), findsOneWidget);
+    expect(find.text('remote missing'), findsOneWidget);
+    expect(find.text('bad name'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('run-setup-address')))
+          .decoration
+          ?.errorText,
+      isNull,
+    );
+  });
+
+  testWidgets('starting: inputs and button disabled, progress shown', (
+    tester,
+  ) async {
+    await pumpLoaded(tester);
+
+    controller.state.recordOutcome(const RunSetupStarting());
+    await tester.pump();
+
+    expect(startEnabled(tester), isFalse);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    for (final key in const [
+      'run-setup-new-folder',
+      'run-setup-remote-root',
+      'run-setup-address',
+    ]) {
+      expect(tester.widget<TextField>(find.byKey(Key(key))).enabled, isFalse);
+    }
+    expect(
+      tester
+          .widget<SwitchListTile>(find.byKey(const Key('run-setup-dry-run')))
+          .onChanged,
+      isNull,
+    );
+  });
+
+  testWidgets('failed: shows the rendered message and re-enables the button', (
+    tester,
+  ) async {
+    await pumpLoaded(tester);
+    expect(find.text('Could not open /x'), findsNothing);
+
+    controller.state.recordOutcome(const RunSetupFailed('Could not open /x'));
+    await tester.pump();
+
+    expect(find.text('Could not open /x'), findsOneWidget);
+    expect(startEnabled(tester), isTrue);
+  });
+
+  testWidgets('the switch reports to the controller as the user\'s choice', (
+    tester,
+  ) async {
+    await pumpLoaded(tester);
+
+    await tester.tap(find.byKey(const Key('run-setup-dry-run')));
+    await tester.pump();
+
+    expect(controller.state.dryRun, isFalse);
+  });
+
+  testWidgets('tapping Start with nothing filled in shows the field errors '
+      'and does not leave', (tester) async {
+    await pumpLoaded(tester);
+
+    await tester.tap(find.byKey(const Key('run-setup-start')));
+    await tester.pump();
+
+    expect(controller.state.localFolderError, isNotNull);
+    expect(find.text(controller.state.localFolderError!), findsOneWidget);
+    expect(find.text(controller.state.remoteRootError!), findsOneWidget);
+    expect(started, isEmpty);
+  });
+
+  testWidgets('a stale started outcome does not leave by itself', (
+    tester,
+  ) async {
+    await pumpLoaded(tester);
+
+    controller.state.recordOutcome(
+      const RunSetupStarted(
+        RunRequest(
+          localRootPath: '/docs/notes',
+          deviceName: 'desktop',
+          peerDeviceId: 'ab:cd',
+          remoteRootPath: '~/notes',
+          addressOverride: null,
+          jobs: 4,
+          dryRun: true,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(started, isEmpty);
+    expect(startEnabled(tester), isTrue);
+  });
+
+  testWidgets('create, fill in, Start: leaves through onStart once with the '
+      'request', (tester) async {
+    await pumpLoaded(tester);
+
+    await tester.enterText(
+      find.byKey(const Key('run-setup-new-folder')),
+      'notes',
+    );
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('run-setup-create-folder')));
+      final deadline = Stopwatch()..start();
+      while (controller.state.selectedLocalFolder == null &&
+          deadline.elapsed < const Duration(seconds: 20)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    });
+    await tester.pump();
+    expect(find.text('notes'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('run-setup-new-folder')))
+          .controller
+          ?.text,
+      isEmpty,
+    );
+
+    await tester.enterText(
+      find.byKey(const Key('run-setup-remote-root')),
+      '~/notes',
+    );
+    await tester.enterText(
+      find.byKey(const Key('run-setup-address')),
+      '10.0.0.9:4242',
+    );
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('run-setup-start')));
+      final deadline = Stopwatch()..start();
+      while (started.isEmpty &&
+          deadline.elapsed < const Duration(seconds: 20)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    });
+    await tester.pump();
+
+    final request = started.single;
+    expect(request.localRootPath, '${tempDir.path}/documents/notes');
+    expect(request.deviceName, 'desktop');
+    expect(request.peerDeviceId, desktop.deviceId);
+    expect(request.remoteRootPath, '~/notes');
+    expect(request.addressOverride?.host, '10.0.0.9');
+    expect(request.addressOverride?.port, 4242);
+    expect(request.dryRun, isTrue);
+  });
+}

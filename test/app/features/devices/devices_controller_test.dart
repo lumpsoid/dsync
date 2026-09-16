@@ -28,7 +28,11 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('devices_controller_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    app = AppController(
+      () async =>
+          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+      now: DateTime.now,
+    );
     controller = DevicesController(app);
   });
 
@@ -160,7 +164,8 @@ void main() {
       final notAfter = certificateValidityFromDer(identity.certificateDer)
           .notAfter;
       final nearExpiry = AppController(
-        () async => AppPaths(tempDir.path),
+        () async =>
+            AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
         now: () => notAfter.subtract(const Duration(days: 10)),
       );
       final near = DevicesController(nearExpiry);

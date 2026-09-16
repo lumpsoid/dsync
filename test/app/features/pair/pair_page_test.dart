@@ -42,7 +42,11 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('pair_page_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    app = AppController(
+      () async =>
+          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+      now: DateTime.now,
+    );
     controller = PairController(
       app,
       enrol: ({
