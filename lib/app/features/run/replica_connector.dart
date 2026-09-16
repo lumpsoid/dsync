@@ -10,8 +10,10 @@ import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/scan/case_folding.dart';
@@ -269,9 +271,11 @@ class ReplicaConnector {
     // is exactly the peer that gets backgrounded mid-session, so the far
     // end's silence — or its own — must surface as a failure rather than a
     // run that never finishes.
-    return RemoteAgent(
+    return _PeerAgent(
       IdleDeadlineChannel(dialed.channel, peer: deviceName),
       spec,
+      deviceName: deviceName,
+      address: address,
     );
   }
 
@@ -399,4 +403,52 @@ final class CertificateExpiredFailure extends ReplicaConnectFailure {
           'pair again, after `dsync pair revoke` of this device on '
           '"$deviceName".',
   };
+}
+
+/// The peer side as [ReplicaConnector] hands it out: a [RemoteAgent] whose
+/// [hello] failures are rewritten as [PeerUnreachableFailure] — the head's
+/// counterpart of the CLI's `_DiagnosedRemoteAgent`
+/// (`lib/cli/agents/connected_replicas.dart`), for the same reason.
+///
+/// `SocketChannel.connectSecure` documents the trap: under TLS 1.3 this
+/// side can finish its own half of the handshake before the far end has
+/// validated *our* certificate, so a desktop that revoked this device (or
+/// never paired it) does not necessarily refuse the dial at all — the
+/// socket opens, and the refusal arrives as the channel closing under the
+/// version handshake, a `StateError` with no device name in it. That is
+/// still "the desktop would not talk to us", and the Run page should say
+/// so with the address that was tried, not print `Bad state: Channel
+/// closed…`. The rewrap happens here rather than in `connect` because the
+/// protocol connect runs on `RunController`'s schedule (SPEC §4.2), and
+/// [RemoteAgent.hello] is one-shot: a second call would send a second
+/// version frame.
+///
+/// [AgentOperationException] is let through untouched: it is the far end's
+/// own in-band reply to the `hello` — SPEC §4.4's root refusal among them —
+/// and `SyncRunController` renders that one by its text.
+final class _PeerAgent extends RemoteAgent {
+  final String deviceName;
+  final PeerAddress address;
+
+  _PeerAgent(
+    super.channel,
+    super.spec, {
+    required this.deviceName,
+    required this.address,
+  });
+
+  @override
+  Future<ReplicaInfo> hello() async {
+    try {
+      return await super.hello();
+    } on AgentOperationException {
+      rethrow;
+    } catch (error) {
+      throw PeerUnreachableFailure(
+        deviceName: deviceName,
+        address: address,
+        cause: error,
+      );
+    }
+  }
 }

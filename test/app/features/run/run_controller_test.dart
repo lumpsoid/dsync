@@ -202,6 +202,44 @@ void main() {
     },
   );
 
+  test('a far end that hangs up under the version handshake is rendered as '
+      'unreachable, with the address tried (SPEC §4.4)', () async {
+    // The shape a revoked (or never-paired) device sees under TLS 1.3:
+    // the dial itself succeeds and the refusal is the channel closing
+    // before `hello` — see `_PeerAgent` in `replica_connector.dart`.
+    // The dial closes the far end the moment it is handed out; the near
+    // end's version handshake then finds nothing to read.
+    Future<DialResult> hangsUp(
+      String host,
+      int port, {
+      required String expectedPeerDeviceId,
+      required DeviceIdentity ownIdentity,
+      required DateTime now,
+    }) async {
+      final (near, far) = InMemoryChannel.pair();
+      far.input.listen((_) {});
+      // Not awaited: a `StreamController.close()` only completes once the
+      // near end has listened and drained the done event — which is `hello`
+      // itself — so awaiting it here would time the dial out instead, and
+      // "unreachable" would come from the timeout rather than the rewrap.
+      unawaited(far.close());
+      return (channel: near, presentedCertificatePem: desktop.certificatePem);
+    }
+
+    await make(hangsUp).start(request(dryRun: true));
+
+    expect(
+      failed().message,
+      allOf(
+        startsWith('Could not reach "desktop" at 10.0.0.7:28771'),
+        contains('Enter its address by hand'),
+        // The cause travels with it, the way the CLI's "Cannot reach
+        // replica b: <cause>" line carries it.
+        contains('Channel closed before version handshake'),
+      ),
+    );
+  });
+
   group('dry run', () {
     test('the plan and its conflicts are reported, nothing is applied, and '
         'every proposed action counts as skipped', () async {
