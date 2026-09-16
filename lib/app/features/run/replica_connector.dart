@@ -311,7 +311,7 @@ class ReplicaConnector {
       localRootPath,
       peerDeviceId,
       remoteRootPath,
-    ].join(' ');
+    ].join('\x00');
     return sha256.convert(utf8.encode(input)).toString();
   }
 

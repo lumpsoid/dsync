@@ -368,6 +368,23 @@ void main() {
       remoteRootPath: remoteRootPath,
     );
 
+    test('a known triple derives the pinned id', () {
+      // Pins the derivation itself, not just its stability: the separator
+      // is a NUL, and a literal control character in source is fragile in
+      // a way an escape is not — a tool that stripped or mangled it would
+      // silently change every profile id and orphan every archive the head
+      // has written. This constant is sha256 of the four inputs joined by
+      // one U+0000, computed independently of the code under test.
+      expect(
+        ReplicaConnector.profileIdFor(
+          localRootPath: '/data/notes',
+          peerDeviceId: 'peer-id',
+          remoteRootPath: '/home/me/notes',
+        ),
+        '7123a178a0177b0df5828a870033796147bf5d3487dc0493401afd40336a72ce',
+      );
+    });
+
     test('the same triple resolves to the same id across calls', () {
       expect(id(), id());
       expect(id(), matches(RegExp(r'^[0-9a-f]{64}$')));
