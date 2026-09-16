@@ -6,6 +6,8 @@ import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -261,6 +263,109 @@ void main() {
     expect(find.text('No pairing for "desktop".'), findsOneWidget);
     expect(find.byKey(const Key('run-done')), findsOneWidget);
     expect(find.byKey(const Key('run-stop')), findsNothing);
+  });
+
+  group('the conflict sheet', () {
+    const localBoth = ScanEntry(
+      path: 'both.txt',
+      reason: ScanReason.modified,
+      size: 300,
+    );
+    const remoteBoth = ScanEntry(
+      path: 'both.txt',
+      reason: ScanReason.modified,
+      size: 700,
+    );
+    const plan = Plan(
+      actions: [
+        PlanAction(path: 'new.txt', type: ActionType.copyAtoB, bytes: 2048),
+        PlanAction(path: 'gone.txt', type: ActionType.deleteOnB),
+      ],
+      conflicts: [Conflict(path: 'both.txt', onA: localBoth, onB: remoteBoth)],
+    );
+
+    /// What the parked presenter will answer, set by [open]. Kept out of
+    /// `open`'s return value on purpose: an `async` helper returning this
+    /// future would chain onto it, and awaiting the helper would then wait
+    /// for the decision the test has not made yet.
+    late Future<List<PlanAction>> decided;
+
+    /// Opens the sheet the way a run does: the controller's own presenter
+    /// parks the completer and moves the phase, so the page's `start` is
+    /// refused and every tap goes through the real input methods.
+    Future<void> open(WidgetTester tester) async {
+      controller.state.recordStart(dryRun: false);
+      decided = controller.present(plan, request: request);
+      await pump(tester);
+    }
+
+    testWidgets('renders conflicts first, then actions, and Stop', (
+      tester,
+    ) async {
+      await open(tester);
+
+      expect(find.byKey(const Key('run-decisions')), findsOneWidget);
+      expect(find.byKey(const Key('run-awaiting')), findsOneWidget);
+      expect(find.byKey(const Key('run-stop')), findsOneWidget);
+      expect(
+        find.text('Conflict: this device modified, desktop modified'),
+        findsOneWidget,
+      );
+      expect(find.text('Keep this device'), findsOneWidget);
+      expect(find.text('Keep desktop'), findsOneWidget);
+      final conflictY = tester
+          .getTopLeft(find.byKey(const Key('decision-both.txt')))
+          .dy;
+      final actionY = tester
+          .getTopLeft(find.byKey(const Key('decision-new.txt')))
+          .dy;
+      expect(conflictY, lessThan(actionY));
+      expect(find.text('copy to desktop · 2.0 KiB'), findsOneWidget);
+    });
+
+    testWidgets('a direction and a skip reach the returned list on Confirm', (
+      tester,
+    ) async {
+      await open(tester);
+
+      await tester.tap(find.text('Keep desktop'));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('decision-new.txt')));
+      await tester.pump();
+      expect(
+        tester
+            .widget<SwitchListTile>(find.byKey(const Key('decision-new.txt')))
+            .value,
+        isFalse,
+      );
+      await tester.tap(find.byKey(const Key('run-confirm')));
+      await tester.pump();
+
+      final actions = await decided;
+      expect(actions.map((a) => a.path), ['both.txt', 'gone.txt']);
+      expect(actions.first.type, ActionType.copyBtoA);
+      expect(find.byKey(const Key('run-decisions')), findsNothing);
+    });
+
+    testWidgets('Accept all returns the plan unchanged', (tester) async {
+      await open(tester);
+
+      await tester.tap(find.byKey(const Key('run-accept-all')));
+      await tester.pump();
+
+      expect(await decided, same(plan.actions));
+      expect(find.byKey(const Key('run-decisions')), findsNothing);
+    });
+
+    testWidgets('leaving the page mid-decision completes the presenter', (
+      tester,
+    ) async {
+      await open(tester);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      expect(await decided, isEmpty);
+    });
   });
 
   testWidgets('leaving the page disposes the controller it created', (

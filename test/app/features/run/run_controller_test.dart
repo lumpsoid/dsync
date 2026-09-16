@@ -131,6 +131,28 @@ void main() {
 
   SyncRunFailed failed() => controller.state.phase as SyncRunFailed;
 
+  /// Waits for the sheet: `start` is still awaiting the stream, so the
+  /// phase is polled rather than awaited — a bounded poll is what a page
+  /// would see too, and it cannot deadlock on the test's own zone.
+  Future<void> untilAwaiting() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (controller.state.phase is! SyncRunAwaitingDecisions) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('the sheet never opened: ${controller.state.phase}');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  }
+
+  /// A run answered the `--batch` way (SPEC §11.3): the sheet opens and
+  /// "accept all" takes the plan as reconciled.
+  Future<void> startAndAcceptAll(RunRequest request) async {
+    final started = controller.start(request);
+    await untilAwaiting();
+    controller.acceptAll();
+    await started;
+  }
+
   group('connect failures, rendered per case', () {
     test('unpaired device', () async {
       await make(served(desktopAgent))
@@ -213,7 +235,8 @@ void main() {
       // Positive control for the dry run: the same tree, applied.
       await File('${localRoot.path}/new.txt').writeAsString('from a');
 
-      await make(served(desktopAgent)).start(request(dryRun: false));
+      make(served(desktopAgent));
+      await startAndAcceptAll(request(dryRun: false));
 
       final state = controller.state;
       expect(state.results.single.path, 'new.txt');
@@ -225,15 +248,97 @@ void main() {
 
     test('a second run of the same pair is no longer a first sync', () async {
       await File('${localRoot.path}/new.txt').writeAsString('from a');
-      await make(served(desktopAgent)).start(request(dryRun: false));
+      make(served(desktopAgent));
+      await startAndAcceptAll(request(dryRun: false));
       controller.dispose();
 
+      // Nothing left to do, so no sheet opens: `start` runs to the end.
       await make(served(desktopAgent)).start(request(dryRun: false));
 
       expect(controller.state.header!.firstSyncWarning, isNull);
       expect(controller.state.header!.history, contains('Last synced'));
       expect(controller.state.scanTally!.local.metadataMatched, 1);
     });
+  });
+
+  group('interactive run', () {
+    test('a resolved conflict is applied in the chosen direction and a '
+        'skipped action is not', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      await File('${localRoot.path}/both.txt').writeAsString('a version');
+      await File('${remoteRoot.path}/both.txt').writeAsString('b version');
+
+      final started = make(served(desktopAgent)).start(request(dryRun: false));
+      await untilAwaiting();
+      controller.resolveConflict('both.txt', SyncRunConflictChoice.keepLocal);
+      controller.skip('new.txt');
+      controller.confirm();
+      await started;
+
+      final state = controller.state;
+      final finished = state.phase as SyncRunFinished;
+      expect(finished.applied, 1);
+      expect(finished.skipped, 1);
+      expect(finished.conflicts, 1);
+      expect(state.results.single.path, 'both.txt');
+      expect(state.results.single.action, 'copy to desktop');
+      expect(
+        await File('${remoteRoot.path}/both.txt').readAsString(),
+        'a version',
+      );
+      expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
+    });
+
+    test('stop while the sheet is up applies nothing and releases both '
+        'locks', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      final started = make(served(desktopAgent)).start(request(dryRun: false));
+      await untilAwaiting();
+
+      await controller.stop();
+      await started;
+
+      expect(controller.state.phase, isA<SyncRunStopped>());
+      expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
+      // Both locks are free again: a run suspended on the presenter holds
+      // them, and only completing the parked completer lets the generator
+      // reach its cleanup. A held lock throws here.
+      final profileId = ReplicaConnector.profileIdFor(
+        localRootPath: localRoot.path,
+        peerDeviceId: desktop.deviceId,
+        remoteRootPath: remoteRoot.path,
+      );
+      final lockA = ReplicaLock.forProfile(
+        profileId: profileId,
+        side: 'a',
+        platform: (await app.paths).stateDirPlatform,
+      );
+      await lockA.acquire();
+      await lockA.release();
+      final lockB = ReplicaLock(
+        File('${tempDir.path}/desktop/$profileId-b.lock'),
+      );
+      await lockB.acquire();
+      await lockB.release();
+    });
+
+    test(
+      'leaving the page while the sheet is up lets the run finish',
+      () async {
+        await File('${localRoot.path}/new.txt').writeAsString('from a');
+        final started = make(served(desktopAgent))
+            .start(request(dryRun: false));
+        await untilAwaiting();
+
+        controller.dispose();
+        await started;
+
+        // The generator's cleanup is not awaited by dispose; a second run of
+        // the same pair proves both locks came free.
+        await make(served(desktopAgent)).start(request(dryRun: true));
+        expect(controller.state.phase, isA<SyncRunFinished>());
+      },
+    );
   });
 
   test('a second start on the same instance is refused', () async {

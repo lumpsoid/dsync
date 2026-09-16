@@ -45,6 +45,67 @@ final class SyncRunFinished extends SyncRunPhase {
   final int unreadable;
 }
 
+/// `RunController` has handed the plan to the presenter and is suspended on
+/// its answer (SPEC §11.3): the conflict sheet is up. The rows are the
+/// user's choices so far, already rendered — the sheet reads them and calls
+/// `SyncRunController`'s input methods, never a `Plan`. They live on the
+/// phase rather than beside it because a set of decisions only exists
+/// while something is being decided; each input replaces the whole case.
+/// [conflicts] come first, then [actions]: the order SPEC §11.3 fixes and
+/// the order the events arrived in.
+final class SyncRunAwaitingDecisions extends SyncRunPhase {
+  const SyncRunAwaitingDecisions({
+    required this.conflicts,
+    required this.actions,
+  });
+
+  final List<SyncRunConflictDecision> conflicts;
+  final List<SyncRunActionDecision> actions;
+}
+
+/// What the user can do with one conflict (SPEC §11.3: "picks a
+/// direction"). [unresolved] is a choice too — the default, and what "skip"
+/// means for a conflict: no action is added for the path, and the summary
+/// counts it under conflicts, not skips.
+enum SyncRunConflictChoice { unresolved, keepLocal, keepRemote }
+
+/// One `Conflict` in the sheet: the same two status words as
+/// [SyncRunConflictRow], the current [choice], and which choices are
+/// [offered] — a side with no record of the path cannot be the one kept,
+/// so a one-sided conflict offers only the other direction (the CLI's
+/// prompt makes the same call).
+final class SyncRunConflictDecision {
+  const SyncRunConflictDecision({
+    required this.path,
+    required this.local,
+    required this.remote,
+    required this.choice,
+    required this.offered,
+  });
+
+  final String path;
+  final String local;
+  final String remote;
+  final SyncRunConflictChoice choice;
+  final List<SyncRunConflictChoice> offered;
+}
+
+/// One proposed `PlanAction` in the sheet: [kept] is `false` once the user
+/// skipped it.
+final class SyncRunActionDecision {
+  const SyncRunActionDecision({
+    required this.path,
+    required this.action,
+    required this.bytes,
+    required this.kept,
+  });
+
+  final String path;
+  final String action;
+  final int bytes;
+  final bool kept;
+}
+
 /// The user stopped the run. **This is not "cancelled".** Stopping means
 /// `SyncRunController` stopped listening to `RunController.run()`, which
 /// suspends its apply loop at an action boundary — the loop is a

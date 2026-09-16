@@ -73,7 +73,8 @@ class _RunPageState extends State<RunPage> {
             builder: (context, _) => switch (state.phase) {
               SyncRunIdle() ||
               SyncRunConnecting() ||
-              SyncRunRunning() => TextButton(
+              SyncRunRunning() ||
+              SyncRunAwaitingDecisions() => TextButton(
                 key: const Key('run-stop'),
                 onPressed: _controller.stop,
                 child: const Text('Stop'),
@@ -88,6 +89,29 @@ class _RunPageState extends State<RunPage> {
             },
           ),
         ],
+      ),
+      // The conflict sheet (SPEC §11.3), as the Scaffold's persistent
+      // bottom sheet rather than a modal one: it is a rendering of the
+      // awaiting-decisions phase and leaves with it, so there is nothing to
+      // pop, no barrier over Stop, and no way to drag it away and strand a
+      // run that is waiting on an answer.
+      bottomSheet: ListenableBuilder(
+        listenable: state,
+        builder: (context, _) => switch (state.phase) {
+          SyncRunAwaitingDecisions(:final conflicts, :final actions) =>
+            _DecisionSheet(
+              conflicts: conflicts,
+              actions: actions,
+              deviceName: widget.request.deviceName,
+              controller: _controller,
+            ),
+          SyncRunIdle() ||
+          SyncRunConnecting() ||
+          SyncRunRunning() ||
+          SyncRunFinished() ||
+          SyncRunStopped() ||
+          SyncRunFailed() => const SizedBox.shrink(),
+        },
       ),
       body: ListenableBuilder(
         listenable: state,
@@ -153,6 +177,10 @@ class _PhaseLine extends StatelessWidget {
           ],
         ),
         SyncRunRunning() => _Progress(state.progress, dryRun: state.dryRun),
+        SyncRunAwaitingDecisions() => const Text(
+          'Waiting for your decisions below.',
+          key: Key('run-awaiting'),
+        ),
         SyncRunFinished(
           :final applied,
           :final skipped,
@@ -348,6 +376,146 @@ class _Conflicts extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The conflict sheet (SPEC §11.3): conflicts first, each with the choices
+/// it offers, then every proposed action with a keep/skip switch, then
+/// "Accept all" (the `--batch` answer) and "Confirm". Reads the rendered
+/// rows and calls the controller's input methods; decides nothing itself.
+class _DecisionSheet extends StatelessWidget {
+  const _DecisionSheet({
+    required this.conflicts,
+    required this.actions,
+    required this.deviceName,
+    required this.controller,
+  });
+
+  final List<SyncRunConflictDecision> conflicts;
+  final List<SyncRunActionDecision> actions;
+  final String deviceName;
+  final SyncRunController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      key: const Key('run-decisions'),
+      elevation: 8,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.6,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text(
+                'Review before applying',
+                style: theme.textTheme.titleMedium,
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                children: [
+                  for (final row in conflicts)
+                    _ConflictDecision(
+                      row,
+                      deviceName: deviceName,
+                      controller: controller,
+                    ),
+                  for (final row in actions)
+                    SwitchListTile(
+                      key: Key('decision-${row.path}'),
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      title: Text(row.path),
+                      subtitle: Text(
+                        '${row.action} · ${formatBytes(row.bytes)}',
+                      ),
+                      value: row.kept,
+                      onChanged: (kept) => kept
+                          ? controller.keep(row.path)
+                          : controller.skip(row.path),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    key: const Key('run-accept-all'),
+                    onPressed: controller.acceptAll,
+                    child: const Text('Accept all, leave conflicts'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    key: const Key('run-confirm'),
+                    onPressed: controller.confirm,
+                    child: const Text('Confirm'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One conflict's row: both sides' status words and a segmented choice
+/// over exactly the directions the row offers.
+class _ConflictDecision extends StatelessWidget {
+  const _ConflictDecision(
+    this.row, {
+    required this.deviceName,
+    required this.controller,
+  });
+
+  final SyncRunConflictDecision row;
+  final String deviceName;
+  final SyncRunController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      key: Key('decision-${row.path}'),
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(row.path, style: theme.textTheme.titleSmall),
+          Text(
+            'Conflict: this device ${row.local}, $deviceName ${row.remote}',
+            style: TextStyle(color: theme.colorScheme.error),
+          ),
+          const SizedBox(height: 4),
+          SegmentedButton<SyncRunConflictChoice>(
+            segments: [
+              for (final choice in row.offered)
+                ButtonSegment(value: choice, label: Text(_label(choice))),
+            ],
+            selected: {row.choice},
+            onSelectionChanged: (selected) =>
+                controller.resolveConflict(row.path, selected.single),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _label(SyncRunConflictChoice choice) => switch (choice) {
+    SyncRunConflictChoice.unresolved => 'Leave',
+    SyncRunConflictChoice.keepLocal => 'Keep this device',
+    SyncRunConflictChoice.keepRemote => 'Keep $deviceName',
+  };
 }
 
 /// The plan, with each row marked off by its own result once it has one.

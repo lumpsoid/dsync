@@ -12,6 +12,7 @@ import 'package:dsync/dsync_core/run/run_controller.dart';
 import '../../app_controller.dart';
 import '../../run_request.dart';
 import '../run_setup/run_setup_controller.dart';
+import 'plan_decisions.dart';
 import 'replica_connector.dart';
 import 'run_view_state.dart';
 
@@ -60,16 +61,30 @@ import 'run_view_state.dart';
 /// on every backgrounding would turn every notification into a stopped
 /// run. Do not add one as a fix.
 ///
-/// **The presenter seam.** [_present] is the one `Presenter` this head
-/// hands [RunController]: for a dry run it returns nothing, otherwise the
-/// plan unchanged — the batch contract, which never looks at
-/// `Plan.conflicts`. The interactive presenter (the conflict sheet) plugs
-/// in there: it records the plan on the view state, parks a `Completer`
-/// that a new input method completes with the user's choices, and returns
-/// that future. [RunController] emits the `RunPlanEvent` and every
-/// `RunConflictEvent` *before* invoking the presenter, so by the time
-/// [_present] runs the view state already shows what the user is choosing
-/// over.
+/// **The presenter seam.** [present] is the one `Presenter` this head
+/// hands [RunController] (SPEC §11.3). For a dry run it returns nothing.
+/// Otherwise it parks a `Completer`, moves the phase to
+/// [SyncRunAwaitingDecisions] — the conflict sheet — and returns the
+/// completer's future; [resolveConflict], [skip], [keep], [acceptAll] and
+/// [confirm] are the sheet's input methods, and the last two complete it.
+/// [RunController] emits the `RunPlanEvent` and every `RunConflictEvent`
+/// *before* invoking the presenter, so the sheet opens over data the view
+/// state already holds. [acceptAll] is `--batch`: the plan unchanged,
+/// conflicts never resolved.
+///
+/// **The completer is completed exactly once, on every path.** While it is
+/// pending, `RunController.run()` is suspended inside `await presenter(plan)`
+/// holding both replica locks. Cancelling the subscription does *not*
+/// unblock that await — an `async*` generator only notices a cancel at its
+/// next `yield` — so a page that left, or a [stop], while the sheet is up
+/// would otherwise hold both locks until the process dies and the next
+/// run would fail on `ReplicaLockHeldException`. [stop] and [dispose]
+/// therefore complete it first, with the empty list: nothing further
+/// starts, which is exactly the documented stop semantics, and the
+/// generator then reaches its next `yield`, sees the cancel, and runs its
+/// `finally` blocks (unlock, disconnect). [_decide] is the single place
+/// that completes it and guards `isCompleted`, so no path can complete it
+/// twice.
 class SyncRunController {
   SyncRunController(this.app, {required DialPeer dial})
     : _connector = ReplicaConnector(app, dial: dial);
@@ -85,6 +100,12 @@ class SyncRunController {
   bool _stopRequested = false;
   bool _disposed = false;
   int _completedActions = 0;
+  Completer<List<PlanAction>>? _decisions;
+
+  /// The sheet's working state while [_decisions] is pending: the choices
+  /// and the request whose device name the rows are worded with. One
+  /// nullable, not two, so they cannot disagree about whether a sheet is up.
+  ({PlanDecisions choices, RunRequest request})? _pending;
 
   /// Connects both sides for [request] and drives one run to its end.
   /// Completes when the stream has ended, been stopped, or the connection
@@ -129,7 +150,7 @@ class SyncRunController {
     final run = RunController(
       agentA: agents.agentA,
       agentB: agents.agentB,
-      presenter: (plan) => _present(plan, dryRun: request.dryRun),
+      presenter: (plan) => present(plan, request: request),
     );
     await render(run.run(), request: request);
   }
@@ -177,6 +198,9 @@ class SyncRunController {
   Future<void> stop() async {
     if (_stopRequested) return;
     _stopRequested = true;
+    // Before the cancel, which would otherwise never return: see the class
+    // doc comment on the completer.
+    _decide(const []);
     final subscription = _subscription;
     if (subscription == null) return;
     _subscription = null;
@@ -198,6 +222,9 @@ class SyncRunController {
   /// than written to a disposed `ChangeNotifier`.
   void dispose() {
     _disposed = true;
+    // First, so a run suspended on the sheet can reach the cancel below
+    // and release both locks (class doc comment).
+    _decide(const []);
     final subscription = _subscription;
     _subscription = null;
     // Not awaited: the cleanup it triggers (unlock, disconnect) belongs to
@@ -211,12 +238,108 @@ class SyncRunController {
   }
 
   /// The one `Presenter` this head supplies (SPEC §11.3) — see the class
-  /// doc comment's "presenter seam" for where the interactive one goes.
-  Future<List<PlanAction>> _present(Plan plan, {required bool dryRun}) async {
+  /// doc comment's "presenter seam". Public so a test can drive the sheet's
+  /// decision flow over a hand-built plan with no agents; [start] is the
+  /// only production caller.
+  ///
+  /// [request] supplies the mode and the device name the rows are worded
+  /// with, as it does for [render].
+  Future<List<PlanAction>> present(Plan plan, {required RunRequest request}) {
     // `--dry-run`: the plan and its conflicts were already emitted; keeping
     // nothing is what makes every proposed action a skip in the summary.
-    if (dryRun) return const [];
-    return plan.actions;
+    if (request.dryRun) return Future.value(const []);
+    // A run already stopped or abandoned must not park a sheet nobody will
+    // answer; nothing to decide needs no sheet either.
+    if (_stopRequested || _disposed) return Future.value(const []);
+    if (plan.conflicts.isEmpty && plan.actions.isEmpty) {
+      return Future.value(const []);
+    }
+    final decisions = _decisions = Completer<List<PlanAction>>();
+    _pending = (choices: PlanDecisions(plan), request: request);
+    _renderDecisions();
+    return decisions.future;
+  }
+
+  /// Picks a direction for the conflict at [path], or puts it back to
+  /// unresolved. Takes effect on [confirm]; ignored while no sheet is up.
+  void resolveConflict(String path, SyncRunConflictChoice choice) =>
+      _amend((pending) => pending.resolve(path, choice));
+
+  /// Leaves [path] out: a proposed action is dropped, a conflict goes back
+  /// to unresolved. Takes effect on [confirm].
+  void skip(String path) => _amend((pending) => pending.skip(path));
+
+  /// Undoes [skip] for a proposed action.
+  void keep(String path) => _amend((pending) => pending.keep(path));
+
+  /// The `--batch` answer (SPEC §11.3): every proposed action as reconciled,
+  /// no conflict resolved — whatever the sheet showed as chosen so far is
+  /// discarded, because "accept all" has no way to ask which direction an
+  /// unreviewed conflict should go.
+  void acceptAll() {
+    final pending = _pending;
+    if (pending == null) return;
+    _decide(pending.choices.plan.actions);
+    _record(() => state.recordPhase(const SyncRunRunning()));
+  }
+
+  /// Applies the sheet's choices: resolved conflicts and kept actions.
+  void confirm() {
+    final pending = _pending;
+    if (pending == null) return;
+    _decide(pending.choices.resolved());
+    _record(() => state.recordPhase(const SyncRunRunning()));
+  }
+
+  void _amend(void Function(PlanDecisions choices) change) {
+    final pending = _pending;
+    if (pending == null) return;
+    change(pending.choices);
+    _renderDecisions();
+  }
+
+  /// Re-renders the sheet's rows from [_pending]: the whole phase is
+  /// replaced on every input, as `SyncRunAwaitingDecisions` documents.
+  void _renderDecisions() {
+    final pending = _pending;
+    if (pending == null) return;
+    final choices = pending.choices;
+    final deviceName = pending.request.deviceName;
+    _record(
+      () => state.recordPhase(
+        SyncRunAwaitingDecisions(
+          conflicts: [
+            for (final conflict in choices.plan.conflicts)
+              SyncRunConflictDecision(
+                path: conflict.path,
+                local: _status(conflict.onA),
+                remote: _status(conflict.onB),
+                choice: choices.choiceFor(conflict.path),
+                offered: choices.offeredFor(conflict),
+              ),
+          ],
+          actions: [
+            for (final action in choices.plan.actions)
+              SyncRunActionDecision(
+                path: action.path,
+                action: _actionLabel(action.type, deviceName),
+                bytes: action.bytes,
+                kept: choices.isKept(action.path),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Completes the parked presenter with [actions] — once. The one place
+  /// that does; see the class doc comment for why that matters.
+  void _decide(List<PlanAction> actions) {
+    final decisions = _decisions;
+    _decisions = null;
+    _pending = null;
+    if (decisions == null || decisions.isCompleted) return;
+    decisions.complete(actions);
   }
 
   /// Runs [write] unless [dispose] has happened. Every write to [state]
