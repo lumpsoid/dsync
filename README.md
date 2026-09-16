@@ -9,14 +9,14 @@ behaviour, and every module's doc comments reference its section numbers.
 
 ## Status
 
-v0, in development. The core engine and the CLI are implemented; the Flutter
-head is not.
+v0, in development. The core engine, the CLI and the Flutter head are
+implemented; the head pairs by pasted text, not by camera (SPEC §16).
 
 | Area | State |
 |---|---|
 | `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
 | `lib/cli/` — args, profile, prompts, output | implemented |
-| `lib/app/` — Flutter head | skeleton only (SPEC §16) |
+| `lib/app/` — Flutter head: devices, pair, run setup, run | implemented; no QR scanner yet (SPEC §16) |
 
 ## Using it
 
@@ -50,8 +50,8 @@ across sessions and ends on Ctrl-C, unlinking its socket. **It authenticates
 nobody:** anyone who can open the socket can read, write and delete in the
 replicas served through it, so keep it in a directory only you can enter, such
 as `$XDG_RUNTIME_DIR`. That is why this transport is unix-domain and local
-only; a socket that leaves the machine is deferred, along with the
-authentication it would need (SPEC §16).
+only; the one that leaves the machine is `dsync agent --serve` with a
+`peer://` location on the other end, and it authenticates by pairing (below).
 
 ## Pairing
 
@@ -68,13 +68,11 @@ trusted and can reach **nothing** until `dsync pair grant <name> <path>` says
 which replica roots it may serve. `dsync pair revoke` takes it back, and takes
 effect on the next connection attempt.
 
-**Not yet reachable from a sync.** The transport and the pairing work, but
-there is no way to *write down* a paired peer as a replica location yet — the
-`peer://<device-name>:<path>` form SPEC §2 describes is not implemented. Until
-it is, pairing sets up trust that only code can use. `dsync pair show` also
-prints its payload as text rather than a QR, which is the primary path for a
-desktop-to-server pair (neither end has a camera) but leaves phone-to-desktop
-waiting on both the QR rendering and the Flutter head.
+A paired peer is a replica location: `peer://<device-name>:<path>` (SPEC §2)
+against a `dsync agent --serve` on that device. `dsync pair show` prints its
+payload as a text line on stdout and, when the terminal can show one, as a QR
+on stderr; the text is what a desktop-to-server pair exchanges (neither end
+has a camera) and what the Flutter head takes today (below).
 
 Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
 archives, locks, this device's identity and the paired-device set in
@@ -105,7 +103,43 @@ its tests run under plain `dart test`.
 
 ```sh
 flutter pub get
+dart format --output=none --set-exit-if-changed lib test bin
 dart analyze
-dart test            # core suite, no Flutter required
-flutter test         # everything, including the Flutter head
+dart test test/dsync_core test/cli   # core and CLI suites, no Flutter required
+flutter test                         # everything, including test/app/
 ```
+
+The core gate is scoped on purpose: a bare `dart test` compiles every file
+under `test/`, and `test/app/` imports `package:flutter`, which cannot load
+under plain `dart`. The guarantee it checks is unchanged — `dsync_core/` has
+no Flutter dependency and its whole suite runs without one. For a fast loop
+on one head file, `flutter test test/app/<file>.dart`.
+
+### Running the head against a desktop
+
+The app is a client of `dsync agent --serve` on a desktop; it cannot serve a
+replica itself. From nothing to a first sync:
+
+1. On the desktop, `dsync pair show`. It prints a `dsync-pair:v1:…` line and
+   waits five minutes for the peer.
+2. In the app, open **Pair a device**, paste that line, name the desktop, and
+   pair. There is no QR scanner yet (SPEC §16); the text is the whole payload.
+3. On the desktop, `dsync pair grant <app-name> <root>` for the folder the app
+   may reach. Pairing and granting are two steps (SPEC §4.4): without this the
+   run is refused, and the app cannot grant itself anything.
+4. On the desktop, `dsync agent --serve`. It prints the address it serves on
+   (port 28771 unless `--port` says otherwise).
+5. In the app, tap the desktop, pick or create a local folder, type the
+   granted root exactly as you granted it, and sync. The first run is a dry
+   run by default; switch it off to apply.
+
+The address the pairing cached is the port `dsync pair show` listened on, not
+the agent's, so the first run against a fresh pairing needs the agent's
+address typed into the address field on Run setup. A successful connect
+records the new address and later runs use it.
+
+**Android release builds cannot reach the network yet.**
+`android/app/src/main/AndroidManifest.xml` declares no `INTERNET` permission;
+Flutter declares it only for the `debug` and `profile` source sets. Every
+connect works from `flutter run` and fails in a release build until that
+manifest is touched (SPEC §16).
