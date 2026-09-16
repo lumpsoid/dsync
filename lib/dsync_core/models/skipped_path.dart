@@ -36,7 +36,7 @@ enum SkippedReason {
   /// and NTFS by default, or a case-insensitive mount on an otherwise
   /// case-sensitive host. Whether a replica's filesystem folds at all is a
   /// property of *that filesystem*, detected once per replica rather than
-  /// assumed from its OS (`lib/cli/host_platform.dart`'s
+  /// assumed from its OS (`lib/dsync_core/scan/case_folding.dart`'s
   /// `detectsCaseFolding`) — a case-sensitive-formatted APFS volume needs
   /// case-sensitive behaviour just as much as a case-insensitive Linux mount
   /// needs the opposite.

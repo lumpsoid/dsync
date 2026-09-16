@@ -14,6 +14,7 @@ import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
+import 'package:dsync/dsync_core/scan/case_folding.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
 import '../host_platform.dart';

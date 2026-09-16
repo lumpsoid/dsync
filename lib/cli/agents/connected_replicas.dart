@@ -21,6 +21,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
+import 'package:dsync/dsync_core/scan/case_folding.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
 import '../host_platform.dart';
@@ -101,7 +102,7 @@ import 'replica_unreachable_exception.dart';
 /// [platform] because it is a property of the replica root, not of this
 /// process's host, and so cannot be known before [_resolveLocalSide]
 /// resolves that root; it is probed there instead, once, via
-/// `host_platform.dart`'s `detectsCaseFolding`.
+/// `lib/dsync_core/scan/case_folding.dart`'s `detectsCaseFolding`.
 ///
 /// [localAddressLookup] defaults to [systemLocalAddresses] — the one piece
 /// of real I/O this needs — so a test can drive both localities without a

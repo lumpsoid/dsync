@@ -47,15 +47,16 @@ class Scanner {
   ///
   /// A function rather than a `bool foldsCase`, so nothing case-specific is
   /// baked into [scan] itself: v1 only ever supplies a case-folding
-  /// transform (`lib/cli/host_platform.dart`'s `caseFoldKeyFor`, built on
+  /// transform (`case_folding.dart`'s `caseFoldKeyFor`, built on
   /// `path.toLowerCase()`), but SPEC §16 names Unicode normalization
   /// (NFC/NFD) as the same shape of problem, deferred for the same reason
   /// and expected to reuse this exact mechanism — a different transform
   /// supplied here, not a second collision check grown alongside this one.
   ///
   /// Whether *this* replica's filesystem folds at all is resolved once, per
-  /// replica, at the CLI edge (`detectsCaseFolding`) by probing the
-  /// filesystem actually mounted at its root — never assumed from the host
+  /// replica, at each head's edge (`case_folding.dart`'s
+  /// `detectsCaseFolding`) by probing the filesystem actually mounted at
+  /// its root — never assumed from the host
   /// OS, since a case-sensitive-formatted APFS volume or a case-insensitive
   /// Linux mount each need the behaviour their filesystem actually has, not
   /// their OS's default — and threaded down here as a plain value, the same

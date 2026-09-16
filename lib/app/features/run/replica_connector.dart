@@ -14,6 +14,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
+import 'package:dsync/dsync_core/scan/case_folding.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
 import '../../app_controller.dart';
@@ -207,12 +208,14 @@ class ReplicaConnector {
         side: 'a',
         platform: platform,
       ),
-      // SPEC §16's case-folding probe (`detectsCaseFolding`) lives in
-      // `lib/cli/host_platform.dart`, which this head does not import; this
-      // scanner treats the root as case-sensitive. Correct for Android's
-      // app storage; iOS's APFS folds case by default, and a probe of the
-      // head's own is owed the day that matters.
-      scanner: Scanner(jobs: jobs),
+      scanner: Scanner(
+        jobs: jobs,
+        // SPEC §16: this replica's own filesystem, probed once at connect
+        // time — iOS's default APFS volume folds case, Android's app
+        // storage does not, and `detectsCaseFolding`'s own doc comment says
+        // why an OS check alone would get a reformatted volume wrong.
+        foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
+      ),
       archivePath: resolveArchiveLogPath(
         profileId: profileId,
         side: 'a',
