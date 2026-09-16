@@ -48,6 +48,7 @@ import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:test/test.dart';
 
+import '../../support/dsync_binary.dart';
 import '../../support/real_ssh.dart';
 
 /// Set (to anything) on a machine that is supposed to be able to run this —
@@ -89,7 +90,6 @@ Future<void> main() async {
 
   group('a real ssh session running a real `dsync agent --stdio` on '
       '"${ssh.destination}" (SPEC §4.2)', () {
-    late Directory binDir;
     late String binaryPath;
 
     setUpAll(() async {
@@ -98,22 +98,7 @@ Future<void> main() async {
       // test would otherwise be unable to run without installing something,
       // and a stale installed build would fail the handshake and read as a
       // bug in this working tree.
-      binDir = await Directory.systemTemp.createTemp('dsync_real_ssh_bin_');
-      binaryPath = '${binDir.path}/dsync_real_ssh_agent';
-      final compile = await Process.run(Platform.resolvedExecutable, [
-        'compile',
-        'exe',
-        'bin/dsync.dart',
-        '-o',
-        binaryPath,
-      ]);
-      if (compile.exitCode != 0) {
-        fail('failed to compile bin/dsync.dart:\n${compile.stderr}');
-      }
-    });
-
-    tearDownAll(() async {
-      await binDir.delete(recursive: true);
+      binaryPath = await dsyncTestBinary();
     });
 
     late Directory tempDir;

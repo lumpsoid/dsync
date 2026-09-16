@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:dsync/cli/dsync_cli.dart';
 import 'package:test/test.dart';
 
+import '../../support/dsync_binary.dart';
+
 /// End-to-end coverage of `SyncRunner` (`lib/cli/run/sync_runner.dart`)
 /// through the real entry point, `runDsyncCli` — the first proof that
 /// `dsync sync` actually moves a file rather than just parsing flags. Kept
@@ -82,26 +84,10 @@ void main() {
       // spawning the real compiled binary and reading its stdout pipe, the
       // same way `test/cli/commands/agent_stdio_test.dart` does for `agent
       // --stdio`.
-      late Directory binDir;
       late String binaryPath;
 
       setUpAll(() async {
-        binDir = await Directory.systemTemp.createTemp('dsync_sync_bin_');
-        binaryPath = '${binDir.path}/dsync_sync_test';
-        final compile = await Process.run(Platform.resolvedExecutable, [
-          'compile',
-          'exe',
-          'bin/dsync.dart',
-          '-o',
-          binaryPath,
-        ]);
-        if (compile.exitCode != 0) {
-          fail('failed to compile bin/dsync.dart:\n${compile.stderr}');
-        }
-      });
-
-      tearDownAll(() async {
-        await binDir.delete(recursive: true);
+        binaryPath = await dsyncTestBinary();
       });
 
       late Directory tempDir;

@@ -14,6 +14,7 @@ import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
+import '../../support/dsync_binary.dart';
 import '../../support/real_ssh.dart';
 
 /// task 185c8f: the interleaving nothing else in the suite reaches.
@@ -203,26 +204,10 @@ Future<void> _remoteSoakGroup({required int rounds, required int seed}) async {
 
   group('convergence soak over $rounds rounds, against a remote agent over '
       '$transport (SPEC §4.2)', () {
-    late Directory binDir;
     late String binaryPath;
 
     setUpAll(() async {
-      binDir = await Directory.systemTemp.createTemp('dsync_soak_bin_');
-      binaryPath = '${binDir.path}/dsync_soak_agent';
-      final compile = await Process.run(Platform.resolvedExecutable, [
-        'compile',
-        'exe',
-        'bin/dsync.dart',
-        '-o',
-        binaryPath,
-      ]);
-      if (compile.exitCode != 0) {
-        fail('failed to compile bin/dsync.dart:\n${compile.stderr}');
-      }
-    });
-
-    tearDownAll(() async {
-      await binDir.delete(recursive: true);
+      binaryPath = await dsyncTestBinary();
     });
 
     late Directory tempDir;

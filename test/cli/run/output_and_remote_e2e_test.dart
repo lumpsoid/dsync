@@ -10,35 +10,21 @@ import 'package:dsync/cli/options/sync_target.dart';
 import 'package:dsync/cli/run/sync_runner.dart';
 import 'package:test/test.dart';
 
+import '../../support/dsync_binary.dart';
+
 /// task 67d911, points 2 and 4. Both groups below need the real compiled
 /// binary — one to prove what actually reaches this *process's* stdout
 /// (`--json`/human mode: see `ad_hoc_sync_e2e_test.dart`'s own doc comment
 /// on why nothing in-process can intercept the real global `stdout`), the
 /// other to spawn a real `dsync agent --stdio` child, standing in for what
-/// `ssh` would start on a remote host (SPEC §4.2). Compiled once here and
-/// shared by both groups, following `test/cli/commands/agent_stdio_test.dart`
-/// (compile once, not per test — spawning and compiling are both slow).
+/// `ssh` would start on a remote host (SPEC §4.2). The binary comes from
+/// [dsyncTestBinary], which builds it once for every suite that needs it
+/// rather than once per suite — spawning and compiling are both slow.
 void main() {
-  late Directory binDir;
   late String binaryPath;
 
   setUpAll(() async {
-    binDir = await Directory.systemTemp.createTemp('dsync_e2e_bin_');
-    binaryPath = '${binDir.path}/dsync_e2e_test';
-    final compile = await Process.run(Platform.resolvedExecutable, [
-      'compile',
-      'exe',
-      'bin/dsync.dart',
-      '-o',
-      binaryPath,
-    ]);
-    if (compile.exitCode != 0) {
-      fail('failed to compile bin/dsync.dart:\n${compile.stderr}');
-    }
-  });
-
-  tearDownAll(() async {
-    await binDir.delete(recursive: true);
+    binaryPath = await dsyncTestBinary();
   });
 
   group('output modes through the real entry point (SPEC §11.4, point 2)', () {

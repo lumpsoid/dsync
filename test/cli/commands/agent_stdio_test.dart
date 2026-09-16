@@ -19,36 +19,22 @@ import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
+import '../../support/dsync_binary.dart';
+
 /// Drives the real `dsync agent --stdio` command as a child process, over
 /// real OS pipes (SPEC §4.2, §11.1) — the one thing that can't be proven by
 /// exercising `AgentServer`/`StdioChannel` in-process: that this process's
 /// stdout carries *only* the frame stream, from the process's own point of
 /// view, exactly like `ssh` sees it.
 ///
-/// The binary is compiled once in [setUpAll] rather than run via `dart run`
-/// per test, both for speed and so a `dart run` build message can never be
-/// mistaken for protocol noise on the child's stdout.
+/// The binary is compiled ahead of the tests by [dsyncTestBinary] rather than
+/// run via `dart run` per test, both for speed and so a `dart run` build
+/// message can never be mistaken for protocol noise on the child's stdout.
 void main() {
-  late Directory binDir;
   late String binaryPath;
 
   setUpAll(() async {
-    binDir = await Directory.systemTemp.createTemp('dsync_agent_bin_');
-    binaryPath = '${binDir.path}/dsync_agent_test';
-    final compile = await Process.run(Platform.resolvedExecutable, [
-      'compile',
-      'exe',
-      'bin/dsync.dart',
-      '-o',
-      binaryPath,
-    ]);
-    if (compile.exitCode != 0) {
-      fail('failed to compile bin/dsync.dart:\n${compile.stderr}');
-    }
-  });
-
-  tearDownAll(() async {
-    await binDir.delete(recursive: true);
+    binaryPath = await dsyncTestBinary();
   });
 
   group('dsync agent --stdio', () {

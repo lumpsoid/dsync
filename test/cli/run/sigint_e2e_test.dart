@@ -7,6 +7,8 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+import '../../support/dsync_binary.dart';
+
 /// End-to-end coverage of task fc661b through the real compiled binary,
 /// following `test/cli/commands/agent_stdio_test.dart`'s own model: a real
 /// OS-level SIGINT (`Process.kill`), sent to a real child process, is the
@@ -29,26 +31,10 @@ import 'package:test/test.dart';
 /// as safely interruptible.
 void main() {
   group('a real SIGINT against a real dsync process (task fc661b)', () {
-    late Directory binDir;
     late String binaryPath;
 
     setUpAll(() async {
-      binDir = await Directory.systemTemp.createTemp('dsync_sigint_bin_');
-      binaryPath = '${binDir.path}/dsync_sigint_test';
-      final compile = await Process.run(Platform.resolvedExecutable, [
-        'compile',
-        'exe',
-        'bin/dsync.dart',
-        '-o',
-        binaryPath,
-      ]);
-      if (compile.exitCode != 0) {
-        fail('failed to compile bin/dsync.dart:\n${compile.stderr}');
-      }
-    });
-
-    tearDownAll(() async {
-      await binDir.delete(recursive: true);
+      binaryPath = await dsyncTestBinary();
     });
 
     late Directory tempDir;

@@ -29,6 +29,8 @@ import 'dart:io';
 import 'package:dsync/cli/dsync_cli.dart';
 import 'package:test/test.dart';
 
+import '../../support/dsync_binary.dart';
+
 /// How long the agent gets to bind its socket, and to exit once signalled.
 /// Generous enough for a loaded machine starting a VM, short enough that a
 /// listener that never comes up fails the test rather than hanging the suite.
@@ -44,6 +46,14 @@ void main() {
     late String remoteStateHome;
     late Process agent;
     late StringBuffer agentOutput;
+    late String binaryPath;
+
+    // The real compiled binary, not `dart run bin/dsync.dart`: this spawns an
+    // agent once per test, and paying a JIT startup each time is the slower
+    // half of it. [dsyncTestBinary] builds it once for the whole run.
+    setUpAll(() async {
+      binaryPath = await dsyncTestBinary();
+    });
 
     setUp(() async {
       tempDir = await Directory.systemTemp.createTemp('dsync_unix_e2e_');
@@ -54,8 +64,8 @@ void main() {
       remoteStateHome = '${tempDir.path}/remote-state';
 
       agent = await Process.start(
-        Platform.resolvedExecutable,
-        ['run', 'bin/dsync.dart', 'agent', '--listen', socketPath],
+        binaryPath,
+        ['agent', '--listen', socketPath],
         environment: {'XDG_STATE_HOME': remoteStateHome},
       );
 
