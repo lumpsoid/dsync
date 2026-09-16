@@ -138,8 +138,8 @@ the agent's, so the first run against a fresh pairing needs the agent's
 address typed into the address field on Run setup. A successful connect
 records the new address and later runs use it.
 
-**Android release builds cannot reach the network yet.**
-`android/app/src/main/AndroidManifest.xml` declares no `INTERNET` permission;
-Flutter declares it only for the `debug` and `profile` source sets. Every
-connect works from `flutter run` and fails in a release build until that
-manifest is touched (SPEC §16).
+**Android release builds reach the network.** `android/app/src/main/AndroidManifest.xml`
+declares the `INTERNET` permission — Flutter provides it only to the `debug`
+and `profile` source sets, so its absence there made every connect work under
+`flutter run` and fail in a release build. The `CAMERA` permission the QR
+scanner (SPEC §16) needs is declared there too.

@@ -1,4 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- INTERNET is what every connect to a desktop's agent server needs.
+         Flutter declares it only in the debug and profile manifests, so it
+         must be declared here as well or release builds fail to reach the
+         network at all. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- CAMERA is for the QR scanner on the Pair page. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="dsync"
         android:name="${applicationName}"
