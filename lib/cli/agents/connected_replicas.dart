@@ -109,12 +109,16 @@ import 'replica_unreachable_exception.dart';
 /// network. [sshExecutable] is the `ssh` binary to spawn for a remote side
 /// (`SshChannel.connect`'s own `executable` parameter); overridable so a
 /// test can point it at a script that fails instead of a real remote host.
+/// [peerConnectTimeout] bounds a `peer://` dial and its TLS handshake;
+/// overridable so a test can assert that bound without waiting out the
+/// production one.
 Future<ConnectedReplicas> resolveReplicaAgents(
   EffectiveOptions options, {
   Map<String, String> environment = const {},
   required HostPlatform platform,
   Future<Set<String>> Function() localAddressLookup = systemLocalAddresses,
   String sshExecutable = 'ssh',
+  Duration peerConnectTimeout = _peerConnectTimeout,
 }) async {
   // Skipped entirely when neither location gives `classify` anything to ask
   // about — a plain local path, or an `ssh://` destination that is remote by
@@ -140,6 +144,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
     platform: platform,
     localAddresses: localAddresses,
     sshExecutable: sshExecutable,
+    peerConnectTimeout: peerConnectTimeout,
   );
 
   final _ResolvedSide sideB;
@@ -154,6 +159,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
       platform: platform,
       localAddresses: localAddresses,
       sshExecutable: sshExecutable,
+      peerConnectTimeout: peerConnectTimeout,
     );
   } catch (_) {
     await _disconnectQuietly(sideA.agent);
@@ -183,6 +189,7 @@ Future<_ResolvedSide> _resolveSide({
   required HostPlatform platform,
   required Set<String> localAddresses,
   required String sshExecutable,
+  required Duration peerConnectTimeout,
 }) {
   final archivePath = resolveArchiveLogPath(
     profileId: profileId,
@@ -231,6 +238,7 @@ Future<_ResolvedSide> _resolveSide({
         platform: platform,
         archivePath: archivePath,
         lockPath: lockPath,
+        connectTimeout: peerConnectTimeout,
       ),
       LocationScheme.ssh || LocationScheme.inferred => _resolveSshSide(
         side: side,
@@ -437,7 +445,8 @@ Future<_ResolvedSide> _resolveSocketSide({
 /// that resolves is dialed at its cached [PairedDevice.lastKnownAddress];
 /// when that address does not answer, [PeerAddressUnreachableException]
 /// reports the address actually tried rather than the address that would
-/// have been guessed from the name. [_peerConnectTimeout] bounds that dial —
+/// have been guessed from the name. [connectTimeout] — [_peerConnectTimeout]
+/// unless a caller overrides it — bounds that dial —
 /// [SocketChannel.connectSecure] passes no timeout of its own to
 /// `SecureSocket.connect`, and an address that silently drops packets
 /// (rather than refusing the connection outright) would otherwise hang for
@@ -457,6 +466,7 @@ Future<_ResolvedSide> _resolvePeerSide({
   required HostPlatform platform,
   required String archivePath,
   required String lockPath,
+  required Duration connectTimeout,
 }) async {
   // Locality.remote via LocationScheme.peer guarantees a device name is set.
   final deviceName = location.deviceName!;
@@ -501,7 +511,7 @@ Future<_ResolvedSide> _resolvePeerSide({
       expectedPeerDeviceId: device.deviceId,
       ownIdentity: ownIdentity,
       now: now,
-    ).timeout(_peerConnectTimeout);
+    ).timeout(connectTimeout);
   } on PeerCertificateExpiredException {
     throw ReplicaUnreachableException(
       side: side,

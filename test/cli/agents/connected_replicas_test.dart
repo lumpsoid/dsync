@@ -559,10 +559,14 @@ void main() {
               'a peer:// location declares its own locality (SPEC §4.1)',
             ),
           ),
+          // Production's own bound is 10s; what is under test is that there
+          // *is* one, not its length, so the test drives a short one rather
+          // than waiting out the real one.
+          peerConnectTimeout: const Duration(milliseconds: 200),
           // A generous outer bound: this fails the test on an actual hang
           // rather than letting one wedge the suite — the same shape
           // `ssh_channel_test.dart`'s own shutdown-grace assertion uses.
-        ).timeout(const Duration(seconds: 20)),
+        ).timeout(const Duration(seconds: 5)),
         throwsA(
           isA<ReplicaUnreachableException>()
               .having((e) => e.side, 'side', 'b')
