@@ -2,11 +2,9 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
-import 'package:dsync/app/features/run/replica_connector.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/run_request.dart';
-import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
@@ -18,8 +16,7 @@ import '../../../support/fake_folder_picker.dart';
 /// `PairedDeviceStore` in a temporary directory — the setup
 /// `devices_controller_test.dart` uses — with the documents directory a
 /// sibling under the same temp dir, so every folder it lists or creates is
-/// on a real filesystem and every dry-run default comes from a real archive
-/// file's presence.
+/// on a real filesystem.
 void main() {
   late Directory tempDir;
   late AppController app;
@@ -63,24 +60,6 @@ void main() {
   Future<void> loadDesktop() async {
     await store().add(desktop);
     await controller.load(desktop.deviceId);
-  }
-
-  /// The side-`a` archive log for the triple, where a committed run would
-  /// have put it.
-  Future<File> archiveFor({
-    required String folder,
-    required String remoteRoot,
-  }) async {
-    final paths = await app.paths;
-    return resolveArchiveLogPath(
-      profileId: ReplicaConnector.profileIdFor(
-        localRootPath: '${documents()}/$folder',
-        peerDeviceId: desktop.deviceId,
-        remoteRootPath: remoteRoot,
-      ),
-      side: 'a',
-      platform: paths.stateDirPlatform,
-    );
   }
 
   List<String> labels() =>
@@ -148,8 +127,8 @@ void main() {
     test('a second load starts a fresh visit', () async {
       Directory('${documents()}/notes').createSync(recursive: true);
       await loadDesktop();
-      await controller.selectLocalFolder('${documents()}/notes');
-      controller.setDryRun(false);
+      controller.selectLocalFolder('${documents()}/notes');
+      controller.setDryRun(true);
       await controller.start(remoteRoot: '', address: '');
       expect(controller.state.remoteRootError, isNotNull);
 
@@ -157,7 +136,7 @@ void main() {
 
       expect(controller.state.selectedLocalFolder, isNull);
       expect(controller.state.remoteRootError, isNull);
-      expect(controller.state.dryRun, isTrue);
+      expect(controller.state.dryRun, isFalse);
     });
   });
 
@@ -406,7 +385,7 @@ void main() {
       expect(request.remoteRootPath, '~/notes');
       expect(request.addressOverride, isNull);
       expect(request.jobs, 4);
-      expect(request.dryRun, isTrue);
+      expect(request.dryRun, isFalse);
     });
 
     test('a typed address becomes the override, with the default port when '
@@ -440,72 +419,29 @@ void main() {
     test('carries the dry-run switch as it stands', () async {
       await loadDesktop();
       await controller.createLocalFolder('notes');
-      controller.setDryRun(false);
+      controller.setDryRun(true);
 
       await controller.start(remoteRoot: '~/notes', address: '');
 
-      expect(requests().single.dryRun, isFalse);
+      expect(requests().single.dryRun, isTrue);
     });
   });
 
   group('dry-run default', () {
-    test('ON while the triple is incomplete', () async {
+    test('OFF, a constant: nothing the form is given changes it, and an '
+        'opt-in lasts the one visit', () async {
       await loadDesktop();
-      expect(controller.state.dryRun, isTrue);
-
-      await controller.createLocalFolder('notes');
-      expect(controller.state.dryRun, isTrue);
-    });
-
-    test('ON when no archive exists for the triple', () async {
-      await loadDesktop();
-      await controller.createLocalFolder('notes');
-
-      await controller.remoteRootChanged('~/notes');
-
-      expect(controller.state.dryRun, isTrue);
-    });
-
-    test('OFF once an archive exists for the triple', () async {
-      await loadDesktop();
-      await controller.createLocalFolder('notes');
-      final archive = await archiveFor(folder: 'notes', remoteRoot: '~/notes');
-      archive.createSync(recursive: true);
-
-      await controller.remoteRootChanged('~/notes');
-
       expect(controller.state.dryRun, isFalse);
-    });
 
-    test('an archive for another triple does not count', () async {
-      await loadDesktop();
       await controller.createLocalFolder('notes');
-      await controller.createLocalFolder('photos');
-      final archive = await archiveFor(folder: 'notes', remoteRoot: '~/notes');
-      archive.createSync(recursive: true);
+      controller.remoteRootChanged('~/notes');
+      expect(controller.state.dryRun, isFalse);
 
-      await controller.remoteRootChanged('~/notes');
-      expect(controller.state.dryRun, isTrue, reason: 'photos is selected');
-
-      await controller.selectLocalFolder('${documents()}/notes');
-      expect(controller.state.dryRun, isFalse, reason: 'positive control');
-
-      await controller.remoteRootChanged('~/other');
-      expect(controller.state.dryRun, isTrue, reason: 'other remote root');
-    });
-
-    test("the user's choice is not overridden by a later derivation", () async {
-      await loadDesktop();
-      await controller.createLocalFolder('notes');
-      final archive = await archiveFor(folder: 'notes', remoteRoot: '~/notes');
-      archive.createSync(recursive: true);
       controller.setDryRun(true);
+      await controller.start(remoteRoot: '~/notes', address: '');
+      expect(requests().single.dryRun, isTrue);
 
-      await controller.remoteRootChanged('~/notes');
-      expect(controller.state.dryRun, isTrue);
-
-      controller.setDryRun(false);
-      await controller.remoteRootChanged('~/elsewhere');
+      await controller.load(desktop.deviceId);
       expect(controller.state.dryRun, isFalse);
     });
   });

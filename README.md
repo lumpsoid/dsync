@@ -132,8 +132,8 @@ replica itself. From nothing to a first sync:
 4. On the desktop, `dsync agent --serve`. It prints the address it serves on
    (port 28771 unless `--port` says otherwise).
 5. In the app, tap the desktop, pick or create a local folder, type the
-   granted root exactly as you granted it, and sync. The first run is a dry
-   run by default; switch it off to apply.
+   granted root exactly as you granted it, and sync. A run applies by
+   default; switch **Dry run** on to see the plan without applying.
 
 The address the pairing cached is the port `dsync pair show` listened on, not
 the agent's, so the first run against a fresh pairing needs the agent's

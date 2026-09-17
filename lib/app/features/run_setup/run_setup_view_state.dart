@@ -104,8 +104,7 @@ class LocalFolderChoice {
 /// (`TextEditingController`s), not copied here.
 ///
 /// [selectedLocalFolder] *is* here, unlike the text fields, because the
-/// controller acts on it: it is what a new folder is selected into and one
-/// of the two inputs the dry-run default is derived from.
+/// controller acts on it: it is what a new folder is selected into.
 class RunSetupViewState extends ChangeNotifier {
   RunSetupPeer _peer = const RunSetupPeerLoading();
   List<LocalFolderChoice> _localFolders = const [];
@@ -115,7 +114,7 @@ class RunSetupViewState extends ChangeNotifier {
   String? _folderAccessError;
   String? _remoteRootError;
   String? _addressError;
-  bool _dryRun = true;
+  bool _dryRun = false;
   RunSetupOutcome _outcome = const RunSetupIdle();
 
   RunSetupPeer get peer => _peer;
@@ -148,8 +147,8 @@ class RunSetupViewState extends ChangeNotifier {
   /// The line under the address field, or `null` when it validated.
   String? get addressError => _addressError;
 
-  /// The dry-run switch's position: the derived default until the user
-  /// moves it, then whatever they chose.
+  /// The dry-run switch's position: off — a dry run is opt-in — until
+  /// the user moves it, and off again on the next visit.
   bool get dryRun => _dryRun;
 
   RunSetupOutcome get outcome => _outcome;

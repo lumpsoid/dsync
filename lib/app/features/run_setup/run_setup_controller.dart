@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
@@ -8,7 +7,6 @@ import 'package:path/path.dart' as p;
 
 import '../../app_controller.dart';
 import '../../run_request.dart';
-import '../run/replica_connector.dart';
 import 'folder_picker.dart';
 import 'run_setup_view_state.dart';
 
@@ -74,18 +72,19 @@ import 'run_setup_view_state.dart';
 /// pairing with no agreed roots at all is surfaced up front
 /// (`RunSetupPeerLoaded.grantHint`) as the hint it is, not as a check.
 ///
-/// **Dry run defaults ON for the first run against a device** (SPEC §11.3:
-/// `status` is `sync --dry-run`). "First run" is derived from the one
-/// durable record of a run having been applied: the archive log. The
-/// archive is keyed by the `(local root, peer device id, remote root)`
-/// triple through `ReplicaConnector.profileIdFor`, and its side-`a` file
-/// exists iff a run over that triple has committed something (a dry run
-/// commits nothing, so the default stays ON after one). So the default is
-/// re-derived whenever the triple changes — [selectLocalFolder],
-/// [remoteRootChanged] — until the user moves the switch ([setDryRun]),
-/// after which it is theirs. A cheaper rule ("has this device ever
-/// connected") would be wrong for a second folder pair against the same
-/// desktop, which is a first sync with SPEC's first-sync semantics.
+/// **Dry run is opt-in: the switch defaults OFF, a constant.** A dry run
+/// is something the user asks for per run ([setDryRun]), and the choice is
+/// not remembered — [load] resets it with the rest of the visit. This
+/// gives up SPEC §11.3's "show a plan before the first sync applies"
+/// safety on the head: an earlier default derived ON from the absence of
+/// an archive for the `(local root, peer device id, remote root)` triple,
+/// and in practice read as "always on", because a dry run commits nothing,
+/// so the archive that would have flipped the default never appeared until
+/// an applying run — precisely the run the switch was in the way of. If
+/// the first-sync safety is wanted back, it belongs as a confirmation on
+/// the plan the Run page already shows — the point where the head knows
+/// what would change — not as a pre-filled switch guessing from an
+/// archive file.
 class RunSetupController {
   RunSetupController(this.app, {required this.picker});
 
@@ -100,9 +99,6 @@ class RunSetupController {
   final RunSetupViewState state = RunSetupViewState();
 
   String? _peerDeviceId;
-  String _remoteRoot = '';
-  bool _dryRunChosen = false;
-  int _dryRunDerivation = 0;
 
   /// The folders picked through the chooser this visit, in the order they
   /// were picked. Reset by [load], like every other per-visit choice.
@@ -116,9 +112,8 @@ class RunSetupController {
   /// Starts a visit: the selection, the typed remote root and the dry-run
   /// choice are this device's, not carried over from the last one opened.
   Future<void> load(String deviceId) async {
-    _dryRunChosen = false;
-    _remoteRoot = '';
     _pickedRoots.clear();
+    state.recordDryRun(false);
     state.recordFieldErrors(localFolder: null, remoteRoot: null, address: null);
     state.recordNewFolderError(null);
     state.recordFolderAccessError(null);
@@ -147,14 +142,12 @@ class RunSetupController {
       ),
     );
     await _listLocalFolders(selected: null);
-    await _deriveDryRunDefault();
   }
 
   /// Picks [path] from `RunSetupViewState.localFolders`, or nothing.
-  Future<void> selectLocalFolder(String? path) async {
+  void selectLocalFolder(String? path) {
     state.recordLocalFolders(state.localFolders, selected: path);
     state.recordOutcome(const RunSetupIdle());
-    await _deriveDryRunDefault();
   }
 
   /// Opens the platform folder chooser and, if the user picks a folder,
@@ -194,7 +187,6 @@ class RunSetupController {
     if (!_pickedRoots.contains(picked)) _pickedRoots.add(picked);
     await _listLocalFolders(selected: picked);
     state.recordOutcome(const RunSetupIdle());
-    await _deriveDryRunDefault();
   }
 
   /// Opens the OS settings page that grants access to folders outside the
@@ -227,21 +219,17 @@ class RunSetupController {
     state.recordNewFolderError(null);
     await _listLocalFolders(selected: p.join(paths.documentsDir, folder));
     state.recordOutcome(const RunSetupIdle());
-    await _deriveDryRunDefault();
   }
 
-  /// The remote root field's current text, so the dry-run default follows
-  /// the triple it is part of. Validation waits for [start].
-  Future<void> remoteRootChanged(String text) async {
-    _remoteRoot = text;
+  /// A keystroke in the remote root field: the last attempt's outcome is
+  /// stale. Validation waits for [start].
+  void remoteRootChanged(String text) {
     state.recordOutcome(const RunSetupIdle());
-    await _deriveDryRunDefault();
   }
 
-  /// The user moved the dry-run switch: from here on it is their choice,
-  /// and no later derivation overrides it.
+  /// The user moved the dry-run switch: this run is a dry one iff they
+  /// turned it on. The next visit starts over — see the class doc comment.
   void setDryRun(bool dryRun) {
-    _dryRunChosen = true;
     state.recordDryRun(dryRun);
   }
 
@@ -363,34 +351,6 @@ class RunSetupController {
           'Grant it access to all files, or pick a folder in the app\'s own '
           'documents instead.';
     }
-  }
-
-  /// Re-derives the dry-run default from the current triple, unless the
-  /// user has chosen. Two derivations can be in flight when fields change
-  /// quickly; only the latest one's answer lands.
-  Future<void> _deriveDryRunDefault() async {
-    if (_dryRunChosen) return;
-    final derivation = ++_dryRunDerivation;
-    final peerDeviceId = _peerDeviceId;
-    final localRootPath = state.selectedLocalFolder;
-    final remote = _remoteRoot.trim();
-    if (peerDeviceId == null || localRootPath == null || remote.isEmpty) {
-      state.recordDryRun(true);
-      return;
-    }
-    final paths = await app.paths;
-    final archive = resolveArchiveLogPath(
-      profileId: ReplicaConnector.profileIdFor(
-        localRootPath: localRootPath,
-        peerDeviceId: peerDeviceId,
-        remoteRootPath: remote,
-      ),
-      side: 'a',
-      platform: paths.stateDirPlatform,
-    );
-    final applied = await archive.exists();
-    if (derivation != _dryRunDerivation || _dryRunChosen) return;
-    state.recordDryRun(!applied);
   }
 
   void dispose() => state.dispose();

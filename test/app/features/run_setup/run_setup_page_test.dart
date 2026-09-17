@@ -67,10 +67,10 @@ void main() {
 
   /// Waits, in real time, for the controller to stop writing: the view state
   /// has to go quiet, not merely reach the case a test is about. `load`
-  /// keeps going after it records the peer — it lists the folders and
-  /// derives the dry-run default — and a write that lands after the test has
-  /// finished hits a disposed view state, which fails whichever test is
-  /// running by then. Bounded, so a regression fails rather than hangs.
+  /// keeps going after it records the peer — it lists the folders — and a
+  /// write that lands after the test has finished hits a disposed view
+  /// state, which fails whichever test is running by then. Bounded, so a
+  /// regression fails rather than hangs.
   Future<void> settle() async {
     var quiet = 0;
     void restart() => quiet = 0;
@@ -141,8 +141,8 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
-  testWidgets('loaded: the device name, every field, the switch on, and an '
-      'enabled button', (tester) async {
+  testWidgets('loaded: the device name, every field, the switch off, and '
+      'an enabled button', (tester) async {
     await pumpLoaded(tester);
 
     expect(find.text('Sync with desktop'), findsOneWidget);
@@ -161,7 +161,7 @@ void main() {
       tester
           .widget<SwitchListTile>(find.byKey(const Key('run-setup-dry-run')))
           .value,
-      isTrue,
+      isFalse,
     );
     expect(startEnabled(tester), isTrue);
     expect(find.textContaining('dsync pair grant'), findsOneWidget);
@@ -306,7 +306,7 @@ void main() {
     await tester.tap(find.byKey(const Key('run-setup-dry-run')));
     await tester.pump();
 
-    expect(controller.state.dryRun, isFalse);
+    expect(controller.state.dryRun, isTrue);
   });
 
   testWidgets('tapping Start with nothing filled in shows the field errors '
@@ -397,6 +397,6 @@ void main() {
     expect(request.remoteRootPath, '~/notes');
     expect(request.addressOverride?.host, '10.0.0.9');
     expect(request.addressOverride?.port, 4242);
-    expect(request.dryRun, isTrue);
+    expect(request.dryRun, isFalse);
   });
 }

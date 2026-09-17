@@ -301,7 +301,7 @@ void main() {
       // A local folder, then the two fields the task is about — the folder
       // the way the dropdown reports it, the text through the fields, since
       // the text is what the page's own `State` holds.
-      await runSetup.selectLocalFolder(localRoot.path);
+      runSetup.selectLocalFolder(localRoot.path);
       await tester.pump();
       await tester.enterText(
         find.byKey(const Key('run-setup-remote-root')),
