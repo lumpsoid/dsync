@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app_bootstrap.dart';
@@ -35,7 +37,10 @@ import 'run_request.dart';
 /// show someone whose store has simply not been read yet — and a failed
 /// bootstrap is a refusal `core` made on purpose (a half-written identity,
 /// a device store that cannot be decoded), so its message is shown as the
-/// page, not swallowed into an empty list.
+/// page, not swallowed into an empty list. That page offers the sequence
+/// again rather than leaving killing the app as the only way out: the
+/// causes are conditions on disk, and a user who has just fixed one should
+/// not have to relaunch to be believed.
 ///
 /// **Both schemes come off one seed.** Light and dark are the same palette
 /// under two brightnesses, so the app reads as itself either way and a
@@ -79,7 +84,16 @@ class _BootstrapGate extends StatelessWidget {
           child: CircularProgressIndicator(),
         ),
         AppBootstrapFailed(:final message) => _BootstrapShell(
-          child: _BootstrapFailure(message),
+          child: _BootstrapFailure(
+            message,
+            // The same call `main()` makes. `bootstrap()` records
+            // `AppBootstrapLoading` before it touches a file, so the retry
+            // being in flight is the loading case of the gate's own sum
+            // type — there is no second "retrying" flag here to disagree
+            // with it, and a second tap cannot arrive because the button
+            // is no longer on screen.
+            onRetry: () => unawaited(appScope.controller.bootstrap()),
+          ),
         ),
         AppBootstrapReady() => ProfilesPage(
           onOpenProfile: (profileId) =>
@@ -154,20 +168,45 @@ class _BootstrapShell extends StatelessWidget {
 }
 
 /// A failed bootstrap's own message, selectable because it names a file
-/// path the user is expected to act on.
+/// path the user is expected to act on, and [onRetry] beneath it.
+///
+/// The retry is offered on every failure rather than only the ones that
+/// look transient: this widget is handed a rendered message, not the
+/// exception, and re-reading two files is cheap enough that guessing wrong
+/// costs a frame. A cause that has not been fixed simply fails again into
+/// this same screen — which is the honest answer — and one that has (the
+/// half-written identity removed, the device store restored from a backup
+/// while the app sat here) no longer needs the app killed to be picked up.
 class _BootstrapFailure extends StatelessWidget {
-  const _BootstrapFailure(this.message);
+  const _BootstrapFailure(this.message, {required this.onRetry});
 
   final String message;
+
+  /// Re-runs the bootstrap sequence. Named as intent, like every other
+  /// callback a page in this head takes: this widget does not know that
+  /// what it triggers is `AppController.bootstrap()`, only that the gate
+  /// will move again.
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.all(24),
-      child: SelectableText(
-        message,
-        key: const Key('bootstrap-failed'),
-        style: TextStyle(color: Theme.of(context).colorScheme.error),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SelectableText(
+            message,
+            key: const Key('bootstrap-failed'),
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            key: const Key('bootstrap-retry'),
+            onPressed: onRetry,
+            child: const Text('Try again'),
+          ),
+        ],
       ),
     );
   }

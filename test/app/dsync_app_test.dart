@@ -196,6 +196,47 @@ void main() {
     expect(find.byType(DevicesPage), findsNothing);
   });
 
+  testWidgets('a retry re-runs bootstrap and lands on the home', (
+    tester,
+  ) async {
+    // The one test in this file that drives `bootstrap()` rather than
+    // writing its outcome: the subject *is* the second call, so a pinned
+    // state would prove nothing. Both attempts are real I/O against
+    // `tempDir`, hence `runAsync` throughout — see the file doc comment.
+    final store = File('${tempDir.path}/dsync/paired-devices.json');
+    await tester.runAsync(() async {
+      // A device store that exists and cannot be decoded: the
+      // `PairedDeviceStoreCorruptException` half of what the gate renders,
+      // and a condition a user can go and fix.
+      await store.parent.create(recursive: true);
+      await store.writeAsString('not json');
+      await app.bootstrap();
+      await tester.pumpWidget(const DsyncApp());
+    });
+
+    expect(find.byKey(const Key('bootstrap-failed')), findsOneWidget);
+    expect(find.byType(ProfilesPage), findsNothing);
+
+    await tester.runAsync(() async {
+      // Fixed behind the app's back, the way a user would: the file is
+      // readable now and says the same thing an untouched install does.
+      await store.writeAsString('{"schemaVersion": 1, "devices": []}');
+      await tester.tap(find.byKey(const Key('bootstrap-retry')));
+      await runRealTimeUntil(
+        tester,
+        () => app.state.bootstrap is AppBootstrapReady,
+      );
+    });
+    // Not `pumpAndSettle`: the gate shows an indefinite spinner while the
+    // retry is in flight, and there is a route transition to finish once
+    // it is not. Frames, bounded.
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byType(ProfilesPage), findsOneWidget);
+    expect(find.byKey(const Key('bootstrap-failed')), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
   testWidgets('renders the profiles home once ready, and follows the gate', (
     tester,
   ) async {
