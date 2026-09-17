@@ -15,6 +15,8 @@ import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:test/test.dart';
 
+import '../../../support/fake_screen_wake.dart';
+
 /// `SyncRunViewState` folded from a hand-built `Stream<RunEvent>` through
 /// `SyncRunController.render` — no agents, no sockets, no widgets. The
 /// controller's `AppController` is never asked for its paths and its dial
@@ -48,6 +50,7 @@ void main() {
         now: () => now,
       ),
       dial: neverDial,
+      screenWake: FakeScreenWake(),
     );
   });
 
@@ -410,6 +413,57 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(controller.state.phase, isA<SyncRunStopped>());
+    });
+  });
+
+  group('pause', () {
+    test('suspends the run the way stop does, under its own phase', () async {
+      var cancelled = false;
+      final events = StreamController<RunEvent>(
+        onCancel: () => cancelled = true,
+      );
+      final done = controller.render(events.stream, request: request);
+      events
+        ..add(happy[5]) // plan
+        ..add(const RunResultEvent(path: 'new.txt', type: ActionType.copyAtoB))
+        ..add(const RunProgressEvent(completed: 1, total: 2));
+      await Future<void>.delayed(Duration.zero);
+
+      await controller.pause();
+      await done;
+
+      expect(cancelled, isTrue);
+      final paused = controller.state.phase as SyncRunPaused;
+      expect(paused.completedActions, 1);
+      final message = pausedMessage(paused.completedActions);
+      expect(message, contains('after 1 action'));
+      expect(message, contains('continues when you come back'));
+    });
+
+    test('the next attempt renders from nothing, cells included', () async {
+      await render(happy);
+      final cell = controller.state.resultCell('new.txt');
+      expect(controller.state.plan, isNotEmpty);
+      expect(cell.value, isNotNull);
+
+      controller.state.recordStart(dryRun: false);
+
+      // Everything the fold wrote is gone, so a resumed run cannot show the
+      // paused attempt's plan, counts or ticked-off rows as its own.
+      expect(controller.state.phase, isA<SyncRunConnecting>());
+      expect(controller.state.header, isNull);
+      expect(controller.state.scanTally, isNull);
+      expect(controller.state.conflicts, isEmpty);
+      expect(controller.state.skippedSymlinks, isEmpty);
+      expect(controller.state.unreadablePaths, isEmpty);
+      expect(controller.state.plan, isEmpty);
+      expect(controller.state.bytesToTransfer, 0);
+      expect(controller.state.results, isEmpty);
+      expect(controller.state.progress, isNull);
+      // The same cell a built row is already watching, emptied rather than
+      // dropped.
+      expect(cell.value, isNull);
+      expect(controller.state.resultCell('new.txt'), same(cell));
     });
   });
 

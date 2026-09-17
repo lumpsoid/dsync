@@ -34,6 +34,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_folder_picker.dart';
+import '../support/fake_screen_wake.dart';
 
 /// The entrypoint's wiring: the bootstrap gate renders each `AppBootstrap`
 /// case, and a tap on Devices lands on the route this file promised. Driven
@@ -437,7 +438,11 @@ void main() {
     var runs = 0;
     runScope.setFactory(() {
       runs++;
-      return SyncRunController(app, dial: neverDial)
+      return SyncRunController(
+          app,
+          dial: neverDial,
+          screenWake: FakeScreenWake(),
+        )
         ..state.recordStart(dryRun: true)
         ..state.recordPhase(
           const SyncRunFailed('Could not reach "desktop": refused.'),

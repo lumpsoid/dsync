@@ -126,6 +126,24 @@ final class SyncRunStopped extends SyncRunPhase {
   final int completedActions;
 }
 
+/// The OS backgrounded the app mid-run and the run was suspended for it —
+/// the screen went off, or the user switched away (SPEC §11.4).
+///
+/// Mechanically this is [SyncRunStopped]: the same suspension at the same
+/// action boundary, with the same guarantee that [completedActions] are
+/// applied and committed on both sides and nothing further started. It is
+/// a case of its own because it is not a *terminal* phase — nobody asked
+/// for it, and the run continues when the app comes back — and because the
+/// page's wording and its Resume affordance follow from which of the two
+/// happened. A phase that both carried a count and a "was this the user's
+/// doing?" flag would be the bool-plus-nullable cluster the head's states
+/// are written to avoid.
+final class SyncRunPaused extends SyncRunPhase {
+  const SyncRunPaused({required this.completedActions});
+
+  final int completedActions;
+}
+
 /// The run ended without a summary: a `ReplicaConnectFailure` (SPEC §4.4)
 /// before any event, or a `RunErrorEvent` — always the stream's last event.
 /// [message] is the whole line to show.
@@ -328,8 +346,28 @@ class SyncRunViewState extends ChangeNotifier {
 
   /// Starts a run's rendering from nothing but its mode. `SyncRunController`
   /// only.
+  ///
+  /// **From nothing, literally**: every field the fold writes is cleared
+  /// first, because a resumed run (`SyncRunController.resume`) renders into
+  /// this same state and its scan, plan and results replace the paused
+  /// attempt's — they do not continue them. The result cells are emptied
+  /// rather than dropped: a row built from the previous attempt's plan may
+  /// still be watching one, and a cell that kept its old value would mark
+  /// an action the new plan has not started as already applied.
   void recordStart({required bool dryRun}) {
     _dryRun = dryRun;
+    _header = null;
+    _scanTally = null;
+    _skippedSymlinks = const [];
+    _unreadablePaths = const [];
+    _conflicts = const [];
+    _bytesToTransfer = 0;
+    _results.clear();
+    for (final cell in _resultCells.values) {
+      cell.value = null;
+    }
+    _progress = null;
+    _plan.value = const [];
     _phase.value = const SyncRunConnecting();
     notifyListeners();
   }

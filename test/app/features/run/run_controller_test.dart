@@ -23,6 +23,8 @@ import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:test/test.dart';
 
+import '../../../support/fake_screen_wake.dart';
+
 /// `SyncRunController` driven end to end with no socket: a real
 /// `AppController` and paired-device store in a temporary directory, and a
 /// dial that hands back one end of an `InMemoryChannel` with a real
@@ -36,12 +38,14 @@ void main() {
   late Directory localRoot;
   late Directory remoteRoot;
   late SyncRunController controller;
+  late FakeScreenWake screenWake;
 
   setUpAll(() {
     desktop = generateDeviceIdentity(commonName: 'desktop');
   });
 
   setUp(() async {
+    screenWake = FakeScreenWake();
     tempDir = await Directory.systemTemp.createTemp('sync_run_controller_test');
     app = AppController(
       () async =>
@@ -130,7 +134,7 @@ void main() {
       }) async => throw error;
 
   SyncRunController make(DialPeer dial) =>
-      controller = SyncRunController(app, dial: dial);
+      controller = SyncRunController(app, dial: dial, screenWake: screenWake);
 
   SyncRunFailed failed() => controller.state.phase as SyncRunFailed;
 
@@ -412,6 +416,101 @@ void main() {
         expect(controller.state.phase, isA<SyncRunFinished>());
       },
     );
+  });
+
+  group('backgrounding', () {
+    test('pausing suspends the run, and resuming finishes the work', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      final started = make(served(desktopAgent)).start(request(dryRun: false));
+      await untilAwaiting();
+
+      await controller.pause();
+      await started;
+
+      final paused = controller.state.phase as SyncRunPaused;
+      expect(paused.completedActions, 0);
+      // Suspended, not finished: nothing was applied, and the screen is no
+      // longer held for a run the app cannot see.
+      expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
+      expect(screenWake.held, isFalse);
+
+      final resumed = controller.resume(request(dryRun: false));
+      await untilAwaiting();
+      expect(screenWake.held, isTrue);
+      controller.acceptAll();
+      await resumed;
+
+      expect(controller.state.phase, isA<SyncRunFinished>());
+      expect(await File('${remoteRoot.path}/new.txt').readAsString(), 'from a');
+      expect(screenWake.held, isFalse);
+    });
+
+    test('the resumed run renders from nothing, not on top of the '
+        'paused one', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      final started = make(served(desktopAgent)).start(request(dryRun: false));
+      await untilAwaiting();
+      expect(controller.state.plan, hasLength(1));
+      await controller.pause();
+      await started;
+
+      // The same path is planned again by the resumed run; one row, not two.
+      final resumed = controller.resume(request(dryRun: false));
+      await untilAwaiting();
+      expect(controller.state.plan, hasLength(1));
+      controller.acceptAll();
+      await resumed;
+
+      expect(controller.state.results, hasLength(1));
+    });
+
+    test('a run that is over is neither paused nor resumed', () async {
+      await make(served(desktopAgent)).start(request(dryRun: true));
+      final finished = controller.state.phase;
+
+      await controller.pause();
+      await controller.resume(request(dryRun: false));
+
+      expect(controller.state.phase, same(finished));
+    });
+
+    test('coming back to a run that never paused changes nothing', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      final started = make(served(desktopAgent)).start(request(dryRun: false));
+      await untilAwaiting();
+      final phase = controller.state.phase;
+
+      // The lifecycle fires this on every return to the foreground, including
+      // the ones that never backgrounded a run (a notification, a dialog).
+      await controller.resumeFromBackground(request(dryRun: false));
+
+      expect(controller.state.phase, same(phase));
+      controller.acceptAll();
+      await started;
+      expect(controller.state.phase, isA<SyncRunFinished>());
+    });
+
+    test('the screen is held for exactly as long as the run is live', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      await make(served(desktopAgent)).start(request(dryRun: true));
+
+      // Once on, once off — never re-asked for what it already holds, and
+      // the dry run's phase moves several times in between.
+      expect(screenWake.calls, [true, false]);
+      expect(screenWake.held, isFalse);
+    });
+
+    test('leaving the page releases the screen', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      final started = make(served(desktopAgent)).start(request(dryRun: false));
+      await untilAwaiting();
+      expect(screenWake.held, isTrue);
+
+      controller.dispose();
+      await started;
+
+      expect(screenWake.held, isFalse);
+    });
   });
 
   test('a second start on the same instance is refused', () async {

@@ -51,6 +51,8 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:test/test.dart';
 
+import '../support/fake_screen_wake.dart';
+
 /// How long any one asynchronous step gets — the enrolment exchange, a
 /// whole run — before the test fails with a message rather than the suite
 /// timing out around it. Same figure as the CLI's peer e2e.
@@ -205,7 +207,11 @@ void main() {
   /// because `start` is what is being awaited and it does not return until
   /// the sheet is answered.
   Future<SyncRunPhase> drive(RunRequest request) async {
-    final controller = SyncRunController(app, dial: dialPeer);
+    final controller = SyncRunController(
+      app,
+      dial: dialPeer,
+      screenWake: FakeScreenWake(),
+    );
     addTearDown(controller.dispose);
     final started = controller.start(request);
     final deadline = DateTime.now().add(_startupDeadline);

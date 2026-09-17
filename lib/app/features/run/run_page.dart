@@ -16,19 +16,29 @@ import 'run_view_state.dart';
 /// two runs must never share a loop, and an event arriving late from a
 /// finished run must not write into a view state a later page tore down.
 ///
-/// **Backgrounding does not stop the run.** No `WidgetsBindingObserver`
-/// here: `SyncRunController`'s doc comment says what bounds a wedged
-/// session (the heartbeat deadline), and why a lifecycle callback that
-/// stopped the run would be wrong.
+/// **The lifecycle seam lives here.** This page owns the
+/// `AppLifecycleListener` that pauses the run when the app is backgrounded
+/// and resumes it when it comes back — the two input methods
+/// `SyncRunController` exposes for it, whose doc comment carries the whole
+/// rationale: why a backgrounded run is torn down rather than left to the
+/// far end's heartbeat deadline, what a resume does and does not carry
+/// over, and why only `paused` may trigger it. The page is the owner
+/// because the binding is a widget-tree fact and a controller that reached
+/// for `WidgetsBinding.instance` itself could not be tested without one.
 ///
-/// **The screen is not kept awake.** SPEC's requirement stands and is not
-/// met: the Flutter SDK pinned in `pubspec.yaml` exposes no keep-screen-on
-/// API (`SystemChrome` has none), and meeting it needs either the
-/// `wakelock_plus` plugin or a `MethodChannel` into `android/` and `ios/`
-/// — a dependency or platform code, both out of this feature's hands. A
-/// device that sleeps mid-run is the backgrounding case above: the run is
-/// not torn down by the page, and the heartbeat deadline is what ends it
-/// if the OS suspends the process for long enough.
+/// `onPause` and nothing above it — not `onInactive`, not `onHide`. A
+/// notification shade, a permission dialog and an incoming call are
+/// `inactive`; pausing for those would stop a run that was never in
+/// danger. The platform walks every state in between on the way down and
+/// back up (`inactive`, `hidden`, then `paused`), so these two callbacks
+/// see a backgrounding and a return, never a jump.
+///
+/// **Resuming is automatic, and the button is the fallback.** `onResume`
+/// continues a paused run without asking, because the user did not ask for
+/// the pause either. A run that ended in failure — including one whose
+/// pause did not finish before the OS froze the process, which surfaces as
+/// the far end's heartbeat deadline — is not resumed behind their back:
+/// that one offers Resume as a button and waits to be told.
 ///
 /// [onDone] is the navigation seam: it fires when the user taps Done on a
 /// finished, stopped or failed run, and the entrypoint decides where that
@@ -48,6 +58,11 @@ class RunPage extends StatefulWidget {
 
 class _RunPageState extends State<RunPage> {
   final SyncRunController _controller = runScope.create();
+
+  /// The app's lifecycle, as the two calls this page makes on it. Held so
+  /// it is disposed with the page: a listener that outlived the run it
+  /// pauses would pause a controller nobody owns any more.
+  late final AppLifecycleListener _lifecycle;
 
   /// What the body's plan section follows: the plan itself, and the phase
   /// that decides whether the body shows it at all. Built once and not per
@@ -72,11 +87,16 @@ class _RunPageState extends State<RunPage> {
   @override
   void initState() {
     super.initState();
+    _lifecycle = AppLifecycleListener(
+      onPause: _controller.pause,
+      onResume: () => _controller.resumeFromBackground(widget.request),
+    );
     _controller.start(widget.request);
   }
 
   @override
   void dispose() {
+    _lifecycle.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -93,6 +113,7 @@ class _RunPageState extends State<RunPage> {
     SyncRunConnecting() ||
     SyncRunFinished() ||
     SyncRunStopped() ||
+    SyncRunPaused() ||
     SyncRunFailed() => false,
   };
 
@@ -132,6 +153,27 @@ class _RunPageState extends State<RunPage> {
         actions: [
           ListenableBuilder(
             listenable: state,
+            // Resume is offered where a run can be continued but is not
+            // continued on its own: a failure, and a pause the app has not
+            // come back from yet (the tablet on the desk that is picked up
+            // and read rather than unlocked). A finished or stopped run is
+            // an outcome, not an interruption, and is not re-run from here.
+            builder: (context, _) => switch (state.phase) {
+              SyncRunPaused() || SyncRunFailed() => TextButton(
+                key: const Key('run-resume'),
+                onPressed: () => _controller.resume(widget.request),
+                child: const Text('Resume'),
+              ),
+              SyncRunIdle() ||
+              SyncRunConnecting() ||
+              SyncRunRunning() ||
+              SyncRunAwaitingDecisions() ||
+              SyncRunFinished() ||
+              SyncRunStopped() => const SizedBox.shrink(),
+            },
+          ),
+          ListenableBuilder(
+            listenable: state,
             builder: (context, _) => switch (state.phase) {
               SyncRunIdle() ||
               SyncRunConnecting() ||
@@ -143,6 +185,7 @@ class _RunPageState extends State<RunPage> {
               ),
               SyncRunFinished() ||
               SyncRunStopped() ||
+              SyncRunPaused() ||
               SyncRunFailed() => TextButton(
                 key: const Key('run-done'),
                 onPressed: widget.onDone,
@@ -180,6 +223,7 @@ class _RunPageState extends State<RunPage> {
           SyncRunRunning() ||
           SyncRunFinished() ||
           SyncRunStopped() ||
+          SyncRunPaused() ||
           SyncRunFailed() => const SizedBox.shrink(),
         },
       ),
@@ -393,6 +437,10 @@ class _PhaseLine extends StatelessWidget {
         SyncRunStopped(:final completedActions) => Text(
           stoppedMessage(completedActions),
           key: const Key('run-stopped'),
+        ),
+        SyncRunPaused(:final completedActions) => Text(
+          pausedMessage(completedActions),
+          key: const Key('run-paused'),
         ),
         SyncRunFailed(:final message) => _NoticeLine.error(
           message,

@@ -111,6 +111,20 @@ dependencies:
   # `storage`, `openAppSettings`) is identical.
   permission_handler: 12.0.1
 
+  # Keeps the screen on for as long as a run is live on the mobile head, so
+  # the screen timeout cannot suspend the process in the middle of an apply
+  # loop (SPEC §11.4). Pinned for the same platform-channel reason as the
+  # plugins above: what it sets is an Android window flag
+  # (`FLAG_KEEP_SCREEN_ON`) and an iOS `isIdleTimerDisabled`, both native
+  # code, and neither needs a permission. It does not — and cannot — stop a
+  # user who presses the power button; that case is the lifecycle pause in
+  # `run_controller.dart`, and the two are complementary halves of the same
+  # requirement. `dsync_core/` never imports it, and neither does `lib/cli/`,
+  # so the v1 targets with no `app` head are untouched (§3). It brings `http`
+  # and `package_info_plus` into the closure (its web half reads the browser's
+  # user agent); both are transitive and neither is imported here.
+  wakelock_plus: 1.8.0
+
   # Pinned, not a range (SPEC §3, same rationale as the other pins above),
   # and this one is the odd dependency out: it is a platform-channel plugin,
   # not pure Dart. Its Dart side is a single call

@@ -7,6 +7,8 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:test/test.dart';
 
+import '../../../support/fake_screen_wake.dart';
+
 /// The conflict sheet's decision flow (SPEC §11.3), driven through
 /// `SyncRunController.present` over a hand-built `Plan` — no agents, no
 /// stream, no widgets. The whole presenter contract is the returned list,
@@ -49,6 +51,7 @@ void main() {
         now: DateTime.now,
       ),
       dial: neverDial,
+      screenWake: FakeScreenWake(),
     );
   });
 
@@ -291,7 +294,11 @@ void main() {
       controller.confirm();
       expect((await decided).first.path, 'both.txt');
 
-      final abandoned = SyncRunController(controller.app, dial: neverDial);
+      final abandoned = SyncRunController(
+        controller.app,
+        dial: neverDial,
+        screenWake: FakeScreenWake(),
+      );
       final pending = abandoned.present(plan, request: interactive);
       abandoned.dispose();
 

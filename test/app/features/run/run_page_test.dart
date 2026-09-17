@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/features/run/replica_connector.dart';
@@ -11,6 +13,8 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../support/fake_screen_wake.dart';
+
 /// Rendering tests for the Run page, driven the way the scope contract in
 /// `app_scope.dart` intends: `runScope.setController(fake)` pins one
 /// instance so that `create()` — which this page calls — returns it, and
@@ -21,6 +25,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// when the tree is torn down, as it would its own.
 void main() {
   late SyncRunController controller;
+  late FakeScreenWake screenWake;
   var doneTaps = 0;
 
   const request = RunRequest(
@@ -42,12 +47,14 @@ void main() {
   }) async => fail('the page test must not dial');
 
   setUp(() {
+    screenWake = FakeScreenWake();
     controller = SyncRunController(
       AppController(
         () async => fail('the page test must not resolve paths'),
         now: DateTime.now,
       ),
       dial: neverDial,
+      screenWake: screenWake,
     );
     appScope.setController(controller.app);
     runScope.setController(controller);
@@ -507,6 +514,131 @@ void main() {
     expect(find.byKey(const Key('run-done')), findsOneWidget);
   });
 
+  group('the app going away', () {
+    /// The platform's own sequences. `AppLifecycleListener` walks one state
+    /// at a time and asserts on a jump, which is also how a real Android or
+    /// iOS backgrounding arrives: `inactive`, `hidden`, then `paused`.
+    const backgrounding = [
+      AppLifecycleState.inactive,
+      AppLifecycleState.hidden,
+      AppLifecycleState.paused,
+    ];
+    const foregrounding = [
+      AppLifecycleState.hidden,
+      AppLifecycleState.inactive,
+      AppLifecycleState.resumed,
+    ];
+
+    late _SpyController spy;
+
+    setUp(() {
+      spy = _SpyController(controller.app, dial: neverDial);
+      runScope.setController(spy);
+    });
+
+    Future<void> drive(
+      WidgetTester tester,
+      List<AppLifecycleState> states,
+    ) async {
+      for (final state in states) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+        await tester.pump();
+      }
+    }
+
+    testWidgets('backgrounding pauses the run', (tester) async {
+      spy.state.recordPhase(const SyncRunRunning());
+      await pump(tester);
+
+      await drive(tester, backgrounding);
+
+      expect(spy.pauses, 1);
+      expect(spy.backgroundResumes, 0);
+    });
+
+    testWidgets('a notification is not a backgrounding', (tester) async {
+      spy.state.recordPhase(const SyncRunRunning());
+      await pump(tester);
+
+      // `inactive` is the shade, a permission dialog or an incoming call,
+      // and a run torn down for one of those was never in danger.
+      await drive(tester, [AppLifecycleState.inactive]);
+      expect(spy.pauses, 0);
+
+      // Coming back from `inactive` does fire the lifecycle's resume, and
+      // it is a no-op: `resumeFromBackground` continues a paused run and
+      // this one was never paused.
+      await drive(tester, [AppLifecycleState.resumed]);
+      expect(spy.pauses, 0);
+    });
+
+    testWidgets('coming back asks for the run to continue', (tester) async {
+      spy.state.recordPhase(const SyncRunRunning());
+      await pump(tester);
+
+      await drive(tester, backgrounding);
+      await drive(tester, foregrounding);
+
+      // The lifecycle's resume, which continues a paused run and leaves a
+      // failed one alone; the button below is the other one.
+      expect(spy.backgroundResumes, 1);
+      expect(spy.resumes, isEmpty);
+    });
+
+    testWidgets('the Resume button asks for the run it is shown on', (
+      tester,
+    ) async {
+      spy.state.recordPhase(const SyncRunPaused(completedActions: 3));
+      await pump(tester);
+
+      await tester.tap(find.byKey(const Key('run-resume')));
+      await tester.pump();
+
+      expect(spy.resumes, [request]);
+      expect(spy.backgroundResumes, 0);
+    });
+
+    testWidgets('leaving the page stops listening to the lifecycle', (
+      tester,
+    ) async {
+      spy.state.recordPhase(const SyncRunRunning());
+      await pump(tester);
+      await tester.pumpWidget(const SizedBox());
+
+      await drive(tester, backgrounding);
+
+      // A listener that outlived the page would pause a controller the page
+      // has already disposed.
+      expect(spy.pauses, 0);
+    });
+  });
+
+  group('paused', () {
+    testWidgets('says how many actions completed, and offers both Resume '
+        'and Done', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunPaused(completedActions: 3));
+      await pump(tester);
+
+      expect(find.byKey(const Key('run-paused')), findsOneWidget);
+      expect(find.textContaining('Paused after 3 action(s)'), findsOneWidget);
+      expect(find.byKey(const Key('run-resume')), findsOneWidget);
+      expect(find.byKey(const Key('run-done')), findsOneWidget);
+      expect(find.byKey(const Key('run-stop')), findsNothing);
+    });
+
+    testWidgets('a failed run offers Resume too', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunFailed('Could not reach "desktop".'));
+      await pump(tester);
+
+      expect(find.byKey(const Key('run-resume')), findsOneWidget);
+      expect(find.byKey(const Key('run-done')), findsOneWidget);
+    });
+  });
+
   testWidgets('failed: the message and Done', (tester) async {
     controller.state
       ..recordStart(dryRun: false)
@@ -547,8 +679,12 @@ void main() {
     /// Opens the sheet the way a run does: the controller's own presenter
     /// parks the completer and moves the phase, so the page's `start` is
     /// refused and every tap goes through the real input methods.
-    Future<void> open(WidgetTester tester) async {
+    /// [fill] writes what a real run's fold would have written before the
+    /// presenter is asked. It runs *after* `recordStart`, which clears the
+    /// view state for the attempt it begins (`SyncRunViewState.recordStart`).
+    Future<void> open(WidgetTester tester, {VoidCallback? fill}) async {
       controller.state.recordStart(dryRun: false);
+      fill?.call();
       decided = controller.present(plan, request: request);
       await pump(tester);
     }
@@ -582,36 +718,38 @@ void main() {
     ) async {
       // A real run fills the body's lists before the presenter is asked, so
       // without the phase check every path would be on screen twice.
-      controller.state
-        ..recordHeader(
-          const SyncRunHeader(
-            localRoot: '/data/notes',
-            remoteRoot: '~/notes',
-            deviceName: 'desktop',
-            history: 'Last synced 2026-09-16 10:00 (just now).',
-            firstSyncWarning: null,
-          ),
-        )
-        ..recordConflict(
-          const SyncRunConflictRow(
-            path: 'both.txt',
-            local: 'modified',
-            remote: 'modified',
-          ),
-        )
-        ..recordPlan(const [
-          SyncRunPlanRow(
-            path: 'new.txt',
-            action: 'copy to desktop',
-            bytes: 2048,
-          ),
-          SyncRunPlanRow(
-            path: 'gone.txt',
-            action: 'delete on desktop',
-            bytes: 0,
-          ),
-        ], bytesToTransfer: 2048);
-      await open(tester);
+      await open(
+        tester,
+        fill: () => controller.state
+          ..recordHeader(
+            const SyncRunHeader(
+              localRoot: '/data/notes',
+              remoteRoot: '~/notes',
+              deviceName: 'desktop',
+              history: 'Last synced 2026-09-16 10:00 (just now).',
+              firstSyncWarning: null,
+            ),
+          )
+          ..recordConflict(
+            const SyncRunConflictRow(
+              path: 'both.txt',
+              local: 'modified',
+              remote: 'modified',
+            ),
+          )
+          ..recordPlan(const [
+            SyncRunPlanRow(
+              path: 'new.txt',
+              action: 'copy to desktop',
+              bytes: 2048,
+            ),
+            SyncRunPlanRow(
+              path: 'gone.txt',
+              action: 'delete on desktop',
+              bytes: 0,
+            ),
+          ], bytesToTransfer: 2048),
+      );
 
       expect(find.byKey(const Key('run-plan')), findsNothing);
       expect(find.byKey(const Key('run-conflicts')), findsNothing);
@@ -1036,4 +1174,31 @@ void main() {
       expect(errorIconIn(find.byKey(const Key('run-failed'))), findsOneWidget);
     });
   });
+}
+
+/// A [SyncRunController] that records the input methods the lifecycle and
+/// the Resume button call, and runs nothing.
+///
+/// The page's job here is wiring — which lifecycle transition calls which
+/// input method — and that is all this proves. What pausing and resuming
+/// actually *do* is `run_controller_test.dart`'s, where a plain `test` can
+/// await a real suspension; a `testWidgets` body runs under `FakeAsync`,
+/// which does not settle the stream cancel a pause waits on.
+class _SpyController extends SyncRunController {
+  _SpyController(super.app, {required super.dial})
+    : super(screenWake: FakeScreenWake());
+
+  int pauses = 0;
+  int backgroundResumes = 0;
+  final List<RunRequest> resumes = [];
+
+  @override
+  Future<void> pause() async => pauses++;
+
+  @override
+  Future<void> resumeFromBackground(RunRequest request) async =>
+      backgroundResumes++;
+
+  @override
+  Future<void> resume(RunRequest request) async => resumes.add(request);
 }
