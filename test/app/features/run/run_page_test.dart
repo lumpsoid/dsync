@@ -88,6 +88,53 @@ void main() {
     expect(find.byKey(const Key('run-done')), findsNothing);
   });
 
+  group('the indicators announce what they are waiting on', () {
+    testWidgets('connecting: the spinner is labelled', (tester) async {
+      final semantics = tester.ensureSemantics();
+      controller.state.recordStart(dryRun: false);
+      await pump(tester);
+
+      expect(
+        tester.getSemantics(find.byType(CircularProgressIndicator)),
+        isSemantics(label: 'Connecting to the device'),
+      );
+      semantics.dispose();
+    });
+
+    testWidgets('scanning: the bar names the phase it is in', (tester) async {
+      final semantics = tester.ensureSemantics();
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning());
+      await pump(tester);
+
+      expect(
+        tester.getSemantics(find.byType(LinearProgressIndicator)),
+        isSemantics(label: 'Scanning for changes'),
+      );
+      semantics.dispose();
+    });
+
+    // The value is the framework's, off `value`: the progress-bar role
+    // will not take anything but a number on 0..100.
+    testWidgets('applying: the bar names the phase and reads its percentage', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordProgress(const SyncRunProgress(completed: 3, total: 10));
+      await pump(tester);
+
+      expect(
+        tester.getSemantics(find.byType(LinearProgressIndicator)),
+        isSemantics(label: 'Applying changes', value: '30'),
+      );
+      semantics.dispose();
+    });
+  });
+
   testWidgets('running: header, warning, tally, conflicts, plan with each '
       'row marked off by its result, and progress', (tester) async {
     controller.state

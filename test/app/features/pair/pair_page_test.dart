@@ -256,6 +256,22 @@ void main() {
     }
   });
 
+  testWidgets('submitting: the spinner stands in for the button\'s label', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await pumpPage(tester);
+
+    controller.state.recordOutcome(const PairSubmitting());
+    await tester.pump();
+
+    expect(
+      tester.getSemantics(find.byType(CircularProgressIndicator)),
+      isSemantics(label: 'Pairing'),
+    );
+    semantics.dispose();
+  });
+
   testWidgets('failed: shows the rendered message and re-enables the button', (
     tester,
   ) async {

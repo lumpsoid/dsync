@@ -140,7 +140,11 @@ class _RunSetupPageState extends State<RunSetupPage> {
         listenable: _controller.state,
         builder: (context, _) => switch (_controller.state.peer) {
           RunSetupPeerLoading() => const Center(
-            child: CircularProgressIndicator(),
+            // Nothing else is on screen in this case, so the label carries
+            // the whole announcement.
+            child: CircularProgressIndicator(
+              semanticsLabel: 'Loading the device',
+            ),
           ),
           RunSetupPeerMissing(:final message) => Padding(
             padding: const EdgeInsets.all(32),
@@ -363,7 +367,12 @@ class _RunSetupForm extends StatelessWidget {
               ? const SizedBox(
                   width: 20,
                   height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  // The spinner replaces the button's label while the run
+                  // is starting, so it has to say what the button now is.
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    semanticsLabel: 'Starting the run',
+                  ),
                 )
               : const Text('Start'),
         ),

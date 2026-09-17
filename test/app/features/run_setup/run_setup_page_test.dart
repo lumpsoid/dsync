@@ -148,6 +148,29 @@ void main() {
     await tester.runAsync(settle);
   });
 
+  testWidgets('loading: the spinner says what it is waiting on', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RunSetupPage(
+          source: RunSetupFromDevice(desktop.deviceId),
+          onStart: started.add,
+          onSaved: () => saved++,
+        ),
+      ),
+    );
+
+    expect(
+      tester.getSemantics(find.byType(CircularProgressIndicator)),
+      isSemantics(label: 'Loading the device'),
+    );
+    semantics.dispose();
+    await tester.runAsync(settle);
+  });
+
   testWidgets('missing: the message instead of the form', (tester) async {
     await pumpLoaded(tester, source: const RunSetupFromDevice('dead:beef'));
 
@@ -294,6 +317,22 @@ void main() {
           .onChanged,
       isNull,
     );
+  });
+
+  testWidgets('starting: the spinner stands in for the button\'s label', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await pumpLoaded(tester);
+
+    controller.state.recordOutcome(const RunSetupStarting());
+    await tester.pump();
+
+    expect(
+      tester.getSemantics(find.byType(CircularProgressIndicator)),
+      isSemantics(label: 'Starting the run'),
+    );
+    semantics.dispose();
   });
 
   testWidgets('failed: shows the rendered message and re-enables the button', (

@@ -159,6 +159,20 @@ void main() {
     expect(find.byType(DevicesPage), findsNothing);
   });
 
+  testWidgets('the bootstrap spinner says what it is waiting on', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(const DsyncApp());
+
+    expect(
+      tester.getSemantics(find.byType(CircularProgressIndicator)),
+      isSemantics(label: 'Starting dsync'),
+    );
+    semantics.dispose();
+  });
+
   testWidgets('follows the device into dark, off the same seed', (
     tester,
   ) async {

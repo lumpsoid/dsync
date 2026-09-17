@@ -345,7 +345,10 @@ class _PhaseLine extends StatelessWidget {
             SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                semanticsLabel: 'Connecting to the device',
+              ),
             ),
             SizedBox(width: 12),
             Text('Connecting…'),
@@ -421,10 +424,18 @@ class _Progress extends StatelessWidget {
               : 'Applying ${progress.completed} of ${progress.total}…',
         ),
         const SizedBox(height: 8),
+        // The label carries the phase, because a determinate bar takes the
+        // platform's progress-bar role and its value must be a number on
+        // 0..100 — the framework fills that in from [value], and a prose
+        // `semanticsValue` here would be rejected outright. So the phase
+        // goes where prose is allowed, and the percentage stays the value.
         LinearProgressIndicator(
           value: progress == null || progress.total == 0
               ? null
               : progress.completed / progress.total,
+          semanticsLabel: progress == null
+              ? 'Scanning for changes'
+              : 'Applying changes',
         ),
       ],
     );

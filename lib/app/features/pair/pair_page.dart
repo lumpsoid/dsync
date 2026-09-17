@@ -331,7 +331,12 @@ class _PairForm extends StatelessWidget {
               ? const SizedBox(
                   width: 20,
                   height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  // The spinner stands in for the button's 'Pair' label
+                  // while the request is in flight.
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    semanticsLabel: 'Pairing',
+                  ),
                 )
               : const Text('Pair'),
         ),
