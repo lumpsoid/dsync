@@ -33,7 +33,9 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 class SocketChannel implements Channel {
   final Socket _socket;
 
-  SocketChannel(this._socket);
+  SocketChannel(this._socket) {
+    _disableNagle(_socket);
+  }
 
   /// Connects to the agent listening on the unix socket at [socketPath].
   ///
@@ -163,6 +165,35 @@ class SocketChannel implements Channel {
     await _socket.close();
     _socket.destroy();
   }
+}
+
+/// Turns Nagle's algorithm off on [socket] — every socket a [SocketChannel]
+/// ever wraps, dialed or accepted, `unix://` or `peer://`, since a socket
+/// option only affects the end that sets it and every exchange has two ends.
+///
+/// This protocol is request-then-wait-for-reply, and [SocketChannel.send] is
+/// one `add` plus one awaited `flush` per frame — so every write is small and
+/// nothing is ever queued behind it. That is precisely the shape Nagle plus
+/// the peer's delayed ACK punishes: the frame is held back until the previous
+/// one is ACKed, and that ACK is held back tens of milliseconds because the
+/// peer has nothing of its own to send back yet. Measured over a real
+/// phone-to-desktop `peer://` run (SPEC §17), `archiveCommitUpsert` — one
+/// request, one reply — averaged 84.7 ms against a 10.0 ms bare round trip.
+///
+/// Nothing observable on the wire changes: the same bytes in the same order,
+/// possibly sooner. It is deliberate, and invisible when it is working —
+/// which is why it is written down here rather than left as a bare line.
+///
+/// **The transport is asked, not assumed.** `TCP_NODELAY` is a TCP option and
+/// a unix socket refuses it outright — `setOption` throws `OS Error:
+/// Operation not supported, errno = 95`, it is *not* a silent no-op, so this
+/// cannot be set unconditionally. Nagle does not exist on a unix socket in
+/// the first place, so there is nothing to lose by skipping it there;
+/// `socket_channel_test.dart` pins that refusal so this branch does not read
+/// as superstition.
+void _disableNagle(Socket socket) {
+  if (socket.address.type == InternetAddressType.unix) return;
+  socket.setOption(SocketOption.tcpNoDelay, true);
 }
 
 /// Whether [certificate]'s public key hashes to [deviceId] — what

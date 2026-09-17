@@ -85,4 +85,58 @@ void main() {
       throwsA(isA<SocketException>()),
     );
   });
+
+  group('Nagle', () {
+    test('a unix socket is left alone, because it refuses the option', () async {
+      // Why `SocketChannel`'s constructor asks the transport instead of
+      // setting `TCP_NODELAY` unconditionally: `TCP_NODELAY` is a TCP option,
+      // and a unix socket does not quietly ignore it — it throws. An
+      // unconditional set would break every `unix://` connection in the
+      // project, so this pins the refusal rather than leaving the branch
+      // looking like superstition someone should tidy away.
+      server.listen((socket) => socket.destroy());
+      final raw = await Socket.connect(
+        InternetAddress(socketPath, type: InternetAddressType.unix),
+        0,
+      );
+      addTearDown(raw.destroy);
+
+      expect(
+        () => raw.setOption(SocketOption.tcpNoDelay, true),
+        // A bare `OSError`, not a `SocketException` — `setOption` lets
+        // `setsockopt`'s `EOPNOTSUPP` straight through unwrapped.
+        throwsA(isA<OSError>()),
+      );
+
+      // And the channel over that same transport still constructs.
+      expect(() => SocketChannel(raw), returnsNormally);
+    });
+
+    test('a TCP socket takes it, on both the dialed and the accepted end',
+        () async {
+      // The end that matters, and the one that cannot be asserted by reading
+      // the option back — `dart:io` has no getter. What is checked is that
+      // the constructor accepts both ends of a real TCP pair and the bytes
+      // still cross: an option that threw, or a branch that skipped TCP and
+      // left Nagle on, would be caught by the measurement in SPEC §17 rather
+      // than here.
+      final tcp = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(tcp.close);
+
+      final accepted = Completer<SocketChannel>();
+      tcp.listen((socket) => accepted.complete(SocketChannel(socket)));
+
+      final dialed = SocketChannel(
+        await Socket.connect(InternetAddress.loopbackIPv4, tcp.port),
+      );
+      final peer = await accepted.future;
+      final received = peer.input.expand((chunk) => chunk).take(3).toList();
+
+      await dialed.send(Uint8List.fromList([7, 8, 9]));
+
+      expect(await received, [7, 8, 9]);
+      await dialed.close();
+      await peer.close();
+    });
+  });
 }
