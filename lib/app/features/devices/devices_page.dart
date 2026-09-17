@@ -15,7 +15,8 @@ import 'devices_scope.dart';
 /// state for this page's own error line.
 ///
 /// [onOpenRunSetup] and [onOpenPair] are the seams to the two features a
-/// tap leads to: Run setup for a device, Pair from the empty state. Both
+/// tap leads to: Run setup for a device, Pair from either the app-bar
+/// action or the empty state's button. Both
 /// take the destination as an id (or nothing) rather than a row — the
 /// destination loads what it needs — and both are the entrypoint's to wire
 /// to routes, so this page needs no `Navigator` of its own.
@@ -29,14 +30,25 @@ class DevicesPage extends StatelessWidget {
   /// Opens Run setup for the tapped device, by id.
   final void Function(String deviceId) onOpenRunSetup;
 
-  /// Opens the Pair page, from the empty state.
+  /// Opens the Pair page. Reached from the app-bar action at any list
+  /// length, and from the empty state's button on a first run.
   final VoidCallback onOpenPair;
 
   @override
   Widget build(BuildContext context) {
     final controller = devicesScope.controller;
     return Scaffold(
-      appBar: AppBar(title: const Text('Devices')),
+      appBar: AppBar(
+        title: const Text('Devices'),
+        actions: [
+          IconButton(
+            key: const Key('devices-open-pair'),
+            icon: const Icon(Icons.add),
+            tooltip: 'Pair a device',
+            onPressed: onOpenPair,
+          ),
+        ],
+      ),
       body: ListenableBuilder(
         listenable: Listenable.merge([controller.app.state, controller.state]),
         builder: (context, _) => _DevicesBody(

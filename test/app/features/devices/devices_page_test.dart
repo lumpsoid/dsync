@@ -102,6 +102,19 @@ void main() {
     expect(pairOpened, 1);
   });
 
+  testWidgets('the app-bar action opens Pair with a non-empty list', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordDevices([row('phone')]);
+
+    await pumpPage(tester);
+    expect(find.text('Pair a device'), findsNothing);
+    await tester.tap(find.byKey(const Key('devices-open-pair')));
+
+    expect(pairOpened, 1);
+  });
+
   testWidgets("shows a row's certificate warning only on that row", (
     tester,
   ) async {
