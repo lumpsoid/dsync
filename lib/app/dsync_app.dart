@@ -36,14 +36,26 @@ import 'run_request.dart';
 /// bootstrap is a refusal `core` made on purpose (a half-written identity,
 /// a device store that cannot be decoded), so its message is shown as the
 /// page, not swallowed into an empty list.
+///
+/// **Both schemes come off one seed.** Light and dark are the same palette
+/// under two brightnesses, so the app reads as itself either way and a
+/// colour change is still one line. Which one shows is the device's call —
+/// there is no in-app toggle and nothing to persist.
 class DsyncApp extends StatelessWidget {
   const DsyncApp({super.key});
+
+  /// The single colour both schemes are derived from.
+  static const _seed = Colors.teal;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'dsync',
-      theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.teal)),
+      theme: ThemeData(colorScheme: .fromSeed(seedColor: _seed)),
+      darkTheme: ThemeData(
+        colorScheme: .fromSeed(seedColor: _seed, brightness: Brightness.dark),
+      ),
+      themeMode: ThemeMode.system,
       home: const _BootstrapGate(),
     );
   }

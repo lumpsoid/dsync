@@ -159,6 +159,24 @@ void main() {
     expect(find.byType(DevicesPage), findsNothing);
   });
 
+  testWidgets('follows the device into dark, off the same seed', (
+    tester,
+  ) async {
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+
+    await tester.pumpWidget(const DsyncApp());
+
+    final scheme = Theme.of(
+      tester.element(find.byType(CircularProgressIndicator)),
+    ).colorScheme;
+    expect(scheme.brightness, Brightness.dark);
+    expect(
+      scheme,
+      ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
+    );
+  });
+
   testWidgets('renders the failure message on a failed bootstrap', (
     tester,
   ) async {
