@@ -1,10 +1,17 @@
 import '../../app_scope.dart';
+import '../run_setup/folder_picker.dart';
 import 'profiles_controller.dart';
 
 /// The cell for [ProfilesController]; see the scope contract in
 /// `app_scope.dart`.
 final class ProfilesScope extends Scope<ProfilesController> {
-  ProfilesScope() : super(() => ProfilesController(appScope.controller));
+  ProfilesScope()
+    : super(
+        () => ProfilesController(
+          appScope.controller,
+          picker: const PlatformFolderPicker(),
+        ),
+      );
 }
 
 /// The single profiles scope.

@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/paired_device.dart';
 
+import 'profile_breakage.dart';
 import 'sync_profile.dart';
 
 /// One saved profile as the head's home list displays it: every field is
@@ -14,10 +15,12 @@ import 'sync_profile.dart';
 /// revoked since the last refresh is unpaired *now*) and the same
 /// filesystem probe Run setup runs on a folder it is offered.
 ///
-/// [brokenReason] is the whole line to show instead of a tap target: a
-/// broken profile *renders* rather than disappearing (the run it names is
-/// still the run the user configured), and nothing about a broken row is
-/// tappable — the page reads [brokenReason] and renders the row inert.
+/// [breakage] is the whole of that decision: a broken profile *renders*
+/// rather than disappearing (the run it names is still the run the user
+/// configured), it is not a tap target while it cannot be run, and the case
+/// says which remedy the row offers in place of that tap — re-picking the
+/// local folder, or pairing with the peer again. The page reads [breakage]
+/// and switches; it never re-derives what is wrong.
 class ProfileRow {
   const ProfileRow({
     required this.id,
@@ -26,7 +29,7 @@ class ProfileRow {
     required this.peerName,
     required this.localRootPath,
     required this.remoteRootPath,
-    required this.brokenReason,
+    required this.breakage,
   });
 
   /// [profile] against the facts fetched for it. [device] is the paired
@@ -38,15 +41,11 @@ class ProfileRow {
     required PairedDevice? device,
     required String? localRootRefusal,
   }) {
-    final String? broken;
+    final ProfileBreakage? broken;
     if (device == null) {
-      broken =
-          'The device this profile syncs with is no longer paired. Pair '
-          'again, then delete this profile and save it from a working run.';
+      broken = const ProfileDeviceUnpaired();
     } else if (localRootRefusal != null) {
-      broken =
-          'The local folder is no longer accessible. Grant access to it '
-          'again, or delete this profile and save it from a working run.';
+      broken = const ProfileLocalRootUnusable();
     } else {
       broken = null;
     }
@@ -57,7 +56,7 @@ class ProfileRow {
       peerName: device?.name,
       localRootPath: profile.localRootPath,
       remoteRootPath: profile.remoteRootPath,
-      brokenReason: broken,
+      breakage: broken,
     );
   }
 
@@ -84,6 +83,7 @@ class ProfileRow {
   /// Side `b`, unexpanded.
   final String remoteRootPath;
 
-  /// Why this profile cannot be run any more, or `null` while it can.
-  final String? brokenReason;
+  /// Why this profile cannot be run any more and what fixes it, or `null`
+  /// while it can be run.
+  final ProfileBreakage? breakage;
 }

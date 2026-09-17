@@ -156,7 +156,7 @@ class AppController {
   /// profile's id resolves to *now* (a fresh store read, per
   /// `PairedDeviceStore`'s freshness rule) and the filesystem probe on its
   /// local root. A profile whose device is gone or whose folder cannot be
-  /// probed renders [ProfileRow.brokenReason] — visible, not gone.
+  /// probed renders [ProfileRow.breakage] — visible, remediable, not gone.
   ///
   /// Throws `SyncProfileStoreCorruptException` as the store does, for the
   /// caller to surface — the profiles home as its error line, [bootstrap]
@@ -184,6 +184,30 @@ class AppController {
   Future<void> upsertProfile(SyncProfile profile) async {
     await (await profiles).save(profile);
     await refreshProfiles();
+  }
+
+  /// Points the profile saved under [id] at [localRootPath] and re-renders
+  /// the list — the remedy the home list offers on a row broken by a lost
+  /// folder grant, in place of deleting the profile and saving it again
+  /// from a fresh run. The caller has already proved the folder usable;
+  /// this only writes it.
+  ///
+  /// Returns `null` on success, or the message to show when nothing matched
+  /// — the same stale-row rendering [deleteProfile] gives its own
+  /// not-found, and the list is refreshed on that path too.
+  Future<String?> relocateProfile(
+    String id, {
+    required String localRootPath,
+  }) async {
+    final store = await profiles;
+    final profile = await store.byId(id);
+    if (profile == null) {
+      await refreshProfiles();
+      return SyncProfileNotFoundException(id).toString();
+    }
+    await store.save(profile.withLocalRoot(localRootPath));
+    await refreshProfiles();
+    return null;
   }
 
   /// Deletes the profile saved under [id] and re-renders the list. Returns
