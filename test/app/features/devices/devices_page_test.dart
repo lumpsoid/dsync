@@ -91,6 +91,38 @@ void main() {
     expect(find.text('No paired devices.'), findsNothing);
   });
 
+  testWidgets('leads with the address and demotes the id below it', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordDevices([row('phone')]);
+
+    await pumpPage(tester);
+
+    final address = tester.getTopLeft(find.text('10.0.0.7:28771')).dy;
+    final id = tester.getTopLeft(find.text('a1b2:c3d4:phone')).dy;
+    expect(address, lessThan(id));
+    // The id is still there — a revoke is addressed by it — but in the
+    // muted label style rather than as the first thing read.
+    final idStyle = tester.widget<Text>(find.text('a1b2:c3d4:phone')).style;
+    final theme = Theme.of(tester.element(find.text('phone')));
+    expect(idStyle?.fontSize, theme.textTheme.labelSmall?.fontSize);
+    expect(idStyle?.color, theme.colorScheme.onSurfaceVariant);
+  });
+
+  testWidgets('every row names what a tap does and opens Run setup', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordDevices([row('phone'), row('laptop')]);
+
+    await pumpPage(tester);
+    expect(find.text('Set up run'), findsNWidgets(2));
+    await tester.tap(find.text('Set up run').last);
+
+    expect(opened, ['a1b2:c3d4:laptop']);
+  });
+
   testWidgets('empty state points at Pair', (tester) async {
     ready();
     app.state.recordDevices([]);
