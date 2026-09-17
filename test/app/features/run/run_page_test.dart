@@ -647,6 +647,44 @@ void main() {
       expect(await decided, isEmpty);
     });
 
+    testWidgets('the body is padded by the sheet while it is up', (
+      tester,
+    ) async {
+      // The body's bottom inset, from the scroll view's outer padding: the
+      // sections are inside it, so it is what decides whether the last of
+      // them can be scrolled out from behind the sheet.
+      double bottomInset() => tester
+          .widgetList<SliverPadding>(
+            find.descendant(
+              of: find.byType(CustomScrollView),
+              matching: find.byType(SliverPadding),
+            ),
+          )
+          .first
+          .padding
+          .resolve(TextDirection.ltr)
+          .bottom;
+
+      await open(tester);
+      // The extent is measured after the sheet lays out, so it reaches the
+      // body one frame later.
+      await tester.pump();
+
+      final sheetHeight = tester
+          .getSize(find.byKey(const Key('run-decisions')))
+          .height;
+      expect(sheetHeight, greaterThan(0));
+      expect(bottomInset(), 16 + sheetHeight);
+
+      await tester.tap(find.byKey(const Key('run-confirm')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.byKey(const Key('run-decisions')), findsNothing);
+      expect(bottomInset(), 16);
+      await decided;
+    });
+
     testWidgets('a plan far taller than the sheet is built on demand too', (
       tester,
     ) async {

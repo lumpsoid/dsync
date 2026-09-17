@@ -57,6 +57,18 @@ class _RunPageState extends State<RunPage> {
     _controller.state.phaseChanged,
   ]);
 
+  /// How much of the body the decision sheet covers, measured from the
+  /// sheet itself after it lays out: it sizes to its content up to a share
+  /// of the screen, so only layout knows which of the two it landed on.
+  /// The body pads its scroll view by this, so the bottom of it can still
+  /// be scrolled out from behind the sheet. Zero while the sheet is down.
+  double _sheetExtent = 0;
+
+  void _setSheetExtent(double extent) {
+    if (!mounted || _sheetExtent == extent) return;
+    setState(() => _sheetExtent = extent);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -153,12 +165,15 @@ class _RunPageState extends State<RunPage> {
             :final actions,
             :final bytesToTransfer,
           ) =>
-            _DecisionSheet(
-              conflicts: conflicts,
-              actions: actions,
-              bytesToTransfer: bytesToTransfer,
-              deviceName: widget.request.deviceName,
-              controller: _controller,
+            _MeasuredHeight(
+              onExtent: _setSheetExtent,
+              child: _DecisionSheet(
+                conflicts: conflicts,
+                actions: actions,
+                bytesToTransfer: bytesToTransfer,
+                deviceName: widget.request.deviceName,
+                controller: _controller,
+              ),
             ),
           SyncRunIdle() ||
           SyncRunConnecting() ||
@@ -187,7 +202,10 @@ class _RunPageState extends State<RunPage> {
       body: CustomScrollView(
         slivers: [
           SliverPadding(
-            padding: const EdgeInsets.all(16),
+            // Padded by the sheet's own height while it is up: without it
+            // the last of these sections sits behind the sheet with no way
+            // to scroll it into view.
+            padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + _sheetExtent),
             sliver: SliverMainAxisGroup(
               slivers: [
                 ListenableBuilder(
@@ -629,6 +647,51 @@ class _PlanRow extends StatelessWidget {
           result?.error ?? '${row.action} · ${formatBytes(row.bytes)}',
         ),
       ),
+    );
+  }
+}
+
+/// Reports its child's laid-out height to [onExtent], and zero once it
+/// leaves the tree. The run page pads its body by the decision sheet's real
+/// extent, and the sheet's height is its content's, bounded by a share of
+/// the screen — a number only layout has.
+class _MeasuredHeight extends StatefulWidget {
+  const _MeasuredHeight({required this.onExtent, required this.child});
+
+  final ValueChanged<double> onExtent;
+  final Widget child;
+
+  @override
+  State<_MeasuredHeight> createState() => _MeasuredHeightState();
+}
+
+class _MeasuredHeightState extends State<_MeasuredHeight> {
+  @override
+  void dispose() {
+    // After the frame that removes this, not during it: the listener is a
+    // rebuild of the page, and the page is mid-build right now.
+    final onExtent = widget.onExtent;
+    WidgetsBinding.instance.addPostFrameCallback((_) => onExtent(0));
+    super.dispose();
+  }
+
+  void _report() {
+    if (!mounted) return;
+    final size = context.size;
+    if (size != null) widget.onExtent(size.height);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // The first layout, and every rebuild's; the notifier below catches the
+    // resizes that no rebuild of this widget accompanies.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _report());
+    return NotificationListener<SizeChangedLayoutNotification>(
+      onNotification: (_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _report());
+        return false;
+      },
+      child: SizeChangedLayoutNotifier(child: widget.child),
     );
   }
 }
