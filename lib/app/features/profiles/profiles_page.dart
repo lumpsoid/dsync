@@ -23,10 +23,13 @@ import 'profiles_scope.dart';
 ///
 /// [onOpenProfile] is the seam to Run setup, fired with the tapped row's
 /// profile id — an id, not a row, per the handoff rule.
-/// [onOpenDevices] is the seam to Devices, from the app bar and from the
-/// empty state: pairing and revoking still need a device view, and a first
-/// profile is born there. Both are the entrypoint's to wire to routes, so
-/// this page needs no `Navigator` of its own.
+/// [onOpenDevices] is the seam to Devices, from the app bar, from the empty
+/// state and from the "New run" button: pairing and revoking still need a
+/// device view, and every run — the first and every one after it — is born
+/// there. The app-bar action keeps its own meaning, pairing; the button is
+/// about running, and stays on screen once the list has rows. Both are the
+/// entrypoint's to wire to routes, so this page needs no `Navigator` of its
+/// own.
 class ProfilesPage extends StatefulWidget {
   const ProfilesPage({
     super.key,
@@ -77,6 +80,12 @@ class _ProfilesPageState extends State<ProfilesPage> {
           onOpenProfile: widget.onOpenProfile,
           onOpenDevices: widget.onOpenDevices,
         ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        key: const Key('profiles-new-run'),
+        onPressed: widget.onOpenDevices,
+        icon: const Icon(Icons.sync),
+        label: const Text('New run'),
       ),
     );
   }

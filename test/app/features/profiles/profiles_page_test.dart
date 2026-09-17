@@ -90,6 +90,25 @@ void main() {
     expect(find.byKey(const Key('profiles-open-devices')), findsOneWidget);
   });
 
+  testWidgets('a new run stays one tap away once the list has rows', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordProfiles([ok()]);
+    await pumpPage(tester);
+
+    // The empty state's action is gone with the empty state; the permanent
+    // one is not.
+    expect(find.text('Sync with a device'), findsNothing);
+    await tester.tap(find.byKey(const Key('profiles-new-run')));
+    await tester.pumpAndSettle();
+
+    expect(devicesOpened, 1);
+    // The app bar's own entry point is untouched by it.
+    expect(find.byKey(const Key('profiles-open-devices')), findsOneWidget);
+    expect(opened, isEmpty);
+  });
+
   testWidgets('every profile is a row naming the run it re-runs', (
     tester,
   ) async {
