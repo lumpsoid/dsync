@@ -23,8 +23,8 @@ import 'run_request.dart';
 /// controller cannot navigate without a `BuildContext`, and a page that
 /// pushed its own routes would couple two features' shapes together. This
 /// file is the one place that knows Devices → Pair pops back on success,
-/// Run setup is *replaced* by Run so that Done lands on Devices, and every
-/// hop carries an id or a plain [RunRequest], never loaded data.
+/// Run setup pushes Run, and every hop carries an id or a plain [RunRequest],
+/// never loaded data.
 ///
 /// **Nothing routes before the gate is ready.** `AppController.bootstrap()`
 /// is started by `main()`, before `runApp`; this widget only renders what
@@ -94,7 +94,7 @@ class _BootstrapGate extends StatelessWidget {
       MaterialPageRoute<void>(
         builder: (_) => RunSetupPage(
           deviceId: deviceId,
-          onStart: (request) => navigator.pushReplacement(
+          onStart: (request) => navigator.push(
             MaterialPageRoute<void>(
               builder: (_) => RunPage(request: request, onDone: navigator.pop),
             ),

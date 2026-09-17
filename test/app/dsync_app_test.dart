@@ -11,11 +11,20 @@ import 'package:dsync/app/features/devices/devices_scope.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_page.dart';
 import 'package:dsync/app/features/pair/pair_scope.dart';
+import 'package:dsync/app/features/run/replica_connector.dart';
+import 'package:dsync/app/features/run/run_controller.dart';
+import 'package:dsync/app/features/run/run_page.dart';
+import 'package:dsync/app/features/run/run_scope.dart';
+import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
+import 'package:dsync/app/run_request.dart';
+import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -23,11 +32,28 @@ import '../support/fake_folder_picker.dart';
 
 /// The entrypoint's wiring: the bootstrap gate renders each `AppBootstrap`
 /// case, and a tap on Devices lands on the route this file promised. Driven
-/// the way the scope contract in `app_scope.dart` intends — every scope
-/// pinned with `setController`, the app pumped directly, the gate moved by
-/// writing `AppState` as `AppController.bootstrap()` would. `bootstrap()`
-/// itself is `main()`'s to call, so nothing here does I/O beyond Run
-/// setup's read of a store that does not exist.
+/// the way the scope contract in `app_scope.dart` intends — the controllers
+/// pinned with `setController`, the Run scope's factory swapped for a fresh
+/// pinned controller per `create()`, the app pumped directly, the gate moved
+/// by writing `AppState` as `AppController.bootstrap()` would. `bootstrap()`
+/// itself is `main()`'s to call, so the I/O here is Run setup's own: a store
+/// read, and the one write the last test makes to go with it.
+///
+/// **Real I/O is real, and `flutter_test` runs the body against a fake
+/// clock.** A `Future` that completes from a real read or write — a store,
+/// a `Directory` — resumes in the fake zone's microtask queue only when
+/// something pumps, so awaiting one straight from the test body hangs the
+/// test instead of failing it. Every await of real I/O in this file is
+/// therefore inside `tester.runAsync`, and every wait for it is
+/// [runRealTimeUntil], which pumps frames *and* lets the real event loop
+/// turn. Its bound is what fails a regression rather than hanging on it.
+///
+/// The Run feature is pinned, not driven: a fresh `SyncRunController` per
+/// `create()` whose phase is already the failed run these routes are about.
+/// What a failed run *renders* is `run_page_test.dart`'s and what a refused
+/// dial *causes* is `replica_connector_test.dart`'s; this file's subject is
+/// the route stack — Run setup pushed, Run over it, and a back that finds
+/// the form still filled.
 void main() {
   late Directory tempDir;
   late AppController app;
@@ -66,6 +92,7 @@ void main() {
   tearDown(devicesScope.reset);
   tearDown(pairScope.reset);
   tearDown(runSetupScope.reset);
+  tearDown(runScope.reset);
   tearDown(() {
     devices.dispose();
     pair.dispose();
@@ -77,6 +104,43 @@ void main() {
   void ready() => app.state.recordBootstrap(
     const AppBootstrapReady(deviceId: 'ffff:0000', certificateWarning: null),
   );
+
+  /// Pumped frames plus real time, until [condition] holds. For waits that
+  /// straddle both worlds — real file I/O the page is awaiting, and a frame
+  /// that has to be built for its result to show. Call inside
+  /// `tester.runAsync`; bounded, so a regression fails rather than hangs.
+  Future<void> runRealTimeUntil(
+    WidgetTester tester,
+    bool Function() condition,
+  ) async {
+    final deadline = Stopwatch()..start();
+    while (!condition() && deadline.elapsed < const Duration(seconds: 5)) {
+      await tester.pump(const Duration(milliseconds: 20));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(condition(), isTrue, reason: 'the app never caught up');
+  }
+
+  /// The text currently in the field under [key]. Read through the widget:
+  /// the `TextEditingController`s live in the page's `State`, so this is
+  /// what a `Navigator.push` that disposed the page would lose.
+  String fieldText(WidgetTester tester, String key) =>
+      tester.widget<TextField>(find.byKey(Key(key))).controller?.text ?? '';
+
+  /// The request the Run page on screen was started with.
+  RunRequest requestIn(WidgetTester tester) =>
+      tester.widget<RunPage>(find.byType(RunPage)).request;
+
+  /// A dial that must never happen: the Run controller this file pins is
+  /// never idle, so `SyncRunController.start` returns before the connector
+  /// reads a store, an identity or an address.
+  Future<DialResult> neverDial(
+    String host,
+    int port, {
+    required String expectedPeerDeviceId,
+    required ownIdentity,
+    required DateTime now,
+  }) async => fail('the entrypoint test must not dial');
 
   testWidgets('renders the bootstrap screen while loading', (tester) async {
     await tester.pumpWidget(const DsyncApp());
@@ -156,11 +220,10 @@ void main() {
       await tester.tap(find.text('desktop'));
       // One frame builds the pushed route, which is what starts `load`.
       await tester.pump();
-      final deadline = Stopwatch()..start();
-      while (runSetup.state.peer is RunSetupPeerLoading &&
-          deadline.elapsed < const Duration(seconds: 20)) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
+      await runRealTimeUntil(
+        tester,
+        () => runSetup.state.peer is! RunSetupPeerLoading,
+      );
     });
     // Not `pumpAndSettle`: Run setup's spinner never settles. One frame
     // past the transition instead.
@@ -170,5 +233,127 @@ void main() {
     expect(page.deviceId, 'a1b2:c3d4');
     expect(find.byType(DevicesPage), findsNothing);
     expect(runSetup.state.peer, isA<RunSetupPeerMissing>());
+  });
+
+  testWidgets('Run setup stays under Run: back from a failed run finds the '
+      'form still filled, and Start runs again', (tester) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final desktop = PairedDevice(
+      certificatePem: generateDeviceIdentity(commonName: 'desktop')
+          .certificatePem,
+      name: 'desktop',
+      agreedReplicaRoots: const {'/home/me/notes'},
+      pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
+      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
+    );
+    final localRoot = Directory('${tempDir.path}/documents/notes')
+      ..createSync(recursive: true);
+
+    ready();
+    app.state.recordDevices([
+      PairedDeviceRow(
+        name: 'desktop',
+        deviceId: desktop.deviceId,
+        address: '10.0.0.7:28771',
+        pairedAt: DateTime(2026, 9, 15),
+        agreedRootCount: 1,
+        certificateWarning: null,
+      ),
+    ]);
+
+    // One failed run per push, and nothing else: the phase is written the
+    // way `run_page_test.dart` writes it, so the page mounts on a run that
+    // has already failed and `start` refuses to begin a second one.
+    var runs = 0;
+    runScope.setFactory(() {
+      runs++;
+      return SyncRunController(app, dial: neverDial)
+        ..state.recordStart(dryRun: true)
+        ..state.recordPhase(
+          const SyncRunFailed('Could not reach "desktop": refused.'),
+        );
+    });
+
+    await tester.runAsync(() async {
+      // The store is what Run setup's `load` reads, and writing it is real
+      // I/O that has to happen in this zone — see the file doc comment.
+      await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
+          .add(desktop);
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(find.text('desktop'));
+      await tester.pump();
+      // `load` records the peer *before* it lists the folders and keeps
+      // going afterwards, so waiting for the peer case alone leaves its
+      // `_listLocalFolders(selected: null)` free to land after the selection
+      // below and clear it — which it does under a loaded machine. The
+      // folder list is the last thing `load` writes about this form.
+      await runRealTimeUntil(
+        tester,
+        () => runSetup.state.localFolders.any(
+          (choice) => choice.path == localRoot.path,
+        ),
+      );
+
+      // A local folder, then the two fields the task is about — the folder
+      // the way the dropdown reports it, the text through the fields, since
+      // the text is what the page's own `State` holds.
+      await runSetup.selectLocalFolder(localRoot.path);
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('run-setup-remote-root')),
+        '~/notes',
+      );
+      await tester.enterText(
+        find.byKey(const Key('run-setup-address')),
+        '10.0.0.9:4242',
+      );
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('run-setup-start')));
+      await runRealTimeUntil(tester, () => runs == 1);
+    });
+    // Not `pumpAndSettle` for the route transition either: the Run page
+    // carries a spinner of its own until its phase lands. A frame past it.
+    await tester.pump(const Duration(seconds: 1));
+
+    // Run is over Run setup, started with what was typed.
+    expect(find.byType(RunPage), findsOneWidget);
+    expect(find.textContaining('Could not reach'), findsOneWidget);
+    final first = requestIn(tester);
+    expect(first.localRootPath, localRoot.path);
+    expect(first.remoteRootPath, '~/notes');
+    expect(first.addressOverride?.host, '10.0.0.9');
+    expect(first.addressOverride?.port, 4242);
+
+    await tester.pageBack();
+    // Settled: a single frame leaves the popped route's exit animation at
+    // its end value with the overlay entry not yet removed.
+    await tester.pumpAndSettle();
+
+    // The whole of the fix: Run setup was covered, not replaced, so the
+    // form it holds is the one the user left.
+    expect(find.byType(RunSetupPage), findsOneWidget);
+    expect(find.byType(RunPage), findsNothing);
+    expect(runSetup.state.selectedLocalFolder, localRoot.path);
+    expect(fieldText(tester, 'run-setup-remote-root'), '~/notes');
+    expect(fieldText(tester, 'run-setup-address'), '10.0.0.9:4242');
+
+    // And starting again from that form builds the same request.
+    await tester.runAsync(() async {
+      await tester.tap(find.byKey(const Key('run-setup-start')));
+      await runRealTimeUntil(tester, () => runs == 2);
+    });
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byType(RunPage), findsOneWidget);
+    final second = requestIn(tester);
+    expect(second.localRootPath, localRoot.path);
+    expect(second.remoteRootPath, '~/notes');
+    expect(second.addressOverride?.host, '10.0.0.9');
+    expect(second.addressOverride?.port, 4242);
   });
 }
