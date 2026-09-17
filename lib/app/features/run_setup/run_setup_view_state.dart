@@ -51,15 +51,14 @@ final class RunSetupPeerLoading extends RunSetupPeer {
   const RunSetupPeerLoading();
 }
 
-/// The device is paired. [grantHint] is the line to show under the remote
-/// root field when the pairing has no agreed roots at all — a strong local
-/// hint that `dsync pair grant` has not been run, not a check that the path
-/// about to be typed is granted (only the desktop can say that).
+/// The device is paired. Nothing here says whether the root about to be
+/// typed is granted: only the desktop knows, and SPEC §4.4 has it answer
+/// uninformatively — `remoteRootNotGrantedMessage`, off that refusal, is
+/// where the head learns it.
 final class RunSetupPeerLoaded extends RunSetupPeer {
-  const RunSetupPeerLoaded({required this.name, required this.grantHint});
+  const RunSetupPeerLoaded({required this.name});
 
   final String name;
-  final String? grantHint;
 }
 
 /// The id the Devices page handed over matches nothing: a stale row, tapped

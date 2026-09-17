@@ -73,17 +73,16 @@ void main() {
   ];
 
   group('load', () {
-    test('renders the paired device by id, with no hint when roots are '
-        'granted', () async {
+    test('renders the paired device by id', () async {
       await loadDesktop();
 
       final peer = controller.state.peer;
       expect(peer, isA<RunSetupPeerLoaded>());
       expect((peer as RunSetupPeerLoaded).name, 'desktop');
-      expect(peer.grantHint, isNull);
     });
 
-    test('hints at `dsync pair grant` when the pairing has no roots', () async {
+    test('an empty agreed-root set says nothing about the peer: it is what '
+        'this device granted, and the head grants nothing', () async {
       desktop = PairedDevice(
         certificatePem: certA,
         name: 'desktop',
@@ -93,8 +92,7 @@ void main() {
       );
       await loadDesktop();
 
-      final peer = controller.state.peer as RunSetupPeerLoaded;
-      expect(peer.grantHint, contains('dsync pair grant'));
+      expect(controller.state.peer, isA<RunSetupPeerLoaded>());
     });
 
     test('renders an unknown id as missing, not a throw', () async {

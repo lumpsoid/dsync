@@ -162,7 +162,7 @@ class _DeviceTile extends StatelessWidget {
           Text(row.deviceId),
           Text(row.address),
           Text('paired ${_formatPairedAt(row.pairedAt)}'),
-          Text(_rootsLine(row.agreedRootCount)),
+          if (_rootsLine(row.agreedRootCount) case final roots?) Text(roots),
           if (warning != null)
             Text(
               warning,
@@ -222,12 +222,15 @@ String _formatPairedAt(DateTime pairedAt) {
   return '${local.year}-${two(local.month)}-${two(local.day)}';
 }
 
-/// The agreed-roots count as a line. Zero is shown as the fact SPEC §4.4's
-/// two-step rule makes it — paired but granted nothing yet — with the
-/// desktop command that changes that, the way `dsync pair list` does.
-/// Pluralisation over an already-rendered count, not a rule about it.
-String _rootsLine(int count) => switch (count) {
-  0 => 'no replica roots granted — grant one with `dsync pair grant`',
+/// The agreed-roots count as a line, or `null` for zero — no line at all.
+/// The count is what this device grants the peer, and the head has no way to
+/// grant anything, so zero here is structural rather than a fact about the
+/// pairing: printing it told a device whose sync works that nothing was
+/// granted. `dsync pair list` still shows its zero, where the set is the
+/// host's own grants. Pluralisation over an already-rendered count, not a
+/// rule about it.
+String? _rootsLine(int count) => switch (count) {
+  0 => null,
   1 => '1 replica root',
   _ => '$count replica roots',
 };

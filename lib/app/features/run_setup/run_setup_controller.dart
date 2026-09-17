@@ -74,9 +74,11 @@ import 'run_setup_view_state.dart';
 /// so the peer that asked cannot probe a desktop's filesystem. The head
 /// genuinely cannot tell which it was, and [remoteRootNotGrantedMessage] —
 /// what the Run feature shows for that reply — must not be "improved" into
-/// claiming the path does or does not exist; either would fabricate. A
-/// pairing with no agreed roots at all is surfaced up front
-/// (`RunSetupPeerLoaded.grantHint`) as the hint it is, not as a check.
+/// claiming the path does or does not exist; either would fabricate. That
+/// refusal is the *only* place the head learns a root is not granted:
+/// `PairedDevice.agreedReplicaRoots` is what this device grants the peer,
+/// never the reverse, and the head grants nothing, so it is always empty —
+/// nothing up front may be derived from it.
 ///
 /// **Dry run is opt-in: the switch defaults OFF, a constant.** A dry run
 /// is something the user asks for per run ([setDryRun]), and the choice is
@@ -184,16 +186,7 @@ class RunSetupController {
       return;
     }
     _peerDeviceId = device.deviceId;
-    state.recordPeer(
-      RunSetupPeerLoaded(
-        name: device.name,
-        grantHint: device.agreedReplicaRoots.isEmpty
-            ? '${device.name} has not granted this device any replica root '
-                  'yet. On it, run `dsync pair grant <this device> <root>` '
-                  'first, then type that root here.'
-            : null,
-      ),
-    );
+    state.recordPeer(RunSetupPeerLoaded(name: device.name));
     await _listLocalFolders(selected: profileLocalRoot);
   }
 

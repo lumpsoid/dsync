@@ -84,7 +84,10 @@ void main() {
     expect(find.text('10.0.0.7:28771'), findsNWidgets(2));
     expect(find.text('paired 2026-09-15'), findsNWidgets(2));
     expect(find.text('1 replica root'), findsOneWidget);
-    expect(find.textContaining('dsync pair grant'), findsOneWidget);
+    // The zero row prints no roots line at all: the count is what this
+    // device granted the peer, which the head can never set.
+    expect(find.textContaining('replica root'), findsOneWidget);
+    expect(find.textContaining('dsync pair grant'), findsNothing);
     expect(find.text('No paired devices.'), findsNothing);
   });
 

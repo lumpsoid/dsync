@@ -128,10 +128,9 @@ class _RunSetupPageState extends State<RunSetupPage> {
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ),
-          RunSetupPeerLoaded(:final name, :final grantHint) => _RunSetupForm(
+          RunSetupPeerLoaded(:final name) => _RunSetupForm(
             controller: _controller,
             deviceName: name,
-            grantHint: grantHint,
             newFolder: _newFolder,
             remoteRoot: _remoteRoot,
             address: _address,
@@ -150,7 +149,6 @@ class _RunSetupForm extends StatelessWidget {
   const _RunSetupForm({
     required this.controller,
     required this.deviceName,
-    required this.grantHint,
     required this.newFolder,
     required this.remoteRoot,
     required this.address,
@@ -162,7 +160,6 @@ class _RunSetupForm extends StatelessWidget {
 
   final RunSetupController controller;
   final String deviceName;
-  final String? grantHint;
   final TextEditingController newFolder;
   final TextEditingController remoteRoot;
   final TextEditingController address;
@@ -255,9 +252,7 @@ class _RunSetupForm extends StatelessWidget {
           decoration: InputDecoration(
             labelText: 'Folder on $deviceName',
             hintText: '~/notes',
-            helperText:
-                grantHint ??
-                'Exactly as granted there with `dsync pair grant`.',
+            helperText: 'Exactly as granted there with `dsync pair grant`.',
             helperMaxLines: 4,
             errorText: state.remoteRootError,
           ),

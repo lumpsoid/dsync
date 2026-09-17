@@ -172,20 +172,6 @@ void main() {
     expect(find.textContaining('has not granted this device'), findsNothing);
   });
 
-  testWidgets('the grant hint replaces the remote root helper', (tester) async {
-    await pumpLoaded(tester);
-
-    controller.state.recordPeer(
-      const RunSetupPeerLoaded(
-        name: 'desktop',
-        grantHint: 'desktop has not granted this device any replica root yet.',
-      ),
-    );
-    await tester.pump();
-
-    expect(find.textContaining('has not granted this device'), findsOneWidget);
-  });
-
   testWidgets('folders are listed and the selection follows the view state', (
     tester,
   ) async {

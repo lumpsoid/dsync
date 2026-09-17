@@ -57,9 +57,10 @@ class PairedDeviceRow {
 
   final DateTime pairedAt;
 
-  /// How many replica roots have been agreed with this device. Zero is a
-  /// fact worth showing — SPEC §4.4's two-step rule pairs a device before
-  /// granting it anything — not an absence.
+  /// How many replica roots *this* device has granted the peer — what it
+  /// serves, never what the peer serves back (SPEC §4.4 keeps that from the
+  /// peer on purpose). Zero is not shown: the head never calls
+  /// `PairedDeviceStore.grant`, so zero says nothing about the pairing.
   final int agreedRootCount;
 
   /// SPEC §4.4's warning line for this device's certificate, or `null`
