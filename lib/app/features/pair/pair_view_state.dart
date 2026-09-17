@@ -66,6 +66,21 @@ class PairViewState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Records the local-name field's line alone — the as-you-type path,
+  /// where one field changed and the other's verdict has not been
+  /// re-derived. `PairController` only.
+  void recordLocalNameError(String? error) {
+    _localNameError = error;
+    notifyListeners();
+  }
+
+  /// Records the proposed-name field's line alone; see
+  /// [recordLocalNameError]. `PairController` only.
+  void recordProposedNameError(String? error) {
+    _proposedNameError = error;
+    notifyListeners();
+  }
+
   /// Moves the outcome. `PairController` only.
   void recordOutcome(PairOutcome outcome) {
     _outcome = outcome;

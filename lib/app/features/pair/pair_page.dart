@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import 'default_names.dart';
 import 'pair_controller.dart';
 import 'pair_scope.dart';
 import 'pair_view_state.dart';
@@ -30,6 +32,15 @@ typedef PairScanner = Widget Function(ValueChanged<String> onScanned);
 /// that same path with the guard a source that fires repeatedly needs. Which
 /// of the two a user uses is the whole of their choice; nothing else on this
 /// page knows which one produced the payload it is showing.
+///
+/// **Neither name is something the user has to invent.** The two name
+/// fields arrive filled in from what is already known — this device's own
+/// host name, and the desktop's, read out of the certificate inside the
+/// payload it printed (`default_names.dart`) — so the page can be completed
+/// by pasting one line and pressing one button. Both stay ordinary editable
+/// fields: what is offered is overwritten by whatever the user types, and
+/// the field that is emptied says so at the keyboard rather than after a
+/// tap that did nothing (`PairController.localNameEdited`).
 ///
 /// **The camera is mounted by the tap, not when the page opens.** Starting
 /// `MobileScanner` is what asks the OS for the camera, so a page that built
@@ -68,6 +79,59 @@ class _PairPageState extends State<PairPage> {
   /// Whether the camera is on screen. Off until the user asks for it, for
   /// the reason the class doc comment gives.
   bool _scanning = false;
+
+  /// The desktop name this page last put in the field itself, so it can tell
+  /// its own offer from a name the user typed — and never overwrite the
+  /// second. One string rather than a `bool edited` beside the text: the
+  /// question is only ever "is the field still showing what I put there",
+  /// and a flag kept in step with the text is one more thing that can drift.
+  String? _offeredDesktopName;
+
+  @override
+  void initState() {
+    super.initState();
+    // Filled before the listeners are attached: an untouched field is not an
+    // edited one, and it is editing a name away that earns the line under it.
+    _proposedName.text = defaultThisDeviceName();
+    _payload.addListener(_offerDesktopName);
+    _localName.addListener(_localNameEdited);
+    _proposedName.addListener(_proposedNameEdited);
+  }
+
+  /// The desktop names itself in the payload it printed, so the field for
+  /// that name fills itself in as soon as one is readable — pasted, scanned
+  /// or typed. Left alone once the user has put something else there.
+  void _offerDesktopName() {
+    final offered = desktopNameFromPayload(_payload.text);
+    if (offered == null) return;
+    if (_localName.text != (_offeredDesktopName ?? '')) return;
+    _offeredDesktopName = offered;
+    _localName.text = offered;
+  }
+
+  void _localNameEdited() => pairScope.controller.localNameEdited(
+    _localName.text,
+  );
+
+  void _proposedNameEdited() => pairScope.controller.proposedNameEdited(
+    _proposedName.text,
+  );
+
+  /// The clipboard, as the payload field's own button: the `dsync-pair:v1:`
+  /// line reaches a phone by being copied out of something else, and a long
+  /// press on a text field is an affordance only to someone who already
+  /// knows it is there.
+  ///
+  /// Pasting fills the field and nothing more — the exchange still starts
+  /// from the button, so a mis-paste is looked at before it is sent. The
+  /// text is trimmed because a line copied out of a terminal carries the
+  /// newline that ended it.
+  Future<void> _paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text?.trim();
+    if (text == null || text.isEmpty || !mounted) return;
+    _payload.text = text;
+  }
 
   @override
   void dispose() {
@@ -126,6 +190,7 @@ class _PairPageState extends State<PairPage> {
           onShowScanner: () => setState(() => _scanning = true),
           onHideScanner: () => setState(() => _scanning = false),
           payload: _payload,
+          onPaste: _paste,
           localName: _localName,
           proposedName: _proposedName,
           onSubmit: _submit,
@@ -144,6 +209,7 @@ class _PairForm extends StatelessWidget {
     required this.onShowScanner,
     required this.onHideScanner,
     required this.payload,
+    required this.onPaste,
     required this.localName,
     required this.proposedName,
     required this.onSubmit,
@@ -161,6 +227,7 @@ class _PairForm extends StatelessWidget {
   final VoidCallback onShowScanner;
   final VoidCallback onHideScanner;
   final TextEditingController payload;
+  final VoidCallback onPaste;
   final TextEditingController localName;
   final TextEditingController proposedName;
   final VoidCallback onSubmit;
@@ -202,9 +269,15 @@ class _PairForm extends StatelessWidget {
           controller: payload,
           enabled: !submitting,
           maxLines: null,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'Pairing payload',
             hintText: 'dsync-pair:v1:…',
+            suffixIcon: IconButton(
+              key: const Key('pair-payload-paste'),
+              onPressed: submitting ? null : onPaste,
+              icon: const Icon(Icons.content_paste),
+              tooltip: 'Paste',
+            ),
           ),
         ),
         const SizedBox(height: 16),
