@@ -680,4 +680,101 @@ void main() {
     // would take it silently, so this fails if the page skipped dispose.
     expect(() => controller.state.addListener(() {}), throwsFlutterError);
   });
+
+  group('system back', () {
+    // Not `pumpAndSettle`: the running phase's progress bar animates for
+    // ever, so the route transition and the dialog are pumped by hand.
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+    }
+
+    // Pushed onto a route of its own, which is what gives the page the
+    // back arrow (and what makes `maybePop` — the same path the OS back
+    // gesture takes — reach the page's `PopScope`).
+    Future<void> pumpPushed(WidgetTester tester) async {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        RunPage(request: request, onDone: () => doneTaps++),
+                  ),
+                ),
+                child: const Text('open run'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open run'));
+      await settle(tester);
+    }
+
+    testWidgets('while running it asks, and cancelling stays on the run', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning());
+      await pumpPushed(tester);
+
+      await tester.tap(find.byType(BackButton));
+      await settle(tester);
+      expect(find.byKey(const Key('run-abort-dialog')), findsOneWidget);
+      expect(find.byType(RunPage), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('run-abort-cancel')));
+      await settle(tester);
+
+      // Still on the page, and the controller it owns is still alive: the
+      // pop that would have disposed it never happened.
+      expect(find.byKey(const Key('run-abort-dialog')), findsNothing);
+      expect(find.byType(RunPage), findsOneWidget);
+      expect(controller.state.phase, isA<SyncRunRunning>());
+    });
+
+    testWidgets('confirming leaves the page', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning());
+      await pumpPushed(tester);
+
+      await tester.tap(find.byType(BackButton));
+      await settle(tester);
+      await tester.tap(find.byKey(const Key('run-abort-confirm')));
+      await settle(tester);
+
+      expect(find.byType(RunPage), findsNothing);
+      expect(() => controller.state.addListener(() {}), throwsFlutterError);
+    });
+
+    testWidgets('a finished run pops with no prompt', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(
+          const SyncRunFinished(
+            applied: 2,
+            skipped: 0,
+            conflicts: 0,
+            failed: 0,
+            unreadable: 0,
+          ),
+        );
+      await pumpPushed(tester);
+
+      await tester.tap(find.byType(BackButton));
+      await settle(tester);
+
+      expect(find.byKey(const Key('run-abort-dialog')), findsNothing);
+      expect(find.byType(RunPage), findsNothing);
+    });
+  });
 }

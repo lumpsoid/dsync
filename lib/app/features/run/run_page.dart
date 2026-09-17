@@ -69,9 +69,51 @@ class _RunPageState extends State<RunPage> {
     super.dispose();
   }
 
+  /// System back while the run is live: ask before leaving, because popping
+  /// disposes the controller and that cancels the session mid-apply. Only
+  /// the phases that have a session to lose are guarded — idle and
+  /// connecting have applied nothing, and finished, stopped and failed are
+  /// over, so back pops those with no prompt. Stop stays the deliberate
+  /// path and is untouched: this only closes the silent one.
+  bool _abortsRun(SyncRunPhase phase) => switch (phase) {
+    SyncRunRunning() || SyncRunAwaitingDecisions() => true,
+    SyncRunIdle() ||
+    SyncRunConnecting() ||
+    SyncRunFinished() ||
+    SyncRunStopped() ||
+    SyncRunFailed() => false,
+  };
+
+  Future<void> _confirmAbort() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => const _AbortDialog(),
+    );
+    if (!(confirmed ?? false)) return;
+    if (!mounted) return;
+    // Nothing to stop first: popping disposes the controller, which cancels
+    // the subscription and releases the run's locks (see its `dispose`).
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = _controller.state;
+    return ListenableBuilder(
+      listenable: state.phaseChanged,
+      builder: (context, child) => PopScope(
+        canPop: !_abortsRun(state.phase),
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          _confirmAbort();
+        },
+        child: child!,
+      ),
+      child: _buildScaffold(context, state),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context, SyncRunViewState state) {
     return Scaffold(
       appBar: AppBar(
         title: Text('Sync with ${widget.request.deviceName}'),
@@ -761,4 +803,36 @@ Widget _resultIcon(SyncRunResultRow? result, ThemeData theme) {
   if (result == null) return const Icon(Icons.radio_button_unchecked);
   if (result.error == null) return const Icon(Icons.check_circle_outline);
   return Icon(Icons.error_outline, color: theme.colorScheme.error);
+}
+
+/// The confirmation the system back gesture puts in front of a live run:
+/// leaving is an abort, worded as one, and the cancel is the default way
+/// out. Stop is not offered here — it is one tap away in the app bar, and
+/// this dialog's only job is to make the silent path deliberate.
+class _AbortDialog extends StatelessWidget {
+  const _AbortDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      key: const Key('run-abort-dialog'),
+      title: const Text('Leave and stop this sync?'),
+      content: const Text(
+        'This sync is still running. Leaving stops it where it is; '
+        'anything already applied stays applied.',
+      ),
+      actions: [
+        TextButton(
+          key: const Key('run-abort-cancel'),
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Keep syncing'),
+        ),
+        FilledButton(
+          key: const Key('run-abort-confirm'),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Leave and stop'),
+        ),
+      ],
+    );
+  }
 }
