@@ -159,12 +159,22 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('Plan: 2 action(s), 2.0 KiB'), findsOneWidget);
+    expect(find.text('Applying 1 of 2…'), findsOneWidget);
+    expect(find.byKey(const Key('run-stop')), findsOneWidget);
+
+    // Applying: the rows are behind the disclosure, their tally in front of
+    // it.
+    expect(find.byKey(const Key('run-plan')), findsNothing);
+    expect(find.text('Applied: 1'), findsOneWidget);
+    expect(find.text('Failed: 0'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+    await tester.pump();
+
     expect(find.text('new.txt'), findsOneWidget);
     expect(find.text('old.txt'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
     expect(find.byIcon(Icons.radio_button_unchecked), findsOneWidget);
-    expect(find.text('Applying 1 of 2…'), findsOneWidget);
-    expect(find.byKey(const Key('run-stop')), findsOneWidget);
   });
 
   testWidgets('running with no warning and no lists shows neither', (
@@ -214,6 +224,8 @@ void main() {
         ..recordPhase(const SyncRunRunning())
         ..recordPlan(bigPlan(), bytesToTransfer: 50000 * 1024);
       await pump(tester);
+      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+      await tester.pump();
 
       // The section is on the page, its title and its first rows with it.
       expect(find.byKey(const Key('run-plan')), findsOneWidget);
@@ -248,6 +260,8 @@ void main() {
           ),
         ], bytesToTransfer: 2048);
       await pump(tester);
+      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+      await tester.pump();
 
       final other = tester.widget<Text>(find.text('old.txt'));
       final title = tester.widget<Text>(
@@ -283,6 +297,106 @@ void main() {
       expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
       expect(tester.widget<Text>(find.text('new.txt')), isNot(same(applied)));
       expect(tester.widget<Text>(find.text('old.txt')), same(other));
+    });
+  });
+
+  group('the plan collapses while the run applies it', () {
+    const plan = [
+      SyncRunPlanRow(path: 'new.txt', action: 'copy to desktop', bytes: 2048),
+      SyncRunPlanRow(path: 'old.txt', action: 'delete on desktop', bytes: 0),
+    ];
+
+    testWidgets('collapsed by default, and a failure is readable there', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordPlan(plan, bytesToTransfer: 2048)
+        ..recordResult(
+          const SyncRunResultRow(
+            path: 'new.txt',
+            action: 'copy to desktop',
+            error: 'Permission denied',
+          ),
+        );
+      await pump(tester);
+
+      expect(find.byKey(const Key('run-plan')), findsNothing);
+      expect(find.text('new.txt'), findsNothing);
+      expect(
+        find.text('Plan: 2 action(s), 2.0 KiB to transfer'),
+        findsOneWidget,
+      );
+      expect(find.text('Applied: 0'), findsOneWidget);
+
+      // The reason to expand, in the colour the finished summary uses.
+      final failed = find.text('Failed: 1');
+      expect(
+        tester.widget<Text>(failed).style?.color,
+        Theme.of(tester.element(failed)).colorScheme.error,
+      );
+    });
+
+    testWidgets('the tally follows the apply loop, the rows stay put', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordPlan(plan, bytesToTransfer: 2048);
+      await pump(tester);
+      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+      await tester.pump();
+
+      final row = tester.widget<Text>(find.text('old.txt'));
+      controller.state
+        ..recordResult(
+          const SyncRunResultRow(
+            path: 'new.txt',
+            action: 'copy to desktop',
+            error: null,
+          ),
+        )
+        ..recordProgress(const SyncRunProgress(completed: 1, total: 2));
+      await tester.pump();
+
+      expect(find.text('Applied: 1'), findsOneWidget);
+      // Expanded until the user says otherwise, and the rows the tally's
+      // rebuild left alone.
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(tester.widget<Text>(find.text('old.txt')), same(row));
+
+      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+      await tester.pump();
+      expect(find.byKey(const Key('run-plan')), findsNothing);
+    });
+
+    testWidgets('a finished run shows the rows with nothing to expand', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordPlan(plan, bytesToTransfer: 2048);
+      await pump(tester);
+      expect(find.byKey(const Key('run-plan')), findsNothing);
+
+      controller.state.recordPhase(
+        const SyncRunFinished(
+          applied: 2,
+          skipped: 0,
+          conflicts: 0,
+          failed: 0,
+          unreadable: 0,
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(find.byKey(const Key('run-plan-disclosure')), findsNothing);
+      expect(find.text('new.txt'), findsOneWidget);
+      expect(find.text('old.txt'), findsOneWidget);
     });
   });
 
@@ -468,10 +582,15 @@ void main() {
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
 
-      // Back with the decision made, and now marking each action off.
+      // Back with the decision made — the plan collapsed to its summary
+      // while the run applies it, and marking each action off behind it.
       expect(find.byKey(const Key('run-decisions')), findsNothing);
-      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(find.byKey(const Key('run-plan')), findsNothing);
+      expect(find.byKey(const Key('run-plan-disclosure')), findsOneWidget);
       expect(find.byKey(const Key('run-conflicts')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+      await tester.pump();
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
       controller.state.recordResult(
         const SyncRunResultRow(
           path: 'new.txt',

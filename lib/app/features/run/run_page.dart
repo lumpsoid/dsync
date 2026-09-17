@@ -140,7 +140,8 @@ class _RunPageState extends State<RunPage> {
       // or the path lists — and each row follows the cell for its own path
       // (`SyncRunViewState.resultCell`), which is what keeps applying action
       // N from rebuilding the rows above it — see the view state's class doc
-      // comment and `_PlanRow`.
+      // comment and `_PlanRow`. The one part of the section that does follow
+      // the view state is `_PlanTally`, which is a line and no rows.
       body: CustomScrollView(
         slivers: [
           SliverPadding(
@@ -216,16 +217,7 @@ class _RunPageState extends State<RunPage> {
                       state.plan.isEmpty ||
                           state.phase is SyncRunAwaitingDecisions
                       ? const SliverToBoxAdapter(child: SizedBox.shrink())
-                      : _ListSection(
-                          sectionKey: const Key('run-plan'),
-                          title:
-                              'Plan: ${state.plan.length} action(s), '
-                              '${formatBytes(state.bytesToTransfer)} '
-                              'to transfer',
-                          itemCount: state.plan.length,
-                          itemBuilder: (context, index) =>
-                              _PlanRow(state: state, row: state.plan[index]),
-                        ),
+                      : _PlanSection(state),
                 ),
               ],
             ),
@@ -444,6 +436,131 @@ class _ScanTally extends StatelessWidget {
     '${s.hashMatched} unchanged by hash, ${s.modified} modified, '
     '${s.created} created, ${s.deleted} deleted',
   );
+}
+
+/// The plan section: its rows, except while the run is applying them.
+///
+/// Once the apply loop is running there is nothing left to decide, and
+/// thousands of paths scrolling under the progress bar is not what someone
+/// watches — the question is how far along it is and whether anything is
+/// failing, which the progress line and this section's summary answer
+/// together. So [SyncRunRunning] collapses the rows behind a disclosure and
+/// every other phase shows them: finished, stopped and failed are over, and
+/// the rows are the record of what happened.
+///
+/// Expansion is this widget's own state and not the view state's: it is a
+/// rendering of no `RunEvent`, and it stays as the user left it — the outer
+/// builder rebuilds this widget for the plan and the phase, which does not
+/// touch [State].
+class _PlanSection extends StatefulWidget {
+  const _PlanSection(this.state);
+
+  final SyncRunViewState state;
+
+  @override
+  State<_PlanSection> createState() => _PlanSectionState();
+}
+
+class _PlanSectionState extends State<_PlanSection> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = widget.state;
+    final title =
+        'Plan: ${state.plan.length} action(s), '
+        '${formatBytes(state.bytesToTransfer)} to transfer';
+    Widget row(BuildContext context, int index) =>
+        _PlanRow(state: state, row: state.plan[index]);
+
+    if (state.phase is! SyncRunRunning) {
+      return _ListSection(
+        sectionKey: const Key('run-plan'),
+        title: title,
+        itemCount: state.plan.length,
+        itemBuilder: row,
+      );
+    }
+    return SliverPadding(
+      padding: const EdgeInsets.only(bottom: 16),
+      sliver: SliverMainAxisGroup(
+        slivers: [
+          SliverToBoxAdapter(
+            child: InkWell(
+              key: const Key('run-plan-disclosure'),
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        _PlanTally(state),
+                      ],
+                    ),
+                  ),
+                  Icon(_expanded ? Icons.expand_less : Icons.expand_more),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded)
+            SliverList.builder(
+              key: const Key('run-plan'),
+              itemCount: state.plan.length,
+              itemBuilder: row,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// What the results say so far, under the collapsed plan's title: the reason
+/// to expand is a failure, so the failed count is what has to be readable
+/// without expanding, in the error colour as the finished summary shows it.
+///
+/// Derived from `SyncRunViewState.results` here rather than counted into the
+/// view state: the two numbers are this section's rendering and nothing else
+/// asks for them. It follows the view state itself — which the apply loop
+/// wakes once per action with its progress — and is deliberately the only
+/// part of the section that does, so a result does not rebuild the title
+/// above it or the rows below.
+class _PlanTally extends StatelessWidget {
+  const _PlanTally(this.state);
+
+  final SyncRunViewState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) {
+        var applied = 0;
+        var failed = 0;
+        for (final result in state.results) {
+          result.error == null ? applied++ : failed++;
+        }
+        return Row(
+          key: const Key('run-plan-tally'),
+          children: [
+            Text('Applied: $applied'),
+            const SizedBox(width: 12),
+            Text(
+              'Failed: $failed',
+              style: failed > 0
+                  ? TextStyle(color: Theme.of(context).colorScheme.error)
+                  : null,
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
 
 /// One plan row: what its action does, and its own result in the leading
