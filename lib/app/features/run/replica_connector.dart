@@ -256,7 +256,9 @@ class ReplicaConnector {
     final store = await app.pairedDevices;
     // SPEC §4.4's last-known-address cache is only useful if something
     // writes to it, and this is the one code path that knows a connection
-    // to this device just worked.
+    // to this device just worked. `dryRun` makes no difference here — a dry
+    // run that reaches the peer proves the address exactly as an applying
+    // one does.
     await store.recordConnection(device.deviceId, address);
     // A peer that renewed its certificate under the pinned key (SPEC §4.4)
     // presents bytes the store has not seen; they are what this device
@@ -265,6 +267,12 @@ class ReplicaConnector {
     if (presented != null && presented != device.certificatePem) {
       await store.recordCertificate(device.deviceId, presented);
     }
+    // The Devices page reads this process's cached copy of the store
+    // (`AppState.devices`), not the file, so without a re-read its row keeps
+    // the address this connection just replaced until a pull-to-refresh —
+    // the stale row the manual re-entry hatch was tried from. The Pair
+    // feature's controller makes the same call after its own store write.
+    await app.refreshDevices();
 
     // SPEC §4.2, §4.4: [peerConnectTimeout] bounds the dial and the
     // handshake; the idle deadline bounds the session after it. This head

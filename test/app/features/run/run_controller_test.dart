@@ -69,16 +69,19 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  RunRequest request({required bool dryRun, String deviceName = 'desktop'}) =>
-      RunRequest(
-        localRootPath: localRoot.path,
-        deviceName: deviceName,
-        peerDeviceId: desktop.deviceId,
-        remoteRootPath: remoteRoot.path,
-        addressOverride: null,
-        jobs: 2,
-        dryRun: dryRun,
-      );
+  RunRequest request({
+    required bool dryRun,
+    String deviceName = 'desktop',
+    PeerAddress? addressOverride,
+  }) => RunRequest(
+    localRootPath: localRoot.path,
+    deviceName: deviceName,
+    peerDeviceId: desktop.deviceId,
+    remoteRootPath: remoteRoot.path,
+    addressOverride: addressOverride,
+    jobs: 2,
+    dryRun: dryRun,
+  );
 
   /// The desktop's side `b`, built the way `AgentListener` would build it
   /// from the `hello`'s spec: a `LocalAgent` over [remoteRoot], keyed by the
@@ -265,6 +268,38 @@ void main() {
       expect(finished.skipped, 1);
       expect(finished.conflicts, 1);
       expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
+    });
+
+    test('a hand-entered address a dry run reached becomes the last-known '
+        'address, and the Devices row shows it', () async {
+      // SPEC §4.4's manual re-entry hatch, tried first after a phone moves
+      // network — as a dry run, the natural way to prove the new address
+      // before letting anything apply. A dry run that reached the peer
+      // proves the address exactly as an applying one does, so the cache
+      // must follow it here too, and the next visit to Run setup needs
+      // nothing typed (the empty field is the cached address).
+      final before = app.state.devices;
+      await make(served(desktopAgent)).start(
+        request(
+          dryRun: true,
+          addressOverride: PeerAddress(host: '192.168.1.9', port: 4000),
+        ),
+      );
+      expect(controller.state.phase, isA<SyncRunFinished>());
+
+      final recorded = (await (await app.pairedDevices).byName('desktop'))!
+          .lastKnownAddress;
+      expect(recorded.host, '192.168.1.9');
+      expect(recorded.port, 4000);
+      // The Devices page reads this process's cached copy of the store, not
+      // the file: it was stale before this connect ([before] is whatever the
+      // page last saw), and it is the connector's refresh that has brought
+      // the row in line with the address that just worked.
+      expect(app.state.devices.single.address, '192.168.1.9:4000');
+      expect(
+        before.map((row) => row.address),
+        isNot(contains('192.168.1.9:4000')),
+      );
     });
   });
 

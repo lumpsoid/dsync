@@ -204,6 +204,14 @@ void main() {
         ),
       );
       expect(dials, [('192.168.1.9', 4000)]);
+      // An address that never connected is not recorded: the store keeps
+      // the address it had, and the Devices row is not re-read into a
+      // list the connect could not have changed.
+      expect(
+        (await store().byName('desktop'))!.lastKnownAddress.host,
+        '10.0.0.7',
+      );
+      expect(app.state.devices, isEmpty);
     });
 
     test(
@@ -310,6 +318,10 @@ void main() {
       final recorded = (await store().byName('desktop'))!.lastKnownAddress;
       expect(recorded.host, '192.168.1.9');
       expect(recorded.port, 4000);
+      // The Devices page reads `AppState.devices`, not the file: the cache
+      // is re-read with the same connect, so the row follows the address
+      // that worked without waiting for a pull-to-refresh.
+      expect(app.state.devices.single.address, '192.168.1.9:4000');
     });
 
     test(
