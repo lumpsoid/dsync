@@ -255,12 +255,9 @@ class _RunPageState extends State<RunPage> {
                           itemCount: state.conflicts.length,
                           itemBuilder: (context, index) {
                             final row = state.conflicts[index];
-                            return Text(
+                            return _NoticeLine.error(
                               '${row.path}: this device ${row.local}, the '
                               'other side ${row.remote}',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.error,
-                              ),
                             );
                           },
                         ),
@@ -339,7 +336,6 @@ class _PhaseLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final errorStyle = TextStyle(color: theme.colorScheme.error);
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: switch (state.phase) {
@@ -381,21 +377,23 @@ class _PhaseLine extends StatelessWidget {
               Text('Applied: $applied'),
               Text('Skipped: $skipped'),
               Text('Conflicts: $conflicts'),
-              Text('Failed: $failed', style: failed > 0 ? errorStyle : null),
-              Text(
-                'Unreadable: $unreadable',
-                style: unreadable > 0 ? errorStyle : null,
-              ),
+              if (failed > 0)
+                _NoticeLine.error('Failed: $failed')
+              else
+                const Text('Failed: 0'),
+              if (unreadable > 0)
+                _NoticeLine.error('Unreadable: $unreadable')
+              else
+                const Text('Unreadable: 0'),
             ],
           ),
         SyncRunStopped(:final completedActions) => Text(
           stoppedMessage(completedActions),
           key: const Key('run-stopped'),
         ),
-        SyncRunFailed(:final message) => Text(
+        SyncRunFailed(:final message) => _NoticeLine.error(
           message,
           key: const Key('run-failed'),
-          style: errorStyle,
         ),
       },
     );
@@ -440,7 +438,6 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
@@ -454,10 +451,9 @@ class _Header extends StatelessWidget {
           if (header.firstSyncWarning case final warning?)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(
+              child: _NoticeLine.warning(
                 warning,
                 key: const Key('run-first-sync-warning'),
-                style: TextStyle(color: theme.colorScheme.tertiary),
               ),
             ),
         ],
@@ -582,7 +578,7 @@ class _PlanSectionState extends State<_PlanSection> {
 
 /// What the results say so far, under the collapsed plan's title: the reason
 /// to expand is a failure, so the failed count is what has to be readable
-/// without expanding, in the error colour as the finished summary shows it.
+/// without expanding, marked as the finished summary marks it.
 ///
 /// Derived from `SyncRunViewState.results` here rather than counted into the
 /// view state: the two numbers are this section's rendering and nothing else
@@ -610,12 +606,10 @@ class _PlanTally extends StatelessWidget {
           children: [
             Text('Applied: $applied'),
             const SizedBox(width: 12),
-            Text(
-              'Failed: $failed',
-              style: failed > 0
-                  ? TextStyle(color: Theme.of(context).colorScheme.error)
-                  : null,
-            ),
+            if (failed > 0)
+              Flexible(child: _NoticeLine.error('Failed: $failed'))
+            else
+              const Text('Failed: 0'),
           ],
         );
       },
@@ -835,9 +829,8 @@ class _ConflictDecision extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(row.path, style: theme.textTheme.titleSmall),
-          Text(
+          _NoticeLine.error(
             'Conflict: this device ${row.local}, $deviceName ${row.remote}',
-            style: TextStyle(color: theme.colorScheme.error),
           ),
           const SizedBox(height: 4),
           SegmentedButton<SyncRunConflictChoice>(
@@ -859,6 +852,48 @@ class _ConflictDecision extends StatelessWidget {
     SyncRunConflictChoice.keepLocal => 'Keep this device',
     SyncRunConflictChoice.keepRemote => 'Keep $deviceName',
   };
+}
+
+/// A line that reports something gone wrong — a failure, a conflict, a
+/// caveat — with an icon in front of it as well as the theme's colour for
+/// it. The icon is the point: colour alone does not carry the meaning to a
+/// reader who cannot tell these hues apart, which is why the notice tiles on
+/// Devices and Profiles pair the two, and this is the same pairing —
+/// `error_outline` over `colorScheme.error` for something that failed,
+/// `warning_amber_outlined` over `colorScheme.tertiary` for a caveat.
+class _NoticeLine extends StatelessWidget {
+  const _NoticeLine.error(this.message, {super.key})
+    : icon = Icons.error_outline,
+      isError = true;
+
+  const _NoticeLine.warning(this.message, {super.key})
+    : icon = Icons.warning_amber_outlined,
+      isError = false;
+
+  final String message;
+  final IconData icon;
+  final bool isError;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = isError ? scheme.error : scheme.tertiary;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          // The icon's box is taller than a line of text; this sits it on
+          // the first line rather than above it.
+          padding: const EdgeInsets.only(top: 2, right: 6),
+          child: Icon(icon, size: 16, color: color),
+        ),
+        Flexible(
+          child: Text(message, style: TextStyle(color: color)),
+        ),
+      ],
+    );
+  }
 }
 
 /// The leading icon of a plan row: nothing reported yet, applied, or failed.

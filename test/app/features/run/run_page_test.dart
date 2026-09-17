@@ -815,4 +815,178 @@ void main() {
       expect(find.byType(RunPage), findsNothing);
     });
   });
+
+  /// Nothing on this page may be distinguishable by colour alone (WCAG
+  /// 1.4.1), so every line the theme paints in `error`/`tertiary` carries an
+  /// icon as well — the pairing the Devices and Profiles notice tiles use.
+  group('no state is signalled by colour alone', () {
+    Finder errorIconIn(Finder parent) =>
+        find.descendant(of: parent, matching: find.byIcon(Icons.error_outline));
+
+    testWidgets('the finished summary marks failed and unreadable', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(
+          const SyncRunFinished(
+            applied: 1,
+            skipped: 0,
+            conflicts: 0,
+            failed: 2,
+            unreadable: 3,
+          ),
+        );
+      await pump(tester);
+
+      final summary = find.byKey(const Key('run-summary'));
+      expect(find.text('Failed: 2'), findsOneWidget);
+      expect(find.text('Unreadable: 3'), findsOneWidget);
+      expect(errorIconIn(summary), findsNWidgets(2));
+      // And nothing else in the summary is marked: the counts that are not
+      // a failure are plain.
+      expect(
+        find.descendant(of: summary, matching: find.byType(Icon)),
+        findsNWidgets(2),
+      );
+    });
+
+    testWidgets('a clean finish marks nothing', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(
+          const SyncRunFinished(
+            applied: 1,
+            skipped: 0,
+            conflicts: 0,
+            failed: 0,
+            unreadable: 0,
+          ),
+        );
+      await pump(tester);
+
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('run-summary')),
+          matching: find.byType(Icon),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('the collapsed plan tally marks its failed count', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordPlan(const [
+          SyncRunPlanRow(path: 'new.txt', action: 'copy to desktop', bytes: 8),
+        ], bytesToTransfer: 8)
+        ..recordResult(
+          const SyncRunResultRow(
+            path: 'new.txt',
+            action: 'copy to desktop',
+            error: 'Permission denied',
+          ),
+        );
+      await pump(tester);
+
+      expect(find.text('Failed: 1'), findsOneWidget);
+      expect(
+        errorIconIn(find.byKey(const Key('run-plan-tally'))),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the unresolved conflict lines are marked', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordConflict(
+          const SyncRunConflictRow(
+            path: 'both.txt',
+            local: 'modified',
+            remote: 'modified',
+          ),
+        );
+      await pump(tester);
+
+      expect(
+        errorIconIn(find.byKey(const Key('run-conflicts'))),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets("the sheet's conflict line is marked", (tester) async {
+      const plan = Plan(
+        actions: [
+          PlanAction(path: 'new.txt', type: ActionType.copyAtoB, bytes: 2048),
+        ],
+        conflicts: [
+          Conflict(
+            path: 'both.txt',
+            onA: ScanEntry(
+              path: 'both.txt',
+              reason: ScanReason.modified,
+              size: 300,
+            ),
+            onB: ScanEntry(
+              path: 'both.txt',
+              reason: ScanReason.modified,
+              size: 700,
+            ),
+          ),
+        ],
+      );
+      controller.state.recordStart(dryRun: false);
+      // Parked: the test never answers, and the page tears the run down.
+      controller.present(plan, request: request).ignore();
+      await pump(tester);
+
+      expect(
+        find.text('Conflict: this device modified, desktop modified'),
+        findsOneWidget,
+      );
+      expect(
+        errorIconIn(find.byKey(const Key('run-decisions'))),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the first-sync warning carries a warning icon', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordHeader(
+          const SyncRunHeader(
+            localRoot: '/data/notes',
+            remoteRoot: '~/notes',
+            deviceName: 'desktop',
+            history: 'First sync of this pair.',
+            firstSyncWarning: firstSyncWarning,
+          ),
+        );
+      await pump(tester);
+
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('run-first-sync-warning')),
+          matching: find.byIcon(Icons.warning_amber_outlined),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the failure message is marked', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunFailed('No pairing for "desktop".'));
+      await pump(tester);
+
+      expect(errorIconIn(find.byKey(const Key('run-failed'))), findsOneWidget);
+    });
+  });
 }
