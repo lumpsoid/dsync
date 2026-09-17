@@ -1,0 +1,228 @@
+/// One step of `RunController`'s flow (SPEC §13), in the order it drives them.
+///
+/// The phase split is the one the flow already has, not a finer one invented
+/// for reporting: each value is a section of `RunController.run` with a
+/// single obvious boundary, so a duration here can always be pointed at a
+/// particular thing the tool was doing.
+///
+/// [present] is separated from [apply] rather than folded into it precisely
+/// because it is the one phase that is not the tool's own cost — on an
+/// interactive head it is however long the user took to answer (SPEC §11.3),
+/// which would otherwise swamp every real number in the report.
+enum RunPhase {
+  /// Both `hello` calls: the version handshake and replica identification
+  /// (SPEC §4.2).
+  connect,
+
+  /// Both `lock` calls (SPEC §4.3).
+  lock,
+
+  /// Both `scan` calls, which run concurrently — so this is the *longer* of
+  /// the two sides, not their sum.
+  scan,
+
+  /// `Reconciler.reconcile` (SPEC §6): pure computation on two status lists,
+  /// no I/O, no wire.
+  reconcile,
+
+  /// The `Presenter` callback (SPEC §11.3) — user think-time on an
+  /// interactive head, effectively zero on a batch one.
+  present,
+
+  /// `Applier.apply` (SPEC §7) end to end, including the per-path archive
+  /// commits on both sides (SPEC §7.3).
+  apply,
+
+  /// Both `compact` calls (SPEC §8.2), skipped entirely by a run that
+  /// committed nothing.
+  compact,
+
+  /// Both `unlock` calls (SPEC §4.3).
+  unlock,
+
+  /// Both `disconnect` calls — closing the transport (SPEC §4.2).
+  disconnect,
+}
+
+/// One `Agent` operation (SPEC §4.2), as a key that cannot be misspelled.
+///
+/// A `Map<AgentOp, AgentOpStats>` rather than one field per operation, which
+/// is what `ScanReasonTally` does for its five counts: twelve required fields
+/// would be a wall, and unlike a tally over a closed set of branches, an
+/// operation a run never performed has no count to report — a `deleteOnB`-free
+/// run genuinely has nothing to say about `delete`. The map is partial on
+/// purpose, and the enum is what keeps a partial map from also being a
+/// misspelled one.
+///
+/// [disconnect] is here even though it is teardown rather than work: it is an
+/// `Agent` call that can block, and a run that appeared to hang after printing
+/// its summary is exactly the bug the `RemoteAgent.disconnect` doc comment
+/// records. There is no value for a heartbeat — it is not an operation (SPEC
+/// §4.2: "no `op`, no reply, and no agent behind it"), and its bytes land in
+/// [ReplicaMetrics.wireBytesSent] like any other frame's.
+enum AgentOp {
+  hello,
+  lock,
+  unlock,
+  scan,
+  readFile,
+  writeFile,
+  delete,
+  removeEmptyDirs,
+  archiveCommitUpsert,
+  archiveCommitDelete,
+  compact,
+  disconnect,
+}
+
+/// Everything one [AgentOp] cost on one replica across a whole run.
+class AgentOpStats {
+  /// How many times the operation was called.
+  final int count;
+
+  /// Summed wall time of every call, measured at the `Agent` boundary — so
+  /// for a remote replica it *is* the round trip, and for a local one it is
+  /// the filesystem call.
+  final Duration total;
+
+  /// The slowest single call. Kept alongside [total] because a mean hides
+  /// the shape of the distribution, and the two questions a slow run raises
+  /// — "is every request slow?" and "did one request stall?" — have opposite
+  /// answers depending on which of these dominates.
+  final Duration max;
+
+  /// Payload bytes this operation moved: file content for [AgentOp.readFile]
+  /// and [AgentOp.writeFile], zero for every other operation, which carries
+  /// one path or nothing (SPEC §15.3).
+  ///
+  /// Counted at the `Agent` boundary, so it is the file's own size — not what
+  /// went over the wire, which carries framing on top and is
+  /// [ReplicaMetrics.wireBytesSent]. The gap between the two is the protocol's
+  /// overhead, which is the whole point of measuring both.
+  final int bytes;
+
+  const AgentOpStats({
+    required this.count,
+    required this.total,
+    required this.max,
+    required this.bytes,
+  });
+
+  /// Zero of everything — the starting point [merge] accumulates onto.
+  static const none = AgentOpStats(
+    count: 0,
+    total: Duration.zero,
+    max: Duration.zero,
+    bytes: 0,
+  );
+
+  /// This plus one more call of [elapsed] carrying [bytes] payload bytes.
+  AgentOpStats merge(Duration elapsed, int bytes) => AgentOpStats(
+    count: count + 1,
+    total: total + elapsed,
+    max: elapsed > max ? elapsed : max,
+    bytes: this.bytes + bytes,
+  );
+
+  /// Mean call time, [Duration.zero] for an operation never called.
+  ///
+  /// On a remote replica this is the useful number: every operation but
+  /// `scan`, `readFile` and `writeFile` carries one path or nothing, so its
+  /// mean is the link's round-trip time with the peer's own work added.
+  Duration get mean => count == 0
+      ? Duration.zero
+      : Duration(microseconds: total.inMicroseconds ~/ count);
+}
+
+/// What one replica's `Agent` cost over a run, by operation.
+class ReplicaMetrics {
+  /// Which replica this is, as SPEC §4.2's `hello` names it — `'A'` or `'B'`.
+  final String side;
+
+  /// Whether this replica was reached over a transport (SPEC §4.1). What it
+  /// changes is how every other number here should be read: on a remote side
+  /// an operation's [AgentOpStats.mean] is a round trip, on a local one it is
+  /// a syscall, and the two differ by orders of magnitude without differing
+  /// in type.
+  final bool remote;
+
+  /// Per-operation cost. An operation this run never performed is absent, not
+  /// present-and-zero — see [AgentOp].
+  final Map<AgentOp, AgentOpStats> ops;
+
+  /// Protocol bytes written to and read from this replica's transport,
+  /// framing included — zero for a local replica, which has no wire.
+  final int wireBytesSent;
+  final int wireBytesReceived;
+
+  const ReplicaMetrics({
+    required this.side,
+    required this.remote,
+    required this.ops,
+    required this.wireBytesSent,
+    required this.wireBytesReceived,
+  });
+
+  /// Every operation's calls summed: on a remote replica, the run's total
+  /// round-trip count, which is the number the mobile case lives or dies by.
+  int get opCount => ops.values.fold(0, (sum, stats) => sum + stats.count);
+
+  /// Every operation's wall time summed. Not the same as the run's elapsed
+  /// time even for a single side — the two sides' scans overlap, and a copy's
+  /// `readFile` on one side runs inside the other's `writeFile`.
+  Duration get opTime =>
+      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.total);
+
+  /// File content moved in either direction (SPEC §7.2).
+  int get payloadBytes => ops.values.fold(0, (sum, stats) => sum + stats.bytes);
+}
+
+/// What one run cost, and where (SPEC §17).
+///
+/// This is measurement, not behaviour: nothing in the engine reads these
+/// numbers or changes what it does because of them. They exist because the
+/// mobile head's cost is dominated by *per-path round trips and fsyncs*
+/// rather than by bytes — a tree of 14k files under 50 KB each moves less
+/// data than one video and takes far longer — and no existing event says so.
+/// `RunSummaryEvent` counts outcomes, `ScanReasonTally` counts scan branches;
+/// neither can tell a run that was slow because the link was slow from one
+/// that was slow because it made 28,000 sequential requests to do 14,000
+/// files' worth of work.
+///
+/// One run's measurements, as of whenever it was taken.
+///
+/// A snapshot, not a live view: a head that wants a progress ticker takes a
+/// fresh one each time rather than holding this and watching it change.
+class RunMetrics {
+  /// Wall time since the recorder was created, which a head starts at the
+  /// top of the run. Not the sum of [phases] — the gaps between phases are
+  /// the run's own bookkeeping, and a phase still running is not in there at
+  /// all.
+  final Duration elapsed;
+
+  /// How long each completed phase took. A phase the run never reached — a
+  /// fatal error before `apply`, a `compact` skipped because nothing was
+  /// committed (SPEC §8.2) — is absent rather than zero, so "0 ms" always
+  /// means "ran and was instant" and never "never happened".
+  final Map<RunPhase, Duration> phases;
+
+  /// Each replica the run drove, keyed by [ReplicaMetrics.side]. Empty on a
+  /// run whose agents were never wrapped, one entry for each side otherwise.
+  final Map<String, ReplicaMetrics> replicas;
+
+  const RunMetrics({
+    required this.elapsed,
+    required this.phases,
+    required this.replicas,
+  });
+
+  /// Both sides' operations summed — the run's total request count.
+  int get opCount =>
+      replicas.values.fold(0, (sum, replica) => sum + replica.opCount);
+
+  /// Both sides' wire traffic summed, framing included.
+  int get wireBytes => replicas.values.fold(
+    0,
+    (sum, replica) => sum + replica.wireBytesSent + replica.wireBytesReceived,
+  );
+}

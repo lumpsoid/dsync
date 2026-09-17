@@ -2,8 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/agent/metered_agent.dart';
+import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
+import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
+import 'package:dsync/dsync_core/run/run_metrics_report.dart';
 
 import '../agents/connected_replicas.dart';
 import '../agents/local_addresses.dart';
@@ -206,19 +211,28 @@ class SyncRunner {
         sharedLocalAddressLookup = () async => localAddresses;
     }
 
+    // Constructed before the agents connect, not with the controller, so
+    // `RunMetrics.elapsed` covers the dial and the TLS handshake — on a
+    // `peer://` run against a phone those are a real part of what the user
+    // waited for, and a clock started after them would report a run that
+    // was faster than the one they sat through (SPEC §17).
+    final metrics = RunMetricsRecorder();
+
     final connected = await resolveReplicaAgents(
       effective,
       environment: environment,
       platform: platform,
       localAddressLookup: sharedLocalAddressLookup,
       sshExecutable: sshExecutable,
+      metrics: metrics,
     );
 
     final controller = RunController(
-      agentA: connected.agentA,
-      agentB: connected.agentB,
+      agentA: _metered(connected.agentA, 'a', connected.diagnosticsA, metrics),
+      agentB: _metered(connected.agentB, 'b', connected.diagnosticsB, metrics),
       presenter: _choosePresenter(options),
       rules: effective.rules,
+      metrics: metrics,
     );
 
     // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC
@@ -332,12 +346,43 @@ class SyncRunner {
       });
     }
 
+    // After the summary and after the interrupt note, so it never comes
+    // between a reader and the outcome — and on stderr, so `--json`'s
+    // stdout stays a clean JSON Lines stream (SPEC §11.4). Printed for a
+    // failed or interrupted run too: those are the runs whose timings
+    // someone is most likely to be asking about.
+    if (options.timings) {
+      stderr.write(formatRunMetrics(metrics.snapshot()));
+    }
+
     return RunOutcome(
       summary: summary,
       error: error,
       interruptedBy: interruptedBy,
     ).exitCode;
   }
+
+  /// Wraps one side's [Agent] so its operations are timed (SPEC §17).
+  ///
+  /// Here rather than inside [resolveReplicaAgents], where the channel
+  /// metering does live: that function's contract is which *kind* of agent a
+  /// location resolves to, and its tests read the returned type to assert it
+  /// — a wrapper there would make every one of them assert on the wrapper.
+  /// This is also the layer that owns the run, so a decorator that exists to
+  /// measure the run belongs to it; [ReplicaDiagnostics.locality] already
+  /// carries the local-or-remote fact [MeteredAgent] needs, so nothing has to
+  /// be re-derived to put it on here.
+  static Agent _metered(
+    Agent agent,
+    String side,
+    ReplicaDiagnostics diagnostics,
+    RunMetricsRecorder metrics,
+  ) => MeteredAgent(
+    agent,
+    side: side,
+    metrics: metrics,
+    remote: diagnostics.locality == Locality.remote,
+  );
 
   /// SPEC §11.1, §11.3: dry-run (which includes `status`) never applies
   /// anything; `--batch` applies every non-conflicting action unasked;

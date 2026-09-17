@@ -23,6 +23,22 @@ class CliOptions {
   final bool batch;
   final bool json;
 
+  /// `--timings`: print the run's own measurements after the summary (SPEC
+  /// §17).
+  ///
+  /// Not a [Verbosity] level, though it looks like one: verbosity says how
+  /// much to say *about the sync*, and every level of it is still about
+  /// paths and actions. This is a different report entirely — where the time
+  /// went and what each replica was asked for — wanted at any verbosity, and
+  /// it is the answer to "why is this slow", which is a question a quiet run
+  /// raises as often as a verbose one.
+  ///
+  /// It combines with `--json` rather than being suppressed by it: a report
+  /// meant to be compared across runs is exactly the thing worth capturing
+  /// mechanically. It goes to stderr either way, so it never lands in the
+  /// middle of the JSON Lines stream a `--json` consumer is parsing.
+  final bool timings;
+
   /// `--ignore` globs, additive to whatever a loaded profile contributes
   /// (SPEC §9) — merging the two is task 603ea7's job, not this one's.
   final List<String> ignore;
@@ -60,6 +76,7 @@ class CliOptions {
     required this.dryRun,
     required this.batch,
     required this.json,
+    this.timings = false,
     this.ignore = const [],
     this.sshOptions = const [],
     this.remoteCommand,

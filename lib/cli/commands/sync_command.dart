@@ -45,6 +45,7 @@ class SyncCommand extends Command<int> {
         dryRun: results.flag(CommonSyncFlags.flagDryRun),
         batch: results.flag(CommonSyncFlags.flagBatch),
         json: results.flag(CommonSyncFlags.flagJson),
+        timings: results.flag(CommonSyncFlags.flagTimings),
         ignore: results.multiOption(CommonSyncFlags.multiOptionIgnore),
         sshOptions: results.multiOption(CommonSyncFlags.multiOptionSshOption),
         remoteCommand: results.option(CommonSyncFlags.optionRemoteDsync),

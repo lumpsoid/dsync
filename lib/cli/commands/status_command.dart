@@ -45,6 +45,7 @@ class StatusCommand extends Command<int> {
         dryRun: true,
         batch: results.flag(CommonSyncFlags.flagBatch),
         json: results.flag(CommonSyncFlags.flagJson),
+        timings: results.flag(CommonSyncFlags.flagTimings),
         ignore: results.multiOption(CommonSyncFlags.multiOptionIgnore),
         sshOptions: results.multiOption(CommonSyncFlags.multiOptionSshOption),
         remoteCommand: results.option(CommonSyncFlags.optionRemoteDsync),

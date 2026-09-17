@@ -19,6 +19,8 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
+import 'package:dsync/dsync_core/protocol/metered_channel.dart';
+import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/case_folding.dart';
@@ -119,6 +121,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
   Future<Set<String>> Function() localAddressLookup = systemLocalAddresses,
   String sshExecutable = 'ssh',
   Duration peerConnectTimeout = _peerConnectTimeout,
+  required RunMetricsRecorder metrics,
 }) async {
   // Skipped entirely when neither location gives `classify` anything to ask
   // about — a plain local path, or an `ssh://` destination that is remote by
@@ -145,6 +148,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
     localAddresses: localAddresses,
     sshExecutable: sshExecutable,
     peerConnectTimeout: peerConnectTimeout,
+    metrics: metrics,
   );
 
   final _ResolvedSide sideB;
@@ -160,6 +164,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
       localAddresses: localAddresses,
       sshExecutable: sshExecutable,
       peerConnectTimeout: peerConnectTimeout,
+      metrics: metrics,
     );
   } catch (_) {
     await _disconnectQuietly(sideA.agent);
@@ -190,6 +195,7 @@ Future<_ResolvedSide> _resolveSide({
   required Set<String> localAddresses,
   required String sshExecutable,
   required Duration peerConnectTimeout,
+  required RunMetricsRecorder metrics,
 }) {
   final archivePath = resolveArchiveLogPath(
     profileId: profileId,
@@ -228,6 +234,7 @@ Future<_ResolvedSide> _resolveSide({
         jobs: jobs,
         archivePath: archivePath,
         lockPath: lockPath,
+        metrics: metrics,
       ),
       LocationScheme.peer => _resolvePeerSide(
         side: side,
@@ -239,6 +246,7 @@ Future<_ResolvedSide> _resolveSide({
         archivePath: archivePath,
         lockPath: lockPath,
         connectTimeout: peerConnectTimeout,
+        metrics: metrics,
       ),
       LocationScheme.ssh || LocationScheme.inferred => _resolveSshSide(
         side: side,
@@ -249,6 +257,7 @@ Future<_ResolvedSide> _resolveSide({
         sshExecutable: sshExecutable,
         archivePath: archivePath,
         lockPath: lockPath,
+        metrics: metrics,
       ),
     },
   };
@@ -322,6 +331,7 @@ Future<_ResolvedSide> _resolveSshSide({
   required String sshExecutable,
   required String archivePath,
   required String lockPath,
+  required RunMetricsRecorder metrics,
 }) async {
   final host = location.host!; // Locality.remote guarantees a host is set.
   final user = location.user;
@@ -341,7 +351,7 @@ Future<_ResolvedSide> _resolveSshSide({
   }
 
   final agent = _DiagnosedRemoteAgent(
-    channel: channel,
+    channel: MeteredChannel(channel, side: side, metrics: metrics),
     spec: _specFor(
       location: location,
       profileId: profileId,
@@ -386,6 +396,7 @@ Future<_ResolvedSide> _resolveSocketSide({
   required int jobs,
   required String archivePath,
   required String lockPath,
+  required RunMetricsRecorder metrics,
 }) async {
   // Locality.remote via LocationScheme.unix guarantees a socket path is set.
   final socketPath = location.socketPath!;
@@ -398,7 +409,7 @@ Future<_ResolvedSide> _resolveSocketSide({
   }
 
   final agent = _DiagnosedRemoteAgent(
-    channel: channel,
+    channel: MeteredChannel(channel, side: side, metrics: metrics),
     spec: _specFor(
       location: location,
       profileId: profileId,
@@ -467,6 +478,7 @@ Future<_ResolvedSide> _resolvePeerSide({
   required String archivePath,
   required String lockPath,
   required Duration connectTimeout,
+  required RunMetricsRecorder metrics,
 }) async {
   // Locality.remote via LocationScheme.peer guarantees a device name is set.
   final deviceName = location.deviceName!;
@@ -559,7 +571,16 @@ Future<_ResolvedSide> _resolvePeerSide({
     // `moveNext()` with no exit code, no summary and no output. See
     // `IdleDeadlineChannel` for why this is `peer://`'s problem and not
     // `unix://`'s or `ssh://`'s.
-    channel: IdleDeadlineChannel(channel, peer: deviceName),
+    //
+    // Metered *outside* the idle deadline (SPEC §17), so the heartbeat
+    // frames it injects are counted as the traffic they are — a run that
+    // spent its time waiting rather than transferring should show that in
+    // the byte count, not hide it.
+    channel: MeteredChannel(
+      IdleDeadlineChannel(channel, peer: deviceName),
+      side: side,
+      metrics: metrics,
+    ),
     spec: _specFor(
       location: location,
       profileId: profileId,

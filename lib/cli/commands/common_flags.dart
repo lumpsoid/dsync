@@ -16,6 +16,7 @@ class CommonSyncFlags {
   static const optionJobs = 'jobs';
   static const multiOptionSshOption = 'ssh-option';
   static const optionRemoteDsync = 'remote-dsync';
+  static const flagTimings = 'timings';
   static const flagVerbose = 'verbose';
   static const flagQuiet = 'quiet';
 }
@@ -76,6 +77,13 @@ void addCommonSyncFlags(ArgParser parser, {bool includeDryRun = true}) {
           'The command that starts the agent on the far side. Default: '
           '"dsync", resolved on the remote non-interactive PATH. Applies to '
           'every remote replica of this run.',
+    )
+    ..addFlag(
+      CommonSyncFlags.flagTimings,
+      negatable: false,
+      help:
+          'Print where the run spent its time, and what it asked of each '
+          'replica, after the summary (SPEC §17).',
     )
     ..addFlag(
       CommonSyncFlags.flagVerbose,

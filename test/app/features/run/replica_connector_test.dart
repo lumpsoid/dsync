@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/features/run/replica_connector.dart';
+import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
@@ -116,6 +117,7 @@ void main() {
     remoteRootPath: remoteRootPath,
     addressOverride: addressOverride,
     jobs: 2,
+    metrics: RunMetricsRecorder(),
   );
 
   Future<void> disconnectBoth(ConnectedAgents agents) async {

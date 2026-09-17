@@ -6,8 +6,10 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
+import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
+import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 
 /// Decides which of a [Plan]'s proposed actions actually run (SPEC §11.3).
 /// Called once, with the full reconciled plan, after its conflicts and the
@@ -58,6 +60,22 @@ class RunController {
   /// side can read the profile.
   final RuleSet rules;
 
+  /// Where this run's timings land (SPEC §17). Written to here for phases
+  /// and by the `MeteredAgent`/`MeteredChannel` wrappers a head installs for
+  /// per-operation cost.
+  ///
+  /// Public and read by whoever wants a report, rather than emitted as a
+  /// [RunEvent]: [RunErrorEvent]'s contract is that nothing follows it, so a
+  /// metrics event could not be emitted on the exit path whose numbers are
+  /// most worth having. Exposing the recorder also lets a head read it
+  /// *during* the run, which a live debug view needs and a terminal event
+  /// could never give it.
+  ///
+  /// Defaulted rather than required so every existing construction site — and
+  /// every test — keeps working unchanged; a caller that wants the numbers
+  /// passes its own and reads that.
+  final RunMetricsRecorder metrics;
+
   final Reconciler _reconciler = Reconciler();
   final Applier _applier = Applier();
 
@@ -66,7 +84,9 @@ class RunController {
     required this.agentB,
     required this.presenter,
     RuleSet? rules,
-  }) : rules = rules ?? RuleSet();
+    RunMetricsRecorder? metrics,
+  }) : rules = rules ?? RuleSet(),
+       metrics = metrics ?? RunMetricsRecorder();
 
   /// Drives one run end to end, emitting [RunEvent]s as it goes (SPEC
   /// §11.4). The stream always ends normally — whether the run succeeded,
@@ -77,8 +97,12 @@ class RunController {
       final ReplicaInfo infoA;
       final ReplicaInfo infoB;
       try {
-        infoA = await agentA.hello();
-        infoB = await agentB.hello();
+        // Each `hello` is timed into the same phase rather than the pair
+        // into one span: they run in sequence, so the sum is the phase, and
+        // recording them separately would need a phase per side for a number
+        // nobody reads apart (SPEC §17).
+        infoA = await metrics.phase(RunPhase.connect, agentA.hello);
+        infoB = await metrics.phase(RunPhase.connect, agentB.hello);
       } catch (error) {
         yield RunErrorEvent(error);
         return;
@@ -86,7 +110,7 @@ class RunController {
       yield RunReplicasEvent(infoA: infoA, infoB: infoB);
 
       try {
-        await agentA.lock();
+        await metrics.phase(RunPhase.lock, agentA.lock);
       } catch (error) {
         yield RunErrorEvent(error);
         return;
@@ -94,7 +118,7 @@ class RunController {
 
       try {
         try {
-          await agentB.lock();
+          await metrics.phase(RunPhase.lock, agentB.lock);
         } catch (error) {
           yield RunErrorEvent(error);
           return;
@@ -105,14 +129,20 @@ class RunController {
         } catch (error) {
           yield RunErrorEvent(error);
         } finally {
-          await agentB.unlock();
+          await metrics.phase(RunPhase.unlock, agentB.unlock);
         }
       } finally {
-        await agentA.unlock();
+        await metrics.phase(RunPhase.unlock, agentA.unlock);
       }
     } finally {
       await _disconnect(agentA);
       await _disconnect(agentB);
+      // Whatever ended the run — success, a fatal error mid-apply, a
+      // consumer that stopped listening — no phase is left running (SPEC
+      // §17). The apply phase is the one that needs this: it is opened and
+      // closed by hand because its span contains `yield`s, so an abort
+      // between the two would otherwise lose it entirely.
+      metrics.endOpenPhases();
     }
   }
 
@@ -124,14 +154,20 @@ class RunController {
   /// process still exits, since the transport is closed either way.
   Future<void> _disconnect(Agent agent) async {
     try {
-      await agent.disconnect();
+      await metrics.phase(RunPhase.disconnect, agent.disconnect);
     } catch (_) {}
   }
 
   /// Scan → reconcile → present → apply → compact, once both replicas are
   /// locked.
   Stream<RunEvent> _runLocked() async* {
-    final scans = await Future.wait([agentA.scan(rules), agentB.scan(rules)]);
+    // One phase for both sides because they run concurrently: this span is
+    // the slower of the two, not their sum, which is what a head needs to
+    // compare against the per-side `scan` figures in [metrics] (SPEC §17).
+    final scans = await metrics.phase(
+      RunPhase.scan,
+      () => Future.wait([agentA.scan(rules), agentB.scan(rules)]),
+    );
     final onA = scans[0].entries;
     final onB = scans[1].entries;
 
@@ -154,6 +190,7 @@ class RunController {
     // Both sides' unreadable paths, not each side's own: a path only one
     // replica failed to read still cannot be reconciled, because the §6 table
     // needs a status from both (task 37bf4f).
+    metrics.beginPhase(RunPhase.reconcile);
     final plan = _reconciler.reconcile(
       onA,
       onB,
@@ -162,13 +199,17 @@ class RunController {
         ...scans[1].skippedPaths,
       ]),
     );
+    metrics.endPhase(RunPhase.reconcile);
 
     for (final conflict in plan.conflicts) {
       yield RunConflictEvent(conflict);
     }
     yield RunPlanEvent(plan);
 
-    final actionsToApply = await presenter(plan);
+    final actionsToApply = await metrics.phase(
+      RunPhase.present,
+      () => presenter(plan),
+    );
     for (final action in actionsToApply) {
       yield RunActionEvent(action);
     }
@@ -190,6 +231,14 @@ class RunController {
     // completed, so `apply()` stays suspended at that action boundary
     // forever — the action already recorded is durable (SPEC §7.3), and
     // nothing after it ever starts. See `ApplyProgress`'s own doc comment.
+    // The apply phase is bracketed by hand rather than wrapped in
+    // `metrics.phase`, because the span contains `yield`s: the generator is
+    // suspended inside it every time it hands an event downstream, which a
+    // closure cannot express. It closes below, after `applyResultFuture`
+    // completes — so it includes the consumer's own rendering time, which is
+    // honest: on a head that draws a row per path, that *is* part of what
+    // applying the plan costs (SPEC §17).
+    metrics.beginPhase(RunPhase.apply);
     final pending =
         StreamController<(String, ActionType, Object?, Completer<void>)>();
     final applyResultFuture = _applier.apply(
@@ -223,6 +272,7 @@ class RunController {
     // handling; `run()`'s own try/catch (around `yield* _runLocked()`) turns
     // that into a `RunErrorEvent` exactly like any other unexpected failure.
     final applyResult = await applyResultFuture;
+    metrics.endPhase(RunPhase.apply);
 
     // SPEC §8.2: a run that committed nothing does not compact. Every action
     // type — including commitOnly — reaches archiveCommitUpsert/Delete on
@@ -234,8 +284,8 @@ class RunController {
     // in each log" — not derived from the shape of the plan, since an
     // all-skipped or all-failed-before-any-commit plan must not compact.
     if (applyResult.applied.isNotEmpty) {
-      await agentA.compact();
-      await agentB.compact();
+      await metrics.phase(RunPhase.compact, agentA.compact);
+      await metrics.phase(RunPhase.compact, agentB.compact);
     }
 
     // Counted by path rather than by list length: the presenter may add an

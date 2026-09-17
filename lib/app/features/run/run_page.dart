@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../run_request.dart';
 import 'run_controller.dart';
 import 'run_scope.dart';
+import 'run_timings_sheet.dart';
 import 'run_view_state.dart';
 
 /// The Run page: drive a run for [request] and render its `RunEvent`s
@@ -151,6 +152,29 @@ class _RunPageState extends State<RunPage> {
       appBar: AppBar(
         title: Text('Sync with ${widget.request.deviceName}'),
         actions: [
+          // Offered in every phase, including while the run is still going
+          // (SPEC §17): "why is this taking so long" is a question asked
+          // during the wait, and a report only reachable from a finished run
+          // would answer it after it stopped mattering. Idle is the one
+          // exception — there is nothing measured yet to look at.
+          ListenableBuilder(
+            listenable: state,
+            builder: (context, _) => switch (state.phase) {
+              SyncRunIdle() => const SizedBox.shrink(),
+              SyncRunConnecting() ||
+              SyncRunRunning() ||
+              SyncRunAwaitingDecisions() ||
+              SyncRunFinished() ||
+              SyncRunStopped() ||
+              SyncRunPaused() ||
+              SyncRunFailed() => IconButton(
+                key: const Key('run-timings'),
+                icon: const Icon(Icons.speed_outlined),
+                tooltip: 'Timings',
+                onPressed: () => showRunTimings(context, _controller),
+              ),
+            },
+          ),
           ListenableBuilder(
             listenable: state,
             // Resume is offered where a run can be continued but is not

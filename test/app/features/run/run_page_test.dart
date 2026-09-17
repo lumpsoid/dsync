@@ -11,6 +11,7 @@ import 'package:dsync/app/run_request.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_screen_wake.dart';
@@ -83,6 +84,77 @@ void main() {
     await pump(tester);
 
     expect(find.text('Sync with desktop'), findsOneWidget);
+  });
+
+  group('the Timings sheet (SPEC 17)', () {
+    // The sheet refreshes on a periodic timer while it is open, so
+    // `pumpAndSettle` would never settle: these drive the sheet's route
+    // animation by hand and close it before the test ends, which is what
+    // disposes the timer.
+    Future<void> openTimings(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('run-timings')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    Future<void> closeTimings(WidgetTester tester) async {
+      tester.state<NavigatorState>(find.byType(Navigator)).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    testWidgets('a live run opens the sheet with its phases', (tester) async {
+      // Offered while the run is still going, not only after it: "why is
+      // this taking so long" is asked during the wait.
+      controller.state.recordStart(dryRun: false);
+      await pump(tester);
+
+      await openTimings(tester);
+
+      expect(find.text('Timings'), findsOneWidget);
+      expect(find.text('Phases'), findsOneWidget);
+      expect(find.text('elapsed'), findsOneWidget);
+      expect(find.byKey(const Key('run-timings-copy')), findsOneWidget);
+
+      await closeTimings(tester);
+    });
+
+    testWidgets('the copy button yields the core report', (tester) async {
+      final clipboard = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboard.add((call.arguments as Map)['text'] as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+
+      controller.state.recordStart(dryRun: false);
+      await pump(tester);
+      await openTimings(tester);
+      await tester.tap(find.byKey(const Key('run-timings-copy')));
+      await tester.pump();
+
+      // The same text `dsync sync --timings` prints, so a report from a
+      // phone and one from a desktop can be read side by side. Compared on
+      // its structural lines rather than on the whole string: the headline
+      // carries an elapsed time that moves between the copy and this
+      // assertion.
+      final copied = clipboard.single;
+      expect(copied, contains('phases'));
+      expect(copied, contains('connect'));
+      expect(copied, contains('disconnect'));
+
+      await closeTimings(tester);
+    });
   });
 
   testWidgets('connecting: a spinner and Stop, no Done', (tester) async {

@@ -15,6 +15,8 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
+import 'package:dsync/dsync_core/protocol/metered_channel.dart';
+import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/scan/case_folding.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
@@ -144,6 +146,7 @@ class ReplicaConnector {
     required String remoteRootPath,
     required PeerAddress? addressOverride,
     required int jobs,
+    required RunMetricsRecorder metrics,
   }) async {
     final store = await app.pairedDevices;
     final device = await store.byName(deviceName);
@@ -183,6 +186,7 @@ class ReplicaConnector {
           side: 'b',
           jobs: jobs,
         ),
+        metrics: metrics,
       );
     } catch (_) {
       await _disconnectQuietly(agentA);
@@ -233,6 +237,7 @@ class ReplicaConnector {
     required DeviceIdentity ownIdentity,
     required DateTime now,
     required ReplicaSpec spec,
+    required RunMetricsRecorder metrics,
   }) async {
     final DialResult dialed;
     try {
@@ -280,7 +285,15 @@ class ReplicaConnector {
     // end's silence — or its own — must surface as a failure rather than a
     // run that never finishes.
     return _PeerAgent(
-      IdleDeadlineChannel(dialed.channel, peer: deviceName),
+      // Metered outside the idle deadline (SPEC §17) so the heartbeat frames
+      // it injects count as the traffic they are — on a phone, a run that
+      // spent its time waiting rather than transferring is exactly the
+      // reading this report has to make possible.
+      MeteredChannel(
+        IdleDeadlineChannel(dialed.channel, peer: deviceName),
+        side: spec.side,
+        metrics: metrics,
+      ),
       spec,
       deviceName: deviceName,
       address: address,
