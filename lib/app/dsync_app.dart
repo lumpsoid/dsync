@@ -71,7 +71,7 @@ class _BootstrapGate extends StatelessWidget {
         ),
         AppBootstrapReady() => ProfilesPage(
           onOpenProfile: (profileId) =>
-              _openRunSetup(context, profileId: profileId),
+              _openRunSetup(context, RunSetupFromProfile(profileId)),
           onOpenDevices: () => _openDevices(context),
         ),
       },
@@ -84,7 +84,7 @@ class _BootstrapGate extends StatelessWidget {
       MaterialPageRoute<void>(
         builder: (_) => DevicesPage(
           onOpenRunSetup: (deviceId) =>
-              _openRunSetup(context, deviceId: deviceId),
+              _openRunSetup(context, RunSetupFromDevice(deviceId)),
           onOpenPair: () => _openPair(context),
         ),
       ),
@@ -104,20 +104,15 @@ class _BootstrapGate extends StatelessWidget {
     );
   }
 
-  /// Run setup, blank over a device or pre-filled over a profile — the
-  /// source is the page's, so the two entries cannot grow out of step.
-  Future<void> _openRunSetup(
-    BuildContext context, {
-    String? deviceId,
-    String? profileId,
-  }) {
+  /// Run setup over [source] — blank for a device, pre-filled for a saved
+  /// profile. Each caller names its own case, so there is no pair of
+  /// nullables here to keep in step: the sum type is the argument.
+  Future<void> _openRunSetup(BuildContext context, RunSetupSource source) {
     final navigator = Navigator.of(context);
     return navigator.push(
       MaterialPageRoute<void>(
         builder: (_) => RunSetupPage(
-          source: profileId == null
-              ? RunSetupFromDevice(deviceId!)
-              : RunSetupFromProfile(profileId),
+          source: source,
           onStart: (request) => navigator.push(
             MaterialPageRoute<void>(
               builder: (_) => RunPage(request: request, onDone: navigator.pop),
