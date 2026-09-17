@@ -228,9 +228,9 @@ class RunSetupController {
     }
     if (picked == null) return;
 
-    var refusal = await _accessRefusal(picked);
+    var refusal = await folderAccessRefusal(picked);
     if (refusal != null && await picker.requestAccess()) {
-      refusal = await _accessRefusal(picked);
+      refusal = await folderAccessRefusal(picked);
     }
     if (refusal != null) {
       state.recordFolderAccessError(refusal);
@@ -417,11 +417,6 @@ class RunSetupController {
       selected: paths.contains(selected) ? selected : null,
     );
   }
-
-  /// Why [path] cannot be a replica root, or `null` when it can — see
-  /// [folderAccessRefusal], whose probe this is and which the profiles home
-  /// re-runs over every saved profile's local root.
-  Future<String?> _accessRefusal(String path) => folderAccessRefusal(path);
 
   void dispose() => state.dispose();
 }
