@@ -11,6 +11,10 @@ include: package:flutter_lints/flutter.yaml
 
 analyzer:
   exclude:
+    # Agent worktrees are a second checkout of this repo nested inside it.
+    # Without this the analyzer resolves `package:dsync` against both trees
+    # and reports every symbol as defined twice.
+    - .claude/worktrees/**
     - build/**
     - android/**
     - ios/**
