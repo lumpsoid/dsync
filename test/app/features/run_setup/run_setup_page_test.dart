@@ -293,6 +293,20 @@ void main() {
     expect(startEnabled(tester), isTrue);
   });
 
+  testWidgets('failed: the message sits directly above Start', (tester) async {
+    await pumpLoaded(tester);
+
+    controller.state.recordOutcome(const RunSetupFailed('Could not open /x'));
+    await tester.pump();
+
+    final message = tester.getRect(find.text('Could not open /x'));
+    final start = tester.getRect(find.byKey(const Key('run-setup-start')));
+    final save = tester.getRect(find.byKey(const Key('run-setup-save')));
+
+    expect(message.bottom, lessThanOrEqualTo(start.top));
+    expect(message.top, greaterThanOrEqualTo(save.bottom));
+  });
+
   testWidgets('the switch reports to the controller as the user\'s choice', (
     tester,
   ) async {

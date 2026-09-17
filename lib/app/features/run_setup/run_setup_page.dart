@@ -305,7 +305,6 @@ class _RunSetupForm extends StatelessWidget {
           onChanged: starting ? null : controller.setDryRun,
         ),
         const SizedBox(height: 24),
-        _OutcomeLine(state.outcome),
         TextField(
           key: const Key('run-setup-profile-name'),
           controller: profileName,
@@ -328,6 +327,7 @@ class _RunSetupForm extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 24),
+        _OutcomeLine(state.outcome),
         FilledButton(
           key: const Key('run-setup-start'),
           onPressed: starting ? null : onStart,
