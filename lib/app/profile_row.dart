@@ -68,8 +68,9 @@ class ProfileRow {
   /// What the user named the run.
   final String name;
 
-  /// The peer's grouped device id, kept so the page's [onOpenProfile]-shaped
-  /// handoff can carry an id without the entrypoint opening a store.
+  /// The peer's grouped device id, kept as what the row shows in place of
+  /// [peerName] when the device has been revoked — an id is all this host
+  /// still knows the peer by then.
   final String peerDeviceId;
 
   /// The peer's name as the paired-device store has it *now*, or `null`

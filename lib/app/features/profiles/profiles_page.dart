@@ -22,7 +22,7 @@ import 'profiles_scope.dart';
 /// the row is the only place the run the user configured still exists.
 ///
 /// [onOpenProfile] is the seam to Run setup, fired with the tapped row's
-/// profile id and peer device id — ids, not rows, per the handoff rule.
+/// profile id — an id, not a row, per the handoff rule.
 /// [onOpenDevices] is the seam to Devices, from the app bar and from the
 /// empty state: pairing and revoking still need a device view, and a first
 /// profile is born there. Both are the entrypoint's to wire to routes, so
