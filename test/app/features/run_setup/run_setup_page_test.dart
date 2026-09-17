@@ -119,6 +119,14 @@ void main() {
     await tester.pump();
   }
 
+  /// Opens one of the form's disclosures. The ways of adding a local
+  /// folder and the address override are folded away under the required
+  /// fields, so a test that drives them has to ask for them first.
+  Future<void> openDisclosure(WidgetTester tester, String key) async {
+    await tester.tap(find.byKey(Key(key)));
+    await tester.pumpAndSettle();
+  }
+
   bool startEnabled(WidgetTester tester) => tester
       .widget<FilledButton>(find.byKey(const Key('run-setup-start')))
       .enabled;
@@ -151,6 +159,8 @@ void main() {
   testWidgets('loaded: the device name, every field, the switch off, and '
       'an enabled button', (tester) async {
     await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-folder-options');
+    await openDisclosure(tester, 'run-setup-address-options');
 
     expect(find.text('Sync with desktop'), findsOneWidget);
     for (final key in const [
@@ -199,6 +209,7 @@ void main() {
     Directory(picked).createSync(recursive: true);
     picker.onPick = () => picked;
     await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-folder-options');
 
     await pickFolder(tester);
 
@@ -211,6 +222,7 @@ void main() {
       'it, and the form is untouched', (tester) async {
     picker.onPick = () => '${tempDir.path}/elsewhere/no-such-tree';
     await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-folder-options');
 
     await pickFolder(tester);
 
@@ -232,6 +244,8 @@ void main() {
 
   testWidgets('field errors render under their own field', (tester) async {
     await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-folder-options');
+    await openDisclosure(tester, 'run-setup-address-options');
     expect(find.text('folder missing'), findsNothing);
 
     controller.state.recordFieldErrors(
@@ -258,6 +272,8 @@ void main() {
     tester,
   ) async {
     await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-folder-options');
+    await openDisclosure(tester, 'run-setup-address-options');
 
     controller.state.recordOutcome(const RunSetupStarting());
     await tester.pump();
@@ -358,6 +374,8 @@ void main() {
   testWidgets('create, fill in, Start: leaves through onStart once with the '
       'request', (tester) async {
     await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-folder-options');
+    await openDisclosure(tester, 'run-setup-address-options');
 
     await tester.enterText(
       find.byKey(const Key('run-setup-new-folder')),

@@ -338,7 +338,10 @@ void main() {
     expect(fieldText(tester, 'run-setup-remote-root'), '~/notes');
     expect(runSetup.state.selectedLocalFolder, localRoot.path);
     // The per-run choices did not come along: the address is empty and the
-    // switch is off.
+    // switch is off. The address is a disclosure under the required fields,
+    // so it is opened before the field it holds can be read.
+    await tester.tap(find.byKey(const Key('run-setup-address-options')));
+    await tester.pump(const Duration(milliseconds: 400));
     expect(fieldText(tester, 'run-setup-address'), '');
     expect(runSetup.state.dryRun, isFalse);
   });
@@ -417,6 +420,8 @@ void main() {
         find.byKey(const Key('run-setup-remote-root')),
         '~/notes',
       );
+      await tester.tap(find.byKey(const Key('run-setup-address-options')));
+      await tester.pump(const Duration(milliseconds: 400));
       await tester.enterText(
         find.byKey(const Key('run-setup-address')),
         '10.0.0.9:4242',

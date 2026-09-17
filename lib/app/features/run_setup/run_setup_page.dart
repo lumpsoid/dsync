@@ -204,69 +204,92 @@ class _RunSetupForm extends StatelessWidget {
           style: Theme.of(context).textTheme.titleLarge,
         ),
         const SizedBox(height: 16),
-        const Text('On this device'),
+        _SectionLabel('On this device'),
         const SizedBox(height: 8),
-        // A plain `DropdownButton` under an `InputDecorator` rather than a
-        // `DropdownButtonFormField`: the form field keeps its own copy of
-        // the selection and would not follow the controller selecting a
-        // folder it just created.
-        InputDecorator(
-          decoration: InputDecoration(
-            labelText: 'Folder',
-            helperText: "A folder in this app's documents, or one you pick.",
-            errorText: state.localFolderError,
-          ),
-          child: DropdownButton<String>(
-            key: const Key('run-setup-local-folder'),
-            value: state.selectedLocalFolder,
-            isExpanded: true,
-            underline: const SizedBox.shrink(),
-            hint: const Text('Pick a folder'),
-            items: [
-              for (final folder in state.localFolders)
-                DropdownMenuItem(
-                  value: folder.path,
-                  child: Text(folder.label, overflow: TextOverflow.ellipsis),
+        // One card, so the folder reads as a single decision: the dropdown
+        // is the choice, and the two ways of adding a folder to it are a
+        // disclosure under it rather than controls competing with it.
+        Card.outlined(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // A plain `DropdownButton` under an `InputDecorator` rather
+                // than a `DropdownButtonFormField`: the form field keeps its
+                // own copy of the selection and would not follow the
+                // controller selecting a folder it just created.
+                InputDecorator(
+                  decoration: InputDecoration(
+                    labelText: 'Folder',
+                    helperText:
+                        "A folder in this app's documents, or one you pick.",
+                    errorText: state.localFolderError,
+                  ),
+                  child: DropdownButton<String>(
+                    key: const Key('run-setup-local-folder'),
+                    value: state.selectedLocalFolder,
+                    isExpanded: true,
+                    underline: const SizedBox.shrink(),
+                    hint: const Text('Pick a folder'),
+                    items: [
+                      for (final folder in state.localFolders)
+                        DropdownMenuItem(
+                          value: folder.path,
+                          child: Text(
+                            folder.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: starting ? null : controller.selectLocalFolder,
+                  ),
                 ),
-            ],
-            onChanged: starting ? null : controller.selectLocalFolder,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: OutlinedButton.icon(
-            key: const Key('run-setup-pick-folder'),
-            onPressed: starting ? null : onPickFolder,
-            icon: const Icon(Icons.folder_open),
-            label: const Text('Pick a folder on this device'),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: TextField(
-                key: const Key('run-setup-new-folder'),
-                controller: newFolder,
-                enabled: !starting,
-                decoration: InputDecoration(
-                  labelText: 'New folder',
-                  errorText: state.newFolderError,
+                _Disclosure(
+                  key: const Key('run-setup-folder-options'),
+                  title: 'Add another folder',
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        key: const Key('run-setup-pick-folder'),
+                        onPressed: starting ? null : onPickFolder,
+                        icon: const Icon(Icons.folder_open),
+                        label: const Text('Pick a folder on this device'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            key: const Key('run-setup-new-folder'),
+                            controller: newFolder,
+                            enabled: !starting,
+                            decoration: InputDecoration(
+                              labelText: 'New folder',
+                              errorText: state.newFolderError,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton(
+                          key: const Key('run-setup-create-folder'),
+                          onPressed: starting ? null : onCreateFolder,
+                          child: const Text('Create'),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-              ),
+              ],
             ),
-            const SizedBox(width: 8),
-            TextButton(
-              key: const Key('run-setup-create-folder'),
-              onPressed: starting ? null : onCreateFolder,
-              child: const Text('Create'),
-            ),
-          ],
+          ),
         ),
         const SizedBox(height: 24),
-        Text('On $deviceName'),
+        _SectionLabel('On $deviceName'),
         const SizedBox(height: 8),
         TextField(
           key: const Key('run-setup-remote-root'),
@@ -281,20 +304,25 @@ class _RunSetupForm extends StatelessWidget {
             errorText: state.remoteRootError,
           ),
         ),
-        const SizedBox(height: 16),
-        TextField(
-          key: const Key('run-setup-address'),
-          controller: address,
-          enabled: !starting,
-          decoration: InputDecoration(
-            labelText: 'Address (optional)',
-            hintText: 'host or host:port',
-            helperText:
-                'Leave empty to use the address $deviceName was last '
-                'reached at.',
-            helperMaxLines: 3,
-            errorText: state.addressError,
-          ),
+        _Disclosure(
+          key: const Key('run-setup-address-options'),
+          title: 'Reach $deviceName at another address',
+          children: [
+            TextField(
+              key: const Key('run-setup-address'),
+              controller: address,
+              enabled: !starting,
+              decoration: InputDecoration(
+                labelText: 'Address (optional)',
+                hintText: 'host or host:port',
+                helperText:
+                    'Leave empty to use the address $deviceName was last '
+                    'reached at.',
+                helperMaxLines: 3,
+                errorText: state.addressError,
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
         SwitchListTile(
@@ -340,6 +368,56 @@ class _RunSetupForm extends StatelessWidget {
               : const Text('Start'),
         ),
       ],
+    );
+  }
+}
+
+/// A required section's heading: the two sections the form cannot do
+/// without carry more weight than the optional rows inside them.
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(text, style: Theme.of(context).textTheme.titleMedium);
+  }
+}
+
+/// A secondary path folded away. The control above it is the one the form
+/// expects; what is in here only opens when that path does not fit, so it
+/// reads as an escape hatch rather than a field of equal weight.
+///
+/// The errors these rows carry — a rejected new folder name, an unparseable
+/// address — can only be provoked from inside an open disclosure, so folding
+/// one away never hides a message the user has not seen.
+class _Disclosure extends StatelessWidget {
+  const _Disclosure({
+    super.key,
+    required this.title,
+    required this.children,
+  });
+
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ExpansionTile(
+      title: Text(
+        title,
+        style: theme.textTheme.labelLarge?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 8),
+      expandedCrossAxisAlignment: CrossAxisAlignment.start,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      children: children,
     );
   }
 }
