@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../../profile_breakage.dart';
 import '../../profile_row.dart';
 import 'profiles_controller.dart';
 import 'profiles_scope.dart';
 
 /// The home page: the saved runs (the head's home list). Widgets only, per
 /// the page role in `app_scope.dart`: every row is a [ProfileRow] of
-/// already-rendered values — including [ProfileRow.brokenReason], which is
-/// the whole of the brokenness decision — and the only branches here are
-/// "is there a line to show" over a `String?`.
+/// already-rendered values — including [ProfileRow.breakage], which is the
+/// whole of the brokenness decision — and the only branches here are over
+/// that sealed case, picking which remedy button to draw.
 ///
 /// Rows come from `AppState.profiles` through the controller's
 /// `AppController`; this page holds no copy of them. It loads on mounting —
@@ -16,15 +17,19 @@ import 'profiles_scope.dart';
 /// either notifier (the application state for the rows, the view state for
 /// this page's own error line), and refreshes on pull.
 ///
-/// A broken profile renders as itself, not gone: untappable, with its
-/// [ProfileRow.brokenReason] where the tap summary would be. Revoking the
-/// device or losing the folder must be visible from the home list, because
-/// the row is the only place the run the user configured still exists.
+/// A broken profile renders as itself, not gone: not a tap target, with its
+/// [ProfileBreakage] message and that breakage's remedy where the tap
+/// summary would be. Revoking the device or losing the folder must be
+/// visible from the home list, because the row is the only place the run
+/// the user configured still exists — and it must be fixable there, because
+/// the alternative is deleting the run and configuring it again.
 ///
 /// [onOpenProfile] is the seam to Run setup, fired with the tapped row's
 /// profile id — an id, not a row, per the handoff rule.
 /// [onOpenDevices] is the seam to Devices, from the app bar, from the empty
-/// state and from the "New run" button: pairing and revoking still need a
+/// state, from the "New run" button and from the remedy on a row whose
+/// device was revoked — Pair is reached through Devices, and this page has
+/// no `Navigator` to reach it any other way: pairing and revoking still need a
 /// device view, and every run — the first and every one after it — is born
 /// there. The app-bar action keeps its own meaning, pairing; the button is
 /// about running, and stays on screen once the list has rows. Both are the
@@ -120,9 +125,11 @@ class _ProfilesBody extends StatelessWidget {
             for (final row in profiles)
               _ProfileTile(
                 row: row,
-                onTap: row.brokenReason == null
+                onTap: row.breakage == null
                     ? () => onOpenProfile(row.id)
                     : null,
+                onPickFolder: () => controller.repickLocalFolder(row.id),
+                onPairAgain: onOpenDevices,
                 onDelete: () => _confirmDelete(context, row),
               ),
         ],
@@ -185,19 +192,29 @@ class _ProfileTile extends StatelessWidget {
   const _ProfileTile({
     required this.row,
     required this.onTap,
+    required this.onPickFolder,
+    required this.onPairAgain,
     required this.onDelete,
   });
 
   final ProfileRow row;
 
-  /// `null` on a broken profile: the row renders, but nothing about it is a
-  /// tap target.
+  /// `null` on a broken profile: running it is what is broken, so the row
+  /// is not a tap target until its remedy has been taken.
   final VoidCallback? onTap;
+
+  /// Re-picks this profile's local folder — the remedy for
+  /// [ProfileLocalRootUnusable].
+  final VoidCallback onPickFolder;
+
+  /// Opens Devices, where the revoked peer can be paired with again — the
+  /// remedy for [ProfileDeviceUnpaired].
+  final VoidCallback onPairAgain;
   final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
-    final broken = row.brokenReason;
+    final breakage = row.breakage;
     return ListTile(
       title: Text(row.name),
       subtitle: Column(
@@ -208,11 +225,27 @@ class _ProfileTile extends StatelessWidget {
             '${row.peerName ?? row.peerDeviceId}:${row.remoteRootPath}',
             overflow: TextOverflow.ellipsis,
           ),
-          if (broken != null)
+          if (breakage != null) ...[
             Text(
-              broken,
+              breakage.message,
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: switch (breakage) {
+                ProfileLocalRootUnusable() => TextButton(
+                  key: Key('profile-pick-folder-${row.id}'),
+                  onPressed: onPickFolder,
+                  child: const Text('Choose folder'),
+                ),
+                ProfileDeviceUnpaired() => TextButton(
+                  key: Key('profile-pair-again-${row.id}'),
+                  onPressed: onPairAgain,
+                  child: const Text('Pair again'),
+                ),
+              },
+            ),
+          ],
         ],
       ),
       isThreeLine: true,

@@ -7,9 +7,12 @@ import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
+import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../../support/fake_folder_picker.dart';
 
 /// Rendering tests for the profiles home, driven the way the scope contract
 /// in `app_scope.dart` intends: the controllers are pinned with
@@ -18,7 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// here touches a store, because the page renders values, not profiles.
 void main() {
   late AppController app;
-  late ProfilesController controller;
+  late _RecordingProfilesController controller;
   final opened = <String>[];
   var devicesOpened = 0;
 
@@ -30,7 +33,7 @@ void main() {
       ),
       now: DateTime.now,
     );
-    controller = ProfilesController(app);
+    controller = _RecordingProfilesController(app, picker: FakeFolderPicker());
     appScope.setController(app);
     profilesScope.setController(controller);
     opened.clear();
@@ -63,19 +66,27 @@ void main() {
     peerName: 'desktop',
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
-    brokenReason: null,
+    breakage: null,
   );
 
-  ProfileRow broken() => ProfileRow(
+  ProfileRow broken() => const ProfileRow(
     id: 'p2',
     name: 'revoked',
     peerDeviceId: 'dead:beef',
     peerName: null,
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
-    brokenReason:
-        'The device this profile syncs with is no longer paired. '
-        'Pair again, then delete this profile and save it from a working run.',
+    breakage: ProfileDeviceUnpaired(),
+  );
+
+  ProfileRow folderLost() => const ProfileRow(
+    id: 'p3',
+    name: 'no folder',
+    peerDeviceId: 'a1b2:c3d4',
+    peerName: 'desktop',
+    localRootPath: '/on-device/gone',
+    remoteRootPath: '~/notes',
+    breakage: ProfileLocalRootUnusable(),
   );
 
   testWidgets('an empty list is the first-run state, pointing at Devices', (
@@ -153,6 +164,41 @@ void main() {
     expect(opened, isEmpty);
   });
 
+  testWidgets('a revoked row offers pairing again, where pairing lives', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordProfiles([broken()]);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('profile-pair-again-p2')));
+    await tester.pumpAndSettle();
+
+    // Pair is reached through Devices, which is the seam this page holds.
+    expect(devicesOpened, 1);
+    expect(opened, isEmpty);
+  });
+
+  testWidgets('a lost folder is re-picked from the row, going nowhere', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordProfiles([folderLost()]);
+    await pumpPage(tester);
+    expect(find.textContaining('no longer accessible'), findsOneWidget);
+    // One remedy per breakage: this row is not the pairing one.
+    expect(find.byKey(const Key('profile-pair-again-p3')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('profile-pick-folder-p3')));
+    await tester.pumpAndSettle();
+
+    // The row asks its own controller, by id, and nothing navigates away
+    // to do it. What the ask then does is `profiles_controller_test.dart`'s.
+    expect(controller.repicked, ['p3']);
+    expect(opened, isEmpty);
+    expect(devicesOpened, 0);
+  });
+
   testWidgets('the error line shows above the rows and clears on success', (
     tester,
   ) async {
@@ -186,4 +232,17 @@ void main() {
     expect(find.text('Delete weekly?'), findsNothing);
     expect(opened, isEmpty);
   });
+}
+
+/// The real controller with its one folder-chooser input recorded instead of
+/// run: this page's tests are rendering tests, and what the chooser then
+/// does to the store is exercised where the store is real, in
+/// `profiles_controller_test.dart`.
+class _RecordingProfilesController extends ProfilesController {
+  _RecordingProfilesController(super.app, {required super.picker});
+
+  final List<String> repicked = [];
+
+  @override
+  Future<void> repickLocalFolder(String id) async => repicked.add(id);
 }

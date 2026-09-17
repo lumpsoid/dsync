@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/sync_profile.dart';
 import 'package:dsync/app/sync_profile_store.dart';
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
@@ -314,7 +315,7 @@ void main() {
         expect(row.peerDeviceId, savedProfile().peerDeviceId);
         expect(row.localRootPath, savedProfile().localRootPath);
         expect(row.remoteRootPath, '~/notes');
-        expect(row.brokenReason, isNull);
+        expect(row.breakage, isNull);
       },
     );
 
@@ -325,7 +326,7 @@ void main() {
       await controller.bootstrap();
 
       await controller.refreshProfiles();
-      expect(controller.state.profiles.single.brokenReason, isNull);
+      expect(controller.state.profiles.single.breakage, isNull);
       expect(controller.state.profiles.single.peerName, 'phone');
 
       await controller.revoke(controller.state.profiles.single.peerDeviceId);
@@ -334,7 +335,7 @@ void main() {
       final row = controller.state.profiles.single;
       expect(row.name, 'weekly notes');
       expect(row.peerName, isNull);
-      expect(row.brokenReason, contains('no longer paired'));
+      expect(row.breakage, isA<ProfileDeviceUnpaired>());
     });
 
     test(
@@ -349,8 +350,8 @@ void main() {
         await controller.refreshProfiles();
 
         expect(
-          controller.state.profiles.single.brokenReason,
-          contains('no longer accessible'),
+          controller.state.profiles.single.breakage,
+          isA<ProfileLocalRootUnusable>(),
         );
       },
     );

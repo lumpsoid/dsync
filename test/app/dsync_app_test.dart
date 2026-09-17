@@ -85,7 +85,7 @@ void main() {
         required pairedDeviceStore,
       }) => throw StateError('no enrolment in this test'),
     );
-    profiles = ProfilesController(app);
+    profiles = ProfilesController(app, picker: FakeFolderPicker());
     runSetup = RunSetupController(app, picker: FakeFolderPicker());
     appScope.setController(app);
     devicesScope.setController(devices);

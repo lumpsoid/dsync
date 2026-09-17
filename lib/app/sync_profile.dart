@@ -52,4 +52,21 @@ class SyncProfile {
   /// Hashing concurrency for the local scan, as the request that produced
   /// this profile carried it.
   final int jobs;
+
+  /// The same saved run against [path] instead — what the home list saves
+  /// when the user re-picks the local folder of a profile whose grant was
+  /// withdrawn.
+  ///
+  /// The id is kept rather than re-derived: as the class doc comment says,
+  /// a profile whose fields are edited keeps its id, because the stored id
+  /// is only this profile's key in its store and the archive id a run
+  /// writes under is derived from the request being built.
+  SyncProfile withLocalRoot(String path) => SyncProfile(
+    id: id,
+    name: name,
+    localRootPath: path,
+    peerDeviceId: peerDeviceId,
+    remoteRootPath: remoteRootPath,
+    jobs: jobs,
+  );
 }
