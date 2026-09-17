@@ -14,10 +14,50 @@ import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
+
+/// A minimal pipelining client: allocates request ids, opens a route per
+/// request, and sends. Deliberately not a `RemoteAgent` — these tests are
+/// about what the *server* answers, including for requests no `RemoteAgent`
+/// would ever make.
+class _RawClient {
+  final Channel channel;
+  final FrameRouter router;
+
+  int _lastId = Frame.noRequest;
+
+  _RawClient(this.channel) : router = FrameRouter(channel.input);
+
+  int nextId() => ++_lastId;
+
+  /// The version exchange, on the route for [Frame.noRequest] — opened
+  /// before the router reads, since the server's own version frame is
+  /// already on its way.
+  Future<void> handshake() async {
+    final replies = router.open(Frame.noRequest);
+    unawaited(router.run(onUnrouted: (_, _) {}).catchError((_) {}));
+    await performVersionHandshake(channel, replies);
+    router.close(Frame.noRequest);
+  }
+
+  Future<_Exchange> request(AgentRequest request) async {
+    final id = nextId();
+    final replies = router.open(id);
+    await channel.send(FrameCodec().encode(request.toFrame(id)));
+    return _Exchange(id, replies);
+  }
+}
+
+class _Exchange {
+  final int id;
+  final Stream<Frame> replies;
+
+  _Exchange(this.id, this.replies);
+}
 
 /// The spec every test's `hello` prologue sends, when the test doesn't care
 /// what it contains.
@@ -30,49 +70,42 @@ const _testSpec = ReplicaSpec(
 
 void main() {
   late _FakeAgent agent;
-  late Channel client;
-  late StreamIterator<Frame> clientFrames;
+  late _RawClient client;
 
   setUp(() async {
     final (a, b) = InMemoryChannel.pair();
-    client = a;
     agent = _FakeAgent();
-    clientFrames = StreamIterator(FrameCodec().decode(client.input));
+    client = _RawClient(a);
 
     unawaited(AgentServer().serve(b, (_) => agent));
-    await performVersionHandshake(client, clientFrames);
-    await client.send(
-      FrameCodec().encode(
-        AgentRequest('hello', {
-          'replica': replicaSpecToJson(_testSpec),
-        }).toFrame(),
-      ),
+    await client.handshake();
+    final hello = await client.request(
+      AgentRequest('hello', {'replica': replicaSpecToJson(_testSpec)}),
     );
-    await clientFrames.moveNext();
-    expect(AgentResult.fromFrame(clientFrames.current), isA<AgentSuccess>());
+    expect(
+      AgentResult.fromFrame(await hello.replies.first),
+      isA<AgentSuccess>(),
+    );
   });
 
   Future<AgentResult> call(
     String op, [
     Map<String, dynamic> params = const {},
   ]) async {
-    await client.send(FrameCodec().encode(AgentRequest(op, params).toFrame()));
-    await clientFrames.moveNext();
-    return AgentResult.fromFrame(clientFrames.current);
+    final exchange = await client.request(AgentRequest(op, params));
+    return AgentResult.fromFrame(await exchange.replies.first);
   }
 
   /// `scan` alone, because its success is a `FrameType.scanResult` frame
   /// rather than a control frame (SPEC §15.3) — [call] would try to read it
   /// as JSON.
   Future<ScanResult> callScan(RuleSet rules) async {
-    await client.send(
-      FrameCodec().encode(
-        AgentRequest('scan', {'rules': ruleSetToJson(rules)}).toFrame(),
-      ),
+    final exchange = await client.request(
+      AgentRequest('scan', {'rules': ruleSetToJson(rules)}),
     );
-    await clientFrames.moveNext();
-    expect(clientFrames.current.type, FrameType.scanResult);
-    return decodeScanResult(clientFrames.current.payload);
+    final frame = await exchange.replies.first;
+    expect(frame.type, FrameType.scanResult);
+    return decodeScanResult(frame.payload);
   }
 
   group('lock / unlock', () {
@@ -109,16 +142,14 @@ void main() {
         'frame type is what tells the two apart (SPEC §15.3)', () async {
       agent.scanFailure = Exception('permission denied');
 
-      await client.send(
-        FrameCodec().encode(
-          AgentRequest('scan', {'rules': ruleSetToJson(RuleSet())}).toFrame(),
-        ),
+      final exchange = await client.request(
+        AgentRequest('scan', {'rules': ruleSetToJson(RuleSet())}),
       );
-      await clientFrames.moveNext();
+      final frame = await exchange.replies.first;
 
-      expect(clientFrames.current.type, FrameType.control);
+      expect(frame.type, FrameType.control);
       expect(
-        AgentResult.fromFrame(clientFrames.current),
+        AgentResult.fromFrame(frame),
         isA<AgentFailure>().having(
           (f) => f.error,
           'error',
@@ -142,27 +173,23 @@ void main() {
     test("streams the file's bytes as fileBytes frames, terminated", () async {
       agent.fileContents['a.txt'] = utf8.encode('hello');
 
-      await client.send(
-        FrameCodec().encode(
-          const AgentRequest('readFile', {'path': 'a.txt'}).toFrame(),
-        ),
+      final exchange = await client.request(
+        const AgentRequest('readFile', {'path': 'a.txt'}),
       );
 
-      final chunks = await readByteStream(clientFrames).toList();
+      final chunks = await readByteStream(exchange.replies).toList();
       expect(utf8.decode(chunks.expand((c) => c).toList()), 'hello');
     });
 
     test(
       'a missing file replies with a failure instead of streaming',
       () async {
-        await client.send(
-          FrameCodec().encode(
-            const AgentRequest('readFile', {'path': 'missing.txt'}).toFrame(),
-          ),
+        final exchange = await client.request(
+          const AgentRequest('readFile', {'path': 'missing.txt'}),
         );
 
         await expectLater(
-          readByteStream(clientFrames).toList(),
+          readByteStream(exchange.replies).toList(),
           throwsA(isA<AgentOperationException>()),
         );
       },
@@ -173,20 +200,21 @@ void main() {
     test(
       'writes the streamed bytes and replies with the resulting metadata',
       () async {
-        await client.send(
-          FrameCodec().encode(
-            const AgentRequest('writeFile', {
-              'path': 'a.txt',
-              'mtime': 123,
-              'mode': 420,
-            }).toFrame(),
-          ),
+        final exchange = await client.request(
+          const AgentRequest('writeFile', {
+            'path': 'a.txt',
+            'mtime': 123,
+            'mode': 420,
+          }),
         );
-        await sendByteStream(client, Stream.value(utf8.encode('hello')));
+        await sendByteStream(
+          client.channel,
+          Stream.value(utf8.encode('hello')),
+          requestId: exchange.id,
+        );
 
-        await clientFrames.moveNext();
         final result =
-            AgentResult.fromFrame(clientFrames.current) as AgentSuccess;
+            AgentResult.fromFrame(await exchange.replies.first) as AgentSuccess;
 
         expect(utf8.decode(agent.fileContents['a.txt']!), 'hello');
         expect(result.data['metadata'], {'size': 5, 'mtime': 123, 'mode': 420});
@@ -197,24 +225,28 @@ void main() {
         'request', () async {
       agent.writeError = Exception('permission denied');
 
-      await client.send(
-        FrameCodec().encode(
-          const AgentRequest('writeFile', {
-            'path': 'a.txt',
-            'mtime': 123,
-            'mode': 420,
-          }).toFrame(),
-        ),
+      final exchange = await client.request(
+        const AgentRequest('writeFile', {
+          'path': 'a.txt',
+          'mtime': 123,
+          'mode': 420,
+        }),
       );
-      await sendByteStream(client, Stream.value(utf8.encode('hello')));
+      await sendByteStream(
+        client.channel,
+        Stream.value(utf8.encode('hello')),
+        requestId: exchange.id,
+      );
 
-      await clientFrames.moveNext();
-      expect(AgentResult.fromFrame(clientFrames.current), isA<AgentFailure>());
+      expect(
+        AgentResult.fromFrame(await exchange.replies.first),
+        isA<AgentFailure>(),
+      );
 
-      // The peer had already committed to sending the whole transfer. If
-      // those frames were left queued the serve loop would read file bytes
-      // where it expects a request — and SPEC §7.6 keeps the run going, so
-      // there is always a next request.
+      // The peer had already committed to sending the whole transfer. Those
+      // frames route nowhere now rather than having to be drained — without
+      // the id they would have been read as the next request, and SPEC §7.6
+      // keeps the run going, so there is always a next request.
       expect(await call('lock'), isA<AgentSuccess>());
     });
   });
@@ -223,17 +255,19 @@ void main() {
     test(
       'a frame that is not a request fails without ending the session',
       () async {
-        await client.send(
+        final id = client.nextId();
+        final replies = client.router.open(id);
+        await client.channel.send(
           FrameCodec().encode(
-            const Frame(type: FrameType.control, payload: [0x7b, 0x7b]),
+            Frame(
+              type: FrameType.control,
+              requestId: id,
+              payload: [0x7b, 0x7b],
+            ),
           ),
         );
 
-        await clientFrames.moveNext();
-        expect(
-          AgentResult.fromFrame(clientFrames.current),
-          isA<AgentFailure>(),
-        );
+        expect(AgentResult.fromFrame(await replies.first), isA<AgentFailure>());
 
         expect(await call('lock'), isA<AgentSuccess>());
       },
@@ -305,8 +339,8 @@ void main() {
   // other group's `setUp` already assumes it succeeds.
   group('hello prologue', () {
     test('builds the agent from the spec the client sent', () async {
-      final (client, server) = InMemoryChannel.pair();
-      final clientFrames = StreamIterator(FrameCodec().decode(client.input));
+      final (channel, server) = InMemoryChannel.pair();
+      final client = _RawClient(channel);
       ReplicaSpec? received;
       unawaited(
         AgentServer().serve(server, (spec) {
@@ -314,7 +348,7 @@ void main() {
           return _FakeAgent();
         }),
       );
-      await performVersionHandshake(client, clientFrames);
+      await client.handshake();
 
       const spec = ReplicaSpec(
         rootPath: '~/notes',
@@ -322,13 +356,13 @@ void main() {
         side: 'b',
         jobs: 3,
       );
-      await client.send(
-        FrameCodec().encode(
-          AgentRequest('hello', {'replica': replicaSpecToJson(spec)}).toFrame(),
-        ),
+      final hello = await client.request(
+        AgentRequest('hello', {'replica': replicaSpecToJson(spec)}),
       );
-      await clientFrames.moveNext();
-      expect(AgentResult.fromFrame(clientFrames.current), isA<AgentSuccess>());
+      expect(
+        AgentResult.fromFrame(await hello.replies.first),
+        isA<AgentSuccess>(),
+      );
 
       expect(received?.rootPath, '~/notes');
       expect(received?.profileId, 'notes');
@@ -338,16 +372,16 @@ void main() {
 
     test('a first frame that is not hello gets an AgentFailure and ends the '
         'session', () async {
-      final (client, server) = InMemoryChannel.pair();
-      final clientFrames = StreamIterator(FrameCodec().decode(client.input));
+      final (channel, server) = InMemoryChannel.pair();
+      final client = _RawClient(channel);
       final serveFuture = AgentServer().serve(server, (_) => _FakeAgent());
-      await performVersionHandshake(client, clientFrames);
+      await client.handshake();
 
-      await client.send(
-        FrameCodec().encode(const AgentRequest('lock').toFrame()),
+      final exchange = await client.request(const AgentRequest('lock'));
+      expect(
+        AgentResult.fromFrame(await exchange.replies.first),
+        isA<AgentFailure>(),
       );
-      await clientFrames.moveNext();
-      expect(AgentResult.fromFrame(clientFrames.current), isA<AgentFailure>());
 
       // No dispatch loop is ever entered, so `serve` itself returns —
       // nothing is left reading the channel for a next request.
@@ -363,26 +397,23 @@ void main() {
   group('session teardown', () {
     /// A session past its `hello` prologue, returning the fake it serves, the
     /// client end, and `serve`'s own future.
-    Future<(_FakeAgent, Channel, Future<void>)> session() async {
-      final (client, server) = InMemoryChannel.pair();
-      final clientFrames = StreamIterator(FrameCodec().decode(client.input));
+    Future<(_FakeAgent, _RawClient, Future<void>)> session() async {
+      final (channel, server) = InMemoryChannel.pair();
+      final client = _RawClient(channel);
       final agent = _FakeAgent();
       final serveFuture = AgentServer().serve(server, (_) => agent);
-      await performVersionHandshake(client, clientFrames);
-      await client.send(
-        FrameCodec().encode(
-          AgentRequest('hello', {
-            'replica': replicaSpecToJson(_testSpec),
-          }).toFrame(),
-        ),
+      await client.handshake();
+      final hello = await client.request(
+        AgentRequest('hello', {'replica': replicaSpecToJson(_testSpec)}),
       );
-      await clientFrames.moveNext();
-      await clientFrames.cancel();
+      await hello.replies.first;
+      await client.router.cancel();
       return (agent, client, serveFuture);
     }
 
-    Future<void> send(Channel client, String op) =>
-        client.send(FrameCodec().encode(AgentRequest(op).toFrame()));
+    Future<void> send(_RawClient client, String op) => client.channel.send(
+      FrameCodec().encode(AgentRequest(op).toFrame(client.nextId())),
+    );
 
     test('releases the lock a client dropped without unlocking', () async {
       final (agent, client, serveFuture) = await session();
@@ -390,7 +421,7 @@ void main() {
       await pumpEventQueue();
       expect(agent.locked, isTrue);
 
-      await client.close();
+      await client.channel.close();
       await expectLater(serveFuture, completes);
       expect(agent.locked, isFalse);
     });
@@ -398,7 +429,7 @@ void main() {
     test('a session that never locked tears down without error', () async {
       final (agent, client, serveFuture) = await session();
 
-      await client.close();
+      await client.channel.close();
       await expectLater(serveFuture, completes);
       expect(agent.locked, isFalse);
     });
@@ -412,7 +443,7 @@ void main() {
         await pumpEventQueue();
         expect(agent.unlockCalls, 1);
 
-        await client.close();
+        await client.channel.close();
         await expectLater(serveFuture, completes);
         // The redundant release is the normal case, not an error: every
         // well-behaved client unlocks, and `ReplicaLock.release` is a no-op

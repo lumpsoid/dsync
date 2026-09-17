@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 
 /// The argv passed to the `ssh` executable to reach [host] and start the
 /// remote agent (SPEC §4.2).
@@ -51,6 +52,11 @@ class SshChannel implements Channel {
   static const _stderrBufferLines = 50;
 
   final Process _process;
+
+  /// One frame on the wire at a time, however many operations are sending
+  /// (SPEC §4.2) — see [FlushedSink].
+  late final FlushedSink _writer = FlushedSink(_process.stdin);
+
   final StreamController<String> _stderrLines = StreamController.broadcast();
   final List<String> _recentStderr = [];
 
@@ -109,10 +115,7 @@ class SshChannel implements Channel {
   Stream<Uint8List> get input => _process.stdout.cast<Uint8List>();
 
   @override
-  Future<void> send(Uint8List bytes) async {
-    _process.stdin.add(bytes);
-    await _process.stdin.flush();
-  }
+  Future<void> send(Uint8List bytes) => _writer.send(bytes);
 
   @override
   Future<void> close() async {

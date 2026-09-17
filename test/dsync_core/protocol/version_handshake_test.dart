@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
 
@@ -14,8 +15,8 @@ void main() {
       final (a, b) = _pairedChannels();
 
       await Future.wait([
-        performVersionHandshake(a, _frameIterator(a)),
-        performVersionHandshake(b, _frameIterator(b)),
+        performVersionHandshake(a, _handshake(a).replies),
+        performVersionHandshake(b, _handshake(b).replies),
       ]);
     });
 
@@ -32,7 +33,7 @@ void main() {
       );
 
       await expectLater(
-        performVersionHandshake(a, _frameIterator(a)),
+        performVersionHandshake(a, _handshake(a).replies),
         throwsA(
           isA<ProtocolVersionMismatchException>()
               .having((e) => e.local, 'local', protocolVersion)
@@ -47,7 +48,7 @@ void main() {
       await b.send(utf8.encode('Welcome to build-box!\nLast login: today\n'));
 
       await expectLater(
-        performVersionHandshake(a, _frameIterator(a)),
+        performVersionHandshake(a, _handshake(a).replies),
         throwsA(
           isA<PeerNotSpeakingProtocolException>().having(
             (e) => e.toString(),
@@ -71,7 +72,7 @@ void main() {
       );
 
       await expectLater(
-        performVersionHandshake(a, _frameIterator(a)),
+        performVersionHandshake(a, _handshake(a).replies),
         throwsA(
           isA<PeerNotSpeakingProtocolException>().having(
             (e) => e.toString(),
@@ -85,11 +86,11 @@ void main() {
     test('leaves a decode failure after the handshake as the protocol bug it '
         'is', () async {
       final (a, b) = _pairedChannels();
-      final frames = _frameIterator(a);
+      final handshake = _handshake(a);
 
       await Future.wait([
-        performVersionHandshake(a, frames),
-        performVersionHandshake(b, _frameIterator(b)),
+        performVersionHandshake(a, handshake.replies),
+        performVersionHandshake(b, _handshake(b).replies),
       ]);
       await b.send(utf8.encode('Welcome to build-box!\n'));
 
@@ -97,7 +98,7 @@ void main() {
       // handshake has succeeded, garbage on the wire is a protocol bug and
       // pointing the next debugger at ~/.bashrc would waste their time.
       await expectLater(
-        frames.moveNext(),
+        handshake.reading,
         throwsA(isA<FrameDecodeException>()),
       );
     });
@@ -110,9 +111,10 @@ void main() {
           outbox: StreamController<Uint8List>(),
           input: controller.stream,
         );
-        final frames = _frameIterator(channel);
-
-        final result = performVersionHandshake(channel, frames);
+        final result = performVersionHandshake(
+          channel,
+          _handshake(channel).replies,
+        );
         final expectation = expectLater(result, throwsStateError);
         await controller.close();
 
@@ -122,8 +124,28 @@ void main() {
   });
 }
 
-StreamIterator<Frame> _frameIterator(Channel channel) =>
-    StreamIterator(FrameCodec().decode(channel.input));
+/// The handshake route on a running [FrameRouter] over [channel] — what
+/// `RemoteAgent` and `AgentServer` both hand `performVersionHandshake`.
+///
+/// The route is opened before the router starts reading, for the reason both
+/// of those give: the peer's version frame is already on its way.
+_Handshake _handshake(Channel channel) {
+  final router = FrameRouter(channel.input);
+  final replies = router.open(Frame.noRequest);
+  final reading = router.run(onUnrouted: (_, _) {});
+  unawaited(reading.catchError((_) {}));
+  return _Handshake(replies, reading);
+}
+
+class _Handshake {
+  final Stream<Frame> replies;
+
+  /// The router's read loop — where a decode failure surfaces once the
+  /// handshake itself is past.
+  final Future<void> reading;
+
+  _Handshake(this.replies, this.reading);
+}
 
 (Channel, Channel) _pairedChannels() {
   final aToB = StreamController<Uint8List>();

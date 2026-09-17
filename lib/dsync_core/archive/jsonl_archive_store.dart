@@ -29,6 +29,10 @@ class JsonlArchiveStore implements ArchiveStore {
   /// the size of the tree.
   final Map<String, ArchiveEntry> _entries = {};
 
+  /// Completes when the commit currently in progress is finished with the
+  /// log — see [_serialized].
+  Future<void> _committing = Future<void>.value();
+
   /// Commit lines currently on disk in [_logFile], not counting the header.
   /// Compared against `_entries.length` to tell whether the log already holds
   /// exactly one upsert per live path — i.e. compaction would be a no-op.
@@ -173,16 +177,16 @@ class JsonlArchiveStore implements ArchiveStore {
   }
 
   @override
-  Future<void> commitUpsert(ArchiveEntry entry) async {
+  Future<void> commitUpsert(ArchiveEntry entry) => _serialized(() async {
     await _append(_upsertRecord(entry));
     _entries[entry.path] = entry;
-  }
+  });
 
   @override
-  Future<void> commitDelete(String path) async {
+  Future<void> commitDelete(String path) => _serialized(() async {
     await _append({'op': 'delete', 'path': path});
     _entries.remove(path);
-  }
+  });
 
   @override
   Future<DateTime?> lastCommitTime() async {
@@ -191,7 +195,9 @@ class JsonlArchiveStore implements ArchiveStore {
   }
 
   @override
-  Future<void> compact() async {
+  Future<void> compact() => _serialized(_compact);
+
+  Future<void> _compact() async {
     if (!_needsRepair && _logLineCount == _entries.length) return;
 
     final tempFile = File('${_logFile.path}.compact.tmp');
@@ -234,6 +240,30 @@ class JsonlArchiveStore implements ArchiveStore {
     'hash': entry.hash,
   };
 
+  /// Runs [body] after every commit already issued against this store has
+  /// finished, and before every one issued after it.
+  ///
+  /// Required since task 0f7dfc, which lets a peer have several
+  /// `archiveCommitUpsert`s outstanding at once (SPEC §4.2) and so lands
+  /// several of them here concurrently. Two overlapping [_append]s would
+  /// each open the log, and the header a new log needs is a second write
+  /// after the first — so one commit's line could land between another's
+  /// header and record. [_logLineCount] and [_entries] are read-modify-write
+  /// across an `await` too, which is the same race without the file.
+  ///
+  /// A chain rather than a lock because that is all a single-isolate event
+  /// loop needs, and it costs nothing: these operations are serialized by
+  /// their own fsync anyway (SPEC §8.2), which is the floor this is nowhere
+  /// near.
+  Future<void> _serialized(Future<void> Function() body) {
+    final result = _committing.then((_) => body());
+    // Chained on a future that ignores the outcome, so one failed commit
+    // does not fail every commit after it — a failed action is recorded and
+    // the run carries on (SPEC §7.6).
+    _committing = result.then((_) {}, onError: (_) {});
+    return result;
+  }
+
   /// Appends one record and returns only once it is on disk.
   ///
   /// Uses [RandomAccessFile] rather than an [IOSink] because `IOSink.flush`
@@ -242,7 +272,7 @@ class JsonlArchiveStore implements ArchiveStore {
   /// converges on the next one; that argument needs the commit to be durable,
   /// so this flush is a real fsync.
   Future<void> _append(Map<String, Object?> record) async {
-    if (_needsRepair) await compact();
+    if (_needsRepair) await _compact();
 
     var isNewLog = false;
     if (!_logExists) {

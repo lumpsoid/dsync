@@ -691,7 +691,7 @@ void main() {
   });
 
   group('onAction callback (task e9f31c)', () {
-    test('fires once per action, in plan order, including for a failed action (SPEC §7.6)', () async {
+    test('fires once per action, in plan order for one worker, including for a failed action (SPEC §7.6)', () async {
       await File('${replicaADir.path}/one.txt').writeAsString('one');
       await File('${replicaADir.path}/two.txt').writeAsString('two-fails');
       await File('${replicaADir.path}/three.txt').writeAsString('three');
@@ -720,7 +720,10 @@ void main() {
       );
 
       final calls = <(String, ActionType, Object?)>[];
-      final result = await Applier().apply(
+      // One worker, so "the order they finished" is the plan's order and the
+      // per-call error argument is what is under test rather than the
+      // scheduling (task 0f7dfc).
+      final result = await Applier(concurrency: 1).apply(
         plan,
         [
           entry('one.txt', 3, 'h1'),
@@ -752,8 +755,8 @@ void main() {
     }, testOn: 'linux');
 
     test(
-      'a caller that never resolves the callback holds the loop at that '
-      'action boundary — the next action never touches the filesystem',
+      'a caller that never resolves the callback holds each worker at its '
+      'own action boundary — no further action touches the filesystem',
       () async {
         await File('${replicaADir.path}/first.txt').writeAsString('first');
         await File('${replicaADir.path}/second.txt').writeAsString('second');
@@ -793,7 +796,7 @@ void main() {
         // `RunController`-level half (a stream consumer that actually
         // cancels) is asserted in run_controller_test.dart.
         unawaited(
-          Applier().apply(
+          Applier(concurrency: 1).apply(
             plan,
             entries,
             [],

@@ -1,21 +1,30 @@
+import 'dart:collection';
+
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/models/apply_result.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 
-/// Reports one action's outcome as [Applier.apply] finishes it, before
-/// moving on to the next path in plan order (SPEC §7.1) — `error` is `null`
-/// on success, the thrown error otherwise (SPEC §7.6), matching exactly what
-/// [FailedPath.error] would say.
+/// Reports one action's outcome as [Applier.apply] finishes it — `error` is
+/// `null` on success, the thrown error otherwise (SPEC §7.6), matching
+/// exactly what [FailedPath.error] would say.
 ///
-/// [Applier.apply] `await`s the returned future before starting the next
-/// action, so this doubles as the only cancellation seam it has: a caller
+/// **In completion order, not plan order** (SPEC §7.1, task 0f7dfc). Several
+/// actions are in flight at once, so the order outcomes arrive in is the
+/// order they finished, and a caller rendering a row per path gets them as
+/// they land rather than as they were planned.
+///
+/// A worker `await`s the returned future before taking its next action, so
+/// this is still the only cancellation seam [Applier.apply] has: a caller
 /// whose own consumer stopped wanting more events can simply never resolve
-/// it, which leaves the loop suspended at this action boundary — the
-/// action already recorded is not undone (SPEC §7.3 already made it durable
-/// on both sides before this fires), and no action after it ever starts.
-/// `RunController` is the caller that does this (see its own doc comments).
+/// it, and each worker in turn parks at its own action boundary. What that
+/// no longer promises is that exactly one action ran past the last one
+/// reported: up to [Applier.concurrency] actions may have been in flight,
+/// and each of them is either finished and durable (SPEC §7.3 makes it so on
+/// both sides before this fires) or parked here waiting to be reported.
+/// Nothing beyond those ever starts. `RunController` is the caller that does
+/// this (see its own doc comments).
 ///
 /// Shaped like the callbacks already in this codebase — `RunController`'s
 /// own `Presenter` typedef, `AgentServer.serve`'s `Agent Function(ReplicaSpec)`
@@ -41,10 +50,38 @@ Future<void> _noopApplyProgress(String path, ActionType type, Object? error) =>
 /// the size/mtime/mode/hash needed to write a file or build an
 /// [ArchiveEntry], so those are looked up here by path.
 ///
-/// Actions are applied in the order given (SPEC §7.1). Copies vs. deletions
-/// are never reordered — the per-path archive commit in [_copy]/[_delete]
-/// (SPEC §7.3) makes order irrelevant to correctness.
+/// Actions are *started* in the order given and up to [concurrency] of them
+/// run at once (SPEC §7.1, task 0f7dfc). Order was never what made this
+/// correct — the per-path archive commit in [_copy]/[_delete] (SPEC §7.3)
+/// is, and it is per path, so two actions on two paths have nothing to
+/// order between them. A plan holds one action per path, so no two workers
+/// can be on the same path at all.
+///
+/// **Why overlap at all.** A single action against a remote replica is a
+/// handful of round trips with the link idle between them, and on a phone an
+/// idle link is a radio that powers its receiver down (`RequestWindow`).
+/// Overlapping actions is what puts traffic in that gap; the connection's
+/// own window is what bounds it.
 class Applier {
+  /// How many actions may be in flight at once.
+  ///
+  /// Four, against a connection window of eight (`RequestWindow.size`): a
+  /// copy's operations against one replica are a `writeFile` and then an
+  /// `archiveCommitUpsert`, so four workers keep four to eight operations
+  /// outstanding per side, which is the window full without queueing behind
+  /// it. Higher would not buy more overlap — it would buy more actions
+  /// waiting for a slot, more concurrently open files on the phone, and a
+  /// longer list of paths that are half-applied if the run is stopped.
+  static const defaultConcurrency = 4;
+
+  /// How many actions this applier runs at once. Injectable, and `1` is
+  /// exactly the strictly sequential behaviour this had before pipelining —
+  /// which is what a test that reasons about ordering wants.
+  final int concurrency;
+
+  Applier({this.concurrency = defaultConcurrency})
+    : assert(concurrency >= 1, 'An applier with no workers applies nothing');
+
   Future<ApplyResult> apply(
     Plan plan,
     List<ScanEntry> onA,
@@ -59,56 +96,87 @@ class Applier {
     final applied = <AppliedPath>[];
     final failed = <FailedPath>[];
 
-    for (final action in plan.actions) {
-      Object? error;
-      try {
-        switch (action.type) {
-          case ActionType.copyAtoB:
-            await _copy(
-              action.path,
-              source: agentA,
-              dest: agentB,
-              sourceEntries: a,
-            );
-          case ActionType.copyBtoA:
-            await _copy(
-              action.path,
-              source: agentB,
-              dest: agentA,
-              sourceEntries: b,
-            );
-          case ActionType.deleteOnA:
-            await _delete(
-              action.path,
-              target: agentA,
-              agentA: agentA,
-              agentB: agentB,
-            );
-          case ActionType.deleteOnB:
-            await _delete(
-              action.path,
-              target: agentB,
-              agentA: agentA,
-              agentB: agentB,
-            );
-          case ActionType.commitOnly:
-            await _commitOnly(
-              action.path,
-              a[action.path],
-              b[action.path],
-              agentA,
-              agentB,
-            );
+    // One queue, drained by [concurrency] workers, rather than a chunked
+    // `Future.wait` per batch: a batch is only as fast as its slowest action,
+    // and a plan of 14k small files with one large one in it would spend most
+    // of its time with every worker but one idle.
+    final queue = Queue<PlanAction>.of(plan.actions);
+
+    Future<void> worker() async {
+      while (queue.isNotEmpty) {
+        final action = queue.removeFirst();
+        final error = await _applyOne(action, a, b, agentA, agentB);
+        if (error == null) {
+          applied.add(AppliedPath(path: action.path, type: action.type));
+        } else {
+          failed.add(
+            FailedPath(path: action.path, type: action.type, error: error),
+          );
         }
-        applied.add(AppliedPath(path: action.path, type: action.type));
-      } catch (e) {
-        error = e;
-        failed.add(FailedPath(path: action.path, type: action.type, error: e));
+        // Awaited inside the worker, so a caller that never resolves it
+        // parks this worker at an action boundary and nothing it would have
+        // taken next ever starts.
+        await onAction(action.path, action.type, error);
       }
-      await onAction(action.path, action.type, error);
     }
 
+    await Future.wait([for (var i = 0; i < concurrency; i++) worker()]);
+
     return ApplyResult(applied: applied, failed: failed);
+  }
+
+  /// Applies one action, returning the failure it ended with or `null`
+  /// (SPEC §7.6).
+  Future<Object?> _applyOne(
+    PlanAction action,
+    Map<String, ScanEntry> a,
+    Map<String, ScanEntry> b,
+    Agent agentA,
+    Agent agentB,
+  ) async {
+    try {
+      switch (action.type) {
+        case ActionType.copyAtoB:
+          await _copy(
+            action.path,
+            source: agentA,
+            dest: agentB,
+            sourceEntries: a,
+          );
+        case ActionType.copyBtoA:
+          await _copy(
+            action.path,
+            source: agentB,
+            dest: agentA,
+            sourceEntries: b,
+          );
+        case ActionType.deleteOnA:
+          await _delete(
+            action.path,
+            target: agentA,
+            agentA: agentA,
+            agentB: agentB,
+          );
+        case ActionType.deleteOnB:
+          await _delete(
+            action.path,
+            target: agentB,
+            agentA: agentA,
+            agentB: agentB,
+          );
+        case ActionType.commitOnly:
+          await _commitOnly(
+            action.path,
+            a[action.path],
+            b[action.path],
+            agentA,
+            agentB,
+          );
+      }
+      return null;
+    } catch (error) {
+      return error;
+    }
   }
 
   /// Copy in one direction (SPEC §7.2, §7.3). [source] streams the file;

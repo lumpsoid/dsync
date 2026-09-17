@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
+import 'package:dsync/dsync_core/agent/request_window.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -164,6 +165,155 @@ void main() {
     });
   });
 
+  group('pipelining (task 0f7dfc)', () {
+    ArchiveEntry entry(String path) =>
+        ArchiveEntry(path: path, size: 1, mtime: 1, mode: 420, hash: 'h');
+
+    test('replies arriving out of order complete the right callers', () async {
+      // Three commits in flight, answered back to front. Matched by arrival
+      // order — what the protocol did before the request id — every caller
+      // but one would be handed somebody else's answer.
+      for (final path in ['a.txt', 'b.txt', 'c.txt']) {
+        backing.heldCommits[path] = Completer<void>();
+      }
+      backing.failCommits.add('b.txt');
+
+      final a = expectLater(
+        remote.archiveCommitUpsert(entry('a.txt')),
+        completes,
+      );
+      // The failure lands on b's caller and nobody else's: SPEC §7.6's
+      // "record the failed path and carry on" has to mean the same thing
+      // with a window open as it did one request at a time. Expected before
+      // the commits are released, since an outcome nothing is watching yet
+      // is reported as an unhandled error whatever is done with it later.
+      final b = expectLater(
+        remote.archiveCommitUpsert(entry('b.txt')),
+        throwsA(isA<AgentOperationException>()),
+      );
+      final c = expectLater(
+        remote.archiveCommitUpsert(entry('c.txt')),
+        completes,
+      );
+      await pumpEventQueue();
+      expect(backing.started, [
+        'archiveCommitUpsert a.txt',
+        'archiveCommitUpsert b.txt',
+        'archiveCommitUpsert c.txt',
+      ], reason: 'all three are outstanding at once');
+
+      backing.heldCommits['c.txt']!.complete();
+      backing.heldCommits['b.txt']!.complete();
+      backing.heldCommits['a.txt']!.complete();
+
+      await c;
+      await a;
+      await b;
+      expect(backing.archive.keys, unorderedEquals(['a.txt', 'c.txt']));
+    });
+
+    test('the window never exceeds its size', () async {
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final narrow = _FakeAgent();
+      unawaited(AgentServer().serve(serverChannel, (_) => narrow));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        window: RequestWindow(size: 2),
+      );
+      await agent.hello();
+
+      final paths = ['a.txt', 'b.txt', 'c.txt', 'd.txt'];
+      for (final path in paths) {
+        narrow.heldCommits[path] = Completer<void>();
+      }
+      final commits = [
+        for (final path in paths) agent.archiveCommitUpsert(entry(path)),
+      ];
+      await pumpEventQueue();
+
+      expect(narrow.started, [
+        'archiveCommitUpsert a.txt',
+        'archiveCommitUpsert b.txt',
+      ]);
+
+      narrow.heldCommits['a.txt']!.complete();
+      await pumpEventQueue();
+      expect(narrow.started, hasLength(3));
+
+      for (final held in narrow.heldCommits.values) {
+        if (!held.isCompleted) held.complete();
+      }
+      await Future.wait(commits);
+      await agent.disconnect();
+    });
+
+    test('a barrier operation drains the window before it runs', () async {
+      backing.heldCommits['a.txt'] = Completer<void>();
+      final commit = remote.archiveCommitUpsert(entry('a.txt'));
+      await pumpEventQueue();
+
+      // `lock` is a barrier: it changes what the replica means to the whole
+      // session, so it must not overlap work already in flight (SPEC §4.2).
+      final locked = remote.lock();
+      await pumpEventQueue();
+      expect(backing.started, ['archiveCommitUpsert a.txt']);
+
+      backing.heldCommits['a.txt']!.complete();
+      await commit;
+      await locked;
+      expect(backing.started, ['archiveCommitUpsert a.txt', 'lock']);
+    });
+
+    test('operations on one path keep the order they were issued in', () async {
+      // `writeFile` then `archiveCommitUpsert` for one path is what SPEC
+      // §7.3 rests on, and it must not become "whichever the window let
+      // through first".
+      backing.heldCommits['a.txt'] = Completer<void>();
+      final first = remote.archiveCommitUpsert(entry('a.txt'));
+      final second = remote.archiveCommitUpsert(entry('a.txt'));
+      await pumpEventQueue();
+
+      expect(backing.started, ['archiveCommitUpsert a.txt']);
+
+      backing.heldCommits.remove('a.txt')!.complete();
+      await first;
+      await second;
+      expect(backing.started, [
+        'archiveCommitUpsert a.txt',
+        'archiveCommitUpsert a.txt',
+      ]);
+    });
+
+    test('a connection that fails takes every outstanding operation with '
+        'it', () async {
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final stalled = _FakeAgent();
+      unawaited(AgentServer().serve(serverChannel, (_) => stalled));
+      final agent = RemoteAgent(clientChannel, _testSpec);
+      await agent.hello();
+
+      for (final path in ['a.txt', 'b.txt']) {
+        stalled.heldCommits[path] = Completer<void>();
+      }
+      final outstanding = [
+        for (final path in ['a.txt', 'b.txt'])
+          expectLater(
+            agent.archiveCommitUpsert(entry(path)),
+            throwsA(isA<Object>()),
+          ),
+      ];
+      await pumpEventQueue();
+
+      // Nothing can be matched to anything once the wire is gone, so this
+      // is the one failure that is everyone's — fatal for the run (SPEC
+      // §11.5 exit 3) however many operations it took down.
+      await serverChannel.close();
+
+      await Future.wait(outstanding);
+    });
+  });
+
   group('disconnect', () {
     test('lets go of the channel\'s input, not just its output', () async {
       // The frame stream is read through a `StreamIterator`, which holds its
@@ -227,11 +377,23 @@ class _FakeAgent implements Agent {
   Object? lockError;
   ReplicaInfo helloInfo = const ReplicaInfo();
 
+  /// Paths whose `archiveCommitUpsert` waits to be released, so a test can
+  /// hold several operations open at once and decide the order they are
+  /// answered in.
+  final Map<String, Completer<void>> heldCommits = {};
+
+  /// Paths whose `archiveCommitUpsert` fails.
+  final Set<String> failCommits = {};
+
+  /// Every operation the server dispatched, in the order it started them.
+  final List<String> started = [];
+
   @override
   Future<ReplicaInfo> hello() async => helloInfo;
 
   @override
   Future<void> lock() async {
+    started.add('lock');
     if (lockError != null) throw lockError!;
     locked = true;
   }
@@ -281,6 +443,11 @@ class _FakeAgent implements Agent {
 
   @override
   Future<void> archiveCommitUpsert(ArchiveEntry entry) async {
+    started.add('archiveCommitUpsert ${entry.path}');
+    await heldCommits[entry.path]?.future;
+    if (failCommits.contains(entry.path)) {
+      throw Exception('commit refused: ${entry.path}');
+    }
     archive[entry.path] = entry;
   }
 

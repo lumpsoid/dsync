@@ -74,25 +74,26 @@ class MeteredAgent implements Agent {
   /// A generator rather than a `Stream.map` with a `listen`/`onDone` pair,
   /// so a consumer that stops early — which SPEC §7.6 makes the normal case,
   /// and which `RemoteAgent.readFile` documents at length — closes the
-  /// operation through this `finally` on its way to the inner one's drain,
-  /// instead of leaving it open for the rest of the run.
+  /// operation through this `finally` as it goes, instead of leaving it open
+  /// for the rest of the run.
   @override
   Stream<List<int>> readFile(String path) async* {
-    final end = metrics.beginOp(side, AgentOp.readFile);
+    final operation = metrics.beginOp(side, AgentOp.readFile);
     try {
       await for (final chunk in _inner.readFile(path)) {
-        metrics.countPayloadBytes(side, chunk.length);
+        operation.countBytes(chunk.length);
         yield chunk;
       }
     } finally {
-      end();
+      operation.end();
     }
   }
 
   /// Counts [data] as it is consumed by the inner agent rather than after the
   /// fact, so a transfer that fails part-way is credited with the bytes it
   /// did move — the size mismatch `Applier` then raises is about a file, and
-  /// this report is about the wire.
+  /// this report is about the wire. Credited to *this* operation's handle,
+  /// not to whatever is open on this side, since several are (SPEC §17).
   @override
   Future<FileMetadata> writeFile(
     String path,
@@ -100,19 +101,19 @@ class MeteredAgent implements Agent {
     required int mtime,
     required int mode,
   }) async {
-    final end = metrics.beginOp(side, AgentOp.writeFile);
+    final operation = metrics.beginOp(side, AgentOp.writeFile);
     try {
       return await _inner.writeFile(
         path,
         data.map((chunk) {
-          metrics.countPayloadBytes(side, chunk.length);
+          operation.countBytes(chunk.length);
           return chunk;
         }),
         mtime: mtime,
         mode: mode,
       );
     } finally {
-      end();
+      operation.end();
     }
   }
 
@@ -146,11 +147,11 @@ class MeteredAgent implements Agent {
   /// spent thirty seconds on requests that all threw is a run whose report
   /// should say thirty seconds.
   Future<T> _timed<T>(AgentOp op, Future<T> Function() body) async {
-    final end = metrics.beginOp(side, op);
+    final operation = metrics.beginOp(side, op);
     try {
       return await body();
     } finally {
-      end();
+      operation.end();
     }
   }
 }

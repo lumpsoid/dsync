@@ -45,12 +45,16 @@ import 'screen_wake.dart';
 /// in-memory channel; the scope names the real `dialPeer`.
 ///
 /// **What [stop] means.** [RunController.run] is an `async*` generator
-/// whose apply loop is a one-at-a-time handoff: `Applier` cannot start the
-/// next action until the generator has yielded the previous one's result.
-/// Cancelling the subscription therefore suspends the loop at an action
-/// boundary — the action whose `RunResultEvent` was last delivered is fully
-/// applied and committed on both sides (SPEC §7.3 makes it durable), and
-/// nothing further starts. The generator's own `finally` blocks still run
+/// whose apply loop hands each action's outcome downstream before that
+/// worker takes another: an `Applier` worker cannot start its next action
+/// until the generator has yielded the last one's result. Cancelling the
+/// subscription therefore parks every worker at an action boundary — each
+/// action whose `RunResultEvent` was delivered is fully applied and
+/// committed on both sides (SPEC §7.3 makes it durable), and nothing beyond
+/// the ones already in flight starts. Since task 0f7dfc that is up to
+/// `Applier.concurrency` actions past the last one reported, not exactly
+/// one: they finish and become durable, they are simply never reported.
+/// The generator's own `finally` blocks still run
 /// on cancel, so both locks are released and both agents disconnected
 /// (SPEC §4.3; `run_controller_test.dart`'s "stopping mid-apply" case
 /// proves it). The view state records [SyncRunStopped] with the number of

@@ -10,7 +10,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
-import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -18,15 +18,19 @@ void main() {
     test('round-trips an op with params through a frame', () {
       final request = AgentRequest('delete', {'path': 'a.txt'});
 
-      final decoded = AgentRequest.fromFrame(request.toFrame());
+      final frame = request.toFrame(7);
 
+      final decoded = AgentRequest.fromFrame(frame);
       expect(decoded.op, 'delete');
       expect(decoded.params, {'path': 'a.txt'});
+      // The id is a header field, not part of the payload: it must reach the
+      // frame and must not turn up among the params (task 0f7dfc).
+      expect(frame.requestId, 7);
     });
 
     test('round-trips an op with no params', () {
       final decoded = AgentRequest.fromFrame(
-        const AgentRequest('lock').toFrame(),
+        const AgentRequest('lock').toFrame(1),
       );
 
       expect(decoded.op, 'lock');
@@ -37,7 +41,7 @@ void main() {
   group('AgentResult', () {
     test('round-trips a success with data', () {
       final decoded = AgentResult.fromFrame(
-        const AgentSuccess({'entries': []}).toFrame(),
+        const AgentSuccess({'entries': []}).toFrame(1),
       );
 
       expect(decoded, isA<AgentSuccess>());
@@ -45,10 +49,10 @@ void main() {
     });
 
     test('round-trips a failure with its message', () {
-      final decoded = AgentResult.fromFrame(
-        const AgentFailure('replica lock held').toFrame(),
-      );
+      final frame = const AgentFailure('replica lock held').toFrame(9);
 
+      final decoded = AgentResult.fromFrame(frame);
+      expect(frame.requestId, 9, reason: 'a reply answers under its own id');
       expect(decoded, isA<AgentFailure>());
       expect((decoded as AgentFailure).error, 'replica lock held');
     });
@@ -177,10 +181,11 @@ void main() {
         sendByteStream(
           sender,
           Stream.fromIterable([utf8.encode('hel'), utf8.encode('lo')]),
+          requestId: 1,
         ),
       );
 
-      final chunks = await readByteStream(_frameIterator(receiver)).toList();
+      final chunks = await readByteStream(_route(receiver, 1)).toList();
 
       expect(utf8.decode(chunks.expand((c) => c).toList()), 'hello');
     });
@@ -192,10 +197,11 @@ void main() {
         sendByteStream(
           sender,
           Stream.fromIterable([utf8.encode('a'), [], utf8.encode('b')]),
+          requestId: 1,
         ),
       );
 
-      final chunks = await readByteStream(_frameIterator(receiver)).toList();
+      final chunks = await readByteStream(_route(receiver, 1)).toList();
 
       expect(utf8.decode(chunks.expand((c) => c).toList()), 'ab');
     });
@@ -210,10 +216,10 @@ void main() {
           throw Exception('boom');
         }
 
-        unawaited(sendByteStream(sender, failing()));
+        unawaited(sendByteStream(sender, failing(), requestId: 1));
 
         await expectLater(
-          readByteStream(_frameIterator(receiver)).toList(),
+          readByteStream(_route(receiver, 1)).toList(),
           throwsA(isA<AgentOperationException>()),
         );
       },
@@ -221,8 +227,15 @@ void main() {
   });
 }
 
-StreamIterator<Frame> _frameIterator(Channel channel) =>
-    StreamIterator(FrameCodec().decode(channel.input));
+/// The route for request [requestId] on a running router over [channel] —
+/// what `readByteStream` now reads, one exchange's frames rather than the
+/// whole connection's (task 0f7dfc).
+Stream<Frame> _route(Channel channel, int requestId) {
+  final router = FrameRouter(channel.input);
+  final route = router.open(requestId);
+  unawaited(router.run(onUnrouted: (_, _) {}).catchError((_) {}));
+  return route;
+}
 
 (Channel, Channel) _pairedChannels() {
   final aToB = StreamController<Uint8List>();

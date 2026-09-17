@@ -3,55 +3,59 @@ import 'dart:convert';
 
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
-import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 
 /// The protocol version this build speaks (SPEC §4.2). Bumped whenever the
 /// wire format changes in a way older and newer builds can't both handle.
 ///
-/// Still 1, and every wire change so far has left it there — `hello`'s last
-/// field addition, `scanEntryToJson`'s `reason`, task 37bf4f renaming `scan`'s
-/// `skippedSymlinks` to `skippedPaths`, task 9551c4 respelling a
-/// successful `scan` reply as the binary `FrameType.scanResult` (SPEC §15.3),
-/// and task 40812e adding `FrameType.heartbeat`.
-/// A version exists to protect pairs that cannot be upgraded together, and
-/// there are none: no stable release, no users, no deployed agent — the only
-/// thing that ever speaks this protocol to itself is the test suite, which is
-/// built from this tree. Bumping now would only make this build refuse
-/// yesterday's build of itself.
+/// **2 since task 0f7dfc**, which widened the frame header from 5 bytes to 9
+/// to carry a request id (`FrameCodec`). That is the first wire change here
+/// that moves the header itself, and it is the kind a version exists for:
+/// every frame a version-1 peer sends is undecodable to this build and
+/// vice versa, in both directions, at the very first frame.
 ///
-/// What a bump is *for*, when there is finally something to protect:
-/// **adding** an optional field does not need one, because a peer that omits
-/// it decodes to the same absence it would have had anyway. **Renaming or
-/// repurposing** a field does, because both directions then decode
-/// successfully and silently wrong — the key the peer sent is not the key
-/// that is read, so the value is dropped with no error anywhere. 37bf4f's
-/// rename is the first change of that second kind; the next one after the
-/// first release is the one that has to bump.
+/// It is also the change that shows what the version field can and cannot
+/// do. A peer speaking version 1 does not get a version mismatch — its
+/// version frame has a 5-byte header, so this build reads its length field
+/// out of the payload and refuses it as [PeerNotSpeakingProtocolException]
+/// instead. The constant still earns the bump: it is what makes the *next*
+/// change, which will not move the header, a clean refusal rather than a
+/// corrupt session, and it stops this build from claiming to speak what a
+/// version-1 build spoke. Both ends of a `peer://` pair are this project and
+/// there is no third-party implementation to keep, which is why the header
+/// could move at all.
 ///
-/// **Respelling a payload** — 9551c4 — is a third kind, and is the *least*
-/// in need of a version, not the most: JSON and this protocol's binary cannot
-/// be mistaken for each other, so a mismatched pair fails loudly at the first
-/// `scan` whatever this constant says. A bump would improve that failure's
-/// wording, nothing else, and only for a pair that does not exist yet.
+/// Every earlier wire change left this at 1 — `hello`'s last field addition,
+/// `scanEntryToJson`'s `reason`, task 37bf4f renaming `scan`'s
+/// `skippedSymlinks` to `skippedPaths`, task 9551c4 respelling a successful
+/// `scan` reply as the binary `FrameType.scanResult` (SPEC §15.3), and task
+/// 40812e adding `FrameType.heartbeat` — on the argument that a version
+/// exists to protect pairs that cannot be upgraded together, and there were
+/// none. That argument has not changed; what changed is that this build
+/// genuinely cannot read the older one at all, so saying so costs nothing
+/// and mis-stating it would cost the next reader.
 ///
-/// **Adding a frame type** — 40812e — is a fourth kind, and the one that
-/// most looks like it owes a bump: an older peer meeting a
-/// `FrameType.heartbeat` type byte does not ignore it, it throws
-/// [FrameDecodeException] and takes the session down. It is still not one,
-/// for the same reason as the rest — the pair it would protect is the pair
-/// that does not exist — and SPEC §4.4 now says so itself rather than being
-/// left asserting a rule this deliberately departs from.
-const protocolVersion = 1;
+/// What a bump is *for*, restated now that one has happened: **adding** an
+/// optional field does not need one, because a peer that omits it decodes to
+/// the same absence it would have had anyway. **Renaming or repurposing** a
+/// field does, because both directions then decode successfully and silently
+/// wrong. **Respelling a payload** — 9551c4 — needs one least of all, since
+/// JSON and this protocol's binary cannot be mistaken for each other.
+/// **Adding a frame type** — 40812e — fails loudly at the type byte.
+/// **Moving the header** — 0f7dfc — fails loudly too, but at a length field
+/// read out of someone else's payload, which is the one failure mode worth
+/// a constant that can be compared.
+const protocolVersion = 2;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this
 /// build's [protocolVersion] as a control frame, then reads the peer's.
 ///
-/// Reads through [frames] rather than a fresh listen on [channel]'s input so
-/// the same decoded-frame stream can keep being consumed for the rest of the
-/// connection afterward — [frames] must be a `StreamIterator` over
-/// `FrameCodec().decode(channel.input)`, and the caller keeps using that same
-/// iterator once this returns.
+/// Reads through [replies] rather than a fresh listen on [channel]'s input so
+/// the same reader can keep serving the rest of the connection afterward —
+/// [replies] must be the `FrameRouter` route for [Frame.noRequest], which is
+/// the id both version frames carry: the handshake precedes any request, so
+/// there is no request for it to belong to (SPEC §4.2). The caller closes
+/// that route once this returns.
 ///
 /// Throws [ProtocolVersionMismatchException] — fatal for the caller (SPEC
 /// §11.5 exit 3) — if the versions differ. Throws
@@ -60,13 +64,24 @@ const protocolVersion = 1;
 /// arrives.
 Future<void> performVersionHandshake(
   Channel channel,
-  StreamIterator<Frame> frames,
+  Stream<Frame> replies,
 ) async {
   await channel.send(FrameCodec().encode(_versionFrame(protocolVersion)));
 
-  final Frame? reply;
+  // Read after the send, not before it: [replies] is a route off a
+  // `FrameRouter`, opened by the caller before the connection was read at
+  // all, so a version frame that has already arrived is waiting there rather
+  // than missed. Taking the future up front instead leaves it holding an
+  // error nothing is listening for across the `await` above, which Dart
+  // reports as an unhandled error even though the `catch` below goes on to
+  // convert it.
+  final Frame reply;
   try {
-    reply = await nextMeaningfulFrame(frames);
+    reply = await replies.first;
+  } on StateError {
+    // `Stream.first` on an empty stream — the route ended without a frame,
+    // which is the peer closing before it answered.
+    throw StateError('Channel closed before version handshake completed');
   } on FrameDecodeException catch (error) {
     // Rewritten here and nowhere else, deliberately. These are the first
     // bytes of a fresh connection, so undecodable ones mean nobody is
@@ -80,9 +95,6 @@ Future<void> performVersionHandshake(
       truncated: error.truncated,
     );
   }
-  if (reply == null) {
-    throw StateError('Channel closed before version handshake completed');
-  }
   final remoteVersion = _versionFromFrame(reply);
   if (remoteVersion != protocolVersion) {
     throw ProtocolVersionMismatchException(
@@ -94,6 +106,7 @@ Future<void> performVersionHandshake(
 
 Frame _versionFrame(int version) => Frame(
   type: FrameType.control,
+  requestId: Frame.noRequest,
   payload: utf8.encode(jsonEncode({'version': version})),
 );
 

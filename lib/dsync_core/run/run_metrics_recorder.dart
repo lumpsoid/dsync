@@ -30,10 +30,23 @@ typedef Elapsed = Duration Function();
 /// use.
 ///
 /// **Not thread-safe and does not need to be.** Dart's isolate model means
-/// every writer here runs on the one event loop; the overlap this *does* have
-/// to handle is two concurrent operations on different replicas (both `scan`s,
-/// or a copy's `readFile` on one side inside the other's `writeFile`), which
-/// is why an open operation is tracked per side rather than globally.
+/// every writer here runs on the one event loop.
+///
+/// **It does have to handle overlap**, and since task 0f7dfc a great deal
+/// more of it: the connection keeps several operations outstanding
+/// (`RequestWindow`) and `Applier` runs several actions at once, so one
+/// replica can have a dozen operations open at the same instant. Two
+/// consequences a reader of the report has to know about, and SPEC §17 now
+/// says both:
+/// - A per-operation **total is wall time and the spans overlap**, so the
+///   totals no longer sum to the phase that contained them and will exceed
+///   it. `mean` is still what one call cost end to end — which is the number
+///   that says whether the link is slow — but it is no longer that call's
+///   share of the run.
+/// - **Bytes are attributed to the operation that moved them**, through the
+///   handle [beginOp] returns, rather than to whichever operation on that
+///   side was innermost. With one operation open at a time those were the
+///   same thing; with a window open they are not.
 class RunMetricsRecorder {
   final Elapsed _elapsed;
 
@@ -93,38 +106,24 @@ class RunMetricsRecorder {
     }
   }
 
-  /// Opens an operation on the replica named [side]; the returned callback
-  /// closes it and records the span.
+  /// Opens an operation on the replica named [side]; the returned handle is
+  /// how its bytes are counted and how it is closed.
   ///
-  /// A callback rather than a matching `endOp(side, op)` so a caller cannot
-  /// close the wrong one, and so `MeteredAgent` can hold it in a `finally`
-  /// without restating which operation it was in. Operations on one side
-  /// nest as a stack: bytes counted while one is open are attributed to the
-  /// innermost, which is the one actually moving them.
-  void Function() beginOp(String side, AgentOp op) {
+  /// A handle rather than a matching `endOp(side, op)` so a caller cannot
+  /// close or credit the wrong one, and so `MeteredAgent` can hold it in a
+  /// `finally` without restating which operation it was in. That matters
+  /// more than it used to: several operations are open on one side at once
+  /// (see this class's own note), so "the operation currently open" is not a
+  /// thing the recorder can work out for itself.
+  OpenOperation beginOp(String side, AgentOp op) {
     final record = _replicaRecord(side);
-    final open = _OpenOp(op, _elapsed());
-    record.open.add(open);
-    var closed = false;
-    return () {
-      if (closed) return;
-      closed = true;
-      record.open.remove(open);
+    final open = OpenOperation._(op, _elapsed(), (operation) {
       record.ops[op] = (record.ops[op] ?? AgentOpStats.none).merge(
-        _elapsed() - open.startedAt,
-        open.bytes,
+        _elapsed() - operation.startedAt,
+        operation.bytes,
       );
-    };
-  }
-
-  /// Attributes [bytes] of file content to whichever operation is currently
-  /// open on [side] (SPEC §7.2). Bytes arriving with no operation open are
-  /// dropped: they belong to nothing this report describes, and inventing an
-  /// operation to hang them on would be worse than not counting them.
-  void countPayloadBytes(String side, int bytes) {
-    final open = _replicaRecord(side).open;
-    if (open.isEmpty) return;
-    open.last.bytes += bytes;
+    });
+    return open;
   }
 
   /// Records raw transport traffic for [side], framing included — called by
@@ -172,16 +171,34 @@ class RunMetricsRecorder {
 class _ReplicaRecord {
   bool remote = false;
   final Map<AgentOp, AgentOpStats> ops = {};
-  final List<_OpenOp> open = [];
   int wireBytesSent = 0;
   int wireBytesReceived = 0;
 }
 
-/// An operation begun and not yet closed, holding what it has moved so far.
-class _OpenOp {
+/// One operation begun and not yet closed (SPEC §17), holding what it has
+/// moved so far — the handle [RunMetricsRecorder.beginOp] hands back.
+class OpenOperation {
   final AgentOp op;
   final Duration startedAt;
-  int bytes = 0;
+  final void Function(OpenOperation) _record;
 
-  _OpenOp(this.op, this.startedAt);
+  int bytes = 0;
+  bool _closed = false;
+
+  OpenOperation._(this.op, this.startedAt, this._record);
+
+  /// Attributes [count] bytes of file content to *this* operation (SPEC
+  /// §7.2), whatever else is open on the same replica at the same time.
+  void countBytes(int count) {
+    if (_closed) return;
+    bytes += count;
+  }
+
+  /// Closes the operation and records its span. Idempotent: `readFile`'s
+  /// `finally` can run on an abandoned stream that has already ended.
+  void end() {
+    if (_closed) return;
+    _closed = true;
+    _record(this);
+  }
 }

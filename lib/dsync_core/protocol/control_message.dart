@@ -20,14 +20,20 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// is the binary encoding in `scan_result_codec.dart` (SPEC §15.3). A *failed*
 /// `scan` is still an [AgentFailure] from this file.
 /// One `Agent` operation's request, sent as a control frame.
+///
+/// The request id is not part of this payload: it is a header field on every
+/// frame of the exchange (SPEC §4.2), so it is passed to [toFrame] by
+/// whoever allocated it rather than carried here, and read back off
+/// [Frame.requestId] rather than out of the JSON.
 class AgentRequest {
   final String op;
   final Map<String, dynamic> params;
 
   const AgentRequest(this.op, [this.params = const {}]);
 
-  Frame toFrame() => Frame(
+  Frame toFrame(int requestId) => Frame(
     type: FrameType.control,
+    requestId: requestId,
     payload: utf8.encode(jsonEncode({'op': op, ...params})),
   );
 
@@ -42,7 +48,10 @@ class AgentRequest {
 sealed class AgentResult {
   const AgentResult();
 
-  Frame toFrame();
+  /// This result as the frame that answers request [requestId] — echoed
+  /// unchanged from the request, which is how the peer matches it back
+  /// (SPEC §4.2).
+  Frame toFrame(int requestId);
 
   static AgentResult fromFrame(Frame frame) {
     final json = _decodeControlJson(frame);
@@ -60,8 +69,9 @@ class AgentSuccess extends AgentResult {
   const AgentSuccess([this.data = const {}]);
 
   @override
-  Frame toFrame() => Frame(
+  Frame toFrame(int requestId) => Frame(
     type: FrameType.control,
+    requestId: requestId,
     payload: utf8.encode(jsonEncode({'ok': true, ...data})),
   );
 }
@@ -74,8 +84,9 @@ class AgentFailure extends AgentResult {
   const AgentFailure(this.error);
 
   @override
-  Frame toFrame() => Frame(
+  Frame toFrame(int requestId) => Frame(
     type: FrameType.control,
+    requestId: requestId,
     payload: utf8.encode(jsonEncode({'ok': false, 'error': error})),
   );
 }
@@ -127,79 +138,84 @@ class AgentOperationException implements Exception {
   String toString() => 'Remote agent operation failed: $message';
 }
 
-/// The next frame off [frames] that means something, or `null` if the stream
-/// ended first — every [FrameType.heartbeat] tick in between is dropped
-/// (SPEC §4.2).
-///
-/// Every positional read of a shared frame stream goes through here, because
-/// a tick can land between *any* two frames: `IdleDeadlineChannel` sends one
-/// whenever its side has been quiet for a moment, with no idea what the
-/// other end is in the middle of. A reader that took the next frame literally
-/// would read a tick as the version frame, the `hello`, the reply it was
-/// waiting for, or an operation to dispatch.
-///
-/// `null` rather than a throw at the end of the stream: a closed channel
-/// means something different to each caller — "before the version handshake
-/// completed", "before hello arrived", "before a response arrived", or simply
-/// the ordinary end of a session — and only the caller can say which.
-Future<Frame?> nextMeaningfulFrame(StreamIterator<Frame> frames) async {
-  while (await frames.moveNext()) {
-    if (frames.current.type != FrameType.heartbeat) return frames.current;
-  }
-  return null;
-}
-
 /// Sends [data] over [channel] as `fileBytes` frames (SPEC §4.2), one per
-/// chunk, terminated by an empty `fileBytes` frame so the receiver learns the
-/// stream ended without needing its length up front. Never buffers more than
-/// one chunk at a time.
+/// chunk, all tagged [requestId], terminated by an empty `fileBytes` frame so
+/// the receiver learns the stream ended without needing its length up front.
+/// Never buffers more than one chunk at a time.
+///
+/// Every frame carries [requestId] because that is what lets this transfer
+/// interleave with other operations on the same connection (task 0f7dfc) —
+/// a `fileBytes` frame with no identity can only be read by arrival order,
+/// which is what used to cap the connection at one operation.
 ///
 /// If [data] itself fails, the failure is sent as a control frame in place of
 /// the terminator so [readByteStream] aborts instead of treating a partial
-/// transfer as complete. This function never throws: the shared frame stream
-/// stays aligned for whatever operation comes next, and the caller is
-/// expected to still await that operation's own response.
-Future<void> sendByteStream(Channel channel, Stream<List<int>> data) async {
+/// transfer as complete. This function never throws: the exchange is left
+/// properly terminated either way, and the caller is expected to still await
+/// that operation's own response.
+Future<void> sendByteStream(
+  Channel channel,
+  Stream<List<int>> data, {
+  required int requestId,
+}) async {
   final codec = FrameCodec();
   try {
     await for (final chunk in data) {
       if (chunk.isEmpty) continue;
       await channel.send(
-        codec.encode(Frame(type: FrameType.fileBytes, payload: chunk)),
+        codec.encode(
+          Frame(
+            type: FrameType.fileBytes,
+            requestId: requestId,
+            payload: chunk,
+          ),
+        ),
       );
     }
     await channel.send(
-      codec.encode(Frame(type: FrameType.fileBytes, payload: const [])),
+      codec.encode(
+        Frame(
+          type: FrameType.fileBytes,
+          requestId: requestId,
+          payload: const [],
+        ),
+      ),
     );
   } catch (error) {
-    await channel.send(codec.encode(AgentFailure('$error').toFrame()));
+    await channel.send(codec.encode(AgentFailure('$error').toFrame(requestId)));
   }
 }
 
-/// Reads the `fileBytes` frames [sendByteStream] wrote back out of [frames],
-/// yielding each non-empty chunk and stopping at the empty terminator frame.
+/// Reads the `fileBytes` frames [sendByteStream] wrote back out of [frames]
+/// — one exchange's route off a `FrameRouter`, so every frame here already
+/// belongs to this transfer — yielding each non-empty chunk and stopping at
+/// the empty terminator frame.
 ///
 /// Throws [AgentOperationException] if the sender aborted with a failure
 /// control frame instead of a normal terminator, or [StateError] if the
 /// channel closes mid-stream.
-Stream<List<int>> readByteStream(StreamIterator<Frame> frames) async* {
-  while (true) {
-    // Through [nextMeaningfulFrame] for the reason that function gives, and
-    // sharply here: a tick landing mid-transfer would be counted as file
-    // bytes if it were read literally, and its empty payload reads exactly
-    // like the terminator that ends the file.
-    final frame = await nextMeaningfulFrame(frames);
-    if (frame == null) {
-      throw StateError('Channel closed mid-stream');
-    }
+///
+/// A [FrameType.heartbeat] tick can no longer be mistaken for file bytes or
+/// for the terminator, which used to be this reader's sharpest hazard: a
+/// tick belongs to no request (SPEC §4.2) and `FrameRouter` drops it before
+/// any route sees it.
+Stream<List<int>> readByteStream(Stream<Frame> frames) async* {
+  var terminated = false;
+  await for (final frame in frames) {
     if (frame.type == FrameType.control) {
       throw switch (AgentResult.fromFrame(frame)) {
         AgentFailure(:final error) => AgentOperationException(error),
         AgentSuccess() => StateError('Unexpected success frame mid-stream'),
       };
     }
-    if (frame.payload.isEmpty) return;
+    if (frame.payload.isEmpty) {
+      terminated = true;
+      return;
+    }
     yield frame.payload;
+  }
+  if (!terminated) {
+    throw StateError('Channel closed mid-stream');
   }
 }
 

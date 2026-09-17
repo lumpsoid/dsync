@@ -77,16 +77,22 @@ class RunController {
   final RunMetricsRecorder metrics;
 
   final Reconciler _reconciler = Reconciler();
-  final Applier _applier = Applier();
+  final Applier _applier;
 
+  /// [applyConcurrency] is how many actions overlap (SPEC §7.1, task
+  /// 0f7dfc). Defaulted to `Applier.defaultConcurrency` and passed in only
+  /// by a test that reasons about the *order* outcomes arrive in, which is
+  /// the one thing overlap gives up.
   RunController({
     required this.agentA,
     required this.agentB,
     required this.presenter,
     RuleSet? rules,
     RunMetricsRecorder? metrics,
+    int applyConcurrency = Applier.defaultConcurrency,
   }) : rules = rules ?? RuleSet(),
-       metrics = metrics ?? RunMetricsRecorder();
+       metrics = metrics ?? RunMetricsRecorder(),
+       _applier = Applier(concurrency: applyConcurrency);
 
   /// Drives one run end to end, emitting [RunEvent]s as it goes (SPEC
   /// §11.4). The stream always ends normally — whether the run succeeded,
@@ -219,18 +225,21 @@ class RunController {
     // this generator (task e9f31c). `apply()` runs concurrently in the
     // background; each callback invocation hands its event to `pending` and
     // then awaits an `ack` that only the loop below completes, once that
-    // event has actually been yielded downstream. That makes `pending` hold
-    // at most one undelivered event at a time — not a buffer that races
-    // ahead of the consumer, a one-at-a-time handoff: `apply()`'s own loop
-    // cannot start the next action until this generator has caught up with
-    // the last one.
+    // event has actually been yielded downstream. `pending` therefore holds
+    // at most one undelivered event per applier worker — not a buffer that
+    // races ahead of the consumer: a worker cannot start its next action
+    // until this generator has caught up with the one it just finished.
     //
     // A consumer of `RunController.run()`'s stream that stops listening
     // mid-apply cancels this generator at whichever `yield` below it is
     // currently suspended on; the `ack` for that event is then never
-    // completed, so `apply()` stays suspended at that action boundary
-    // forever — the action already recorded is durable (SPEC §7.3), and
-    // nothing after it ever starts. See `ApplyProgress`'s own doc comment.
+    // completed, so that worker stays suspended at that action boundary
+    // forever, and every other worker follows it there as it finishes what
+    // it already had — the actions already recorded are durable (SPEC §7.3),
+    // and nothing beyond the ones already in flight ever starts. Since task
+    // 0f7dfc that is up to `Applier.concurrency` actions past the last one
+    // reported rather than exactly one; see `ApplyProgress`'s own doc
+    // comment.
     // The apply phase is bracketed by hand rather than wrapped in
     // `metrics.phase`, because the span contains `yield`s: the generator is
     // suspended inside it every time it hands an event downstream, which a

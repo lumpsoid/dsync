@@ -9,28 +9,66 @@ void main() {
   final codec = FrameCodec();
 
   group('encode', () {
-    test(
-      'control frames encode as type 0 + 4-byte big-endian length + payload',
-      () {
-        final bytes = codec.encode(
-          Frame(type: FrameType.control, payload: [1, 2, 3]),
-        );
-        expect(bytes, [0, 0, 0, 0, 3, 1, 2, 3]);
-      },
-    );
+    test('control frames encode as type 0 + 4-byte big-endian request id + '
+        '4-byte big-endian length + payload', () {
+      final bytes = codec.encode(
+        Frame(type: FrameType.control, requestId: 1, payload: [1, 2, 3]),
+      );
+      expect(bytes, [0, 0, 0, 0, 1, 0, 0, 0, 3, 1, 2, 3]);
+    });
 
     test('fileBytes frames encode as type 1', () {
       final bytes = codec.encode(
-        Frame(type: FrameType.fileBytes, payload: [9]),
+        Frame(type: FrameType.fileBytes, requestId: 2, payload: [9]),
       );
-      expect(bytes, [1, 0, 0, 0, 1, 9]);
+      expect(bytes, [1, 0, 0, 0, 2, 0, 0, 0, 1, 9]);
     });
 
     test('an empty payload encodes as a zero-length frame', () {
       final bytes = codec.encode(
         Frame(type: FrameType.control, payload: const []),
       );
-      expect(bytes, [0, 0, 0, 0, 0]);
+      expect(bytes, [0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    });
+
+    test('a request id past a signed 32-bit int survives the round trip', () {
+      // The allocator wraps at 0xFFFFFFFF, and the field is unsigned; a
+      // `setUint32`/`getUint32` pair that disagreed about sign would only
+      // show up this far up the range (task 0f7dfc).
+      final bytes = codec.encode(
+        Frame(
+          type: FrameType.control,
+          requestId: 0xFFFFFFFF,
+          payload: const [],
+        ),
+      );
+      expect(bytes.sublist(1, 5), [255, 255, 255, 255]);
+    });
+  });
+
+  group('request id', () {
+    test('is carried back off the wire on every frame type', () async {
+      final encoded = <int>[
+        for (final type in FrameType.values)
+          ...codec.encode(
+            Frame(type: type, requestId: 7000 + type.index, payload: const []),
+          ),
+      ];
+
+      final frames = await codec
+          .decode(Stream.value(Uint8List.fromList(encoded)))
+          .toList();
+
+      expect(frames.map((f) => (f.type, f.requestId)), [
+        for (final type in FrameType.values) (type, 7000 + type.index),
+      ]);
+    });
+
+    test('defaults to the id that belongs to no request', () {
+      expect(
+        const Frame(type: FrameType.heartbeat, payload: []).requestId,
+        Frame.noRequest,
+      );
     });
   });
 
@@ -185,14 +223,24 @@ void main() {
     test('throws FrameDecodeException on an unknown type byte', () async {
       // 4, not 3: 2 became `FrameType.scanResult` with task 9551c4 and 3
       // became `FrameType.heartbeat` with task 40812e.
-      final bad = Uint8List.fromList([4, 0, 0, 0, 0]);
+      final bad = Uint8List.fromList([4, 0, 0, 0, 0, 0, 0, 0, 0]);
 
       await expectLater(
         codec.decode(Stream.value(bad)).toList(),
         throwsA(
           isA<FrameDecodeException>()
               .having((e) => e.message, 'message', contains('4'))
-              .having((e) => e.received, 'received', [4, 0, 0, 0, 0])
+              .having((e) => e.received, 'received', [
+                4,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+              ])
               .having((e) => e.truncated, 'truncated', isFalse),
         ),
       );

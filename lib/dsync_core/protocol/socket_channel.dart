@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 
 /// A [Channel] over a real socket, talking to a `dsync agent --listen` on the
 /// other end (SPEC §4.2) — the transport that needs no system binary.
@@ -32,6 +33,10 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 /// handshake like any other.
 class SocketChannel implements Channel {
   final Socket _socket;
+
+  /// One frame on the wire at a time, however many operations are sending
+  /// (SPEC §4.2) — see [FlushedSink].
+  late final FlushedSink _writer = FlushedSink(_socket);
 
   SocketChannel(this._socket) {
     _disableNagle(_socket);
@@ -142,10 +147,7 @@ class SocketChannel implements Channel {
   Stream<Uint8List> get input => _socket;
 
   @override
-  Future<void> send(Uint8List bytes) async {
-    _socket.add(bytes);
-    await _socket.flush();
-  }
+  Future<void> send(Uint8List bytes) => _writer.send(bytes);
 
   /// Closes this end: the write side first — which is the EOF that ends the
   /// peer's session (SPEC §4.2) — then the socket itself.

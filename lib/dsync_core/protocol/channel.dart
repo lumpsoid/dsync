@@ -25,6 +25,15 @@ abstract class Channel {
   Stream<Uint8List> get input;
 
   /// Sends [bytes] to the other end.
+  ///
+  /// Safe to call again before a previous call has returned. Several
+  /// operations are outstanding on one connection (SPEC §4.2, task 0f7dfc),
+  /// so several of them are sending; an implementation over a `dart:io` sink
+  /// gets this from `FlushedSink`, which is also where the failure that
+  /// makes it a requirement rather than a nicety is written down. What an
+  /// implementation must *not* do is interleave one call's bytes with
+  /// another's: a caller hands over whole frames, and a frame split down the
+  /// middle by someone else's is not decodable by anyone.
   Future<void> send(Uint8List bytes);
 
   /// Closes both directions of the stream.

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 
 /// A [Channel] over this process's own stdin/stdout (SPEC §4.2) — the other
 /// side of the transport [SshChannel] speaks to a spawned `ssh` process, from
@@ -34,14 +35,15 @@ class StdioChannel implements Channel {
     : _input = input ?? stdin.cast<Uint8List>(),
       _output = output ?? stdout;
 
+  /// One frame on the wire at a time, however many operations are sending
+  /// (SPEC §4.2) — see [FlushedSink].
+  late final FlushedSink _writer = FlushedSink(_output);
+
   @override
   Stream<Uint8List> get input => _input;
 
   @override
-  Future<void> send(Uint8List bytes) async {
-    _output.add(bytes);
-    await _output.flush();
-  }
+  Future<void> send(Uint8List bytes) => _writer.send(bytes);
 
   /// Closes the output side. There is no way for one end of a process's own
   /// stdio to force the *input* side closed — that happens when whatever is

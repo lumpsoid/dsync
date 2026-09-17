@@ -12,6 +12,7 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
@@ -68,10 +69,14 @@ void main() {
         input: process.stdout.cast<Uint8List>(),
         output: process.stdin,
       );
-      final frames = StreamIterator(FrameCodec().decode(channel.input));
+      final router = FrameRouter(channel.input);
+      final handshake = router.open(Frame.noRequest);
+      unawaited(router.run(onUnrouted: (_, _) {}).catchError((_) {}));
 
-      await performVersionHandshake(channel, frames);
+      await performVersionHandshake(channel, handshake);
+      router.close(Frame.noRequest);
 
+      final helloReplies = router.open(1);
       await channel.send(
         FrameCodec().encode(
           AgentRequest('hello', {
@@ -83,11 +88,10 @@ void main() {
                 jobs: 2,
               ),
             ),
-          }).toFrame(),
+          }).toFrame(1),
         ),
       );
-      await frames.moveNext();
-      final helloReply = AgentResult.fromFrame(frames.current);
+      final helloReply = AgentResult.fromFrame(await helloReplies.first);
       expect(helloReply, isA<AgentSuccess>());
       // task ee190c: the remote side's own `LocalAgent` resolves and
       // reports its real archive path — the initiator has no way to
@@ -102,16 +106,17 @@ void main() {
         ).path,
       );
 
+      final scanReplies = router.open(2);
       await channel.send(
         FrameCodec().encode(
-          AgentRequest('scan', {'rules': ruleSetToJson(RuleSet())}).toFrame(),
+          AgentRequest('scan', {'rules': ruleSetToJson(RuleSet())}).toFrame(2),
         ),
       );
-      await frames.moveNext();
+      final scanReply = await scanReplies.first;
       // A successful scan comes back as its own frame type, not a control
       // frame (SPEC §15.3, task 9551c4).
-      expect(frames.current.type, FrameType.scanResult);
-      final entries = decodeScanResult(frames.current.payload).entries;
+      expect(scanReply.type, FrameType.scanResult);
+      final entries = decodeScanResult(scanReply.payload).entries;
       expect(entries.single.path, 'a.txt');
       expect(entries.single.reason, ScanReason.created);
 

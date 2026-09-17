@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/agent/request_window.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
@@ -11,6 +12,7 @@ import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 
@@ -18,61 +20,93 @@ import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 /// exchanging framed control messages and file bytes with the agent server
 /// handler on the other end (SPEC §4.2).
 ///
-/// Requests are not pipelined: responses are matched to requests positionally
-/// over one shared frame stream, so exactly one operation may be in flight —
-/// matching the single in-flight request the agent server handler expects.
-/// That is enforced here rather than left to callers, because the window is
-/// not always visible from the outside: an abandoned `readFile` keeps reading
-/// frames after its consumer has stopped listening (see [readFile]), while
-/// SPEC §7.6 has the run starting its next action immediately.
+/// **Requests are pipelined** (task 0f7dfc). Every frame carries the id of
+/// the request it belongs to, so a reply is matched by that id rather than
+/// by arrival order, and up to [RequestWindow.size] operations are
+/// outstanding at once. What the window admits and what it serialises is
+/// [RequestWindow]'s to say; this class only names which operation is which.
+///
+/// **Failure semantics with several operations in flight**, which is the
+/// part a reader most needs stated:
+/// - An operation that *fails* fails alone. Its reply is an `AgentFailure`
+///   under its own id, so it completes that caller's future with an
+///   [AgentOperationException] and touches nothing else. The others in the
+///   window carry on and report their own outcomes, which is exactly what
+///   SPEC §7.6 already asks of a run: record the failed path, keep going.
+/// - A failure of the *connection* — the channel closing, or bytes that do
+///   not decode — fails every outstanding operation with that error, and
+///   every operation issued afterwards, because nothing can be matched to
+///   anything any more. That is the one case where one failure is everyone's,
+///   and it is fatal for the run (SPEC §11.5 exit 3) however many operations
+///   it took down.
 class RemoteAgent implements Agent {
   final Channel _channel;
   final ReplicaSpec _spec;
-  final StreamIterator<Frame> _frames;
+  final FrameRouter _router;
+  final RequestWindow _window;
 
-  /// Completes when the operation currently holding the wire is finished with
-  /// it. Each operation chains onto the last, so they queue instead of
-  /// interleaving.
-  Future<void> _wire = Future<void>.value();
+  /// The router's read loop. Held so [disconnect] can wait for it, and its
+  /// failure is swallowed here rather than left unhandled: the error has
+  /// already been delivered to every open route, which is where a caller
+  /// sees it.
+  late final Future<void> _reading;
+
+  /// The peer's version frame, on the route for [Frame.noRequest].
+  ///
+  /// Opened here rather than in [hello], and before the router starts
+  /// reading: the peer sends its version as soon as it is serving, so a
+  /// route opened when `hello` is finally called would be opened after the
+  /// frame it is for had already arrived and been discarded as unrouted.
+  late final Stream<Frame> _handshakeReplies;
+
+  /// The last id handed out. Starts at [Frame.noRequest], so the first
+  /// request is 1 and no operation ever claims the id the version handshake
+  /// and the heartbeats use.
+  int _lastRequestId = Frame.noRequest;
 
   /// [spec] identifies the replica this agent drives on the other end of
   /// [channel] — sent as part of [hello], since nothing else tells the peer
   /// a root path, profile id, side, or job count (SPEC §4.2).
-  RemoteAgent(Channel channel, ReplicaSpec spec)
+  ///
+  /// [window] is injectable so a test can pin the bound it asserts against
+  /// rather than restating [RequestWindow.defaultSize].
+  RemoteAgent(Channel channel, ReplicaSpec spec, {RequestWindow? window})
     : _channel = channel,
       _spec = spec,
-      _frames = StreamIterator(FrameCodec().decode(channel.input));
-
-  /// Waits for the wire, then hands back the callback that releases it.
-  /// Callers must release in a `finally`, or every later operation hangs.
-  Future<void Function()> _acquireWire() async {
-    final previous = _wire;
-    final done = Completer<void>();
-    _wire = done.future;
-    await previous;
-    return done.complete;
+      _window = window ?? RequestWindow(),
+      _router = FrameRouter(channel.input) {
+    _handshakeReplies = _router.open(Frame.noRequest);
+    _reading = _router.run(
+      // A frame under an id nothing is waiting for is dropped, not fatal.
+      // It is what an abandoned transfer's tail looks like once the route
+      // has been closed and the id forgotten (SPEC §7.6 makes abandoning
+      // one the normal case), and a reply to nothing is harmless where
+      // tearing a run down over it is not.
+      onUnrouted: (frame, _) => _router.close(frame.requestId),
+    );
+    unawaited(_reading.catchError((_) {}));
   }
 
   @override
-  Future<ReplicaInfo> hello() async {
-    final release = await _acquireWire();
+  Future<ReplicaInfo> hello() => _window.runExclusive(() async {
+    // Both version frames carry [Frame.noRequest]: the handshake precedes
+    // every request, so there is no request for them to belong to.
     try {
-      await performVersionHandshake(_channel, _frames);
-      // Inlined rather than a call to `_call`, which would try to acquire
-      // the wire a second time and deadlock against the acquisition above —
-      // the handshake and `hello` share one acquisition (SPEC §4.2).
-      await _send(AgentRequest('hello', {'replica': replicaSpecToJson(_spec)}));
-      return replicaInfoFromJson(await _awaitResult());
+      await performVersionHandshake(_channel, _handshakeReplies);
     } finally {
-      release();
+      _router.close(Frame.noRequest);
     }
-  }
+    return _exchange(
+      AgentRequest('hello', {'replica': replicaSpecToJson(_spec)}),
+      (id, replies) async => replicaInfoFromJson(await _awaitResult(replies)),
+    );
+  });
 
   @override
-  Future<void> lock() => _call('lock');
+  Future<void> lock() => _window.runExclusive(() => _call('lock'));
 
   @override
-  Future<void> unlock() => _call('unlock');
+  Future<void> unlock() => _window.runExclusive(() => _call('unlock'));
 
   /// The one operation whose success does not come back as a control frame
   /// (SPEC §15.3): a `scan` reply is `FrameType.scanResult`, the binary
@@ -80,11 +114,12 @@ class RemoteAgent implements Agent {
   /// `AgentFailure` control frame, so the frame type is what tells the two
   /// apart — which is why this cannot go through [_call].
   @override
-  Future<ScanResult> scan(RuleSet rules) async {
-    final release = await _acquireWire();
-    try {
-      await _send(AgentRequest('scan', {'rules': ruleSetToJson(rules)}));
-      final frame = await _nextReplyFrame();
+  Future<ScanResult> scan(RuleSet rules) => _window.runExclusive(
+    () => _exchange(AgentRequest('scan', {'rules': ruleSetToJson(rules)}), (
+      id,
+      replies,
+    ) async {
+      final frame = await _firstReply(replies);
       if (frame.type == FrameType.scanResult) {
         return decodeScanResult(frame.payload);
       }
@@ -94,59 +129,33 @@ class RemoteAgent implements Agent {
           'Peer answered scan with a success control frame, not a scan result',
         ),
       };
-    } finally {
-      release();
-    }
-  }
+    }),
+  );
 
-  /// Streams the file, and guarantees the shared frame stream is left
-  /// positioned at the next operation's response even if the consumer stops
-  /// early.
+  /// Streams the file. A consumer that stops early — which `Applier` makes
+  /// the normal case, since SPEC §7.6 has the run carrying on after a failed
+  /// write — costs nothing beyond the bytes already in flight: the id is
+  /// marked discarded and the peer's remaining `fileBytes` frames route
+  /// nowhere.
   ///
-  /// Stopping early is the normal case, not an exotic one: `Applier` pipes
-  /// this straight into the destination's `writeFile`, and SPEC §7.6 requires
-  /// the run to carry on to the next action after that write fails. Without
-  /// the drain, the peer's remaining `fileBytes` frames stay queued and the
-  /// next operation decodes raw file bytes as its own control reply — one
-  /// failed path silently breaks every later action against this replica.
-  ///
-  /// Draining does pull the rest of the file over the wire for nothing. The
-  /// alternative is tagging requests so a reply can be matched instead of
-  /// positionally, which is a protocol change; this keeps a failed copy
-  /// costing bandwidth rather than correctness.
+  /// This is what the correlation id bought most visibly. Without one, the
+  /// rest of the file had to be *drained* over the wire before the next
+  /// operation could be read at all, because a reply could only be matched
+  /// positionally and raw file bytes would otherwise have been decoded as
+  /// the next operation's control reply.
   @override
-  Stream<List<int>> readFile(String path) async* {
-    final release = await _acquireWire();
+  Stream<List<int>> readFile(String path) => _window.runStream(path, () async* {
+    final id = _nextRequestId();
+    final replies = _router.open(id);
+    var complete = false;
     try {
-      await _send(AgentRequest('readFile', {'path': path}));
-      // Held as an iterator rather than consumed with `await for` so the drain
-      // below can continue this same transfer. A second readByteStream over
-      // `_frames` would have two `moveNext` calls in flight at once.
-      final bytes = StreamIterator(readByteStream(_frames));
-      var midStream = true;
-      try {
-        while (await bytes.moveNext()) {
-          yield bytes.current;
-        }
-        midStream = false;
-      } catch (_) {
-        // The peer replaced the terminator with a failure frame, which
-        // readByteStream has already consumed — the wire is past the transfer.
-        midStream = false;
-        rethrow;
-      } finally {
-        if (midStream) {
-          try {
-            while (await bytes.moveNext()) {}
-          } catch (_) {
-            // However the transfer ended, the frame stream is now past it.
-          }
-        }
-      }
+      await _send(AgentRequest('readFile', {'path': path}), id);
+      yield* readByteStream(replies);
+      complete = true;
     } finally {
-      release();
+      _router.close(id, discardRemaining: !complete);
     }
-  }
+  });
 
   @override
   Future<FileMetadata> writeFile(
@@ -154,83 +163,101 @@ class RemoteAgent implements Agent {
     Stream<List<int>> data, {
     required int mtime,
     required int mode,
-  }) async {
-    final release = await _acquireWire();
-    try {
-      await _send(
-        AgentRequest('writeFile', {'path': path, 'mtime': mtime, 'mode': mode}),
-      );
-      await sendByteStream(_channel, data);
-      final result = await _awaitResult();
-      return fileMetadataFromJson(result['metadata'] as Map<String, dynamic>);
-    } finally {
-      release();
-    }
-  }
+  }) => _window.run(
+    path,
+    () => _exchange(
+      AgentRequest('writeFile', {'path': path, 'mtime': mtime, 'mode': mode}),
+      (id, replies) async {
+        await sendByteStream(_channel, data, requestId: id);
+        final result = await _awaitResult(replies);
+        return fileMetadataFromJson(result['metadata'] as Map<String, dynamic>);
+      },
+    ),
+  );
 
   @override
-  Future<void> delete(String path) => _call('delete', {'path': path});
+  Future<void> delete(String path) =>
+      _window.run(path, () => _call('delete', {'path': path}));
 
   @override
   Future<void> removeEmptyDirs(String path) =>
-      _call('removeEmptyDirs', {'path': path});
+      _window.runExclusive(() => _call('removeEmptyDirs', {'path': path}));
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
-      _call('archiveCommitUpsert', {'entry': archiveEntryToJson(entry)});
+  Future<void> archiveCommitUpsert(ArchiveEntry entry) => _window.run(
+    entry.path,
+    () => _call('archiveCommitUpsert', {'entry': archiveEntryToJson(entry)}),
+  );
 
   @override
   Future<void> archiveCommitDelete(String path) =>
-      _call('archiveCommitDelete', {'path': path});
+      _window.runExclusive(() => _call('archiveCommitDelete', {'path': path}));
 
   @override
-  Future<void> compact() => _call('compact');
+  Future<void> compact() => _window.runExclusive(() => _call('compact'));
 
   @override
-  Future<void> disconnect() async {
-    // Waits for the wire so an operation still unwinding — an abandoned
-    // transfer draining, say — is not cut off mid-frame.
-    final release = await _acquireWire();
+  Future<void> disconnect() => _window.runExclusive(() async {
+    await _channel.close();
+    // The router holds its subscription to [Channel.input] and, between
+    // frames, holds it *paused* — and a paused subscription on a pipe keeps
+    // the file descriptor registered with the event loop whatever the peer
+    // does with its end. Closing the channel is not enough to release it: a
+    // CLI run over a real ssh session printed its summary, exited
+    // `RunController`, and then sat there forever with nothing left to do.
+    // Cancelling is what lets the process exit.
+    await _router.cancel();
+    await _reading.catchError((_) {});
+  });
+
+  /// One request-and-reply exchange under a fresh id, with the route open
+  /// for as long as [body] needs it.
+  Future<T> _exchange<T>(
+    AgentRequest request,
+    Future<T> Function(int id, Stream<Frame> replies) body,
+  ) async {
+    final id = _nextRequestId();
+    final replies = _router.open(id);
     try {
-      await _channel.close();
-      // [_frames] holds its subscription to [Channel.input] *paused* between
-      // `moveNext()` calls — that is how a `StreamIterator` works — and a
-      // paused subscription on a pipe keeps the file descriptor registered
-      // with the event loop whatever the peer does with its end. Closing the
-      // channel is not enough to release it: a CLI run over a real ssh
-      // session printed its summary, exited `RunController`, and then sat
-      // there forever with nothing left to do. Cancelling is what lets the
-      // process exit.
-      await _frames.cancel();
+      await _send(request, id);
+      return await body(id, replies);
     } finally {
-      release();
+      _router.close(id);
     }
   }
 
   Future<Map<String, dynamic>> _call(
     String op, [
     Map<String, dynamic> params = const {},
-  ]) async {
-    final release = await _acquireWire();
+  ]) => _exchange(
+    AgentRequest(op, params),
+    (id, replies) => _awaitResult(replies),
+  );
+
+  int _nextRequestId() {
+    // Wraps past the id the handshake and the heartbeats own rather than
+    // through it. A `uint32` is four billion requests, against the ~28,000 a
+    // 14k-file tree costs (SPEC §17), so this is about not writing an
+    // overflow rather than about a session that reaches one.
+    _lastRequestId = _lastRequestId == 0xFFFFFFFF ? 1 : _lastRequestId + 1;
+    return _lastRequestId;
+  }
+
+  Future<void> _send(AgentRequest request, int requestId) =>
+      _channel.send(FrameCodec().encode(request.toFrame(requestId)));
+
+  /// The one frame answering this request, with the meaning this caller
+  /// gives a route that ended without one.
+  Future<Frame> _firstReply(Stream<Frame> replies) async {
     try {
-      await _send(AgentRequest(op, params));
-      return await _awaitResult();
-    } finally {
-      release();
+      return await replies.first;
+    } on StateError {
+      throw StateError('Channel closed before a response arrived');
     }
   }
 
-  Future<void> _send(AgentRequest request) =>
-      _channel.send(FrameCodec().encode(request.toFrame()));
-
-  /// The answer to the request just sent — [nextMeaningfulFrame], with the
-  /// meaning this caller gives a channel that closed instead.
-  Future<Frame> _nextReplyFrame() async =>
-      await nextMeaningfulFrame(_frames) ??
-      (throw StateError('Channel closed before a response arrived'));
-
-  Future<Map<String, dynamic>> _awaitResult() async {
-    return switch (AgentResult.fromFrame(await _nextReplyFrame())) {
+  Future<Map<String, dynamic>> _awaitResult(Stream<Frame> replies) async {
+    return switch (AgentResult.fromFrame(await _firstReply(replies))) {
       AgentSuccess(:final data) => data,
       AgentFailure(:final error) => throw AgentOperationException(error),
     };

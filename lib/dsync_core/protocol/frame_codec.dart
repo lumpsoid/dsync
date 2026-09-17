@@ -3,39 +3,79 @@ import 'dart:typed_data';
 import 'package:dsync/dsync_core/models/frame.dart';
 
 /// Encodes and decodes the wire protocol's frames (SPEC §4.2): `1 byte type +
-/// 4 byte big-endian length + payload`.
+/// 4 byte big-endian request id + 4 byte big-endian length + payload`.
+///
+/// The request id is what the `_headerLength` of 5 grew to 9 for (task
+/// 0f7dfc): it is carried by *every* frame type, including each `fileBytes`
+/// chunk, so that a streaming operation can interleave with any other. An
+/// id only in the JSON control payload was the cheaper alternative — no
+/// header change at all — and was rejected because `writeFile` is the
+/// dominant operation and it streams, so the frames that most need identity
+/// are exactly the ones a control-payload id cannot reach.
 ///
 /// Pure byte-array logic — no I/O — so it is unit-testable without a
 /// `Channel` or any transport.
 class FrameCodec {
-  static const _headerLength = 5;
-
   /// Serializes [frame] to its wire bytes.
   Uint8List encode(Frame frame) {
-    final bytes = Uint8List(_headerLength + frame.payload.length);
+    final bytes = Uint8List(_FrameHeader.length + frame.payload.length);
     bytes[0] = _byteForType(frame.type);
-    ByteData.sublistView(
-      bytes,
-      1,
-      _headerLength,
-    ).setUint32(0, frame.payload.length, Endian.big);
-    bytes.setRange(_headerLength, bytes.length, frame.payload);
+    final header = ByteData.sublistView(bytes, 1, _FrameHeader.length);
+    header.setUint32(0, frame.requestId, Endian.big);
+    header.setUint32(4, frame.payload.length, Endian.big);
+    bytes.setRange(_FrameHeader.length, bytes.length, frame.payload);
     return bytes;
   }
 
   /// Decodes a stream of raw byte chunks into the [Frame]s they contain,
   /// buffering across chunk boundaries since a chunk need not align with a
   /// frame boundary.
+  ///
+  /// A convenience over [FrameDecoder] for a caller that wants a stream. The
+  /// one reader that actually owns a connection — `FrameRouter` — uses the
+  /// decoder directly instead, because a generator cannot be torn down while
+  /// it is waiting: cancelling a subscription to an `async*` takes effect at
+  /// its next `yield`, so a reader parked here on a quiet socket would never
+  /// finish cancelling, and `RemoteAgent.disconnect` has to be able to let
+  /// the transport go.
   Stream<Frame> decode(Stream<Uint8List> input) async* {
-    final pending = _PendingBytes();
+    final decoder = FrameDecoder();
     await for (final chunk in input) {
-      pending.add(chunk);
-      var frame = _tryDecodeOne(pending);
-      while (frame != null) {
+      for (final frame in decoder.add(chunk)) {
         yield frame;
-        frame = _tryDecodeOne(pending);
       }
     }
+  }
+
+  int _byteForType(FrameType type) => switch (type) {
+    FrameType.control => 0,
+    FrameType.fileBytes => 1,
+    FrameType.scanResult => 2,
+    FrameType.heartbeat => 3,
+  };
+}
+
+/// Turns arriving byte chunks into the [Frame]s they spell, one chunk at a
+/// time, holding whatever is left over for the next one (SPEC §4.2).
+///
+/// Push-shaped rather than a stream, so the reader driving it stays in
+/// charge of its own subscription — see [FrameCodec.decode].
+class FrameDecoder {
+  final _PendingBytes _pending = _PendingBytes();
+
+  /// Buffers [chunk] and returns every frame now complete, in order.
+  ///
+  /// Throws [FrameDecodeException] when the bytes are not this protocol at
+  /// all.
+  List<Frame> add(Uint8List chunk) {
+    _pending.add(chunk);
+    final frames = <Frame>[];
+    var frame = _tryDecodeOne(_pending);
+    while (frame != null) {
+      frames.add(frame);
+      frame = _tryDecodeOne(_pending);
+    }
+    return frames;
   }
 
   /// Decodes the one frame at the front of [pending] and advances [pending]
@@ -43,13 +83,13 @@ class FrameCodec {
   ///
   /// Throws [FrameDecodeException] when [pending] is not this protocol at all.
   Frame? _tryDecodeOne(_PendingBytes pending) {
-    if (pending.length < _headerLength) return null;
+    if (pending.length < _FrameHeader.length) return null;
 
     // Checked before the length field below, not after it. A stream that is
     // not this protocol reads its four length bytes out of whatever text
     // arrived instead — `elco`, the tail of a shell banner's "Welcome", is a
     // 1.7 GB payload — and waiting for bytes that will never come means the
-    // failure never surfaces at all. The five bytes already in hand are
+    // failure never surfaces at all. The header bytes already in hand are
     // enough to know nobody is speaking this protocol.
     final type = _typeForByte(pending[0]);
     if (type == null) {
@@ -59,23 +99,17 @@ class FrameCodec {
       );
     }
 
-    final end = _headerLength + pending.uint32At(1);
+    final requestId = pending.uint32At(1);
+    final end = _FrameHeader.length + pending.uint32At(_FrameHeader.lengthAt);
     if (pending.length < end) return null;
 
     // Copied out rather than viewed: [_PendingBytes] overwrites these bytes
     // as later chunks arrive, while a `fileBytes` payload outlives the decode
     // loop — `Applier` streams it into the destination's `writeFile`.
-    final payload = pending.copyRange(_headerLength, end);
+    final payload = pending.copyRange(_FrameHeader.length, end);
     pending.skip(end);
-    return Frame(type: type, payload: payload);
+    return Frame(type: type, requestId: requestId, payload: payload);
   }
-
-  int _byteForType(FrameType type) => switch (type) {
-    FrameType.control => 0,
-    FrameType.fileBytes => 1,
-    FrameType.scanResult => 2,
-    FrameType.heartbeat => 3,
-  };
 
   /// The frame type [byte] names, or `null` if it names none — reported by
   /// the caller, which is the one holding the bytes the failure needs.
@@ -88,7 +122,16 @@ class FrameCodec {
   };
 }
 
-/// The bytes [FrameCodec.decode] has received but not yet turned into frames.
+/// The fixed part every frame starts with (SPEC §4.2).
+class _FrameHeader {
+  /// `type` (1) + `requestId` (4) + payload length (4).
+  static const length = 9;
+
+  /// Where the payload length sits in the header.
+  static const lengthAt = 5;
+}
+
+/// The bytes [FrameDecoder] has received but not yet turned into frames.
 ///
 /// One buffer, reused: a chunk is appended with a single `setRange`, and
 /// decoding a frame advances a start offset rather than re-copying what

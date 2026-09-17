@@ -6,14 +6,29 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 
 /// The remote end of the framed protocol (SPEC §4.2): performs the version
-/// handshake, then the required `hello` prologue, then reads control-frame
+/// handshake, then the required `hello` prologue, then routes control-frame
 /// requests off a [Channel] and dispatches each to the [Agent] `hello` built
 /// — in practice always a `LocalAgent`, so what a `RemoteAgent` on the other
 /// end drives really is this replica's filesystem.
+///
+/// **Requests may interleave** (task 0f7dfc). Each carries an id, and this
+/// end answers each under the id it came in on, so a reply is not owed in
+/// arrival order and a `writeFile`'s `fileBytes` frames can have another
+/// operation's request sitting between them. Dispatch is therefore a router
+/// plus one handler per request rather than a serial read-dispatch-reply
+/// loop.
+///
+/// **No window here.** The initiator bounds how many operations are
+/// outstanding and decides which may overlap (`RequestWindow`), and it
+/// cannot send an operation it has declared a barrier until every earlier
+/// reply is in hand. A second bound on this end would be a second answer to
+/// a question already answered, and a smaller one would deadlock a peer
+/// waiting on replies this side is refusing to start.
 class AgentServer {
   /// Serves a replica over [channel] until the channel's input closes.
   ///
@@ -23,8 +38,8 @@ class AgentServer {
   /// callback rather than an interface — nothing here has a second
   /// implementation, the same reason `RunController`'s `Presenter` typedef is
   /// a callback rather than an interface — and requiring it as a prologue
-  /// means the dispatch loop never holds a nullable or `late` [Agent]: by
-  /// the time it starts, one already exists.
+  /// means dispatch never holds a nullable or `late` [Agent]: by the time it
+  /// starts, one already exists.
   ///
   /// A first frame that is not `hello` ends the session with an
   /// [AgentFailure] reply rather than dispatching against no agent at all.
@@ -32,16 +47,60 @@ class AgentServer {
     Channel channel,
     Agent Function(ReplicaSpec spec) buildAgent,
   ) async {
-    final frames = StreamIterator(FrameCodec().decode(channel.input));
-    // Cancelled on every way out of the `try` below — the ordinary end of
-    // the dispatch loop, the early return for a non-`hello` first frame, and
-    // a `performVersionHandshake` throw alike — because a `StreamIterator`
-    // that is never cancelled leaves its subscription on `channel.input`
-    // alive after `serve` returns. That is silent for an in-memory or SSH
-    // channel, but on a channel over a process's own stdio it is the
-    // subscription that keeps that process's event loop non-empty: the
-    // caller may need the process to actually exit once `serve` is done with
-    // it, and it can't while something is still listening for more input.
+    final router = FrameRouter(channel.input);
+
+    final firstRequest = Completer<Frame>();
+
+    // What an arriving request is answered with, swapped once `hello` has
+    // built the session's agent. A mutable hook rather than two routers,
+    // because the prologue and the session read the same frames off the same
+    // connection and only differ in what they are allowed to be.
+    //
+    // A second request during the prologue fails the session rather than
+    // being queued or dropped: SPEC §4.2 makes `hello` a prologue, and a
+    // peer that sends past it without waiting for the reply is one whose
+    // later frames this end cannot safely guess the meaning of.
+    void Function(Frame request, Stream<Frame> body) onRequest = (frame, _) {
+      if (firstRequest.isCompleted) {
+        throw StateError(
+          'A request arrived before the "hello" prologue was answered',
+        );
+      }
+      firstRequest.complete(frame);
+    };
+
+    // Every dispatch still running, so the session does not tear its agent
+    // down underneath one. Entries remove themselves, so this holds what is
+    // in flight rather than everything the session ever did.
+    final inFlight = <Future<void>>{};
+
+    // Cancelled on every way out of the `try` below, because a router that
+    // is never cancelled leaves its subscription on `channel.input` alive
+    // after `serve` returns. That is silent for an in-memory or SSH channel,
+    // but on a channel over a process's own stdio it is the subscription
+    // that keeps that process's event loop non-empty: the caller may need
+    // the process to actually exit once `serve` is done with it, and it
+    // can't while something is still listening for more input.
+    // Opened before the router starts reading: the peer sends its version
+    // frame as soon as it dials, so a route opened after would be opened
+    // after the frame it is for had already arrived as unrouted.
+    final handshake = router.open(Frame.noRequest);
+
+    final reading = router.run(
+      onUnrouted: (frame, body) {
+        onRequest(frame, body);
+      },
+    );
+    // The failure this can carry — undecodable bytes — also reaches every
+    // open route, which is where a handler sees it. Suppressed here so it is
+    // not an unhandled error while the prologue below is still waiting, and
+    // rethrown by the `await reading` that ends the session.
+    unawaited(reading.catchError((_) {}));
+
+    // The same read loop, read as "the channel closed" rather than as a
+    // frame, so the prologue below can wait for whichever comes first.
+    final closed = reading.then<Frame?>((_) => null);
+    unawaited(closed.catchError((_) => null));
 
     // Holds the session's agent once `hello` has built one, so the `finally`
     // can release this replica's lock (SPEC §4.3) whatever ends the session.
@@ -51,9 +110,15 @@ class AgentServer {
     // for the life of the agent.
     Agent? sessionAgent;
     try {
-      await performVersionHandshake(channel, frames);
+      // Both version frames carry [Frame.noRequest] — the handshake precedes
+      // every request, so there is no request for them to belong to.
+      try {
+        await performVersionHandshake(channel, handshake);
+      } finally {
+        router.close(Frame.noRequest);
+      }
 
-      final helloFrame = await nextMeaningfulFrame(frames);
+      final helloFrame = await Future.any([firstRequest.future, closed]);
       if (helloFrame == null) {
         throw StateError('Channel closed before hello arrived');
       }
@@ -65,6 +130,7 @@ class AgentServer {
             'Expected "hello" as the first operation, got '
             '"${request.op}"',
           ),
+          helloFrame.requestId,
         );
         return;
       }
@@ -88,27 +154,30 @@ class AgentServer {
       try {
         agent = buildAgent(spec);
       } catch (error) {
-        await _reply(channel, AgentFailure('$error'));
+        await _reply(channel, AgentFailure('$error'), helloFrame.requestId);
         return;
       }
       sessionAgent = agent;
       final info = await agent.hello();
-      await _reply(channel, AgentSuccess(replicaInfoToJson(info)));
+      await _reply(
+        channel,
+        AgentSuccess(replicaInfoToJson(info)),
+        helloFrame.requestId,
+      );
 
-      // Through [nextMeaningfulFrame] rather than `frames.moveNext()`
-      // directly: a heartbeat tick is not an operation — it carries no `op`
-      // to decode, and answering one with `AgentFailure('unknown op')` would
-      // put a reply the peer never asked for where its next real answer
-      // belongs (SPEC §4.2).
-      for (
-        var frame = await nextMeaningfulFrame(frames);
-        frame != null;
-        frame = await nextMeaningfulFrame(frames)
-      ) {
-        await _dispatch(channel, frames, agent, frame);
-      }
+      onRequest = (frame, body) {
+        final handled = _dispatch(channel, router, agent, frame, body);
+        inFlight.add(handled);
+        unawaited(handled.whenComplete(() => inFlight.remove(handled)));
+      };
+
+      await reading;
     } finally {
-      await frames.cancel();
+      await router.cancel();
+      // Handlers first, then the lock: a dispatch still finishing is still
+      // touching this replica, and releasing the lock out from under it
+      // would let a second session in while it writes.
+      if (inFlight.isNotEmpty) await Future.wait(inFlight.toList());
       // Tolerant by construction: `unlock` on a lock this session never took,
       // or already released, is the ordinary case — `--stdio` and every
       // well-behaved client release explicitly — and `ReplicaLock.release` is
@@ -117,126 +186,115 @@ class AgentServer {
     }
   }
 
-  /// Handles one request frame, reporting any failure back to the peer.
+  /// Handles one request, reporting any failure back to the peer under the
+  /// request's own id.
   ///
   /// Decoding happens inside the `try` deliberately: a frame that is not a
   /// valid request is a failed operation, not a reason to drop the
-  /// connection. Parsing it in the serve loop instead would let one
+  /// connection. Parsing it in the routing callback instead would let one
   /// unexpected frame throw past this handler and tear down the session.
+  ///
+  /// A failure here is this operation's alone. Other requests are in flight
+  /// under their own ids and are neither cancelled nor failed by it — which
+  /// is what lets SPEC §7.6's "record it and carry on" mean the same thing
+  /// with a window open as it did one request at a time.
   Future<void> _dispatch(
     Channel channel,
-    StreamIterator<Frame> frames,
+    FrameRouter router,
     Agent agent,
     Frame frame,
+    Stream<Frame> body,
   ) async {
+    final id = frame.requestId;
+    var bodyComplete = true;
     try {
-      final request = AgentRequest.fromFrame(frame);
-      switch (request.op) {
-        case 'lock':
-          await agent.lock();
-          await _reply(channel, const AgentSuccess());
-        case 'unlock':
-          await agent.unlock();
-          await _reply(channel, const AgentSuccess());
-        case 'scan':
-          final result = await agent.scan(
-            ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
-          );
-          // The one reply that is not a control frame (SPEC §15.3). A failure
-          // still is: the `catch` below answers with an `AgentFailure`, which
-          // is what lets `RemoteAgent.scan` tell the two apart by frame type
-          // without the encoding having to carry an ok/error flag of its own.
-          await channel.send(
-            FrameCodec().encode(
-              Frame(
-                type: FrameType.scanResult,
-                payload: encodeScanResult(result),
+      try {
+        final request = AgentRequest.fromFrame(frame);
+        switch (request.op) {
+          case 'lock':
+            await agent.lock();
+            await _reply(channel, const AgentSuccess(), id);
+          case 'unlock':
+            await agent.unlock();
+            await _reply(channel, const AgentSuccess(), id);
+          case 'scan':
+            final result = await agent.scan(
+              ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
+            );
+            // The one reply that is not a control frame (SPEC §15.3). A failure
+            // still is: the `catch` below answers with an `AgentFailure`, which
+            // is what lets `RemoteAgent.scan` tell the two apart by frame type
+            // without the encoding having to carry an ok/error flag of its own.
+            await channel.send(
+              FrameCodec().encode(
+                Frame(
+                  type: FrameType.scanResult,
+                  requestId: id,
+                  payload: encodeScanResult(result),
+                ),
               ),
-            ),
-          );
-        case 'readFile':
-          await sendByteStream(
-            channel,
-            agent.readFile(request.params['path'] as String),
-          );
-        case 'writeFile':
-          await _writeFile(channel, frames, agent, request);
-        case 'delete':
-          await agent.delete(request.params['path'] as String);
-          await _reply(channel, const AgentSuccess());
-        case 'removeEmptyDirs':
-          await agent.removeEmptyDirs(request.params['path'] as String);
-          await _reply(channel, const AgentSuccess());
-        case 'archiveCommitUpsert':
-          await agent.archiveCommitUpsert(
-            archiveEntryFromJson(
-              request.params['entry'] as Map<String, dynamic>,
-            ),
-          );
-          await _reply(channel, const AgentSuccess());
-        case 'archiveCommitDelete':
-          await agent.archiveCommitDelete(request.params['path'] as String);
-          await _reply(channel, const AgentSuccess());
-        case 'compact':
-          await agent.compact();
-          await _reply(channel, const AgentSuccess());
-        default:
-          throw FormatException('Unknown agent operation: ${request.op}');
+            );
+          case 'readFile':
+            await sendByteStream(
+              channel,
+              agent.readFile(request.params['path'] as String),
+              requestId: id,
+            );
+          case 'writeFile':
+            bodyComplete = false;
+            final bytes = readByteStream(body);
+            final metadata = await agent.writeFile(
+              request.params['path'] as String,
+              bytes,
+              mtime: request.params['mtime'] as int,
+              mode: request.params['mode'] as int,
+            );
+            bodyComplete = true;
+            await _reply(
+              channel,
+              AgentSuccess({'metadata': fileMetadataToJson(metadata)}),
+              id,
+            );
+          case 'delete':
+            await agent.delete(request.params['path'] as String);
+            await _reply(channel, const AgentSuccess(), id);
+          case 'removeEmptyDirs':
+            await agent.removeEmptyDirs(request.params['path'] as String);
+            await _reply(channel, const AgentSuccess(), id);
+          case 'archiveCommitUpsert':
+            await agent.archiveCommitUpsert(
+              archiveEntryFromJson(
+                request.params['entry'] as Map<String, dynamic>,
+              ),
+            );
+            await _reply(channel, const AgentSuccess(), id);
+          case 'archiveCommitDelete':
+            await agent.archiveCommitDelete(request.params['path'] as String);
+            await _reply(channel, const AgentSuccess(), id);
+          case 'compact':
+            await agent.compact();
+            await _reply(channel, const AgentSuccess(), id);
+          default:
+            throw FormatException('Unknown agent operation: ${request.op}');
+        }
+      } catch (error) {
+        await _reply(channel, AgentFailure('$error'), id);
       }
-    } catch (error) {
-      await _reply(channel, AgentFailure('$error'));
-    }
-  }
-
-  /// Writes the incoming byte stream, consuming every frame the peer sent
-  /// even when the write fails.
-  ///
-  /// The peer has already committed to sending the whole file plus its
-  /// terminator by the time the write is attempted, so a write that fails
-  /// early — a permission error creating the parent directory, say — would
-  /// otherwise leave those frames queued. The serve loop would then read file
-  /// bytes where it expects the next request. That path is reachable in
-  /// ordinary operation: SPEC §7.6 keeps the run going after a failed action.
-  Future<void> _writeFile(
-    Channel channel,
-    StreamIterator<Frame> frames,
-    Agent agent,
-    AgentRequest request,
-  ) async {
-    final bytes = StreamIterator(readByteStream(frames));
-    try {
-      final metadata = await agent.writeFile(
-        request.params['path'] as String,
-        _remaining(bytes),
-        mtime: request.params['mtime'] as int,
-        mode: request.params['mode'] as int,
-      );
-      await _drain(bytes);
-      await _reply(
-        channel,
-        AgentSuccess({'metadata': fileMetadataToJson(metadata)}),
-      );
     } catch (_) {
-      await _drain(bytes);
-      rethrow;
+      // Sending the reply failed, so the channel is gone. There is nothing
+      // left to report it to, and the router is about to end the session for
+      // the same reason — while the other handlers in flight still have to
+      // be allowed to unwind.
+    } finally {
+      // A write that failed before reading the whole transfer — a permission
+      // error creating the parent directory, say, which SPEC §7.6 makes an
+      // ordinary outcome — leaves the peer still sending. Those frames route
+      // nowhere rather than having to be drained: without the id they would
+      // have been read as the next request.
+      router.close(id, discardRemaining: !bodyComplete);
     }
   }
 
-  Stream<List<int>> _remaining(StreamIterator<List<int>> bytes) async* {
-    while (await bytes.moveNext()) {
-      yield bytes.current;
-    }
-  }
-
-  /// Consumes what is left of a transfer the write did not finish reading.
-  /// An error here means the peer ended it some other way, which leaves the
-  /// frame stream equally well positioned for the next request.
-  Future<void> _drain(StreamIterator<List<int>> bytes) async {
-    try {
-      while (await bytes.moveNext()) {}
-    } catch (_) {}
-  }
-
-  Future<void> _reply(Channel channel, AgentResult result) =>
-      channel.send(FrameCodec().encode(result.toFrame()));
+  Future<void> _reply(Channel channel, AgentResult result, int requestId) =>
+      channel.send(FrameCodec().encode(result.toFrame(requestId)));
 }

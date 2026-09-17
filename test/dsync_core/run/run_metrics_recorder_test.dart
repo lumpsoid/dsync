@@ -108,9 +108,9 @@ void main() {
         Duration(milliseconds: 30),
         Duration(milliseconds: 20),
       ]) {
-        final end = metrics.beginOp('b', AgentOp.archiveCommitUpsert);
+        final operation = metrics.beginOp('b', AgentOp.archiveCommitUpsert);
         advance(span);
-        end();
+        operation.end();
       }
 
       final stats = metrics
@@ -125,18 +125,17 @@ void main() {
     });
 
     test('an operation never performed is absent from its side', () {
-      final end = metrics.beginOp('a', AgentOp.scan);
-      end();
+      metrics.beginOp('a', AgentOp.scan).end();
 
       final ops = metrics.snapshot().replicas['a']!.ops;
       expect(ops.keys, [AgentOp.scan]);
     });
 
-    test('payload bytes land on the operation that was open', () {
-      final end = metrics.beginOp('a', AgentOp.readFile);
-      metrics.countPayloadBytes('a', 400);
-      metrics.countPayloadBytes('a', 600);
-      end();
+    test('payload bytes land on the operation that counted them', () {
+      final operation = metrics.beginOp('a', AgentOp.readFile);
+      operation.countBytes(400);
+      operation.countBytes(600);
+      operation.end();
 
       expect(
         metrics.snapshot().replicas['a']!.ops[AgentOp.readFile]!.bytes,
@@ -144,25 +143,45 @@ void main() {
       );
     });
 
-    test('bytes counted with nothing open are dropped', () {
-      // They belong to no operation this report describes; inventing one to
-      // hang them on would be worse than not counting them.
-      metrics.countPayloadBytes('a', 999);
+    test('bytes counted after an operation closed are dropped', () {
+      // They belong to nothing this report describes; crediting them to an
+      // operation already recorded would move bytes between rows.
+      final operation = metrics.beginOp('a', AgentOp.readFile);
+      operation.end();
+      operation.countBytes(999);
 
       expect(metrics.snapshot().replicas['a']!.payloadBytes, 0);
+    });
+
+    test('concurrent operations on one side each keep their own bytes', () {
+      // The overlap a window makes ordinary (task 0f7dfc): two `writeFile`s
+      // against the same replica at the same time. Attributing bytes to
+      // whichever was innermost would move one file's content onto another's
+      // row.
+      final first = metrics.beginOp('b', AgentOp.writeFile);
+      final second = metrics.beginOp('b', AgentOp.readFile);
+      first.countBytes(100);
+      second.countBytes(700);
+      first.countBytes(200);
+      first.end();
+      second.end();
+
+      final ops = metrics.snapshot().replicas['b']!.ops;
+      expect(ops[AgentOp.writeFile]!.bytes, 300);
+      expect(ops[AgentOp.readFile]!.bytes, 700);
     });
 
     test('two sides overlap without their spans mixing', () {
       // The real overlap: both scans run concurrently, and a copy's
       // `readFile` on one side runs inside the other's `writeFile`.
-      final endA = metrics.beginOp('a', AgentOp.readFile);
-      final endB = metrics.beginOp('b', AgentOp.writeFile);
-      metrics.countPayloadBytes('a', 100);
-      metrics.countPayloadBytes('b', 100);
+      final operationA = metrics.beginOp('a', AgentOp.readFile);
+      final operationB = metrics.beginOp('b', AgentOp.writeFile);
+      operationA.countBytes(100);
+      operationB.countBytes(100);
       advance(const Duration(milliseconds: 50));
-      endA();
+      operationA.end();
       advance(const Duration(milliseconds: 25));
-      endB();
+      operationB.end();
 
       final snapshot = metrics.snapshot();
       expect(
@@ -176,10 +195,10 @@ void main() {
     });
 
     test('closing an operation twice records it once', () {
-      final end = metrics.beginOp('a', AgentOp.lock);
+      final operation = metrics.beginOp('a', AgentOp.lock);
       advance(const Duration(milliseconds: 5));
-      end();
-      end();
+      operation.end();
+      operation.end();
 
       expect(metrics.snapshot().replicas['a']!.ops[AgentOp.lock]!.count, 1);
     });
@@ -197,9 +216,9 @@ void main() {
     });
 
     test('a side is local until something says otherwise', () {
-      metrics.beginOp('a', AgentOp.hello)();
+      metrics.beginOp('a', AgentOp.hello).end();
       metrics.markRemote('b');
-      metrics.beginOp('b', AgentOp.hello)();
+      metrics.beginOp('b', AgentOp.hello).end();
 
       final snapshot = metrics.snapshot();
       expect(snapshot.replicas['a']!.remote, isFalse);
@@ -208,9 +227,9 @@ void main() {
 
     test('run totals sum both sides', () {
       metrics.markRemote('b');
-      metrics.beginOp('a', AgentOp.readFile)();
-      metrics.beginOp('b', AgentOp.writeFile)();
-      metrics.beginOp('b', AgentOp.archiveCommitUpsert)();
+      metrics.beginOp('a', AgentOp.readFile).end();
+      metrics.beginOp('b', AgentOp.writeFile).end();
+      metrics.beginOp('b', AgentOp.archiveCommitUpsert).end();
       metrics.countWireBytes('b', sent: 10, received: 5);
       advance(const Duration(seconds: 7));
 

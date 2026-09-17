@@ -33,10 +33,32 @@ enum FrameType {
 /// (SPEC §4.2).
 ///
 /// See `FrameCodec` for the byte-level encoding (`1 byte type + 4 byte
-/// big-endian length + payload`).
+/// big-endian request id + 4 byte big-endian length`).
 class Frame {
+  /// The id reserved for a frame that answers to no request: the version
+  /// handshake's two frames, which precede any request, and every
+  /// [FrameType.heartbeat] tick, which is a property of the connection and
+  /// never an operation (SPEC §4.2).
+  static const noRequest = 0;
+
   final FrameType type;
+
+  /// Which request this frame belongs to (SPEC §4.2) — assigned by the
+  /// initiator, echoed unchanged on every frame of the reply, and
+  /// [noRequest] for the frames that belong to no request.
+  ///
+  /// This is what lets more than one operation be outstanding on one
+  /// connection (task 0f7dfc): without it a reply can only be matched to its
+  /// request by arrival order, which caps the connection at one operation at
+  /// a time and leaves the initiator's radio idle for the whole of every
+  /// round trip.
+  final int requestId;
+
   final List<int> payload;
 
-  const Frame({required this.type, required this.payload});
+  const Frame({
+    required this.type,
+    required this.payload,
+    this.requestId = noRequest,
+  });
 }

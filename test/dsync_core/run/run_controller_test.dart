@@ -857,6 +857,11 @@ void main(List<String> args) async {
       final events = await RunController(
         agentA: agentA,
         agentB: flakyB,
+        // One worker, so the order results arrive in is the plan's. With
+        // several, outcomes arrive as they finish (task 0f7dfc) and the
+        // interleaving this test is about — one result then its own
+        // progress line — is what stays true either way.
+        applyConcurrency: 1,
         // Deliberately not plan order as the reconciler happens to
         // produce it: pinned to bad/good/bad/good so the assertions below
         // are checking this run's actual behaviour, not the reconciler's
@@ -912,6 +917,10 @@ void main(List<String> args) async {
   group('backpressure: a consumer that stops listening (task e9f31c)', () {
     test('stops the apply loop at that action boundary — later actions never '
         'touch the filesystem', () async {
+      // One applier worker, so "later actions" means every action after the
+      // one whose result was last delivered. With several workers the
+      // guarantee is the same in kind but weaker in number: nothing beyond
+      // the actions already in flight starts (see `ApplyProgress`).
       await File('${replicaADir.path}/a.txt').writeAsString('a');
       await File('${replicaADir.path}/b.txt').writeAsString('b');
       await File('${replicaADir.path}/c.txt').writeAsString('c');
@@ -919,6 +928,7 @@ void main(List<String> args) async {
       final controller = RunController(
         agentA: agentA,
         agentB: agentB,
+        applyConcurrency: 1,
         presenter: (plan) async {
           final byPath = {
             for (final action in plan.actions) action.path: action,
