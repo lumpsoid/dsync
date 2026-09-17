@@ -61,6 +61,12 @@ final class SyncRunAwaitingDecisions extends SyncRunPhase {
 
   final List<SyncRunConflictDecision> conflicts;
   final List<SyncRunActionDecision> actions;
+
+  /// What the proposed actions would move (SPEC §10) — the same sum as
+  /// `SyncRunViewState.bytesToTransfer`, over the same actions. The sheet
+  /// shows it while the page's plan section is hidden behind the sheet, so
+  /// the size of what is being decided is on screen with the decisions.
+  int get bytesToTransfer => actions.fold(0, (total, row) => total + row.bytes);
 }
 
 /// What the user can do with one conflict (SPEC §11.3: "picks a
@@ -248,7 +254,7 @@ final class SyncRunProgress {
 /// that rendered 50k plan rows from this notifier alone would rebuild them
 /// for every action applied, to show one leading icon changing.
 class SyncRunViewState extends ChangeNotifier {
-  SyncRunPhase _phase = const SyncRunIdle();
+  final ValueNotifier<SyncRunPhase> _phase = ValueNotifier(const SyncRunIdle());
   bool _dryRun = false;
   SyncRunHeader? _header;
   SyncRunScanTally? _scanTally;
@@ -261,7 +267,13 @@ class SyncRunViewState extends ChangeNotifier {
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
   SyncRunProgress? _progress;
 
-  SyncRunPhase get phase => _phase;
+  SyncRunPhase get phase => _phase.value;
+
+  /// Fires when [phase] does, and only then. The body hides the sections
+  /// the decision sheet already shows, and the plan section — which follows
+  /// [planChanged] so the apply loop cannot rebuild it — needs that switch
+  /// without following every progress event to get it.
+  Listenable get phaseChanged => _phase;
 
   /// SPEC §11.3 `--dry-run`: the plan is shown and nothing is applied, so
   /// the page labels the empty apply section as intended, not as a failure.
@@ -318,13 +330,13 @@ class SyncRunViewState extends ChangeNotifier {
   /// only.
   void recordStart({required bool dryRun}) {
     _dryRun = dryRun;
-    _phase = const SyncRunConnecting();
+    _phase.value = const SyncRunConnecting();
     notifyListeners();
   }
 
   /// Moves the phase. `SyncRunController` only.
   void recordPhase(SyncRunPhase phase) {
-    _phase = phase;
+    _phase.value = phase;
     notifyListeners();
   }
 
@@ -374,11 +386,12 @@ class SyncRunViewState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Disposes the notifiers this state hands out — the plan's, and the
-  /// cells built rows are watching — so a write after the page left is an
+  /// Disposes the notifiers this state hands out — the phase's, the plan's,
+  /// and the cells built rows are watching — so a write after the page left is an
   /// assertion failure in the page that made it, as it is for [this].
   @override
   void dispose() {
+    _phase.dispose();
     _plan.dispose();
     for (final cell in _resultCells.values) {
       cell.dispose();

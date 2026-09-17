@@ -416,6 +416,74 @@ void main() {
       expect(find.text('copy to desktop · 2.0 KiB'), findsOneWidget);
     });
 
+    testWidgets('the body drops the rows the sheet is already showing', (
+      tester,
+    ) async {
+      // A real run fills the body's lists before the presenter is asked, so
+      // without the phase check every path would be on screen twice.
+      controller.state
+        ..recordHeader(
+          const SyncRunHeader(
+            localRoot: '/data/notes',
+            remoteRoot: '~/notes',
+            deviceName: 'desktop',
+            history: 'Last synced 2026-09-16 10:00 (just now).',
+            firstSyncWarning: null,
+          ),
+        )
+        ..recordConflict(
+          const SyncRunConflictRow(
+            path: 'both.txt',
+            local: 'modified',
+            remote: 'modified',
+          ),
+        )
+        ..recordPlan(const [
+          SyncRunPlanRow(
+            path: 'new.txt',
+            action: 'copy to desktop',
+            bytes: 2048,
+          ),
+          SyncRunPlanRow(
+            path: 'gone.txt',
+            action: 'delete on desktop',
+            bytes: 0,
+          ),
+        ], bytesToTransfer: 2048);
+      await open(tester);
+
+      expect(find.byKey(const Key('run-plan')), findsNothing);
+      expect(find.byKey(const Key('run-conflicts')), findsNothing);
+      // One row per path, the sheet's — the one that does something.
+      expect(find.text('new.txt'), findsOneWidget);
+      expect(find.byKey(const Key('decision-new.txt')), findsOneWidget);
+      // What the body's plan header carried is in the sheet instead.
+      expect(
+        find.text('Plan: 2 action(s), 2.0 KiB to transfer'),
+        findsOneWidget,
+      );
+      // Still there: the context for deciding, which the sheet does not have.
+      expect(find.byKey(const Key('run-header')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('run-confirm')));
+      await tester.pump();
+
+      // Back with the decision made, and now marking each action off.
+      expect(find.byKey(const Key('run-decisions')), findsNothing);
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(find.byKey(const Key('run-conflicts')), findsOneWidget);
+      controller.state.recordResult(
+        const SyncRunResultRow(
+          path: 'new.txt',
+          action: 'copy to desktop',
+          error: null,
+        ),
+      );
+      await tester.pump();
+      expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
+      await decided;
+    });
+
     testWidgets('a direction and a skip reach the returned list on Confirm', (
       tester,
     ) async {

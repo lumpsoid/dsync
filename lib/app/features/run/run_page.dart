@@ -49,6 +49,14 @@ class RunPage extends StatefulWidget {
 class _RunPageState extends State<RunPage> {
   final SyncRunController _controller = runScope.create();
 
+  /// What the body's plan section follows: the plan itself, and the phase
+  /// that decides whether the body shows it at all. Built once and not per
+  /// build, so a rebuild does not swap the section's listeners.
+  late final Listenable _planSection = Listenable.merge([
+    _controller.state.planChanged,
+    _controller.state.phaseChanged,
+  ]);
+
   @override
   void initState() {
     super.initState();
@@ -98,10 +106,15 @@ class _RunPageState extends State<RunPage> {
       bottomSheet: ListenableBuilder(
         listenable: state,
         builder: (context, _) => switch (state.phase) {
-          SyncRunAwaitingDecisions(:final conflicts, :final actions) =>
+          SyncRunAwaitingDecisions(
+            :final conflicts,
+            :final actions,
+            :final bytesToTransfer,
+          ) =>
             _DecisionSheet(
               conflicts: conflicts,
               actions: actions,
+              bytesToTransfer: bytesToTransfer,
               deviceName: widget.request.deviceName,
               controller: _controller,
             ),
@@ -123,7 +136,8 @@ class _RunPageState extends State<RunPage> {
       // conflicts — and follows the view state itself. The plan deliberately
       // does not: it arrives whole in one `RunPlanEvent`, and the apply loop
       // then reports one result per action. So the plan section follows
-      // `planChanged` alone and each row follows the cell for its own path
+      // `planChanged` and the phase (`_planSection`) — never the progress
+      // or the path lists — and each row follows the cell for its own path
       // (`SyncRunViewState.resultCell`), which is what keeps applying action
       // N from rebuilding the rows above it — see the view state's class doc
       // comment and `_PlanRow`.
@@ -167,7 +181,13 @@ class _RunPageState extends State<RunPage> {
                           itemBuilder: (context, index) =>
                               Text(state.skippedSymlinks[index]),
                         ),
-                      if (state.conflicts.isNotEmpty)
+                      // Hidden while the sheet is up: the sheet lists the
+                      // same conflicts, with the directions to resolve them.
+                      // Everything above stays — the header, the tally and
+                      // the two path lists are not in the sheet and are the
+                      // context someone wants while deciding.
+                      if (state.phase is! SyncRunAwaitingDecisions &&
+                          state.conflicts.isNotEmpty)
                         _ListSection(
                           sectionKey: const Key('run-conflicts'),
                           title: 'Conflicts (not resolved)',
@@ -186,9 +206,15 @@ class _RunPageState extends State<RunPage> {
                     ],
                   ),
                 ),
+                // Hidden while the sheet is up for the same reason as the
+                // conflicts above, and back the moment the decision is
+                // made: from then on these rows carry each action's result
+                // icon, which is what the sheet's rows do not do.
                 ListenableBuilder(
-                  listenable: state.planChanged,
-                  builder: (context, _) => state.plan.isEmpty
+                  listenable: _planSection,
+                  builder: (context, _) =>
+                      state.plan.isEmpty ||
+                          state.phase is SyncRunAwaitingDecisions
                       ? const SliverToBoxAdapter(child: SizedBox.shrink())
                       : _ListSection(
                           sectionKey: const Key('run-plan'),
@@ -448,20 +474,27 @@ class _PlanRow extends StatelessWidget {
   }
 }
 
-/// The conflict sheet (SPEC §11.3): conflicts first, each with the choices
-/// it offers, then every proposed action with a keep/skip switch, then
-/// "Accept all" (the `--batch` answer) and "Confirm". Reads the rendered
-/// rows and calls the controller's input methods; decides nothing itself.
+/// The conflict sheet (SPEC §11.3): what the plan weighs, conflicts first,
+/// each with the choices it offers, then every proposed action with a
+/// keep/skip switch, then "Accept all" (the `--batch` answer) and "Confirm".
+/// Reads the rendered rows and calls the controller's input methods; decides
+/// nothing itself.
+///
+/// The page's body hides its own plan and conflict lists while this is up,
+/// so these are the only rows for those paths on screen — and the only ones
+/// that do anything.
 class _DecisionSheet extends StatelessWidget {
   const _DecisionSheet({
     required this.conflicts,
     required this.actions,
+    required this.bytesToTransfer,
     required this.deviceName,
     required this.controller,
   });
 
   final List<SyncRunConflictDecision> conflicts;
   final List<SyncRunActionDecision> actions;
+  final int bytesToTransfer;
   final String deviceName;
   final SyncRunController controller;
 
@@ -480,9 +513,20 @@ class _DecisionSheet extends StatelessWidget {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(
-                'Review before applying',
-                style: theme.textTheme.titleMedium,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Review before applying',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                  Text(
+                    'Plan: ${actions.length} action(s), '
+                    '${formatBytes(bytesToTransfer)} to transfer',
+                    key: const Key('run-plan-summary'),
+                    style: theme.textTheme.titleSmall,
+                  ),
+                ],
               ),
             ),
             Flexible(
