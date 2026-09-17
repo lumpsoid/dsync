@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/sync_profile.dart';
+import 'package:dsync/app/sync_profile_store.dart';
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
@@ -48,6 +50,41 @@ void main() {
         pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
         lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
       );
+
+  /// The profile store as another writer sees it — Run setup, saving from
+  /// the form — over the same file the controller reads.
+  SyncProfileStore profileStoreBehindTheControllersBack() =>
+      SyncProfileStore(File('${tempDir.path}/dsync/sync-profiles.json'));
+
+  /// A saved run over a folder that exists under the temp dir, so the
+  /// brokenness probe passes unless a test deliberately points the root
+  /// somewhere unusable. [id] is arbitrary — the controller does not derive
+  /// it, that is Run setup's job.
+  Directory savedFolder() =>
+      Directory('${tempDir.path}/documents/notes')..createSync(recursive: true);
+
+  SyncProfile savedProfile({
+    String id = 'p1',
+    String name = 'weekly notes',
+    String? localRootPath,
+  }) => SyncProfile(
+    id: id,
+    name: name,
+    localRootPath: localRootPath ?? savedFolder().path,
+    peerDeviceId: device(certA, name: 'phone').deviceId,
+    remoteRootPath: '~/notes',
+    jobs: 4,
+  );
+
+  void expectSameProfile(SyncProfile? actual, SyncProfile expected) {
+    expect(actual, isNotNull);
+    expect(actual!.id, expected.id);
+    expect(actual.name, expected.name);
+    expect(actual.localRootPath, expected.localRootPath);
+    expect(actual.peerDeviceId, expected.peerDeviceId);
+    expect(actual.remoteRootPath, expected.remoteRootPath);
+    expect(actual.jobs, expected.jobs);
+  }
 
   tearDown(() async {
     await tempDir.delete(recursive: true);
@@ -256,6 +293,137 @@ void main() {
       expect(failure, isNotNull);
       expect(failure, contains('dead beef'));
       expect(controller.state.devices.map((d) => d.name), ['phone']);
+    });
+  });
+
+  group('refreshProfiles', () {
+    test(
+      'picks up a profile saved behind its back, rendered as a row',
+      () async {
+        await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
+        await controller.bootstrap();
+        expect(controller.state.profiles, isEmpty);
+
+        await profileStoreBehindTheControllersBack().save(savedProfile());
+        await controller.refreshProfiles();
+
+        final row = controller.state.profiles.single;
+        expect(row.id, 'p1');
+        expect(row.name, 'weekly notes');
+        expect(row.peerName, 'phone');
+        expect(row.peerDeviceId, savedProfile().peerDeviceId);
+        expect(row.localRootPath, savedProfile().localRootPath);
+        expect(row.remoteRootPath, '~/notes');
+        expect(row.brokenReason, isNull);
+      },
+    );
+
+    test('a revoked device renders the profile broken, not gone', () async {
+      final store = profileStoreBehindTheControllersBack();
+      await store.save(savedProfile());
+      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
+      await controller.bootstrap();
+
+      await controller.refreshProfiles();
+      expect(controller.state.profiles.single.brokenReason, isNull);
+      expect(controller.state.profiles.single.peerName, 'phone');
+
+      await controller.revoke(controller.state.profiles.single.peerDeviceId);
+      await controller.refreshProfiles();
+
+      final row = controller.state.profiles.single;
+      expect(row.name, 'weekly notes');
+      expect(row.peerName, isNull);
+      expect(row.brokenReason, contains('no longer paired'));
+    });
+
+    test(
+      'a local root the probe cannot use renders the profile broken',
+      () async {
+        await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
+        await profileStoreBehindTheControllersBack().save(
+          savedProfile(localRootPath: '${tempDir.path}/no-such-folder'),
+        );
+        await controller.bootstrap();
+
+        await controller.refreshProfiles();
+
+        expect(
+          controller.state.profiles.single.brokenReason,
+          contains('no longer accessible'),
+        );
+      },
+    );
+
+    test('rethrows a profile store that went corrupt', () async {
+      await controller.bootstrap();
+      File('${tempDir.path}/dsync/sync-profiles.json')
+          .writeAsStringSync('not json');
+
+      await expectLater(
+        controller.refreshProfiles(),
+        throwsA(isA<SyncProfileStoreCorruptException>()),
+      );
+    });
+  });
+
+  group('upsertProfile and deleteProfile', () {
+    test(
+      'a save lands in the store and on the rendered list at once',
+      () async {
+        await controller.bootstrap();
+
+        await controller.upsertProfile(savedProfile());
+
+        expectSameProfile(
+          await profileStoreBehindTheControllersBack().byId('p1'),
+          savedProfile(),
+        );
+        expect(controller.state.profiles.single.name, 'weekly notes');
+      },
+    );
+
+    test(
+      'a second save over the same id replaces, and the list follows',
+      () async {
+        await controller.bootstrap();
+        await controller.upsertProfile(savedProfile());
+
+        await controller.upsertProfile(savedProfile(name: 'renamed'));
+
+        final loaded = await profileStoreBehindTheControllersBack().load();
+        expect(loaded, hasLength(1));
+        expect(loaded.single.name, 'renamed');
+        expect(controller.state.profiles.single.name, 'renamed');
+      },
+    );
+
+    test('delete removes the row and keeps the others', () async {
+      await controller.bootstrap();
+      await controller.upsertProfile(savedProfile(id: 'p1'));
+      await controller.upsertProfile(savedProfile(id: 'p2', name: 'other'));
+
+      final failure = await controller.deleteProfile('p1');
+
+      expect(failure, isNull);
+      expect(
+        (await profileStoreBehindTheControllersBack().load()).map((p) => p.id),
+        ['p2'],
+      );
+      // Positive control: 'other' still on the list, so an empty list — a
+      // broken query — could not pass this.
+      expect(controller.state.profiles.map((p) => p.name), ['other']);
+    });
+
+    test('renders an unknown id as a message, not an exception', () async {
+      await controller.bootstrap();
+      await controller.upsertProfile(savedProfile());
+
+      final failure = await controller.deleteProfile('gone');
+
+      expect(failure, isNotNull);
+      expect(failure, contains('gone'));
+      expect(controller.state.profiles.map((p) => p.name), ['weekly notes']);
     });
   });
 

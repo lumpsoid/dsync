@@ -2,6 +2,43 @@ import 'package:flutter/foundation.dart';
 
 import '../../run_request.dart';
 
+/// Where the Run setup page was opened from — the sum type that keeps
+/// "opened for a device" and "opened for a profile" from being two nullable
+/// fields that must stay in step. [RunSetupFromDevice] is a blank form for
+/// the device the Devices page named; [RunSetupFromProfile] is the profile
+/// the home list named, whose values pre-fill the form and whose id is
+/// what an edit saves back over.
+sealed class RunSetupSource {
+  const RunSetupSource();
+}
+
+/// A blank form, for [deviceId].
+final class RunSetupFromDevice extends RunSetupSource {
+  const RunSetupFromDevice(this.deviceId);
+
+  final String deviceId;
+}
+
+/// The saved profile named [profileId], pre-filled.
+final class RunSetupFromProfile extends RunSetupSource {
+  const RunSetupFromProfile(this.profileId);
+
+  final String profileId;
+}
+
+/// The saved profile's values as the page's text fields should start out:
+/// recorded once by `load` and applied by the page to its own
+/// `TextEditingController`s — the text fields are the page's, by the same
+/// rule that keeps the remote root and address out of the view state
+/// (`RunSetupViewState`'s doc comment), so what crosses here is the initial
+/// text and nothing else.
+class RunSetupPrefill {
+  const RunSetupPrefill({required this.profileName, required this.remoteRoot});
+
+  final String profileName;
+  final String remoteRoot;
+}
+
 /// The peer the page was opened for, as the page shows it. Sealed, for the
 /// reason `PairOutcome` gives: "loading with a name" and "missing without a
 /// message" cannot be constructed, and the page switches over every case.
@@ -116,6 +153,7 @@ class RunSetupViewState extends ChangeNotifier {
   String? _addressError;
   bool _dryRun = false;
   RunSetupOutcome _outcome = const RunSetupIdle();
+  RunSetupPrefill? _prefill;
 
   RunSetupPeer get peer => _peer;
 
@@ -152,6 +190,11 @@ class RunSetupViewState extends ChangeNotifier {
   bool get dryRun => _dryRun;
 
   RunSetupOutcome get outcome => _outcome;
+
+  /// The saved profile's initial values, or `null` on a blank form. Read
+  /// once by the page after `load` completes, to fill its text fields; the
+  /// local root needs no entry here — the controller selects it directly.
+  RunSetupPrefill? get prefill => _prefill;
 
   /// Records the peer's case. `RunSetupController` only.
   void recordPeer(RunSetupPeer peer) {
@@ -206,6 +249,13 @@ class RunSetupViewState extends ChangeNotifier {
   /// Moves the outcome. `RunSetupController` only.
   void recordOutcome(RunSetupOutcome outcome) {
     _outcome = outcome;
+    notifyListeners();
+  }
+
+  /// Records the pre-filled fields' initial text, or clears it on a blank
+  /// form. `RunSetupController` only.
+  void recordPrefill(RunSetupPrefill? prefill) {
+    _prefill = prefill;
     notifyListeners();
   }
 }

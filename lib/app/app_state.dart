@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'app_bootstrap.dart';
 import 'paired_device_row.dart';
+import 'profile_row.dart';
 
 /// The one application state of the Flutter head (SPEC §13, §16): whether
 /// the head has bootstrapped enough to show a page at all — and, once it
@@ -17,7 +18,10 @@ import 'paired_device_row.dart';
 /// The paired devices live here, not on the Devices page's view state,
 /// because two features write them: Devices revokes, Pair adds, and a
 /// successful pair must appear in the list without a reload. One list with
-/// one writer — `AppController` — is how that stays true.
+/// one writer — `AppController` — is how that stays true. The saved
+/// profiles are here for the same reason: Run setup saves them, the
+/// profiles home deletes them, and the home list (now under a pushed page)
+/// must show both without a reload.
 ///
 /// The mutators are the controller's, not a widget's: they are the only
 /// way in, they are named for the transition they record, and there is no
@@ -26,6 +30,7 @@ import 'paired_device_row.dart';
 class AppState extends ChangeNotifier {
   AppBootstrap _bootstrap = const AppBootstrapLoading();
   List<PairedDeviceRow> _devices = const [];
+  List<ProfileRow> _profiles = const [];
 
   /// The gate: loading until `AppController.bootstrap()` has run, then
   /// ready — carrying this device's id and its expiry warning — or failed
@@ -37,6 +42,11 @@ class AppState extends ChangeNotifier {
   /// this list, says which.
   List<PairedDeviceRow> get devices => _devices;
 
+  /// The saved profiles as rows, in the store's order. Empty before the
+  /// profiles home's first read of the store; the home page's error line,
+  /// not this list's emptiness, says when the store could not be read.
+  List<ProfileRow> get profiles => _profiles;
+
   /// Records a bootstrap transition. `AppController` only.
   void recordBootstrap(AppBootstrap bootstrap) {
     _bootstrap = bootstrap;
@@ -47,6 +57,13 @@ class AppState extends ChangeNotifier {
   /// only.
   void recordDevices(List<PairedDeviceRow> devices) {
     _devices = List.unmodifiable(devices);
+    notifyListeners();
+  }
+
+  /// Replaces the profile list with a freshly rendered one.
+  /// `AppController` only.
+  void recordProfiles(List<ProfileRow> profiles) {
+    _profiles = List.unmodifiable(profiles);
     notifyListeners();
   }
 }

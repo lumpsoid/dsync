@@ -7,28 +7,29 @@ import 'run_setup_view_state.dart';
 
 /// The Run setup page: pick the two locations a run syncs (SPEC §2, §4.4,
 /// §11.2). Widgets only, per the page role in `app_scope.dart`: a folder
-/// picker, three text fields, a switch, one button, and switches over the
+/// picker, four text fields, a switch, one button, and switches over the
 /// rendered [RunSetupPeer] and [RunSetupOutcome].
 ///
-/// Opened for a device by [deviceId] — the Devices page hands over the id
-/// and `RunSetupController.load` reads what it needs, resetting the
-/// selection and the dry-run choice to this visit's. The cached scope
-/// controller, as the Pair page uses, rather than `create()`: `load` is
-/// asynchronous, and a controller disposed by a page that left early would
-/// have its view state written to after disposal.
+/// Opened from a [RunSetupSource] — a device (blank form) or a saved
+/// profile (pre-filled, editable) — and `RunSetupController.load` reads
+/// what it needs, resetting the selection and the dry-run choice to this
+/// visit's. The cached scope controller, as the Pair page uses, rather than
+/// `create()`: `load` is asynchronous, and a controller disposed by a page
+/// that left early would have its view state written to after disposal.
+///
+/// The pre-fill lands in this `State`'s own `TextEditingController`s, read
+/// once from the view state after `load` completes — the text fields are
+/// the page's, not the view state's (`RunSetupViewState`'s doc comment).
 ///
 /// [onStart] is the seam to the Run feature: it fires once with the
 /// [RunRequest] the controller built, and the entrypoint wires it to the
 /// Run route. This page holds no `Navigator` of its own.
 class RunSetupPage extends StatefulWidget {
-  const RunSetupPage({
-    super.key,
-    required this.deviceId,
-    required this.onStart,
-  });
+  const RunSetupPage({super.key, required this.source, required this.onStart});
 
-  /// The grouped device id of the peer to set a run up against.
-  final String deviceId;
+  /// What the form opens over: a device's blank form or a saved profile's
+  /// pre-filled one.
+  final RunSetupSource source;
 
   /// Called once when the request is built and the page should leave.
   final void Function(RunRequest request) onStart;
@@ -42,11 +43,25 @@ class _RunSetupPageState extends State<RunSetupPage> {
   final _newFolder = TextEditingController();
   final _remoteRoot = TextEditingController();
   final _address = TextEditingController();
+  final _profileName = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _controller.load(widget.deviceId);
+    _load();
+  }
+
+  /// Loads what [RunSetupPage.source] names, then applies the pre-fill to
+  /// this State's text fields — after `load` completes, so the values are
+  /// the profile's and not whatever the last visit left.
+  Future<void> _load() async {
+    await _controller.load(widget.source);
+    if (!mounted) return;
+    final prefill = _controller.state.prefill;
+    if (prefill != null) {
+      _profileName.text = prefill.profileName;
+      _remoteRoot.text = prefill.remoteRoot;
+    }
   }
 
   @override
@@ -54,6 +69,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
     _newFolder.dispose();
     _remoteRoot.dispose();
     _address.dispose();
+    _profileName.dispose();
     super.dispose();
   }
 
@@ -87,6 +103,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
     await _controller.start(
       remoteRoot: _remoteRoot.text,
       address: _address.text,
+      profileName: _profileName.text,
     );
     if (!mounted) return;
     if (_controller.state.outcome case RunSetupStarted(:final request)) {
@@ -118,6 +135,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
             newFolder: _newFolder,
             remoteRoot: _remoteRoot,
             address: _address,
+            profileName: _profileName,
             onCreateFolder: _createFolder,
             onPickFolder: _pickFolder,
             onStart: _start,
@@ -136,6 +154,7 @@ class _RunSetupForm extends StatelessWidget {
     required this.newFolder,
     required this.remoteRoot,
     required this.address,
+    required this.profileName,
     required this.onCreateFolder,
     required this.onPickFolder,
     required this.onStart,
@@ -147,6 +166,7 @@ class _RunSetupForm extends StatelessWidget {
   final TextEditingController newFolder;
   final TextEditingController remoteRoot;
   final TextEditingController address;
+  final TextEditingController profileName;
   final VoidCallback onCreateFolder;
   final VoidCallback onPickFolder;
   final VoidCallback onStart;
@@ -267,6 +287,19 @@ class _RunSetupForm extends StatelessWidget {
         ),
         const SizedBox(height: 24),
         _OutcomeLine(state.outcome),
+        TextField(
+          key: const Key('run-setup-profile-name'),
+          controller: profileName,
+          enabled: !starting,
+          decoration: const InputDecoration(
+            labelText: 'Save as profile (optional)',
+            helperText:
+                'Name this run and it lands on the home list, ready to '
+                're-run with no typing.',
+            helperMaxLines: 2,
+          ),
+        ),
+        const SizedBox(height: 24),
         FilledButton(
           key: const Key('run-setup-start'),
           onPressed: starting ? null : onStart,

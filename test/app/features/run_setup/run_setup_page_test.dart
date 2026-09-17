@@ -83,11 +83,11 @@ void main() {
     controller.state.removeListener(restart);
   }
 
-  /// Pumps the page for [deviceId] and waits, in real time, for `load` to
+  /// Pumps the page over [source] and waits, in real time, for `load` to
   /// finish. Bounded so a regression fails rather than hangs. The viewport
   /// is made tall enough for the whole form: a `ListView` builds only what
   /// is on screen, and the button is last.
-  Future<void> pumpLoaded(WidgetTester tester, {String? deviceId}) async {
+  Future<void> pumpLoaded(WidgetTester tester, {RunSetupSource? source}) async {
     tester.view.physicalSize = const Size(800, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -96,7 +96,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: RunSetupPage(
-            deviceId: deviceId ?? desktop.deviceId,
+            source: source ?? RunSetupFromDevice(desktop.deviceId),
             onStart: started.add,
           ),
         ),
@@ -123,7 +123,10 @@ void main() {
   testWidgets('loading: a progress indicator and no form', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
-        home: RunSetupPage(deviceId: desktop.deviceId, onStart: started.add),
+        home: RunSetupPage(
+          source: RunSetupFromDevice(desktop.deviceId),
+          onStart: started.add,
+        ),
       ),
     );
 
@@ -134,7 +137,7 @@ void main() {
   });
 
   testWidgets('missing: the message instead of the form', (tester) async {
-    await pumpLoaded(tester, deviceId: 'dead:beef');
+    await pumpLoaded(tester, source: const RunSetupFromDevice('dead:beef'));
 
     expect(find.textContaining('dead:beef'), findsOneWidget);
     expect(find.byKey(const Key('run-setup-start')), findsNothing);
@@ -154,6 +157,7 @@ void main() {
       'run-setup-remote-root',
       'run-setup-address',
       'run-setup-dry-run',
+      'run-setup-profile-name',
     ]) {
       expect(find.byKey(Key(key)), findsOneWidget, reason: key);
     }
@@ -274,6 +278,7 @@ void main() {
       'run-setup-new-folder',
       'run-setup-remote-root',
       'run-setup-address',
+      'run-setup-profile-name',
     ]) {
       expect(tester.widget<TextField>(find.byKey(Key(key))).enabled, isFalse);
     }

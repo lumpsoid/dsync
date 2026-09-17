@@ -4,12 +4,14 @@ import 'app_bootstrap.dart';
 import 'app_scope.dart';
 import 'features/devices/devices_page.dart';
 import 'features/pair/pair_page.dart';
+import 'features/profiles/profiles_page.dart';
 import 'features/run/run_page.dart';
 import 'features/run_setup/run_setup_page.dart';
+import 'features/run_setup/run_setup_view_state.dart';
 import 'run_request.dart';
 
 /// The Flutter head's root: the bootstrap gate and the routes between the
-/// four pages (SPEC §4.4, §13).
+/// five pages (SPEC §4.4, §13).
 ///
 /// This file is still where a Flutter dependency leaking into `dsync_core/`
 /// would show up: it is the one root that imports both, so anything
@@ -18,22 +20,22 @@ import 'run_request.dart';
 /// the rest of it is now the wiring below.
 ///
 /// **Navigation lives here and nowhere else.** Every page takes where a tap
-/// leads as a required constructor callback (`DevicesPage.onOpenPair`,
+/// leads as a required constructor callback (`ProfilesPage.onOpenProfile`,
 /// `RunSetupPage.onStart`, ...) and holds no `Navigator` of its own — a
 /// controller cannot navigate without a `BuildContext`, and a page that
 /// pushed its own routes would couple two features' shapes together. This
-/// file is the one place that knows Devices → Pair pops back on success,
-/// Run setup pushes Run, and every hop carries an id or a plain [RunRequest],
-/// never loaded data.
+/// file is the one place that knows Profiles → Devices → Pair pops back on
+/// success, Run setup pushes Run, and every hop carries an id or a plain
+/// [RunRequest], never loaded data.
 ///
 /// **Nothing routes before the gate is ready.** `AppController.bootstrap()`
 /// is started by `main()`, before `runApp`; this widget only renders what
-/// `AppState.bootstrap` says. Rendering Devices against an un-bootstrapped
-/// state would read as "no paired devices", which is the wrong thing to show
-/// someone whose store has simply not been read yet — and a failed bootstrap
-/// is a refusal `core` made on purpose (a half-written identity, a device
-/// store that cannot be decoded), so its message is shown as the page, not
-/// swallowed into an empty list.
+/// `AppState.bootstrap` says. Rendering the home against an un-bootstrapped
+/// state would read as "no saved profiles", which is the wrong thing to
+/// show someone whose store has simply not been read yet — and a failed
+/// bootstrap is a refusal `core` made on purpose (a half-written identity,
+/// a device store that cannot be decoded), so its message is shown as the
+/// page, not swallowed into an empty list.
 class DsyncApp extends StatelessWidget {
   const DsyncApp({super.key});
 
@@ -67,11 +69,25 @@ class _BootstrapGate extends StatelessWidget {
         AppBootstrapFailed(:final message) => _BootstrapShell(
           child: _BootstrapFailure(message),
         ),
-        AppBootstrapReady() => DevicesPage(
-          onOpenRunSetup: (deviceId) => _openRunSetup(context, deviceId),
-          onOpenPair: () => _openPair(context),
+        AppBootstrapReady() => ProfilesPage(
+          onOpenProfile: (profileId) =>
+              _openRunSetup(context, profileId: profileId),
+          onOpenDevices: () => _openDevices(context),
         ),
       },
+    );
+  }
+
+  Future<void> _openDevices(BuildContext context) {
+    final navigator = Navigator.of(context);
+    return navigator.push(
+      MaterialPageRoute<void>(
+        builder: (_) => DevicesPage(
+          onOpenRunSetup: (deviceId) =>
+              _openRunSetup(context, deviceId: deviceId),
+          onOpenPair: () => _openPair(context),
+        ),
+      ),
     );
   }
 
@@ -88,12 +104,20 @@ class _BootstrapGate extends StatelessWidget {
     );
   }
 
-  Future<void> _openRunSetup(BuildContext context, String deviceId) {
+  /// Run setup, blank over a device or pre-filled over a profile — the
+  /// source is the page's, so the two entries cannot grow out of step.
+  Future<void> _openRunSetup(
+    BuildContext context, {
+    String? deviceId,
+    String? profileId,
+  }) {
     final navigator = Navigator.of(context);
     return navigator.push(
       MaterialPageRoute<void>(
         builder: (_) => RunSetupPage(
-          deviceId: deviceId,
+          source: profileId == null
+              ? RunSetupFromDevice(deviceId!)
+              : RunSetupFromProfile(profileId),
           onStart: (request) => navigator.push(
             MaterialPageRoute<void>(
               builder: (_) => RunPage(request: request, onDone: navigator.pop),

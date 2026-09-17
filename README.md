@@ -17,7 +17,7 @@ beside it (SPEC §4.4).
 |---|---|
 | `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
 | `lib/cli/` — args, profile, prompts, output | implemented |
-| `lib/app/` — Flutter head: devices, pair, run setup, run | implemented |
+| `lib/app/` — Flutter head: profiles home, devices, pair, run setup, run | implemented |
 
 ## Using it
 
@@ -76,8 +76,10 @@ on stderr; the text is what a desktop-to-server pair exchanges (neither end
 has a camera), and the Flutter head takes either form (below).
 
 Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
-archives, locks, this device's identity and the paired-device set in
-`$XDG_STATE_HOME/dsync/` (SPEC §8.3).
+archives, locks, this device's identity, the paired-device set and the
+Flutter head's own saved runs in `$XDG_STATE_HOME/dsync/` (SPEC §8.3) — the
+head's saved runs are its own store, not §12's file, and re-run from its home
+list, not from `dsync sync`.
 
 Every run prints a header naming both replicas and when the pair last synced,
 before anything moves. `--dry-run` and `status` show the plan and apply
@@ -134,6 +136,13 @@ replica itself. From nothing to a first sync:
 5. In the app, tap the desktop, pick or create a local folder, type the
    granted root exactly as you granted it, and sync. A run applies by
    default; switch **Dry run** on to see the plan without applying.
+
+The app's first page is the list of saved sync profiles, not the device list.
+Name a run in Run setup's **Save as profile** field and it lands there; a tap
+re-opens the form pre-filled — the same device, folder and root, the dry-run
+switch back off — and Start re-runs it with no typing. A profile whose device
+has been revoked, or whose local folder can no longer be read and written,
+stays on the list rendered as broken and unrunnable rather than disappearing.
 
 The address the pairing cached is the port `dsync pair show` listened on, not
 the agent's, so the first run against a fresh pairing needs the agent's

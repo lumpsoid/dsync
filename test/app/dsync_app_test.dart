@@ -11,6 +11,9 @@ import 'package:dsync/app/features/devices/devices_scope.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_page.dart';
 import 'package:dsync/app/features/pair/pair_scope.dart';
+import 'package:dsync/app/features/profiles/profiles_controller.dart';
+import 'package:dsync/app/features/profiles/profiles_page.dart';
+import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/features/run/replica_connector.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
@@ -22,6 +25,8 @@ import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/sync_profile.dart';
+import 'package:dsync/app/sync_profile_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
@@ -59,6 +64,7 @@ void main() {
   late AppController app;
   late DevicesController devices;
   late PairController pair;
+  late ProfilesController profiles;
   late RunSetupController runSetup;
 
   setUp(() async {
@@ -79,10 +85,12 @@ void main() {
         required pairedDeviceStore,
       }) => throw StateError('no enrolment in this test'),
     );
+    profiles = ProfilesController(app);
     runSetup = RunSetupController(app, picker: FakeFolderPicker());
     appScope.setController(app);
     devicesScope.setController(devices);
     pairScope.setController(pair);
+    profilesScope.setController(profiles);
     runSetupScope.setController(runSetup);
   });
 
@@ -91,11 +99,13 @@ void main() {
   tearDown(appScope.reset);
   tearDown(devicesScope.reset);
   tearDown(pairScope.reset);
+  tearDown(profilesScope.reset);
   tearDown(runSetupScope.reset);
   tearDown(runScope.reset);
   tearDown(() {
     devices.dispose();
     pair.dispose();
+    profiles.dispose();
     runSetup.dispose();
     app.dispose();
     return tempDir.delete(recursive: true);
@@ -168,28 +178,34 @@ void main() {
     expect(find.byType(DevicesPage), findsNothing);
   });
 
-  testWidgets('renders Devices once ready, and follows the gate', (
+  testWidgets('renders the profiles home once ready, and follows the gate', (
     tester,
   ) async {
     await tester.pumpWidget(const DsyncApp());
-    expect(find.byType(DevicesPage), findsNothing);
+    expect(find.byType(ProfilesPage), findsNothing);
 
     ready();
     await tester.pump();
 
-    expect(find.byType(DevicesPage), findsOneWidget);
+    expect(find.byType(ProfilesPage), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
-    expect(find.text('No paired devices.'), findsOneWidget);
+    expect(find.text('No saved sync profiles yet.'), findsOneWidget);
   });
 
-  testWidgets('Devices → Pair, and back pops to Devices', (tester) async {
+  testWidgets('Profiles → Devices → Pair, and back pops to Devices', (
+    tester,
+  ) async {
     ready();
     await tester.pumpWidget(const DsyncApp());
+
+    await tester.tap(find.byKey(const Key('profiles-open-devices')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DevicesPage), findsOneWidget);
+    expect(find.byType(ProfilesPage), findsNothing);
 
     await tester.tap(find.text('Pair a device'));
     await tester.pumpAndSettle();
     expect(find.byType(PairPage), findsOneWidget);
-    expect(find.byType(DevicesPage), findsNothing);
 
     await tester.pageBack();
     await tester.pumpAndSettle();
@@ -211,12 +227,14 @@ void main() {
         certificateWarning: null,
       ),
     ]);
+    await tester.pumpWidget(const DsyncApp());
+    await tester.tap(find.byKey(const Key('profiles-open-devices')));
+    await tester.pumpAndSettle();
     // The page's `initState` calls `load` — real I/O, so the tap runs under
     // `runAsync` and the test waits for it the way
     // `run_setup_page_test.dart` does, rather than tearing the tree down
     // under it.
     await tester.runAsync(() async {
-      await tester.pumpWidget(const DsyncApp());
       await tester.tap(find.text('desktop'));
       // One frame builds the pushed route, which is what starts `load`.
       await tester.pump();
@@ -230,9 +248,81 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
 
     final page = tester.widget<RunSetupPage>(find.byType(RunSetupPage));
-    expect(page.deviceId, 'a1b2:c3d4');
+    expect((page.source as RunSetupFromDevice).deviceId, 'a1b2:c3d4');
     expect(find.byType(DevicesPage), findsNothing);
     expect(runSetup.state.peer, isA<RunSetupPeerMissing>());
+  });
+
+  testWidgets('Home → Run setup carries the tapped profile, pre-filled', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final desktop = PairedDevice(
+      certificatePem: generateDeviceIdentity(commonName: 'desktop')
+          .certificatePem,
+      name: 'desktop',
+      agreedReplicaRoots: const {'/home/me/notes'},
+      pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
+      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
+    );
+    final localRoot = Directory('${tempDir.path}/documents/notes')
+      ..createSync(recursive: true);
+    final profileId = ReplicaConnector.profileIdFor(
+      localRootPath: localRoot.path,
+      peerDeviceId: desktop.deviceId,
+      remoteRootPath: '~/notes',
+    );
+
+    ready();
+    // Real stores: the home page reads them on mounting, and Run setup
+    // reads the profile behind the row the tap names.
+    await tester.runAsync(() async {
+      await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
+          .add(desktop);
+      await SyncProfileStore(File('${tempDir.path}/dsync/sync-profiles.json'))
+          .save(
+            SyncProfile(
+              id: profileId,
+              name: 'weekly',
+              localRootPath: localRoot.path,
+              peerDeviceId: desktop.deviceId,
+              remoteRootPath: '~/notes',
+              jobs: 4,
+            ),
+          );
+      await tester.pumpWidget(const DsyncApp());
+      await runRealTimeUntil(tester, () => app.state.profiles.isNotEmpty);
+      // The condition is the state write; the frame that renders the row
+      // needs one pump past it.
+      await tester.pump();
+      await tester.tap(find.text('weekly'));
+      await tester.pump();
+      await runRealTimeUntil(
+        tester,
+        () => runSetup.state.localFolders.any(
+          (choice) => choice.path == localRoot.path,
+        ),
+      );
+    });
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byType(RunSetupPage), findsOneWidget);
+    final page = tester.widget<RunSetupPage>(find.byType(RunSetupPage));
+    expect((page.source as RunSetupFromProfile).profileId, profileId);
+    // Pre-filled from the profile, editable, no typing: the name and the
+    // remote root through the fields the page owns, the folder through the
+    // controller's selection.
+    expect(fieldText(tester, 'run-setup-profile-name'), 'weekly');
+    expect(fieldText(tester, 'run-setup-remote-root'), '~/notes');
+    expect(runSetup.state.selectedLocalFolder, localRoot.path);
+    // The per-run choices did not come along: the address is empty and the
+    // switch is off.
+    expect(fieldText(tester, 'run-setup-address'), '');
+    expect(runSetup.state.dryRun, isFalse);
   });
 
   testWidgets('Run setup stays under Run: back from a failed run finds the '
@@ -284,6 +374,8 @@ void main() {
       await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
           .add(desktop);
       await tester.pumpWidget(const DsyncApp());
+      await tester.tap(find.byKey(const Key('profiles-open-devices')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('desktop'));
       await tester.pump();
       // `load` records the peer *before* it lists the folders and keeps

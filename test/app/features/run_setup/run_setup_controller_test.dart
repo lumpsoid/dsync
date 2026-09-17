@@ -2,9 +2,12 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/features/run/replica_connector.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/sync_profile.dart';
+import 'package:dsync/app/sync_profile_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
@@ -59,7 +62,7 @@ void main() {
 
   Future<void> loadDesktop() async {
     await store().add(desktop);
-    await controller.load(desktop.deviceId);
+    await controller.load(RunSetupFromDevice(desktop.deviceId));
   }
 
   List<String> labels() =>
@@ -97,7 +100,7 @@ void main() {
     test('renders an unknown id as missing, not a throw', () async {
       await store().add(desktop);
 
-      await controller.load('dead:beef');
+      await controller.load(const RunSetupFromDevice('dead:beef'));
 
       final peer = controller.state.peer;
       expect(peer, isA<RunSetupPeerMissing>());
@@ -129,10 +132,10 @@ void main() {
       await loadDesktop();
       controller.selectLocalFolder('${documents()}/notes');
       controller.setDryRun(true);
-      await controller.start(remoteRoot: '', address: '');
+      await controller.start(remoteRoot: '', address: '', profileName: '');
       expect(controller.state.remoteRootError, isNotNull);
 
-      await controller.load(desktop.deviceId);
+      await controller.load(RunSetupFromDevice(desktop.deviceId));
 
       expect(controller.state.selectedLocalFolder, isNull);
       expect(controller.state.remoteRootError, isNull);
@@ -275,7 +278,7 @@ void main() {
       await controller.pickLocalFolder();
       expect(labels(), [picked]);
 
-      await controller.load(desktop.deviceId);
+      await controller.load(RunSetupFromDevice(desktop.deviceId));
 
       expect(labels(), isEmpty);
       expect(controller.state.selectedLocalFolder, isNull);
@@ -290,7 +293,11 @@ void main() {
 
   group('start', () {
     test('before load: a failure line, no request', () async {
-      await controller.start(remoteRoot: '~/notes', address: '');
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: '',
+      );
 
       expect(controller.state.outcome, isA<RunSetupFailed>());
       expect(requests(), isEmpty);
@@ -299,7 +306,11 @@ void main() {
     test('no folder picked: the folder line, no request', () async {
       await loadDesktop();
 
-      await controller.start(remoteRoot: '~/notes', address: '');
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: '',
+      );
 
       expect(controller.state.localFolderError, isNotNull);
       expect(controller.state.remoteRootError, isNull);
@@ -311,7 +322,7 @@ void main() {
       await loadDesktop();
       await controller.createLocalFolder('notes');
 
-      await controller.start(remoteRoot: '  ', address: '');
+      await controller.start(remoteRoot: '  ', address: '', profileName: '');
 
       expect(controller.state.remoteRootError, isNotNull);
       expect(controller.state.localFolderError, isNull);
@@ -328,7 +339,11 @@ void main() {
         'ssh://desktop:~/notes',
         'desktop:~/notes',
       ]) {
-        await controller.start(remoteRoot: remote, address: '');
+        await controller.start(
+          remoteRoot: remote,
+          address: '',
+          profileName: '',
+        );
         expect(
           controller.state.remoteRootError,
           contains('peer://'),
@@ -342,7 +357,11 @@ void main() {
       await loadDesktop();
       await controller.createLocalFolder('notes');
 
-      await controller.start(remoteRoot: '~/notes', address: 'desk:abc');
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: 'desk:abc',
+        profileName: '',
+      );
 
       expect(controller.state.addressError, contains('number'));
       expect(requests(), isEmpty);
@@ -354,10 +373,18 @@ void main() {
         await loadDesktop();
         await controller.createLocalFolder('notes');
 
-        await controller.start(remoteRoot: '~/notes', address: 'desk:99999');
+        await controller.start(
+          remoteRoot: '~/notes',
+          address: 'desk:99999',
+          profileName: '',
+        );
         expect(controller.state.addressError, 'Port out of range: 99999');
 
-        await controller.start(remoteRoot: '~/notes', address: ':28771');
+        await controller.start(
+          remoteRoot: '~/notes',
+          address: ':28771',
+          profileName: '',
+        );
         expect(controller.state.addressError, 'Empty host');
         expect(requests(), isEmpty);
       },
@@ -372,7 +399,11 @@ void main() {
         if (controller.state.outcome is RunSetupStarted) started++;
       });
 
-      await controller.start(remoteRoot: ' ~/notes ', address: '');
+      await controller.start(
+        remoteRoot: ' ~/notes ',
+        address: '',
+        profileName: '',
+      );
 
       expect(started, 1);
       expect(controller.state.localFolderError, isNull);
@@ -393,13 +424,18 @@ void main() {
       await loadDesktop();
       await controller.createLocalFolder('notes');
 
-      await controller.start(remoteRoot: '/srv/notes', address: '10.0.0.9');
+      await controller.start(
+        remoteRoot: '/srv/notes',
+        address: '10.0.0.9',
+        profileName: '',
+      );
       expect(requests().single.addressOverride?.host, '10.0.0.9');
       expect(requests().single.addressOverride?.port, PeerAddress.defaultPort);
 
       await controller.start(
         remoteRoot: '/srv/notes',
         address: ' 10.0.0.9:4242 ',
+        profileName: '',
       );
       expect(requests().single.addressOverride?.host, '10.0.0.9');
       expect(requests().single.addressOverride?.port, 4242);
@@ -410,7 +446,11 @@ void main() {
       await controller.createLocalFolder('notes');
       Directory('${documents()}/notes').deleteSync();
 
-      await controller.start(remoteRoot: '~/notes', address: '');
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: '',
+      );
 
       expect(Directory('${documents()}/notes').existsSync(), isTrue);
       expect(requests(), hasLength(1));
@@ -421,7 +461,11 @@ void main() {
       await controller.createLocalFolder('notes');
       controller.setDryRun(true);
 
-      await controller.start(remoteRoot: '~/notes', address: '');
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: '',
+      );
 
       expect(requests().single.dryRun, isTrue);
     });
@@ -438,12 +482,195 @@ void main() {
       expect(controller.state.dryRun, isFalse);
 
       controller.setDryRun(true);
-      await controller.start(remoteRoot: '~/notes', address: '');
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: '',
+      );
       expect(requests().single.dryRun, isTrue);
 
-      await controller.load(desktop.deviceId);
+      await controller.load(RunSetupFromDevice(desktop.deviceId));
       expect(controller.state.dryRun, isFalse);
     });
+  });
+
+  group('profiles', () {
+    SyncProfileStore profileStore() =>
+        SyncProfileStore(File('${tempDir.path}/dsync/sync-profiles.json'));
+
+    test('a named start saves the run under the id the archive will be keyed '
+        'under, and the home list sees it at once', () async {
+      await loadDesktop();
+      await controller.createLocalFolder('notes');
+
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: 'weekly',
+      );
+
+      final saved = await profileStore().byId(
+        ReplicaConnector.profileIdFor(
+          localRootPath: '${documents()}/notes',
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+        ),
+      );
+      expect(saved, isNotNull);
+      expect(saved!.name, 'weekly');
+      expect(saved.localRootPath, '${documents()}/notes');
+      expect(saved.peerDeviceId, desktop.deviceId);
+      expect(saved.remoteRootPath, '~/notes');
+      expect(saved.jobs, 4);
+      // The write refreshed the application state, not just the file: the
+      // home list (possibly under this page) shows the new profile without
+      // a reload.
+      expect(app.state.profiles.single.name, 'weekly');
+    });
+
+    test('an unnamed start saves nothing — a one-off run', () async {
+      await loadDesktop();
+      await controller.createLocalFolder('notes');
+
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: '   ',
+      );
+
+      expect(requests(), hasLength(1));
+      expect(await profileStore().load(), isEmpty);
+    });
+
+    test('a failed start saves nothing', () async {
+      await loadDesktop();
+
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: 'weekly',
+      );
+
+      expect(requests(), isEmpty);
+      expect(await profileStore().load(), isEmpty);
+    });
+
+    test('opened from a profile: the form is pre-filled, the folder '
+        'selected, the per-run choices not carried over', () async {
+      final localRoot = Directory('${documents()}/notes')
+        ..createSync(recursive: true);
+      final id = ReplicaConnector.profileIdFor(
+        localRootPath: localRoot.path,
+        peerDeviceId: desktop.deviceId,
+        remoteRootPath: '~/notes',
+      );
+      await profileStore().save(
+        SyncProfile(
+          id: id,
+          name: 'weekly',
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+          jobs: 4,
+        ),
+      );
+      await store().add(desktop);
+
+      await controller.load(RunSetupFromProfile(id));
+
+      final peer = controller.state.peer as RunSetupPeerLoaded;
+      expect(peer.name, 'desktop');
+      expect(controller.state.prefill!.profileName, 'weekly');
+      expect(controller.state.prefill!.remoteRoot, '~/notes');
+      expect(controller.state.selectedLocalFolder, localRoot.path);
+      // A root chosen in an earlier visit is listed again, as its path.
+      expect(
+        controller.state.localFolders.map((c) => c.path),
+        contains(localRoot.path),
+      );
+      expect(controller.state.dryRun, isFalse);
+    });
+
+    test('a start from a profile saves over its id, not beside it', () async {
+      final localRoot = Directory('${documents()}/notes')
+        ..createSync(recursive: true);
+      final id = ReplicaConnector.profileIdFor(
+        localRootPath: localRoot.path,
+        peerDeviceId: desktop.deviceId,
+        remoteRootPath: '~/notes',
+      );
+      await profileStore().save(
+        SyncProfile(
+          id: id,
+          name: 'weekly',
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+          jobs: 4,
+        ),
+      );
+      await store().add(desktop);
+      await controller.load(RunSetupFromProfile(id));
+
+      // The remote root retyped in the form: the run targets a new triple,
+      // but the profile the user edited is the one updated.
+      await controller.start(
+        remoteRoot: '~/notes/sub',
+        address: '',
+        profileName: 'weekly retyped',
+      );
+
+      final loaded = await profileStore().load();
+      expect(loaded, hasLength(1));
+      expect(loaded.single.id, id);
+      expect(loaded.single.name, 'weekly retyped');
+      expect(loaded.single.remoteRootPath, '~/notes/sub');
+    });
+
+    test(
+      'a profile id that names nothing is rendered missing, not thrown',
+      () async {
+        await store().add(desktop);
+
+        await controller.load(const RunSetupFromProfile('gone'));
+
+        final peer = controller.state.peer;
+        expect(peer, isA<RunSetupPeerMissing>());
+        expect((peer as RunSetupPeerMissing).message, contains('gone'));
+        expect(controller.state.prefill, isNull);
+      },
+    );
+
+    test(
+      'a second load from a device clears the previous visit\'s pre-fill',
+      () async {
+        final localRoot = Directory('${documents()}/notes')
+          ..createSync(recursive: true);
+        final id = ReplicaConnector.profileIdFor(
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+        );
+        await profileStore().save(
+          SyncProfile(
+            id: id,
+            name: 'weekly',
+            localRootPath: localRoot.path,
+            peerDeviceId: desktop.deviceId,
+            remoteRootPath: '~/notes',
+            jobs: 4,
+          ),
+        );
+        await store().add(desktop);
+        await controller.load(RunSetupFromProfile(id));
+        expect(controller.state.prefill, isNotNull);
+
+        await controller.load(RunSetupFromDevice(desktop.deviceId));
+
+        expect(controller.state.prefill, isNull);
+        expect(controller.state.selectedLocalFolder, isNull);
+      },
+    );
   });
 
   test('remoteRootNotGrantedMessage says not granted and nothing about '

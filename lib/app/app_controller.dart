@@ -8,7 +8,11 @@ import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'app_bootstrap.dart';
 import 'app_paths.dart';
 import 'app_state.dart';
+import 'folder_access.dart';
 import 'paired_device_row.dart';
+import 'profile_row.dart';
+import 'sync_profile.dart';
+import 'sync_profile_store.dart';
 
 /// The head's bootstrap orchestrator: owns [AppState], the paths, and the
 /// identity every feature controller borrows rather than opens for itself
@@ -62,6 +66,14 @@ class AppController {
   /// [refreshDevices] to show the result.
   Future<PairedDeviceStore> get pairedDevices async =>
       PairedDeviceStore(File('${(await paths).stateDir}/paired-devices.json'));
+
+  /// The saved-profile store over the resolved state dir — the head's own
+  /// store, next to the paired-device store, and not SPEC §12's profile
+  /// file (see `SyncProfile` for why). Shared with Run setup, which saves
+  /// through [upsertProfile] and then asks [refreshProfiles] to show the
+  /// result, the way Pair saves through the paired-device store.
+  Future<SyncProfileStore> get profiles async =>
+      SyncProfileStore(File('${(await paths).stateDir}/sync-profiles.json'));
 
   /// Runs the sequence a page depends on — identity first, then the
   /// paired-device store — and moves [AppState.bootstrap] from loading to
@@ -132,6 +144,61 @@ class AppController {
       failure = e.toString();
     }
     await refreshDevices();
+    return failure;
+  }
+
+  /// Re-reads the profile store and re-renders [AppState.profiles] — the
+  /// call the profiles home makes on mounting and on pull-to-refresh, and
+  /// the one [upsertProfile] and [deleteProfile] make after their writes,
+  /// so a saved or deleted profile is on the home list without a reload.
+  ///
+  /// Each row is rendered from facts fetched for it: the device the
+  /// profile's id resolves to *now* (a fresh store read, per
+  /// `PairedDeviceStore`'s freshness rule) and the filesystem probe on its
+  /// local root. A profile whose device is gone or whose folder cannot be
+  /// probed renders [ProfileRow.brokenReason] — visible, not gone.
+  ///
+  /// Throws `SyncProfileStoreCorruptException` as the store does, for the
+  /// caller to surface — the profiles home as its error line, [bootstrap]
+  /// not at all (the gate does not read this store; a corrupt profile file
+  /// costs the list, not the head).
+  Future<void> refreshProfiles() async {
+    final deviceStore = await pairedDevices;
+    final rows = <ProfileRow>[];
+    for (final profile in await (await profiles).load()) {
+      rows.add(
+        ProfileRow.render(
+          profile,
+          device: await deviceStore.byDeviceId(profile.peerDeviceId),
+          localRootRefusal: await folderAccessRefusal(profile.localRootPath),
+        ),
+      );
+    }
+    state.recordProfiles(rows);
+  }
+
+  /// Saves [profile], replacing any profile stored under its id, and
+  /// re-renders the list. Called from Run setup — the one place a run's
+  /// fields have just validated — with the profile name the user typed;
+  /// see `RunSetupController.start` for when a run becomes a profile.
+  Future<void> upsertProfile(SyncProfile profile) async {
+    await (await profiles).save(profile);
+    await refreshProfiles();
+  }
+
+  /// Deletes the profile saved under [id] and re-renders the list. Returns
+  /// `null` on success, or the message to show when nothing matched — a
+  /// `SyncProfileNotFoundException` rendered rather than thrown, the same
+  /// stale-row rendering [revoke] gives its own not-found. The list is
+  /// refreshed on that path too.
+  Future<String?> deleteProfile(String id) async {
+    String? failure;
+    try {
+      await (await profiles).delete(id);
+    } on SyncProfileNotFoundException catch (e) {
+      failure = e.toString();
+    }
+    await refreshProfiles();
     return failure;
   }
 

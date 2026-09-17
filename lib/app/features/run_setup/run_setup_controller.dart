@@ -6,12 +6,15 @@ import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:path/path.dart' as p;
 
 import '../../app_controller.dart';
+import '../../folder_access.dart';
 import '../../run_request.dart';
+import '../../sync_profile.dart';
+import '../run/replica_connector.dart';
 import 'folder_picker.dart';
 import 'run_setup_view_state.dart';
 
 /// Input methods of the Run setup page: building the two locations a run
-/// needs, with no profile (SPEC §2, §4.4, §11.2, §12).
+/// needs, blank or from a saved profile (SPEC §2, §4.4, §11.2, §12).
 ///
 /// Takes the [AppController] it borrows the application from as a
 /// constructor argument, per the controller role in `app_scope.dart`. It
@@ -47,9 +50,12 @@ import 'run_setup_view_state.dart';
 /// unexpanded: `Location.expandedPath` — which throws when `HOME` is unset,
 /// as it is on a mobile head — is never called here.
 ///
-/// A picked folder lasts the visit. Nothing persists it across a restart
-/// yet; that belongs with the saved-profile work, which has to store a
-/// replica root anyway.
+/// A picked folder lasts the visit unless the run is saved: the
+/// saved-profile work is here now, and [start] is what stores a replica
+/// root — in a [SyncProfile], when the run is given a name — so a folder
+/// picked once comes back pre-selected the next time its profile is
+/// opened. Nothing persists it for a run left unnamed; that run was a
+/// one-off.
 ///
 /// **The remote root is sent exactly as typed, never expanded.** The desktop
 /// resolves `~` in its own environment (`ReplicaSpec.rootPath`,
@@ -100,18 +106,34 @@ class RunSetupController {
 
   String? _peerDeviceId;
 
+  /// The saved profile this form was opened from, or `null` on a blank
+  /// one — what an edit saves back over, so renaming a run or retyping its
+  /// remote root updates the one profile instead of saving a second beside
+  /// it. Set by [load], cleared with it.
+  String? _profileId;
+
   /// The folders picked through the chooser this visit, in the order they
   /// were picked. Reset by [load], like every other per-visit choice.
   final List<String> _pickedRoots = [];
 
-  /// Reads the device the Devices page handed over by id — the destination
-  /// loads what it needs — and lists the folders that can be a local
-  /// replica. An id that matches nothing is a stale row and is rendered as
-  /// [RunSetupPeerMissing], not thrown.
+  /// Reads what the page was opened for — the device the Devices page
+  /// named, or the saved profile the home list named, via [source] — and
+  /// lists the folders that can be a local replica. A device id that
+  /// matches nothing, or a profile id that names a deleted profile, is
+  /// rendered as [RunSetupPeerMissing], not thrown.
+  ///
+  /// A profile's values pre-fill the form: its local root is selected
+  /// (added to the visit's picks first, so a root chosen in an earlier
+  /// visit is listed again) and its name and remote root go out as
+  /// [RunSetupViewState.prefill] for the page's text fields. Its id is kept
+  /// in [_profileId] for [start]. What is *not* carried over is the
+  /// per-run state: the dry-run switch resets, and the address field stays
+  /// empty — the cached address is what empty means, and the profile does
+  /// not save one (SPEC §4.4's hatch is per run).
   ///
   /// Starts a visit: the selection, the typed remote root and the dry-run
   /// choice are this device's, not carried over from the last one opened.
-  Future<void> load(String deviceId) async {
+  Future<void> load(RunSetupSource source) async {
     _pickedRoots.clear();
     state.recordDryRun(false);
     state.recordFieldErrors(localFolder: null, remoteRoot: null, address: null);
@@ -119,13 +141,44 @@ class RunSetupController {
     state.recordFolderAccessError(null);
     state.recordOutcome(const RunSetupIdle());
     state.recordPeer(const RunSetupPeerLoading());
+    state.recordPrefill(null);
+
+    final String deviceId;
+    String? profileLocalRoot;
+    switch (source) {
+      case RunSetupFromDevice(deviceId: final id):
+        _profileId = null;
+        deviceId = id;
+      case RunSetupFromProfile(:final profileId):
+        final profile = await (await app.profiles).byId(profileId);
+        if (profile == null) {
+          _profileId = null;
+          state.recordPeer(
+            RunSetupPeerMissing(
+              'No saved profile has the id $profileId any more. Go back to '
+              'the home list and pick one that is still saved.',
+            ),
+          );
+          return;
+        }
+        deviceId = profile.peerDeviceId;
+        _profileId = profile.id;
+        profileLocalRoot = profile.localRootPath;
+        _pickedRoots.add(profileLocalRoot);
+        state.recordPrefill(
+          RunSetupPrefill(
+            profileName: profile.name,
+            remoteRoot: profile.remoteRootPath,
+          ),
+        );
+    }
     final device = await (await app.pairedDevices).byDeviceId(deviceId);
     if (device == null) {
       _peerDeviceId = null;
       state.recordPeer(
         RunSetupPeerMissing(
-          'No paired device has the id $deviceId any more. Go back to '
-          'Devices and pick one that is still paired.',
+          'No paired device has the id $deviceId any more. Go back and pick '
+          'one that is still paired.',
         ),
       );
       return;
@@ -141,7 +194,7 @@ class RunSetupController {
             : null,
       ),
     );
-    await _listLocalFolders(selected: null);
+    await _listLocalFolders(selected: profileLocalRoot);
   }
 
   /// Picks [path] from `RunSetupViewState.localFolders`, or nothing.
@@ -234,7 +287,19 @@ class RunSetupController {
   }
 
   /// Validates every field and, when all hold, records a [RunSetupStarted]
-  /// carrying the one [RunRequest] this page produces.
+  /// carrying the one [RunRequest] this page produces — and, when
+  /// [profileName] names it, saves the run as a [SyncProfile] for the home
+  /// list. Saving happens here and only here, on the one path where every
+  /// field has validated, so a profile is never saved for a run that could
+  /// not start; an empty [profileName] saves nothing, which is what a
+  /// one-off run leaves blank.
+  ///
+  /// A form opened from a profile saves over that profile's id — renaming
+  /// it or retyping its remote root updates the one entry — and a blank
+  /// form saves under a fresh [ReplicaConnector.profileIdFor] derivation
+  /// over the triple, the id the archive and lock will be keyed under when
+  /// this request runs. The per-run choices are not saved: [address] is
+  /// SPEC §4.4's hatch, and the dry-run switch is per run.
   ///
   /// [address] is SPEC §4.4's manual re-entry hatch — `host` or
   /// `host:port`, empty for the cached address. The port range is
@@ -244,6 +309,7 @@ class RunSetupController {
   Future<void> start({
     required String remoteRoot,
     required String address,
+    required String profileName,
   }) async {
     final peer = state.peer;
     if (peer is! RunSetupPeerLoaded) {
@@ -296,21 +362,37 @@ class RunSetupController {
       );
       return;
     }
-    state.recordOutcome(
-      RunSetupStarted(
-        RunRequest(
+    final request = RunRequest(
+      localRootPath: localRootPath,
+      deviceName: peer.name,
+      peerDeviceId: peerDeviceId,
+      remoteRootPath: remote,
+      addressOverride: addressOverride,
+      // The same default the CLI takes when no `--jobs` is given
+      // (`lib/cli/agents/connected_replicas.dart`).
+      jobs: Scanner().jobs,
+      dryRun: state.dryRun,
+    );
+    final name = profileName.trim();
+    if (name.isNotEmpty) {
+      await app.upsertProfile(
+        SyncProfile(
+          id:
+              _profileId ??
+              ReplicaConnector.profileIdFor(
+                localRootPath: localRootPath,
+                peerDeviceId: peerDeviceId,
+                remoteRootPath: remote,
+              ),
+          name: name,
           localRootPath: localRootPath,
-          deviceName: peer.name,
           peerDeviceId: peerDeviceId,
           remoteRootPath: remote,
-          addressOverride: addressOverride,
-          // The same default the CLI takes when no `--jobs` is given
-          // (`lib/cli/agents/connected_replicas.dart`).
-          jobs: Scanner().jobs,
-          dryRun: state.dryRun,
+          jobs: request.jobs,
         ),
-      ),
-    );
+      );
+    }
+    state.recordOutcome(RunSetupStarted(request));
   }
 
   /// The documents directory's own folders, by name, then this visit's
@@ -336,22 +418,10 @@ class RunSetupController {
     );
   }
 
-  /// Why [path] cannot be a replica root, or `null` when it can: it lists,
-  /// and one entry can be written and removed in it. The same `dart:io` a
-  /// run would use — see the class doc comment.
-  Future<String?> _accessRefusal(String path) async {
-    final probe = File(p.join(path, '.dsync-access-probe'));
-    try {
-      await Directory(path).list(followLinks: false).take(1).toList();
-      await probe.writeAsString('');
-      await probe.delete();
-      return null;
-    } on FileSystemException catch (e) {
-      return 'dsync cannot use $path: ${e.osError?.message ?? e.message}. '
-          'Grant it access to all files, or pick a folder in the app\'s own '
-          'documents instead.';
-    }
-  }
+  /// Why [path] cannot be a replica root, or `null` when it can — see
+  /// [folderAccessRefusal], whose probe this is and which the profiles home
+  /// re-runs over every saved profile's local root.
+  Future<String?> _accessRefusal(String path) => folderAccessRefusal(path);
 
   void dispose() => state.dispose();
 }
