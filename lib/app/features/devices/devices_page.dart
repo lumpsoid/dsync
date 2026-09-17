@@ -152,6 +152,16 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
+/// One paired device. The lines are ordered by how much a person can do
+/// with them: the address they would recognise, when the pairing happened,
+/// what it grants, any warning — and only then the grouped hex id, which is
+/// how `revoke` addresses the device rather than how anyone recognises it.
+/// It stays on the row (a revoke is addressed by it) but reads as a
+/// footnote, in the muted label style.
+///
+/// Tapping anywhere on the row opens Run setup. That is invisible on a plain
+/// list tile, so [_runSetupLabel] says it in words next to the revoke action
+/// and runs the same callback.
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
     required this.row,
@@ -165,33 +175,45 @@ class _DeviceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final warning = row.certificateWarning;
     return ListTile(
       title: Text(row.name),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(row.deviceId),
           Text(row.address),
           Text('paired ${_formatPairedAt(row.pairedAt)}'),
           if (_rootsLine(row.agreedRootCount) case final roots?) Text(roots),
           if (warning != null)
-            Text(
-              warning,
-              style: TextStyle(color: Theme.of(context).colorScheme.tertiary),
+            Text(warning, style: TextStyle(color: theme.colorScheme.tertiary)),
+          Text(
+            row.deviceId,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
+          ),
         ],
       ),
       isThreeLine: true,
       onTap: onTap,
-      trailing: IconButton(
-        icon: const Icon(Icons.delete_outline),
-        tooltip: 'Revoke',
-        onPressed: onRevoke,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextButton(onPressed: onTap, child: const Text(_runSetupLabel)),
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: 'Revoke',
+            onPressed: onRevoke,
+          ),
+        ],
       ),
     );
   }
 }
+
+/// What a tap on a device row does, in the user's words.
+const _runSetupLabel = 'Set up run';
 
 /// The confirmation before a revoke. Its text carries SPEC §4.4's
 /// one-sidedness in the user's words: revoking here only makes this device
