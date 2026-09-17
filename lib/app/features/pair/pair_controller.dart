@@ -175,6 +175,24 @@ class PairController {
     state.recordOutcome(const PairSucceeded());
   }
 
+  /// The desktop's name as it is being typed.
+  ///
+  /// The same rule [submitPayload] applies, applied when the field changes
+  /// rather than only when a submit is refused: the page fills this field in
+  /// from the payload the moment one is readable, so the only way it is ever
+  /// empty is that the user emptied it — and being told that at the keyboard
+  /// beats being told it after a tap that did nothing. Only this field's
+  /// line moves; the other field's verdict is whatever its own last edit or
+  /// the last submit made it.
+  void localNameEdited(String value) => state.recordLocalNameError(
+    value.trim().isEmpty ? _localNameRequired : null,
+  );
+
+  /// This device's name as it is being typed; see [localNameEdited].
+  void proposedNameEdited(String value) => state.recordProposedNameError(
+    value.trim().isEmpty ? _proposedNameRequired : null,
+  );
+
   /// The other input method of this page: a payload the camera read off the
   /// QR that `dsync pair show` prints beside that line.
   ///

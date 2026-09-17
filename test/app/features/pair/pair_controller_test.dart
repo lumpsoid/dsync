@@ -148,6 +148,31 @@ void main() {
       expect(controller.state.localNameError, isNull);
       expect(controller.state.proposedNameError, isNull);
     });
+
+    test('an edit is validated where it stands, without a submit', () {
+      controller.localNameEdited('  ');
+
+      expect(controller.state.localNameError, isNotNull);
+      // One field's edit moves one field's line: the other has not been
+      // looked at.
+      expect(controller.state.proposedNameError, isNull);
+      expect(controller.state.outcome, isA<PairIdle>());
+
+      controller.localNameEdited(' studio ');
+
+      expect(controller.state.localNameError, isNull);
+    });
+
+    test('the proposed name is validated the same way', () {
+      controller.proposedNameEdited('');
+
+      expect(controller.state.proposedNameError, isNotNull);
+      expect(controller.state.localNameError, isNull);
+
+      controller.proposedNameEdited('phone');
+
+      expect(controller.state.proposedNameError, isNull);
+    });
   });
 
   group('FormatException', () {

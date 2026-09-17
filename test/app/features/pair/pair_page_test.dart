@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
@@ -12,7 +11,9 @@ import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/app/features/pair/default_names.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Rendering tests for the Pair page, driven the way the scope contract in
@@ -138,6 +139,90 @@ void main() {
       isTrue,
     );
     expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  /// The text a field is showing, by key.
+  String fieldText(WidgetTester tester, String key) =>
+      tester.widget<TextField>(find.byKey(Key(key))).controller!.text;
+
+  testWidgets('the two names arrive filled in: this device from the host, '
+      'the desktop from the payload it sent', (tester) async {
+    await pumpPage(tester);
+
+    expect(fieldText(tester, 'pair-proposed-name'), defaultThisDeviceName());
+    expect(fieldText(tester, 'pair-proposed-name'), isNotEmpty);
+    // Nothing to read a desktop name out of until a payload is there.
+    expect(fieldText(tester, 'pair-local-name'), isEmpty);
+
+    await tester.enterText(find.byKey(const Key('pair-payload')), payloadText);
+    await tester.pump();
+
+    // The common name of the certificate the payload carries.
+    expect(fieldText(tester, 'pair-local-name'), 'desktop');
+  });
+
+  testWidgets('a name the user typed survives a payload arriving after it', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+
+    await tester.enterText(
+      find.byKey(const Key('pair-local-name')),
+      'the big one',
+    );
+    await tester.enterText(find.byKey(const Key('pair-payload')), payloadText);
+    await tester.pump();
+
+    expect(fieldText(tester, 'pair-local-name'), 'the big one');
+  });
+
+  testWidgets('emptying a name shows its line straight away, with no submit', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    expect(controller.state.proposedNameError, isNull);
+
+    await tester.enterText(find.byKey(const Key('pair-proposed-name')), '  ');
+    await tester.pump();
+
+    expect(controller.state.proposedNameError, isNotNull);
+    expect(find.text(controller.state.proposedNameError!), findsOneWidget);
+    // Typing a name back takes the line away again, also with no submit.
+    await tester.enterText(
+      find.byKey(const Key('pair-proposed-name')),
+      'phone',
+    );
+    await tester.pump();
+
+    expect(controller.state.proposedNameError, isNull);
+    expect(enrolCalls, 0);
+  });
+
+  testWidgets('the paste button fills the payload field from the clipboard', (
+    tester,
+  ) async {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async => call.method == 'Clipboard.getData'
+          ? <String, dynamic>{'text': '  $payloadText\n'}
+          : null,
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('pair-payload-paste')));
+    await tester.pump();
+    await tester.pump();
+
+    // Trimmed: a line copied out of a terminal brings its newline along.
+    expect(fieldText(tester, 'pair-payload'), payloadText);
+    // And the pasted payload names the desktop, as a scanned one does.
+    expect(fieldText(tester, 'pair-local-name'), 'desktop');
   });
 
   testWidgets('submitting: inputs and button disabled, progress shown', (
@@ -315,18 +400,20 @@ void main() {
     );
   });
 
-  testWidgets('a scan with no names is a field error, and starts no exchange', (
-    tester,
-  ) async {
+  testWidgets('a scan with a name emptied is a field error, and starts no '
+      'exchange', (tester) async {
     await pumpPage(tester, scanner: scanning(payloadText));
+    // The name for this device arrives filled in, so the only way to reach
+    // the validation path is to take it away again.
+    await tester.enterText(find.byKey(const Key('pair-proposed-name')), '');
     await tester.tap(find.byKey(const Key('pair-show-camera')));
     await tester.pump();
 
     await tester.tap(find.text('scan'));
     await tester.pump();
 
-    expect(controller.state.localNameError, isNotNull);
-    expect(find.text(controller.state.localNameError!), findsOneWidget);
+    expect(controller.state.proposedNameError, isNotNull);
+    expect(find.text(controller.state.proposedNameError!), findsOneWidget);
     expect(enrolCalls, 0);
     expect(paired, 0);
   });
