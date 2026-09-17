@@ -55,7 +55,9 @@ typedef PairScanner = Widget Function(ValueChanged<String> onScanned);
 /// [onPaired] is the seam back to Devices: the controller has refreshed
 /// `AppState.devices` by the time it fires, so the destination needs
 /// nothing handed to it. The entrypoint wires it to a pop; this page holds
-/// no `Navigator` of its own.
+/// no `Navigator` of its own — and the confirmation naming the device it
+/// paired with is shown just before, through the app's `ScaffoldMessenger`,
+/// so it is still on screen once Devices is.
 class PairPage extends StatefulWidget {
   const PairPage({super.key, required this.onPaired, required this.scanner});
 
@@ -170,9 +172,28 @@ class _PairPageState extends State<PairPage> {
     _leaveIfPaired(controller);
   }
 
+  /// Leaves on success, having said so first.
+  ///
+  /// The confirmation goes through `ScaffoldMessenger`, and the one it
+  /// finds is the app's — `MaterialApp` installs it above the `Navigator`,
+  /// so the snackbar outlives this page's pop and is read on Devices, over
+  /// the row that has just appeared. Without it a successful pairing says
+  /// nothing at all: this page renders nothing for [PairSucceeded] because
+  /// it is leaving, and the user is left to infer that it worked from a
+  /// list they were not looking at.
+  ///
+  /// Raised here rather than on Devices because the desktop's name is this
+  /// exchange's own result — Devices is never told a pairing happened, and
+  /// its only other way to name the device would be to hunt the refreshed
+  /// list for whichever row is new.
   void _leaveIfPaired(PairController controller) {
     if (!mounted) return;
-    if (controller.state.outcome is PairSucceeded) widget.onPaired();
+    if (controller.state.outcome case PairSucceeded(:final deviceName)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Paired with $deviceName.')),
+      );
+      widget.onPaired();
+    }
   }
 
   @override
@@ -452,7 +473,8 @@ class _CameraNote extends StatelessWidget {
 }
 
 /// The line above the button for the outcome that has one. Success shows
-/// nothing: the page is leaving.
+/// nothing here: the page is leaving, and it confirms itself on the way out
+/// with a snackbar that outlives the pop (`_PairPageState._leaveIfPaired`).
 class _OutcomeLine extends StatelessWidget {
   const _OutcomeLine(this.outcome);
 

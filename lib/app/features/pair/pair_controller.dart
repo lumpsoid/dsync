@@ -86,9 +86,12 @@ class PairController {
   ///   the fix is a different local name against a fresh `dsync pair show`.
   ///
   /// On success `AppController.refreshDevices` shows the new row; the page
-  /// reads [PairSucceeded] and leaves. A store that went corrupt between
-  /// the add and the re-read is reported as "paired, but" — the pairing
-  /// itself held — with `core`'s own line naming the file.
+  /// reads [PairSucceeded], says so in the desktop's name, and leaves. The
+  /// name on the outcome is [localName] trimmed — what the desktop was
+  /// recorded as here, and so what the new row shows it as. A store that
+  /// went corrupt between the add and the re-read is reported as "paired,
+  /// but" — the pairing itself held — with `core`'s own line naming the
+  /// file.
   Future<void> submitPayload({
     required String payloadText,
     required String localName,
@@ -172,7 +175,7 @@ class PairController {
       );
       return;
     }
-    state.recordOutcome(const PairSucceeded());
+    state.recordOutcome(PairSucceeded(local));
   }
 
   /// The desktop's name as it is being typed.

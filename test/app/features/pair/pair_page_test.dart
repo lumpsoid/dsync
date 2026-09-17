@@ -315,11 +315,14 @@ void main() {
   testWidgets('a stale success does not leave by itself', (tester) async {
     await pumpPage(tester);
 
-    controller.state.recordOutcome(const PairSucceeded());
+    controller.state.recordOutcome(const PairSucceeded('desktop'));
     await tester.pump();
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(paired, 0);
+    // Nor does it confirm anything: the confirmation belongs to the submit
+    // that produced it, not to whatever the outcome happens to say.
+    expect(find.byType(SnackBar), findsNothing);
   });
 
   testWidgets('a submit that succeeds leaves through onPaired, once', (
@@ -345,6 +348,12 @@ void main() {
     expect(enrolCalls, 1);
     expect(controller.state.outcome, isA<PairSucceeded>());
     expect(paired, 1);
+    // Said in words, and naming the desktop it paired with: the page is
+    // leaving, so the row appearing behind it is not the confirmation. The
+    // snackbar is the app's, not this `Scaffold`'s, so it is still there
+    // once the pop has happened.
+    await tester.pump(const Duration(milliseconds: 750));
+    expect(find.text('Paired with desktop.'), findsOneWidget);
   });
 
   testWidgets('asking for the camera mounts it, and putting it away unmounts '

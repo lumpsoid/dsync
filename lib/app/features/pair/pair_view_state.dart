@@ -28,9 +28,17 @@ final class PairFailed extends PairOutcome {
 }
 
 /// The far end recorded this device and this device recorded the far end;
-/// `AppState.devices` already shows it. The page leaves.
+/// `AppState.devices` already shows it. The page confirms it and leaves.
 final class PairSucceeded extends PairOutcome {
-  const PairSucceeded();
+  const PairSucceeded(this.deviceName);
+
+  /// The name the desktop was recorded under here — the same string the
+  /// new row in `AppState.devices` carries, so the confirmation and the row
+  /// it appears over name the device the same way. Carried on the outcome
+  /// rather than re-read from the list because it is this exchange's own
+  /// result, and a page that searched the refreshed list for "the new one"
+  /// would be deriving a fact it was already told.
+  final String deviceName;
 }
 
 /// The rendered values of the Pair page: enrolling against a
