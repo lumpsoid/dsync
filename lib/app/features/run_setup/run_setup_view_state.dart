@@ -80,9 +80,17 @@ final class RunSetupIdle extends RunSetupOutcome {
   const RunSetupIdle();
 }
 
-/// `start()` is validating and building the request; inputs disabled.
+/// `start()` is validating and building the request, or `save()` is
+/// writing the profile; inputs disabled either way.
 final class RunSetupStarting extends RunSetupOutcome {
   const RunSetupStarting();
+}
+
+/// `save()` wrote the profile and no run was started; the page hands that
+/// to its `onSaved` seam and leaves. Carried here, like [RunSetupStarted],
+/// so the page switches over one hierarchy.
+final class RunSetupSaved extends RunSetupOutcome {
+  const RunSetupSaved();
 }
 
 /// The attempt did not produce a request for a reason that is not one

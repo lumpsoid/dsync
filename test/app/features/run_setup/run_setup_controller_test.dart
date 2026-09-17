@@ -625,6 +625,93 @@ void main() {
       expect(loaded.single.remoteRootPath, '~/notes/sub');
     });
 
+    test('save persists the profile and does not start a run', () async {
+      await loadDesktop();
+      await controller.createLocalFolder('notes');
+
+      await controller.save(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: 'weekly',
+      );
+
+      final saved = await profileStore().byId(
+        ReplicaConnector.profileIdFor(
+          localRootPath: '${documents()}/notes',
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+        ),
+      );
+      expect(saved, isNotNull);
+      expect(saved!.name, 'weekly');
+      expect(saved.localRootPath, '${documents()}/notes');
+      expect(saved.remoteRootPath, '~/notes');
+      expect(app.state.profiles.single.name, 'weekly');
+      expect(requests(), isEmpty);
+      expect(controller.state.outcome, isA<RunSetupSaved>());
+    });
+
+    test('a save the form does not validate writes nothing and shows the '
+        'field line', () async {
+      await loadDesktop();
+      await controller.createLocalFolder('notes');
+
+      await controller.save(remoteRoot: '', address: '', profileName: 'weekly');
+
+      expect(controller.state.remoteRootError, isNotNull);
+      expect(await profileStore().load(), isEmpty);
+      expect(controller.state.outcome, isA<RunSetupIdle>());
+    });
+
+    test('an unnamed save is refused: there is nothing to save', () async {
+      await loadDesktop();
+      await controller.createLocalFolder('notes');
+
+      await controller.save(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: '   ',
+      );
+
+      expect(await profileStore().load(), isEmpty);
+      expect(controller.state.outcome, isA<RunSetupFailed>());
+    });
+
+    test('a save from a profile saves over its id, not beside it', () async {
+      final localRoot = Directory('${documents()}/notes')
+        ..createSync(recursive: true);
+      final id = ReplicaConnector.profileIdFor(
+        localRootPath: localRoot.path,
+        peerDeviceId: desktop.deviceId,
+        remoteRootPath: '~/notes',
+      );
+      await profileStore().save(
+        SyncProfile(
+          id: id,
+          name: 'weekly',
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+          jobs: 4,
+        ),
+      );
+      await store().add(desktop);
+      await controller.load(RunSetupFromProfile(id));
+
+      await controller.save(
+        remoteRoot: '~/notes/sub',
+        address: '',
+        profileName: 'weekly retyped',
+      );
+
+      final loaded = await profileStore().load();
+      expect(loaded, hasLength(1));
+      expect(loaded.single.id, id);
+      expect(loaded.single.name, 'weekly retyped');
+      expect(loaded.single.remoteRootPath, '~/notes/sub');
+      expect(requests(), isEmpty);
+    });
+
     test(
       'a profile id that names nothing is rendered missing, not thrown',
       () async {

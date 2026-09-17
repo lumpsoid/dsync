@@ -113,6 +113,7 @@ class _BootstrapGate extends StatelessWidget {
       MaterialPageRoute<void>(
         builder: (_) => RunSetupPage(
           source: source,
+          onSaved: navigator.pop,
           onStart: (request) => navigator.push(
             MaterialPageRoute<void>(
               builder: (_) => RunPage(request: request, onDone: navigator.pop),

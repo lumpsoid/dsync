@@ -282,10 +282,10 @@ class RunSetupController {
   /// Validates every field and, when all hold, records a [RunSetupStarted]
   /// carrying the one [RunRequest] this page produces — and, when
   /// [profileName] names it, saves the run as a [SyncProfile] for the home
-  /// list. Saving happens here and only here, on the one path where every
-  /// field has validated, so a profile is never saved for a run that could
-  /// not start; an empty [profileName] saves nothing, which is what a
-  /// one-off run leaves blank.
+  /// list. Saving happens on a path where every field has validated — this
+  /// one and [save] — so a profile is never saved for a run that could not
+  /// start; an empty [profileName] saves nothing, which is what a one-off
+  /// run leaves blank.
   ///
   /// A form opened from a profile saves over that profile's id — renaming
   /// it or retyping its remote root updates the one entry — and a blank
@@ -304,19 +304,106 @@ class RunSetupController {
     required String address,
     required String profileName,
   }) async {
-    final peer = state.peer;
-    if (peer is! RunSetupPeerLoaded) {
+    final form = _validate(remoteRoot: remoteRoot, address: address);
+    if (form == null) return;
+
+    state.recordOutcome(const RunSetupStarting());
+    try {
+      // On demand: a folder listed a moment ago may have been removed by a
+      // file manager since, and a missing local root is not a run.
+      await Directory(form.localRootPath).create(recursive: true);
+    } on FileSystemException catch (e) {
       state.recordOutcome(
-        const RunSetupFailed('Wait for the device to load, then try again.'),
+        RunSetupFailed('Could not open ${form.localRootPath}: ${e.message}'),
       );
       return;
     }
+    final request = RunRequest(
+      localRootPath: form.localRootPath,
+      deviceName: form.deviceName,
+      peerDeviceId: form.peerDeviceId,
+      remoteRootPath: form.remoteRootPath,
+      addressOverride: form.addressOverride,
+      jobs: _jobs,
+      dryRun: state.dryRun,
+    );
+    final name = profileName.trim();
+    if (name.isNotEmpty) await _saveProfile(form, name);
+    state.recordOutcome(RunSetupStarted(request));
+  }
+
+  /// Saves the form as a [SyncProfile] and stops there — what renaming a
+  /// saved run, or fixing its remote root, needs when the user is not
+  /// committing to a sync.
+  ///
+  /// The same validation [start] applies, surfaced the same way: a field
+  /// that does not hold gets its own line and nothing is written. The one
+  /// rule only this path has is that a profile needs a name — [start] reads
+  /// an empty one as "this run is a one-off", which is not something Save
+  /// can mean — and its refusal lands on the outcome line, where the other
+  /// whole-form refusals land. Saving touches no filesystem: only [start]
+  /// creates the local root, because only a run needs it to exist.
+  Future<void> save({
+    required String remoteRoot,
+    required String address,
+    required String profileName,
+  }) async {
+    final form = _validate(remoteRoot: remoteRoot, address: address);
+    if (form == null) return;
+    final name = profileName.trim();
+    if (name.isEmpty) {
+      state.recordOutcome(const RunSetupFailed(_profileNameRequired));
+      return;
+    }
+
+    state.recordOutcome(const RunSetupStarting());
+    await _saveProfile(form, name);
+    state.recordOutcome(const RunSetupSaved());
+  }
+
+  /// Writes [form] under [name]: over the profile this form was opened
+  /// from when there was one, under a fresh [ReplicaConnector.profileIdFor]
+  /// derivation over the triple when there was not — the id the archive and
+  /// lock are keyed under when this form runs. The id is remembered, so a
+  /// second save in the same visit updates the entry the first one made
+  /// rather than saving a second beside it.
+  Future<void> _saveProfile(_ValidatedForm form, String name) async {
+    final id =
+        _profileId ??
+        ReplicaConnector.profileIdFor(
+          localRootPath: form.localRootPath,
+          peerDeviceId: form.peerDeviceId,
+          remoteRootPath: form.remoteRootPath,
+        );
+    await app.upsertProfile(
+      SyncProfile(
+        id: id,
+        name: name,
+        localRootPath: form.localRootPath,
+        peerDeviceId: form.peerDeviceId,
+        remoteRootPath: form.remoteRootPath,
+        jobs: _jobs,
+      ),
+    );
+    _profileId = id;
+  }
+
+  /// The one validation pass, shared by [start] and [save] so the two
+  /// cannot drift: the loaded peer, the picked local folder, the typed
+  /// remote root and the address override, as a single value when all of
+  /// them hold. Records every field's line either way, and answers `null` —
+  /// with the outcome reset — when any of them did not.
+  _ValidatedForm? _validate({
+    required String remoteRoot,
+    required String address,
+  }) {
+    final peer = state.peer;
     final peerDeviceId = _peerDeviceId;
-    if (peerDeviceId == null) {
+    if (peer is! RunSetupPeerLoaded || peerDeviceId == null) {
       state.recordOutcome(
         const RunSetupFailed('Wait for the device to load, then try again.'),
       );
-      return;
+      return null;
     }
 
     final localRootPath = state.selectedLocalFolder;
@@ -341,51 +428,15 @@ class RunSetupController {
         remoteRootError != null ||
         addressError != null) {
       state.recordOutcome(const RunSetupIdle());
-      return;
+      return null;
     }
-
-    state.recordOutcome(const RunSetupStarting());
-    try {
-      // On demand: a folder listed a moment ago may have been removed by a
-      // file manager since, and a missing local root is not a run.
-      await Directory(localRootPath).create(recursive: true);
-    } on FileSystemException catch (e) {
-      state.recordOutcome(
-        RunSetupFailed('Could not open $localRootPath: ${e.message}'),
-      );
-      return;
-    }
-    final request = RunRequest(
+    return _ValidatedForm(
       localRootPath: localRootPath,
       deviceName: peer.name,
       peerDeviceId: peerDeviceId,
       remoteRootPath: remote,
       addressOverride: addressOverride,
-      // The same default the CLI takes when no `--jobs` is given
-      // (`lib/cli/agents/connected_replicas.dart`).
-      jobs: Scanner().jobs,
-      dryRun: state.dryRun,
     );
-    final name = profileName.trim();
-    if (name.isNotEmpty) {
-      await app.upsertProfile(
-        SyncProfile(
-          id:
-              _profileId ??
-              ReplicaConnector.profileIdFor(
-                localRootPath: localRootPath,
-                peerDeviceId: peerDeviceId,
-                remoteRootPath: remote,
-              ),
-          name: name,
-          localRootPath: localRootPath,
-          peerDeviceId: peerDeviceId,
-          remoteRootPath: remote,
-          jobs: request.jobs,
-        ),
-      );
-    }
-    state.recordOutcome(RunSetupStarted(request));
   }
 
   /// The documents directory's own folders, by name, then this visit's
@@ -454,7 +505,35 @@ String? _remoteRootError(String remote) {
   return null;
 }
 
+/// A validated form: everything `RunSetupController.start` needs to build a
+/// [RunRequest] and everything `RunSetupController.save` needs to build a
+/// [SyncProfile]. Built only by `_validate`, so holding one is proof every
+/// field validated.
+class _ValidatedForm {
+  const _ValidatedForm({
+    required this.localRootPath,
+    required this.deviceName,
+    required this.peerDeviceId,
+    required this.remoteRootPath,
+    required this.addressOverride,
+  });
+
+  final String localRootPath;
+  final String deviceName;
+  final String peerDeviceId;
+  final String remoteRootPath;
+  final PeerAddress? addressOverride;
+}
+
+/// The same default the CLI takes when no `--jobs` is given
+/// (`lib/cli/agents/connected_replicas.dart`). One value for the request and
+/// the profile saved beside it, so a save and a start agree.
+final int _jobs = Scanner().jobs;
+
 const _localFolderRequired = 'Pick a folder on this device, or create one.';
+const _profileNameRequired =
+    'Name this run to save it — an unnamed run is a one-off, so there is '
+    'nothing to save.';
 const _remoteRootRequired =
     'Type the folder on the desktop, as it was granted there.';
 const _remoteRootNotAPath =

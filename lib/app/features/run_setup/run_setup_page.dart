@@ -23,9 +23,16 @@ import 'run_setup_view_state.dart';
 ///
 /// [onStart] is the seam to the Run feature: it fires once with the
 /// [RunRequest] the controller built, and the entrypoint wires it to the
-/// Run route. This page holds no `Navigator` of its own.
+/// Run route. [onSaved] is the other way out — the profile was written and
+/// no run began, so the entrypoint simply leaves the page. This page holds
+/// no `Navigator` of its own.
 class RunSetupPage extends StatefulWidget {
-  const RunSetupPage({super.key, required this.source, required this.onStart});
+  const RunSetupPage({
+    super.key,
+    required this.source,
+    required this.onStart,
+    required this.onSaved,
+  });
 
   /// What the form opens over: a device's blank form or a saved profile's
   /// pre-filled one.
@@ -33,6 +40,10 @@ class RunSetupPage extends StatefulWidget {
 
   /// Called once when the request is built and the page should leave.
   final void Function(RunRequest request) onStart;
+
+  /// Called once when the profile has been saved and the page should leave
+  /// without a run. Carries no profile: the home list reloads its own rows.
+  final VoidCallback onSaved;
 
   @override
   State<RunSetupPage> createState() => _RunSetupPageState();
@@ -111,6 +122,16 @@ class _RunSetupPageState extends State<RunSetupPage> {
     }
   }
 
+  Future<void> _save() async {
+    await _controller.save(
+      remoteRoot: _remoteRoot.text,
+      address: _address.text,
+      profileName: _profileName.text,
+    );
+    if (!mounted) return;
+    if (_controller.state.outcome is RunSetupSaved) widget.onSaved();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -138,6 +159,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
             onCreateFolder: _createFolder,
             onPickFolder: _pickFolder,
             onStart: _start,
+            onSave: _save,
           ),
         },
       ),
@@ -156,6 +178,7 @@ class _RunSetupForm extends StatelessWidget {
     required this.onCreateFolder,
     required this.onPickFolder,
     required this.onStart,
+    required this.onSave,
   });
 
   final RunSetupController controller;
@@ -167,6 +190,7 @@ class _RunSetupForm extends StatelessWidget {
   final VoidCallback onCreateFolder;
   final VoidCallback onPickFolder;
   final VoidCallback onStart;
+  final VoidCallback onSave;
 
   @override
   Widget build(BuildContext context) {
@@ -294,6 +318,15 @@ class _RunSetupForm extends StatelessWidget {
             helperMaxLines: 2,
           ),
         ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton(
+            key: const Key('run-setup-save'),
+            onPressed: starting ? null : onSave,
+            child: const Text('Save without starting'),
+          ),
+        ),
         const SizedBox(height: 24),
         FilledButton(
           key: const Key('run-setup-start'),
@@ -311,8 +344,8 @@ class _RunSetupForm extends StatelessWidget {
   }
 }
 
-/// The line above the button for the outcome that has one. Started shows
-/// nothing: the page is leaving.
+/// The line above the button for the outcome that has one. Started and
+/// saved show nothing: the page is leaving.
 class _OutcomeLine extends StatelessWidget {
   const _OutcomeLine(this.outcome);
 
@@ -330,6 +363,7 @@ class _OutcomeLine extends StatelessWidget {
       ),
       RunSetupIdle() ||
       RunSetupStarting() ||
+      RunSetupSaved() ||
       RunSetupStarted() => const SizedBox.shrink(),
     };
   }

@@ -30,6 +30,7 @@ void main() {
   late PairedDevice desktop;
   late String certA;
   final started = <RunRequest>[];
+  var saved = 0;
 
   setUpAll(() {
     certA = generateDeviceIdentity(commonName: 'desktop').certificatePem;
@@ -56,6 +57,7 @@ void main() {
     appScope.setController(app);
     runSetupScope.setController(controller);
     started.clear();
+    saved = 0;
   });
 
   // Scopes are process-global: reset both so a pin cannot leak into the
@@ -98,6 +100,7 @@ void main() {
           home: RunSetupPage(
             source: source ?? RunSetupFromDevice(desktop.deviceId),
             onStart: started.add,
+            onSaved: () => saved++,
           ),
         ),
       );
@@ -126,6 +129,7 @@ void main() {
         home: RunSetupPage(
           source: RunSetupFromDevice(desktop.deviceId),
           onStart: started.add,
+          onSaved: () => saved++,
         ),
       ),
     );
