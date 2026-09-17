@@ -113,38 +113,139 @@ class _RunPageState extends State<RunPage> {
           SyncRunFailed() => const SizedBox.shrink(),
         },
       ),
-      body: ListenableBuilder(
-        listenable: state,
-        builder: (context, _) => ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _PhaseLine(state),
-            if (state.header case final header?) _Header(header),
-            if (state.scanTally case final tally?)
-              _ScanTally(tally, deviceName: widget.request.deviceName),
-            if (state.unreadablePaths.isNotEmpty)
-              _Lines(
-                key: const Key('run-unreadable'),
-                title: 'Could not read',
-                lines: state.unreadablePaths,
-                error: true,
-              ),
-            if (state.skippedSymlinks.isNotEmpty)
-              _Lines(
-                key: const Key('run-symlinks'),
-                title: 'Symlinks not followed',
-                lines: state.skippedSymlinks,
-                error: false,
-              ),
-            if (state.conflicts.isNotEmpty) _Conflicts(state.conflicts),
-            if (state.plan.isNotEmpty)
-              _Plan(
-                state.plan,
-                bytesToTransfer: state.bytesToTransfer,
-                results: state.results,
-              ),
-          ],
-        ),
+      // A sliver list, so a section builds the rows the viewport holds and
+      // not the rows that exist: a photo library's scan is tens of thousands
+      // of paths, and none of them fit on a screen (§9's lists are the whole
+      // library, not the part of it that changed).
+      //
+      // Two listeners, not one. Everything above the plan changes as the run
+      // reports — phase and progress, header, tally, the two path lists, the
+      // conflicts — and follows the view state itself. The plan deliberately
+      // does not: it arrives whole in one `RunPlanEvent`, and the apply loop
+      // then reports one result per action. So the plan section follows
+      // `planChanged` alone and each row follows the cell for its own path
+      // (`SyncRunViewState.resultCell`), which is what keeps applying action
+      // N from rebuilding the rows above it — see the view state's class doc
+      // comment and `_PlanRow`.
+      body: CustomScrollView(
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.all(16),
+            sliver: SliverMainAxisGroup(
+              slivers: [
+                ListenableBuilder(
+                  listenable: state,
+                  builder: (context, _) => SliverMainAxisGroup(
+                    slivers: [
+                      SliverToBoxAdapter(child: _PhaseLine(state)),
+                      if (state.header case final header?)
+                        SliverToBoxAdapter(child: _Header(header)),
+                      if (state.scanTally case final tally?)
+                        SliverToBoxAdapter(
+                          child: _ScanTally(
+                            tally,
+                            deviceName: widget.request.deviceName,
+                          ),
+                        ),
+                      if (state.unreadablePaths.isNotEmpty)
+                        _ListSection(
+                          sectionKey: const Key('run-unreadable'),
+                          title: 'Could not read',
+                          itemCount: state.unreadablePaths.length,
+                          itemBuilder: (context, index) => Text(
+                            state.unreadablePaths[index],
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        ),
+                      if (state.skippedSymlinks.isNotEmpty)
+                        _ListSection(
+                          sectionKey: const Key('run-symlinks'),
+                          title: 'Symlinks not followed',
+                          itemCount: state.skippedSymlinks.length,
+                          itemBuilder: (context, index) =>
+                              Text(state.skippedSymlinks[index]),
+                        ),
+                      if (state.conflicts.isNotEmpty)
+                        _ListSection(
+                          sectionKey: const Key('run-conflicts'),
+                          title: 'Conflicts (not resolved)',
+                          itemCount: state.conflicts.length,
+                          itemBuilder: (context, index) {
+                            final row = state.conflicts[index];
+                            return Text(
+                              '${row.path}: this device ${row.local}, the '
+                              'other side ${row.remote}',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+                ListenableBuilder(
+                  listenable: state.planChanged,
+                  builder: (context, _) => state.plan.isEmpty
+                      ? const SliverToBoxAdapter(child: SizedBox.shrink())
+                      : _ListSection(
+                          sectionKey: const Key('run-plan'),
+                          title:
+                              'Plan: ${state.plan.length} action(s), '
+                              '${formatBytes(state.bytesToTransfer)} '
+                              'to transfer',
+                          itemCount: state.plan.length,
+                          itemBuilder: (context, index) =>
+                              _PlanRow(state: state, row: state.plan[index]),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One section of path rows: its title, then its rows, built lazily — the
+/// rows the viewport holds are the rows that exist. The title is a sliver of
+/// its own, so it is on the page whenever the section is, whatever part of
+/// the section's list the viewport holds, and [sectionKey] is on that list:
+/// "this section is shown at all" is still assertable while its rows come
+/// and go with the scroll.
+class _ListSection extends StatelessWidget {
+  const _ListSection({
+    required this.sectionKey,
+    required this.title,
+    required this.itemCount,
+    required this.itemBuilder,
+  });
+
+  final Key sectionKey;
+  final String title;
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    return SliverPadding(
+      // The section's trailing space, which was the padding of the box that
+      // used to hold the title and the rows together.
+      padding: const EdgeInsets.only(bottom: 16),
+      sliver: SliverMainAxisGroup(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Text(title, style: Theme.of(context).textTheme.titleSmall),
+          ),
+          SliverList.builder(
+            key: sectionKey,
+            itemCount: itemCount,
+            itemBuilder: itemBuilder,
+          ),
+        ],
       ),
     );
   }
@@ -319,60 +420,29 @@ class _ScanTally extends StatelessWidget {
   );
 }
 
-class _Lines extends StatelessWidget {
-  const _Lines({
-    super.key,
-    required this.title,
-    required this.lines,
-    required this.error,
-  });
+/// One plan row: what its action does, and its own result in the leading
+/// icon once it has one. Follows the cell for its own path and nothing
+/// else — which is what makes applying action N repaint action N's row
+/// rather than the plan: the section above it follows `planChanged`, and a
+/// result does not touch that.
+class _PlanRow extends StatelessWidget {
+  const _PlanRow({required this.state, required this.row});
 
-  final String title;
-  final List<String> lines;
-  final bool error;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: theme.textTheme.titleSmall),
-          for (final line in lines)
-            Text(
-              line,
-              style: error ? TextStyle(color: theme.colorScheme.error) : null,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Conflicts extends StatelessWidget {
-  const _Conflicts(this.conflicts);
-
-  final List<SyncRunConflictRow> conflicts;
+  final SyncRunViewState state;
+  final SyncRunPlanRow row;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Column(
-        key: const Key('run-conflicts'),
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Conflicts (not resolved)', style: theme.textTheme.titleSmall),
-          for (final row in conflicts)
-            Text(
-              '${row.path}: this device ${row.local}, the other side '
-              '${row.remote}',
-              style: TextStyle(color: theme.colorScheme.error),
-            ),
-        ],
+    return ValueListenableBuilder<SyncRunResultRow?>(
+      valueListenable: state.resultCell(row.path),
+      builder: (context, result, _) => ListTile(
+        contentPadding: EdgeInsets.zero,
+        dense: true,
+        leading: _resultIcon(result, Theme.of(context)),
+        title: Text(row.path),
+        subtitle: Text(
+          result?.error ?? '${row.action} · ${formatBytes(row.bytes)}',
+        ),
       ),
     );
   }
@@ -416,31 +486,38 @@ class _DecisionSheet extends StatelessWidget {
               ),
             ),
             Flexible(
-              child: ListView(
-                shrinkWrap: true,
+              // A builder, not a `ListView(children: [...])`: the sheet's
+              // plan is the whole run's, and every row it holds is a
+              // `SwitchListTile` with a `SegmentedButton` in the conflicts
+              // above it. `shrinkWrap: true` would defeat that by measuring
+              // every child anyway; the enclosing `ConstrainedBox` bounds
+              // this list's height, which is what the shrink-wrap was for.
+              child: ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                children: [
-                  for (final row in conflicts)
-                    _ConflictDecision(
-                      row,
+                // Conflicts first, then actions: SPEC §11.3's order, and
+                // the order the events arrived in.
+                itemCount: conflicts.length + actions.length,
+                itemBuilder: (context, index) {
+                  if (index < conflicts.length) {
+                    return _ConflictDecision(
+                      conflicts[index],
                       deviceName: deviceName,
                       controller: controller,
-                    ),
-                  for (final row in actions)
-                    SwitchListTile(
-                      key: Key('decision-${row.path}'),
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      title: Text(row.path),
-                      subtitle: Text(
-                        '${row.action} · ${formatBytes(row.bytes)}',
-                      ),
-                      value: row.kept,
-                      onChanged: (kept) => kept
-                          ? controller.keep(row.path)
-                          : controller.skip(row.path),
-                    ),
-                ],
+                    );
+                  }
+                  final row = actions[index - conflicts.length];
+                  return SwitchListTile(
+                    key: Key('decision-${row.path}'),
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: Text(row.path),
+                    subtitle: Text('${row.action} · ${formatBytes(row.bytes)}'),
+                    value: row.kept,
+                    onChanged: (kept) => kept
+                        ? controller.keep(row.path)
+                        : controller.skip(row.path),
+                  );
+                },
               ),
             ),
             Padding(
@@ -518,49 +595,9 @@ class _ConflictDecision extends StatelessWidget {
   };
 }
 
-/// The plan, with each row marked off by its own result once it has one.
-class _Plan extends StatelessWidget {
-  const _Plan(
-    this.plan, {
-    required this.bytesToTransfer,
-    required this.results,
-  });
-
-  final List<SyncRunPlanRow> plan;
-  final int bytesToTransfer;
-  final List<SyncRunResultRow> results;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final byPath = {for (final result in results) result.path: result};
-    return Column(
-      key: const Key('run-plan'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Plan: ${plan.length} action(s), ${formatBytes(bytesToTransfer)} '
-          'to transfer',
-          style: theme.textTheme.titleSmall,
-        ),
-        for (final row in plan)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-            leading: _resultIcon(byPath[row.path], theme),
-            title: Text(row.path),
-            subtitle: Text(
-              byPath[row.path]?.error ??
-                  '${row.action} · ${formatBytes(row.bytes)}',
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _resultIcon(SyncRunResultRow? result, ThemeData theme) {
-    if (result == null) return const Icon(Icons.radio_button_unchecked);
-    if (result.error == null) return const Icon(Icons.check_circle_outline);
-    return Icon(Icons.error_outline, color: theme.colorScheme.error);
-  }
+/// The leading icon of a plan row: nothing reported yet, applied, or failed.
+Widget _resultIcon(SyncRunResultRow? result, ThemeData theme) {
+  if (result == null) return const Icon(Icons.radio_button_unchecked);
+  if (result.error == null) return const Icon(Icons.check_circle_outline);
+  return Icon(Icons.error_outline, color: theme.colorScheme.error);
 }

@@ -241,6 +241,12 @@ final class SyncRunProgress {
 /// each field is the rendering of the event that fills it. It is many
 /// fields because it is one view of one run; what it is not is a set of
 /// flags that must agree: the run's phase is one sealed value.
+///
+/// **Not every write wakes this state's listeners.** The plan and the
+/// per-action results each have a listenable of their own ([planChanged],
+/// [resultCell]) because the apply loop writes them once per action: a page
+/// that rendered 50k plan rows from this notifier alone would rebuild them
+/// for every action applied, to show one leading icon changing.
 class SyncRunViewState extends ChangeNotifier {
   SyncRunPhase _phase = const SyncRunIdle();
   bool _dryRun = false;
@@ -249,9 +255,10 @@ class SyncRunViewState extends ChangeNotifier {
   List<String> _skippedSymlinks = const [];
   List<String> _unreadablePaths = const [];
   List<SyncRunConflictRow> _conflicts = const [];
-  List<SyncRunPlanRow> _plan = const [];
+  final ValueNotifier<List<SyncRunPlanRow>> _plan = ValueNotifier(const []);
   int _bytesToTransfer = 0;
-  List<SyncRunResultRow> _results = const [];
+  final Map<String, SyncRunResultRow> _results = {};
+  final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
   SyncRunProgress? _progress;
 
   SyncRunPhase get phase => _phase;
@@ -279,12 +286,31 @@ class SyncRunViewState extends ChangeNotifier {
   List<SyncRunConflictRow> get conflicts => _conflicts;
 
   /// The reconciled plan (SPEC §6), before the presenter decides.
-  List<SyncRunPlanRow> get plan => _plan;
+  List<SyncRunPlanRow> get plan => _plan.value;
+
+  /// Fires when [plan] does, and only then. The plan arrives whole in one
+  /// `RunPlanEvent`, and the apply loop that follows it reports one result
+  /// per action — so a plan of 50k actions is fetched once, and a widget
+  /// showing the plan under this listenable builds once per run rather than
+  /// once per action. [SyncRunViewState]'s own listeners cannot say that:
+  /// they also fire for the phase, the progress and every path list.
+  Listenable get planChanged => _plan;
 
   int get bytesToTransfer => _bytesToTransfer;
 
   /// Each applied action's outcome, in the order they ran.
-  List<SyncRunResultRow> get results => _results;
+  List<SyncRunResultRow> get results => List.unmodifiable(_results.values);
+
+  /// The result for [path], as something the row for that path can watch.
+  /// One result is one row's news: [recordResult] writes it here and on
+  /// [SyncRunViewState]'s listeners never, so the plan above the rows is not
+  /// rebuilt for it and no row re-walks the plan to find its own result.
+  ///
+  /// The cell is created on first read, and only a row that is built reads
+  /// one: a path the viewport has never reached costs a map entry, not a
+  /// notifier. `value` is `null` until the action reports.
+  ValueListenable<SyncRunResultRow?> resultCell(String path) =>
+      _resultCells.putIfAbsent(path, () => ValueNotifier(_results[path]));
 
   SyncRunProgress? get progress => _progress;
 
@@ -327,20 +353,36 @@ class SyncRunViewState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Replaces the plan at once — one notification for one `RunPlanEvent`.
+  /// Replaces the plan at once — one notification for one `RunPlanEvent`,
+  /// on [planChanged] alone. `bytesToTransfer` is set first, so a listener
+  /// woken by the plan reads the plan's own sum.
   void recordPlan(List<SyncRunPlanRow> rows, {required int bytesToTransfer}) {
-    _plan = List.unmodifiable(rows);
     _bytesToTransfer = bytesToTransfer;
-    notifyListeners();
+    _plan.value = List.unmodifiable(rows);
   }
 
+  /// One action's outcome: recorded for [results], and pushed to that
+  /// path's [resultCell] if the row for it has been built. Deliberately not
+  /// on this state's listeners — see [planChanged].
   void recordResult(SyncRunResultRow row) {
-    _results = List.unmodifiable([..._results, row]);
-    notifyListeners();
+    _results[row.path] = row;
+    _resultCells[row.path]?.value = row;
   }
 
   void recordProgress(SyncRunProgress progress) {
     _progress = progress;
     notifyListeners();
+  }
+
+  /// Disposes the notifiers this state hands out — the plan's, and the
+  /// cells built rows are watching — so a write after the page left is an
+  /// assertion failure in the page that made it, as it is for [this].
+  @override
+  void dispose() {
+    _plan.dispose();
+    for (final cell in _resultCells.values) {
+      cell.dispose();
+    }
+    super.dispose();
   }
 }

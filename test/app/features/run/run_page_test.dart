@@ -193,6 +193,99 @@ void main() {
     expect(find.text('Scanning (dry run)…'), findsOneWidget);
   });
 
+  group('the plan list is built on demand', () {
+    /// A plan the size of a photo library's: 50k actions, far more than any
+    /// viewport holds. Rows are cheap objects; what the page must not do is
+    /// materialise a widget for each of them.
+    List<SyncRunPlanRow> bigPlan() => [
+      for (var i = 0; i < 50000; i++)
+        SyncRunPlanRow(
+          path: 'file-$i.txt',
+          action: 'copy to desktop',
+          bytes: 1024,
+        ),
+    ];
+
+    testWidgets('only the rows the viewport holds are in the tree', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordPlan(bigPlan(), bytesToTransfer: 50000 * 1024);
+      await pump(tester);
+
+      // The section is on the page, its title and its first rows with it.
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(find.textContaining('Plan: 50000 action(s)'), findsOneWidget);
+      expect(find.text('file-0.txt'), findsOneWidget);
+      // The rest of the plan exists as data and not as widgets.
+      expect(find.text('file-49999.txt'), findsNothing);
+      expect(find.byType(ListTile).evaluate().length, lessThan(100));
+
+      // Absent because it was never built, not because the list is short:
+      // scrolling reaches it.
+      await tester.scrollUntilVisible(find.text('file-60.txt'), 400);
+      expect(find.text('file-60.txt'), findsOneWidget);
+    });
+
+    testWidgets('a result repaints its own row and never the plan', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning())
+        ..recordPlan(const [
+          SyncRunPlanRow(
+            path: 'new.txt',
+            action: 'copy to desktop',
+            bytes: 2048,
+          ),
+          SyncRunPlanRow(
+            path: 'old.txt',
+            action: 'delete on desktop',
+            bytes: 0,
+          ),
+        ], bytesToTransfer: 2048);
+      await pump(tester);
+
+      final other = tester.widget<Text>(find.text('old.txt'));
+      final title = tester.widget<Text>(
+        find.textContaining('Plan: 2 action(s)'),
+      );
+
+      // Progress is the apply loop's other notification, once per action:
+      // it repaints the line that shows it and nothing in the plan.
+      controller.state.recordProgress(
+        const SyncRunProgress(completed: 1, total: 2),
+      );
+      await tester.pump();
+
+      expect(find.text('Applying 1 of 2…'), findsOneWidget);
+      expect(tester.widget<Text>(find.text('old.txt')), same(other));
+      expect(
+        tester.widget<Text>(find.textContaining('Plan: 2 action(s)')),
+        same(title),
+      );
+
+      final applied = tester.widget<Text>(find.text('new.txt'));
+      controller.state.recordResult(
+        const SyncRunResultRow(
+          path: 'new.txt',
+          action: 'copy to desktop',
+          error: null,
+        ),
+      );
+      await tester.pump();
+
+      // It repainted that row (positive control: the widget object for its
+      // path is new) and left every other row alone.
+      expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
+      expect(tester.widget<Text>(find.text('new.txt')), isNot(same(applied)));
+      expect(tester.widget<Text>(find.text('old.txt')), same(other));
+    });
+  });
+
   testWidgets('finished: five counts, a Done that fires onDone, no Stop', (
     tester,
   ) async {
@@ -365,6 +458,27 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
 
       expect(await decided, isEmpty);
+    });
+
+    testWidgets('a plan far taller than the sheet is built on demand too', (
+      tester,
+    ) async {
+      // `shrinkWrap: true` would have measured every row of this before the
+      // sheet opened, which is the whole reason it is gone.
+      final many = Plan(
+        actions: [
+          for (var i = 0; i < 50000; i++)
+            PlanAction(path: 'file-$i.txt', type: ActionType.copyAtoB),
+        ],
+        conflicts: const [],
+      );
+      controller.state.recordStart(dryRun: false);
+      decided = controller.present(many, request: request);
+      await pump(tester);
+
+      expect(find.byKey(const Key('decision-file-0.txt')), findsOneWidget);
+      expect(find.byKey(const Key('decision-file-49999.txt')), findsNothing);
+      expect(find.byType(SwitchListTile).evaluate().length, lessThan(100));
     });
   });
 
