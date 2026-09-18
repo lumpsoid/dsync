@@ -465,4 +465,42 @@ void main() {
     expect(request.addressOverride?.port, 4242);
     expect(request.dryRun, isFalse);
   });
+
+  group('the Diagnostics entry (task 8347dd)', () {
+    testWidgets('waits for a folder, since the probes need one to measure', (
+      tester,
+    ) async {
+      await pumpLoaded(tester);
+
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const Key('run-setup-diagnostics')),
+            )
+            .onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('opens over the chosen folder, ready to measure — this is '
+        'the only way in before a run', (tester) async {
+      await pumpLoaded(tester);
+      await tester.runAsync(() async {
+        await controller.createLocalFolder('notes');
+        await settle();
+      });
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('run-setup-diagnostics')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Diagnostics'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('read-rate-run')))
+            .onPressed,
+        isNotNull,
+      );
+    });
+  });
 }

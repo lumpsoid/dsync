@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../run_request.dart';
+import '../diagnostics/diagnostics_page.dart';
 import 'run_setup_controller.dart';
 import 'run_setup_scope.dart';
 import 'run_setup_view_state.dart';
@@ -132,10 +133,47 @@ class _RunSetupPageState extends State<RunSetupPage> {
     if (_controller.state.outcome is RunSetupSaved) widget.onSaved();
   }
 
+  Future<void> _openDiagnostics(String rootPath) =>
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              DiagnosticsPage(rootPath: rootPath, blockedReason: null),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Run setup')),
+      appBar: AppBar(
+        title: const Text('Run setup'),
+        actions: [
+          // The reachable entry to Diagnostics: the Run page carries the
+          // same button, but that page only exists once a run has been
+          // started, and a probe is refused while one is in flight — so
+          // this is the only place a measurement can be taken *before* a
+          // sync, which is when the question is usually asked.
+          //
+          // It needs the folder the probes would measure, so it waits for
+          // one to be chosen rather than opening a page with nothing to
+          // point at.
+          ListenableBuilder(
+            listenable: _controller.state,
+            builder: (context, _) {
+              final rootPath = _controller.state.selectedLocalFolder;
+              return IconButton(
+                key: const Key('run-setup-diagnostics'),
+                icon: const Icon(Icons.biotech_outlined),
+                tooltip: rootPath == null
+                    ? 'Diagnostics — pick a folder on this device first'
+                    : 'Diagnostics',
+                onPressed: rootPath == null
+                    ? null
+                    : () => _openDiagnostics(rootPath),
+              );
+            },
+          ),
+        ],
+      ),
       body: ListenableBuilder(
         listenable: _controller.state,
         builder: (context, _) => switch (_controller.state.peer) {
