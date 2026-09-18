@@ -66,6 +66,9 @@ void main() {
             hash: 'h',
           ),
         );
+        // Commits are batched (SPEC §8.2); the log this test is about the
+        // mtime of does not exist until they are written.
+        await archiveStore.flush();
 
         final expected = (await archiveLog.stat()).modified;
         final info = await agent().hello();
@@ -129,8 +132,12 @@ void main() {
             hash: hash,
           ),
         );
+        await archiveStore.flush();
 
         await agent().scan(RuleSet());
+        // The write-back is a commit like any other, so it is durable when
+        // the session gives the replica up (SPEC §8.2) — here, explicitly.
+        await archiveStore.flush();
 
         // Without the write-back the fast path never matches again and this
         // file is rehashed on every run, forever (SPEC §5.2 step 2).
@@ -155,9 +162,11 @@ void main() {
           hash: 'sentinel-not-recomputed',
         ),
       );
+      await archiveStore.flush();
       final before = await archiveLog.readAsString();
 
       await agent().scan(RuleSet());
+      await archiveStore.flush();
 
       expect(await archiveLog.readAsString(), before);
     });
@@ -595,8 +604,10 @@ exit 0
       hash: 'deadbeef',
     );
 
-    test('archiveCommitUpsert durably commits through the store', () async {
+    test('archiveCommitUpsert commits through the store, durable once the '
+        'session gives the replica up (SPEC §8.2)', () async {
       await agent().archiveCommitUpsert(entry);
+      await archiveStore.flush();
 
       final reloaded = await JsonlArchiveStore(archiveLog, header).load();
       expect(reloaded.entries['a.txt']?.hash, 'deadbeef');

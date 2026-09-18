@@ -51,11 +51,30 @@ abstract class ArchiveStore {
   /// Replays the log and returns the resulting state.
   Future<Archive> load();
 
-  /// Durably commits [entry], superseding any prior entry at the same path.
+  /// Records [entry], superseding any prior entry at the same path.
+  ///
+  /// Durable by the time [flush] returns, not necessarily by the time this
+  /// does — see [flush] for what that costs and why it is worth it.
   Future<void> commitUpsert(ArchiveEntry entry);
 
-  /// Durably commits a tombstone for [path].
+  /// Records a tombstone for [path], on the same terms as [commitUpsert].
   Future<void> commitDelete(String path);
+
+  /// Makes every commit recorded so far durable (SPEC §7.3, §8.2).
+  ///
+  /// An implementation may batch commits rather than fsyncing each one — a
+  /// run of a 14k-file tree commits 14,471 times per replica, and one fsync
+  /// each is the largest serial cost left in an apply. What that gives up is
+  /// bounded and already handled: a crash loses at most the last unflushed
+  /// batch, which is the same "crash between two commits" state §7.3's
+  /// convergence rule exists for, and costs the next run a rehash of those
+  /// paths rather than a wrong answer.
+  ///
+  /// Called by whoever is about to stop being responsible for the replica —
+  /// `LocalAgent.unlock`, since giving up the lock with commits still in
+  /// memory is what would turn a tolerated crash window into ordinary,
+  /// silent loss.
+  Future<void> flush();
 
   /// Folds the durable log down to the minimal record of [snapshot] (SPEC
   /// §8.2). Called once a run has reached the apply phase. A no-op when the

@@ -105,8 +105,21 @@ class LocalAgent implements Agent {
   @override
   Future<void> lock() => replicaLock.acquire();
 
+  /// Makes this replica's commits durable, then releases the lock (SPEC
+  /// §4.3, §8.2).
+  ///
+  /// The flush is here, and here is where it has to be: commits are batched
+  /// (`JsonlArchiveStore`), and the lock is what says this replica is this
+  /// session's. Giving it up with commits still in memory would turn the
+  /// bounded crash window batching accepts into ordinary, silent loss on
+  /// every clean exit. Unlock is also the one operation both ends run on
+  /// every exit path — `RunController`'s `finally` for a local replica,
+  /// `AgentServer`'s for a served one — which `disconnect` is not.
   @override
-  Future<void> unlock() => replicaLock.release();
+  Future<void> unlock() async {
+    await archiveStore.flush();
+    await replicaLock.release();
+  }
 
   @override
   Future<ScanResult> scan(RuleSet rules) async {

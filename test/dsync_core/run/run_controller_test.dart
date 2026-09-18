@@ -512,7 +512,8 @@ void main() {
       // hand-built one) is what a rounding-prone filesystem would
       // actually produce (SPEC §15 point 6).
       final staleEntry = (await reloadA()).entries['shared.txt']!;
-      await JsonlArchiveStore(archiveLogA, headerA).commitUpsert(
+      final staleWriter = JsonlArchiveStore(archiveLogA, headerA);
+      await staleWriter.commitUpsert(
         ArchiveEntry(
           path: staleEntry.path,
           size: staleEntry.size,
@@ -521,6 +522,9 @@ void main() {
           hash: staleEntry.hash,
         ),
       );
+      // Commits are batched (SPEC §8.2), and the next run reads the log off
+      // disk — this one has no session to flush it.
+      await staleWriter.flush();
 
       final events = await RunController(
         agentA: agentA,

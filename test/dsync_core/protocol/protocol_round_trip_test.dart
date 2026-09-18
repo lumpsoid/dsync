@@ -290,11 +290,17 @@ void main() {
         hash: 'deadbeef',
       );
 
+      // Commits are batched and made durable when the session gives the
+      // replica up (SPEC §8.2), so each read below goes through `unlock` —
+      // which the far end dispatches to its own `LocalAgent`, and which is
+      // what a real run does on every exit path.
       await remote.archiveCommitUpsert(entry);
+      await remote.unlock();
       final afterUpsert = await JsonlArchiveStore(archiveLog, header).load();
       expect(afterUpsert.entries['a.txt']?.hash, 'deadbeef');
 
       await remote.archiveCommitDelete('a.txt');
+      await remote.unlock();
       final afterDelete = await JsonlArchiveStore(archiveLog, header).load();
       expect(afterDelete.entries.containsKey('a.txt'), isFalse);
     });

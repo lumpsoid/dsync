@@ -58,8 +58,22 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  Future<Archive> reloadA() => JsonlArchiveStore(archiveLogA, headerA).load();
-  Future<Archive> reloadB() => JsonlArchiveStore(archiveLogB, headerB).load();
+  /// The archive as the *next* run would read it off disk.
+  ///
+  /// Goes through `unlock`, because that is where a real run's commits are
+  /// made durable (SPEC §8.2): `JsonlArchiveStore` batches them, and
+  /// `LocalAgent.unlock` is what flushes before giving the replica up.
+  /// `Applier` itself never flushes — it has only the `Agent` contract, and
+  /// durability is the session's business, not one action's.
+  Future<Archive> reloadA() async {
+    await agentA.unlock();
+    return JsonlArchiveStore(archiveLogA, headerA).load();
+  }
+
+  Future<Archive> reloadB() async {
+    await agentB.unlock();
+    return JsonlArchiveStore(archiveLogB, headerB).load();
+  }
 
   group('copy', () {
     test('copyAtoB transfers bytes, propagates mtime/mode, commits both archives with the source hash', () async {

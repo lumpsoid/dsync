@@ -7,8 +7,9 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// Append-only JSON Lines [ArchiveStore] (SPEC §8.2, chosen in §15).
 ///
 /// The first line is the header (SPEC §8.1); every line after it is one
-/// commit — an upsert or a tombstone — appended and fsynced before returning,
-/// so a commit that returns has survived a crash. [load] checks the header,
+/// commit — an upsert or a tombstone. Commits are buffered and appended in
+/// batches, one fsync per batch (see [_batchSize]); [flush] is what makes
+/// everything recorded so far durable. [load] checks the header,
 /// then replays the log; the last line for a path wins. A half-written last
 /// line — the state a crash mid-append leaves behind — is dropped on load and
 /// repaired before the next commit. [compact] folds the log back down to one
@@ -19,6 +20,34 @@ class JsonlArchiveStore implements ArchiveStore {
   /// line, so a version 1 log — which starts straight in on commits — is
   /// correctly rejected as belonging to an older schema.
   static const schemaVersion = 2;
+
+  /// How many commits are buffered before a batch is written and fsynced
+  /// (SPEC §8.2).
+  ///
+  /// The cost this exists to remove is measured: a phone-to-desktop run of a
+  /// 14k-file tree spent 85.4 s of its 133 s apply phase inside this store on
+  /// the initiating side alone, one fsync per path, and the far side another
+  /// 143 s (SPEC §17). One fsync per 256 paths takes that to 57 flushes.
+  ///
+  /// The number is chosen from what a lost batch costs, which is the only
+  /// thing that gets worse: a crash loses at most 256 commits, and SPEC §7.3
+  /// already converges on exactly that state without intervention — the
+  /// stale side rehashes those paths on the next run and they resolve as
+  /// commit-only. 256 paths of a 14k tree is under 2% of one scan's hashing,
+  /// against a saving measured in minutes. Larger batches stop paying: the
+  /// fsyncs are already amortised to nothing by here, while the window a
+  /// crash can lose keeps growing.
+  static const _batchSize = 256;
+
+  /// How long a commit may sit unwritten while more are still arriving.
+  ///
+  /// [_batchSize] alone is a bad bound when commits are slow rather than
+  /// dense — a plan of a few large files would hold its handful of commits
+  /// for the whole transfer. This is checked as each commit arrives rather
+  /// than driven by a timer: a timer would need cancelling on every exit
+  /// path to let a process exit, and it would only ever fire in the case
+  /// [flush] already covers, which is "no more commits are coming".
+  static const _batchAge = Duration(seconds: 1);
 
   final File _logFile;
   final ArchiveHeader _header;
@@ -32,6 +61,14 @@ class JsonlArchiveStore implements ArchiveStore {
   /// Completes when the commit currently in progress is finished with the
   /// log — see [_serialized].
   Future<void> _committing = Future<void>.value();
+
+  /// Commits recorded but not yet written, oldest first. Already applied to
+  /// [_entries], so this replica's own view of its archive does not depend
+  /// on when they reach the disk — only its survival of a crash does.
+  final List<Map<String, Object?>> _pending = [];
+
+  /// When the oldest entry in [_pending] was recorded, for [_batchAge].
+  final Stopwatch _pendingAge = Stopwatch();
 
   /// Commit lines currently on disk in [_logFile], not counting the header.
   /// Compared against `_entries.length` to tell whether the log already holds
@@ -81,7 +118,16 @@ class JsonlArchiveStore implements ArchiveStore {
   }
 
   @override
-  Future<Archive> load() async {
+  Future<Archive> load() => _serialized(() async {
+    // Written out first: [_load] rebuilds [_entries] from what is on disk,
+    // so a commit still sitting in [_pending] would be dropped without a
+    // trace. `LocalAgent.scan` loads mid-session, after `_refreshFastPathKeys`
+    // has committed, which is exactly that case.
+    await _write();
+    return _load();
+  });
+
+  Future<Archive> _load() async {
     final entries = <String, ArchiveEntry>{};
     var lineCount = 0;
     var torn = false;
@@ -178,24 +224,41 @@ class JsonlArchiveStore implements ArchiveStore {
 
   @override
   Future<void> commitUpsert(ArchiveEntry entry) => _serialized(() async {
-    await _append(_upsertRecord(entry));
+    _record(_upsertRecord(entry));
     _entries[entry.path] = entry;
+    await _writeIfDue();
   });
 
   @override
   Future<void> commitDelete(String path) => _serialized(() async {
-    await _append({'op': 'delete', 'path': path});
+    _record({'op': 'delete', 'path': path});
     _entries.remove(path);
+    await _writeIfDue();
   });
 
   @override
-  Future<DateTime?> lastCommitTime() async {
-    if (!await _logFile.exists()) return null;
-    return (await _logFile.stat()).modified;
-  }
+  Future<void> flush() => _serialized(_write);
 
   @override
-  Future<void> compact() => _serialized(_compact);
+  Future<DateTime?> lastCommitTime() => _serialized(() async {
+    // Written out first, so this answers about every commit made rather than
+    // about every commit that happens to have reached the disk. It costs
+    // nothing: `Agent.hello` asks once per session, before anything has been
+    // committed at all.
+    await _write();
+    if (!await _logFile.exists()) return null;
+    return (await _logFile.stat()).modified;
+  });
+
+  @override
+  Future<void> compact() => _serialized(() async {
+    // Written out first rather than dropped, even though [_compact] rebuilds
+    // the log from [_entries] and would carry them anyway: its early return
+    // for a log that already matches [_entries] would otherwise throw away
+    // commits that never reached the disk at all.
+    await _write();
+    await _compact();
+  });
 
   Future<void> _compact() async {
     if (!_needsRepair && _logLineCount == _entries.length) return;
@@ -255,7 +318,7 @@ class JsonlArchiveStore implements ArchiveStore {
   /// loop needs, and it costs nothing: these operations are serialized by
   /// their own fsync anyway (SPEC §8.2), which is the floor this is nowhere
   /// near.
-  Future<void> _serialized(Future<void> Function() body) {
+  Future<T> _serialized<T>(Future<T> Function() body) {
     final result = _committing.then((_) => body());
     // Chained on a future that ignores the outcome, so one failed commit
     // does not fail every commit after it — a failed action is recorded and
@@ -264,14 +327,39 @@ class JsonlArchiveStore implements ArchiveStore {
     return result;
   }
 
-  /// Appends one record and returns only once it is on disk.
+  /// Buffers [record] for the next batch.
+  void _record(Map<String, Object?> record) {
+    if (_pending.isEmpty) {
+      _pendingAge
+        ..reset()
+        ..start();
+    }
+    _pending.add(record);
+  }
+
+  /// Writes the buffered batch if it is full enough or old enough.
+  Future<void> _writeIfDue() async {
+    if (_pending.length < _batchSize && _pendingAge.elapsed < _batchAge) {
+      return;
+    }
+    await _write();
+  }
+
+  /// Appends every buffered record and returns only once they are on disk.
   ///
   /// Uses [RandomAccessFile] rather than an [IOSink] because `IOSink.flush`
   /// only pushes Dart's buffers to the OS, which survives a process crash but
-  /// not a power loss. SPEC §7.3 commits per path so that an interrupted run
-  /// converges on the next one; that argument needs the commit to be durable,
-  /// so this flush is a real fsync.
-  Future<void> _append(Map<String, Object?> record) async {
+  /// not a power loss. SPEC §7.3's convergence argument needs a commit that
+  /// is reported durable to actually be durable, so this flush is a real
+  /// fsync — one per batch rather than one per path (SPEC §8.2).
+  ///
+  /// The batch goes out as a single `writeString`, so a crash can tear the
+  /// last line but cannot interleave two records: [load] drops a
+  /// half-written last line and [_needsRepair] rewrites before the next
+  /// append, exactly as for a single record.
+  Future<void> _write() async {
+    if (_pending.isEmpty) return;
+
     if (_needsRepair) await _compact();
 
     var isNewLog = false;
@@ -280,20 +368,25 @@ class JsonlArchiveStore implements ArchiveStore {
       isNewLog = !await _logFile.exists();
     }
 
+    // The header is written by whoever creates the log, not by load(), so a
+    // run that never commits anything — a dry run — leaves no file behind.
+    final records = [
+      if (isNewLog) _headerRecord(),
+      ..._pending,
+    ].map(jsonEncode).join('\n');
+    final written = _pending.length;
+    _pending.clear();
+    _pendingAge.stop();
+
     final handle = await _logFile.open(mode: FileMode.append);
     try {
-      // The header is written by whoever creates the log, not by load(), so a
-      // run that never commits anything — a dry run — leaves no file behind.
-      if (isNewLog) {
-        await handle.writeString('${jsonEncode(_headerRecord())}\n');
-      }
-      await handle.writeString('${jsonEncode(record)}\n');
+      await handle.writeString('$records\n');
       await handle.flush();
     } finally {
       await handle.close();
     }
     _logExists = true;
-    _logLineCount++;
+    _logLineCount += written;
   }
 }
 

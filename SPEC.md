@@ -185,7 +185,7 @@ Outcomes are therefore reported in **completion order, not plan order**, and a c
 4. Destination stats the final file and returns the resulting `size`, `mtime`, `mode`.
 
 ### 7.3 Archive commit per path
-After an action succeeds on both sides, **both** agents commit the entry for that path immediately. A crash between the two commits leaves one side's archive stale.
+After an action succeeds on both sides, **both** agents commit the entry for that path immediately. The commit is recorded immediately; it is made *durable* in batches (§8.2), so a crash loses at most the last unflushed batch. That is the same shape of damage as the crash this section is already about, and the rules below close it the same way — it is simply a few hundred paths rather than one. A crash between the two commits leaves one side's archive stale.
 
 For a copy, that self-heals: the stale side reports the path as modified with the same hash as the other side, which resolves as commit-only (§6). No work is redone beyond one hash.
 
@@ -213,9 +213,15 @@ A failed action is recorded, the path is left in whatever state it reached (temp
 One archive per replica, on the host of that replica, keyed by profile id + replica side. Header: schema version, profile id, root path. Entry: `path`, `size`, `mtime`, `mode`, `hash`.
 
 ### 8.2 Format (default chosen, see §15)
-Append-only JSON Lines log. Each commit appends one line (an upsert or a tombstone) and flushes. At the end of a run that reached the apply phase, the log is compacted into a fresh file and swapped in by rename. A run that committed nothing does not compact. On load, the log is replayed; last write per path wins.
+Append-only JSON Lines log. Each commit appends one line (an upsert or a tombstone). At the end of a run that reached the apply phase, the log is compacted into a fresh file and swapped in by rename. A run that committed nothing does not compact. On load, the log is replayed; last write per path wins.
 
-Rationale: per-path durable commits (§7.3) without rewriting the whole file, no native dependency, trivially inspectable. The archive sits behind an `ArchiveStore` interface so a SQLite implementation can replace it if the log approach proves inadequate on large trees.
+**Commits are batched behind one fsync (task 0f7dfc).** Lines are buffered and written together — 256 of them, or one second of them, whichever comes first — and the whole batch is fsynced as a single append. Measured phone-to-desktop on a 14k-file tree, one fsync per path cost 85.4 s of a 133 s apply phase on the initiating replica alone and 143 s on the far one (§17); it is the largest serial cost left in an apply once the requests themselves are pipelined (§4.2), because every commit on one replica queues behind every other commit on it.
+
+What batching gives up is bounded: a crash loses at most the last unflushed batch, which is the state §7.3 already converges on without intervention — the stale side rehashes those paths on the next run and they resolve as commit-only. The cost of being wrong is a rehash, never a wrong answer, and it is capped at a couple of hundred paths.
+
+**Buffered commits are flushed before the replica is given up**, which is the part that is not optional: a clean exit must not lose work. `Agent.unlock` is where that happens, since it is the one operation both a local replica and a served one run on every exit path, and the lock is what says the replica is this session's. `load`, `compact` and `lastCommitTime` flush first too, each because it reads or replaces the log that the buffer belongs to.
+
+Rationale: per-path commits (§7.3) without rewriting the whole file, no native dependency, trivially inspectable. The archive sits behind an `ArchiveStore` interface so a SQLite implementation can replace it if the log approach proves inadequate on large trees.
 
 ### 8.3 Location
 - Linux: `$XDG_STATE_HOME/dsync/` (default `~/.local/state/dsync/`).

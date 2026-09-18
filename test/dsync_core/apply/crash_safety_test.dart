@@ -68,8 +68,24 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  Future<Archive> reloadA() => JsonlArchiveStore(archiveLogA, headerA).load();
-  Future<Archive> reloadB() => JsonlArchiveStore(archiveLogB, headerB).load();
+  /// The archive as the *next* run would read it off disk.
+  ///
+  /// Goes through `unlock`, because that is where a real run's commits are
+  /// made durable (SPEC §8.2): `JsonlArchiveStore` batches them, and
+  /// `LocalAgent.unlock` is what flushes before giving the replica up. The
+  /// crash this test simulates is a commit that never happened at all — the
+  /// wrapped agent throws instead of recording it — so flushing the ones
+  /// that did is exactly what a real interrupted-then-restarted run leaves
+  /// behind.
+  Future<Archive> reloadA() async {
+    await agentA.unlock();
+    return JsonlArchiveStore(archiveLogA, headerA).load();
+  }
+
+  Future<Archive> reloadB() async {
+    await agentB.unlock();
+    return JsonlArchiveStore(archiveLogB, headerB).load();
+  }
 
   test('crash between the two per-path commits converges on re-run without moving bytes again', () async {
     final v1Hash = _sha256Of('v1');

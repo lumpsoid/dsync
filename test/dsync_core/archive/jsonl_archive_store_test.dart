@@ -56,6 +56,7 @@ void main() {
       final writer = JsonlArchiveStore(logFile(), header);
       await writer.load();
       await writer.commitUpsert(entry);
+      await writer.flush();
 
       final reader = JsonlArchiveStore(logFile(), header);
       final archive = await reader.load();
@@ -67,6 +68,7 @@ void main() {
       await writer.load();
       await writer.commitUpsert(entry);
       await writer.commitDelete('a.txt');
+      await writer.flush();
 
       final reader = JsonlArchiveStore(logFile(), header);
       final archive = await reader.load();
@@ -85,6 +87,7 @@ void main() {
       await writer.load();
       await writer.commitUpsert(entry);
       await writer.commitUpsert(updated);
+      await writer.flush();
 
       final reader = JsonlArchiveStore(logFile(), header);
       final archive = await reader.load();
@@ -97,6 +100,7 @@ void main() {
       await writer.commitUpsert(entry);
       await writer.commitDelete('a.txt');
       await writer.commitUpsert(entry);
+      await writer.flush();
 
       final reader = JsonlArchiveStore(logFile(), header);
       final archive = await reader.load();
@@ -111,6 +115,7 @@ void main() {
       await store.commitUpsert(entry);
       await store.commitDelete('a.txt');
       await store.commitUpsert(entry);
+      await store.flush();
 
       final lines = await logFile().readAsLines();
       expect(lines.where((l) => l.contains('"op":"header"')), hasLength(1));
@@ -123,12 +128,14 @@ void main() {
         final writer = JsonlArchiveStore(logFile(), header);
         await writer.load();
         await writer.commitUpsert(entry);
+        await writer.flush();
 
         // A fresh store that has loaded the existing file must not decide it is
         // creating the log.
         final reopened = JsonlArchiveStore(logFile(), header);
         await reopened.load();
         await reopened.commitDelete('a.txt');
+        await reopened.flush();
 
         final lines = await logFile().readAsLines();
         expect(lines.where((l) => l.contains('"op":"header"')), hasLength(1));
@@ -139,6 +146,7 @@ void main() {
       final store = JsonlArchiveStore(logFile(), header);
       await store.load();
       await store.commitUpsert(entry);
+      await store.flush();
 
       final first = (await logFile().readAsLines()).first;
       expect(first, contains('"op":"header"'));
@@ -159,6 +167,7 @@ void main() {
       final writer = JsonlArchiveStore(logFile(), header);
       await writer.load();
       await writer.commitUpsert(entry);
+      await writer.flush();
 
       final repointed = JsonlArchiveStore(
         logFile(),
@@ -181,6 +190,7 @@ void main() {
       final writer = JsonlArchiveStore(logFile(), header);
       await writer.load();
       await writer.commitUpsert(entry);
+      await writer.flush();
 
       final other = JsonlArchiveStore(
         logFile(),
@@ -224,6 +234,7 @@ void main() {
         final writer = JsonlArchiveStore(logFile(), header);
         await writer.load();
         await writer.commitUpsert(entry);
+        await writer.flush();
         await tear();
 
         final archive = await JsonlArchiveStore(logFile(), header).load();
@@ -237,11 +248,13 @@ void main() {
       final writer = JsonlArchiveStore(logFile(), header);
       await writer.load();
       await writer.commitUpsert(entry);
+      await writer.flush();
       await tear();
 
       final reopened = JsonlArchiveStore(logFile(), header);
       await reopened.load();
       await reopened.commitDelete('a.txt');
+      await reopened.flush();
 
       // Appending onto the fragment would splice it into the next record and
       // turn a recoverable tear into corruption mid-log, so the next load has
@@ -254,6 +267,7 @@ void main() {
       final writer = JsonlArchiveStore(logFile(), header);
       await writer.load();
       await writer.commitUpsert(entry);
+      await writer.flush();
       await logFile().writeAsString(
         'not json\n{"op":"delete","path":"a.txt"}\n',
         mode: FileMode.append,
@@ -273,6 +287,7 @@ void main() {
       final loaded = await store.load();
 
       await store.commitUpsert(entry);
+      await store.flush();
 
       // LocalAgent holds the loaded archive while committing against it, so
       // the view it got has to stay the one it scanned against.
@@ -286,6 +301,7 @@ void main() {
         final store = JsonlArchiveStore(logFile(), header);
         await store.load();
         await store.commitUpsert(entry);
+        await store.flush();
         expectEntry(store.snapshot().entries['a.txt'], entry);
       },
     );
@@ -302,9 +318,127 @@ void main() {
       final store = JsonlArchiveStore(logFile(), header);
       await store.load();
       await store.commitUpsert(entry);
+      await store.flush();
 
       final expected = (await logFile().stat()).modified;
       expect(await store.lastCommitTime(), expected);
+    });
+  });
+
+  group('batching (task 0f7dfc)', () {
+    ArchiveEntry at(String path) =>
+        ArchiveEntry(path: path, size: 1, mtime: 1, mode: 420, hash: 'h-$path');
+
+    Future<int> commitLines() async {
+      if (!await logFile().exists()) return 0;
+      final lines = (await logFile().readAsLines())
+        ..removeWhere((line) => line.isEmpty);
+      return lines.isEmpty ? 0 : lines.length - 1; // less the header
+    }
+
+    test(
+      'a commit is visible to this session before it reaches disk',
+      () async {
+        final store = JsonlArchiveStore(logFile(), header);
+        await store.load();
+
+        await store.commitUpsert(entry);
+
+        // The replica's own view does not wait on the disk — only its survival
+        // of a crash does (SPEC §8.2).
+        expectEntry(store.snapshot().entries['a.txt'], entry);
+        expect(await logFile().exists(), isFalse);
+      },
+    );
+
+    test('a batch of commits costs one append, not one per commit', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+
+      for (var i = 0; i < 20; i++) {
+        await store.commitUpsert(at('f$i'));
+      }
+      expect(await commitLines(), 0, reason: 'still buffered');
+
+      await store.flush();
+
+      expect(await commitLines(), 20);
+      final reloaded = await JsonlArchiveStore(logFile(), header).load();
+      expect(reloaded.entries, hasLength(20));
+      expect(reloaded.entries['f19']?.hash, 'h-f19');
+    });
+
+    test('flushing nothing writes nothing — a dry run leaves no log', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+
+      await store.flush();
+
+      expect(await logFile().exists(), isFalse);
+    });
+
+    test('load writes the buffer out rather than dropping it', () async {
+      // `LocalAgent.scan` loads mid-session, after the fast-path write-back
+      // has committed. [load] rebuilds its entries from disk, so a buffered
+      // commit would vanish without a trace.
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+
+      final reloaded = await store.load();
+
+      expectEntry(reloaded.entries['a.txt'], entry);
+      expect(await commitLines(), 1);
+    });
+
+    test('compact carries commits that never reached the log', () async {
+      // [compact] returns early when the log already holds one line per live
+      // entry. Buffered commits make that comparison a lie, so they have to
+      // be written before it is made.
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+
+      await store.compact();
+
+      final reloaded = await JsonlArchiveStore(logFile(), header).load();
+      expectEntry(reloaded.entries['a.txt'], entry);
+    });
+
+    test('lastCommitTime answers about every commit made', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      expect(await store.lastCommitTime(), isNull);
+
+      await store.commitUpsert(entry);
+
+      expect(await store.lastCommitTime(), isNotNull);
+    });
+
+    test('a batch is torn, never interleaved, by a crash mid-append', () async {
+      // The whole batch goes out as one write, so the damage a crash can do
+      // is the same as for a single record: a half-written *last* line,
+      // which load drops and the next append repairs (SPEC §8.2).
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      await store.commitUpsert(at('b.txt'));
+      await store.flush();
+
+      final intact = await logFile().readAsString();
+      await logFile().writeAsString(
+        intact.substring(0, intact.length - 8), // tear the last line
+      );
+
+      final reopened = JsonlArchiveStore(logFile(), header);
+      final archive = await reopened.load();
+      expectEntry(archive.entries['a.txt'], entry);
+      expect(archive.entries.containsKey('b.txt'), isFalse);
+
+      await reopened.commitUpsert(at('c.txt'));
+      await reopened.flush();
+      final repaired = await JsonlArchiveStore(logFile(), header).load();
+      expect(repaired.entries.keys, unorderedEquals(['a.txt', 'c.txt']));
     });
   });
 
@@ -347,6 +481,7 @@ void main() {
       final store = JsonlArchiveStore(logFile(), header);
       await store.load();
       await store.commitUpsert(entry);
+      await store.flush();
       final before = await logFile().readAsString();
 
       await store.compact();
@@ -361,7 +496,8 @@ void main() {
         final store = JsonlArchiveStore(logFile(), header);
         await store.load();
         await store.commitUpsert(entry);
-        await store.commitUpsert(updated); // 2 lines on disk, 1 live entry
+        await store.commitUpsert(updated);
+        await store.flush(); // 2 lines on disk, 1 live entry
         final before = await logFile().readAsString();
 
         // Pre-create the compaction temp file so the "rewrite" step below
