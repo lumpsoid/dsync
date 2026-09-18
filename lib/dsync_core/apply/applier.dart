@@ -65,14 +65,34 @@ Future<void> _noopApplyProgress(String path, ActionType type, Object? error) =>
 class Applier {
   /// How many actions may be in flight at once.
   ///
-  /// Four, against a connection window of eight (`RequestWindow.size`): a
-  /// copy's operations against one replica are a `writeFile` and then an
-  /// `archiveCommitUpsert`, so four workers keep four to eight operations
-  /// outstanding per side, which is the window full without queueing behind
-  /// it. Higher would not buy more overlap — it would buy more actions
-  /// waiting for a slot, more concurrently open files on the phone, and a
-  /// longer list of paths that are half-applied if the run is stopped.
-  static const defaultConcurrency = 4;
+  /// **Sixteen, and the number is the bandwidth-delay product**, not a guess.
+  /// Every agent operation costs one round trip (SPEC §4.2), and an action is
+  /// about two of them — a `writeFile` and an `archiveCommitUpsert` — so one
+  /// worker moves one file per two round trips however fat the link is.
+  /// Throughput is therefore `concurrency × file size ÷ (2 × RTT)` and
+  /// nothing else, until it meets the link.
+  ///
+  /// Measured over a unix socket with a forwarding proxy adding 10 ms
+  /// (`benchmark/local_sync_throughput.dart`), on the 14k-file tree SPEC §17
+  /// quotes: apply time halved for every doubling from 4 to 64 concurrent
+  /// actions, with every per-operation mean pinned at one round trip
+  /// throughout — no contention appeared anywhere in that range. The same
+  /// sweep at zero latency showed 16 slightly *faster* than 4, so this costs
+  /// a same-machine `unix://` sync nothing.
+  ///
+  /// Sixteen is where that arithmetic meets a phone on Wi-Fi: ~12.7 KB per
+  /// file at a 10 ms round trip is ~0.53 MiB/s per worker, so sixteen reach
+  /// ~8.5 MiB/s — about what the link measured at. Going further would not be
+  /// wrong, it would just be queueing against the link instead of against
+  /// latency, and queueing is what makes SPEC §17's per-operation means stop
+  /// meaning "what one exchange cost". The other lever is the round trips
+  /// themselves: fold the archive commit into the `writeFile` reply and every
+  /// number here doubles.
+  ///
+  /// The cost is what is in flight on the memory-constrained end: sixteen
+  /// streaming `writeFile`s hold one chunk each, not one file each (SPEC
+  /// §7.2), so about a megabyte of buffers and sixteen open handles a side.
+  static const defaultConcurrency = 16;
 
   /// How many actions this applier runs at once. Injectable, and `1` is
   /// exactly the strictly sequential behaviour this had before pipelining —

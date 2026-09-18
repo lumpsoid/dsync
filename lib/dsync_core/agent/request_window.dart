@@ -21,20 +21,21 @@ import 'dart:collection';
 class RequestWindow {
   /// How many operations may be outstanding on one connection.
   ///
-  /// Eight, and the number is a trade, not a tuning knob left at a default.
-  /// The floor is set by what fills the radio's idle gap: a copy issues one
-  /// `writeFile` and one `archiveCommitUpsert` against the destination, so a
-  /// window of two covers a single in-flight copy and buys nothing, and the
-  /// win only starts once several paths overlap. The ceiling is memory on
-  /// the phone (SPEC §7.2): each concurrent `writeFile` holds one streaming
-  /// chunk, not a whole file, but each also holds an open handle and a route
-  /// buffer on both ends, and the initiating side of a large sync is the
-  /// memory-constrained one. Eight is four `Applier` workers' worth of
-  /// concurrent copies plus headroom for each one's trailing commit, which
-  /// is the shape the work actually has. Beyond that the link stops being
-  /// the floor — the desktop's one fsync per `archiveCommitUpsert` (SPEC
-  /// §8.2) is — and a wider window would only queue against it.
-  static const defaultSize = 8;
+  /// Twice what `Applier` runs at once, because an action's operations
+  /// against one replica are sequential — a
+  /// `writeFile` then its `archiveCommitUpsert` — while a delete action adds
+  /// a third. Headroom, in other words: this bound exists so a peer cannot
+  /// be flooded, not to meter the work, and `Applier` is what decides how
+  /// much work there is.
+  ///
+  /// **Why it is not smaller.** Every operation costs one round trip, so a
+  /// connection's throughput is the window divided by the round-trip time,
+  /// and nothing else — measured over a unix socket with a forwarding proxy
+  /// adding 10 ms (`benchmark/local_sync_throughput.dart`), apply time
+  /// halved for every doubling from 4 concurrent actions to 64, with every
+  /// per-operation mean pinned at exactly one round trip throughout. There
+  /// is no contention to find; there is only latency to cover.
+  static const defaultSize = 32;
 
   /// The bound. At most this many [run] bodies are in flight at once.
   final int size;
