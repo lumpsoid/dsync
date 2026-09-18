@@ -553,6 +553,112 @@ void main() {
     });
   });
 
+  group('walk order across stat batches (SPEC §5.3, task 1a341e)', () {
+    test('entries come back in walk order however the batches fall', () async {
+      // More files than any `jobs` below, interleaved with a subdirectory so
+      // batches are cut short by a directory as well as by filling up. The
+      // walk sorts by path, and `am_dir` sorts between `a09.txt` and
+      // `b00.txt`, so its contents must appear there — not after every file of
+      // this directory, which is what deferring the whole batch would
+      // produce.
+      for (var i = 0; i < 10; i++) {
+        await File('${tempDir.path}/a${i.toString().padLeft(2, '0')}.txt')
+            .writeAsString('a$i');
+      }
+      await Directory('${tempDir.path}/am_dir').create();
+      await File('${tempDir.path}/am_dir/inner.txt').writeAsString('inner');
+      for (var i = 0; i < 10; i++) {
+        await File('${tempDir.path}/b${i.toString().padLeft(2, '0')}.txt')
+            .writeAsString('b$i');
+      }
+
+      final expected = [
+        for (var i = 0; i < 10; i++) 'a${i.toString().padLeft(2, '0')}.txt',
+        'am_dir/inner.txt',
+        for (var i = 0; i < 10; i++) 'b${i.toString().padLeft(2, '0')}.txt',
+      ];
+
+      for (final jobs in [1, 3, 4, 7, 64]) {
+        final result = await Scanner(jobs: jobs).scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+        );
+
+        expect(
+          result.entries.map((e) => e.path),
+          expected,
+          reason: 'jobs: $jobs',
+        );
+      }
+    });
+
+    test('a followed symlink lands where the link sits, not after the batch '
+        'it interrupted', () async {
+      for (var i = 0; i < 6; i++) {
+        await File('${tempDir.path}/a$i.txt').writeAsString('a$i');
+      }
+      await File('${tempDir.path}/target.txt').writeAsString('target');
+      // `m_link` sorts between `a5.txt` and `target.txt`.
+      await Link('${tempDir.path}/m_link')
+          .create('${tempDir.path}/target.txt');
+
+      final result = await Scanner(jobs: 4).scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+        rules: RuleSet(follow: ['m_link']),
+      );
+
+      expect(result.entries.map((e) => e.path), [
+        for (var i = 0; i < 6; i++) 'a$i.txt',
+        'm_link',
+        'target.txt',
+      ]);
+    }, onPlatform: {'windows': Skip('symlink creation needs a privilege')});
+  });
+
+  group('hash batching across isolates (SPEC §5.2, task 1a341e)', () {
+    test('every file is hashed exactly once and correctly however the work '
+        'shards — the balancing must not drop or duplicate a path', () async {
+      // Sizes chosen so the greedy packer cannot deal them evenly: one file
+      // far larger than the rest is what sends a naive round-robin's shards
+      // out of balance, and what a slot-misaligned shard would misreport.
+      final contents = {
+        'big.bin': 'B' * (512 * 1024),
+        'a.txt': 'a',
+        'b.txt': 'bb',
+        'c.txt': 'ccc',
+        'nested/d.txt': 'dddd',
+        'nested/e.txt': 'eeeee',
+      };
+      for (final MapEntry(key: path, value: body) in contents.entries) {
+        final file = File('${tempDir.path}/$path');
+        await file.parent.create(recursive: true);
+        await file.writeAsString(body);
+      }
+
+      for (final jobs in [1, 2, 3, 8]) {
+        final result = await Scanner(jobs: jobs).scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+        );
+
+        expect(
+          result.entries.map((e) => e.path).toList()..sort(),
+          contents.keys.toList()..sort(),
+          reason: 'jobs: $jobs',
+        );
+        for (final MapEntry(key: path, value: body) in contents.entries) {
+          expect(
+            entryFor(result.entries, path).hash,
+            hashOf(body),
+            reason: 'jobs: $jobs, path: $path',
+          );
+        }
+      }
+    });
+
+  });
+
   group('jobs', () {
     test('scanning is correct regardless of configured parallelism', () async {
       for (var i = 0; i < 5; i++) {
@@ -574,10 +680,17 @@ void main() {
     /// Drops every permission bit, and registers a tear-down that puts them
     /// back — a chmod-000 directory cannot be removed recursively, so without
     /// this the shared `tearDown` fails and takes unrelated tests with it.
-    Future<void> lockDown(String path, {required String restore}) async {
+    /// [mode] is what to clamp the path down *to*, `000` unless a test needs
+    /// something subtler — `444` on a directory is the one case that still
+    /// lists (`readdir` needs only read) while denying every `stat` inside it.
+    Future<void> lockDown(
+      String path, {
+      required String restore,
+      String mode = '000',
+    }) async {
       addTearDown(() => Process.run('chmod', [restore, path]));
-      final result = await Process.run('chmod', ['000', path]);
-      expect(result.exitCode, 0, reason: 'chmod 000 $path: ${result.stderr}');
+      final result = await Process.run('chmod', [mode, path]);
+      expect(result.exitCode, 0, reason: 'chmod $mode $path: ${result.stderr}');
     }
 
     /// chmod 000 does not stop root, and a container or CI runner may well be
@@ -617,6 +730,81 @@ void main() {
       expect(result.skippedPaths.single.detail, 'Permission denied');
       expect(result.unreadableCount, 1);
     }, testOn: 'linux');
+
+    test('a file `stat` cannot answer for is reported with the OS\'s own '
+        'reason, not with a guess (SPEC §5, task 1a341e)', () async {
+      // `FileStat` collapses every failure into `notFound` and carries no
+      // `OSError`, so the scanner has to ask separately why. This is the
+      // deterministic way to provoke it: a directory readable but not
+      // executable still lists — `readdir` needs only read — while `stat` on
+      // anything inside it is denied. Before task 1a341e the per-entry
+      // `FileSystemEntity.type` lookup hit the same wall and the path was
+      // dropped in silence, which SPEC §5 says it should not be.
+      await Directory('${tempDir.path}/sub').create();
+      await File('${tempDir.path}/sub/inner.txt').writeAsString('inner');
+      await lockDown('${tempDir.path}/sub', restore: '755', mode: '444');
+      if (await stillReadable(
+        () => File('${tempDir.path}/sub/inner.txt').length(),
+      )) {
+        markTestSkipped('running as root: chmod 444 does not deny the stat');
+        return;
+      }
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      expect(result.entries, isEmpty);
+      final skipped = result.skippedPaths.single;
+      expect(skipped.path, 'sub/inner.txt');
+      expect(skipped.reason, SkippedReason.unreadable);
+      // The OS's word, so a locked file and a vanished one stay tellable
+      // apart — the whole point of SPEC §5 carrying a reason at all.
+      expect(skipped.detail, 'Permission denied');
+      expect(result.unreadableCount, 1);
+    }, testOn: 'linux');
+
+    test('no entry ever carries FileStat\'s not-found sentinel as a size',
+        () async {
+      await File('${tempDir.path}/ok.txt').writeAsString('hello');
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      for (final entry in result.entries) {
+        expect(entry.size, isNot(isNegative), reason: entry.path);
+      }
+    });
+
+    test('a vanished file with an archive entry is not reported deleted — '
+        'SPEC §5 excludes an unread path from reconciliation rather than '
+        'propagating a deletion the user never made', () async {
+      await File('${tempDir.path}/ok.txt').writeAsString('hello');
+
+      // No file on disk at all, so `_visitFile` is never reached for it and
+      // the archived path is genuinely absent: this pins the *other* side of
+      // the change, that a path the walk never saw still reaches `deleted`.
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({
+          'archived.txt': ArchiveEntry(
+            path: 'archived.txt',
+            size: 3,
+            mtime: 1,
+            mode: 420,
+            hash: hashOf('old'),
+          ),
+        }),
+      );
+
+      expect(
+        result.entries.singleWhere((e) => e.path == 'archived.txt').status,
+        ScanStatus.deleted,
+      );
+    });
 
     test('an unreadable directory is reported and its siblings still '
         'scan', () async {
@@ -729,6 +917,56 @@ void main() {
       expect(result.skippedPaths.single.reason, SkippedReason.unreadable);
     }, testOn: 'linux');
 
+    test('one unreadable file costs only itself, whichever shard it landed '
+        'in', () async {
+      await File('${tempDir.path}/ok.txt').writeAsString('hello');
+      await File('${tempDir.path}/big.bin').writeAsString('B' * (512 * 1024));
+      await File('${tempDir.path}/locked.txt').writeAsString('secret');
+      await lockDown('${tempDir.path}/locked.txt', restore: '644');
+      if (await stillReadable(
+        () => File('${tempDir.path}/locked.txt').readAsBytes(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny reads');
+        return;
+      }
+
+      final result = await Scanner(jobs: 4).scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      expect(
+        result.entries.map((e) => e.path).toList()..sort(),
+        ['big.bin', 'ok.txt'],
+      );
+      expect(result.skippedPaths.single.path, 'locked.txt');
+      expect(result.skippedPaths.single.detail, 'Permission denied');
+    }, testOn: 'linux');
+
+    test('failures are reported in walk order, not in the order the shards '
+        'happened to finish', () async {
+      for (final name in ['a', 'b', 'c']) {
+        await File('${tempDir.path}/$name.txt').writeAsString(name);
+        await lockDown('${tempDir.path}/$name.txt', restore: '644');
+      }
+      if (await stillReadable(
+        () => File('${tempDir.path}/a.txt').readAsBytes(),
+      )) {
+        markTestSkipped('running as root: chmod 000 does not deny reads');
+        return;
+      }
+
+      final result = await Scanner(jobs: 3).scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({}),
+      );
+
+      expect(result.skippedPaths.map((s) => s.path), [
+        'a.txt',
+        'b.txt',
+        'c.txt',
+      ]);
+    }, testOn: 'linux');
     test('an unreadable replica root is fatal, not a per-path skip: there '
         'is no tree left to sync, and an empty report would invite '
         'mirroring the whole other replica into it (SPEC §5)', () async {

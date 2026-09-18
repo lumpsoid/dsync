@@ -18,9 +18,16 @@ import 'package:path/path.dart' as p;
 /// each side reports statuses relative to its own archive, which is enough
 /// for reconciliation (SPEC §5, §6).
 class Scanner {
-  /// Hashing concurrency (SPEC §5.2: "hashing runs in isolates, parallelism
-  /// configurable"). A property of this host's resources, unlike the rules,
-  /// which belong to the run.
+  /// How many file operations this scan keeps outstanding at once: the
+  /// hashing isolates of SPEC §5.2, and the `stat` batches of [_walkChildren].
+  /// A property of this host's resources, unlike the rules, which belong to
+  /// the run.
+  ///
+  /// One value for both because both are the same bet — that this host can
+  /// carry more than one file operation at a time — and a host where that is
+  /// true of hashing is a host where it is true of the walk. Measured on a
+  /// phone, batching the walk's stats four deep took about 9% off it
+  /// (SPEC §5.3).
   final int jobs;
 
   /// How a child's own name is read back out of [FileSystemEntity.path]
@@ -208,6 +215,18 @@ class Scanner {
     }
     children.sort((a, b) => a.path.compareTo(b.path));
 
+    // Files whose `stat` has not been issued yet, in walk order. The walk
+    // otherwise keeps exactly one `stat` outstanding at a time, and on a
+    // filesystem that charges a round trip per lookup — Android's emulated
+    // storage charges ~330 µs — it pays every one of them end to end.
+    //
+    // Flushed before anything that reports, never merely at the end: a batch
+    // left outstanding while a subdirectory is walked, or while a symlink is
+    // recorded, would put that subtree's entries ahead of files that come
+    // before it in the sort. Everything this scan reports is in walk order and
+    // stays that way.
+    final pending = <(File, String)>[];
+
     for (final child in children) {
       // Platform-aware: `child.path` is OS-spelled (SPEC §3) — `\`-joined on
       // Windows, `/`-joined everywhere else this project runs — while `name`
@@ -224,12 +243,30 @@ class Scanner {
       // data to the other side as a new file.
       if (isTempFileName(name)) continue;
 
-      switch (await FileSystemEntity.type(child.path, followLinks: false)) {
-        case FileSystemEntityType.directory:
+      // The child's type comes from the listing, which already typed it, not
+      // from a second `FileSystemEntity.type` lookup of the same path. That
+      // call cost 3.50 s of a 29.9 s scan of 14,471 files on a phone
+      // (task 1a341e) — Android's emulated storage charges ~333 µs for a
+      // path lookup, and this was the second one per entry for information
+      // `dir.list(followLinks: false)` had already returned. `followLinks`
+      // is false on that listing, so a symlink arrives as a [Link] rather
+      // than as whatever it points at, which is the distinction SPEC §5.1
+      // turns on.
+      //
+      // What the lookup did buy is the vanished-file case: a path removed
+      // between the listing and the switch typed as `notFound` and fell to
+      // `default`. [_visitFile] carries that check now, off the `stat` it
+      // already makes, so the race costs nothing extra instead of costing a
+      // syscall per entry.
+      switch (child) {
+        case Directory():
+          await _flush(pending, context);
           await _walk(Directory(child.path), relativePath, context);
-        case FileSystemEntityType.file:
-          await _visitFile(File(child.path), relativePath, context);
-        case FileSystemEntityType.link:
+        case File():
+          pending.add((File(child.path), relativePath));
+          if (pending.length >= jobs) await _flush(pending, context);
+        case Link():
+          await _flush(pending, context);
           if (context.rules.follows(relativePath)) {
             await _visitLink(child.path, relativePath, context);
           } else {
@@ -243,6 +280,30 @@ class Scanner {
         default:
           break;
       }
+    }
+    await _flush(pending, context);
+  }
+
+  /// Stats every file in [pending] at once, then records them in the order
+  /// they were added.
+  ///
+  /// The two halves are separate on purpose. `Future.wait` resolves in
+  /// completion order, so recording from inside the wait would order this
+  /// scan's entries by whichever `stat` came back first — which is what
+  /// [_hashAll] avoids for the same reason, and would make the report's
+  /// ordering depend on the filesystem's mood. The stats overlap; the
+  /// recording does not.
+  Future<void> _flush(
+    List<(File, String)> pending,
+    _ScanContext context,
+  ) async {
+    if (pending.isEmpty) return;
+    final batch = [...pending];
+    pending.clear();
+    final stats = await Future.wait([for (final (file, _) in batch) file.stat()]);
+    for (var i = 0; i < batch.length; i++) {
+      final (file, relativePath) = batch[i];
+      await _recordFile(file, relativePath, stats[i], context);
     }
   }
 
@@ -287,13 +348,40 @@ class Scanner {
     }
   }
 
+  /// One file, stat'd and recorded on its own — the followed-symlink path
+  /// (SPEC §5.1), which reaches a single target rather than a directory's
+  /// worth of children and so has no batch to join.
   Future<void> _visitFile(
     File file,
     String relativePath,
     _ScanContext context,
+  ) async => _recordFile(file, relativePath, await file.stat(), context);
+
+  /// Records one file against [_ScanContext], given the [FileStat] already
+  /// taken for it.
+  ///
+  /// Takes the stat rather than making it, so a caller can have taken several
+  /// at once ([_flush]) without giving up the order it records them in.
+  Future<void> _recordFile(
+    File file,
+    String relativePath,
+    FileStat stat,
+    _ScanContext context,
   ) async {
+    // The file went away between the directory listing and this `stat`.
+    // Reported rather than silently dropped, and — the part that matters —
+    // *not* added to [_ScanContext.seen], so an archived path that really is
+    // gone still reaches `deletedPaths` below. `FileStat` answers this
+    // without a syscall of its own: it is the reading of the `stat` that had
+    // to happen anyway, which is what let the per-entry type lookup go
+    // (task 1a341e).
+    if (stat.type == FileSystemEntityType.notFound) {
+      context.skipped.add(
+        SkippedPath.unreadable(relativePath, await _statFailureReason(file)),
+      );
+      return;
+    }
     context.seen.add(relativePath);
-    final stat = await file.stat();
     final size = stat.size;
     final mtime = stat.modified.microsecondsSinceEpoch;
     final mode = stat.mode & 0xFFF; // permission + setuid/setgid/sticky bits
@@ -328,8 +416,51 @@ class Scanner {
     );
   }
 
-  /// Hashes every [_ScanContext.pendingHash] candidate with at most [jobs]
-  /// concurrent isolates.
+  /// Why a [FileStat] came back as [FileSystemEntityType.notFound], in the
+  /// OS's own words.
+  ///
+  /// [FileStat] collapses every failure into that one sentinel and carries no
+  /// [OSError], so the reason has to be asked for separately — and SPEC §5
+  /// says it is worth asking: "permission denied" and "no such file or
+  /// directory" are exactly what tell a locked file apart from one that
+  /// vanished mid-scan, and only the second is gone by the time anyone reads
+  /// the report. Calling it "vanished" because `stat` said `notFound` would
+  /// mislabel every locked file as a deleted one.
+  ///
+  /// One extra syscall, on the failure path only — [File.length] is the
+  /// cheapest call here that throws rather than returning a sentinel. The
+  /// per-entry cost this whole change exists to remove (task 1a341e) is not
+  /// reintroduced: a tree with no unreadable paths never reaches this.
+  Future<String> _statFailureReason(File file) async {
+    try {
+      await file.length();
+    } on FileSystemException catch (error) {
+      return describeFileSystemFailure(error);
+    }
+    // It answered the second time. Nothing is known about what the first call
+    // hit, so nothing is claimed about it.
+    return 'could not be read';
+  }
+
+  /// Hashes every [_ScanContext.pendingHash] candidate across at most [jobs]
+  /// isolates (SPEC §5.2: "hashing runs in isolates, parallelism
+  /// configurable").
+  ///
+  /// **Batched per isolate, not per file** (task 1a341e). An earlier shape
+  /// spawned an isolate only for files past a size threshold and hashed
+  /// everything smaller inline, which meant a tree of small files did all its
+  /// hashing on the calling isolate: SHA-256 is synchronous CPU work, so [jobs]
+  /// async workers on one isolate interleave at the reads and then queue for
+  /// the one core. Measured on a phone, a tree of 14,471 files averaging
+  /// 12.7 KiB spent 15.6 s of a 29.9 s scan hashing; measured on a desktop
+  /// over the same tree shape, that inline path plateaus at ~93 MiB/s however
+  /// high [jobs] goes, while the same bytes across real isolates scale
+  /// linearly — 100, 196, 384, 653 MiB/s at 1, 2, 4 and 8. The threshold was
+  /// not wrong about spawning being dear relative to hashing 13 KiB; it was
+  /// wrong that the alternative was hashing on the caller.
+  ///
+  /// Each isolate still streams one file at a time, so peak memory is one
+  /// file per isolate rather than one shard — see [_hashFile].
   ///
   /// A candidate whose read fails — permission denied, or the file vanished
   /// between the directory listing and the hash — yields no [ScanEntry] and
@@ -338,9 +469,8 @@ class Scanner {
   /// `deleted`: the scan knows the file was there, only not what is in it.
   ///
   /// Failures are collected into a slot-per-candidate array and appended
-  /// afterwards rather than pushed onto [context] from inside the workers.
-  /// The workers interleave at every `await`, so pushing directly would order
-  /// the report by whichever read happened to fail first; this keeps it in
+  /// afterwards rather than pushed onto [context] from inside the shards.
+  /// The shards finish in whatever order they finish; this keeps the report in
   /// walk order, the same order every other part of a scan reports in.
   Future<List<ScanEntry>> _hashAll(_ScanContext context) async {
     final candidates = context.pendingHash;
@@ -348,28 +478,96 @@ class Scanner {
 
     final results = List<ScanEntry?>.filled(candidates.length, null);
     final failures = List<SkippedPath?>.filled(candidates.length, null);
-    var next = 0;
 
-    Future<void> worker() async {
-      while (next < candidates.length) {
-        final index = next++;
-        final candidate = candidates[index];
-        try {
-          results[index] = await candidate.hash();
-        } on FileSystemException catch (error) {
-          failures[index] = SkippedPath.unreadable(
-            candidate.path,
-            describeFileSystemFailure(error),
-          );
-        }
-      }
-    }
+    await Future.wait([
+      for (final shard in _shards(candidates))
+        () async {
+          // Built out here, not inside the closure below: a closure that
+          // reached for `candidates` would copy every [_HashCandidate] — and
+          // its [ArchiveEntry] — into the isolate. Only the paths need to
+          // cross.
+          final paths = [for (final i in shard) candidates[i].absolutePath];
+          final (digests, errors) = shard.length == candidates.length
+              // One shard is the whole job, so there is no second isolate to
+              // run alongside and nothing to gain by leaving this one.
+              ? await _hashBatch(paths)
+              : await Isolate.run(() => _hashBatch(paths));
+          for (var slot = 0; slot < shard.length; slot++) {
+            final index = shard[slot];
+            if (digests[slot] case final digest?) {
+              results[index] = candidates[index].entryFor(digest);
+            } else {
+              failures[index] = SkippedPath.unreadable(
+                candidates[index].path,
+                errors[slot] ?? 'could not be read',
+              );
+            }
+          }
+        }(),
+    ]);
 
-    final workerCount = jobs.clamp(1, candidates.length);
-    await Future.wait(List.generate(workerCount, (_) => worker()));
     context.skipped.addAll(failures.whereType<SkippedPath>());
     return results.whereType<ScanEntry>().toList();
   }
+
+  /// Splits [candidates] into at most [jobs] lists of indices, balanced by
+  /// total bytes.
+  ///
+  /// Largest first into whichever shard is currently lightest — the standard
+  /// greedy fit. Dealing them round-robin in walk order would be simpler and
+  /// is fine until a tree has a few large files among many small ones, which
+  /// is precisely the tree this project keeps meeting: the shard that drew
+  /// them becomes the straggler every other isolate waits on, and the
+  /// parallelism this method exists for is spent waiting.
+  ///
+  /// One shard when the whole job is smaller than [_isolateBatchFloorBytes]:
+  /// below that, spawning costs more than the hashing, which is the one thing
+  /// the old per-file threshold had right.
+  List<List<int>> _shards(List<_HashCandidate> candidates) {
+    final totalBytes = candidates.fold<int>(0, (sum, c) => sum + c.size);
+    final count = totalBytes < _isolateBatchFloorBytes
+        ? 1
+        : jobs.clamp(1, candidates.length);
+    if (count == 1) return [[for (var i = 0; i < candidates.length; i++) i]];
+
+    final order = [for (var i = 0; i < candidates.length; i++) i]
+      ..sort((a, b) => candidates[b].size.compareTo(candidates[a].size));
+    final shards = List.generate(count, (_) => <int>[]);
+    final load = List<int>.filled(count, 0);
+    for (final index in order) {
+      var lightest = 0;
+      for (var shard = 1; shard < count; shard++) {
+        if (load[shard] < load[lightest]) lightest = shard;
+      }
+      shards[lightest].add(index);
+      load[lightest] += candidates[index].size;
+    }
+    // Walk order within a shard, so a shard reads its files roughly in the
+    // order they sit on disk rather than in the size order it was packed in.
+    for (final shard in shards) {
+      shard.sort();
+    }
+    return shards;
+  }
+}
+
+/// SHA-256 of each of [paths], in order: per slot either a digest or, in the
+/// other list, the OS's reason it could not be read (SPEC §5).
+///
+/// Top-level and returning plain strings because this is what crosses into an
+/// isolate: a [FileSystemException] thrown here would have to be rebuilt on
+/// the other side, and one failed path must not cost the rest of the batch.
+Future<(List<String?>, List<String?>)> _hashBatch(List<String> paths) async {
+  final digests = List<String?>.filled(paths.length, null);
+  final errors = List<String?>.filled(paths.length, null);
+  for (var i = 0; i < paths.length; i++) {
+    try {
+      digests[i] = await _hashFile(paths[i]);
+    } on FileSystemException catch (error) {
+      errors[i] = describeFileSystemFailure(error);
+    }
+  }
+  return (digests, errors);
 }
 
 /// Groups `live` ∪ `archived` by `foldKey`, keeping only the groups SPEC §16
@@ -436,22 +634,15 @@ class _ScanContext {
   _ScanContext(this.archive, this.rules);
 }
 
-/// Files at least this large are hashed in their own isolate; smaller ones
-/// are hashed inline.
+/// A scan with less than this much to hash in total does it on the calling
+/// isolate rather than spawning any.
 ///
-/// SPEC §5.2 puts hashing in isolates so that a big file neither stalls the
-/// event loop nor monopolises one core. Neither concern applies below this
-/// size: SHA-256 over a couple of hundred kilobytes finishes in well under a
-/// millisecond, while spawning an isolate costs more than that — a tree of
-/// many small files would spend most of the scan starting isolates.
-const _isolateThresholdBytes = 256 * 1024;
-
-/// The SHA-256 of the file at [absolutePath], as a hex string.
-Future<String> _digestOf(String absolutePath, int size) {
-  return size >= _isolateThresholdBytes
-      ? Isolate.run(() => _hashFile(absolutePath))
-      : _hashFile(absolutePath);
-}
+/// Spawning costs more than hashing a couple of hundred kilobytes, so a scan
+/// that finds one changed file should not pay for an isolate to hash it. This
+/// is a floor on the *whole job*, not on one file (task 1a341e): as a
+/// per-file threshold it sent every small file to the calling isolate, which
+/// on a tree of many small files is the entire tree.
+const _isolateBatchFloorBytes = 256 * 1024;
 
 /// Streams the file through the hash rather than reading it whole.
 ///
@@ -483,9 +674,13 @@ class _HashCandidate {
     required this.existing,
   });
 
-  Future<ScanEntry> hash() async {
-    final digest = await _digestOf(absolutePath, size);
-
+  /// This candidate's [ScanEntry], given the digest [_hashBatch] computed for
+  /// it.
+  ///
+  /// Separate from the hashing so the hashing can happen in another isolate:
+  /// what comes back across is a string, and the SPEC §5.2 branch it implies
+  /// is decided here, against the [ArchiveEntry] that never had to leave.
+  ScanEntry entryFor(String digest) {
     final existing = this.existing;
     final reason = existing == null
         ? ScanReason.created
