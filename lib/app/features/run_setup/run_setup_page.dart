@@ -4,7 +4,6 @@ import '../../run_request.dart';
 import 'run_setup_controller.dart';
 import 'run_setup_scope.dart';
 import 'run_setup_view_state.dart';
-import 'scan_cost_sheet.dart';
 
 /// The Run setup page: pick the two locations a run syncs (SPEC §2, §4.4,
 /// §11.2). Widgets only, per the page role in `app_scope.dart`: a folder
@@ -111,29 +110,6 @@ class _RunSetupPageState extends State<RunSetupPage> {
     );
   }
 
-  /// Measures where a scan of the selected folder goes (task 1a341e), then
-  /// opens the report.
-  ///
-  /// The sheet opens from here rather than from the controller for the reason
-  /// every other navigation on this page does: the controller records an
-  /// outcome and the page decides what to show for it. A measurement that
-  /// failed is a snackbar — it is about a folder, not about a field, the same
-  /// call `_pickFolder` makes for a refused pick.
-  Future<void> _measureScanCost() async {
-    await _controller.measureScanCost();
-    if (!mounted) return;
-    switch (_controller.state.scanCost) {
-      case ScanCostMeasured(:final report):
-        await showScanCost(context, report);
-      case ScanCostFailed(:final message):
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message)));
-      case ScanCostIdle() || ScanCostMeasuring():
-        break;
-    }
-  }
-
   Future<void> _start() async {
     await _controller.start(
       remoteRoot: _remoteRoot.text,
@@ -186,7 +162,6 @@ class _RunSetupPageState extends State<RunSetupPage> {
             profileName: _profileName,
             onCreateFolder: _createFolder,
             onPickFolder: _pickFolder,
-            onMeasureScanCost: _measureScanCost,
             onStart: _start,
             onSave: _save,
           ),
@@ -206,7 +181,6 @@ class _RunSetupForm extends StatelessWidget {
     required this.profileName,
     required this.onCreateFolder,
     required this.onPickFolder,
-    required this.onMeasureScanCost,
     required this.onStart,
     required this.onSave,
   });
@@ -219,7 +193,6 @@ class _RunSetupForm extends StatelessWidget {
   final TextEditingController profileName;
   final VoidCallback onCreateFolder;
   final VoidCallback onPickFolder;
-  final VoidCallback onMeasureScanCost;
   final VoidCallback onStart;
   final VoidCallback onSave;
 
@@ -313,56 +286,6 @@ class _RunSetupForm extends StatelessWidget {
                         ),
                       ],
                     ),
-                  ],
-                ),
-                // Under the folder card, because it is about the folder the
-                // card selected and about nothing else on this page — and a
-                // disclosure, because it is a diagnostic: the answer to "why
-                // is this slow" is worth a tap to find and should not sit in
-                // the path of someone who only wants to start a run.
-                _Disclosure(
-                  key: const Key('run-setup-scan-cost'),
-                  title: 'Measure scan cost',
-                  children: [
-                    Text(
-                      'Walks this folder several times, adding one step each '
-                      'time, to split the scan into what Android costs and '
-                      'what dsync adds. Takes minutes on a large folder. '
-                      'Nothing is written and no run is started.',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: switch (state.scanCost) {
-                        // Disabled *and* labelled while it runs: on the tree
-                        // sizes this exists for there is nothing else on
-                        // screen to say the walk is still going.
-                        ScanCostMeasuring() => OutlinedButton.icon(
-                          onPressed: null,
-                          icon: const SizedBox.square(
-                            dimension: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                          label: const Text('Measuring…'),
-                        ),
-                        _ => OutlinedButton.icon(
-                          key: const Key('run-setup-measure-scan-cost'),
-                          onPressed: starting ? null : onMeasureScanCost,
-                          icon: const Icon(Icons.timer_outlined),
-                          label: const Text('Measure'),
-                        ),
-                      },
-                    ),
-                    if (state.scanCost case ScanCostMeasured(:final report))
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton(
-                          key: const Key('run-setup-show-scan-cost'),
-                          onPressed: () => showScanCost(context, report),
-                          child: const Text('Show last report'),
-                        ),
-                      ),
                   ],
                 ),
               ],

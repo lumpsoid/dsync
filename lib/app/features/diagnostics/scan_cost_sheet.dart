@@ -4,7 +4,7 @@ import 'package:dsync/dsync_core/scan/scan_probe_format.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Opens the scan-cost report over the Run setup page (task 1a341e).
+/// Opens the scan-cost report over the Diagnostics page (task 1a341e).
 Future<void> showScanCost(BuildContext context, ScanProbeReport report) =>
     showModalBottomSheet<void>(
       context: context,

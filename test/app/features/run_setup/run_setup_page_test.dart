@@ -11,7 +11,6 @@ import 'package:dsync/app/run_request.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
-import 'package:dsync/dsync_core/models/scan_probe_report.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -465,73 +464,5 @@ void main() {
     expect(request.addressOverride?.host, '10.0.0.9');
     expect(request.addressOverride?.port, 4242);
     expect(request.dryRun, isFalse);
-  });
-
-  group('measure scan cost (task 1a341e)', () {
-    testWidgets('the action is folded away under the folder, not in the path '
-        'of someone starting a run', (tester) async {
-      await pumpLoaded(tester);
-
-      expect(find.byKey(const Key('run-setup-scan-cost')), findsOneWidget);
-      expect(
-        find.byKey(const Key('run-setup-measure-scan-cost')),
-        findsNothing,
-      );
-    });
-
-    testWidgets('measuring disables the button and says so, since nothing '
-        'else on screen would', (tester) async {
-      await pumpLoaded(tester);
-      await openDisclosure(tester, 'run-setup-scan-cost');
-
-      controller.state.recordScanCost(const ScanCostMeasuring());
-      await tester.pump();
-
-      expect(find.text('Measuring…'), findsOneWidget);
-      expect(
-        tester
-            .widget<OutlinedButton>(
-              find.ancestor(
-                of: find.text('Measuring…'),
-                matching: find.byType(OutlinedButton),
-              ),
-            )
-            .onPressed,
-        isNull,
-      );
-    });
-
-    testWidgets('a finished measurement can be reopened without measuring '
-        'again', (tester) async {
-      await pumpLoaded(tester);
-      await openDisclosure(tester, 'run-setup-scan-cost');
-
-      controller.state.recordScanCost(
-        const ScanCostMeasured(
-          ScanProbeReport(rootPath: '/tmp/notes', passes: []),
-        ),
-      );
-      await tester.pump();
-      await tester.tap(find.byKey(const Key('run-setup-show-scan-cost')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Scan cost'), findsOneWidget);
-      expect(find.text('/tmp/notes'), findsOneWidget);
-    });
-
-    testWidgets('a measurement that failed is a snackbar, not a field line — '
-        'it is about the folder', (tester) async {
-      await pumpLoaded(tester);
-      await openDisclosure(tester, 'run-setup-scan-cost');
-
-      await tester.runAsync(() async {
-        await tester.tap(find.byKey(const Key('run-setup-measure-scan-cost')));
-        await settle();
-      });
-      await tester.pump();
-
-      expect(find.byType(SnackBar), findsOneWidget);
-      expect(find.textContaining('Pick a folder'), findsWidgets);
-    });
   });
 }

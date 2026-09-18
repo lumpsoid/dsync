@@ -1,4 +1,3 @@
-import 'package:dsync/dsync_core/models/scan_probe_report.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../run_request.dart';
@@ -113,42 +112,6 @@ final class RunSetupStarted extends RunSetupOutcome {
   final RunRequest request;
 }
 
-/// Where the scan-cost measurement stands (task 1a341e). Same shape as
-/// [RunSetupOutcome], and separate from it because the two are genuinely
-/// independent: measuring is a diagnostic on the folder already chosen and
-/// starts no run, so a measurement in flight must not read as a run
-/// starting, and one that failed must not block a start.
-sealed class ScanCostOutcome {
-  const ScanCostOutcome();
-}
-
-/// Nothing measured this visit, or the folder changed since the last one.
-final class ScanCostIdle extends ScanCostOutcome {
-  const ScanCostIdle();
-}
-
-/// `RunSetupController.measureScanCost` is walking the tree. Minutes, on the
-/// tree sizes this exists for, which is why it is a state the page renders
-/// rather than a dialog it puts up.
-final class ScanCostMeasuring extends ScanCostOutcome {
-  const ScanCostMeasuring();
-}
-
-/// The walk finished; [report] is what it found.
-final class ScanCostMeasured extends ScanCostOutcome {
-  const ScanCostMeasured(this.report);
-
-  final ScanProbeReport report;
-}
-
-/// The walk could not run — the folder is gone, or this head has no grant to
-/// read it. [message] is the whole line to show.
-final class ScanCostFailed extends ScanCostOutcome {
-  const ScanCostFailed(this.message);
-
-  final String message;
-}
-
 /// One row of the local-folder chooser: the absolute path a run would sync
 /// ([path]) and the line the user reads ([label]) — the bare name for a
 /// folder in the app's own documents directory, the whole path for one the
@@ -197,7 +160,6 @@ class RunSetupViewState extends ChangeNotifier {
   String? _addressError;
   bool _dryRun = false;
   RunSetupOutcome _outcome = const RunSetupIdle();
-  ScanCostOutcome _scanCost = const ScanCostIdle();
   RunSetupPrefill? _prefill;
 
   RunSetupPeer get peer => _peer;
@@ -236,9 +198,6 @@ class RunSetupViewState extends ChangeNotifier {
 
   RunSetupOutcome get outcome => _outcome;
 
-  /// Where the scan-cost measurement stands (task 1a341e).
-  ScanCostOutcome get scanCost => _scanCost;
-
   /// The saved profile's initial values, or `null` on a blank form. Read
   /// once by the page after `load` completes, to fill its text fields; the
   /// local root needs no entry here — the controller selects it directly.
@@ -253,18 +212,10 @@ class RunSetupViewState extends ChangeNotifier {
   /// Replaces the folder list and the selection at once — one notification
   /// for one listing. `RunSetupController` only.
   ///
-  /// A selection that actually moved drops [scanCost]. A scan-cost report is
-  /// about the folder it was measured on, so a report kept across a change of
-  /// folder would sit on screen under a different folder's name — the pairing
-  /// this makes unrepresentable. It is enforced here rather than at each call
-  /// site because this is the only place the selection changes, and the three
-  /// callers that reach it (selecting, creating, picking) would otherwise each
-  /// have to remember.
   void recordLocalFolders(
     List<LocalFolderChoice> folders, {
     required String? selected,
   }) {
-    if (selected != _selectedLocalFolder) _scanCost = const ScanCostIdle();
     _localFolders = List.unmodifiable(folders);
     _selectedLocalFolder = selected;
     notifyListeners();
@@ -306,12 +257,6 @@ class RunSetupViewState extends ChangeNotifier {
   /// Moves the outcome. `RunSetupController` only.
   void recordOutcome(RunSetupOutcome outcome) {
     _outcome = outcome;
-    notifyListeners();
-  }
-
-  /// Moves the scan-cost outcome. `RunSetupController` only.
-  void recordScanCost(ScanCostOutcome outcome) {
-    _scanCost = outcome;
     notifyListeners();
   }
 

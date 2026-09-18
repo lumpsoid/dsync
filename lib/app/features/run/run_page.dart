@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../run_request.dart';
+import '../diagnostics/diagnostics_page.dart';
 import 'run_controller.dart';
 import 'run_scope.dart';
 import 'run_timings_sheet.dart';
@@ -118,6 +119,37 @@ class _RunPageState extends State<RunPage> {
     SyncRunFailed() => false,
   };
 
+  /// Opens the Diagnostics page over this run's local replica.
+  ///
+  /// The reason a probe may not run is decided here rather than there: what
+  /// counts as "a run is in flight" is this feature's own phase sum type, and
+  /// the Diagnostics page takes a sentence it can show rather than a phase it
+  /// would have to interpret.
+  Future<void> _openDiagnostics(SyncRunViewState state) {
+    final running = switch (state.phase) {
+      SyncRunConnecting() ||
+      SyncRunRunning() ||
+      SyncRunAwaitingDecisions() => true,
+      SyncRunIdle() ||
+      SyncRunFinished() ||
+      SyncRunStopped() ||
+      SyncRunPaused() ||
+      SyncRunFailed() => false,
+    };
+    return Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DiagnosticsPage(
+          rootPath: widget.request.localRootPath,
+          blockedReason: running
+              ? 'A sync is running. Measuring now would compete with it for '
+                    'the same storage, so neither figure would be honest — '
+                    'wait for it to finish, or stop it.'
+              : null,
+        ),
+      ),
+    );
+  }
+
   Future<void> _confirmAbort() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -174,6 +206,18 @@ class _RunPageState extends State<RunPage> {
                 onPressed: () => showRunTimings(context, _controller),
               ),
             },
+          ),
+          // Offered in every phase, unlike Timings: the page it opens is
+          // useful before a run as well as after one, and it says for itself
+          // why its probes are disabled while a run is in flight. The report
+          // it leads to is read *beside* the Timings one — §17's `readFile`
+          // and apply throughput against what this device's files cost to
+          // read any other way — which is why the two are one tap apart.
+          IconButton(
+            key: const Key('run-diagnostics'),
+            icon: const Icon(Icons.biotech_outlined),
+            tooltip: 'Diagnostics',
+            onPressed: () => _openDiagnostics(state),
           ),
           ListenableBuilder(
             listenable: state,

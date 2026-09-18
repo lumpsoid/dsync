@@ -11,7 +11,6 @@ import 'package:dsync/app/sync_profile_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
-import 'package:dsync/dsync_core/models/scan_probe_report.dart';
 import 'package:test/test.dart';
 
 import '../../../support/fake_folder_picker.dart';
@@ -757,81 +756,6 @@ void main() {
         expect(controller.state.selectedLocalFolder, isNull);
       },
     );
-  });
-
-  group('measure scan cost (task 1a341e)', () {
-    test('refuses before a folder is chosen, and says which choice is '
-        'missing', () async {
-      await loadDesktop();
-
-      await controller.measureScanCost();
-
-      expect(
-        controller.state.scanCost,
-        isA<ScanCostFailed>().having(
-          (f) => f.message,
-          'message',
-          contains('Pick a folder'),
-        ),
-      );
-    });
-
-    test('measures the selected folder and reports every rung', () async {
-      await loadDesktop();
-      await controller.createLocalFolder('notes');
-      await File('${documents()}/notes/a.txt').writeAsString('a');
-
-      await controller.measureScanCost(passes: 1);
-
-      final outcome = controller.state.scanCost;
-      expect(outcome, isA<ScanCostMeasured>());
-      final report = (outcome as ScanCostMeasured).report;
-      expect(report.rootPath, endsWith('notes'));
-      expect(report.passes.single.layers, hasLength(ScanProbeLayer.values.length));
-      for (final layer in report.passes.single.layers) {
-        expect(layer.files, 1, reason: '${layer.layer} disagreed on the tree');
-      }
-    });
-
-    test('starts no run: a measurement leaves the start outcome alone',
-        () async {
-      await loadDesktop();
-      await controller.createLocalFolder('notes');
-
-      await controller.measureScanCost(passes: 1);
-
-      expect(controller.state.outcome, isA<RunSetupIdle>());
-    });
-
-    test('a report is dropped when a different folder is selected — it is '
-        'about the folder it was measured on', () async {
-      await loadDesktop();
-      await controller.createLocalFolder('notes');
-      await controller.measureScanCost(passes: 1);
-      expect(controller.state.scanCost, isA<ScanCostMeasured>());
-
-      await controller.createLocalFolder('other');
-
-      expect(controller.state.scanCost, isA<ScanCostIdle>());
-    });
-
-    test('a folder that vanished fails with the OS reason and the way out',
-        () async {
-      await loadDesktop();
-      await controller.createLocalFolder('notes');
-      await Directory('${documents()}/notes').delete();
-
-      await controller.measureScanCost(passes: 1);
-
-      expect(
-        controller.state.scanCost,
-        isA<ScanCostFailed>().having(
-          (f) => f.message,
-          'message',
-          allOf(contains('Could not scan'), contains('all files')),
-        ),
-      );
-    });
   });
 
   test('remoteRootNotGrantedMessage says not granted and nothing about '

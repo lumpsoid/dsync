@@ -86,6 +86,56 @@ void main() {
     expect(find.text('Sync with desktop'), findsOneWidget);
   });
 
+  group('the Diagnostics page (task 8347dd)', () {
+    testWidgets('a live run opens it blocked, with the reason on screen', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunRunning());
+      await pump(tester);
+
+      await tester.tap(find.byKey(const Key('run-diagnostics')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Diagnostics'), findsOneWidget);
+      expect(find.textContaining('compete with it'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('read-rate-run')))
+            .onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('a finished run opens it ready to measure, over that run\'s '
+        'own local root', (tester) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(
+          const SyncRunFinished(
+            applied: 0,
+            skipped: 0,
+            conflicts: 0,
+            failed: 0,
+            unreadable: 0,
+          ),
+        );
+      await pump(tester);
+
+      await tester.tap(find.byKey(const Key('run-diagnostics')));
+      await tester.pumpAndSettle();
+
+      expect(find.text(request.localRootPath), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('read-rate-run')))
+            .onPressed,
+        isNotNull,
+      );
+    });
+  });
+
   group('the Timings sheet (SPEC 17)', () {
     // The sheet refreshes on a periodic timer while it is open, so
     // `pumpAndSettle` would never settle: these drive the sheet's route
