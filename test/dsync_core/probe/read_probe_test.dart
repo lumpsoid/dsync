@@ -82,13 +82,47 @@ void main() {
       expect(report.files, 4);
       for (final sample in report.samples) {
         expect(sample.files, 4);
-        // Sorted order, so the cap takes f0..f3 — one byte each — on every
-        // sample. A cap that took a different four would make the samples
-        // incomparable without the report being able to say so.
+        // One byte each, whichever four the stride took — and the same four
+        // on every sample. A cap that took a different four per sample would
+        // make them incomparable without the report being able to say so.
         expect(sample.bytes, 4);
       }
     },
   );
+
+  test(
+    'the corpus is spread across the tree, not taken from its front',
+    () async {
+      // Ten files of growing size in sorted order: a prefix of four averages
+      // 2.5 bytes against the tree's 5.5, which is the bias phase 0b exists to
+      // remove. A stride of every third file averages 5.5.
+      for (var i = 1; i <= 10; i++) {
+        await write('f${i.toString().padLeft(2, '0')}.txt', 'x' * i);
+      }
+
+      final report = await ReadProbe(fileLimit: 4)
+          .run(rootPath: tempDir.path, depths: const [1]);
+
+      expect(report.treeFiles, 10);
+      expect(report.treeBytes, 55);
+      expect(report.corpusBytes, 1 + 3 + 6 + 8);
+      expect(report.meanFileSize, closeTo(report.treeMeanFileSize, 1));
+    },
+  );
+
+  test('a corpus smaller than the cap is the whole tree', () async {
+    await write('a.txt', 'a');
+    await write('nested/b.txt', 'bb');
+
+    final report = await ReadProbe().run(
+      rootPath: tempDir.path,
+      depths: const [1],
+    );
+
+    expect(report.files, report.treeFiles);
+    expect(report.corpusBytes, report.treeBytes);
+    expect(report.meanFileSize, report.treeMeanFileSize);
+  });
 
   test('an unreadable file is skipped rather than failing the sweep', () async {
     await write('readable.txt', 'ok');
@@ -148,6 +182,12 @@ void main() {
       expect(text, contains(readProbeModeLabel(mode)));
     }
     expect(text, contains('fastest:'));
+    expect(text, contains('corpus'), reason: 'the corpus is described');
+    expect(
+      text,
+      contains('tree'),
+      reason: "the tree it stands for is described beside it",
+    );
     // Not the temp path itself: the probe reports the root it resolved, and
     // a symlinked temp dir (macOS) resolves to a different string.
     expect(text, contains('read probe:'));
@@ -155,7 +195,14 @@ void main() {
 
   test('an empty sweep formats without a fastest line', () {
     final text = formatReadProbe(
-      const ReadProbeReport(rootPath: '/nowhere', files: 0, samples: []),
+      const ReadProbeReport(
+        rootPath: '/nowhere',
+        files: 0,
+        corpusBytes: 0,
+        treeFiles: 0,
+        treeBytes: 0,
+        samples: [],
+      ),
     );
 
     expect(text, contains('nothing measured'));

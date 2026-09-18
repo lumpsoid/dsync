@@ -71,8 +71,19 @@ class ReadRateSheet extends StatelessWidget {
                 children: [
                   Text(report.rootPath, style: theme.textTheme.bodySmall),
                   Text(
-                    '${formatMetricCount(report.files)} files, '
-                    '${formatMetricBytes(report.bytes)}',
+                    'Corpus ${formatMetricCount(report.files)} files, '
+                    '${formatMetricBytes(report.corpusBytes)}, mean '
+                    '${formatMetricBytes(report.meanFileSize.round())}/file',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  // Beside the corpus, always. The rates below are per-file
+                  // dominated, so the two means are what says whether they
+                  // stand for a real run or for an unrepresentative slice.
+                  Text(
+                    'Tree ${formatMetricCount(report.treeFiles)} files, '
+                    '${formatMetricBytes(report.treeBytes)}, mean '
+                    '${formatMetricBytes(report.treeMeanFileSize.round())}'
+                    '/file',
                     style: theme.textTheme.bodySmall,
                   ),
                   if (fastest != null) ...[

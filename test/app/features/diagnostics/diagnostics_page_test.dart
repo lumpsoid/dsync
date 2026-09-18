@@ -114,7 +114,14 @@ void main() {
 
     controller.state.recordReadRate(
       const ReadRateMeasured(
-        ReadProbeReport(rootPath: '/tmp/notes', files: 0, samples: []),
+        ReadProbeReport(
+          rootPath: '/tmp/notes',
+          files: 0,
+          corpusBytes: 0,
+          treeFiles: 0,
+          treeBytes: 0,
+          samples: [],
+        ),
       ),
     );
     await tester.pump();

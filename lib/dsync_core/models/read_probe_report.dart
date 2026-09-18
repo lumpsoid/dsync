@@ -93,6 +93,9 @@ class ReadProbeReport {
   const ReadProbeReport({
     required this.rootPath,
     required this.files,
+    required this.corpusBytes,
+    required this.treeFiles,
+    required this.treeBytes,
     required this.samples,
   });
 
@@ -102,11 +105,31 @@ class ReadProbeReport {
   /// How many files every sample read.
   final int files;
 
+  /// The corpus in bytes, as `stat` reports it — not as the reads returned
+  /// it, so that it is the same measure as [treeBytes] and the two means
+  /// below are comparable. A sample's own [ReadProbeSample.bytes] is what
+  /// came back from the reads, and is lower by whatever could not be read.
+  final int corpusBytes;
+
+  /// Every file under the root, and their total size, whether or not the
+  /// corpus sampled them.
+  ///
+  /// Here so the corpus can be checked against the thing it stands for. Cost
+  /// on this path is per-file dominated, so a corpus whose mean file is twice
+  /// the tree's reports up to ~2× the MiB/s the same device would give on a
+  /// real run — the per-mode *ratios* survive that, the absolute rates do
+  /// not, and only these two numbers can say which is being read.
+  final int treeFiles;
+  final int treeBytes;
+
   final List<ReadProbeSample> samples;
 
-  /// The corpus in bytes, taken from a sample rather than from a `stat` pass
-  /// of its own. Zero when nothing ran.
-  int get bytes => samples.isEmpty ? 0 : samples.first.bytes;
+  /// Mean file size of the corpus, against [treeMeanFileSize]. Within a few
+  /// percent of each other means the absolute rates can be taken at face
+  /// value.
+  double get meanFileSize => files == 0 ? 0 : corpusBytes / files;
+
+  double get treeMeanFileSize => treeFiles == 0 ? 0 : treeBytes / treeFiles;
 
   /// The fastest sample, which is the report's headline: the best this
   /// device gave up under any shape tried.

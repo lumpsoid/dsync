@@ -15,8 +15,14 @@ String formatReadProbe(ReadProbeReport report) {
   final out = StringBuffer();
   out.writeln('read probe: ${report.rootPath}');
   out.writeln(
-    '  ${formatMetricCount(report.files)} files, '
-    '${formatMetricBytes(report.bytes)}',
+    '  corpus ${formatMetricCount(report.files)} files, '
+    '${formatMetricBytes(report.corpusBytes)}, '
+    'mean ${formatMetricBytes(report.meanFileSize.round())}/file',
+  );
+  out.writeln(
+    '  tree   ${formatMetricCount(report.treeFiles)} files, '
+    '${formatMetricBytes(report.treeBytes)}, '
+    'mean ${formatMetricBytes(report.treeMeanFileSize.round())}/file',
   );
 
   if (report.samples.isEmpty) {
@@ -59,7 +65,10 @@ String formatReadProbe(ReadProbeReport report) {
     'The first sample of the first mode is the only one whose cache state is '
     'unknown; nothing here can drop a page cache on Android. Read each mode '
     'as a curve — where it flattens, and at what value — rather than as a '
-    'best figure.',
+    'best figure. Check the two mean file sizes against each other first: '
+    'cost here is per-file dominated, so a corpus whose mean is n× the '
+    "tree's reports rates up to n× what a real run would see. The per-mode "
+    'ratios hold either way.',
   );
 
   return out.toString();

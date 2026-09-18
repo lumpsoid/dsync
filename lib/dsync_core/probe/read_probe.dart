@@ -47,8 +47,8 @@ class ReadProbe {
   /// chart.
   static const defaultDepths = [1, 2, 4, 8, 16, 32, 64];
 
-  /// Sweeps [modes] across [depths] over the first [fileLimit] files under
-  /// [rootPath], in sorted path order.
+  /// Sweeps [modes] across [depths] over a [fileLimit]-file sample of the
+  /// tree under [rootPath].
   ///
   /// [onSample] is called as each sample lands, because the sweep takes
   /// minutes on the device it exists for and a head showing nothing until
@@ -71,12 +71,14 @@ class ReadProbe {
     void Function(ReadProbeSample sample)? onSample,
   }) async {
     final root = await Directory(rootPath).resolveSymbolicLinks();
-    final corpus = await _collect(root);
+    final tree = await _walk(root);
+    final corpus = _sampleCorpus(tree);
+    final paths = [for (final file in corpus) file.path];
 
     final samples = <ReadProbeSample>[];
     for (final mode in modes) {
       for (final depth in depths) {
-        final sample = await _sample(corpus, mode, depth);
+        final sample = await _sample(paths, mode, depth);
         samples.add(sample);
         onSample?.call(sample);
       }
@@ -85,30 +87,69 @@ class ReadProbe {
     return ReadProbeReport(
       rootPath: root,
       files: corpus.length,
+      corpusBytes: _totalBytes(corpus),
+      treeFiles: tree.length,
+      treeBytes: _totalBytes(tree),
       samples: samples,
     );
   }
 
-  /// The first [fileLimit] files under [root] in sorted path order.
+  /// Every file under [root] with its size, in sorted path order.
   ///
-  /// Sorted so two runs of the probe on an unchanged tree read the same
-  /// files, and so the corpus is a contiguous region of the tree rather than
-  /// whatever order the filesystem enumerated — the second matters on
-  /// emulated storage, where directory locality is not nothing.
+  /// Sorted so two runs of the probe on an unchanged tree see the same tree
+  /// in the same order, rather than whatever order the filesystem enumerated.
+  ///
+  /// Each file is `stat`ed here, once, so the report can put the corpus's
+  /// mean file size beside the whole tree's — the one number that says
+  /// whether the rates below stand for a real run. It is a walk's worth of
+  /// extra `stat`s before any sample starts and none of it is inside a timed
+  /// region.
   ///
   /// Symlinks are not followed and a directory that cannot be listed is
   /// skipped silently: this measures cost, and a probe that stopped to
   /// report a `SkippedPath` (SPEC §5) would be doing work the thing it
   /// models does not.
-  Future<List<String>> _collect(String root) async {
-    final paths = <String>[];
+  Future<List<_TreeFile>> _walk(String root) async {
+    final files = <_TreeFile>[];
     await for (final entity in Directory(
       root,
     ).list(recursive: true, followLinks: false)) {
-      if (entity is File) paths.add(entity.path);
+      if (entity is! File) continue;
+      try {
+        files.add(_TreeFile(entity.path, (await entity.stat()).size));
+      } on FileSystemException {
+        // Gone between the walk and the stat, or unreadable. Skipped for the
+        // same reason an unreadable file is skipped inside a sample.
+      }
     }
-    paths.sort();
-    return paths.length <= fileLimit ? paths : paths.sublist(0, fileLimit);
+    files.sort((a, b) => a.path.compareTo(b.path));
+    return files;
+  }
+
+  /// [fileLimit] files spread evenly across the whole sorted walk — every
+  /// `n`th file, taken from the front.
+  ///
+  /// **Why not the first N.** The tree's cost profile is per-file dominated,
+  /// so the corpus's mean file size sets the absolute MiB/s the sweep
+  /// reports. A contiguous prefix is one region of one subtree, and on this
+  /// project's own replica that region averaged 27.1 KiB against the tree's
+  /// 12.7 — flattering every rate by up to ~2×. A stride takes from every
+  /// region instead, which is what makes the absolute number usable.
+  ///
+  /// **What it costs.** Directory locality, deliberately. A prefix reads
+  /// whole directories in order; a stride skips between them, so every
+  /// sample pays whatever a spread-out read pattern costs on emulated
+  /// storage. That is the pattern a real apply has — reconcile hands the
+  /// `Applier` changed paths from across the tree, not one directory at a
+  /// time — so it is the more honest corpus as well as the more
+  /// representative one.
+  ///
+  /// Deterministic: the same tree gives the same corpus on every run, which
+  /// is what makes two sweeps subtractable.
+  List<_TreeFile> _sampleCorpus(List<_TreeFile> tree) {
+    if (tree.length <= fileLimit) return tree;
+    final stride = tree.length / fileLimit;
+    return [for (var i = 0; i < fileLimit; i++) tree[(i * stride).floor()]];
   }
 
   Future<ReadProbeSample> _sample(
@@ -202,6 +243,17 @@ class ReadProbe {
     return counts.fold<int>(0, (sum, count) => sum + count);
   }
 }
+
+/// One file in the walk, and what `stat` said it weighs.
+class _TreeFile {
+  const _TreeFile(this.path, this.size);
+
+  final String path;
+  final int size;
+}
+
+int _totalBytes(List<_TreeFile> files) =>
+    files.fold<int>(0, (sum, file) => sum + file.size);
 
 /// [ReadProbeMode.asyncStream]'s read: what `LocalAgent.readFile` yields,
 /// drained the way a `writeFile` on the far side drains it.
