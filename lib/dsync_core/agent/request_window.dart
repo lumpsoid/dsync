@@ -92,17 +92,19 @@ class RequestWindow {
   /// Runs [body] alone: nothing else is in flight while it runs, and nothing
   /// admitted after it starts until it finishes.
   ///
-  /// This is what `lock`, `unlock`, `hello`, `scan`, `compact`,
-  /// `removeEmptyDirs` and `archiveCommitDelete` get. Only `readFile`,
-  /// `writeFile`, `delete` and `archiveCommitUpsert` are per-path operations
-  /// whose effects commute with another path's; the rest either change what
-  /// the whole replica means to the session or reach paths they were not
-  /// given — `removeEmptyDirs` walks *ancestors* (SPEC §7.5), so it can
-  /// delete a directory a concurrent `writeFile` on another path is about to
-  /// write into. That is the smallest rule this could defensibly have, not
-  /// the widest it could ever have: `archiveCommitDelete` is per-path and
-  /// commutes exactly as `archiveCommitUpsert` does, and could be admitted
-  /// to the window by a later change with a measurement behind it.
+  /// This is what `lock`, `unlock`, `hello`, `scan`, `compact` and
+  /// `removeEmptyDirs` get. `readFile`, `writeFile`, `delete`,
+  /// `archiveCommitUpsert` and `archiveCommitDelete` are per-path operations
+  /// whose effects commute with another path's, so they go in the window;
+  /// the rest either change what the whole replica means to the session or
+  /// reach paths they were not given — `removeEmptyDirs` walks *ancestors*
+  /// (SPEC §7.5), so it can delete a directory a concurrent `writeFile` on
+  /// another path is about to write into.
+  ///
+  /// `removeEmptyDirs` is the only one of those that costs anything during
+  /// an apply, and it no longer does: `Applier` sweeps emptied ancestors
+  /// once, after every action has finished (SPEC §7.5), so the drain it asks
+  /// for finds an empty window.
   Future<T> runExclusive<T>(Future<T> Function() body) async {
     // Waited on before queueing, not after: an operation still held behind
     // an earlier one on its own path has not reached the queue yet, so the

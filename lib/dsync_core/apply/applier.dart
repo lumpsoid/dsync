@@ -96,6 +96,10 @@ class Applier {
     final applied = <AppliedPath>[];
     final failed = <FailedPath>[];
 
+    // Filled by every delete that got as far as removing its file, swept
+    // once at the end — see [_pruneEmptiedDirs].
+    final emptied = <_Emptied>[];
+
     // One queue, drained by [concurrency] workers, rather than a chunked
     // `Future.wait` per batch: a batch is only as fast as its slowest action,
     // and a plan of 14k small files with one large one in it would spend most
@@ -105,7 +109,7 @@ class Applier {
     Future<void> worker() async {
       while (queue.isNotEmpty) {
         final action = queue.removeFirst();
-        final error = await _applyOne(action, a, b, agentA, agentB);
+        final error = await _applyOne(action, a, b, agentA, agentB, emptied);
         if (error == null) {
           applied.add(AppliedPath(path: action.path, type: action.type));
         } else {
@@ -121,6 +125,7 @@ class Applier {
     }
 
     await Future.wait([for (var i = 0; i < concurrency; i++) worker()]);
+    await _pruneEmptiedDirs(emptied);
 
     return ApplyResult(applied: applied, failed: failed);
   }
@@ -133,6 +138,7 @@ class Applier {
     Map<String, ScanEntry> b,
     Agent agentA,
     Agent agentB,
+    List<_Emptied> emptied,
   ) async {
     try {
       switch (action.type) {
@@ -156,6 +162,7 @@ class Applier {
             target: agentA,
             agentA: agentA,
             agentB: agentB,
+            emptied: emptied,
           );
         case ActionType.deleteOnB:
           await _delete(
@@ -163,6 +170,7 @@ class Applier {
             target: agentB,
             agentA: agentA,
             agentB: agentB,
+            emptied: emptied,
           );
         case ActionType.commitOnly:
           await _commitOnly(
@@ -230,17 +238,61 @@ class Applier {
   /// Delete on the side that still physically holds the file (SPEC §7.5,
   /// §7.3). On success both archives are tombstoned, even though only
   /// [target] ever held the file — both need to agree the path is gone.
+  ///
+  /// The ancestor pruning §7.5 also asks for is *not* done here. It is
+  /// recorded in [emptied] and swept once the whole plan is applied, for the
+  /// reason [_pruneEmptiedDirs] gives.
   Future<void> _delete(
     String path, {
     required Agent target,
     required Agent agentA,
     required Agent agentB,
+    required List<_Emptied> emptied,
   }) async {
     await target.delete(path);
-    await target.removeEmptyDirs(path);
+    // Recorded as soon as the file is gone, not after the commits: the
+    // directory is empty from this moment whatever the commits do, and a
+    // commit that fails leaves a failed action (SPEC §7.6) whose file is
+    // still deleted.
+    emptied.add(_Emptied(target, path));
 
     await agentA.archiveCommitDelete(path);
     await agentB.archiveCommitDelete(path);
+  }
+
+  /// Removes the directories this run emptied (SPEC §7.5), once every action
+  /// is done.
+  ///
+  /// **Deferred rather than done per delete**, because `removeEmptyDirs` is
+  /// the one operation that cannot share a connection with anything else: it
+  /// reaches *ancestors* of the path it is given, so it can remove a
+  /// directory a concurrent `writeFile` on an unrelated path is about to
+  /// write into, and `RemoteAgent` therefore makes it a barrier. Called
+  /// inside the apply loop it drained the connection's whole window once per
+  /// delete, which handed back most of what SPEC §7.1's overlap buys. Here
+  /// there is nothing left to drain.
+  ///
+  /// It is not less correct for being late. §7.5's rule is that the tool
+  /// removes only emptiness it created, and that still holds: a directory
+  /// emptied by a delete and then written into again by a later copy is now
+  /// simply left alone, where before it would have been removed and
+  /// recreated.
+  ///
+  /// **Failures here are swallowed**, which is the one thing this gives up.
+  /// Pruning is tidying: §7.3's archive rule does not depend on it, so a
+  /// directory left behind cannot stop the replicas converging, and it is
+  /// the same best-effort §7.4 already gives mode bits. It is also no longer
+  /// attributable — the action it belonged to has already been reported and
+  /// recorded as applied, and failing it after the fact would claim the
+  /// delete did not happen.
+  Future<void> _pruneEmptiedDirs(List<_Emptied> emptied) async {
+    for (final entry in emptied) {
+      try {
+        await entry.agent.removeEmptyDirs(entry.path);
+      } catch (_) {
+        // See above: cosmetic, and belongs to no action any more.
+      }
+    }
   }
 
   /// No filesystem I/O (SPEC §6 "same content, no transfer"). Either both
@@ -313,4 +365,13 @@ class TransferSizeMismatchException implements Exception {
   String toString() =>
       'Incomplete transfer of "$path": expected $expected bytes, '
       'destination has $actual';
+}
+
+/// One directory sweep owed by a delete that has already happened — which
+/// replica to prune on, and the path whose ancestors to walk (SPEC §7.5).
+class _Emptied {
+  final Agent agent;
+  final String path;
+
+  const _Emptied(this.agent, this.path);
 }

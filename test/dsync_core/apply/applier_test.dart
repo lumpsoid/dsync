@@ -232,6 +232,112 @@ void main() {
     });
   });
 
+  group('emptied directories are swept once, at the end (task 0f7dfc)', () {
+    ScanEntry entry(String path, int size, String hash) => ScanEntry(
+      path: path,
+      reason: ScanReason.created,
+      size: size,
+      mtime: DateTime.utc(2022, 1, 1).microsecondsSinceEpoch,
+      mode: 420,
+      hash: hash,
+    );
+
+    test('no removeEmptyDirs is issued until every action is done', () async {
+      // `removeEmptyDirs` is the one operation that cannot share a
+      // connection with anything else (SPEC §4.2), so issuing it inside the
+      // apply loop drained the whole window once per delete. It has to come
+      // after the last action, not between two of them.
+      await Directory('${replicaADir.path}/gone').create();
+      await File('${replicaADir.path}/gone/old.txt').writeAsString('old');
+      await File('${replicaADir.path}/new1.txt').writeAsString('one');
+      await File('${replicaADir.path}/new2.txt').writeAsString('two');
+
+      final calls = <String>[];
+      final watchedA = _RecordingCallsAgent(agentA, calls);
+
+      final plan = Plan(
+        actions: [
+          const PlanAction(path: 'gone/old.txt', type: ActionType.deleteOnA),
+          const PlanAction(path: 'new1.txt', type: ActionType.copyAtoB),
+          const PlanAction(path: 'new2.txt', type: ActionType.copyAtoB),
+        ],
+        conflicts: [],
+      );
+
+      final result = await Applier(concurrency: 1).apply(
+        plan,
+        [entry('new1.txt', 3, 'h1'), entry('new2.txt', 3, 'h2')],
+        [],
+        watchedA,
+        agentB,
+      );
+
+      expect(result.failed, isEmpty);
+      final sweep = calls.indexOf('removeEmptyDirs gone/old.txt');
+      expect(sweep, isNot(-1), reason: 'the sweep still happens');
+      expect(
+        sweep,
+        calls.length - 1,
+        reason: 'and it is the last thing this replica was asked to do',
+      );
+      expect(await Directory('${replicaADir.path}/gone').exists(), isFalse);
+    });
+
+    test('a directory a later copy wrote into is left alone', () async {
+      // Deferring the sweep is not less correct: SPEC §7.5's rule is that
+      // the tool removes only emptiness it created, and a directory emptied
+      // by a delete and then written into again is now simply left in place
+      // rather than removed and recreated.
+      await Directory('${replicaADir.path}/shared').create();
+      await File('${replicaADir.path}/shared/old.txt').writeAsString('old');
+      await Directory('${replicaBDir.path}/shared').create();
+      await File('${replicaBDir.path}/shared/new.txt').writeAsString('new');
+
+      final plan = Plan(
+        actions: [
+          const PlanAction(path: 'shared/old.txt', type: ActionType.deleteOnA),
+          const PlanAction(path: 'shared/new.txt', type: ActionType.copyBtoA),
+        ],
+        conflicts: [],
+      );
+
+      final result = await Applier(concurrency: 1)
+          .apply(plan, [], [entry('shared/new.txt', 3, 'h1')], agentA, agentB);
+
+      expect(result.failed, isEmpty);
+      expect(
+        await File('${replicaADir.path}/shared/new.txt').readAsString(),
+        'new',
+      );
+      expect(await Directory('${replicaADir.path}/shared').exists(), isTrue);
+    });
+
+    test(
+      'a sweep that fails does not fail the delete that asked for it',
+      () async {
+        // The action has already been reported and recorded as applied by the
+        // time the sweep runs, so failing it afterwards would claim the delete
+        // did not happen. Pruning is tidying — SPEC §7.3's archive rule does
+        // not depend on it — so the failure is swallowed (SPEC §7.5).
+        await File('${replicaADir.path}/a.txt').writeAsString('bye');
+        final refusing = _RefusingPruneAgent(agentA);
+
+        final plan = Plan(
+          actions: [
+            const PlanAction(path: 'a.txt', type: ActionType.deleteOnA),
+          ],
+          conflicts: [],
+        );
+
+        final result = await Applier().apply(plan, [], [], refusing, agentB);
+
+        expect(result.failed, isEmpty);
+        expect(result.applied.single.path, 'a.txt');
+        expect(await File('${replicaADir.path}/a.txt').exists(), isFalse);
+      },
+    );
+  });
+
   group('commitOnly', () {
     test(
       'matching content writes no bytes; each side archives its own metadata',
@@ -971,4 +1077,83 @@ class _CrashingDeleteAgent implements Agent {
 
   @override
   Future<void> disconnect() async {}
+}
+
+/// Wraps a real [Agent] and records every call made against it, so the order
+/// operations reach one replica can be asserted (task 0f7dfc).
+class _RecordingCallsAgent implements Agent {
+  final Agent _wrapped;
+  final List<String> calls;
+
+  _RecordingCallsAgent(this._wrapped, this.calls);
+
+  @override
+  Future<ReplicaInfo> hello() => _wrapped.hello();
+
+  @override
+  Future<void> lock() => _wrapped.lock();
+
+  @override
+  Future<void> unlock() => _wrapped.unlock();
+
+  @override
+  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+
+  @override
+  Stream<List<int>> readFile(String path) {
+    calls.add('readFile $path');
+    return _wrapped.readFile(path);
+  }
+
+  @override
+  Future<FileMetadata> writeFile(
+    String path,
+    Stream<List<int>> data, {
+    required int mtime,
+    required int mode,
+  }) {
+    calls.add('writeFile $path');
+    return _wrapped.writeFile(path, data, mtime: mtime, mode: mode);
+  }
+
+  @override
+  Future<void> delete(String path) {
+    calls.add('delete $path');
+    return _wrapped.delete(path);
+  }
+
+  @override
+  Future<void> removeEmptyDirs(String path) {
+    calls.add('removeEmptyDirs $path');
+    return _wrapped.removeEmptyDirs(path);
+  }
+
+  @override
+  Future<void> archiveCommitUpsert(ArchiveEntry entry) {
+    calls.add('archiveCommitUpsert ${entry.path}');
+    return _wrapped.archiveCommitUpsert(entry);
+  }
+
+  @override
+  Future<void> archiveCommitDelete(String path) {
+    calls.add('archiveCommitDelete $path');
+    return _wrapped.archiveCommitDelete(path);
+  }
+
+  @override
+  Future<void> compact() => _wrapped.compact();
+
+  @override
+  Future<void> disconnect() => _wrapped.disconnect();
+}
+
+/// A replica whose ancestor pruning always fails — a permission error on a
+/// parent directory, which is the shape SPEC §7.5's best-effort covers.
+class _RefusingPruneAgent extends _RecordingCallsAgent {
+  _RefusingPruneAgent(Agent wrapped) : super(wrapped, <String>[]);
+
+  @override
+  Future<void> removeEmptyDirs(String path) async {
+    throw Exception('cannot prune $path');
+  }
 }

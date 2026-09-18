@@ -179,6 +179,17 @@ class RemoteAgent implements Agent {
   Future<void> delete(String path) =>
       _window.run(path, () => _call('delete', {'path': path}));
 
+  /// A barrier, and the only windowed-out operation that is one on its own
+  /// merits rather than by category: it reaches *ancestors* of [path] (SPEC
+  /// §7.5), so it can remove a directory a concurrent `writeFile` on an
+  /// unrelated path is about to write into.
+  ///
+  /// It costs nothing in practice, because `Applier` no longer calls it
+  /// during the apply loop at all — it sweeps once, after every action is
+  /// done, when there is nothing left in the window to drain (SPEC §7.5).
+  /// The barrier stays because the hazard is this operation's, not the
+  /// caller's, and a future caller that did interleave it must not have to
+  /// rediscover why that is unsafe.
   @override
   Future<void> removeEmptyDirs(String path) =>
       _window.runExclusive(() => _call('removeEmptyDirs', {'path': path}));
@@ -189,9 +200,14 @@ class RemoteAgent implements Agent {
     () => _call('archiveCommitUpsert', {'entry': archiveEntryToJson(entry)}),
   );
 
+  /// Windowed, exactly as [archiveCommitUpsert] is: both append one record
+  /// for one path to this replica's archive (SPEC §7.3), and neither can
+  /// affect another path's outcome. A barrier here would have made every
+  /// delete action drain the connection, which is the whole window's worth
+  /// of overlap given up for a tombstone.
   @override
   Future<void> archiveCommitDelete(String path) =>
-      _window.runExclusive(() => _call('archiveCommitDelete', {'path': path}));
+      _window.run(path, () => _call('archiveCommitDelete', {'path': path}));
 
   @override
   Future<void> compact() => _window.runExclusive(() => _call('compact'));

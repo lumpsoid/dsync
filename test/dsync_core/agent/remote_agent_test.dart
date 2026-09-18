@@ -285,6 +285,49 @@ void main() {
       ]);
     });
 
+    test('a tombstone commit is windowed, not a barrier', () async {
+      // `archiveCommitDelete` appends one record for one path, exactly as
+      // `archiveCommitUpsert` does. A barrier here would have made every
+      // delete action drain the connection — the whole window's worth of
+      // overlap given up for a tombstone.
+      backing.heldCommits['a.txt'] = Completer<void>();
+      backing.heldCommits['b.txt'] = Completer<void>();
+
+      final first = remote.archiveCommitDelete('a.txt');
+      final second = remote.archiveCommitUpsert(entry('b.txt'));
+      await pumpEventQueue();
+
+      expect(backing.started, [
+        'archiveCommitDelete a.txt',
+        'archiveCommitUpsert b.txt',
+      ]);
+
+      backing.heldCommits['a.txt']!.complete();
+      backing.heldCommits['b.txt']!.complete();
+      await first;
+      await second;
+    });
+
+    test('removeEmptyDirs is still a barrier', () async {
+      // It reaches *ancestors* of the path it is given (SPEC §7.5), so it
+      // can remove a directory a concurrent `writeFile` on an unrelated path
+      // is about to write into. `Applier` keeps it out of the apply loop
+      // entirely, which is what makes the drain free rather than what makes
+      // it unnecessary.
+      backing.heldCommits['a.txt'] = Completer<void>();
+      final commit = remote.archiveCommitUpsert(entry('a.txt'));
+      await pumpEventQueue();
+
+      final pruned = remote.removeEmptyDirs('sub/gone.txt');
+      await pumpEventQueue();
+      expect(backing.removedEmptyDirsFor, isNull);
+
+      backing.heldCommits['a.txt']!.complete();
+      await commit;
+      await pruned;
+      expect(backing.removedEmptyDirsFor, 'sub/gone.txt');
+    });
+
     test('a connection that fails takes every outstanding operation with '
         'it', () async {
       final (clientChannel, serverChannel) = InMemoryChannel.pair();
@@ -453,6 +496,8 @@ class _FakeAgent implements Agent {
 
   @override
   Future<void> archiveCommitDelete(String path) async {
+    started.add('archiveCommitDelete $path');
+    await heldCommits[path]?.future;
     archive.remove(path);
   }
 
