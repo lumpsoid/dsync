@@ -2,6 +2,9 @@ import 'dart:io';
 
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/scan/case_folding.dart';
+import 'package:dsync/dsync_core/scan/scan_probe.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:path/path.dart' as p;
 
@@ -194,6 +197,70 @@ class RunSetupController {
   void selectLocalFolder(String? path) {
     state.recordLocalFolders(state.localFolders, selected: path);
     state.recordOutcome(const RunSetupIdle());
+  }
+
+  /// Splits what scanning the selected folder costs into the platform's floor
+  /// and this project's own code (task 1a341e).
+  ///
+  /// **Why it is in the app at all.** The device whose scan cost exists
+  /// nowhere else is this one: a phone differs from a desktop in CPU *and*
+  /// storage *and* OS at once, so no benchmark run on a laptop can say
+  /// whether 36.7 s of `scan` on a phone is Android's floor or this code's.
+  /// Every off-device way of running the same measurement — a `flutter drive`
+  /// harness in particular — reinstalls the app to do it, and reinstalling is
+  /// what drops the All-files grant (`FolderPicker.requestAccess`) that makes
+  /// a replica root readable at all. The measurement has to run inside the
+  /// app that already holds the grant.
+  ///
+  /// **It is not a run and starts none.** SPEC §17's report is a run's
+  /// instrumentation and has a `scan` phase (§13); this is the split *inside*
+  /// that phase, which §17 deliberately does not carry — see [RunPhase]'s own
+  /// doc comment. Nothing is written, no lock is taken (§4.3) and no archive
+  /// is read from disk (§8.3): the probe compares against archives it builds
+  /// in memory, so measuring costs the replica nothing and can be done on a
+  /// folder mid-edit.
+  ///
+  /// Minutes, on the tree sizes this exists for. The outcome is a state the
+  /// page renders rather than a dialog, so the form stays usable while the
+  /// walk runs.
+  Future<void> measureScanCost({int passes = 2}) async {
+    final rootPath = state.selectedLocalFolder;
+    if (rootPath == null) {
+      state.recordScanCost(
+        const ScanCostFailed('Pick a folder on this device first.'),
+      );
+      return;
+    }
+
+    state.recordScanCost(const ScanCostMeasuring());
+    try {
+      final report =
+          await ScanProbe(
+            jobs: _jobs,
+            // Configured exactly as `ReplicaConnector` configures the scanner a
+            // real run uses (SPEC §16), so the rungs that measure `Scanner.scan`
+            // measure the scanner this head actually runs and not a cheaper one.
+            foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
+          ).run(
+            rootPath: rootPath,
+            // The app head carries no SPEC §9 rules — nothing here collects them
+            // and `RunRequest` has no field for them — so an empty set is what a
+            // run from this head actually scans with. The rung that measures rule
+            // matching is therefore measuring the path building and the empty
+            // match, which is the honest figure for this head.
+            rules: RuleSet(),
+            passes: passes,
+          );
+      state.recordScanCost(ScanCostMeasured(report));
+    } on FileSystemException catch (e) {
+      state.recordScanCost(
+        ScanCostFailed(
+          'Could not scan $rootPath: ${e.osError?.message ?? e.message}. '
+          'Grant dsync access to all files, or pick a folder in the app\'s '
+          'own documents instead.',
+        ),
+      );
+    }
   }
 
   /// Opens the platform folder chooser and, if the user picks a folder,
