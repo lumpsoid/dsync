@@ -61,12 +61,36 @@ sealed class AgentResult {
   }
 }
 
+/// The key under which a peer reports how long an operation took on *its*
+/// side, in microseconds (SPEC §17) — the request frame arriving at
+/// `AgentServer` to its reply going out.
+///
+/// **Optional, and absent is not zero.** A build that does not measure it
+/// omits the key, and [farSideFromJson] answers null rather than
+/// `Duration.zero`: zero would read as "the destination cost nothing", which
+/// is exactly the conclusion this figure exists to check rather than assume.
+/// An added optional field needs no `protocolVersion` bump — a peer that
+/// omits it decodes to the absence it would have had anyway.
+const farSideKey = 'farSideMicros';
+
+/// The peer's own span for this exchange, or null if it did not report one.
+Duration? farSideFromJson(Map<String, dynamic> data) {
+  final micros = data[farSideKey];
+  return micros is int ? Duration(microseconds: micros) : null;
+}
+
 /// The operation succeeded; [data] carries whatever result it returns, empty
 /// for operations with nothing to report beyond having happened.
 class AgentSuccess extends AgentResult {
   final Map<String, dynamic> data;
 
   const AgentSuccess([this.data = const {}]);
+
+  /// This result with the peer's own span for the exchange added (SPEC §17),
+  /// which is how [farSideKey] gets onto the wire without every `case` in
+  /// the dispatch having to remember it.
+  AgentSuccess withFarSide(Duration span) =>
+      AgentSuccess({...data, farSideKey: span.inMicroseconds});
 
   @override
   Frame toFrame(int requestId) => Frame(

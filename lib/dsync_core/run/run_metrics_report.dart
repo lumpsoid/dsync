@@ -73,6 +73,7 @@ String formatRunMetrics(RunMetrics metrics) {
     out.writeln(
       '  ${'operation'.padRight(20)}${'count'.padLeft(8)}'
       '${'total'.padLeft(10)}${'queue'.padLeft(10)}${'wire'.padLeft(10)}'
+      '${'far'.padLeft(10)}${'link'.padLeft(10)}'
       '${'max'.padLeft(10)}${'content'.padLeft(11)}',
     );
     // Slowest first: the report exists to answer "where did the time go",
@@ -84,11 +85,20 @@ String formatRunMetrics(RunMetrics metrics) {
       // `queue` and `wire` are per call and sum to the mean, which is why the
       // mean itself is not a column: one number that bundles the two is what
       // made a rising mean unreadable in the first place (SPEC §17).
+      //
+      // `far` and `link` split `wire` the same way, and for the same reason:
+      // `far` is what the peer says it spent on the operation and `link` is
+      // what is left for the request and the reply. Printed rather than left
+      // to arithmetic over the other columns, because that arithmetic is how
+      // this work picked the wrong lever twice. Both are `—` when the peer
+      // did not report — which is not the same as a peer that cost nothing.
       out.writeln(
         '  ${op.name.padRight(20)}${formatMetricCount(stats.count).padLeft(8)}'
         '${formatMetricDuration(stats.total).padLeft(10)}'
         '${formatMetricDuration(stats.meanQueueWait).padLeft(10)}'
         '${formatMetricDuration(stats.meanWireTime).padLeft(10)}'
+        '${formatMetricSplit(stats.meanFarSide).padLeft(10)}'
+        '${formatMetricSplit(stats.meanLinkTime).padLeft(10)}'
         '${formatMetricDuration(stats.max).padLeft(10)}'
         '${(stats.bytes == 0 ? '—' : formatMetricBytes(stats.bytes)).padLeft(11)}',
       );
@@ -112,6 +122,19 @@ String formatMetricDuration(Duration value) {
   }
   return '${(micros / Duration.microsecondsPerSecond).toStringAsFixed(1)} s';
 }
+
+/// A duration that may not have been measured at all: [formatMetricDuration]
+/// when there is one, an em dash when there is not.
+///
+/// The whole point of the dash is that it is not `0 µs`. A peer that does not
+/// report its own time and a peer that took no time are different findings
+/// with opposite consequences, and the second is the one this project keeps
+/// being tempted to assume (SPEC §17).
+///
+/// Public alongside the other formatters so the Flutter head spells an
+/// unmeasured value the same way the copied text does.
+String formatMetricSplit(Duration? value) =>
+    value == null ? '—' : formatMetricDuration(value);
 
 /// Bytes in the largest unit that leaves a number above 1, powers of 1024.
 ///

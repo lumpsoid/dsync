@@ -323,6 +323,72 @@ void main() {
       expect(stats.meanWireTime, const Duration(milliseconds: 30));
     });
 
+    test('the peer\'s own span splits the wire figure', () {
+      // SPEC §17 phase 0a: `wire` covers the request out, the peer's work
+      // and the reply back. Only the peer can report the middle term, and
+      // without it the other two cannot be read at all.
+      final operation = metrics.beginOp('b', AgentOp.writeFile);
+      advance(const Duration(milliseconds: 40));
+      metrics.countFarSide(
+        'b',
+        AgentOp.writeFile,
+        const Duration(milliseconds: 25),
+      );
+      operation.end();
+
+      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
+      expect(stats.meanWireTime, const Duration(milliseconds: 40));
+      expect(stats.meanFarSide, const Duration(milliseconds: 25));
+      expect(stats.meanLinkTime, const Duration(milliseconds: 15));
+    });
+
+    test('a peer that reports nothing reads as absent, not as zero', () {
+      // The conclusion this measurement exists to protect: a destination
+      // that costs nothing and a destination that was never asked must not
+      // look the same.
+      metrics.beginOp('b', AgentOp.writeFile).end();
+
+      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
+      expect(stats.count, 1);
+      expect(stats.farSideCount, 0);
+      expect(stats.meanFarSide, isNull);
+      expect(stats.meanLinkTime, isNull);
+    });
+
+    test('only the calls that reported are averaged', () {
+      // An older peer answering some operations and not others, or a mix of
+      // `writeFile` (which reports) and `scan` (which cannot): the mean is
+      // over the samples there are, not over every call.
+      for (var i = 0; i < 4; i++) {
+        metrics.beginOp('b', AgentOp.writeFile).end();
+      }
+      metrics.countFarSide(
+        'b',
+        AgentOp.writeFile,
+        const Duration(milliseconds: 10),
+      );
+      metrics.countFarSide(
+        'b',
+        AgentOp.writeFile,
+        const Duration(milliseconds: 20),
+      );
+
+      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
+      expect(stats.count, 4);
+      expect(stats.farSideCount, 2);
+      expect(stats.meanFarSide, const Duration(milliseconds: 15));
+    });
+
+    test('a far side dearer than the exchange reads as no link time', () {
+      // Mid-run, or a clock that disagrees by a hair: the two figures are
+      // sampled at different instants on different machines, and a negative
+      // link time would look like a bug in the code being measured.
+      metrics.countFarSide('b', AgentOp.delete, const Duration(seconds: 1));
+
+      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.delete]!;
+      expect(stats.meanLinkTime, Duration.zero);
+    });
+
     test('a wait whose span has not landed yet reads as no wire time', () {
       // A mid-run snapshot: the window admitted the operation and reported
       // the wait, and the operation is still running. Negative wire time

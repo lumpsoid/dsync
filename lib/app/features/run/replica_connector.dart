@@ -16,6 +16,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/metered_channel.dart';
+import 'package:dsync/dsync_core/run/metered_far_side.dart';
 import 'package:dsync/dsync_core/run/metered_request_window.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
@@ -302,6 +303,9 @@ class ReplicaConnector {
       // slot, so this side's per-operation means split into the queueing and
       // the exchange instead of bundling the two.
       window: meteredRequestWindow(side: spec.side, metrics: metrics),
+      // SPEC §17: and the peer reports what each exchange cost *it*, so the
+      // wire figure splits again into the far side's own work and the link.
+      onFarSide: meteredFarSide(side: spec.side, metrics: metrics),
     );
   }
 
@@ -462,6 +466,7 @@ final class _PeerAgent extends RemoteAgent {
     required this.deviceName,
     required this.address,
     required super.window,
+    required super.onFarSide,
   });
 
   @override

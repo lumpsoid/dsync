@@ -14,6 +14,33 @@ import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('the peer\'s own span', () {
+    test('rides on a success frame and comes back the same', () {
+      final stamped = const AgentSuccess({
+        'metadata': {'size': 1},
+      }).withFarSide(const Duration(milliseconds: 26));
+
+      final decoded = AgentResult.fromFrame(stamped.toFrame(3));
+
+      expect(decoded, isA<AgentSuccess>());
+      final data = (decoded as AgentSuccess).data;
+      expect(farSideFromJson(data), const Duration(milliseconds: 26));
+      // Alongside the operation's own result, not instead of it.
+      expect(data['metadata'], {'size': 1});
+    });
+
+    test('is absent, not zero, when the peer did not report one', () {
+      // What an older build's reply looks like. Zero would read as "the
+      // destination is free", which is the conclusion the figure exists to
+      // check rather than assume.
+      final decoded = AgentResult.fromFrame(
+        const AgentSuccess().toFrame(1),
+      ) as AgentSuccess;
+
+      expect(farSideFromJson(decoded.data), isNull);
+    });
+  });
+
   group('AgentRequest', () {
     test('round-trips an op with params through a frame', () {
       final request = AgentRequest('delete', {'path': 'a.txt'});

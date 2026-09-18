@@ -17,6 +17,16 @@ import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 
+/// Told what the peer reported as its own time for a call of [op] (SPEC
+/// §17) — the seam `RemoteAgent`'s owner uses to feed `RunMetricsRecorder`.
+///
+/// A callback rather than the recorder itself, for the reason
+/// [WindowWaitSink] is one: this class hands over a number it has just
+/// decoded and knows nothing about reporting. Called only for the replies
+/// that carried the figure, so a peer that does not report leaves the
+/// recorder's count where it was rather than adding a zero.
+typedef FarSideSink = void Function(AgentOp op, Duration span);
+
 /// [Agent] implementation that drives a replica over a [Channel] by
 /// exchanging framed control messages and file bytes with the agent server
 /// handler on the other end (SPEC §4.2).
@@ -46,6 +56,11 @@ class RemoteAgent implements Agent {
   final FrameRouter _router;
   final RequestWindow _window;
 
+  /// Where the peer's own span for each exchange is reported, if anyone
+  /// asked (SPEC §17). Public for the same reason `RequestWindow.onWait` is:
+  /// it is a seam the owner supplies, not internal state.
+  final FarSideSink? onFarSide;
+
   /// The router's read loop. Held so [disconnect] can wait for it, and its
   /// failure is swallowed here rather than left unhandled: the error has
   /// already been delivered to every open route, which is where a caller
@@ -71,11 +86,18 @@ class RemoteAgent implements Agent {
   ///
   /// [window] is injectable so a test can pin the bound it asserts against
   /// rather than restating [RequestWindow.defaultSize].
-  RemoteAgent(Channel channel, ReplicaSpec spec, {RequestWindow? window})
-    : _channel = channel,
-      _spec = spec,
-      _window = window ?? RequestWindow(),
-      _router = FrameRouter(channel.input) {
+  ///
+  /// [onFarSide] is where the peer's own span for each exchange goes, when it
+  /// reports one. Null for a caller that is not measuring.
+  RemoteAgent(
+    Channel channel,
+    ReplicaSpec spec, {
+    RequestWindow? window,
+    this.onFarSide,
+  }) : _channel = channel,
+       _spec = spec,
+       _window = window ?? RequestWindow(),
+       _router = FrameRouter(channel.input) {
     _handshakeReplies = _router.open(Frame.noRequest);
     _reading = _router.run(
       // A frame under an id nothing is waiting for is dropped, not fatal.
@@ -99,7 +121,8 @@ class RemoteAgent implements Agent {
     }
     return _exchange(
       AgentRequest(AgentOp.hello.name, {'replica': replicaSpecToJson(_spec)}),
-      (id, replies) async => replicaInfoFromJson(await _awaitResult(replies)),
+      (id, replies) async =>
+          replicaInfoFromJson(await _awaitResult(AgentOp.hello, replies)),
     );
   });
 
@@ -179,7 +202,7 @@ class RemoteAgent implements Agent {
       }),
       (id, replies) async {
         await sendByteStream(_channel, data, requestId: id);
-        final result = await _awaitResult(replies);
+        final result = await _awaitResult(AgentOp.writeFile, replies);
         return fileMetadataFromJson(result['metadata'] as Map<String, dynamic>);
       },
     ),
@@ -273,7 +296,7 @@ class RemoteAgent implements Agent {
     Map<String, dynamic> params = const {},
   ]) => _exchange(
     AgentRequest(op.name, params),
-    (id, replies) => _awaitResult(replies),
+    (id, replies) => _awaitResult(op, replies),
   );
 
   int _nextRequestId() {
@@ -298,10 +321,27 @@ class RemoteAgent implements Agent {
     }
   }
 
-  Future<Map<String, dynamic>> _awaitResult(Stream<Frame> replies) async {
+  /// The reply's payload, and — on the way past — whatever the peer said
+  /// this exchange cost *it* (SPEC §17).
+  ///
+  /// Reported here rather than in each operation because this is the one
+  /// place every control-frame reply passes through, and the figure is read
+  /// off the same decode that already happened. The two replies that do not
+  /// come through here, `scan` and `readFile`, have nowhere to carry it and
+  /// report nothing, which the recorder keeps distinguishable from zero.
+  Future<Map<String, dynamic>> _awaitResult(
+    AgentOp op,
+    Stream<Frame> replies,
+  ) async {
     return switch (AgentResult.fromFrame(await _firstReply(replies))) {
-      AgentSuccess(:final data) => data,
+      AgentSuccess(:final data) => _reportFarSide(op, data),
       AgentFailure(:final error) => throw AgentOperationException(error),
     };
+  }
+
+  Map<String, dynamic> _reportFarSide(AgentOp op, Map<String, dynamic> data) {
+    final span = farSideFromJson(data);
+    if (span != null) onFarSide?.call(op, span);
+    return data;
   }
 }

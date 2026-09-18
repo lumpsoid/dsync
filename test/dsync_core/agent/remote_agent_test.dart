@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
+import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -52,6 +53,81 @@ void main() {
         info.lastCommitTime?.isAtSameMomentAs(DateTime.utc(2024, 1, 1)),
         isTrue,
       );
+    });
+  });
+
+  group("the peer's own span", () {
+    test('comes back with the reply, against the operation it measured', () {
+      // SPEC §17 phase 0a: an exchange's cost is the request out, whatever
+      // the peer did, and the reply back. This is the middle term, and only
+      // the peer can measure it.
+      return _withHeldCommit((agent, backing, reported) async {
+        final commit = agent.archiveCommitUpsert(
+          const ArchiveEntry(
+            path: 'a.txt',
+            size: 1,
+            mtime: 1,
+            mode: 0x81a4,
+            hash: 'h',
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        backing.heldCommits['a.txt']!.complete();
+        await commit;
+
+        expect(reported, hasLength(1));
+        expect(reported.single.op, AgentOp.archiveCommitUpsert);
+        // The hold is the floor: the peer's span contains it, and contains
+        // nothing the initiator paid.
+        expect(
+          reported.single.span,
+          greaterThanOrEqualTo(const Duration(milliseconds: 15)),
+        );
+      });
+    });
+
+    test('is not reported for the replies that cannot carry it', () async {
+      // `scan` answers with a binary frame and `readFile` with the byte
+      // stream itself (SPEC §15.3), so neither has a field to put this in.
+      // They report nothing, which the recorder keeps distinguishable from
+      // a peer that cost nothing.
+      final reported = <({AgentOp op, Duration span})>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final peer = _FakeAgent()..fileContents['a.txt'] = utf8.encode('hi');
+      unawaited(AgentServer().serve(serverChannel, (_) => peer));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onFarSide: (op, span) => reported.add((op: op, span: span)),
+      );
+
+      await agent.hello();
+      await agent.scan(RuleSet());
+      await agent.readFile('a.txt').drain<void>();
+
+      expect(reported.map((r) => r.op), isNot(contains(AgentOp.scan)));
+      expect(reported.map((r) => r.op), isNot(contains(AgentOp.readFile)));
+      // `hello` is a control-frame reply like any other, so it does report.
+      expect(reported.map((r) => r.op), contains(AgentOp.hello));
+    });
+
+    test('is not reported for a failed operation', () async {
+      // A failure carries an error the caller turns into an exception, and
+      // there is no figure to record it against.
+      final reported = <AgentOp>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final peer = _FakeAgent()..lockError = Exception('locked elsewhere');
+      unawaited(AgentServer().serve(serverChannel, (_) => peer));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onFarSide: (op, _) => reported.add(op),
+      );
+      await agent.hello();
+
+      await expectLater(agent.lock(), throwsA(isA<AgentOperationException>()));
+
+      expect(reported, isNot(contains(AgentOp.lock)));
     });
   });
 
@@ -411,6 +487,32 @@ class _WatchedInputChannel implements Channel {
 
 /// A minimal in-memory [Agent] fake — just enough to be driven through
 /// [RemoteAgent]'s wire protocol without a real filesystem or archive.
+/// Runs [body] against a peer holding `a.txt`'s commit open, with every
+/// reported far-side span collected — the shape all three of these tests
+/// need and none of them should build twice.
+Future<void> _withHeldCommit(
+  Future<void> Function(
+    RemoteAgent agent,
+    _FakeAgent backing,
+    List<({AgentOp op, Duration span})> reported,
+  )
+  body,
+) async {
+  final reported = <({AgentOp op, Duration span})>[];
+  final (clientChannel, serverChannel) = InMemoryChannel.pair();
+  final peer = _FakeAgent()..heldCommits['a.txt'] = Completer<void>();
+  unawaited(AgentServer().serve(serverChannel, (_) => peer));
+  final agent = RemoteAgent(
+    clientChannel,
+    _testSpec,
+    onFarSide: (op, span) => reported.add((op: op, span: span)),
+  );
+  await agent.hello();
+  reported.clear();
+
+  await body(agent, peer, reported);
+}
+
 class _FakeAgent implements Agent {
   bool locked = false;
   List<ScanEntry> scanResult = [];

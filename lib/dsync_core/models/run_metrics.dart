@@ -119,12 +119,42 @@ class AgentOpStats {
   /// the figure is how the wrong one gets picked.
   final Duration queueWait;
 
+  /// Summed time the *peer* spent on these calls, as the peer measured it:
+  /// from the request frame arriving at `AgentServer` to its reply going out
+  /// (SPEC §17).
+  ///
+  /// **This is the second half of a figure that used to be one.** A remote
+  /// [wireTime] covers the request going out, whatever the far side did, and
+  /// the reply coming back — three things with three different fixes. On the
+  /// measured run `writeFile` cost 40.9 ms an action and nothing could say
+  /// how much of it was the destination's own write and fsync. Subtracting
+  /// this leaves the link: `wireTime - farSide`.
+  ///
+  /// For [AgentOp.writeFile] the peer's span starts when the request frame
+  /// lands, so it *includes* draining the inbound file bytes — the transfer
+  /// is inside this figure, not outside it. What it excludes is the request
+  /// going out and the reply coming back, which is the part this split
+  /// exists to isolate.
+  final Duration farSide;
+
+  /// How many of these calls came back with a [farSide] figure at all.
+  ///
+  /// Separate from [count] because **absent is not zero**. A peer that does
+  /// not report its own span — an older build, or an operation like `scan`
+  /// and `readFile` whose reply is not a success control frame — must not
+  /// read as a destination that cost nothing, which is precisely the
+  /// conclusion this measurement exists to rule out. A mean over zero
+  /// samples is no mean, and the report says so rather than printing 0 ms.
+  final int farSideCount;
+
   const AgentOpStats({
     required this.count,
     required this.total,
     required this.max,
     required this.bytes,
     this.queueWait = Duration.zero,
+    this.farSide = Duration.zero,
+    this.farSideCount = 0,
   });
 
   /// Zero of everything — the starting point [merge] accumulates onto.
@@ -142,6 +172,8 @@ class AgentOpStats {
     max: elapsed > max ? elapsed : max,
     bytes: this.bytes + bytes,
     queueWait: queueWait,
+    farSide: farSide,
+    farSideCount: farSideCount,
   );
 
   /// This plus one more call's wait for a window slot.
@@ -157,6 +189,23 @@ class AgentOpStats {
     max: max,
     bytes: bytes,
     queueWait: queueWait + wait,
+    farSide: farSide,
+    farSideCount: farSideCount,
+  );
+
+  /// This plus one more call whose peer reported [span] as its own time.
+  ///
+  /// Separate from [merge] for the same reason [mergeQueueWait] is: the
+  /// figure arrives from a different collaborator at a different instant —
+  /// off the reply, before the operation's own span has closed.
+  AgentOpStats mergeFarSide(Duration span) => AgentOpStats(
+    count: count,
+    total: total,
+    max: max,
+    bytes: bytes,
+    queueWait: queueWait,
+    farSide: farSide + span,
+    farSideCount: farSideCount + 1,
   );
 
   /// Mean call time, [Duration.zero] for an operation never called.
@@ -181,8 +230,26 @@ class AgentOpStats {
   Duration get meanQueueWait => _per(queueWait);
 
   /// Mean time on the wire per call — for a remote replica, one exchange:
-  /// the request out, the peer's own work, and the reply back.
+  /// the request out, the peer's own work, and the reply back. [meanFarSide]
+  /// is the middle term of those three when the peer reports it.
   Duration get meanWireTime => _per(wireTime);
+
+  /// Mean time the peer spent per call that reported one, or null when none
+  /// did — null rather than zero, for the reason [farSideCount] gives.
+  Duration? get meanFarSide => farSideCount == 0
+      ? null
+      : Duration(microseconds: farSide.inMicroseconds ~/ farSideCount);
+
+  /// [meanWireTime] with the peer's own time taken out: what one exchange
+  /// cost the *link*, request out and reply back. Null when the peer did not
+  /// report, and clamped at zero for the reason [wireTime] is — the two
+  /// figures are sampled at different instants.
+  Duration? get meanLinkTime {
+    final far = meanFarSide;
+    if (far == null) return null;
+    final wire = meanWireTime;
+    return wire > far ? wire - far : Duration.zero;
+  }
 
   Duration _per(Duration value) => count == 0
       ? Duration.zero

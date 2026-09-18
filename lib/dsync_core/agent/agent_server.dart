@@ -122,6 +122,10 @@ class AgentServer {
       if (helloFrame == null) {
         throw StateError('Channel closed before hello arrived');
       }
+      // The prologue is an exchange like any other and its span is reported
+      // the same way (SPEC §17): on this end it covers building the agent
+      // and the replica's own `hello`, which on a phone reads the archive.
+      final helloSpan = Stopwatch()..start();
       final request = AgentRequest.fromFrame(helloFrame);
       if (request.op != 'hello') {
         await _reply(
@@ -163,6 +167,7 @@ class AgentServer {
         channel,
         AgentSuccess(replicaInfoToJson(info)),
         helloFrame.requestId,
+        helloSpan,
       );
 
       onRequest = (frame, body) {
@@ -206,6 +211,14 @@ class AgentServer {
     Stream<Frame> body,
   ) async {
     final id = frame.requestId;
+    // Started before the request is even decoded, because what this measures
+    // is everything the initiator's exchange is waiting on at this end (SPEC
+    // §17). Handed to [_reply], which stamps it onto the success frame.
+    //
+    // Wall time on this side, so on a busy agent it includes whatever else
+    // this isolate's event loop was doing — the same sense in which the
+    // initiator's own per-operation mean is wall time.
+    final farSide = Stopwatch()..start();
     var bodyComplete = true;
     try {
       try {
@@ -213,10 +226,10 @@ class AgentServer {
         switch (request.op) {
           case 'lock':
             await agent.lock();
-            await _reply(channel, const AgentSuccess(), id);
+            await _reply(channel, const AgentSuccess(), id, farSide);
           case 'unlock':
             await agent.unlock();
-            await _reply(channel, const AgentSuccess(), id);
+            await _reply(channel, const AgentSuccess(), id, farSide);
           case 'scan':
             final result = await agent.scan(
               ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
@@ -254,26 +267,27 @@ class AgentServer {
               channel,
               AgentSuccess({'metadata': fileMetadataToJson(metadata)}),
               id,
+              farSide,
             );
           case 'delete':
             await agent.delete(request.params['path'] as String);
-            await _reply(channel, const AgentSuccess(), id);
+            await _reply(channel, const AgentSuccess(), id, farSide);
           case 'removeEmptyDirs':
             await agent.removeEmptyDirs(request.params['path'] as String);
-            await _reply(channel, const AgentSuccess(), id);
+            await _reply(channel, const AgentSuccess(), id, farSide);
           case 'archiveCommitUpsert':
             await agent.archiveCommitUpsert(
               archiveEntryFromJson(
                 request.params['entry'] as Map<String, dynamic>,
               ),
             );
-            await _reply(channel, const AgentSuccess(), id);
+            await _reply(channel, const AgentSuccess(), id, farSide);
           case 'archiveCommitDelete':
             await agent.archiveCommitDelete(request.params['path'] as String);
-            await _reply(channel, const AgentSuccess(), id);
+            await _reply(channel, const AgentSuccess(), id, farSide);
           case 'compact':
             await agent.compact();
-            await _reply(channel, const AgentSuccess(), id);
+            await _reply(channel, const AgentSuccess(), id, farSide);
           default:
             throw FormatException('Unknown agent operation: ${request.op}');
         }
@@ -295,6 +309,25 @@ class AgentServer {
     }
   }
 
-  Future<void> _reply(Channel channel, AgentResult result, int requestId) =>
-      channel.send(FrameCodec().encode(result.toFrame(requestId)));
+  /// Sends [result] as the reply to [requestId], stamped — when [farSide] is
+  /// given and the operation succeeded — with how long this side took (SPEC
+  /// §17).
+  ///
+  /// **Success only, and only where the reply is a control frame.** A failure
+  /// carries an error the initiator turns into an exception, so there is no
+  /// figure to record it against; a `scan` reply is binary (SPEC §15.3) and a
+  /// `readFile` reply is the byte stream itself, so neither has a field to
+  /// put this in. All three read as absent on the other end, which is the
+  /// honest answer and is not the same as zero.
+  Future<void> _reply(
+    Channel channel,
+    AgentResult result,
+    int requestId, [
+    Stopwatch? farSide,
+  ]) {
+    final stamped = farSide != null && result is AgentSuccess
+        ? result.withFarSide(farSide.elapsed)
+        : result;
+    return channel.send(FrameCodec().encode(stamped.toFrame(requestId)));
+  }
 }

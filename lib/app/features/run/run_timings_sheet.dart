@@ -284,14 +284,16 @@ class _ReplicaTable extends StatelessWidget {
             style: subtitle,
           ),
         const SizedBox(height: 8),
-        // `queue` and `wire` rather than one `mean`, and `total` left to the
-        // copied report: the split is the whole point of this table now. A
-        // mean that rose because the window filled up and one that rose
-        // because the link slowed look identical bundled together, and they
-        // have opposite fixes — the two columns add up to the mean, so
-        // nothing is lost by showing them instead of it.
+        // `queue`, `wire` and `far` rather than one `mean`, with `total` and
+        // `max` left to the copied report: the splits are the whole point of
+        // this table. A mean that rose because the window filled up, one that
+        // rose because the link slowed, and one that rose because the
+        // destination's disk slowed look identical bundled together, and the
+        // three have different fixes. `far` is what the peer says the
+        // operation cost *it*, so `wire` minus `far` is the link — and `—`
+        // means the peer did not report, not that it was free.
         _Row(
-          cells: const ['operation', 'count', 'queue', 'wire', 'max'],
+          cells: const ['operation', 'count', 'queue', 'wire', 'far'],
           flex: const [4, 2, 2, 2, 2],
           header: true,
         ),
@@ -302,7 +304,7 @@ class _ReplicaTable extends StatelessWidget {
               formatMetricCount(stats.count),
               formatMetricDuration(stats.meanQueueWait),
               formatMetricDuration(stats.meanWireTime),
-              formatMetricDuration(stats.max),
+              formatMetricSplit(stats.meanFarSide),
             ],
             flex: const [4, 2, 2, 2, 2],
           ),

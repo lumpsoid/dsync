@@ -38,6 +38,11 @@ export 'package:dsync/dsync_core/run/elapsed.dart' show Elapsed;
 ///   handle [beginOp] returns, rather than to whichever operation on that
 ///   side was innermost. With one operation open at a time those were the
 ///   same thing; with a window open they are not.
+/// - **A mean is part far side.** A remote operation's mean covers the
+///   request going out, whatever the peer did with it, and the reply coming
+///   back. [countFarSide] records the middle term as the peer itself
+///   measured it, so `AgentOpStats.meanLinkTime` is what is left for the
+///   link. Absent unless the peer reports it, and absent is not zero.
 /// - **A mean is part queue.** An operation that waited for a window slot
 ///   paid that wait inside its span, so [countQueueWait] records the wait
 ///   separately and the report subtracts it: `AgentOpStats.meanWireTime` is
@@ -219,6 +224,19 @@ class RunMetricsRecorder {
   void countQueueWait(String side, AgentOp op, Duration wait) {
     final record = _replicaRecord(side);
     record.ops[op] = (record.ops[op] ?? AgentOpStats.none).mergeQueueWait(wait);
+  }
+
+  /// Records that the peer reported [span] as its own time on a call of [op]
+  /// (SPEC §17) — called by `RemoteAgent` as the reply is decoded, which is
+  /// the one place that sees the figure.
+  ///
+  /// Only calls whose reply actually carried one are recorded, so
+  /// `AgentOpStats.farSideCount` stays below `count` against a peer that does
+  /// not report and the report can say "absent" rather than "zero". Never
+  /// called for a local replica, which has no far side.
+  void countFarSide(String side, AgentOp op, Duration span) {
+    final record = _replicaRecord(side);
+    record.ops[op] = (record.ops[op] ?? AgentOpStats.none).mergeFarSide(span);
   }
 
   /// Declares that [side] is reached over a transport (SPEC §4.1) — called by
