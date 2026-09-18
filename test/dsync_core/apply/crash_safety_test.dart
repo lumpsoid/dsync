@@ -99,24 +99,28 @@ void main() {
 
     // 2. Seed both archives with a matching baseline entry for f, as if
     // already synced before this scenario begins.
-    await agentA.archiveCommitUpsert(
-      ArchiveEntry(
-        path: 'f',
-        size: statA0.size,
-        mtime: statA0.modified.microsecondsSinceEpoch,
-        mode: statA0.mode & 0xFFF,
-        hash: v1Hash,
+    await agentA.archiveCommit([
+      ArchiveUpsert(
+        ArchiveEntry(
+          path: 'f',
+          size: statA0.size,
+          mtime: statA0.modified.microsecondsSinceEpoch,
+          mode: statA0.mode & 0xFFF,
+          hash: v1Hash,
+        ),
       ),
-    );
-    await agentB.archiveCommitUpsert(
-      ArchiveEntry(
-        path: 'f',
-        size: statB0.size,
-        mtime: statB0.modified.microsecondsSinceEpoch,
-        mode: statB0.mode & 0xFFF,
-        hash: v1Hash,
+    ]);
+    await agentB.archiveCommit([
+      ArchiveUpsert(
+        ArchiveEntry(
+          path: 'f',
+          size: statB0.size,
+          mtime: statB0.modified.microsecondsSinceEpoch,
+          mode: statB0.mode & 0xFFF,
+          hash: v1Hash,
+        ),
       ),
-    );
+    ]);
 
     // 3. A real user edit lands only on A; B is untouched.
     fileA.writeAsStringSync('v2');
@@ -290,16 +294,14 @@ class _CrashingCommitAgent implements Agent {
   Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) async {
-    if (crashOn.contains(entry.path) && _alreadyCrashed.add(entry.path)) {
-      throw Exception('simulated crash committing ${entry.path}');
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    for (final commit in commits) {
+      if (crashOn.contains(commit.path) && _alreadyCrashed.add(commit.path)) {
+        throw Exception('simulated crash committing ${commit.path}');
+      }
     }
-    await _wrapped.archiveCommitUpsert(entry);
+    await _wrapped.archiveCommit(commits);
   }
-
-  @override
-  Future<void> archiveCommitDelete(String path) =>
-      _wrapped.archiveCommitDelete(path);
 
   @override
   Future<void> compact() => _wrapped.compact();

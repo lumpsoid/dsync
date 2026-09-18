@@ -8,6 +8,19 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// The protocol version this build speaks (SPEC §4.2). Bumped whenever the
 /// wire format changes in a way older and newer builds can't both handle.
 ///
+/// **3 since task 9d2158**, which replaced the per-path `archiveCommitUpsert`
+/// and `archiveCommitDelete` operations with one `archiveCommit` carrying a
+/// batch of records (SPEC §7.3). This is the change the paragraph below
+/// predicted: it does not move the header, and a peer of either version
+/// refuses the other's commits loudly — a version-2 peer answers
+/// `archiveCommit` with "Unknown agent operation", and this build would answer
+/// its `archiveCommitUpsert` the same way. Loud is not good enough on its own,
+/// though: without the bump, the refusal arrives per path, in the middle of an
+/// apply, after the files have already been written, as fourteen thousand
+/// failed actions. The bump turns that into one refusal at the handshake,
+/// before the run touches either replica, which is exactly what this constant
+/// is for.
+///
 /// **2 since task 0f7dfc**, which widened the frame header from 5 bytes to 9
 /// to carry a request id (`FrameCodec`). That is the first wire change here
 /// that moves the header itself, and it is the kind a version exists for:
@@ -44,8 +57,10 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// **Adding a frame type** — 40812e — fails loudly at the type byte.
 /// **Moving the header** — 0f7dfc — fails loudly too, but at a length field
 /// read out of someone else's payload, which is the one failure mode worth
-/// a constant that can be compared.
-const protocolVersion = 2;
+/// a constant that can be compared. **Replacing an operation** — 9d2158 —
+/// fails loudly at the far end's `default` case, but only once the run is
+/// already half done, which is why it took a bump as well.
+const protocolVersion = 3;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this
 /// build's [protocolVersion] as a control frame, then reads the peer's.

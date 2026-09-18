@@ -290,7 +290,8 @@ void main() {
   });
 
   group('archive commits', () {
-    test('dispatch upsert and delete', () async {
+    test('one batch carries upserts and tombstones together', () async {
+      // A plan mixes copies with deletes, so a batch does too (SPEC §7.3).
       const entry = ArchiveEntry(
         path: 'a.txt',
         size: 1,
@@ -298,18 +299,38 @@ void main() {
         mode: 420,
         hash: 'h',
       );
+      const other = ArchiveEntry(
+        path: 'b.txt',
+        size: 2,
+        mtime: 2,
+        mode: 420,
+        hash: 'h2',
+      );
 
       expect(
-        await call('archiveCommitUpsert', {'entry': archiveEntryToJson(entry)}),
+        await call('archiveCommit', {
+          'commits': [
+            archiveCommitToJson(const ArchiveUpsert(entry)),
+            archiveCommitToJson(const ArchiveUpsert(other)),
+          ],
+        }),
         isA<AgentSuccess>(),
       );
       expect(agent.archive['a.txt']?.hash, 'h');
+      expect(agent.archive['b.txt']?.hash, 'h2');
 
       expect(
-        await call('archiveCommitDelete', {'path': 'a.txt'}),
+        await call('archiveCommit', {
+          'commits': [
+            archiveCommitToJson(const ArchiveTombstone('a.txt')),
+            archiveCommitToJson(const ArchiveUpsert(entry)),
+          ],
+        }),
         isA<AgentSuccess>(),
       );
-      expect(agent.archive.containsKey('a.txt'), isFalse);
+      // Applied in order, so the upsert after the tombstone is what stands.
+      expect(agent.archive['a.txt']?.hash, 'h');
+      expect(agent.archive['b.txt']?.hash, 'h2');
     });
   });
 
@@ -530,13 +551,15 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) async {
-    archive[entry.path] = entry;
-  }
-
-  @override
-  Future<void> archiveCommitDelete(String path) async {
-    archive.remove(path);
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    for (final commit in commits) {
+      switch (commit) {
+        case ArchiveUpsert(:final entry):
+          archive[entry.path] = entry;
+        case ArchiveTombstone(:final path):
+          archive.remove(path);
+      }
+    }
   }
 
   bool compacted = false;

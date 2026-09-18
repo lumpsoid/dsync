@@ -69,13 +69,25 @@ abstract class Agent {
   /// are left alone (SPEC §7.5).
   Future<void> removeEmptyDirs(String path);
 
-  /// Durably commits [entry] to this replica's archive, superseding any
-  /// prior entry at the same path (SPEC §7.3, §8).
-  Future<void> archiveCommitUpsert(ArchiveEntry entry);
-
-  /// Durably commits a tombstone for [path] to this replica's archive (SPEC
-  /// §7.3, §8).
-  Future<void> archiveCommitDelete(String path);
+  /// Commits [commits] to this replica's archive (SPEC §7.3, §8).
+  ///
+  /// **A list, not a path, because the exchange is what costs** (task
+  /// 9d2158). Measured phone-to-desktop over `peer://`, a commit carrying one
+  /// path cost 22.0 ms against 21.7 ms of link latency and 0.34 ms of work on
+  /// the replica itself: the operation is a round trip with a record attached,
+  /// and one per path was a third of a 14k-file apply. N paths in one request
+  /// pay that trip once. Durability is still §8.2's — buffered, fsynced in
+  /// batches, flushed by [unlock] — so what this batches is the *wire*, not
+  /// the fsync, and the two bounds are independent.
+  ///
+  /// **All or nothing to the caller.** A batch that throws leaves every path
+  /// in it uncommitted as far as the caller is concerned, and `Applier` fails
+  /// all of their actions. Some of its commits may in fact have landed; that
+  /// is harmless, because a landed commit belongs to an action whose file work
+  /// already succeeded, so the next run finds that path in sync and the only
+  /// cost of the pessimism is a path reported as failed that turns out not to
+  /// need redoing.
+  Future<void> archiveCommit(List<ArchiveCommit> commits);
 
   /// Compacts this replica's archive log (SPEC §8.2, §13). Called by
   /// `RunController` once a run has reached the apply phase, regardless of

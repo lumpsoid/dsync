@@ -604,20 +604,20 @@ exit 0
       hash: 'deadbeef',
     );
 
-    test('archiveCommitUpsert commits through the store, durable once the '
+    test('archiveCommit records an upsert through the store, durable once the '
         'session gives the replica up (SPEC §8.2)', () async {
-      await agent().archiveCommitUpsert(entry);
+      await agent().archiveCommit([const ArchiveUpsert(entry)]);
       await archiveStore.flush();
 
       final reloaded = await JsonlArchiveStore(archiveLog, header).load();
       expect(reloaded.entries['a.txt']?.hash, 'deadbeef');
     });
 
-    test('archiveCommitDelete removes the entry', () async {
+    test('archiveCommit records a tombstone, removing the entry', () async {
       final a = agent();
-      await a.archiveCommitUpsert(entry);
+      await a.archiveCommit([const ArchiveUpsert(entry)]);
 
-      await a.archiveCommitDelete('a.txt');
+      await a.archiveCommit([const ArchiveTombstone('a.txt')]);
 
       final reloaded = await JsonlArchiveStore(archiveLog, header).load();
       expect(reloaded.entries.containsKey('a.txt'), isFalse);
@@ -634,8 +634,8 @@ exit 0
         hash: 'deadbeef',
       );
       final a = agent();
-      await a.archiveCommitUpsert(entry);
-      await a.archiveCommitUpsert(entry);
+      await a.archiveCommit([const ArchiveUpsert(entry)]);
+      await a.archiveCommit([const ArchiveUpsert(entry)]);
 
       await a.compact();
 

@@ -62,21 +62,23 @@ void main() {
       // the peer did, and the reply back. This is the middle term, and only
       // the peer can measure it.
       return _withHeldCommit((agent, backing, reported) async {
-        final commit = agent.archiveCommitUpsert(
-          const ArchiveEntry(
-            path: 'a.txt',
-            size: 1,
-            mtime: 1,
-            mode: 0x81a4,
-            hash: 'h',
+        final commit = agent.archiveCommit(const [
+          ArchiveUpsert(
+            ArchiveEntry(
+              path: 'a.txt',
+              size: 1,
+              mtime: 1,
+              mode: 0x81a4,
+              hash: 'h',
+            ),
           ),
-        );
+        ]);
         await Future<void>.delayed(const Duration(milliseconds: 20));
         backing.heldCommits['a.txt']!.complete();
         await commit;
 
         expect(reported, hasLength(1));
-        expect(reported.single.op, AgentOp.archiveCommitUpsert);
+        expect(reported.single.op, AgentOp.archiveCommit);
         // The hold is the floor: the peer's span contains it, and contains
         // nothing the initiator paid.
         expect(
@@ -226,10 +228,10 @@ void main() {
         hash: 'h',
       );
 
-      await remote.archiveCommitUpsert(entry);
+      await remote.archiveCommit([const ArchiveUpsert(entry)]);
       expect(backing.archive['a.txt']?.hash, 'h');
 
-      await remote.archiveCommitDelete('a.txt');
+      await remote.archiveCommit([const ArchiveTombstone('a.txt')]);
       expect(backing.archive.containsKey('a.txt'), isFalse);
     });
   });
@@ -255,7 +257,7 @@ void main() {
       backing.failCommits.add('b.txt');
 
       final a = expectLater(
-        remote.archiveCommitUpsert(entry('a.txt')),
+        remote.archiveCommit([ArchiveUpsert(entry('a.txt'))]),
         completes,
       );
       // The failure lands on b's caller and nobody else's: SPEC §7.6's
@@ -264,18 +266,18 @@ void main() {
       // the commits are released, since an outcome nothing is watching yet
       // is reported as an unhandled error whatever is done with it later.
       final b = expectLater(
-        remote.archiveCommitUpsert(entry('b.txt')),
+        remote.archiveCommit([ArchiveUpsert(entry('b.txt'))]),
         throwsA(isA<AgentOperationException>()),
       );
       final c = expectLater(
-        remote.archiveCommitUpsert(entry('c.txt')),
+        remote.archiveCommit([ArchiveUpsert(entry('c.txt'))]),
         completes,
       );
       await pumpEventQueue();
       expect(backing.started, [
-        'archiveCommitUpsert a.txt',
-        'archiveCommitUpsert b.txt',
-        'archiveCommitUpsert c.txt',
+        'archiveCommit a.txt',
+        'archiveCommit b.txt',
+        'archiveCommit c.txt',
       ], reason: 'all three are outstanding at once');
 
       backing.heldCommits['c.txt']!.complete();
@@ -304,14 +306,12 @@ void main() {
         narrow.heldCommits[path] = Completer<void>();
       }
       final commits = [
-        for (final path in paths) agent.archiveCommitUpsert(entry(path)),
+        for (final path in paths)
+          agent.archiveCommit([ArchiveUpsert(entry(path))]),
       ];
       await pumpEventQueue();
 
-      expect(narrow.started, [
-        'archiveCommitUpsert a.txt',
-        'archiveCommitUpsert b.txt',
-      ]);
+      expect(narrow.started, ['archiveCommit a.txt', 'archiveCommit b.txt']);
 
       narrow.heldCommits['a.txt']!.complete();
       await pumpEventQueue();
@@ -326,57 +326,75 @@ void main() {
 
     test('a barrier operation drains the window before it runs', () async {
       backing.heldCommits['a.txt'] = Completer<void>();
-      final commit = remote.archiveCommitUpsert(entry('a.txt'));
+      final commit = remote.archiveCommit([ArchiveUpsert(entry('a.txt'))]);
       await pumpEventQueue();
 
       // `lock` is a barrier: it changes what the replica means to the whole
       // session, so it must not overlap work already in flight (SPEC §4.2).
       final locked = remote.lock();
       await pumpEventQueue();
-      expect(backing.started, ['archiveCommitUpsert a.txt']);
+      expect(backing.started, ['archiveCommit a.txt']);
 
       backing.heldCommits['a.txt']!.complete();
       await commit;
       await locked;
-      expect(backing.started, ['archiveCommitUpsert a.txt', 'lock']);
+      expect(backing.started, ['archiveCommit a.txt', 'lock']);
+    });
+
+    test('a batch waits behind every path it carries', () async {
+      // Per-path order is what SPEC §7.3 rests on, and a batch is about many
+      // paths at once: it must not overtake an operation on *any* of them
+      // just because it also carries paths nothing is holding.
+      backing.heldCommits['a.txt'] = Completer<void>();
+      final held = remote.archiveCommit([ArchiveUpsert(entry('a.txt'))]);
+      await pumpEventQueue();
+
+      final batch = remote.archiveCommit([
+        ArchiveUpsert(entry('b.txt')),
+        ArchiveUpsert(entry('a.txt')),
+      ]);
+      await pumpEventQueue();
+      expect(backing.started, ['archiveCommit a.txt']);
+
+      backing.heldCommits.remove('a.txt')!.complete();
+      await held;
+      await batch;
+      expect(backing.started, [
+        'archiveCommit a.txt',
+        'archiveCommit b.txt,a.txt',
+      ]);
     });
 
     test('operations on one path keep the order they were issued in', () async {
-      // `writeFile` then `archiveCommitUpsert` for one path is what SPEC
+      // `writeFile` then the commit carrying that path is what SPEC
       // §7.3 rests on, and it must not become "whichever the window let
       // through first".
       backing.heldCommits['a.txt'] = Completer<void>();
-      final first = remote.archiveCommitUpsert(entry('a.txt'));
-      final second = remote.archiveCommitUpsert(entry('a.txt'));
+      final first = remote.archiveCommit([ArchiveUpsert(entry('a.txt'))]);
+      final second = remote.archiveCommit([ArchiveUpsert(entry('a.txt'))]);
       await pumpEventQueue();
 
-      expect(backing.started, ['archiveCommitUpsert a.txt']);
+      expect(backing.started, ['archiveCommit a.txt']);
 
       backing.heldCommits.remove('a.txt')!.complete();
       await first;
       await second;
-      expect(backing.started, [
-        'archiveCommitUpsert a.txt',
-        'archiveCommitUpsert a.txt',
-      ]);
+      expect(backing.started, ['archiveCommit a.txt', 'archiveCommit a.txt']);
     });
 
     test('a tombstone commit is windowed, not a barrier', () async {
-      // `archiveCommitDelete` appends one record for one path, exactly as
-      // `archiveCommitUpsert` does. A barrier here would have made every
-      // delete action drain the connection — the whole window's worth of
-      // overlap given up for a tombstone.
+      // A tombstone appends one record for one path, exactly as an upsert
+      // does. A barrier here would have made every delete action drain the
+      // connection — the whole window's worth of overlap given up for a
+      // tombstone.
       backing.heldCommits['a.txt'] = Completer<void>();
       backing.heldCommits['b.txt'] = Completer<void>();
 
-      final first = remote.archiveCommitDelete('a.txt');
-      final second = remote.archiveCommitUpsert(entry('b.txt'));
+      final first = remote.archiveCommit([const ArchiveTombstone('a.txt')]);
+      final second = remote.archiveCommit([ArchiveUpsert(entry('b.txt'))]);
       await pumpEventQueue();
 
-      expect(backing.started, [
-        'archiveCommitDelete a.txt',
-        'archiveCommitUpsert b.txt',
-      ]);
+      expect(backing.started, ['archiveCommit a.txt', 'archiveCommit b.txt']);
 
       backing.heldCommits['a.txt']!.complete();
       backing.heldCommits['b.txt']!.complete();
@@ -391,7 +409,7 @@ void main() {
       // entirely, which is what makes the drain free rather than what makes
       // it unnecessary.
       backing.heldCommits['a.txt'] = Completer<void>();
-      final commit = remote.archiveCommitUpsert(entry('a.txt'));
+      final commit = remote.archiveCommit([ArchiveUpsert(entry('a.txt'))]);
       await pumpEventQueue();
 
       final pruned = remote.removeEmptyDirs('sub/gone.txt');
@@ -418,7 +436,7 @@ void main() {
       final outstanding = [
         for (final path in ['a.txt', 'b.txt'])
           expectLater(
-            agent.archiveCommitUpsert(entry(path)),
+            agent.archiveCommit([ArchiveUpsert(entry(path))]),
             throwsA(isA<Object>()),
           ),
       ];
@@ -522,12 +540,11 @@ class _FakeAgent implements Agent {
   Object? lockError;
   ReplicaInfo helloInfo = const ReplicaInfo();
 
-  /// Paths whose `archiveCommitUpsert` waits to be released, so a test can
-  /// hold several operations open at once and decide the order they are
-  /// answered in.
+  /// Paths whose commit waits to be released, so a test can hold several
+  /// operations open at once and decide the order they are answered in.
   final Map<String, Completer<void>> heldCommits = {};
 
-  /// Paths whose `archiveCommitUpsert` fails.
+  /// Paths whose commit fails.
   final Set<String> failCommits = {};
 
   /// Every operation the server dispatched, in the order it started them.
@@ -587,20 +604,22 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) async {
-    started.add('archiveCommitUpsert ${entry.path}');
-    await heldCommits[entry.path]?.future;
-    if (failCommits.contains(entry.path)) {
-      throw Exception('commit refused: ${entry.path}');
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    started.add('archiveCommit ${commits.map((c) => c.path).join(',')}');
+    for (final commit in commits) {
+      await heldCommits[commit.path]?.future;
+      if (failCommits.contains(commit.path)) {
+        throw Exception('commit refused: ${commit.path}');
+      }
     }
-    archive[entry.path] = entry;
-  }
-
-  @override
-  Future<void> archiveCommitDelete(String path) async {
-    started.add('archiveCommitDelete $path');
-    await heldCommits[path]?.future;
-    archive.remove(path);
+    for (final commit in commits) {
+      switch (commit) {
+        case ArchiveUpsert(:final entry):
+          archive[entry.path] = entry;
+        case ArchiveTombstone(:final path):
+          archive.remove(path);
+      }
+    }
   }
 
   bool compacted = false;

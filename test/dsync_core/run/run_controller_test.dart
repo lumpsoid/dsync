@@ -919,25 +919,33 @@ void main(List<String> args) async {
   });
 
   group('backpressure: a consumer that stops listening (task e9f31c)', () {
-    test('stops the apply loop at that action boundary — later actions never '
-        'touch the filesystem', () async {
-      // One applier worker, so "later actions" means every action after the
-      // one whose result was last delivered. With several workers the
-      // guarantee is the same in kind but weaker in number: nothing beyond
-      // the actions already in flight starts (see `ApplyProgress`).
+    test('stops the apply loop within its stated bound — actions past that '
+        'never touch the filesystem', () async {
+      // One applier worker and one action per commit batch, so the bound is
+      // the tightest it gets: nothing beyond the action already applied while
+      // the last report waited ever starts (see `ApplyProgress`).
       await File('${replicaADir.path}/a.txt').writeAsString('a');
       await File('${replicaADir.path}/b.txt').writeAsString('b');
       await File('${replicaADir.path}/c.txt').writeAsString('c');
+      await File('${replicaADir.path}/d.txt').writeAsString('d');
 
       final controller = RunController(
         agentA: agentA,
         agentB: agentB,
         applyConcurrency: 1,
+        // A commit per action, so the overrun the commit stage allows is two
+        // actions rather than 128 (`CommitPipeline`).
+        applyCommitBatchSize: 1,
         presenter: (plan) async {
           final byPath = {
             for (final action in plan.actions) action.path: action,
           };
-          return [byPath['a.txt']!, byPath['b.txt']!, byPath['c.txt']!];
+          return [
+            byPath['a.txt']!,
+            byPath['b.txt']!,
+            byPath['c.txt']!,
+            byPath['d.txt']!,
+          ];
         },
       );
 
@@ -947,10 +955,11 @@ void main(List<String> args) async {
       subscription = controller.run().listen((event) {
         if (event is RunResultEvent) {
           resultCount++;
-          // Stop right after the second of three actions' results — a
+          // Stop right after the second of four actions' results — a
           // real consumer (a cancelled `SyncRunner.run` loop, a dropped
           // Flutter stream subscription) doing the same thing must leave
-          // the third action's file untouched, not merely "not reported".
+          // the run stopped within the bound `ApplyProgress` states, not
+          // merely "not reported".
           if (resultCount == 2) {
             unawaited(subscription.cancel());
             stoppedAfterSecondResult.complete();
@@ -966,7 +975,10 @@ void main(List<String> args) async {
 
       expect(await File('${replicaBDir.path}/a.txt').exists(), isTrue);
       expect(await File('${replicaBDir.path}/b.txt').exists(), isTrue);
-      expect(await File('${replicaBDir.path}/c.txt').exists(), isFalse);
+      // Applied while b's commit waited to be reported — the one action of
+      // overrun a batch of one allows.
+      expect(await File('${replicaBDir.path}/c.txt').exists(), isTrue);
+      expect(await File('${replicaBDir.path}/d.txt').exists(), isFalse);
 
       // Cancelling mid-apply still unwinds `RunController.run()`'s own
       // unlock/disconnect `finally` blocks (SPEC §4.3) — `Applier.apply`
@@ -1033,12 +1045,8 @@ class _RecordingAgent implements Agent {
   Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
-      _wrapped.archiveCommitUpsert(entry);
-
-  @override
-  Future<void> archiveCommitDelete(String path) =>
-      _wrapped.archiveCommitDelete(path);
+  Future<void> archiveCommit(List<ArchiveCommit> commits) =>
+      _wrapped.archiveCommit(commits);
 
   @override
   Future<void> compact() => _wrapped.compact();
@@ -1093,12 +1101,8 @@ class _FailingPathsAgent implements Agent {
   Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
-      _wrapped.archiveCommitUpsert(entry);
-
-  @override
-  Future<void> archiveCommitDelete(String path) =>
-      _wrapped.archiveCommitDelete(path);
+  Future<void> archiveCommit(List<ArchiveCommit> commits) =>
+      _wrapped.archiveCommit(commits);
 
   @override
   Future<void> compact() => _wrapped.compact();

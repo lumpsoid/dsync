@@ -256,10 +256,7 @@ class _FakeAgent implements Agent {
   Future<void> removeEmptyDirs(String path) async {}
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) async {}
-
-  @override
-  Future<void> archiveCommitDelete(String path) async {}
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {}
 
   @override
   Future<void> compact() async {}

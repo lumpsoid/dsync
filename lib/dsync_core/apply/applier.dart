@@ -1,6 +1,7 @@
 import 'dart:collection';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/apply/commit_pipeline.dart';
 import 'package:dsync/dsync_core/models/apply_result.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
@@ -15,16 +16,25 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 /// order they finished, and a caller rendering a row per path gets them as
 /// they land rather than as they were planned.
 ///
-/// A worker `await`s the returned future before taking its next action, so
-/// this is still the only cancellation seam [Applier.apply] has: a caller
-/// whose own consumer stopped wanting more events can simply never resolve
-/// it, and each worker in turn parks at its own action boundary. What that
-/// no longer promises is that exactly one action ran past the last one
-/// reported: up to [Applier.concurrency] actions may have been in flight,
-/// and each of them is either finished and durable (SPEC §7.3 makes it so on
-/// both sides before this fires) or parked here waiting to be reported.
-/// Nothing beyond those ever starts. `RunController` is the caller that does
-/// this (see its own doc comments).
+/// **Every action reported here is durable on both sides** — SPEC §7.3 makes
+/// it so before this fires, which for a successful action means its archive
+/// batch has landed (`CommitPipeline`).
+///
+/// It is still the only cancellation seam [Applier.apply] has: a caller whose
+/// own consumer stopped wanting more events can simply never resolve the
+/// returned future, and the run parks. What parks is no longer only a worker
+/// at its own action boundary. A failed action is reported by its worker, so
+/// that worker parks; a successful one is reported by the commit stage, and
+/// an unresolved report there stops the batch it belongs to from finishing,
+/// which stops the next batch from being sent, which parks every worker in
+/// turn as soon as one has nowhere to hand its records.
+///
+/// So the run runs on for a bounded distance past the last action reported:
+/// up to [Applier.concurrency] actions in flight, plus up to twice
+/// [Applier.commitBatchSize] applied and waiting to be committed or reported.
+/// Every one of them is finished on disk; what they are waiting for is the
+/// archive to say so. `RunController` is the caller that does this (see its
+/// own doc comments).
 ///
 /// Shaped like the callbacks already in this codebase — `RunController`'s
 /// own `Presenter` typedef, `AgentServer.serve`'s `Agent Function(ReplicaSpec)`
@@ -52,10 +62,17 @@ Future<void> _noopApplyProgress(String path, ActionType type, Object? error) =>
 ///
 /// Actions are *started* in the order given and up to [concurrency] of them
 /// run at once (SPEC §7.1, task 0f7dfc). Order was never what made this
-/// correct — the per-path archive commit in [_copy]/[_delete] (SPEC §7.3)
+/// correct — the per-path archive record each action ends with (SPEC §7.3)
 /// is, and it is per path, so two actions on two paths have nothing to
 /// order between them. A plan holds one action per path, so no two workers
 /// can be on the same path at all.
+///
+/// **Two stages, not one loop** (task 9d2158). A worker does an action's file
+/// work and hands the records the two archives are owed to [CommitPipeline],
+/// which sends them in batches while the workers carry on. The file work and
+/// the commit are different work against different resources — a phone's
+/// storage and a round trip carrying one line of JSON — and a worker that did
+/// both in turn spent a third of the apply waiting on the second.
 ///
 /// **Why overlap at all.** A single action against a remote replica is a
 /// handful of round trips with the link idle between them, and on a phone an
@@ -66,11 +83,14 @@ class Applier {
   /// How many actions may be in flight at once.
   ///
   /// **Sixteen, and the number is the bandwidth-delay product**, not a guess.
-  /// Every agent operation costs one round trip (SPEC §4.2), and an action is
-  /// about two of them — a `writeFile` and an `archiveCommitUpsert` — so one
-  /// worker moves one file per two round trips however fat the link is.
-  /// Throughput is therefore `concurrency × file size ÷ (2 × RTT)` and
-  /// nothing else, until it meets the link.
+  /// Every agent operation costs one round trip (SPEC §4.2), and an action
+  /// used to be about two of them — a `writeFile` and a commit — so one worker
+  /// moved one file per two round trips however fat the link is. Throughput is
+  /// therefore `concurrency × file size ÷ (trips × RTT)` and nothing else,
+  /// until it meets the link. Since task 9d2158 the commit is batched and off
+  /// the worker's path, so `trips` is one: the number below was derived
+  /// against two and is left where it is until it is re-measured against one
+  /// (9d2158 phase 3), not adjusted by arithmetic over means.
   ///
   /// Measured over a unix socket with a forwarding proxy adding 10 ms
   /// (`benchmark/local_sync_throughput.dart`), on the 14k-file tree SPEC §17
@@ -85,9 +105,7 @@ class Applier {
   /// ~8.5 MiB/s — about what the link measured at. Going further would not be
   /// wrong, it would just be queueing against the link instead of against
   /// latency, and queueing is what makes SPEC §17's per-operation means stop
-  /// meaning "what one exchange cost". The other lever is the round trips
-  /// themselves: fold the archive commit into the `writeFile` reply and every
-  /// number here doubles.
+  /// meaning "what one exchange cost".
   ///
   /// The cost is what is in flight on the memory-constrained end: sixteen
   /// streaming `writeFile`s hold one chunk each, not one file each (SPEC
@@ -99,8 +117,16 @@ class Applier {
   /// which is what a test that reasons about ordering wants.
   final int concurrency;
 
-  Applier({this.concurrency = defaultConcurrency})
-    : assert(concurrency >= 1, 'An applier with no workers applies nothing');
+  /// How many actions' archive records travel in one exchange — see
+  /// [CommitPipeline.defaultBatchSize]. Injectable for the same reason
+  /// [concurrency] is: `1` is a commit per action, which is what a test
+  /// reasoning about one path's commits wants to see.
+  final int commitBatchSize;
+
+  Applier({
+    this.concurrency = defaultConcurrency,
+    this.commitBatchSize = CommitPipeline.defaultBatchSize,
+  }) : assert(concurrency >= 1, 'An applier with no workers applies nothing');
 
   Future<ApplyResult> apply(
     Plan plan,
@@ -126,33 +152,62 @@ class Applier {
     // of its time with every worker but one idle.
     final queue = Queue<PlanAction>.of(plan.actions);
 
+    // Awaited by the commit stage as it reports each action, so a caller that
+    // never resolves it parks the run: the batch being reported never
+    // finishes, the next one is never sent, and every worker stops as soon as
+    // it has nowhere to hand its records.
+    Future<void> report(PlanAction action, Object? error) async {
+      if (error == null) {
+        applied.add(AppliedPath(path: action.path, type: action.type));
+      } else {
+        failed.add(
+          FailedPath(path: action.path, type: action.type, error: error),
+        );
+      }
+      await onAction(action.path, action.type, error);
+    }
+
+    final commits = CommitPipeline(
+      agentA: agentA,
+      agentB: agentB,
+      onCommitted: report,
+      batchSize: commitBatchSize,
+    );
+
     Future<void> worker() async {
       while (queue.isNotEmpty) {
         final action = queue.removeFirst();
-        final error = await _applyOne(action, a, b, agentA, agentB, emptied);
-        if (error == null) {
-          applied.add(AppliedPath(path: action.path, type: action.type));
-        } else {
-          failed.add(
-            FailedPath(path: action.path, type: action.type, error: error),
-          );
+        final outcome = await _applyOne(action, a, b, agentA, agentB, emptied);
+        // Both outcomes go to the same stage, so they are reported in the
+        // order the actions finished rather than in whichever order two
+        // unrelated `await`s happened to resume.
+        switch (outcome) {
+          case _ActionFailed(:final error):
+            await commits.addFailed(action, error);
+          case _OwedCommits(:final onA, :final onB):
+            await commits.add(action, onA: onA, onB: onB);
         }
-        // Awaited inside the worker, so a caller that never resolves it
-        // parks this worker at an action boundary and nothing it would have
-        // taken next ever starts.
-        await onAction(action.path, action.type, error);
       }
     }
 
     await Future.wait([for (var i = 0; i < concurrency; i++) worker()]);
+    // Before the sweep, not after: an action still in a batch is an action
+    // still to be reported, and `removeEmptyDirs` is a barrier that would
+    // otherwise be waiting on the same connections the last commits need.
+    await commits.drain();
     await _pruneEmptiedDirs(emptied);
 
     return ApplyResult(applied: applied, failed: failed);
   }
 
-  /// Applies one action, returning the failure it ended with or `null`
-  /// (SPEC §7.6).
-  Future<Object?> _applyOne(
+  /// Applies one action, returning what it left the two archives owing, or
+  /// the failure it ended with (SPEC §7.6).
+  ///
+  /// The records are *returned* rather than committed here, because when they
+  /// are sent is [CommitPipeline]'s to decide and no longer this action's.
+  /// What is still this method's is which record each replica gets, which is
+  /// the part SPEC §7.3 is about.
+  Future<_ActionOutcome> _applyOne(
     PlanAction action,
     Map<String, ScanEntry> a,
     Map<String, ScanEntry> b,
@@ -163,57 +218,42 @@ class Applier {
     try {
       switch (action.type) {
         case ActionType.copyAtoB:
-          await _copy(
+          final (:onSource, :onDest) = await _copy(
             action.path,
             source: agentA,
             dest: agentB,
             sourceEntries: a,
           );
+          return _OwedCommits(onA: onSource, onB: onDest);
         case ActionType.copyBtoA:
-          await _copy(
+          final (:onSource, :onDest) = await _copy(
             action.path,
             source: agentB,
             dest: agentA,
             sourceEntries: b,
           );
+          return _OwedCommits(onA: onDest, onB: onSource);
         case ActionType.deleteOnA:
-          await _delete(
-            action.path,
-            target: agentA,
-            agentA: agentA,
-            agentB: agentB,
-            emptied: emptied,
-          );
+          return await _delete(action.path, target: agentA, emptied: emptied);
         case ActionType.deleteOnB:
-          await _delete(
-            action.path,
-            target: agentB,
-            agentA: agentA,
-            agentB: agentB,
-            emptied: emptied,
-          );
+          return await _delete(action.path, target: agentB, emptied: emptied);
         case ActionType.commitOnly:
-          await _commitOnly(
-            action.path,
-            a[action.path],
-            b[action.path],
-            agentA,
-            agentB,
-          );
+          return _commitOnly(action.path, a[action.path], b[action.path]);
       }
-      return null;
     } catch (error) {
-      return error;
+      return _ActionFailed(error);
     }
   }
 
   /// Copy in one direction (SPEC §7.2, §7.3). [source] streams the file;
   /// [dest] writes it and reports the metadata actually observed afterward.
-  /// On success, both sides commit: [dest] with the post-write metadata (the
-  /// content didn't change, so [sourceEntry]'s already-known hash is reused
-  /// rather than rehashing on the destination), [source] with its own
-  /// unchanged entry, refreshing its archive to match this scan.
-  Future<void> _copy(
+  ///
+  /// Returns what each side is owed rather than committing it: [dest] the
+  /// post-write metadata (the content didn't change, so [sourceEntry]'s
+  /// already-known hash is reused rather than rehashing on the destination),
+  /// [source] its own unchanged entry, refreshing its archive to match this
+  /// scan. Both go to [CommitPipeline], which is what decides when.
+  Future<({ArchiveCommit onSource, ArchiveCommit onDest})> _copy(
     String path, {
     required Agent source,
     required Agent dest,
@@ -235,38 +275,38 @@ class Applier {
       );
     }
 
-    await dest.archiveCommitUpsert(
-      ArchiveEntry(
-        path: path,
-        size: metadata.size,
-        mtime: metadata.mtime,
-        mode: metadata.mode,
-        hash: sourceEntry.hash!,
+    return (
+      onDest: ArchiveUpsert(
+        ArchiveEntry(
+          path: path,
+          size: metadata.size,
+          mtime: metadata.mtime,
+          mode: metadata.mode,
+          hash: sourceEntry.hash!,
+        ),
       ),
-    );
-    await source.archiveCommitUpsert(
-      ArchiveEntry(
-        path: path,
-        size: sourceEntry.size!,
-        mtime: sourceEntry.mtime!,
-        mode: sourceEntry.mode!,
-        hash: sourceEntry.hash!,
+      onSource: ArchiveUpsert(
+        ArchiveEntry(
+          path: path,
+          size: sourceEntry.size!,
+          mtime: sourceEntry.mtime!,
+          mode: sourceEntry.mode!,
+          hash: sourceEntry.hash!,
+        ),
       ),
     );
   }
 
   /// Delete on the side that still physically holds the file (SPEC §7.5,
-  /// §7.3). On success both archives are tombstoned, even though only
-  /// [target] ever held the file — both need to agree the path is gone.
+  /// §7.3). Both archives are tombstoned, even though only [target] ever held
+  /// the file — both need to agree the path is gone.
   ///
   /// The ancestor pruning §7.5 also asks for is *not* done here. It is
   /// recorded in [emptied] and swept once the whole plan is applied, for the
   /// reason [_pruneEmptiedDirs] gives.
-  Future<void> _delete(
+  Future<_ActionOutcome> _delete(
     String path, {
     required Agent target,
-    required Agent agentA,
-    required Agent agentB,
     required List<_Emptied> emptied,
   }) async {
     await target.delete(path);
@@ -276,8 +316,10 @@ class Applier {
     // still deleted.
     emptied.add(_Emptied(target, path));
 
-    await agentA.archiveCommitDelete(path);
-    await agentB.archiveCommitDelete(path);
+    return _OwedCommits(
+      onA: ArchiveTombstone(path),
+      onB: ArchiveTombstone(path),
+    );
   }
 
   /// Removes the directories this run emptied (SPEC §7.5), once every action
@@ -316,35 +358,36 @@ class Applier {
   }
 
   /// No filesystem I/O (SPEC §6 "same content, no transfer"). Either both
-  /// sides currently hold identical content, in which case each commits an
+  /// sides currently hold identical content, in which case each is owed an
   /// upsert built from its own scan entry, or at least one side has nothing
   /// to upsert — already deleted, or (the one-sided tombstone of §6's "a
   /// path one side has never seen", task 6a967f) never scanned into [a]/[b]
   /// at all because that side is silent about the path — in which case both
-  /// commit a delete instead of upserting the null fields.
+  /// are owed a tombstone instead of an upsert over the null fields.
   ///
   /// A `null` entry is treated exactly like an already-deleted one: it is
   /// the silent side of a one-sided commit-only, where there was never an
   /// archive entry or a file to begin with, so tombstoning it is a no-op
   /// commit, redundant but harmless, and dropped by the next compaction
   /// (SPEC §8.2) since this action lands in `applied`.
-  Future<void> _commitOnly(
+  _ActionOutcome _commitOnly(
     String path,
     ScanEntry? entryA,
     ScanEntry? entryB,
-    Agent agentA,
-    Agent agentB,
-  ) async {
+  ) {
     final aDeleted = entryA == null || entryA.status == ScanStatus.deleted;
     final bDeleted = entryB == null || entryB.status == ScanStatus.deleted;
     if (aDeleted && bDeleted) {
-      await agentA.archiveCommitDelete(path);
-      await agentB.archiveCommitDelete(path);
-      return;
+      return _OwedCommits(
+        onA: ArchiveTombstone(path),
+        onB: ArchiveTombstone(path),
+      );
     }
 
-    await agentA.archiveCommitUpsert(_ownEntry(path, entryA!));
-    await agentB.archiveCommitUpsert(_ownEntry(path, entryB!));
+    return _OwedCommits(
+      onA: ArchiveUpsert(_ownEntry(path, entryA!)),
+      onB: ArchiveUpsert(_ownEntry(path, entryB!)),
+    );
   }
 
   ArchiveEntry _ownEntry(String path, ScanEntry entry) => ArchiveEntry(
@@ -385,6 +428,33 @@ class TransferSizeMismatchException implements Exception {
   String toString() =>
       'Incomplete transfer of "$path": expected $expected bytes, '
       'destination has $actual';
+}
+
+/// What one action left behind for [Applier.apply] to do next: the records
+/// the two archives are owed, or the failure that means neither gets one.
+///
+/// A sum type rather than a nullable error beside a nullable pair, because
+/// the two cases have nothing in common and every caller has to branch on
+/// which it got anyway.
+sealed class _ActionOutcome {
+  const _ActionOutcome();
+}
+
+/// An action that succeeded, and what each replica's archive is owed for it
+/// (SPEC §7.3). Handed to `CommitPipeline`, which decides when it travels.
+final class _OwedCommits extends _ActionOutcome {
+  final ArchiveCommit onA;
+  final ArchiveCommit onB;
+
+  const _OwedCommits({required this.onA, required this.onB});
+}
+
+/// An action that failed (SPEC §7.6). Neither archive is committed, so the
+/// path is left as it landed and the next run resolves the difference.
+final class _ActionFailed extends _ActionOutcome {
+  final Object error;
+
+  const _ActionFailed(this.error);
 }
 
 /// One directory sweep owed by a delete that has already happened — which

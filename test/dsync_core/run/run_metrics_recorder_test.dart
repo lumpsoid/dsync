@@ -108,7 +108,7 @@ void main() {
         Duration(milliseconds: 30),
         Duration(milliseconds: 20),
       ]) {
-        final operation = metrics.beginOp('b', AgentOp.archiveCommitUpsert);
+        final operation = metrics.beginOp('b', AgentOp.archiveCommit);
         advance(span);
         operation.end();
       }
@@ -116,7 +116,7 @@ void main() {
       final stats = metrics
           .snapshot()
           .replicas['b']!
-          .ops[AgentOp.archiveCommitUpsert]!;
+          .ops[AgentOp.archiveCommit]!;
       expect(stats.count, 3);
       expect(stats.total, const Duration(milliseconds: 60));
       expect(stats.max, const Duration(milliseconds: 30));
@@ -286,7 +286,7 @@ void main() {
 
     test('sends per operation divides the flushes by the work', () {
       metrics.beginOp('b', AgentOp.writeFile).end();
-      metrics.beginOp('b', AgentOp.archiveCommitUpsert).end();
+      metrics.beginOp('b', AgentOp.archiveCommit).end();
       metrics.beginSend('b', bytes: 10, frames: 1).end();
       metrics.beginSend('b', bytes: 10, frames: 1).end();
       metrics.beginSend('b', bytes: 10, frames: 1).end();
@@ -409,7 +409,7 @@ void main() {
       metrics.markRemote('b');
       metrics.beginOp('a', AgentOp.readFile).end();
       metrics.beginOp('b', AgentOp.writeFile).end();
-      metrics.beginOp('b', AgentOp.archiveCommitUpsert).end();
+      metrics.beginOp('b', AgentOp.archiveCommit).end();
       metrics.beginSend('b', bytes: 10, frames: 1).end();
       metrics.countReceive('b', bytes: 5);
       advance(const Duration(seconds: 7));

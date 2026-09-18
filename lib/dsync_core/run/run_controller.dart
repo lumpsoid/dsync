@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/apply/applier.dart';
+import 'package:dsync/dsync_core/apply/commit_pipeline.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
@@ -80,9 +81,10 @@ class RunController {
   final Applier _applier;
 
   /// [applyConcurrency] is how many actions overlap (SPEC §7.1, task
-  /// 0f7dfc). Defaulted to `Applier.defaultConcurrency` and passed in only
-  /// by a test that reasons about the *order* outcomes arrive in, which is
-  /// the one thing overlap gives up.
+  /// 0f7dfc) and [applyCommitBatchSize] how many of their archive records
+  /// travel in one exchange (SPEC §7.3, task 9d2158). Both defaulted, and
+  /// both passed in only by a test that reasons about *when* an outcome
+  /// arrives — which is the one thing overlapping and batching give up.
   RunController({
     required this.agentA,
     required this.agentB,
@@ -90,9 +92,13 @@ class RunController {
     RuleSet? rules,
     RunMetricsRecorder? metrics,
     int applyConcurrency = Applier.defaultConcurrency,
+    int applyCommitBatchSize = CommitPipeline.defaultBatchSize,
   }) : rules = rules ?? RuleSet(),
        metrics = metrics ?? RunMetricsRecorder(),
-       _applier = Applier(concurrency: applyConcurrency);
+       _applier = Applier(
+         concurrency: applyConcurrency,
+         commitBatchSize: applyCommitBatchSize,
+       );
 
   /// Drives one run end to end, emitting [RunEvent]s as it goes (SPEC
   /// §11.4). The stream always ends normally — whether the run succeeded,
@@ -284,8 +290,8 @@ class RunController {
     metrics.endPhase(RunPhase.apply);
 
     // SPEC §8.2: a run that committed nothing does not compact. Every action
-    // type — including commitOnly — reaches archiveCommitUpsert/Delete on
-    // *both* sides before Applier.apply records it in `applied` (never in
+    // type — including commitOnly — reaches archiveCommit on *both* sides
+    // before Applier.apply records it in `applied` (never in
     // `failed`: a failed action may have partially committed on one side,
     // but that is the same "crash between the two commits" state SPEC §7.3
     // already resolves on the next run, so it is not "committed" for this

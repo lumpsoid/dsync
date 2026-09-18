@@ -275,15 +275,11 @@ class AgentServer {
           case 'removeEmptyDirs':
             await agent.removeEmptyDirs(request.params['path'] as String);
             await _reply(channel, const AgentSuccess(), id, farSide);
-          case 'archiveCommitUpsert':
-            await agent.archiveCommitUpsert(
-              archiveEntryFromJson(
-                request.params['entry'] as Map<String, dynamic>,
-              ),
-            );
-            await _reply(channel, const AgentSuccess(), id, farSide);
-          case 'archiveCommitDelete':
-            await agent.archiveCommitDelete(request.params['path'] as String);
+          case 'archiveCommit':
+            await agent.archiveCommit([
+              for (final commit in request.params['commits'] as List)
+                archiveCommitFromJson(commit as Map<String, dynamic>),
+            ]);
             await _reply(channel, const AgentSuccess(), id, farSide);
           case 'compact':
             await agent.compact();

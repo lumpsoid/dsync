@@ -219,7 +219,7 @@ class RunMetricsRecorder {
   ///
   /// Recorded against the operation rather than the replica because the
   /// answer it gives is per operation: `writeFile` queueing behind the window
-  /// while `archiveCommitUpsert` does not is a different diagnosis from both
+  /// while `archiveCommit` does not is a different diagnosis from both
   /// of them queueing, and a per-replica total cannot show it.
   void countQueueWait(String side, AgentOp op, Duration wait) {
     final record = _replicaRecord(side);

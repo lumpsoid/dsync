@@ -16,6 +16,11 @@ import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:test/test.dart';
 
+/// Puts [entry] in [agent]'s archive before the run under test starts —
+/// setup, not an assertion about how `Applier` commits.
+Future<void> seedArchive(Agent agent, ArchiveEntry entry) =>
+    agent.archiveCommit([ArchiveUpsert(entry)]);
+
 void main() {
   late Directory tempDir;
   late Directory replicaADir;
@@ -165,7 +170,8 @@ void main() {
 
   group('delete', () {
     test('deleteOnA removes the file, prunes emptied ancestor dirs, tombstones both archives', () async {
-      await agentA.archiveCommitUpsert(
+      await seedArchive(
+        agentA,
         const ArchiveEntry(
           path: 'sub/a.txt',
           size: 3,
@@ -174,7 +180,8 @@ void main() {
           hash: 'old',
         ),
       );
-      await agentB.archiveCommitUpsert(
+      await seedArchive(
+        agentB,
         const ArchiveEntry(
           path: 'sub/a.txt',
           size: 3,
@@ -208,7 +215,8 @@ void main() {
     });
 
     test('deleteOnB removes the file and tombstones both archives', () async {
-      await agentA.archiveCommitUpsert(
+      await seedArchive(
+        agentA,
         const ArchiveEntry(
           path: 'b.txt',
           size: 3,
@@ -217,7 +225,8 @@ void main() {
           hash: 'old',
         ),
       );
-      await agentB.archiveCommitUpsert(
+      await seedArchive(
+        agentB,
         const ArchiveEntry(
           path: 'b.txt',
           size: 3,
@@ -415,7 +424,8 @@ void main() {
     );
 
     test('deleted/deleted tombstones both archives without touching the filesystem', () async {
-      await agentA.archiveCommitUpsert(
+      await seedArchive(
+        agentA,
         const ArchiveEntry(
           path: 'gone.txt',
           size: 1,
@@ -424,7 +434,8 @@ void main() {
           hash: 'was-here',
         ),
       );
-      await agentB.archiveCommitUpsert(
+      await seedArchive(
+        agentB,
         const ArchiveEntry(
           path: 'gone.txt',
           size: 1,
@@ -469,7 +480,8 @@ void main() {
       // `apply()`'s null-tolerant lookup for `commitOnly` (the mechanical
       // consequence the task called out: `a[action.path]!` used to throw
       // here).
-      await agentB.archiveCommitUpsert(
+      await seedArchive(
+        agentB,
         const ArchiveEntry(
           path: 'gone.txt',
           size: 1,
@@ -568,7 +580,8 @@ void main() {
         'side\'s commit landed (FailedPath does not guarantee neither side '
         'committed) — the copyAtoB equivalent of this is already covered end '
         'to end by crash_safety_test.dart', () async {
-      await agentA.archiveCommitUpsert(
+      await seedArchive(
+        agentA,
         const ArchiveEntry(
           path: 'sub/a.txt',
           size: 3,
@@ -577,7 +590,8 @@ void main() {
           hash: 'old',
         ),
       );
-      await agentB.archiveCommitUpsert(
+      await seedArchive(
+        agentB,
         const ArchiveEntry(
           path: 'sub/a.txt',
           size: 3,
@@ -591,7 +605,7 @@ void main() {
         ..writeAsStringSync('bye');
 
       // Applier._delete commits agentA's tombstone first, agentB's
-      // second (SPEC §7.3). Wrapping only agentB's archiveCommitDelete
+      // second (SPEC §7.3). Wrapping only agentB's tombstone commit
       // simulates a crash landing A's commit durably while B's is lost.
       final crashingB = _CrashingDeleteAgent(agentB, crashOn: {'sub/a.txt'});
 
@@ -680,7 +694,8 @@ void main() {
       final fileB = File('${replicaBDir.path}/f')..writeAsStringSync('hello');
       final statA0 = await fileA.stat();
       final statB0 = await fileB.stat();
-      await agentA.archiveCommitUpsert(
+      await seedArchive(
+        agentA,
         ArchiveEntry(
           path: 'f',
           size: statA0.size,
@@ -689,7 +704,8 @@ void main() {
           hash: 'baseline-hash',
         ),
       );
-      await agentB.archiveCommitUpsert(
+      await seedArchive(
+        agentB,
         ArchiveEntry(
           path: 'f',
           size: statB0.size,
@@ -725,7 +741,7 @@ void main() {
 
       // Applier._delete commits agentA's tombstone first, agentB's second
       // (SPEC §7.3), regardless of which side physically holds the file.
-      // Wrapping only agentB's archiveCommitDelete simulates a crash that
+      // Wrapping only agentB's tombstone commit simulates a crash that
       // lands A's commit durably (and the real deletion of B's file,
       // which happens before either commit) while B's own commit is lost.
       final crashingB = _CrashingDeleteAgent(agentB, crashOn: {'f'});
@@ -875,11 +891,12 @@ void main() {
     }, testOn: 'linux');
 
     test(
-      'a caller that never resolves the callback holds each worker at its '
-      'own action boundary — no further action touches the filesystem',
+      'a caller that never resolves the callback stops the run a bounded '
+      'distance later — no action past that touches the filesystem',
       () async {
         await File('${replicaADir.path}/first.txt').writeAsString('first');
         await File('${replicaADir.path}/second.txt').writeAsString('second');
+        await File('${replicaADir.path}/third.txt').writeAsString('third');
         final mtime = DateTime.utc(2022, 1, 1).microsecondsSinceEpoch;
 
         final entries = [
@@ -899,24 +916,38 @@ void main() {
             mode: 420,
             hash: 'h2',
           ),
+          ScanEntry(
+            path: 'third.txt',
+            reason: ScanReason.created,
+            size: 5,
+            mtime: mtime,
+            mode: 420,
+            hash: 'h3',
+          ),
         ];
 
         final plan = Plan(
           actions: [
             const PlanAction(path: 'first.txt', type: ActionType.copyAtoB),
             const PlanAction(path: 'second.txt', type: ActionType.copyAtoB),
+            const PlanAction(path: 'third.txt', type: ActionType.copyAtoB),
           ],
           conflicts: [],
         );
 
         // A callback that never resolves is exactly what a downstream
         // consumer that stopped listening looks like from `apply()`'s side
-        // (see `ApplyProgress`'s own doc comment) — this is the direct,
+        // (see `ApplyProgress`'s own doc comment): the batch being reported
+        // never finishes, so the next one is never sent and the worker stops
+        // with nowhere to hand its records. This is the direct,
         // Applier-level half of the backpressure guarantee; the
         // `RunController`-level half (a stream consumer that actually
         // cancels) is asserted in run_controller_test.dart.
+        // A commit per action, so the bound `ApplyProgress` states — one
+        // batch on the wire and one filling — is two actions rather than
+        // 128, and a third file is enough to show where the run stops.
         unawaited(
-          Applier(concurrency: 1).apply(
+          Applier(concurrency: 1, commitBatchSize: 1).apply(
             plan,
             entries,
             [],
@@ -931,7 +962,10 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 200));
 
         expect(await File('${replicaBDir.path}/first.txt').exists(), isTrue);
-        expect(await File('${replicaBDir.path}/second.txt').exists(), isFalse);
+        // Applied while the first action's batch waited to be reported, which
+        // is the overrun the bound allows.
+        expect(await File('${replicaBDir.path}/second.txt').exists(), isTrue);
+        expect(await File('${replicaBDir.path}/third.txt').exists(), isFalse);
       },
       testOn: 'linux',
     );
@@ -1016,13 +1050,15 @@ class _FailingWriteAgent implements Agent {
   Future<void> removeEmptyDirs(String path) async {}
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) async {
-    archive[entry.path] = entry;
-  }
-
-  @override
-  Future<void> archiveCommitDelete(String path) async {
-    archive.remove(path);
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    for (final commit in commits) {
+      switch (commit) {
+        case ArchiveUpsert(:final entry):
+          archive[entry.path] = entry;
+        case ArchiveTombstone(:final path):
+          archive.remove(path);
+      }
+    }
   }
 
   @override
@@ -1033,7 +1069,7 @@ class _FailingWriteAgent implements Agent {
 }
 
 /// Wraps a real [Agent], delegating every method to it by default, except
-/// [archiveCommitDelete] which throws the first time it's called for a path
+/// an `archiveCommit` carrying a tombstone which throws the first time it's called for a path
 /// in [crashOn] — simulating a crash after the *other* side's tombstone
 /// commit already landed durably, but before this side's own does (SPEC
 /// §7.3). Mirrors `_CrashingCommitAgent` in crash_safety_test.dart, but for
@@ -1075,15 +1111,15 @@ class _CrashingDeleteAgent implements Agent {
   Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
-      _wrapped.archiveCommitUpsert(entry);
-
-  @override
-  Future<void> archiveCommitDelete(String path) async {
-    if (crashOn.contains(path) && _alreadyCrashed.add(path)) {
-      throw Exception('simulated crash committing delete of $path');
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    for (final commit in commits) {
+      if (commit is ArchiveTombstone &&
+          crashOn.contains(commit.path) &&
+          _alreadyCrashed.add(commit.path)) {
+        throw Exception('simulated crash committing delete of ${commit.path}');
+      }
     }
-    await _wrapped.archiveCommitDelete(path);
+    await _wrapped.archiveCommit(commits);
   }
 
   @override
@@ -1143,15 +1179,14 @@ class _RecordingCallsAgent implements Agent {
   }
 
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) {
-    calls.add('archiveCommitUpsert ${entry.path}');
-    return _wrapped.archiveCommitUpsert(entry);
-  }
-
-  @override
-  Future<void> archiveCommitDelete(String path) {
-    calls.add('archiveCommitDelete $path');
-    return _wrapped.archiveCommitDelete(path);
+  Future<void> archiveCommit(List<ArchiveCommit> commits) {
+    for (final commit in commits) {
+      calls.add(switch (commit) {
+        ArchiveUpsert(:final path) => 'archiveCommitUpsert $path',
+        ArchiveTombstone(:final path) => 'archiveCommitDelete $path',
+      });
+    }
+    return _wrapped.archiveCommit(commits);
   }
 
   @override

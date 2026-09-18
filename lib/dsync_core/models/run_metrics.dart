@@ -69,8 +69,7 @@ enum AgentOp {
   writeFile,
   delete,
   removeEmptyDirs,
-  archiveCommitUpsert,
-  archiveCommitDelete,
+  archiveCommit,
   compact,
   disconnect,
 }

@@ -139,15 +139,17 @@ void main() {
         final firstScan = (await remote.scan(RuleSet())).entries
             .firstWhere((e) => e.path == 'a.txt');
 
-        await remote.archiveCommitUpsert(
-          ArchiveEntry(
-            path: firstScan.path,
-            size: firstScan.size!,
-            mtime: firstScan.mtime!,
-            mode: firstScan.mode!,
-            hash: firstScan.hash!,
+        await remote.archiveCommit([
+          ArchiveUpsert(
+            ArchiveEntry(
+              path: firstScan.path,
+              size: firstScan.size!,
+              mtime: firstScan.mtime!,
+              mode: firstScan.mode!,
+              hash: firstScan.hash!,
+            ),
           ),
-        );
+        ]);
 
         final secondScan = (await remote.scan(RuleSet())).entries
             .firstWhere((e) => e.path == 'a.txt');
@@ -294,12 +296,12 @@ void main() {
       // replica up (SPEC §8.2), so each read below goes through `unlock` —
       // which the far end dispatches to its own `LocalAgent`, and which is
       // what a real run does on every exit path.
-      await remote.archiveCommitUpsert(entry);
+      await remote.archiveCommit([const ArchiveUpsert(entry)]);
       await remote.unlock();
       final afterUpsert = await JsonlArchiveStore(archiveLog, header).load();
       expect(afterUpsert.entries['a.txt']?.hash, 'deadbeef');
 
-      await remote.archiveCommitDelete('a.txt');
+      await remote.archiveCommit([const ArchiveTombstone('a.txt')]);
       await remote.unlock();
       final afterDelete = await JsonlArchiveStore(archiveLog, header).load();
       expect(afterDelete.entries.containsKey('a.txt'), isFalse);

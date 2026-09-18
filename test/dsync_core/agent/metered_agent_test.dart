@@ -98,33 +98,29 @@ void main() {
 
       // SPEC §7.2 and §7.3, counted: the source streams the file and commits
       // its own archive entry; the destination writes it and commits one too.
-      // The two destination operations are the two round trips a remote
-      // replica pays per path, and the reason a tree of many small files is
-      // latency-bound (SPEC §17).
       expect(count(snapshot, 'a', AgentOp.readFile), 1);
-      expect(count(snapshot, 'a', AgentOp.archiveCommitUpsert), 1);
+      expect(count(snapshot, 'a', AgentOp.archiveCommit), 1);
       expect(count(snapshot, 'b', AgentOp.writeFile), 1);
-      expect(count(snapshot, 'b', AgentOp.archiveCommitUpsert), 1);
+      expect(count(snapshot, 'b', AgentOp.archiveCommit), 1);
     },
   );
 
-  test(
-    'per-path operations scale one-for-one with the number of files',
-    () async {
-      // The whole problem in one assertion: nothing batches, so ten files cost
-      // ten times what one file costs.
-      for (var i = 0; i < 10; i++) {
-        File('${rootA.path}/note$i.txt').writeAsStringSync('body $i');
-      }
+  test('the transfer scales with the files, the commits do not', () async {
+    // Where the round trips go, in one test. Reading and writing is per
+    // file and always will be; committing is not, since task 9d2158 —
+    // ten paths' records ride one exchange per replica, and would still be
+    // one exchange at sixty-four (`CommitPipeline.defaultBatchSize`).
+    for (var i = 0; i < 10; i++) {
+      File('${rootA.path}/note$i.txt').writeAsStringSync('body $i');
+    }
 
-      final snapshot = await runSync();
+    final snapshot = await runSync();
 
-      expect(count(snapshot, 'b', AgentOp.writeFile), 10);
-      expect(count(snapshot, 'b', AgentOp.archiveCommitUpsert), 10);
-      expect(count(snapshot, 'a', AgentOp.readFile), 10);
-      expect(count(snapshot, 'a', AgentOp.archiveCommitUpsert), 10);
-    },
-  );
+    expect(count(snapshot, 'b', AgentOp.writeFile), 10);
+    expect(count(snapshot, 'a', AgentOp.readFile), 10);
+    expect(count(snapshot, 'b', AgentOp.archiveCommit), 1);
+    expect(count(snapshot, 'a', AgentOp.archiveCommit), 1);
+  });
 
   test('file content is counted on both sides of a copy', () async {
     File('${rootA.path}/note.txt').writeAsStringSync('0123456789');
@@ -137,7 +133,7 @@ void main() {
     expect(snapshot.replicas['a']!.wireBytesSent, 0);
   });
 
-  test('a delete costs three operations on top of the two commits', () async {
+  test('a delete costs two operations on top of the commits', () async {
     // Establish the path on both sides, then remove it from A so the next
     // run propagates the deletion (SPEC §6, §7.5).
     File('${rootA.path}/gone.txt').writeAsStringSync('x');
@@ -145,15 +141,16 @@ void main() {
     File('${rootA.path}/gone.txt').deleteSync();
 
     // Same recorder across both runs — the agents captured it at
-    // construction, so it is the only one they write to. The delete
-    // operations below happen in the second run alone, so their counts are
-    // unambiguous without resetting anything.
+    // construction, so it is the only one they write to. `delete` and
+    // `removeEmptyDirs` happen in the second run alone; the commits are two
+    // per side, one run each, since a tombstone and an upsert are the same
+    // operation now that both travel in a batch.
     final snapshot = await runSync();
 
     expect(count(snapshot, 'b', AgentOp.delete), 1);
     expect(count(snapshot, 'b', AgentOp.removeEmptyDirs), 1);
-    expect(count(snapshot, 'a', AgentOp.archiveCommitDelete), 1);
-    expect(count(snapshot, 'b', AgentOp.archiveCommitDelete), 1);
+    expect(count(snapshot, 'a', AgentOp.archiveCommit), 2);
+    expect(count(snapshot, 'b', AgentOp.archiveCommit), 2);
   });
 
   test('a run records every phase it reached, and only those', () async {

@@ -31,6 +31,41 @@ class ArchiveEntry {
   });
 }
 
+/// One path's worth of archive change, owed to a replica by an action that
+/// has already finished (SPEC §7.3).
+///
+/// A sum type rather than an entry-plus-nullable, because the two cases carry
+/// different data and nothing else: an upsert has a whole [ArchiveEntry], a
+/// tombstone has a path and could never have one. It exists because commits
+/// travel in batches — `Agent.archiveCommit` takes a list of these — and a
+/// batch mixes both kinds, since a plan mixes copies with deletes.
+sealed class ArchiveCommit {
+  /// The path this commit is about. The one thing both cases have, and what
+  /// orders a commit against the other operations on the same path (SPEC
+  /// §4.2's window).
+  String get path;
+
+  const ArchiveCommit();
+}
+
+/// Records [entry], superseding any prior entry at the same path.
+final class ArchiveUpsert extends ArchiveCommit {
+  final ArchiveEntry entry;
+
+  const ArchiveUpsert(this.entry);
+
+  @override
+  String get path => entry.path;
+}
+
+/// Records a tombstone for [path].
+final class ArchiveTombstone extends ArchiveCommit {
+  @override
+  final String path;
+
+  const ArchiveTombstone(this.path);
+}
+
 /// A replica's archive: its header plus every entry currently committed,
 /// keyed by path. Returned by [ArchiveStore.snapshot] for scan comparison
 /// (SPEC §5).

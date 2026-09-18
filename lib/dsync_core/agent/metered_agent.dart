@@ -125,17 +125,13 @@ class MeteredAgent implements Agent {
   Future<void> removeEmptyDirs(String path) =>
       _timed(AgentOp.removeEmptyDirs, () => _inner.removeEmptyDirs(path));
 
+  /// One call, one measurement, however many paths it carried — so the mean
+  /// SPEC §17 reports is what an exchange cost, not what a path cost. The
+  /// paths-per-batch figure the mean has to be read against is `Applier`'s
+  /// and is fixed there.
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) => _timed(
-    AgentOp.archiveCommitUpsert,
-    () => _inner.archiveCommitUpsert(entry),
-  );
-
-  @override
-  Future<void> archiveCommitDelete(String path) => _timed(
-    AgentOp.archiveCommitDelete,
-    () => _inner.archiveCommitDelete(path),
-  );
+  Future<void> archiveCommit(List<ArchiveCommit> commits) =>
+      _timed(AgentOp.archiveCommit, () => _inner.archiveCommit(commits));
 
   @override
   Future<void> compact() => _timed(AgentOp.compact, _inner.compact);

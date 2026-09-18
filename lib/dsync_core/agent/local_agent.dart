@@ -286,13 +286,23 @@ class LocalAgent implements Agent {
     }
   }
 
+  /// Records each commit in turn against this replica's store.
+  ///
+  /// No batch call on [ArchiveStore], deliberately: its commits are already
+  /// buffered and fsynced together (SPEC §8.2), so a store-level batch would
+  /// be a rename of this loop. What `Agent.archiveCommit` batches is the
+  /// round trip a `RemoteAgent` pays, which is invisible from here.
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) =>
-      archiveStore.commitUpsert(entry);
-
-  @override
-  Future<void> archiveCommitDelete(String path) =>
-      archiveStore.commitDelete(path);
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    for (final commit in commits) {
+      switch (commit) {
+        case ArchiveUpsert(:final entry):
+          await archiveStore.commitUpsert(entry);
+        case ArchiveTombstone(:final path):
+          await archiveStore.commitDelete(path);
+      }
+    }
+  }
 
   @override
   Future<void> compact() => archiveStore.compact();

@@ -232,25 +232,18 @@ class RemoteAgent implements Agent {
     () => _call(AgentOp.removeEmptyDirs, {'path': path}),
   );
 
+  /// Windowed rather than a barrier: every record in the batch appends to
+  /// this replica's archive under its own path (SPEC §7.3), so none of them
+  /// can affect another path's outcome. It enters the window under every path
+  /// it carries, so it still cannot overtake the `writeFile` or `delete` that
+  /// earned one of those records.
   @override
-  Future<void> archiveCommitUpsert(ArchiveEntry entry) => _window.run(
-    entry.path,
-    AgentOp.archiveCommitUpsert,
-    () => _call(AgentOp.archiveCommitUpsert, {
-      'entry': archiveEntryToJson(entry),
+  Future<void> archiveCommit(List<ArchiveCommit> commits) => _window.runAll(
+    [for (final commit in commits) commit.path],
+    AgentOp.archiveCommit,
+    () => _call(AgentOp.archiveCommit, {
+      'commits': [for (final commit in commits) archiveCommitToJson(commit)],
     }),
-  );
-
-  /// Windowed, exactly as [archiveCommitUpsert] is: both append one record
-  /// for one path to this replica's archive (SPEC §7.3), and neither can
-  /// affect another path's outcome. A barrier here would have made every
-  /// delete action drain the connection, which is the whole window's worth
-  /// of overlap given up for a tombstone.
-  @override
-  Future<void> archiveCommitDelete(String path) => _window.run(
-    path,
-    AgentOp.archiveCommitDelete,
-    () => _call(AgentOp.archiveCommitDelete, {'path': path}),
   );
 
   @override

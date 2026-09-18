@@ -36,9 +36,9 @@ class RequestWindow {
   /// How many operations may be outstanding on one connection.
   ///
   /// Twice what `Applier` runs at once, because an action's operations
-  /// against one replica are sequential — a
-  /// `writeFile` then its `archiveCommitUpsert` — while a delete action adds
-  /// a third. Headroom, in other words: this bound exists so a peer cannot
+  /// against one replica are sequential — a `writeFile` then the
+  /// `archiveCommit` its path is handed to — while a delete action adds a
+  /// third. Headroom, in other words: this bound exists so a peer cannot
   /// be flooded, not to meter the work, and `Applier` is what decides how
   /// much work there is.
   ///
@@ -90,13 +90,30 @@ class RequestWindow {
   /// Runs [body] as one of at most [size] concurrent operations.
   ///
   /// Two operations on the same [path] never overlap, and they run in the
-  /// order they were issued: `writeFile` then `archiveCommitUpsert` for one
-  /// path is the ordering the whole archive rule rests on (SPEC §7.3), and
+  /// order they were issued: `writeFile` then the `archiveCommit` carrying
+  /// that path is the ordering the whole archive rule rests on (SPEC §7.3), and
   /// it must not become "whichever the window admitted first". Operations on
   /// *different* paths are free to overlap in any order, which is where the
   /// win comes from.
-  Future<T> run<T>(String path, AgentOp op, Future<T> Function() body) async {
-    final release = await _enter(path, op);
+  Future<T> run<T>(String path, AgentOp op, Future<T> Function() body) =>
+      runAll([path], op, body);
+
+  /// [run] for an operation that is about several paths at once —
+  /// `archiveCommit`, which carries one record per path in its batch (SPEC
+  /// §7.3).
+  ///
+  /// It waits behind the last operation issued on *every* path it names and
+  /// becomes the tail of all of them, so the per-path ordering [run] promises
+  /// is the same whether a path's commit travelled alone or with sixty
+  /// others. In an apply that costs nothing: a path's commit is only ever
+  /// handed over once its own `writeFile` or `delete` has returned, so the
+  /// predecessors are already gone by the time this asks.
+  Future<T> runAll<T>(
+    List<String> paths,
+    AgentOp op,
+    Future<T> Function() body,
+  ) async {
+    final release = await _enter(paths, op);
     try {
       return await body();
     } finally {
@@ -112,7 +129,7 @@ class RequestWindow {
     AgentOp op,
     Stream<T> Function() body,
   ) async* {
-    final release = await _enter(path, op);
+    final release = await _enter([path], op);
     try {
       yield* body();
     } finally {
@@ -124,9 +141,9 @@ class RequestWindow {
   /// admitted after it starts until it finishes.
   ///
   /// This is what `lock`, `unlock`, `hello`, `scan`, `compact` and
-  /// `removeEmptyDirs` get. `readFile`, `writeFile`, `delete`,
-  /// `archiveCommitUpsert` and `archiveCommitDelete` are per-path operations
-  /// whose effects commute with another path's, so they go in the window;
+  /// `removeEmptyDirs` get. `readFile`, `writeFile`, `delete` and
+  /// `archiveCommit` are per-path operations whose effects commute with
+  /// another path's, so they go in the window;
   /// the rest either change what the whole replica means to the session or
   /// reach paths they were not given — `removeEmptyDirs` walks *ancestors*
   /// (SPEC §7.5), so it can delete a directory a concurrent `writeFile` on
@@ -165,29 +182,37 @@ class RequestWindow {
   /// Waits for a slot behind everything that must precede this operation,
   /// and hands back the callback that gives the slot up. Callers release in
   /// a `finally`, or the window never drains.
-  Future<void Function()> _enter(String path, AgentOp op) async {
+  Future<void Function()> _enter(List<String> paths, AgentOp op) async {
     final queuedAt = _elapsed();
-    final predecessor = _pathTail[path];
+    final predecessors = [for (final path in paths) ?_pathTail[path]];
     final finished = Completer<void>();
     // Recorded before the first `await`, so two calls for one path chain in
     // call order rather than in whatever order they are resumed in.
-    _pathTail[path] = finished.future;
+    for (final path in paths) {
+      _pathTail[path] = finished.future;
+    }
+
+    void releaseChain() {
+      for (final path in paths) {
+        if (_pathTail[path] == finished.future) _pathTail.remove(path);
+      }
+      finished.complete();
+    }
 
     var released = false;
     void release() {
       if (released) return;
       released = true;
       _admitted--;
-      if (_pathTail[path] == finished.future) _pathTail.remove(path);
-      finished.complete();
+      releaseChain();
       _pump();
     }
 
     try {
-      // Before taking a slot, never while holding one: the predecessor
-      // already has its slot and will give it up, so waiting here cannot
+      // Before taking a slot, never while holding one: the predecessors
+      // already have theirs and will give them up, so waiting here cannot
       // deadlock the window against itself.
-      if (predecessor != null) await predecessor;
+      if (predecessors.isNotEmpty) await Future.wait(predecessors);
       final waiter = _Waiter(exclusive: false);
       _queue.add(waiter);
       _pump();
@@ -202,8 +227,7 @@ class RequestWindow {
       // Never admitted, so there is no slot to give back — but the path
       // chain still has to be released, or every later operation on it hangs.
       released = true;
-      if (_pathTail[path] == finished.future) _pathTail.remove(path);
-      finished.complete();
+      releaseChain();
       rethrow;
     }
   }

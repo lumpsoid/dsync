@@ -78,7 +78,7 @@ void main() {
         unawaited(window.run('other.txt', AgentOp.writeFile, op('other')));
         await pumpEventQueue();
 
-        // `writeFile` then `archiveCommitUpsert` for one path is what SPEC
+        // `writeFile` then the commit carrying that path is what SPEC
         // §7.3 rests on; another path is free to overlap either.
         expect(admitted, ['write', 'other']);
 
@@ -217,7 +217,7 @@ void main() {
       final window = meteredWindow();
 
       unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
-      unawaited(window.run('b.txt', AgentOp.archiveCommitUpsert, op('b')));
+      unawaited(window.run('b.txt', AgentOp.archiveCommit, op('b')));
       await pumpEventQueue();
       expect(waits, [(AgentOp.writeFile, Duration.zero)]);
 
@@ -230,7 +230,7 @@ void main() {
       // up as a link that got slower.
       expect(waits, [
         (AgentOp.writeFile, Duration.zero),
-        (AgentOp.archiveCommitUpsert, const Duration(milliseconds: 30)),
+        (AgentOp.archiveCommit, const Duration(milliseconds: 30)),
       ]);
     });
 
@@ -239,9 +239,7 @@ void main() {
 
       unawaited(window.run('same.txt', AgentOp.writeFile, op('write')));
       await pumpEventQueue();
-      unawaited(
-        window.run('same.txt', AgentOp.archiveCommitUpsert, op('commit')),
-      );
+      unawaited(window.run('same.txt', AgentOp.archiveCommit, op('commit')));
       now += const Duration(milliseconds: 12);
       release('write');
       await pumpEventQueue();
@@ -249,7 +247,7 @@ void main() {
       // It never reached the queue, let alone the wire — charging this to
       // the exchange would blame the link for SPEC §7.3's own ordering.
       expect(waits.last, (
-        AgentOp.archiveCommitUpsert,
+        AgentOp.archiveCommit,
         const Duration(milliseconds: 12),
       ));
     });
