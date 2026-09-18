@@ -37,15 +37,35 @@ CertificateValidity certificateValidityFromDer(Uint8List der) {
   );
 }
 
-/// [der]'s subject common name — the one attribute
-/// `self_signed_certificate.dart`'s `_name` writes.
+/// [der]'s subject common name.
+///
+/// Found by its OID rather than at a fixed position, unlike the TBS elements
+/// above. A subject is a *set* of attributes — `self_signed_certificate.dart`
+/// writes a `serialNumber` beside the common name so that no two identities
+/// share a subject — and reading "the first attribute" would make this
+/// depend on an order neither X.500 nor this project's own encoder promises
+/// to keep.
+///
+/// Throws [FormatException] for a subject carrying no common name at all,
+/// which no certificate this project generates does.
 String certificateCommonNameFromDer(Uint8List der) {
   final subject = _tbsElement(der, 5) as ASN1Sequence;
-  final rdn = subject.elements![0] as ASN1Set;
-  final attribute = rdn.elements![0] as ASN1Sequence;
-  final value = attribute.elements![1] as ASN1UTF8String;
-  return value.utf8StringValue!;
+  for (final rdn in subject.elements!) {
+    for (final attribute in (rdn as ASN1Set).elements!) {
+      final pair = (attribute as ASN1Sequence).elements!;
+      final oid = pair[0] as ASN1ObjectIdentifier;
+      if (oid.objectIdentifierAsString != _commonNameOid) continue;
+      return switch (pair[1]) {
+        ASN1UTF8String(:final utf8StringValue) => utf8StringValue!,
+        ASN1PrintableString(:final stringValue) => stringValue!,
+        final other => throw FormatException('Not a name: $other'),
+      };
+    }
+  }
+  throw const FormatException('Certificate subject carries no common name');
 }
+
+const _commonNameOid = '2.5.4.3';
 
 ASN1Object _tbsElement(Uint8List der, int index) {
   final certificate = ASN1Parser(der).nextObject() as ASN1Sequence;

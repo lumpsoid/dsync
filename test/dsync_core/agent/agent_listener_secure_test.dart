@@ -345,6 +345,35 @@ void main() {
     expect(sessionErrors, isEmpty);
   });
 
+  test('two devices a head named the same can both connect', () async {
+    // The Flutter head calls every identity it generates `dsync-app`, so a
+    // desktop paired with two phones has two anchors whose subjects would be
+    // byte-identical without `_name`'s serialNumber attribute. BoringSSL's
+    // trust store looks an issuer up by subject name and answers with
+    // whichever was added first, so the second device used to be refused
+    // with `CERTIFICATE_VERIFY_FAILED: self signed certificate` — a real
+    // failure on a real pair of devices, and an error naming nothing that
+    // would lead anyone to the cause.
+    final first = generateDeviceIdentity(commonName: 'dsync-app');
+    final second = generateDeviceIdentity(commonName: 'dsync-app');
+    await store.add(
+      pairedDeviceFor(first, name: 'old phone', roots: {allowedRoot}),
+    );
+    await store.add(
+      pairedDeviceFor(second, name: 'new phone', roots: {allowedRoot}),
+    );
+    final listener = await bind();
+    addTearDown(listener.close);
+
+    for (final identity in [first, second]) {
+      final agent = await connectAs(identity, listener, rootPath: allowedRoot);
+      await expectLater(agent.hello(), completes);
+      await agent.disconnect();
+    }
+
+    expect(sessionErrors, isEmpty);
+  });
+
   test('an unpaired peer is refused', () async {
     final paired = generateDeviceIdentity(commonName: 'dsync-paired');
     await store.add(

@@ -55,6 +55,11 @@ const defaultCertificateValidity = Duration(days: 3650);
 /// [commonName] is cosmetic: pairing pins the certificate's public key, not
 /// its subject. It exists so a human reading `openssl x509 -text` or a paired
 /// device list sees something other than a blank.
+///
+/// It is *not*, however, the whole subject. The subject also carries a
+/// `serialNumber` attribute derived from the public key, because two
+/// certificates with the same subject cannot both be trust anchors on one
+/// host — see [_name].
 DeviceIdentity generateDeviceIdentity({
   required String commonName,
   SecureRandom? random,
@@ -135,6 +140,7 @@ DeviceIdentity _assembleIdentity({
   final tbs = _tbsCertificate(
     serial: _randomSerial(random),
     commonName: commonName,
+    distinguisher: _subjectDistinguisher(publicKey),
     publicKey: publicKey,
     notBefore: issued.subtract(certificateBackdate),
     notAfter: issued.add(validFor),
@@ -209,6 +215,7 @@ BigInt _bigIntFromBytes(Uint8List bytes) {
 ASN1Sequence _tbsCertificate({
   required BigInt serial,
   required String commonName,
+  required String distinguisher,
   required ECPublicKey publicKey,
   required DateTime notBefore,
   required DateTime notAfter,
@@ -217,9 +224,10 @@ ASN1Sequence _tbsCertificate({
   ASN1Sequence(elements: [ASN1Integer(BigInt.two)], tag: 0xA0),
   ASN1Integer(serial),
   _signatureAlgorithm(),
-  _name(commonName), // issuer == subject: self-signed
+  // issuer == subject: self-signed
+  _name(commonName, distinguisher),
   _validity(notBefore, notAfter),
-  _name(commonName),
+  _name(commonName, distinguisher),
   _subjectPublicKeyInfo(publicKey),
   _extensions(),
 ]);
@@ -245,7 +253,30 @@ ASN1Sequence _subjectPublicKeyInfo(ECPublicKey key) {
 }
 
 /// An `RDNSequence` carrying a single common name.
-ASN1Sequence _name(String commonName) => _sequence([
+/// `Name`: a `commonName` a human reads, and a `serialNumber` no two devices
+/// share.
+///
+/// **Why the second attribute is not optional.** A peer is trusted by having
+/// its self-signed certificate installed as a trust anchor
+/// (`AgentListener._securityContextFor`), and BoringSSL's trust store looks
+/// an issuer up **by subject name**. Two paired devices whose subjects are
+/// byte-identical collide there: the store answers the lookup with whichever
+/// was added first, its signature does not verify the other's certificate,
+/// and the second device is refused with `CERTIFICATE_VERIFY_FAILED: self
+/// signed certificate` — an error that says nothing about the real cause.
+/// That is not hypothetical: the Flutter head names every identity it
+/// generates `dsync-app`, so a desktop paired with two phones could talk to
+/// exactly one of them.
+///
+/// [distinguisher] is derived from the public key ([_subjectDistinguisher]),
+/// so it is unique per identity without a second source of randomness, and
+/// **stable across renewal** — `renewDeviceIdentity` keeps the key, so the
+/// subject it rebuilds is the same subject. Putting it in `serialNumber`
+/// rather than appending it to the common name keeps the name a human name:
+/// it is what a pairing screen offers as the device's label
+/// (`desktopNameFromPayload`), and `studio-4f3a91c2` is not what anyone
+/// would call their desktop.
+ASN1Sequence _name(String commonName, String distinguisher) => _sequence([
   ASN1Set(
     elements: [
       _sequence([
@@ -254,7 +285,35 @@ ASN1Sequence _name(String commonName) => _sequence([
       ]),
     ],
   ),
+  ASN1Set(
+    elements: [
+      _sequence([
+        _oid(_serialNumberOid),
+        ASN1PrintableString(stringValue: distinguisher),
+      ]),
+    ],
+  ),
 ]);
+
+/// What makes one identity's subject different from every other's: the first
+/// eight hex characters of the SHA-256 over the `SubjectPublicKeyInfo` this
+/// certificate will carry — the same bytes [deviceIdFromCertificateDer]
+/// hashes to make a device id, so the two cannot drift apart.
+///
+/// Eight characters, not the whole digest, because this is a
+/// tie-break between the handful of devices one host pairs with, not an
+/// identifier anything authenticates against: the pin is still the full key
+/// (SPEC §4.4). A collision here would cost what today costs certainty — one
+/// of two devices unable to connect — at 2^-32 per pair rather than at
+/// every pair of devices a head names the same.
+String _subjectDistinguisher(ECPublicKey publicKey) {
+  final spki = _subjectPublicKeyInfo(publicKey).encode();
+  return SHA256Digest()
+      .process(spki)
+      .take(4)
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+}
 
 /// `Validity`.
 ///
@@ -409,5 +468,6 @@ const _idEcPublicKey = '1.2.840.10045.2.1';
 const _prime256v1 = '1.2.840.10045.3.1.7';
 const _ecdsaWithSha256 = '1.2.840.10045.4.3.2';
 const _commonNameOid = '2.5.4.3';
+const _serialNumberOid = '2.5.4.5';
 const _basicConstraintsOid = '2.5.29.19';
 const _keyUsageOid = '2.5.29.15';
