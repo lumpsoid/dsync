@@ -204,15 +204,94 @@ void main() {
     });
   });
 
+  group('wire idle', () {
+    test('the gap between two bytes moving lands on the open phase', () {
+      metrics.beginPhase(RunPhase.apply);
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      advance(const Duration(milliseconds: 40));
+      metrics.countReceive('b', bytes: 10);
+      advance(const Duration(milliseconds: 10));
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      metrics.endPhase(RunPhase.apply);
+
+      expect(metrics.snapshot().replicas['b']!.idle, {
+        RunPhase.apply: const Duration(milliseconds: 50),
+      });
+    });
+
+    test('a phase that ended in silence is charged that silence', () {
+      // The reading the 16-worker phone run needed and could not get: a
+      // phase that spent its last stretch waiting, with nothing on the link.
+      metrics.beginPhase(RunPhase.apply);
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      advance(const Duration(seconds: 3));
+      metrics.endPhase(RunPhase.apply);
+
+      expect(
+        metrics.snapshot().replicas['b']!.idle[RunPhase.apply],
+        const Duration(seconds: 3),
+      );
+    });
+
+    test('silence before a phase began is not charged to it', () {
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      advance(const Duration(seconds: 5));
+      metrics.beginPhase(RunPhase.compact);
+      advance(const Duration(seconds: 2));
+      metrics.endPhase(RunPhase.compact);
+
+      // Counting from the last byte rather than from the phase's own start
+      // would charge `compact` with five seconds that happened before it.
+      expect(
+        metrics.snapshot().replicas['b']!.idle[RunPhase.compact],
+        const Duration(seconds: 2),
+      );
+    });
+
+    test('a side that has not spoken yet has no idle time', () {
+      // Absent rather than zero: nothing has been measured, which is not the
+      // same as a link that was never idle.
+      metrics.beginPhase(RunPhase.connect);
+      advance(const Duration(seconds: 4));
+      metrics.endPhase(RunPhase.connect);
+      metrics.beginOp('b', AgentOp.hello).end();
+
+      expect(metrics.snapshot().replicas['b']!.idle, isEmpty);
+    });
+  });
+
   group('replicas', () {
     test('wire bytes are per side and per direction', () {
-      metrics.countWireBytes('b', sent: 120);
-      metrics.countWireBytes('b', received: 30);
-      metrics.countWireBytes('b', sent: 80);
+      metrics.beginSend('b', bytes: 120, frames: 1).end();
+      metrics.countReceive('b', bytes: 30);
+      metrics.beginSend('b', bytes: 80, frames: 1).end();
 
       final replica = metrics.snapshot().replicas['b']!;
       expect(replica.wireBytesSent, 200);
       expect(replica.wireBytesReceived, 30);
+    });
+
+    test('sends and frames are counted apart from the bytes', () {
+      // They only agree while nothing coalesces frames, and the difference
+      // is the coalescing case measured rather than inferred (SPEC §17).
+      metrics.beginSend('b', bytes: 100, frames: 1).end();
+      metrics.beginSend('b', bytes: 300, frames: 3).end();
+
+      final replica = metrics.snapshot().replicas['b']!;
+      expect(replica.sends, 2);
+      expect(replica.framesSent, 4);
+      expect(replica.meanFrameBytes, 100);
+      expect(replica.framesPerSend, 2);
+    });
+
+    test('sends per operation divides the flushes by the work', () {
+      metrics.beginOp('b', AgentOp.writeFile).end();
+      metrics.beginOp('b', AgentOp.archiveCommitUpsert).end();
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+
+      expect(metrics.snapshot().replicas['b']!.sendsPerOp, 1.5);
     });
 
     test('a side is local until something says otherwise', () {
@@ -225,12 +304,48 @@ void main() {
       expect(snapshot.replicas['b']!.remote, isTrue);
     });
 
+    test('a queue wait is recorded against the operation that waited', () {
+      // SPEC §17: the span at the `Agent` boundary contains the wait, so the
+      // report subtracts one from the other rather than reading a mean as a
+      // round trip.
+      final operation = metrics.beginOp('b', AgentOp.writeFile);
+      advance(const Duration(milliseconds: 50));
+      metrics.countQueueWait(
+        'b',
+        AgentOp.writeFile,
+        const Duration(milliseconds: 20),
+      );
+      operation.end();
+
+      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
+      expect(stats.mean, const Duration(milliseconds: 50));
+      expect(stats.meanQueueWait, const Duration(milliseconds: 20));
+      expect(stats.meanWireTime, const Duration(milliseconds: 30));
+    });
+
+    test('a wait whose span has not landed yet reads as no wire time', () {
+      // A mid-run snapshot: the window admitted the operation and reported
+      // the wait, and the operation is still running. Negative wire time
+      // would look like a bug in the code being measured.
+      metrics.countQueueWait(
+        'b',
+        AgentOp.writeFile,
+        const Duration(seconds: 1),
+      );
+
+      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
+      expect(stats.count, 0);
+      expect(stats.wireTime, Duration.zero);
+      expect(stats.meanWireTime, Duration.zero);
+    });
+
     test('run totals sum both sides', () {
       metrics.markRemote('b');
       metrics.beginOp('a', AgentOp.readFile).end();
       metrics.beginOp('b', AgentOp.writeFile).end();
       metrics.beginOp('b', AgentOp.archiveCommitUpsert).end();
-      metrics.countWireBytes('b', sent: 10, received: 5);
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      metrics.countReceive('b', bytes: 5);
       advance(const Duration(seconds: 7));
 
       final snapshot = metrics.snapshot();

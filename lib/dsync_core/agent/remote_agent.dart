@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
+import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -88,7 +89,7 @@ class RemoteAgent implements Agent {
   }
 
   @override
-  Future<ReplicaInfo> hello() => _window.runExclusive(() async {
+  Future<ReplicaInfo> hello() => _window.runExclusive(AgentOp.hello, () async {
     // Both version frames carry [Frame.noRequest]: the handshake precedes
     // every request, so there is no request for them to belong to.
     try {
@@ -97,16 +98,18 @@ class RemoteAgent implements Agent {
       _router.close(Frame.noRequest);
     }
     return _exchange(
-      AgentRequest('hello', {'replica': replicaSpecToJson(_spec)}),
+      AgentRequest(AgentOp.hello.name, {'replica': replicaSpecToJson(_spec)}),
       (id, replies) async => replicaInfoFromJson(await _awaitResult(replies)),
     );
   });
 
   @override
-  Future<void> lock() => _window.runExclusive(() => _call('lock'));
+  Future<void> lock() =>
+      _window.runExclusive(AgentOp.lock, () => _call(AgentOp.lock));
 
   @override
-  Future<void> unlock() => _window.runExclusive(() => _call('unlock'));
+  Future<void> unlock() =>
+      _window.runExclusive(AgentOp.unlock, () => _call(AgentOp.unlock));
 
   /// The one operation whose success does not come back as a control frame
   /// (SPEC §15.3): a `scan` reply is `FrameType.scanResult`, the binary
@@ -115,21 +118,22 @@ class RemoteAgent implements Agent {
   /// apart — which is why this cannot go through [_call].
   @override
   Future<ScanResult> scan(RuleSet rules) => _window.runExclusive(
-    () => _exchange(AgentRequest('scan', {'rules': ruleSetToJson(rules)}), (
-      id,
-      replies,
-    ) async {
-      final frame = await _firstReply(replies);
-      if (frame.type == FrameType.scanResult) {
-        return decodeScanResult(frame.payload);
-      }
-      throw switch (AgentResult.fromFrame(frame)) {
-        AgentFailure(:final error) => AgentOperationException(error),
-        AgentSuccess() => StateError(
-          'Peer answered scan with a success control frame, not a scan result',
-        ),
-      };
-    }),
+    AgentOp.scan,
+    () => _exchange(
+      AgentRequest(AgentOp.scan.name, {'rules': ruleSetToJson(rules)}),
+      (id, replies) async {
+        final frame = await _firstReply(replies);
+        if (frame.type == FrameType.scanResult) {
+          return decodeScanResult(frame.payload);
+        }
+        throw switch (AgentResult.fromFrame(frame)) {
+          AgentFailure(:final error) => AgentOperationException(error),
+          AgentSuccess() => StateError(
+            'Peer answered scan with a success control frame, not a scan result',
+          ),
+        };
+      },
+    ),
   );
 
   /// Streams the file. A consumer that stops early — which `Applier` makes
@@ -144,18 +148,19 @@ class RemoteAgent implements Agent {
   /// positionally and raw file bytes would otherwise have been decoded as
   /// the next operation's control reply.
   @override
-  Stream<List<int>> readFile(String path) => _window.runStream(path, () async* {
-    final id = _nextRequestId();
-    final replies = _router.open(id);
-    var complete = false;
-    try {
-      await _send(AgentRequest('readFile', {'path': path}), id);
-      yield* readByteStream(replies);
-      complete = true;
-    } finally {
-      _router.close(id, discardRemaining: !complete);
-    }
-  });
+  Stream<List<int>> readFile(String path) =>
+      _window.runStream(path, AgentOp.readFile, () async* {
+        final id = _nextRequestId();
+        final replies = _router.open(id);
+        var complete = false;
+        try {
+          await _send(AgentRequest(AgentOp.readFile.name, {'path': path}), id);
+          yield* readByteStream(replies);
+          complete = true;
+        } finally {
+          _router.close(id, discardRemaining: !complete);
+        }
+      });
 
   @override
   Future<FileMetadata> writeFile(
@@ -165,8 +170,13 @@ class RemoteAgent implements Agent {
     required int mode,
   }) => _window.run(
     path,
+    AgentOp.writeFile,
     () => _exchange(
-      AgentRequest('writeFile', {'path': path, 'mtime': mtime, 'mode': mode}),
+      AgentRequest(AgentOp.writeFile.name, {
+        'path': path,
+        'mtime': mtime,
+        'mode': mode,
+      }),
       (id, replies) async {
         await sendByteStream(_channel, data, requestId: id);
         final result = await _awaitResult(replies);
@@ -176,8 +186,11 @@ class RemoteAgent implements Agent {
   );
 
   @override
-  Future<void> delete(String path) =>
-      _window.run(path, () => _call('delete', {'path': path}));
+  Future<void> delete(String path) => _window.run(
+    path,
+    AgentOp.delete,
+    () => _call(AgentOp.delete, {'path': path}),
+  );
 
   /// A barrier, and the only windowed-out operation that is one on its own
   /// merits rather than by category: it reaches *ancestors* of [path] (SPEC
@@ -191,13 +204,18 @@ class RemoteAgent implements Agent {
   /// caller's, and a future caller that did interleave it must not have to
   /// rediscover why that is unsafe.
   @override
-  Future<void> removeEmptyDirs(String path) =>
-      _window.runExclusive(() => _call('removeEmptyDirs', {'path': path}));
+  Future<void> removeEmptyDirs(String path) => _window.runExclusive(
+    AgentOp.removeEmptyDirs,
+    () => _call(AgentOp.removeEmptyDirs, {'path': path}),
+  );
 
   @override
   Future<void> archiveCommitUpsert(ArchiveEntry entry) => _window.run(
     entry.path,
-    () => _call('archiveCommitUpsert', {'entry': archiveEntryToJson(entry)}),
+    AgentOp.archiveCommitUpsert,
+    () => _call(AgentOp.archiveCommitUpsert, {
+      'entry': archiveEntryToJson(entry),
+    }),
   );
 
   /// Windowed, exactly as [archiveCommitUpsert] is: both append one record
@@ -206,25 +224,30 @@ class RemoteAgent implements Agent {
   /// delete action drain the connection, which is the whole window's worth
   /// of overlap given up for a tombstone.
   @override
-  Future<void> archiveCommitDelete(String path) =>
-      _window.run(path, () => _call('archiveCommitDelete', {'path': path}));
+  Future<void> archiveCommitDelete(String path) => _window.run(
+    path,
+    AgentOp.archiveCommitDelete,
+    () => _call(AgentOp.archiveCommitDelete, {'path': path}),
+  );
 
   @override
-  Future<void> compact() => _window.runExclusive(() => _call('compact'));
+  Future<void> compact() =>
+      _window.runExclusive(AgentOp.compact, () => _call(AgentOp.compact));
 
   @override
-  Future<void> disconnect() => _window.runExclusive(() async {
-    await _channel.close();
-    // The router holds its subscription to [Channel.input] and, between
-    // frames, holds it *paused* — and a paused subscription on a pipe keeps
-    // the file descriptor registered with the event loop whatever the peer
-    // does with its end. Closing the channel is not enough to release it: a
-    // CLI run over a real ssh session printed its summary, exited
-    // `RunController`, and then sat there forever with nothing left to do.
-    // Cancelling is what lets the process exit.
-    await _router.cancel();
-    await _reading.catchError((_) {});
-  });
+  Future<void> disconnect() =>
+      _window.runExclusive(AgentOp.disconnect, () async {
+        await _channel.close();
+        // The router holds its subscription to [Channel.input] and, between
+        // frames, holds it *paused* — and a paused subscription on a pipe keeps
+        // the file descriptor registered with the event loop whatever the peer
+        // does with its end. Closing the channel is not enough to release it: a
+        // CLI run over a real ssh session printed its summary, exited
+        // `RunController`, and then sat there forever with nothing left to do.
+        // Cancelling is what lets the process exit.
+        await _router.cancel();
+        await _reading.catchError((_) {});
+      });
 
   /// One request-and-reply exchange under a fresh id, with the route open
   /// for as long as [body] needs it.
@@ -242,11 +265,14 @@ class RemoteAgent implements Agent {
     }
   }
 
+  /// [AgentOp.name] *is* the protocol's `op` string (SPEC §15.3), so naming
+  /// the operation once names it for the wire and for the window's report
+  /// both, and the two cannot drift apart.
   Future<Map<String, dynamic>> _call(
-    String op, [
+    AgentOp op, [
     Map<String, dynamic> params = const {},
   ]) => _exchange(
-    AgentRequest(op, params),
+    AgentRequest(op.name, params),
     (id, replies) => _awaitResult(replies),
   );
 

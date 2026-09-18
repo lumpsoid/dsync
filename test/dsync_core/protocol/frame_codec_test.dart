@@ -301,4 +301,39 @@ void main() {
       );
     });
   });
+
+  group('frameCount', () {
+    Uint8List concat(List<Frame> frames) => Uint8List.fromList([
+      for (final frame in frames) ...codec.encode(frame),
+    ]);
+
+    test('counts the frames a buffer spells without decoding them', () {
+      // What `MeteredChannel` needs to say how much protocol rode on one
+      // flush (SPEC §17) — the figure that would otherwise be a byte total
+      // divided by an assumed frame size.
+      final bytes = concat([
+        Frame(type: FrameType.control, requestId: 1, payload: [1, 2, 3]),
+        Frame(type: FrameType.fileBytes, requestId: 1, payload: [4, 5]),
+        Frame(type: FrameType.heartbeat, requestId: 0, payload: const []),
+      ]);
+
+      expect(codec.frameCount(bytes), 3);
+    });
+
+    test('an empty buffer carries no frames', () {
+      expect(codec.frameCount(Uint8List(0)), 0);
+    });
+
+    test('a buffer cut short still counts the frame it started', () {
+      // `Channel.send` is handed whole frames, so this should not happen —
+      // but a report that quietly undercounted the traffic it exists to
+      // explain would be the worse failure.
+      final whole = concat([
+        Frame(type: FrameType.control, requestId: 1, payload: [1, 2, 3]),
+      ]);
+
+      expect(codec.frameCount(whole.sublist(0, whole.length - 1)), 1);
+      expect(codec.frameCount(whole.sublist(0, 4)), 1);
+    });
+  });
 }

@@ -1,16 +1,7 @@
 import 'package:dsync/dsync_core/models/run_metrics.dart';
+import 'package:dsync/dsync_core/run/elapsed.dart';
 
-/// Where elapsed time comes from, so a test can drive [RunMetricsRecorder]
-/// with plain values instead of sleeping.
-///
-/// A monotonic *elapsed* reading rather than a wall clock (`DateTime
-/// Function()`, which is what `AppController` and `HumanRenderer` inject for
-/// their own purposes): those two format timestamps for a human, where the
-/// wall clock is the answer, while everything here is a difference between
-/// two readings — and a wall clock that steps, over an NTP correction or a
-/// phone changing timezone mid-run, makes a difference meaningless or
-/// negative.
-typedef Elapsed = Duration Function();
+export 'package:dsync/dsync_core/run/elapsed.dart' show Elapsed;
 
 /// Collects one run's timings (SPEC §17). Written to by `RunController` for
 /// phases and by `MeteredAgent`/`MeteredChannel` for per-operation cost; read
@@ -47,6 +38,13 @@ typedef Elapsed = Duration Function();
 ///   handle [beginOp] returns, rather than to whichever operation on that
 ///   side was innermost. With one operation open at a time those were the
 ///   same thing; with a window open they are not.
+/// - **A mean is part queue.** An operation that waited for a window slot
+///   paid that wait inside its span, so [countQueueWait] records the wait
+///   separately and the report subtracts it: `AgentOpStats.meanWireTime` is
+///   the exchange, `AgentOpStats.meanQueueWait` is the queueing, and only
+///   their sum is the mean. Without the split, a mean that rose because the
+///   window filled up is indistinguishable from one that rose because the
+///   link got slower, and the two have opposite fixes.
 class RunMetricsRecorder {
   final Elapsed _elapsed;
 
@@ -59,12 +57,7 @@ class RunMetricsRecorder {
   /// constructs this at the top of the run: [RunMetrics.elapsed] is measured
   /// from this moment, not from the first phase.
   RunMetricsRecorder({Elapsed? elapsed})
-    : _elapsed = elapsed ?? _stopwatchElapsed();
-
-  static Elapsed _stopwatchElapsed() {
-    final stopwatch = Stopwatch()..start();
-    return () => stopwatch.elapsed;
-  }
+    : _elapsed = elapsed ?? stopwatchElapsed();
 
   /// Marks [phase] as starting now. A phase begun twice without an
   /// [endPhase] keeps the later start, which is the honest reading of a run
@@ -75,9 +68,17 @@ class RunMetricsRecorder {
   /// that never began is ignored rather than recorded as zero — see
   /// [RunMetrics.phases] for why absent and zero must stay distinguishable.
   void endPhase(RunPhase phase) {
-    final start = _phaseStarts.remove(phase);
+    final start = _phaseStarts[phase];
     if (start == null) return;
-    _phases[phase] = (_phases[phase] ?? Duration.zero) + (_elapsed() - start);
+    final now = _elapsed();
+    // Before the phase is taken off the open list, or the silence between
+    // the last byte and the end of the phase is credited to nothing. A phase
+    // that ended waiting is exactly the one whose idle time is the point.
+    for (final record in _replicas.values) {
+      if (record.busySends == 0) _creditIdle(record, phase, start, now);
+    }
+    _phaseStarts.remove(phase);
+    _phases[phase] = (_phases[phase] ?? Duration.zero) + (now - start);
   }
 
   /// Closes every phase still open, as of now.
@@ -126,18 +127,98 @@ class RunMetricsRecorder {
     return open;
   }
 
-  /// Records raw transport traffic for [side], framing included — called by
-  /// `MeteredChannel`, and never for a local replica, which has no wire.
+  /// Opens a flush of [bytes] framed protocol carrying [frames] frames on
+  /// [side]'s transport; the returned handle is closed when the transport has
+  /// taken them. Called by `MeteredChannel`, and never for a local replica,
+  /// which has no wire.
   ///
   /// Kept per replica rather than per operation even though an operation is
   /// usually open: the transport's bytes are not the operation's, since a
   /// heartbeat (SPEC §4.2) travels while an operation is outstanding and
   /// belongs to none of them, and the kernel hands over chunks on boundaries
   /// that have nothing to do with which request they answer.
-  void countWireBytes(String side, {int sent = 0, int received = 0}) {
+  ///
+  /// **A span rather than an instant, because idle time depends on it.** A
+  /// flush that is still being written is a link carrying something, and on a
+  /// link with a rate low enough to matter that write takes real time — which
+  /// is exactly the run whose idle time is worth knowing. Counted as a point
+  /// event instead, every run would report its whole phase as idle and the
+  /// figure would say nothing.
+  OpenSend beginSend(String side, {required int bytes, required int frames}) {
     final record = _replicaRecord(side);
-    record.wireBytesSent += sent;
-    record.wireBytesReceived += received;
+    _markWireActivity(record);
+    record.wireBytesSent += bytes;
+    record.sends++;
+    record.framesSent += frames;
+    record.busySends++;
+    return OpenSend._(() {
+      record.busySends--;
+      // Idle only starts again once the last flush has landed, so the time
+      // spent writing is never charged to it.
+      if (record.busySends == 0) record.lastWireActivity = _elapsed();
+    });
+  }
+
+  /// Records [bytes] arriving from [side]'s transport, framing included.
+  ///
+  /// No frame count: a chunk boundary carries no meaning (`Channel.input`),
+  /// so what arrives here is whatever the kernel handed over and counting
+  /// "frames received" from it would be counting chunks under another name.
+  void countReceive(String side, {required int bytes}) {
+    final record = _replicaRecord(side);
+    _markWireActivity(record);
+    record.wireBytesReceived += bytes;
+  }
+
+  /// Credits the silence since [record]'s last traffic to every phase open
+  /// across it, then marks now as its last traffic.
+  ///
+  /// This is the whole of how wire idle time is measured (SPEC §17): the gaps
+  /// between bytes moving. A connection with a request outstanding and no
+  /// reply yet is *idle by this measure* — and deliberately so. The question
+  /// it exists to answer is "did this phase use its link", and a phone
+  /// waiting a beacon interval for a reply is not using its link however busy
+  /// the run feels.
+  ///
+  /// Nothing is credited before a side's first byte: a transport that has not
+  /// spoken yet has not been idle, it has not been measured.
+  void _markWireActivity(_ReplicaRecord record) {
+    final now = _elapsed();
+    if (record.busySends == 0) {
+      for (final MapEntry(key: phase, value: start) in _phaseStarts.entries) {
+        _creditIdle(record, phase, start, now);
+      }
+    }
+    record.lastWireActivity = now;
+  }
+
+  /// Adds [record]'s silence within [phase] up to [now] to that phase's idle
+  /// total, counting only from whichever is later: the phase's start, or the
+  /// last byte that moved.
+  void _creditIdle(
+    _ReplicaRecord record,
+    RunPhase phase,
+    Duration phaseStart,
+    Duration now,
+  ) {
+    final last = record.lastWireActivity;
+    if (last == null) return;
+    final from = last > phaseStart ? last : phaseStart;
+    if (now <= from) return;
+    record.idle[phase] = (record.idle[phase] ?? Duration.zero) + (now - from);
+  }
+
+  /// Records that a call of [op] on [side] waited [wait] for a window slot
+  /// (SPEC §17) — called by `RequestWindow` as it admits the operation, which
+  /// is the one place that knows both instants.
+  ///
+  /// Recorded against the operation rather than the replica because the
+  /// answer it gives is per operation: `writeFile` queueing behind the window
+  /// while `archiveCommitUpsert` does not is a different diagnosis from both
+  /// of them queueing, and a per-replica total cannot show it.
+  void countQueueWait(String side, AgentOp op, Duration wait) {
+    final record = _replicaRecord(side);
+    record.ops[op] = (record.ops[op] ?? AgentOpStats.none).mergeQueueWait(wait);
   }
 
   /// Declares that [side] is reached over a transport (SPEC §4.1) — called by
@@ -158,6 +239,9 @@ class RunMetricsRecorder {
           ops: Map.unmodifiable(entry.value.ops),
           wireBytesSent: entry.value.wireBytesSent,
           wireBytesReceived: entry.value.wireBytesReceived,
+          sends: entry.value.sends,
+          framesSent: entry.value.framesSent,
+          idle: Map.unmodifiable(entry.value.idle),
         ),
     },
   );
@@ -173,6 +257,37 @@ class _ReplicaRecord {
   final Map<AgentOp, AgentOpStats> ops = {};
   int wireBytesSent = 0;
   int wireBytesReceived = 0;
+  int sends = 0;
+  int framesSent = 0;
+
+  /// Flushes handed to the transport and not yet written. While this is
+  /// above zero the link is carrying something and no idle time accrues.
+  int busySends = 0;
+
+  /// Per phase, how long this transport carried nothing.
+  final Map<RunPhase, Duration> idle = {};
+
+  /// When a byte last moved in either direction, or null before the first
+  /// one — which is not the same as zero, and is why this is nullable.
+  Duration? lastWireActivity;
+}
+
+/// One flush handed to a transport and not yet written — the handle
+/// [RunMetricsRecorder.beginSend] hands back, closed when the transport has
+/// taken the bytes.
+class OpenSend {
+  final void Function() _done;
+  bool _closed = false;
+
+  OpenSend._(this._done);
+
+  /// Marks the flush as written. Idempotent, so a caller can close it in a
+  /// `finally` without checking whether the send threw.
+  void end() {
+    if (_closed) return;
+    _closed = true;
+    _done();
+  }
 }
 
 /// One operation begun and not yet closed (SPEC §17), holding what it has

@@ -44,10 +44,36 @@ String formatRunMetrics(RunMetrics metrics) {
       '${replica.remote ? ', ${formatMetricBytes(replica.wireBytesSent)} sent / '
                 '${formatMetricBytes(replica.wireBytesReceived)} received' : ''}',
     );
+    if (replica.remote) {
+      // What the transport was actually made to do, as counts rather than as
+      // a byte total divided by an assumed frame size (SPEC §17). A `send` is
+      // a flush and costs about one link latency whatever rides on it, so
+      // frames-per-send and sends-per-operation are what say whether the
+      // protocol's shape or the link's latency is the ceiling.
+      out.writeln(
+        '  wire: ${formatMetricCount(replica.sends)} sends, '
+        '${formatMetricCount(replica.framesSent)} frames, '
+        '${formatMetricBytes(replica.meanFrameBytes.round())} mean frame, '
+        '${replica.sendsPerOp.toStringAsFixed(2)} sends per operation',
+      );
+      // The gaps between bytes moving, per phase — the figure that separates
+      // "this phase was waiting" from "this phase was working". A phase whose
+      // link went unused while it was idle wants fewer round trips or more of
+      // them in flight; one that used its link with no idle time wants
+      // neither.
+      if (replica.idle.isNotEmpty) {
+        final idle = [
+          for (final phase in RunPhase.values)
+            if (replica.idle[phase] case final value?)
+              '${phase.name} ${formatMetricDuration(value)}',
+        ];
+        out.writeln('  idle: ${idle.join(' · ')}');
+      }
+    }
     out.writeln(
       '  ${'operation'.padRight(20)}${'count'.padLeft(8)}'
-      '${'total'.padLeft(10)}${'mean'.padLeft(10)}${'max'.padLeft(10)}'
-      '${'content'.padLeft(11)}',
+      '${'total'.padLeft(10)}${'queue'.padLeft(10)}${'wire'.padLeft(10)}'
+      '${'max'.padLeft(10)}${'content'.padLeft(11)}',
     );
     // Slowest first: the report exists to answer "where did the time go",
     // and the answer should be the first row rather than something found by
@@ -55,10 +81,14 @@ String formatRunMetrics(RunMetrics metrics) {
     final ops = replica.ops.entries.toList()
       ..sort((a, b) => b.value.total.compareTo(a.value.total));
     for (final MapEntry(key: op, value: stats) in ops) {
+      // `queue` and `wire` are per call and sum to the mean, which is why the
+      // mean itself is not a column: one number that bundles the two is what
+      // made a rising mean unreadable in the first place (SPEC §17).
       out.writeln(
         '  ${op.name.padRight(20)}${formatMetricCount(stats.count).padLeft(8)}'
         '${formatMetricDuration(stats.total).padLeft(10)}'
-        '${formatMetricDuration(stats.mean).padLeft(10)}'
+        '${formatMetricDuration(stats.meanQueueWait).padLeft(10)}'
+        '${formatMetricDuration(stats.meanWireTime).padLeft(10)}'
         '${formatMetricDuration(stats.max).padLeft(10)}'
         '${(stats.bytes == 0 ? '—' : formatMetricBytes(stats.bytes)).padLeft(11)}',
       );

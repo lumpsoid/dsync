@@ -47,6 +47,37 @@ class FrameCodec {
     }
   }
 
+  /// How many whole frames [bytes] spells, without decoding any of them.
+  ///
+  /// For `MeteredChannel`, which counts what a flush actually carried (SPEC
+  /// §17). A `send` is one flush and costs about one link latency whatever is
+  /// in it, so "sends" and "frames" only agree while nothing coalesces them —
+  /// and the difference is the thing worth measuring, not a thing to assume.
+  ///
+  /// Header walking rather than [decode], because the whole point is not to
+  /// copy the payloads: this reads a length field per frame and skips.
+  ///
+  /// [Channel.send] is handed whole frames, so a well-formed buffer ends
+  /// exactly on a boundary. A trailing part-frame is counted as the frame it
+  /// is the start of rather than dropped — a report undercounting the traffic
+  /// it is there to explain would be the worse failure, and nothing here is
+  /// in a position to reject the bytes anyway.
+  int frameCount(Uint8List bytes) {
+    var frames = 0;
+    var offset = 0;
+    while (offset < bytes.length) {
+      frames++;
+      if (offset + _FrameHeader.length > bytes.length) break;
+      final payload = ByteData.sublistView(
+        bytes,
+        offset + _FrameHeader.lengthAt,
+        offset + _FrameHeader.length,
+      ).getUint32(0, Endian.big);
+      offset += _FrameHeader.length + payload;
+    }
+    return frames;
+  }
+
   int _byteForType(FrameType type) => switch (type) {
     FrameType.control => 0,
     FrameType.fileBytes => 1,

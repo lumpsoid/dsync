@@ -5,6 +5,7 @@ import 'package:dsync/cli/output/human_renderer.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
+import 'package:dsync/dsync_core/agent/request_window.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart'
     show OwnCertificateExpiredException;
@@ -20,6 +21,7 @@ import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/metered_channel.dart';
+import 'package:dsync/dsync_core/run/metered_request_window.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
@@ -359,6 +361,7 @@ Future<_ResolvedSide> _resolveSshSide({
       jobs: jobs,
     ),
     side: side,
+    window: meteredRequestWindow(side: side, metrics: metrics),
     transportDiagnostics: () => channel.recentStderr,
   );
 
@@ -417,6 +420,10 @@ Future<_ResolvedSide> _resolveSocketSide({
       jobs: jobs,
     ),
     side: side,
+    // SPEC §17: the window reports how long each operation waited for a
+    // slot, so this side's per-operation means split into the queueing and
+    // the exchange instead of bundling the two.
+    window: meteredRequestWindow(side: side, metrics: metrics),
   );
 
   return (
@@ -588,6 +595,10 @@ Future<_ResolvedSide> _resolvePeerSide({
       jobs: jobs,
     ),
     side: side,
+    // SPEC §17: the window reports how long each operation waited for a
+    // slot, so this side's per-operation means split into the queueing and
+    // the exchange instead of bundling the two.
+    window: meteredRequestWindow(side: side, metrics: metrics),
   );
 
   return (
@@ -707,8 +718,9 @@ class _DiagnosedRemoteAgent extends RemoteAgent {
     required Channel channel,
     required ReplicaSpec spec,
     required this._side,
+    required RequestWindow window,
     this._transportDiagnostics = _noTransportDiagnostics,
-  }) : super(channel, spec);
+  }) : super(channel, spec, window: window);
 
   static List<String> _noTransportDiagnostics() => const [];
 

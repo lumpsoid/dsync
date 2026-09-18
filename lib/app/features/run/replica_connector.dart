@@ -16,6 +16,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/metered_channel.dart';
+import 'package:dsync/dsync_core/run/metered_request_window.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/scan/case_folding.dart';
@@ -297,6 +298,10 @@ class ReplicaConnector {
       spec,
       deviceName: deviceName,
       address: address,
+      // SPEC §17: the window reports how long each operation waited for a
+      // slot, so this side's per-operation means split into the queueing and
+      // the exchange instead of bundling the two.
+      window: meteredRequestWindow(side: spec.side, metrics: metrics),
     );
   }
 
@@ -456,6 +461,7 @@ final class _PeerAgent extends RemoteAgent {
     super.spec, {
     required this.deviceName,
     required this.address,
+    required super.window,
   });
 
   @override

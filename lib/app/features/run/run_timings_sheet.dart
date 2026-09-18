@@ -250,6 +250,9 @@ class _ReplicaTable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final subtitle = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
     final ops = replica.ops.entries.toList()
       ..sort((a, b) => b.value.total.compareTo(a.value.total));
     return Column(
@@ -266,14 +269,30 @@ class _ReplicaTable extends StatelessWidget {
                     '${formatMetricBytes(replica.wireBytesReceived)} received'
               : '${formatMetricCount(replica.opCount)} operations · '
                     '${formatMetricBytes(replica.payloadBytes)} of file content',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
+          style: subtitle,
         ),
+        // What the transport was made to do, rather than only how much it
+        // carried (SPEC §17): a send is a flush and costs about a link
+        // latency whatever rides on it, so these are what say whether the
+        // ceiling is the protocol's shape or the radio.
+        if (replica.remote)
+          Text(
+            '${formatMetricCount(replica.sends)} sends · '
+            '${formatMetricCount(replica.framesSent)} frames · '
+            '${formatMetricBytes(replica.meanFrameBytes.round())} mean frame · '
+            '${replica.sendsPerOp.toStringAsFixed(2)} sends/operation',
+            style: subtitle,
+          ),
         const SizedBox(height: 8),
+        // `queue` and `wire` rather than one `mean`, and `total` left to the
+        // copied report: the split is the whole point of this table now. A
+        // mean that rose because the window filled up and one that rose
+        // because the link slowed look identical bundled together, and they
+        // have opposite fixes — the two columns add up to the mean, so
+        // nothing is lost by showing them instead of it.
         _Row(
-          cells: const ['operation', 'count', 'total', 'mean'],
-          flex: const [4, 2, 2, 2],
+          cells: const ['operation', 'count', 'queue', 'wire', 'max'],
+          flex: const [4, 2, 2, 2, 2],
           header: true,
         ),
         for (final MapEntry(key: op, value: stats) in ops)
@@ -281,11 +300,27 @@ class _ReplicaTable extends StatelessWidget {
             cells: [
               op.name,
               formatMetricCount(stats.count),
-              formatMetricDuration(stats.total),
-              formatMetricDuration(stats.mean),
+              formatMetricDuration(stats.meanQueueWait),
+              formatMetricDuration(stats.meanWireTime),
+              formatMetricDuration(stats.max),
             ],
-            flex: const [4, 2, 2, 2],
+            flex: const [4, 2, 2, 2, 2],
           ),
+        if (replica.remote && replica.idle.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          // The gaps between bytes moving. A phase that went idle for most of
+          // itself was waiting on the link, and wants fewer round trips or
+          // more of them in flight; one that was busy throughout wants
+          // neither, and no byte count can tell the two apart.
+          Text('Idle link', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 4),
+          for (final phase in RunPhase.values)
+            if (replica.idle[phase] case final value?)
+              _Row(
+                cells: [phase.name, formatMetricDuration(value)],
+                flex: const [3, 2],
+              ),
+        ],
       ],
     );
   }

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsync/dsync_core/agent/request_window.dart';
+import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:test/test.dart';
 
 /// Drives [RequestWindow] with plain values: every "operation" is a completer
@@ -32,7 +33,7 @@ void main() {
       final window = RequestWindow(size: 2);
 
       for (final name in ['a', 'b', 'c', 'd']) {
-        unawaited(window.run(name, op(name)));
+        unawaited(window.run(name, AgentOp.writeFile, op(name)));
       }
       await pumpEventQueue();
 
@@ -50,13 +51,17 @@ void main() {
     test('a failed operation gives its slot back', () async {
       final window = RequestWindow(size: 1);
 
-      final failing = window.run('a', () async => throw Exception('boom'));
+      final failing = window.run(
+        'a',
+        AgentOp.writeFile,
+        () async => throw Exception('boom'),
+      );
       await expectLater(failing, throwsA(isA<Exception>()));
 
       // The window is not left one slot narrower for the rest of the run —
       // the failure mode that would show up as a sync grinding to a halt
       // partway through rather than as anything anyone could read.
-      unawaited(window.run('b', op('b')));
+      unawaited(window.run('b', AgentOp.writeFile, op('b')));
       await pumpEventQueue();
       expect(admitted, ['b']);
     });
@@ -68,9 +73,9 @@ void main() {
       () async {
         final window = RequestWindow(size: 4);
 
-        unawaited(window.run('same.txt', op('write')));
-        unawaited(window.run('same.txt', op('commit')));
-        unawaited(window.run('other.txt', op('other')));
+        unawaited(window.run('same.txt', AgentOp.writeFile, op('write')));
+        unawaited(window.run('same.txt', AgentOp.writeFile, op('commit')));
+        unawaited(window.run('other.txt', AgentOp.writeFile, op('other')));
         await pumpEventQueue();
 
         // `writeFile` then `archiveCommitUpsert` for one path is what SPEC
@@ -86,10 +91,10 @@ void main() {
     test('an operation waiting on its path does not hold a slot', () async {
       final window = RequestWindow(size: 2);
 
-      unawaited(window.run('same.txt', op('first')));
-      unawaited(window.run('same.txt', op('second')));
-      unawaited(window.run('a.txt', op('a')));
-      unawaited(window.run('b.txt', op('b')));
+      unawaited(window.run('same.txt', AgentOp.writeFile, op('first')));
+      unawaited(window.run('same.txt', AgentOp.writeFile, op('second')));
+      unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
+      unawaited(window.run('b.txt', AgentOp.writeFile, op('b')));
       await pumpEventQueue();
 
       // `second` is behind `first` on its path. If it were holding a slot
@@ -111,12 +116,12 @@ void main() {
     test('drain the window before running', () async {
       final window = RequestWindow(size: 4);
 
-      unawaited(window.run('a.txt', op('a')));
-      unawaited(window.run('b.txt', op('b')));
+      unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
+      unawaited(window.run('b.txt', AgentOp.writeFile, op('b')));
       await pumpEventQueue();
       expect(admitted, ['a', 'b']);
 
-      unawaited(window.runExclusive(op('scan')));
+      unawaited(window.runExclusive(AgentOp.scan, op('scan')));
       await pumpEventQueue();
       expect(admitted, ['a', 'b'], reason: 'the window still has two in it');
 
@@ -132,12 +137,12 @@ void main() {
     test('hold everything issued after them', () async {
       final window = RequestWindow(size: 4);
 
-      unawaited(window.runExclusive(op('lock')));
+      unawaited(window.runExclusive(AgentOp.lock, op('lock')));
       await pumpEventQueue();
       expect(admitted, ['lock']);
 
-      unawaited(window.run('a.txt', op('a')));
-      unawaited(window.run('b.txt', op('b')));
+      unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
+      unawaited(window.run('b.txt', AgentOp.writeFile, op('b')));
       await pumpEventQueue();
       expect(admitted, ['lock']);
 
@@ -149,9 +154,9 @@ void main() {
     test('wait for an operation still queued behind its own path', () async {
       final window = RequestWindow(size: 4);
 
-      unawaited(window.run('same.txt', op('first')));
-      unawaited(window.run('same.txt', op('second')));
-      unawaited(window.runExclusive(op('compact')));
+      unawaited(window.run('same.txt', AgentOp.writeFile, op('first')));
+      unawaited(window.run('same.txt', AgentOp.writeFile, op('second')));
+      unawaited(window.runExclusive(AgentOp.compact, op('compact')));
       await pumpEventQueue();
 
       // `second` had not reached the window when the barrier was issued —
@@ -172,13 +177,95 @@ void main() {
       final window = RequestWindow(size: 2);
 
       await expectLater(
-        window.runExclusive(() async => throw Exception('boom')),
+        window.runExclusive(AgentOp.scan, () async => throw Exception('boom')),
         throwsA(isA<Exception>()),
       );
 
-      unawaited(window.run('a.txt', op('a')));
+      unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
       await pumpEventQueue();
       expect(admitted, ['a']);
+    });
+  });
+
+  group('admission delay', () {
+    /// A clock the test advances by hand, so a wait is an exact value rather
+    /// than a tolerance around a real one (SPEC §17).
+    late Duration now;
+    late List<(AgentOp, Duration)> waits;
+
+    setUp(() {
+      now = Duration.zero;
+      waits = [];
+    });
+
+    RequestWindow meteredWindow({int size = 1}) => RequestWindow(
+      size: size,
+      elapsed: () => now,
+      onWait: (op, wait) => waits.add((op, wait)),
+    );
+
+    test('an operation admitted at once waited no time', () async {
+      final window = meteredWindow();
+
+      unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
+      await pumpEventQueue();
+
+      expect(waits, [(AgentOp.writeFile, Duration.zero)]);
+    });
+
+    test('an operation held by the bound is charged what it waited', () async {
+      final window = meteredWindow();
+
+      unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
+      unawaited(window.run('b.txt', AgentOp.archiveCommitUpsert, op('b')));
+      await pumpEventQueue();
+      expect(waits, [(AgentOp.writeFile, Duration.zero)]);
+
+      now += const Duration(milliseconds: 30);
+      release('a');
+      await pumpEventQueue();
+
+      // The whole point of the split: `b`'s span at the `Agent` boundary is
+      // 30 ms longer than its exchange, and without this number that shows
+      // up as a link that got slower.
+      expect(waits, [
+        (AgentOp.writeFile, Duration.zero),
+        (AgentOp.archiveCommitUpsert, const Duration(milliseconds: 30)),
+      ]);
+    });
+
+    test('a wait behind the same path counts as a wait', () async {
+      final window = meteredWindow(size: 4);
+
+      unawaited(window.run('same.txt', AgentOp.writeFile, op('write')));
+      await pumpEventQueue();
+      unawaited(
+        window.run('same.txt', AgentOp.archiveCommitUpsert, op('commit')),
+      );
+      now += const Duration(milliseconds: 12);
+      release('write');
+      await pumpEventQueue();
+
+      // It never reached the queue, let alone the wire — charging this to
+      // the exchange would blame the link for SPEC §7.3's own ordering.
+      expect(waits.last, (
+        AgentOp.archiveCommitUpsert,
+        const Duration(milliseconds: 12),
+      ));
+    });
+
+    test('a barrier is charged the drain it asked for', () async {
+      final window = meteredWindow(size: 4);
+
+      unawaited(window.run('a.txt', AgentOp.writeFile, op('a')));
+      await pumpEventQueue();
+      unawaited(window.runExclusive(AgentOp.compact, op('compact')));
+
+      now += const Duration(milliseconds: 50);
+      release('a');
+      await pumpEventQueue();
+
+      expect(waits.last, (AgentOp.compact, const Duration(milliseconds: 50)));
     });
   });
 
@@ -187,11 +274,15 @@ void main() {
       final window = RequestWindow(size: 1);
       final chunks = StreamController<int>();
 
-      final transfer = window.runStream('a.txt', () => chunks.stream);
+      final transfer = window.runStream(
+        'a.txt',
+        AgentOp.readFile,
+        () => chunks.stream,
+      );
       final drained = transfer.toList();
       await pumpEventQueue();
 
-      unawaited(window.run('b.txt', op('b')));
+      unawaited(window.run('b.txt', AgentOp.writeFile, op('b')));
       await pumpEventQueue();
       expect(admitted, isEmpty, reason: 'the transfer still holds the slot');
 

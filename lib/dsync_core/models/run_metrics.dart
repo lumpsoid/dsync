@@ -80,9 +80,10 @@ class AgentOpStats {
   /// How many times the operation was called.
   final int count;
 
-  /// Summed wall time of every call, measured at the `Agent` boundary — so
-  /// for a remote replica it *is* the round trip, and for a local one it is
-  /// the filesystem call.
+  /// Summed wall time of every call, measured at the `Agent` boundary — for
+  /// a local replica the filesystem call, and for a remote one the wait for a
+  /// window slot plus the exchange, which [queueWait] and [wireTime] split
+  /// apart.
   final Duration total;
 
   /// The slowest single call. Kept alongside [total] because a mean hides
@@ -101,11 +102,29 @@ class AgentOpStats {
   /// overhead, which is the whole point of measuring both.
   final int bytes;
 
+  /// Summed time these calls spent waiting for a `RequestWindow` slot rather
+  /// than on the wire (SPEC §17) — the path predecessor they queued behind,
+  /// the window's bound, or a barrier ahead of them.
+  ///
+  /// Zero on a local replica, which has no window, and zero on a remote one
+  /// whose window was never full.
+  ///
+  /// **This is the split a mean stopped being readable without.** Since task
+  /// 0f7dfc several operations are outstanding at once, so [total] bundles
+  /// queueing with the exchange itself, and the two have opposite fixes: a
+  /// mean that rose because [queueWait] rose says "we are queueing — the
+  /// window or the concurrency is the bound", while one that rose because
+  /// [wireTime] rose says "the exchange itself got dearer". A single figure
+  /// cannot tell those apart, and choosing between them from arithmetic over
+  /// the figure is how the wrong one gets picked.
+  final Duration queueWait;
+
   const AgentOpStats({
     required this.count,
     required this.total,
     required this.max,
     required this.bytes,
+    this.queueWait = Duration.zero,
   });
 
   /// Zero of everything — the starting point [merge] accumulates onto.
@@ -122,16 +141,52 @@ class AgentOpStats {
     total: total + elapsed,
     max: elapsed > max ? elapsed : max,
     bytes: this.bytes + bytes,
+    queueWait: queueWait,
+  );
+
+  /// This plus one more call's wait for a window slot.
+  ///
+  /// Separate from [merge] because the two are recorded by different things
+  /// at different moments: the window reports a wait as the operation is
+  /// admitted, while the span is recorded when it ends. A call whose wait
+  /// arrived but whose span has not yet shows here with [count] still behind
+  /// — which is the honest reading of an operation still running.
+  AgentOpStats mergeQueueWait(Duration wait) => AgentOpStats(
+    count: count,
+    total: total,
+    max: max,
+    bytes: bytes,
+    queueWait: queueWait + wait,
   );
 
   /// Mean call time, [Duration.zero] for an operation never called.
   ///
-  /// On a remote replica this is the useful number: every operation but
-  /// `scan`, `readFile` and `writeFile` carries one path or nothing, so its
-  /// mean is the link's round-trip time with the peer's own work added.
-  Duration get mean => count == 0
+  /// On a remote replica this is what one call cost end to end. It is *not*
+  /// the link's round-trip time any more — see [queueWait]; [meanWireTime] is
+  /// the figure that answers that.
+  Duration get mean => _per(total);
+
+  /// [total] with the queueing taken out: what these calls spent on the
+  /// exchange itself.
+  ///
+  /// Clamped at zero rather than allowed to go negative. The two figures are
+  /// recorded at different instants by different collaborators, so a snapshot
+  /// taken mid-operation can hold a wait whose span has not landed yet, and a
+  /// report that showed "-3 ms" would look like a bug in the code being
+  /// measured rather than in the moment it was measured.
+  Duration get wireTime =>
+      total > queueWait ? total - queueWait : Duration.zero;
+
+  /// Mean wait for a window slot per call.
+  Duration get meanQueueWait => _per(queueWait);
+
+  /// Mean time on the wire per call — for a remote replica, one exchange:
+  /// the request out, the peer's own work, and the reply back.
+  Duration get meanWireTime => _per(wireTime);
+
+  Duration _per(Duration value) => count == 0
       ? Duration.zero
-      : Duration(microseconds: total.inMicroseconds ~/ count);
+      : Duration(microseconds: value.inMicroseconds ~/ count);
 }
 
 /// What one replica's `Agent` cost over a run, by operation.
@@ -155,12 +210,41 @@ class ReplicaMetrics {
   final int wireBytesSent;
   final int wireBytesReceived;
 
+  /// How many times the transport was handed a buffer to write, and how many
+  /// protocol frames those buffers spelled (SPEC §17).
+  ///
+  /// Two numbers rather than one because they are only equal while nothing
+  /// coalesces: a `send` is a flush, which on a link with any latency costs
+  /// about one of them, while a frame is a unit of protocol. Measuring both
+  /// is what turns "we could batch these" from a calculation over an assumed
+  /// frame count into an observation — [meanFrameBytes] and [framesPerSend]
+  /// say directly how much is riding on each flush.
+  final int sends;
+  final int framesSent;
+
+  /// How long this replica's transport carried nothing, per phase (SPEC §17).
+  ///
+  /// The gaps between one byte moving and the next, so a phase absent here
+  /// is one during which the connection was never measured rather than one
+  /// that was never idle. Zero for a local replica, which has no wire.
+  ///
+  /// **This is the figure that chooses the next optimization.** A phase that
+  /// used a fraction of its link and was idle for the rest was waiting, and
+  /// the fix is fewer round trips or more of them in flight; a phase that
+  /// used a fraction of its link with no idle time was busy, and the fix is
+  /// elsewhere entirely. Nothing else here can tell those apart — a byte
+  /// count cannot, because both move the same bytes.
+  final Map<RunPhase, Duration> idle;
+
   const ReplicaMetrics({
     required this.side,
     required this.remote,
     required this.ops,
     required this.wireBytesSent,
     required this.wireBytesReceived,
+    this.sends = 0,
+    this.framesSent = 0,
+    this.idle = const {},
   });
 
   /// Every operation's calls summed: on a remote replica, the run's total
@@ -175,6 +259,39 @@ class ReplicaMetrics {
 
   /// File content moved in either direction (SPEC §7.2).
   int get payloadBytes => ops.values.fold(0, (sum, stats) => sum + stats.bytes);
+
+  /// Every operation's wait for a window slot summed (SPEC §17). Read against
+  /// [opTime]: the share of an operation's life spent queued rather than
+  /// exchanging.
+  Duration get queueWait =>
+      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.queueWait);
+
+  /// Every operation's time on the wire summed — [opTime] with the queueing
+  /// taken out.
+  Duration get wireTime =>
+      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.wireTime);
+
+  /// Mean bytes per frame sent, zero when nothing was sent. The size the
+  /// protocol actually put on the link, framing included.
+  double get meanFrameBytes => framesSent == 0 ? 0 : wireBytesSent / framesSent;
+
+  /// Frames per flush. One until something coalesces them; the number the
+  /// coalescing case is judged by afterwards.
+  double get framesPerSend => sends == 0 ? 0 : framesSent / sends;
+
+  /// Flushes per `Agent` operation — how many times this replica's exchanges
+  /// made the transport wait on the link, per unit of work asked of it.
+  ///
+  /// An operation's floor is one round trip, so a figure near 1 says the
+  /// protocol is spending what the work costs and a figure above it says an
+  /// operation is paying for several exchanges. Either way it is what an
+  /// operation's mean should be divided by before it is compared to a link's
+  /// latency.
+  double get sendsPerOp => opCount == 0 ? 0 : sends / opCount;
+
+  /// Every phase's idle time summed.
+  Duration get idleTime =>
+      idle.values.fold(Duration.zero, (sum, value) => sum + value);
 }
 
 /// What one run cost, and where (SPEC §17).

@@ -27,6 +27,15 @@
 // same link the phone has. Together the two answer the question a phone
 // number on its own cannot: when a run falls short of its link, is that this
 // code's shape or the phone's radio?
+//
+// One figure to read with care here. `--timings` reports wire idle time as
+// the gaps in *this process's* transport (SPEC §17), and the proxy accepts
+// whatever it is given and rate-limits downstream — so a capped run through
+// it shows the link as almost entirely idle whatever the cap, because the
+// backpressure stops at the proxy's buffer instead of reaching this side's
+// socket. Against a real peer it does reach it. Every other figure —
+// per-operation queue against wire time, sends, frames, mean frame size —
+// is measured on this side and reads the same either way.
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
