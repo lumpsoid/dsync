@@ -11,6 +11,7 @@
 //   dart run benchmark/local_sync_throughput.dart --files 14471 --mib 180
 //   dart run benchmark/local_sync_throughput.dart --transport local
 //   dart run benchmark/local_sync_throughput.dart --latency-ms 10
+//   dart run benchmark/local_sync_throughput.dart --latency-ms 10 --mbit 65
 //
 // `--transport unix` is the interesting one: same `SocketChannel`,
 // `FlushedSink`, `FrameRouter`, `RequestWindow` and `Applier` as the phone
@@ -21,6 +22,11 @@
 // Wi-Fi, so whatever the difference is, it is not work — it is what this
 // code does while it waits. The flag puts the waiting back, through a
 // forwarding proxy that delays each direction by half of it.
+//
+// `--mbit` caps that proxy's rate as well, so a local run can be held to the
+// same link the phone has. Together the two answer the question a phone
+// number on its own cannot: when a run falls short of its link, is that this
+// code's shape or the phone's radio?
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
@@ -51,7 +57,7 @@ Future<void> main(List<String> args) async {
     stdout.writeln('');
 
     await switch (options.transport) {
-      'unix' => _syncOverUnixSocket(root, source, dest, state, options.latency),
+      'unix' => _syncOverUnixSocket(root, source, dest, state, options),
       'local' => _syncLocally(source, dest, state),
       final other => throw ArgumentError('unknown transport: $other'),
     };
@@ -143,7 +149,7 @@ Future<void> _syncOverUnixSocket(
   Directory source,
   Directory dest,
   Directory state,
-  Duration latency,
+  _Options options,
 ) async {
   final socketPath = '${root.path}/agent.sock';
   final agent = await Process.start(
@@ -159,11 +165,19 @@ Future<void> _syncOverUnixSocket(
   try {
     await _waitForSocket(socketPath);
     var reachedAt = socketPath;
-    if (latency > Duration.zero) {
+    if (options.latency > Duration.zero || options.bytesPerSecond > 0) {
       reachedAt = '${root.path}/proxy.sock';
-      proxy = await _startDelayProxy(reachedAt, socketPath, latency ~/ 2);
+      proxy = await _startDelayProxy(
+        reachedAt,
+        socketPath,
+        options.latency ~/ 2,
+        options.bytesPerSecond,
+      );
       stdout.writeln(
-        'through a proxy adding ${latency.inMilliseconds} ms round trip',
+        'through a proxy adding ${options.latency.inMilliseconds} ms round '
+        'trip${options.bytesPerSecond > 0 ? ', capped at '
+                  '${(options.bytesPerSecond * 8 / 1000000).toStringAsFixed(0)} '
+                  'Mbit/s each way' : ''}',
       );
     }
     await _runSync(
@@ -179,17 +193,20 @@ Future<void> _syncOverUnixSocket(
   }
 }
 
-/// Forwards [listenPath] to [targetPath], holding every chunk for [oneWay]
-/// first — a link with latency and nothing else.
+/// Forwards [listenPath] to [targetPath] over a link with [oneWay] of
+/// latency and, when [bytesPerSecond] is non-zero, that much bandwidth.
 ///
 /// Each chunk is forwarded on its own timer rather than through a queue this
-/// awaits, so the proxy adds delay without also adding a bottleneck of its
-/// own: any number of chunks are in flight at once, exactly as on a real
-/// link.
+/// awaits, so latency alone adds delay without also adding a bottleneck of
+/// its own: any number of chunks are in flight at once, exactly as on a real
+/// link. The rate cap is the serialisation a real link *does* have — a chunk
+/// cannot start transmitting until the one before it has finished, so its
+/// arrival is `(when the wire is free) + (its own transmit time) + latency`.
 Future<ServerSocket> _startDelayProxy(
   String listenPath,
   String targetPath,
   Duration oneWay,
+  int bytesPerSecond,
 ) async {
   final server = await ServerSocket.bind(
     InternetAddress(listenPath, type: InternetAddressType.unix),
@@ -201,14 +218,31 @@ Future<ServerSocket> _startDelayProxy(
       0,
     );
     void pipe(Socket from, Socket to) {
+      // When this direction's wire next falls idle, as an offset from the
+      // stopwatch below.
+      final since = Stopwatch()..start();
+      var freeAt = Duration.zero;
+
       from.listen(
-        (chunk) => Timer(oneWay, () {
-          try {
-            to.add(chunk);
-          } catch (_) {
-            // The far end went away while this chunk was in flight.
+        (chunk) {
+          var wait = oneWay;
+          if (bytesPerSecond > 0) {
+            final now = since.elapsed;
+            final startsAt = freeAt > now ? freeAt : now;
+            final transmit = Duration(
+              microseconds: chunk.length * 1000000 ~/ bytesPerSecond,
+            );
+            freeAt = startsAt + transmit;
+            wait = freeAt - now + oneWay;
           }
-        }),
+          Timer(wait, () {
+            try {
+              to.add(chunk);
+            } catch (_) {
+              // The far end went away while this chunk was in flight.
+            }
+          });
+        },
         onDone: () => Timer(oneWay, () => to.close().catchError((_) {})),
         onError: (_) {},
       );
@@ -241,6 +275,12 @@ Future<void> _runSync(
 
   stdout.writeln(run.stderr);
   stdout.writeln('exit ${run.exitCode} in ${stopwatch.elapsed}');
+  if (run.exitCode != 0) {
+    final lines = (run.stdout as String).split('\n');
+    stdout.writeln(
+      lines.where((l) => !l.startsWith('  copy')).take(30).join('\n'),
+    );
+  }
   if (agentErrors.isNotEmpty) {
     stdout.writeln('agent said: ${agentErrors.join()}');
   }
@@ -259,6 +299,9 @@ class _Options {
   final int mib;
   final String transport;
   final Duration latency;
+
+  /// The proxy's rate cap, or `0` for none.
+  final int bytesPerSecond;
   final bool keep;
 
   const _Options({
@@ -266,6 +309,7 @@ class _Options {
     required this.mib,
     required this.transport,
     required this.latency,
+    required this.bytesPerSecond,
     required this.keep,
   });
 
@@ -274,6 +318,7 @@ class _Options {
     var mib = 25;
     var transport = 'unix';
     var latencyMs = 0;
+    var mbit = 0;
     var keep = false;
     for (var i = 0; i < args.length; i++) {
       switch (args[i]) {
@@ -285,6 +330,8 @@ class _Options {
           transport = args[++i];
         case '--latency-ms':
           latencyMs = int.parse(args[++i]);
+        case '--mbit':
+          mbit = int.parse(args[++i]);
         case '--keep':
           keep = true;
         default:
@@ -296,6 +343,7 @@ class _Options {
       mib: mib,
       transport: transport,
       latency: Duration(milliseconds: latencyMs),
+      bytesPerSecond: mbit == 0 ? 0 : mbit * 1000 * 1000 ~/ 8,
       keep: keep,
     );
   }
