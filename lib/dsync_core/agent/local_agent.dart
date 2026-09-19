@@ -238,6 +238,10 @@ class LocalAgent implements Agent {
       }
       mtimeTaken = since();
       modeStep = await _applyMode(temp, mode);
+      // `_applyMode` runs its own clock, so advance this one past it —
+      // otherwise the next `since()` bills the mode step to `rename` as well
+      // and the six steps sum to more than the span that contains them.
+      since();
 
       await temp.rename(target.path);
       renameTaken = since();

@@ -239,6 +239,7 @@ void main() {
       // spawn. A total cannot say which of them to go after.
       return () async {
         final local = agent();
+        final wall = Stopwatch()..start();
 
         // 0o644 is what a fresh file gets under the usual umask, so the mode
         // step is a stat and nothing forks.
@@ -263,17 +264,12 @@ void main() {
 
         expect(local.writePath.files, 2);
         expect(local.writePath.chmodSpawns, 1);
-        // Every step accumulates, so the total is the sum of the parts and
-        // not one of them standing in for the rest.
-        expect(
-          local.writePath.total,
-          local.writePath.create +
-              local.writePath.write +
-              local.writePath.mtime +
-              local.writePath.mode +
-              local.writePath.rename +
-              local.writePath.stat,
-        );
+        // The split has to fit inside the span that contains it. Asserting
+        // the total equals the sum of the parts says nothing — `total` is
+        // defined as that sum, so a step timed twice stays self-consistent
+        // and only disagrees with the wall clock. That is how the mode step
+        // came to be billed to `rename` as well.
+        expect(local.writePath.total, lessThanOrEqualTo(wall.elapsed));
       }();
     }, testOn: 'linux');
 
