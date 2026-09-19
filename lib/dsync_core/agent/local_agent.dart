@@ -5,6 +5,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -66,6 +67,16 @@ class LocalAgent implements Agent {
   /// Distinguishes this agent's scratch files from each other. See
   /// [tempPathFor].
   int _nextTempSequence = 0;
+
+  /// What [writeFile] has spent, step by step, over this session (SPEC §17).
+  ///
+  /// **Held here rather than handed to a recorder**, for the reason
+  /// `FlushedSink`'s figures are: this object is the only one that sees the
+  /// steps, it is cumulative, and whoever reports it reads it when it has
+  /// something to say. A served replica has no recorder of its own — the
+  /// report is assembled on the initiator's side — so this crosses the wire
+  /// on the `unlock` reply instead (`AgentServer`).
+  WritePathStats writePath = const WritePathStats();
 
   /// [isWindowsReplica] recognizes a Windows replica ahead of time (SPEC
   /// §3, §7.4) rather than [_applyMode] discovering it empirically — see
@@ -187,15 +198,37 @@ class LocalAgent implements Agent {
     required int mtime,
     required int mode,
   }) async {
+    // Every step timed separately (SPEC §17). Nine filesystem round trips
+    // hide behind one `far` figure otherwise, and they have nothing in
+    // common: the directory create is removable, the mode step may be a
+    // process spawn, the rename is neither.
+    final step = Stopwatch()..start();
+    var at = Duration.zero;
+    Duration since() {
+      final now = step.elapsed;
+      final taken = now - at;
+      at = now;
+      return taken;
+    }
+
     final target = File(_absolute(path));
     await target.parent.create(recursive: true);
+    final createTaken = since();
     final temp = File(tempPathFor(target.path, _nextTempSequence++));
 
+    final Duration writeTaken;
+    final Duration mtimeTaken;
+    final _ModeStep modeStep;
+    final Duration renameTaken;
     try {
       final sink = temp.openWrite();
       await sink.addStream(data);
       await sink.flush();
       await sink.close();
+      // Contains the wait for the frames, which arrive at the link's pace —
+      // `FarSideReport.inboundWait` is that wait, measured where they are
+      // consumed, and the difference is what writing cost.
+      writeTaken = since();
 
       try {
         await temp.setLastModified(DateTime.fromMicrosecondsSinceEpoch(mtime));
@@ -203,15 +236,26 @@ class LocalAgent implements Agent {
         // Best-effort (SPEC §7.4): the stat below archives whatever mtime
         // actually landed, so a setter failure here isn't fatal.
       }
-      await _applyMode(temp, mode);
+      mtimeTaken = since();
+      modeStep = await _applyMode(temp, mode);
 
       await temp.rename(target.path);
+      renameTaken = since();
     } catch (_) {
       if (await temp.exists()) await temp.delete();
       rethrow;
     }
 
     final stat = await target.stat();
+    writePath = writePath.plus(
+      create: createTaken,
+      write: writeTaken,
+      mtime: mtimeTaken,
+      mode: modeStep.taken,
+      chmodSpawns: modeStep.spawned ? 1 : 0,
+      rename: renameTaken,
+      stat: since(),
+    );
     return FileMetadata(
       size: stat.size,
       mtime: stat.modified.microsecondsSinceEpoch,
@@ -255,17 +299,26 @@ class LocalAgent implements Agent {
   /// host lacking `chmod` for some other reason (SPEC §3 flags Android
   /// storage as a place metadata writes can be rejected) is still
   /// discovered once instead of once per file, the same way it always was.
-  Future<void> _applyMode(File file, int mode) async {
-    if (_chmodUnavailable) return;
+  Future<_ModeStep> _applyMode(File file, int mode) async {
+    final step = Stopwatch()..start();
+    if (_chmodUnavailable) return _ModeStep(step.elapsed, spawned: false);
 
     final current = await file.stat();
-    if (current.mode & 0xFFF == mode) return;
+    if (current.mode & 0xFFF == mode) {
+      return _ModeStep(step.elapsed, spawned: false);
+    }
 
     try {
       await Process.run(chmodExecutable, [mode.toRadixString(8), file.path]);
     } on ProcessException {
       _chmodUnavailable = true;
     }
+    // Counted as a spawn whether or not it changed anything: a `chmod` that
+    // runs and silently fails to take — which is what a filesystem that does
+    // not carry POSIX modes gives — costs a fork and an exec every time, and
+    // is indistinguishable from a working one except by this count next to
+    // the mode step's total.
+    return _ModeStep(step.elapsed, spawned: true);
   }
 
   @override
@@ -388,4 +441,12 @@ class PathEscapesRootException implements Exception {
 
   @override
   String toString() => 'Path escapes the replica root $root: "$path"';
+}
+
+/// What one call of `LocalAgent._applyMode` cost, and whether it forked.
+class _ModeStep {
+  final Duration taken;
+  final bool spawned;
+
+  const _ModeStep(this.taken, {required this.spawned});
 }

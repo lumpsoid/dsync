@@ -11,6 +11,7 @@ import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
@@ -90,6 +91,11 @@ typedef SessionErrorHandler = void Function(
 /// (see [bindSecure]'s doc comment on the two layers).
 class AgentListener {
   final SessionErrorHandler _onSessionError;
+
+  /// Where a served session's per-step `writeFile` totals are read from when
+  /// its run ends (SPEC §17) — passed straight to [AgentServer.serve], which
+  /// documents why it is a function of the agent rather than a value.
+  final WritePathStats? Function(Agent agent)? _writePath;
   final Future<void> Function() _closeServer;
   final String _boundAddress;
   late final StreamSubscription<void> _connections;
@@ -98,6 +104,7 @@ class AgentListener {
     ServerSocket server,
     Agent Function(ReplicaSpec spec) buildAgent,
     this._onSessionError,
+    this._writePath,
   ) : _closeServer = server.close,
       _boundAddress = server.address.address {
     _connections = server.listen(
@@ -111,6 +118,7 @@ class AgentListener {
     DeviceIdentity ownIdentity,
     Agent Function(ReplicaSpec spec) buildAgent,
     this._onSessionError,
+    this._writePath,
     PairedDeviceStore pairedDeviceStore,
     Map<String, String> environment,
   ) : _closeServer = server.close,
@@ -148,13 +156,14 @@ class AgentListener {
     String socketPath, {
     required Agent Function(ReplicaSpec spec) buildAgent,
     required SessionErrorHandler onSessionError,
+    WritePathStats? Function(Agent agent)? writePath,
   }) async {
     await _clearStaleSocket(socketPath);
     final server = await ServerSocket.bind(
       InternetAddress(socketPath, type: InternetAddressType.unix),
       0, // Ignored for a unix address; the path is the whole address.
     );
-    return AgentListener._unix(server, buildAgent, onSessionError);
+    return AgentListener._unix(server, buildAgent, onSessionError, writePath);
   }
 
   /// Binds a listener to [address]:[port] over mutual TLS (SPEC §4.4) — the
@@ -249,6 +258,7 @@ class AgentListener {
     required Agent Function(ReplicaSpec spec) buildAgent,
     required SessionErrorHandler onSessionError,
     Map<String, String> environment = const {},
+    WritePathStats? Function(Agent agent)? writePath,
   }) async {
     final server = await ServerSocket.bind(address, port);
     return AgentListener._secure(
@@ -256,6 +266,7 @@ class AgentListener {
       ownIdentity,
       buildAgent,
       onSessionError,
+      writePath,
       pairedDeviceStore,
       environment,
     );
@@ -295,7 +306,7 @@ class AgentListener {
     Agent Function(ReplicaSpec spec) buildAgent,
   ) async {
     try {
-      await AgentServer().serve(channel, buildAgent);
+      await AgentServer().serve(channel, buildAgent, writePath: _writePath);
     } catch (error, stackTrace) {
       _onSessionError(error, stackTrace);
     } finally {

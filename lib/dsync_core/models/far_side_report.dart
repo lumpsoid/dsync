@@ -1,3 +1,5 @@
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
+
 /// What the peer says one exchange cost *it* (SPEC §17), as it rides back on
 /// the reply's own success control frame — a field, not an exchange.
 ///
@@ -58,10 +60,23 @@ class FarSideReport {
   /// the next one already queued costs nothing here, which is the point.
   final Duration? inboundWait;
 
+  /// What this peer's `writeFile` spent step by step over the whole session
+  /// (SPEC §17), or null from a peer that does not report it.
+  ///
+  /// **Cumulative, and carried once.** Like [sendWait] it is a session total
+  /// rather than this call's share, because the split it gives — directory
+  /// create, write, mtime, mode, rename, stat — is seven more integers and
+  /// putting them on every reply would inflate the byte counts the report
+  /// exists to explain. It rides on the `unlock` reply, the last exchange of
+  /// a run, so a run that never unlocks reports nothing at all rather than a
+  /// partial total that reads like a complete one.
+  final WritePathStats? writePath;
+
   const FarSideReport({
     required this.span,
     this.inFlight,
     this.sendWait,
     this.inboundWait,
+    this.writePath,
   });
 }

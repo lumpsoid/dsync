@@ -111,6 +111,29 @@ String formatRunMetrics(RunMetrics metrics) {
           'outside ${formatMetricDuration(replica.farTime)} of reported far',
         );
       }
+      // The peer's write path, per file rather than as the session totals it
+      // arrives as — nine filesystem round trips that `far` reports as one
+      // number (SPEC §17). `chmod` is a count, not a duration, because a
+      // process spawn per file and a stat per file are different orders of
+      // cost and the mode step's total cannot tell them apart alone.
+      if (replica.peerWritePath case final steps? when steps.files > 0) {
+        String per(Duration total) =>
+            formatMetricDuration(_per(total, steps.files));
+        out.writeln(
+          '  peer write: ${formatMetricCount(steps.files)} files × '
+          '${per(steps.total)} — '
+          'create ${per(steps.create)} · '
+          'write ${per(steps.write)} · '
+          'mtime ${per(steps.mtime)} · '
+          'mode ${per(steps.mode)} · '
+          'rename ${per(steps.rename)} · '
+          'stat ${per(steps.stat)}',
+        );
+        out.writeln(
+          '  peer chmod: ${formatMetricCount(steps.chmodSpawns)} processes '
+          'spawned, ${formatMetricDuration(steps.mode)} in the mode step',
+        );
+      }
       // Two figures rather than one, per phase, and the split is the answer
       // a single `idle` total could never give (SPEC §17): `quiet` is time
       // with nothing outstanding at all, which more callers would fill, and
@@ -189,6 +212,12 @@ String formatRunMetrics(RunMetrics metrics) {
 
   return out.toString();
 }
+
+/// One share of [total] out of [count], for the cumulative peer-side totals
+/// that arrive summed over every call that fed them.
+Duration _per(Duration total, int count) => count == 0
+    ? Duration.zero
+    : Duration(microseconds: total.inMicroseconds ~/ count);
 
 /// A duration at a precision a reader can compare at a glance: microseconds
 /// below a millisecond, milliseconds below ten seconds, seconds above.

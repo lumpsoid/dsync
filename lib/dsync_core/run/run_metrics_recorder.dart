@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
 
@@ -148,6 +149,9 @@ class RunMetricsRecorder {
     replica.ops[record.op] = (replica.ops[record.op] ?? AgentOpStats.none)
         .mergeExchange(record);
     if (record.far?.sendWait case final wait?) replica.peerSendWait = wait;
+    // Both are cumulative peer-side totals, so the last one to arrive is the
+    // complete one. The write path's arrives on `unlock` and only there.
+    if (record.far?.writePath case final steps?) replica.peerWritePath = steps;
   }
 
   /// Opens a flush of [bytes] framed protocol carrying [frames] frames on
@@ -282,6 +286,7 @@ class RunMetricsRecorder {
           sends: entry.value.sends,
           writeStats: entry.value.writeStats?.call(),
           peerSendWait: entry.value.peerSendWait,
+          peerWritePath: entry.value.peerWritePath,
           framesSent: entry.value.framesSent,
           quiet: Map.unmodifiable(entry.value.quiet),
           awaiting: Map.unmodifiable(entry.value.awaiting),
@@ -310,6 +315,7 @@ class _ReplicaRecord {
   /// The peer's own cumulative send wait as of the last reply that carried
   /// it, or null from a peer that does not report it.
   Duration? peerSendWait;
+  WritePathStats? peerWritePath;
 
   /// Flushes handed to the transport and not yet written. While this is
   /// above zero the link is carrying something and neither idle figure

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -75,6 +76,7 @@ const farSideKey = 'farSideMicros';
 const farInFlightKey = 'farInFlight';
 const farSendWaitKey = 'farSendWaitMicros';
 const farInboundWaitKey = 'farInboundWaitMicros';
+const farWritePathKey = 'farWritePath';
 
 /// What the peer said this exchange cost it, or null if it said nothing.
 ///
@@ -94,6 +96,41 @@ FarSideReport? farSideFromJson(Map<String, dynamic> data) {
     inboundWait: inboundWait is int
         ? Duration(microseconds: inboundWait)
         : null,
+    writePath: writePathFromJson(data[farWritePathKey]),
+  );
+}
+
+/// The peer's per-step write-path totals as they travel (SPEC §17).
+///
+/// Its own object under one key rather than seven more top-level ones: these
+/// only mean anything together, and a reader that finds the key finds the
+/// whole split or none of it.
+Map<String, dynamic> writePathToJson(WritePathStats steps) => {
+  'files': steps.files,
+  'createMicros': steps.create.inMicroseconds,
+  'writeMicros': steps.write.inMicroseconds,
+  'mtimeMicros': steps.mtime.inMicroseconds,
+  'modeMicros': steps.mode.inMicroseconds,
+  'chmodSpawns': steps.chmodSpawns,
+  'renameMicros': steps.rename.inMicroseconds,
+  'statMicros': steps.stat.inMicroseconds,
+};
+
+/// [data] read back, or null when the peer sent none — an older build, or
+/// any reply but the `unlock` that carries it.
+WritePathStats? writePathFromJson(Object? data) {
+  if (data is! Map<String, dynamic>) return null;
+  Duration micros(String key) =>
+      Duration(microseconds: data[key] is int ? data[key] as int : 0);
+  return WritePathStats(
+    files: data['files'] is int ? data['files'] as int : 0,
+    create: micros('createMicros'),
+    write: micros('writeMicros'),
+    mtime: micros('mtimeMicros'),
+    mode: micros('modeMicros'),
+    chmodSpawns: data['chmodSpawns'] is int ? data['chmodSpawns'] as int : 0,
+    rename: micros('renameMicros'),
+    stat: micros('statMicros'),
   );
 }
 
@@ -117,6 +154,8 @@ class AgentSuccess extends AgentResult {
     if (report.sendWait case final wait?) farSendWaitKey: wait.inMicroseconds,
     if (report.inboundWait case final wait?)
       farInboundWaitKey: wait.inMicroseconds,
+    if (report.writePath case final steps?)
+      farWritePathKey: writePathToJson(steps),
   });
 
   @override

@@ -4,6 +4,7 @@ import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -44,10 +45,20 @@ class AgentServer {
   ///
   /// A first frame that is not `hello` ends the session with an
   /// [AgentFailure] reply rather than dispatching against no agent at all.
+  /// [writePath] is where this session's per-step `writeFile` totals are
+  /// read from when the run ends (SPEC §17), supplied by whoever built the
+  /// agent because that is the only thing here that knows the agent is a
+  /// `LocalAgent` with steps to report — it is handed the session's agent so
+  /// it stays a pure function of it rather than captured state a listener
+  /// serving two sessions would mix up. Null for a caller that is not
+  /// measuring, and read once — on the `unlock` reply — rather than on every
+  /// reply, which would put seven integers on 14,000 frames to say a thing
+  /// that is only true at the end.
   Future<void> serve(
     Channel channel,
-    Agent Function(ReplicaSpec spec) buildAgent,
-  ) async {
+    Agent Function(ReplicaSpec spec) buildAgent, {
+    WritePathStats? Function(Agent agent)? writePath,
+  }) async {
     final router = FrameRouter(channel.input);
 
     final firstRequest = Completer<Frame>();
@@ -187,6 +198,7 @@ class AgentServer {
           // *alongside* it, and that is only known once it is over. By then
           // this dispatch is itself in the set, so the count includes it.
           () => inFlight.length,
+          writePath,
         );
         inFlight.add(handled);
         unawaited(handled.whenComplete(() => inFlight.remove(handled)));
@@ -226,6 +238,7 @@ class AgentServer {
     Frame frame,
     Stream<Frame> body,
     int Function() inFlight,
+    WritePathStats? Function(Agent agent)? writePath,
   ) async {
     final id = frame.requestId;
     // Started before the request is even decoded, because what this measures
@@ -250,7 +263,19 @@ class AgentServer {
             await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'unlock':
             await agent.unlock();
-            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
+            // The one reply that carries this side's write-path totals: the
+            // last exchange of a run (SPEC §4.3), so the totals are complete
+            // and nothing before it has paid for seven integers it could not
+            // have filled in yet.
+            await _reply(
+              channel,
+              const AgentSuccess(),
+              id,
+              farSide,
+              inFlight,
+              null,
+              writePath?.call(agent),
+            );
           case 'scan':
             final result = await agent.scan(
               ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
@@ -361,6 +386,7 @@ class AgentServer {
     Stopwatch? farSide,
     int Function()? inFlight,
     Duration? inboundWait,
+    WritePathStats? writePath,
   ]) {
     final stamped = farSide != null && result is AgentSuccess
         ? result.withFarSide(
@@ -369,6 +395,7 @@ class AgentServer {
               inFlight: inFlight?.call(),
               sendWait: channel.writeStats?.sendPath,
               inboundWait: inboundWait,
+              writePath: writePath,
             ),
           )
         : result;

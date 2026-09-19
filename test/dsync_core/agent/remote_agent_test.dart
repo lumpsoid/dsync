@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/agent/request_window.dart';
 import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -165,6 +166,50 @@ void main() {
       // that falls outside its span because a reply cannot carry the cost of
       // its own flush. An in-memory pair has no sink, so this is absent.
       expect(reported.last.far!.sendWait, isNull);
+    });
+  });
+
+  group("the peer's write path", () {
+    test('comes back on the unlock reply, and on no earlier one', () async {
+      // SPEC §17: seven cumulative figures that only mean anything at the
+      // end. Putting them on every reply would spend real bytes on 14,000
+      // frames to say a thing that is not true yet.
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      const steps = WritePathStats(
+        files: 3,
+        create: Duration(milliseconds: 6),
+        write: Duration(milliseconds: 9),
+        chmodSpawns: 3,
+        mode: Duration(milliseconds: 12),
+      );
+      unawaited(
+        AgentServer().serve(
+          serverChannel,
+          (_) => _FakeAgent(),
+          writePath: (_) => steps,
+        ),
+      );
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+
+      await agent.hello();
+      await agent.lock();
+      expect(reported.last.far!.writePath, isNull);
+
+      await agent.unlock();
+
+      final path = reported.last.far!.writePath!;
+      expect(path.files, 3);
+      expect(path.chmodSpawns, 3);
+      expect(path.create, const Duration(milliseconds: 6));
+      expect(path.mode, const Duration(milliseconds: 12));
+      // The steps it was not given stay zero rather than becoming absent:
+      // this is one object, sent whole or not at all.
+      expect(path.rename, Duration.zero);
     });
   });
 

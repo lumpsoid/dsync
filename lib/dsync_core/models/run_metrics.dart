@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 
 /// One step of `RunController`'s flow (SPEC §13), in the order it drives them.
 ///
@@ -400,6 +401,17 @@ class ReplicaMetrics {
   /// reported.
   final Duration? peerSendWait;
 
+  /// What the peer's `writeFile` spent step by step over the session (SPEC
+  /// §17), or null from a peer that does not report it — including any run
+  /// that ended before its `unlock`, which is the reply that carries it.
+  ///
+  /// **The split that `far` minus `starved` is a single number for.** Nine
+  /// filesystem round trips per file hide in there, and they have unrelated
+  /// fixes: a directory create paid once per file rather than once per
+  /// directory, a mode step that may be a process spawn, a rename that is
+  /// neither.
+  final WritePathStats? peerWritePath;
+
   /// How long this replica's transport had nothing to carry, per phase, and
   /// how long it had something outstanding and was waiting for it (SPEC §17).
   ///
@@ -431,6 +443,7 @@ class ReplicaMetrics {
     this.framesSent = 0,
     this.writeStats,
     this.peerSendWait,
+    this.peerWritePath,
     this.quiet = const {},
     this.awaiting = const {},
   });

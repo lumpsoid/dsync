@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
@@ -189,7 +190,7 @@ class AgentCommand extends Command<int> {
   Future<int> _serveStdio() async {
     final channel = StdioChannel();
     try {
-      await AgentServer().serve(channel, _buildAgent);
+      await AgentServer().serve(channel, _buildAgent, writePath: _writePathOf);
     } finally {
       // Best-effort cleanup on every path, including a thrown error left to
       // propagate (see this class's doc comment): the peer gets whatever
@@ -227,6 +228,7 @@ class AgentCommand extends Command<int> {
       final listener = await AgentListener.bindUnix(
         socketPath,
         buildAgent: _buildAgent,
+        writePath: _writePathOf,
         // A failed session is this process's only chance to say so — the peer
         // has already been told over the wire, and there is nobody watching an
         // exit code that is not coming.
@@ -294,6 +296,7 @@ class AgentCommand extends Command<int> {
           platform: platform,
         ),
         buildAgent: _buildAgent,
+        writePath: _writePathOf,
         onSessionError: (error, _) => stderr.writeln('dsync agent: $error'),
         environment: environment,
       );
@@ -389,6 +392,17 @@ class AgentCommand extends Command<int> {
   /// `rootPath` itself is known below, the same "ask this process's own
   /// real host" reasoning as `platform`, just against the filesystem instead
   /// of `Platform.operatingSystem`.
+  /// What this session's `writeFile` has spent step by step (SPEC §17), for
+  /// the `unlock` reply to carry back to whoever is assembling the report.
+  ///
+  /// **The type test lives here, at the edge that built the agent**, rather
+  /// than in `AgentServer` — which serves whatever `buildAgent` returns and
+  /// should go on not caring. [_buildAgent] always returns a `LocalAgent`, so
+  /// in practice this always answers; a future wrapper that hid one would
+  /// report nothing, which reads as "not measured" and not as "free".
+  WritePathStats? _writePathOf(Agent agent) =>
+      agent is LocalAgent ? agent.writePath : null;
+
   Agent _buildAgent(ReplicaSpec spec) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);

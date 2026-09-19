@@ -232,6 +232,51 @@ void main() {
       expect(metadata.mode, 384);
     }, testOn: 'linux');
 
+    test('records what each step of the write cost, and whether it forked', () {
+      // SPEC §17: `far` reports nine filesystem round trips as one number,
+      // and they have unrelated fixes — the directory create is paid per
+      // file rather than per directory, and the mode step may be a process
+      // spawn. A total cannot say which of them to go after.
+      return () async {
+        final local = agent();
+
+        // 0o644 is what a fresh file gets under the usual umask, so the mode
+        // step is a stat and nothing forks.
+        await local.writeFile(
+          'a.txt',
+          Stream.value(utf8.encode('hello')),
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+          mode: 420,
+        );
+
+        expect(local.writePath.files, 1);
+        expect(local.writePath.chmodSpawns, 0);
+        expect(local.writePath.total, greaterThan(Duration.zero));
+
+        // 0o600 differs, so this one does fork.
+        await local.writeFile(
+          'b.txt',
+          Stream.value(utf8.encode('hello')),
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+          mode: 384,
+        );
+
+        expect(local.writePath.files, 2);
+        expect(local.writePath.chmodSpawns, 1);
+        // Every step accumulates, so the total is the sum of the parts and
+        // not one of them standing in for the rest.
+        expect(
+          local.writePath.total,
+          local.writePath.create +
+              local.writePath.write +
+              local.writePath.mtime +
+              local.writePath.mode +
+              local.writePath.rename +
+              local.writePath.stat,
+        );
+      }();
+    }, testOn: 'linux');
+
     test('creates parent directories as needed', () async {
       await agent().writeFile(
         'sub/dir/a.txt',
