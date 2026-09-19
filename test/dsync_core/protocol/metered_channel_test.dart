@@ -60,10 +60,11 @@ void main() {
   test('the channel\'s own write count is what `writes` reports', () async {
     // The figure a send count cannot give: the batching happens below this
     // decorator, so it is read off the channel rather than counted here.
-    inner.writeStats = _writes(1);
     await channel.send(framed([control(1)]));
-    inner.writeStats = _writes(1);
     await channel.send(framed([control(2)]));
+    // Read at report time, not sampled per send: the sink's figures are
+    // cumulative, so the last state is the answer (SPEC §17).
+    inner.writeStats = _writes(1);
 
     expect(replica().sends, 2);
     expect(replica().writeStats?.writes, 1);

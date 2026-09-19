@@ -50,7 +50,13 @@ class MeteredChannel implements Channel {
   /// frame over a 14k-file tree is ~28,000 of them.
   final FrameCodec _codec = FrameCodec();
 
-  MeteredChannel(this._inner, {required this.side, required this.metrics});
+  MeteredChannel(this._inner, {required this.side, required this.metrics}) {
+    // Registered once rather than sampled per send: the sink's figures are
+    // cumulative, so there is nothing a sample catches that reading them at
+    // report time does not — and a `send` on this path runs 46,000 times in
+    // one apply, on a phone (SPEC §17).
+    metrics.watchWrites(side, () => _inner.writeStats);
+  }
 
   /// The wrapped channel's bytes, counted on the way past.
   ///
@@ -69,12 +75,6 @@ class MeteredChannel implements Channel {
   /// carrying something for as long as the write takes — which on a link slow
   /// enough for idle time to be worth measuring is not an instant.
   ///
-  /// The wrapped channel's write figures are read on the way out rather than
-  /// counted here, because this side of the coalescing cannot see them: a
-  /// `send` is a frame handed over and a write is what the link carried, and
-  /// since task 9d2158 those differ (SPEC §17). Sampled per send rather than
-  /// once at the end because they are cumulative and a run that aborts still
-  /// gets the figures up to where it stopped.
   @override
   Future<void> send(Uint8List bytes) async {
     final flush = metrics.beginSend(
@@ -86,7 +86,6 @@ class MeteredChannel implements Channel {
       await _inner.send(bytes);
     } finally {
       flush.end();
-      if (_inner.writeStats case final stats?) metrics.countWrites(side, stats);
     }
   }
 

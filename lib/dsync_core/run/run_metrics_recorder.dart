@@ -180,17 +180,21 @@ class RunMetricsRecorder {
     });
   }
 
-  /// Records what [side]'s sink has done with what it was handed — the
-  /// `add`-and-`flush` pairs `FlushedSink` actually performed, their batch
-  /// sizes, and what the senders waited (SPEC §17).
+  /// Where [side]'s sink figures can be read from when a report is taken —
+  /// the `add`-and-`flush` pairs `FlushedSink` actually performed, their
+  /// batch sizes, and what the senders waited (SPEC §17).
   ///
-  /// Set rather than merged, because what it comes from is cumulative:
-  /// `MeteredChannel` reads the channel's running figures on the way past, so
-  /// the last reading is the answer and a missed one costs nothing. Absent
-  /// until a channel reports, since a transport with no sink to flush has no
-  /// write to count and zero would read as "it coalesced nothing".
-  void countWrites(String side, SinkWriteStats stats) =>
-      _replicaRecord(side).writeStats = stats;
+  /// **A source, not a sample.** The figures it reads are cumulative, so the
+  /// answer is always "whatever they are now" and sampling them per send
+  /// bought nothing — while costing an object and a list copy on a path that
+  /// runs 46,000 times in one apply, on the device this report exists to
+  /// measure. Registered once by `MeteredChannel` and read by [snapshot].
+  ///
+  /// Absent until a channel registers, and free to answer null afterwards: a
+  /// transport with no sink to flush has no write to count, and zero would
+  /// read as "it coalesced nothing".
+  void watchWrites(String side, SinkWriteStats? Function() source) =>
+      _replicaRecord(side).writeStats = source;
 
   /// Records [bytes] arriving from [side]'s transport, framing included.
   ///
@@ -276,7 +280,7 @@ class RunMetricsRecorder {
           wireBytesSent: entry.value.wireBytesSent,
           wireBytesReceived: entry.value.wireBytesReceived,
           sends: entry.value.sends,
-          writeStats: entry.value.writeStats,
+          writeStats: entry.value.writeStats?.call(),
           peerSendWait: entry.value.peerSendWait,
           framesSent: entry.value.framesSent,
           quiet: Map.unmodifiable(entry.value.quiet),
@@ -299,9 +303,9 @@ class _ReplicaRecord {
   int sends = 0;
   int framesSent = 0;
 
-  /// The sink's cumulative figures as last read, or null while no channel on
-  /// this side has reported any.
-  SinkWriteStats? writeStats;
+  /// Where this side's cumulative sink figures are read from, or null while
+  /// no channel on this side has registered one.
+  SinkWriteStats? Function()? writeStats;
 
   /// The peer's own cumulative send wait as of the last reply that carried
   /// it, or null from a peer that does not report it.

@@ -346,16 +346,16 @@ void main() {
       expect(replica.framesPerSend, 2);
     });
 
-    test('writes are the sink\'s cumulative figures, set not merged', () {
-      // `MeteredChannel` reads running figures off the channel, so the last
-      // reading is the answer — merging them would count every write again
-      // on every send (SPEC §17).
+    test('writes are read from the sink when the report is taken', () {
+      // The figures are cumulative, so there is nothing a per-send sample
+      // catches that reading them at report time does not — and the sample
+      // cost an object and a list copy per send, on a phone (SPEC §17).
+      var live = _sinkWrites(1);
+      metrics.watchWrites('b', () => live);
       metrics.beginSend('b', bytes: 100, frames: 1).end();
-      metrics.countWrites('b', _sinkWrites(1));
       metrics.beginSend('b', bytes: 100, frames: 1).end();
-      metrics.countWrites('b', _sinkWrites(1));
       metrics.beginSend('b', bytes: 100, frames: 2).end();
-      metrics.countWrites('b', _sinkWrites(2));
+      live = _sinkWrites(2);
 
       final replica = metrics.snapshot().replicas['b']!;
       expect(replica.sends, 3);
