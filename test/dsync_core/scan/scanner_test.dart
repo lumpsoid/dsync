@@ -590,6 +590,53 @@ void main() {
       }
     });
 
+    test('the blocking and streaming hash paths agree, block boundaries '
+        'included', () async {
+      // Over `_isolateBatchFloorBytes`, so the shards really are isolates and
+      // the reads really are blocking — under it every job runs on the caller
+      // and takes the streaming path, which is what the rest of these tests
+      // exercise.
+      //
+      // The sizes straddle the 64 KiB read block: empty, one byte, exactly a
+      // block, a block plus one, and several blocks with a partial tail. A
+      // chunked hash that mishandled its last short read would agree with the
+      // streaming one on everything except these.
+      const block = 64 * 1024;
+      final sizes = {
+        'empty.bin': 0,
+        'one.bin': 1,
+        'block.bin': block,
+        'block_plus.bin': block + 1,
+        'tail.bin': block * 3 + 7,
+      };
+      for (final MapEntry(key: name, value: size) in sizes.entries) {
+        await File(
+          '${tempDir.path}/$name',
+        ).writeAsBytes([for (var i = 0; i < size; i++) i % 251]);
+      }
+
+      final expected = {
+        for (final MapEntry(key: name, value: size) in sizes.entries)
+          name: sha256
+              .convert([for (var i = 0; i < size; i++) i % 251])
+              .toString(),
+      };
+
+      // jobs: 4 shards across isolates and reads with the blocking path;
+      // jobs: 1 is one shard on the caller and the streaming one. The point
+      // is that they cannot disagree.
+      for (final jobs in [4, 1]) {
+        final result = await Scanner(jobs: jobs)
+            .scan(rootPath: tempDir.path, archive: archiveOf({}));
+
+        expect(
+          {for (final entry in result.entries) entry.path: entry.hash},
+          expected,
+          reason: 'jobs: $jobs',
+        );
+      }
+    });
+
     test('a followed symlink lands where the link sits, not after the batch '
         'it interrupted', () async {
       for (var i = 0; i < 6; i++) {

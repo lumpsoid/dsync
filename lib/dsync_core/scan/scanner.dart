@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
@@ -491,9 +492,12 @@ class Scanner {
           final paths = [for (final i in shard) candidates[i].absolutePath];
           final (digests, errors) = shard.length == candidates.length
               // One shard is the whole job, so there is no second isolate to
-              // run alongside and nothing to gain by leaving this one.
-              ? await _hashBatch(paths)
-              : await Isolate.run(() => _hashBatch(paths));
+              // run alongside and nothing to gain by leaving this one — and
+              // for the same reason its reads stay asynchronous: a blocking
+              // read here would block the caller's own isolate, which is the
+              // 69 s shape SPEC §5.3 measured.
+              ? await _hashBatch(paths, blocking: false)
+              : await Isolate.run(() => _hashBatch(paths, blocking: true));
           for (var slot = 0; slot < shard.length; slot++) {
             final index = shard[slot];
             if (digests[slot] case final digest?) {
@@ -563,12 +567,32 @@ class Scanner {
 /// Top-level and returning plain strings because this is what crosses into an
 /// isolate: a [FileSystemException] thrown here would have to be rebuilt on
 /// the other side, and one failed path must not cost the rest of the batch.
-Future<(List<String?>, List<String?>)> _hashBatch(List<String> paths) async {
+///
+/// [blocking] picks which read the digests are computed from, and the caller
+/// sets it by whether this batch has an isolate to itself. **The rule is not
+/// that blocking reads are faster; it is that a blocking read needs a thread
+/// of its own** — SPEC §5.3 measured a serial `listSync`/`statSync` walk on
+/// one isolate at 69 s against the asynchronous walk's 10.5 s, and that is
+/// what this flag exists to keep away from the caller. Where the batch does
+/// own its isolate, `ReadProbe` measures blocking reads on this phone's tree
+/// at 28.4 MiB/s against `openRead`'s 10.9 at the same four-way spread, and
+/// 35.1 against 18.7 at eight (task 9d2158 §15).
+Future<(List<String?>, List<String?>)> _hashBatch(
+  List<String> paths, {
+  required bool blocking,
+}) async {
   final digests = List<String?>.filled(paths.length, null);
   final errors = List<String?>.filled(paths.length, null);
+  // One buffer for the whole batch, not one per file: the point of reading
+  // in blocks is that peak memory is a block per isolate rather than a file,
+  // and allocating 64 KiB per file would spend on the allocator what the
+  // syscall just saved.
+  final buffer = blocking ? Uint8List(_readBlockBytes) : null;
   for (var i = 0; i < paths.length; i++) {
     try {
-      digests[i] = await _hashFile(paths[i]);
+      digests[i] = buffer == null
+          ? await _hashFile(paths[i])
+          : _hashFileSync(paths[i], buffer);
     } on FileSystemException catch (error) {
       errors[i] = describeFileSystemFailure(error);
     }
@@ -650,6 +674,15 @@ class _ScanContext {
 /// on a tree of many small files is the entire tree.
 const _isolateBatchFloorBytes = 256 * 1024;
 
+/// How much of a file is read per syscall by [_hashFileSync].
+///
+/// 64 KiB because that is what `dart:io`'s own stream uses (`_blockSize` in
+/// the SDK's `file_impl.dart`), so a file under it costs one read either way
+/// and the comparison between the two paths is the syscall's shape and not
+/// the block size. This replica's mean file is 12.7 KiB, so most files are a
+/// single read.
+const _readBlockBytes = 64 * 1024;
+
 /// Streams the file through the hash rather than reading it whole.
 ///
 /// Only the path crosses into the isolate. Reading the bytes first and
@@ -659,6 +692,46 @@ const _isolateBatchFloorBytes = 256 * 1024;
 Future<String> _hashFile(String absolutePath) async {
   final digest = await sha256.bind(File(absolutePath).openRead()).first;
   return digest.toString();
+}
+
+/// [_hashFile]'s digest, from blocking reads into [buffer].
+///
+/// Same bytes, same hash, one syscall per 64 KiB instead of a message to the
+/// VM's native port per block — which is the whole of the difference
+/// `ReadProbe` measures between its two modes. Only ever called where the
+/// batch owns its isolate; see [_hashBatch].
+///
+/// Chunked rather than `readAsBytesSync` so the memory promise [_hashFile]'s
+/// doc makes is kept exactly: a block per isolate, not a file. A replica with
+/// one multi-gigabyte file must not cost [Scanner.jobs] copies of it.
+String _hashFileSync(String absolutePath, Uint8List buffer) {
+  final file = File(absolutePath).openSync();
+  try {
+    final sink = _DigestSink();
+    final hash = sha256.startChunkedConversion(sink);
+    while (true) {
+      final read = file.readIntoSync(buffer);
+      if (read == 0) break;
+      // `addSlice` rather than `sublist`: the buffer is reused, so a copy per
+      // block is the one allocation this path exists to avoid.
+      hash.addSlice(buffer, 0, read, false);
+    }
+    hash.close();
+    return sink.value.toString();
+  } finally {
+    file.closeSync();
+  }
+}
+
+/// Catches the one [Digest] a chunked conversion emits on close.
+class _DigestSink implements Sink<Digest> {
+  late Digest value;
+
+  @override
+  void add(Digest data) => value = data;
+
+  @override
+  void close() {}
 }
 
 /// A file whose fast path (SPEC §5.2 step 1) didn't resolve it, so its
