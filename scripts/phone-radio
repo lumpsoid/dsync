@@ -1,0 +1,113 @@
+#!/bin/sh
+# phone-radio — the phone's Wi-Fi state, without the identifying bits.
+#
+# Exists because a run's throughput turns on the radio and nothing in dsync's
+# own report can see it: eight consecutive applies at ~62 s and five at ~36 s
+# differ by nothing any of our instruments recorded (task 9d2158 §9.0). The
+# band, rate and standard are the witness that was missing.
+#
+# What it deliberately does not print: network name, BSSID, MAC, IP. The AP is
+# reported as a short hash instead, so two runs can be compared for "same AP?"
+# without the address being written into a task body or a commit.
+#
+# Usage:
+#   scripts/phone-radio                  snapshot
+#   scripts/phone-radio <snapshot-file>  snapshot, plus packet deltas since it
+#
+# Take one before a sync and one after — the packet counters are cumulative
+# since boot, so only their delta describes the run.
+
+set -eu
+
+case "${1:-}" in
+-h | --help)
+	sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+	exit 0
+	;;
+esac
+
+command -v adb >/dev/null 2>&1 || {
+	echo "phone-radio: adb not on PATH" >&2
+	exit 1
+}
+
+raw=$(adb shell cmd wifi status 2>/dev/null) || {
+	echo "phone-radio: adb shell failed — is the phone attached and authorised?" >&2
+	exit 1
+}
+
+case "$raw" in
+*"Wifi is connected"*) ;;
+*)
+	echo "phone-radio: phone is not associated" >&2
+	exit 1
+	;;
+esac
+
+# The WifiInfo blob is one long comma-separated line; the counters are their
+# own lines below it.
+field() {
+	printf '%s' "$raw" | tr ',' '\n' | sed -n "s/^ *$1 *: *//p" | head -1
+}
+counter() {
+	printf '%s' "$raw" | sed -n "s/^$1: *//p" | head -1
+}
+
+freq=$(field 'Frequency' | sed 's/MHz.*//')
+case "$freq" in
+2[0-9][0-9][0-9]) band='2.4 GHz' chan=$(((freq - 2407) / 5)) ;;
+5[0-8][0-9][0-9]) band='5 GHz' chan=$(((freq - 5000) / 5)) ;;
+59* | 6* | 7*) band='6 GHz' chan=$(((freq - 5950) / 5)) ;;
+*) band='?' chan='?' ;;
+esac
+
+# A stable per-AP fingerprint that carries no address.
+ap=$(field 'BSSID' | sha256sum | cut -c1-8)
+
+tx_ok=$(counter successfulTxPackets)
+tx_retry=$(counter retriedTxPackets)
+tx_lost=$(counter lostTxPackets)
+rx_ok=$(counter successfulRxPackets)
+
+printf 'ap           %s\n' "$ap"
+printf 'band         %s, channel %s\n' "$band" "$chan"
+printf 'standard     %s\n' "$(field 'Wi-Fi standard')"
+printf 'rssi         %s dBm\n' "$(field 'RSSI')"
+printf 'link         %s tx / %s rx (max %s)\n' \
+	"$(field 'Link speed')" "$(field 'Rx Link speed')" \
+	"$(field 'Max Supported Tx Link speed')"
+printf 'estimated    %s tx / %s rx\n' \
+	"$(field 'Calculated Tx')" "$(field 'Calculated Rx')"
+printf 'score        %s\n' "$(field 'score')"
+printf 'tx_ok        %s\n' "$tx_ok"
+printf 'tx_retry     %s\n' "$tx_retry"
+printf 'tx_lost      %s\n' "$tx_lost"
+printf 'rx_ok        %s\n' "$rx_ok"
+
+if [ $# -eq 0 ]; then
+	exit 0
+fi
+
+snapshot=$1
+if [ ! -r "$snapshot" ]; then
+	echo "phone-radio: cannot read $snapshot" >&2
+	exit 1
+fi
+
+prev() { sed -n "s/^$1  *//p" "$snapshot" | head -1; }
+
+d_tx=$((tx_ok - $(prev tx_ok)))
+d_retry=$((tx_retry - $(prev tx_retry)))
+d_lost=$((tx_lost - $(prev tx_lost)))
+d_rx=$((rx_ok - $(prev rx_ok)))
+
+echo
+echo "since $snapshot"
+printf 'tx           %s packets, %s retried, %s lost\n' "$d_tx" "$d_retry" "$d_lost"
+printf 'rx           %s packets\n' "$d_rx"
+if [ "$d_tx" -gt 0 ]; then
+	printf 'retry share  %s%%\n' "$((d_retry * 100 / d_tx))"
+fi
+if [ "$ap" != "$(prev ap)" ]; then
+	echo 'AP CHANGED — the run roamed, or the radio re-associated'
+fi
