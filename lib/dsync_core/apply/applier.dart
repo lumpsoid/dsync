@@ -82,6 +82,16 @@ Future<void> _noopApplyProgress(String path, ActionType type, Object? error) =>
 class Applier {
   /// How many actions may be in flight at once.
   ///
+  /// **The 16 → 4 sweep was run and 16 won.** Apply went 62.1 s → 80.6 s on
+  /// the 14k-file tree over `peer://` for a 4× cut in workers — throughput
+  /// 233 → 180 actions a second, down 23%, so four workers already reach
+  /// most of what the path allows and the other twelve buy the rest. What
+  /// the sweep settled is where the time is: `link` collapsed 42.4 → 9.0 ms,
+  /// so that column was this side's own queueing and not the link, while
+  /// `far ÷ peers` held at 4.35 ms and 4.89 ms an action against serialized
+  /// budgets of 4.29 ms and 5.57 ms. The destination is the bound, and SPEC
+  /// §17's `starved` split is what now says which part of it.
+  ///
   /// **Sixteen, and the number is the bandwidth-delay product**, not a guess.
   /// Every agent operation costs one round trip (SPEC §4.2), and an action
   /// used to be about two of them — a `writeFile` and a commit — so one worker
