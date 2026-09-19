@@ -167,6 +167,22 @@ class AgentOpStats {
   final int farInFlight;
   final int farInFlightCount;
 
+  /// Summed time the peer spent starved of the inbound frames of these
+  /// calls, over the ones that reported it, and how many did.
+  ///
+  /// **What splits `far` into the peer's two opposite meanings.** A
+  /// `writeFile`'s far span contains the transfer, because it starts when
+  /// the request frame lands and the bytes follow at the link's pace. Near
+  /// [far] it says the destination was waiting on the link and writing
+  /// cheaply; near zero it says the bytes were there and the destination's
+  /// disk is the cost. One number could not tell those apart, and they have
+  /// opposite fixes.
+  ///
+  /// Its denominator is [farInboundCount], not [farCount]: only `writeFile`
+  /// has an inbound stream to wait for.
+  final Duration farInbound;
+  final int farInboundCount;
+
   /// Summed time between a reply's bytes arriving on this side's transport
   /// and the call that was waiting for it finishing, over the calls that
   /// measured it (SPEC §17), and how many did.
@@ -199,6 +215,8 @@ class AgentOpStats {
     this.farInFlightCount = 0,
     this.settle = Duration.zero,
     this.settleCount = 0,
+    this.farInbound = Duration.zero,
+    this.farInboundCount = 0,
   });
 
   /// Zero of everything — the starting point [merge] accumulates onto.
@@ -236,6 +254,13 @@ class AgentOpStats {
     farInFlightCount: farInFlightCount + (record.far?.inFlight == null ? 0 : 1),
     settle: record.settle == null ? settle : settle + record.settle!,
     settleCount: record.settle == null ? settleCount : settleCount + 1,
+    farInbound: switch (record.far?.inboundWait) {
+      final wait? => farInbound + wait,
+      null => farInbound,
+    },
+    farInboundCount: record.far?.inboundWait == null
+        ? farInboundCount
+        : farInboundCount + 1,
   );
 
   /// Mean call time at the `Agent` boundary, or null for an operation never
@@ -269,6 +294,11 @@ class AgentOpStats {
   /// answer rather than zero.
   Duration? get meanSettle => _per(settle, settleCount);
 
+  /// Mean time the peer was starved of this operation's inbound frames, per
+  /// call that reported it, or null when none did — which is every operation
+  /// that sends nothing but its request.
+  Duration? get meanFarInbound => _per(farInbound, farInboundCount);
+
   double? get meanFarInFlight =>
       farInFlightCount == 0 ? null : farInFlight / farInFlightCount;
 
@@ -287,6 +317,8 @@ class AgentOpStats {
     int? farInFlightCount,
     Duration? settle,
     int? settleCount,
+    Duration? farInbound,
+    int? farInboundCount,
   }) => AgentOpStats(
     count: count ?? this.count,
     total: total ?? this.total,
@@ -302,6 +334,8 @@ class AgentOpStats {
     farInFlightCount: farInFlightCount ?? this.farInFlightCount,
     settle: settle ?? this.settle,
     settleCount: settleCount ?? this.settleCount,
+    farInbound: farInbound ?? this.farInbound,
+    farInboundCount: farInboundCount ?? this.farInboundCount,
   );
 
   static Duration? _per(Duration value, int count) =>

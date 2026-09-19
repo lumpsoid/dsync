@@ -276,7 +276,14 @@ class AgentServer {
             );
           case 'writeFile':
             bodyComplete = false;
-            final bytes = readByteStream(body);
+            // The only operation with an inbound stream, and the only one
+            // whose span means two opposite things until it is split (SPEC
+            // §17): the bytes arrive at the link's pace, so a handler
+            // starved by the radio and one busy with its disk are the same
+            // number. Measured where the frames are consumed rather than
+            // subtracted from anything afterwards.
+            final intake = _InboundWait(farSide);
+            final bytes = readByteStream(intake.watch(body));
             final metadata = await agent.writeFile(
               request.params['path'] as String,
               bytes,
@@ -290,6 +297,7 @@ class AgentServer {
               id,
               farSide,
               inFlight,
+              intake.total,
             );
           case 'delete':
             await agent.delete(request.params['path'] as String);
@@ -352,6 +360,7 @@ class AgentServer {
     int requestId, [
     Stopwatch? farSide,
     int Function()? inFlight,
+    Duration? inboundWait,
   ]) {
     final stamped = farSide != null && result is AgentSuccess
         ? result.withFarSide(
@@ -359,9 +368,44 @@ class AgentServer {
               span: farSide.elapsed,
               inFlight: inFlight?.call(),
               sendWait: channel.writeStats?.sendPath,
+              inboundWait: inboundWait,
             ),
           )
         : result;
     return channel.send(FrameCodec().encode(stamped.toFrame(requestId)));
+  }
+}
+
+/// How long a handler spent waiting for the frames of its own request, on
+/// the clock its span is measured with (SPEC §17).
+///
+/// **On the frames rather than on the bytes they spell**, so the empty frame
+/// that ends the transfer is waited for like any other — it is the last gap
+/// of the stream and `readByteStream` consumes it without yielding anything
+/// a byte-level wrapper could see.
+///
+/// The accounting is the generator's own suspension: the clock is read when
+/// this yields a frame onward and again when the next one arrives, so
+/// everything the handler does with a frame in hand — the write, the fsync —
+/// falls outside, and only time with nothing to work on is counted.
+class _InboundWait {
+  final Stopwatch _clock;
+
+  /// Summed gaps so far. Read when the reply is built, which is after the
+  /// last of them.
+  Duration total = Duration.zero;
+
+  _InboundWait(this._clock);
+
+  Stream<Frame> watch(Stream<Frame> source) async* {
+    // Stamped when the handler subscribes, not when the request landed:
+    // whatever this side did before asking for the first frame — opening the
+    // temporary file (SPEC §7.2) — is its own work, not a wait.
+    var since = _clock.elapsed;
+    await for (final frame in source) {
+      total += _clock.elapsed - since;
+      yield frame;
+      since = _clock.elapsed;
+    }
   }
 }

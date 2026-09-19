@@ -74,6 +74,7 @@ sealed class AgentResult {
 const farSideKey = 'farSideMicros';
 const farInFlightKey = 'farInFlight';
 const farSendWaitKey = 'farSendWaitMicros';
+const farInboundWaitKey = 'farInboundWaitMicros';
 
 /// What the peer said this exchange cost it, or null if it said nothing.
 ///
@@ -85,10 +86,14 @@ FarSideReport? farSideFromJson(Map<String, dynamic> data) {
   if (micros is! int) return null;
   final inFlight = data[farInFlightKey];
   final sendWait = data[farSendWaitKey];
+  final inboundWait = data[farInboundWaitKey];
   return FarSideReport(
     span: Duration(microseconds: micros),
     inFlight: inFlight is int ? inFlight : null,
     sendWait: sendWait is int ? Duration(microseconds: sendWait) : null,
+    inboundWait: inboundWait is int
+        ? Duration(microseconds: inboundWait)
+        : null,
   );
 }
 
@@ -110,6 +115,8 @@ class AgentSuccess extends AgentResult {
     farSideKey: report.span.inMicroseconds,
     if (report.inFlight != null) farInFlightKey: report.inFlight!,
     if (report.sendWait case final wait?) farSendWaitKey: wait.inMicroseconds,
+    if (report.inboundWait case final wait?)
+      farInboundWaitKey: wait.inMicroseconds,
   });
 
   @override

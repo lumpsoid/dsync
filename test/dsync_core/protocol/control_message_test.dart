@@ -26,6 +26,7 @@ void main() {
               span: Duration(milliseconds: 26),
               inFlight: 4,
               sendWait: Duration(milliseconds: 7),
+              inboundWait: Duration(milliseconds: 19),
             ),
           );
 
@@ -39,6 +40,10 @@ void main() {
       // was serving, and what its own sink has waited outside the span.
       expect(report.inFlight, 4);
       expect(report.sendWait, const Duration(milliseconds: 7));
+      // And how much of the span was spent waiting for the request's own
+      // frames rather than writing them — the split that keeps a peer
+      // starved by the link from reading as a peer busy with its disk.
+      expect(report.inboundWait, const Duration(milliseconds: 19));
       // Alongside the operation's own result, not instead of it.
       expect(data['metadata'], {'size': 1});
     });
@@ -52,6 +57,18 @@ void main() {
       ) as AgentSuccess;
 
       expect(farSideFromJson(decoded.data), isNull);
+    });
+
+    test('keeps the inbound wait absent for an operation with no stream', () {
+      // Only `writeFile` has frames to be starved of. A peer that reports a
+      // span without one has not measured zero, it has nothing to measure.
+      final stamped = const AgentSuccess().withFarSide(
+        const FarSideReport(span: Duration(milliseconds: 3), inFlight: 1),
+      );
+
+      final decoded = AgentResult.fromFrame(stamped.toFrame(1)) as AgentSuccess;
+
+      expect(farSideFromJson(decoded.data)!.inboundWait, isNull);
     });
   });
 

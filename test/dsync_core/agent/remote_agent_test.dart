@@ -168,6 +168,65 @@ void main() {
     });
   });
 
+  group("the peer's wait for the bytes it was sent", () {
+    test('is most of the span when the sender is slow', () async {
+      // SPEC §17: a `writeFile`'s far span starts when the request frame
+      // lands and the bytes follow at the link's pace, so without this split
+      // a peer starved by the radio and a peer busy with its disk are the
+      // same number — with opposite fixes.
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      unawaited(AgentServer().serve(serverChannel, (_) => _FakeAgent()));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+      await agent.hello();
+      reported.clear();
+
+      Stream<List<int>> trickle() async* {
+        for (final byte in [1, 2, 3]) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          yield [byte];
+        }
+      }
+
+      await agent.writeFile('a.txt', trickle(), mtime: 1, mode: 0x81a4);
+
+      final far = reported.single.far!;
+      expect(far.inboundWait, isNotNull);
+      // Three gaps of 10 ms, and the fake writes nothing — so the span is
+      // the waiting, near enough.
+      expect(
+        far.inboundWait,
+        greaterThanOrEqualTo(const Duration(milliseconds: 25)),
+      );
+      expect(far.inboundWait, lessThanOrEqualTo(far.span));
+    });
+
+    test('is absent for an operation with nothing to receive', () async {
+      // Every operation but `writeFile` sends its request and nothing else,
+      // so there is no stream to be starved of. Absent, not zero: zero would
+      // claim the peer waited on a stream it never had.
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      unawaited(AgentServer().serve(serverChannel, (_) => _FakeAgent()));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+
+      await agent.hello();
+      await agent.lock();
+
+      expect(reported.last.op, AgentOp.lock);
+      expect(reported.last.far!.span, isNotNull);
+      expect(reported.last.far!.inboundWait, isNull);
+    });
+  });
+
   group('what this side spent after the reply arrived', () {
     test('is a span inside the wire span, and not the peer\'s time', () {
       // SPEC §17: `wire` per action is concurrency over throughput, so any

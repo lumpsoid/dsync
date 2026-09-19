@@ -132,7 +132,8 @@ String formatRunMetrics(RunMetrics metrics) {
     out.writeln(
       '  ${'operation'.padRight(20)}${'count'.padLeft(8)}'
       '${'total'.padLeft(10)}${'mean'.padLeft(10)}${'queue'.padLeft(10)}'
-      '${'wire'.padLeft(10)}${'far'.padLeft(10)}${'link'.padLeft(10)}'
+      '${'wire'.padLeft(10)}${'far'.padLeft(10)}${'starved'.padLeft(10)}'
+      '${'link'.padLeft(10)}'
       '${'settle'.padLeft(10)}${'peers'.padLeft(8)}'
       '${'max'.padLeft(10)}${'content'.padLeft(11)}',
     );
@@ -159,6 +160,11 @@ String formatRunMetrics(RunMetrics metrics) {
       // merely its residency. Near 1, `far` is service time; near this side's
       // concurrency, it is not.
       //
+      // `starved` is inside `far`, not beside it: how much of the peer's
+      // span was spent waiting for this request's own frames. Near `far` the
+      // destination was waiting on the link; near zero its disk is the cost.
+      // `—` for every operation that sends nothing but its request.
+      //
       // `settle` is the only column that is this side's own event loop: the
       // reply's bytes arriving to this call finishing. It is not a share of
       // any other column and must not be subtracted from one — it is a span
@@ -171,6 +177,7 @@ String formatRunMetrics(RunMetrics metrics) {
         '${formatMetricSplit(stats.meanQueueWait).padLeft(10)}'
         '${formatMetricSplit(stats.meanWireTime).padLeft(10)}'
         '${formatMetricSplit(stats.meanFarSide).padLeft(10)}'
+        '${formatMetricSplit(stats.meanFarInbound).padLeft(10)}'
         '${formatMetricSplit(stats.meanLinkTime).padLeft(10)}'
         '${formatMetricSplit(stats.meanSettle).padLeft(10)}'
         '${(stats.meanFarInFlight?.toStringAsFixed(1) ?? '—').padLeft(8)}'

@@ -37,5 +37,31 @@ class FarSideReport {
   /// much of what the peer did is missing from what the peer reported.
   final Duration? sendWait;
 
-  const FarSideReport({required this.span, this.inFlight, this.sendWait});
+  /// How much of [span] this side spent with nothing to do but wait for the
+  /// request's own inbound frames, or null for an operation that has no
+  /// inbound stream — which is every operation but `writeFile`.
+  ///
+  /// **The split that stops `span` from meaning two opposite things.** A
+  /// `writeFile`'s span begins when the request frame lands and the bytes
+  /// then arrive at the link's pace, so a peer starved by the radio and a
+  /// peer busy with its disk report the same [span] — and they have opposite
+  /// fixes, one being "send fewer, larger" and the other "write cheaper".
+  /// This is measured where the frames are consumed: from the handler being
+  /// ready for the next frame to that frame arriving, summed. What is left
+  /// of [span] is this side's own work, which for `writeFile` is the write,
+  /// the fsync and the rename (SPEC §7.2).
+  ///
+  /// **It is not the link's latency.** The initiator streams the file
+  /// continuously, so this is the gap between *consecutive* frames — a
+  /// starved receiver, not a round trip — and it is credited only while the
+  /// handler is actually waiting: time this side spends writing a chunk with
+  /// the next one already queued costs nothing here, which is the point.
+  final Duration? inboundWait;
+
+  const FarSideReport({
+    required this.span,
+    this.inFlight,
+    this.sendWait,
+    this.inboundWait,
+  });
 }
