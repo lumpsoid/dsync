@@ -24,6 +24,7 @@ void main() {
   late _RecordingProfilesController controller;
   final opened = <String>[];
   var devicesOpened = 0;
+  var archivesOpened = 0;
 
   setUp(() {
     app = AppController(
@@ -38,6 +39,7 @@ void main() {
     profilesScope.setController(controller);
     opened.clear();
     devicesOpened = 0;
+    archivesOpened = 0;
   });
 
   // Scopes are process-global: reset both so a pin cannot leak into the
@@ -55,6 +57,7 @@ void main() {
       home: ProfilesPage(
         onOpenProfile: opened.add,
         onOpenDevices: () => devicesOpened++,
+        onOpenArchives: () => archivesOpened++,
       ),
     ),
   );
@@ -117,6 +120,22 @@ void main() {
     expect(devicesOpened, 1);
     // The app bar's own entry point is untouched by it.
     expect(find.byKey(const Key('profiles-open-devices')), findsOneWidget);
+    expect(opened, isEmpty);
+  });
+
+  testWidgets('the app bar reaches the sync history at any list length', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordProfiles(const []);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('profiles-open-archives')));
+    await tester.pumpAndSettle();
+
+    expect(archivesOpened, 1);
+    // Maintenance, not a run: neither other destination moves.
+    expect(devicesOpened, 0);
     expect(opened, isEmpty);
   });
 

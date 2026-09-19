@@ -40,6 +40,7 @@ class ProfilesPage extends StatefulWidget {
     super.key,
     required this.onOpenProfile,
     required this.onOpenDevices,
+    required this.onOpenArchives,
   });
 
   /// Opens Run setup pre-filled from the tapped profile, by id — the id is
@@ -48,6 +49,11 @@ class ProfilesPage extends StatefulWidget {
 
   /// Opens the Devices page.
   final VoidCallback onOpenDevices;
+
+  /// Opens the Sync history page, where the archives are listed with what
+  /// they cost and can be deleted. From the app bar only: it is maintenance,
+  /// not part of setting up or making a run.
+  final VoidCallback onOpenArchives;
 
   @override
   State<ProfilesPage> createState() => _ProfilesPageState();
@@ -68,6 +74,12 @@ class _ProfilesPageState extends State<ProfilesPage> {
       appBar: AppBar(
         title: const Text('dsync'),
         actions: [
+          IconButton(
+            key: const Key('profiles-open-archives'),
+            icon: const Icon(Icons.sd_storage_outlined),
+            tooltip: 'Sync history',
+            onPressed: widget.onOpenArchives,
+          ),
           TextButton(
             key: const Key('profiles-open-devices'),
             onPressed: widget.onOpenDevices,

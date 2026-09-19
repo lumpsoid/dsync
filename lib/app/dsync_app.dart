@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'app_bootstrap.dart';
 import 'app_scope.dart';
+import 'features/archives/archives_page.dart';
 import 'features/devices/devices_page.dart';
 import 'features/pair/pair_page.dart';
 import 'features/profiles/profiles_page.dart';
@@ -13,7 +14,7 @@ import 'features/run_setup/run_setup_view_state.dart';
 import 'run_request.dart';
 
 /// The Flutter head's root: the bootstrap gate and the routes between the
-/// five pages (SPEC §4.4, §13).
+/// six pages (SPEC §4.4, §13).
 ///
 /// This file is still where a Flutter dependency leaking into `dsync_core/`
 /// would show up: it is the one root that imports both, so anything
@@ -101,6 +102,7 @@ class _BootstrapGate extends StatelessWidget {
           onOpenProfile: (profileId) =>
               _openRunSetup(context, RunSetupFromProfile(profileId)),
           onOpenDevices: () => _openDevices(context),
+          onOpenArchives: () => _openArchives(context),
         ),
       },
     );
@@ -117,6 +119,13 @@ class _BootstrapGate extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// The Sync history page. A leaf: it takes no callbacks because nothing
+  /// leads anywhere from it.
+  Future<void> _openArchives(BuildContext context) {
+    return Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const ArchivesPage()));
   }
 
   Future<void> _openPair(BuildContext context) {

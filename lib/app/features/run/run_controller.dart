@@ -762,17 +762,3 @@ String pausedMessage(int completedActions) =>
     'Paused after $completedActions action(s) — the app was backgrounded. '
     'Everything applied so far is recorded on both sides; the rest '
     'continues when you come back.';
-
-/// Bytes as the page shows them; `intl` is not a dependency and this is
-/// the only formatting the page needs.
-String formatBytes(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
-  var value = bytes / 1024;
-  var unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  return '${value.toStringAsFixed(value < 10 ? 1 : 0)} ${units[unit]}';
-}
