@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/agent/read_pool.dart';
 import 'package:dsync/dsync_core/agent/posix_chmod.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
@@ -87,6 +88,10 @@ class LocalAgent implements Agent {
   /// state, dropped with the agent.
   final Set<String> _createdParents = {};
 
+  /// Where [readFile] reads a file's head, or null to read it here. Owned:
+  /// see the constructor and [disconnect].
+  final ReadPool? readPool;
+
   /// What [writeFile] has spent, step by step, over this session (SPEC §17).
   ///
   /// **Held here rather than handed to a recorder**, for the reason
@@ -111,6 +116,13 @@ class LocalAgent implements Agent {
   /// `pathStyle` can't default to `p.Style.posix` directly, for the reason
   /// [Scanner]'s constructor gives: `Style`'s constants are `static final`,
   /// not `const`, so the fallback is applied here instead.
+  /// [readPool], when given, is what [readFile] reads a file's head on, and
+  /// this agent owns it from then on — [disconnect] closes it.
+  ///
+  /// Absent by default, and deliberately: a pool is eight isolates, which is
+  /// the right trade for a run moving thousands of files and the wrong one
+  /// for the hundreds of tests that build an agent to read three. The three
+  /// composition roots that drive real runs supply one.
   LocalAgent({
     required this.rootPath,
     required this.archiveStore,
@@ -120,6 +132,7 @@ class LocalAgent implements Agent {
     bool isWindowsReplica = false,
     this.chmod = posixChmod,
     p.Style? pathStyle,
+    this.readPool,
   }) : scanner = scanner ?? Scanner(),
        _chmodUnavailable = isWindowsReplica,
        _pathStyle = pathStyle ?? p.Style.posix;
@@ -208,7 +221,26 @@ class LocalAgent implements Agent {
   }
 
   @override
-  Stream<List<int>> readFile(String path) => File(_absolute(path)).openRead();
+  Stream<List<int>> readFile(String path) {
+    final pool = readPool;
+    if (pool == null) return File(_absolute(path)).openRead();
+    return _readPooled(pool, _absolute(path));
+  }
+
+  /// [readFile] with a pool: the head on a worker, the rest — if there is a
+  /// rest — streamed from where the head stopped.
+  ///
+  /// The head doubles as the size test, which is why no `stat` appears here.
+  /// A short read is end of file, so nine files in ten (SPEC §7.2's 64 KiB
+  /// cap held 90.9% of the measured tree whole) finish without this side
+  /// making a single asynchronous file call, and the tenth hands its first
+  /// block over rather than re-reading it.
+  Stream<List<int>> _readPooled(ReadPool pool, String absolute) async* {
+    final head = await pool.read(absolute);
+    if (head.bytes.isNotEmpty) yield head.bytes;
+    if (head.complete) return;
+    yield* File(absolute).openRead(head.bytes.length);
+  }
 
   @override
   Future<FileMetadata> writeFile(
@@ -436,7 +468,11 @@ class LocalAgent implements Agent {
   Future<void> compact() => archiveStore.compact();
 
   @override
-  Future<void> disconnect() async {}
+  Future<void> disconnect() async {
+    // The one thing an in-process agent does have to let go of: a worker
+    // parked on its port keeps the process alive.
+    await readPool?.close();
+  }
 
   String _absolute(String relativePath) =>
       resolveWithinRoot(rootPath, relativePath, pathStyle: _pathStyle);

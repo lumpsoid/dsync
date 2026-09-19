@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dsync/dsync_core/agent/read_pool.dart';
 import 'package:dsync/cli/options/effective_options.dart';
 import 'package:dsync/cli/output/human_renderer.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
@@ -275,6 +276,7 @@ Future<_ResolvedSide> _resolveLocalSide({
   final rootPath = location.expandedPath(environment);
   final agent = LocalAgent(
     rootPath: rootPath,
+    readPool: ReadPool(),
     archiveStore: JsonlArchiveStore.forProfile(
       profileId: profileId,
       side: side,

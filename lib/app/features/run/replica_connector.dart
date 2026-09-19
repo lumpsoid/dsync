@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:dsync/dsync_core/agent/read_pool.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
@@ -202,6 +203,7 @@ class ReplicaConnector {
     final platform = (await app.paths).stateDirPlatform;
     return LocalAgent(
       rootPath: rootPath,
+      readPool: ReadPool(),
       archiveStore: JsonlArchiveStore.forProfile(
         profileId: profileId,
         side: 'a',

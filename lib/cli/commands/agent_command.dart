@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:dsync/dsync_core/agent/read_pool.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart';
@@ -410,6 +411,7 @@ class AgentCommand extends Command<int> {
 
     return LocalAgent(
       rootPath: rootPath,
+      readPool: ReadPool(),
       archiveStore: JsonlArchiveStore.forProfile(
         profileId: spec.profileId,
         side: spec.side,

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
+import 'package:dsync/dsync_core/agent/read_pool.dart';
 import 'package:dsync/dsync_core/agent/posix_chmod.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
@@ -181,6 +182,58 @@ void main() {
       final bytes = chunks.expand((c) => c).toList();
 
       expect(utf8.decode(bytes), 'hello');
+    });
+
+    test('a pooled read is indistinguishable from a direct one, either '
+        'side of the block boundary', () async {
+      // The pool reads a file's head on an isolate and streams the rest from
+      // where that stopped (task 9d2158 §19). What must hold is that no
+      // caller can tell: same bytes, same order, across a file inside the
+      // block, one exactly on it, and one past it.
+      const block = 8;
+      final sizes = {'under.bin': 3, 'exact.bin': block, 'over.bin': 21};
+      for (final MapEntry(key: name, value: size) in sizes.entries) {
+        await File(
+          '${replicaDir.path}/$name',
+        ).writeAsBytes([for (var i = 0; i < size; i++) i % 251]);
+      }
+
+      final pooled = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        readPool: ReadPool(workers: 2, blockBytes: block),
+      );
+      addTearDown(pooled.disconnect);
+
+      for (final name in sizes.keys) {
+        final direct = await agent().readFile(name).toList();
+        final viaPool = await pooled.readFile(name).toList();
+
+        expect(
+          viaPool.expand((chunk) => chunk).toList(),
+          direct.expand((chunk) => chunk).toList(),
+          reason: name,
+        );
+      }
+    });
+
+    test('a pooled agent releases its workers on disconnect', () async {
+      // Not a formality: a worker parked on its port keeps the process
+      // alive, so an agent that forgot this would hang whatever ran it —
+      // including this suite.
+      final pooled = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        readPool: ReadPool(workers: 1, blockBytes: 8),
+      );
+      await File('${replicaDir.path}/a.txt').writeAsString('hello');
+      await pooled.readFile('a.txt').toList();
+
+      await pooled.disconnect();
+
+      expect(() => pooled.readFile('a.txt').toList(), throwsStateError);
     });
   });
 
