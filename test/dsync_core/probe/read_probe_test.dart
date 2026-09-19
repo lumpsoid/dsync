@@ -129,6 +129,36 @@ void main() {
     },
   );
 
+  test(
+    'uncapped, the corpus is the tree and carries its tail exactly',
+    () async {
+      // A heavy tail is where every capped corpus has gone wrong: on the real
+      // replica a 41% stride over size order kept 41% of the files that hold
+      // the bytes and landed a quarter low. Here one file holds 90% of the
+      // tree, and only an uncapped corpus is guaranteed to hold it.
+      for (var i = 1; i <= 9; i++) {
+        await write('small/f$i.txt', 'x');
+      }
+      await write('big.bin', 'x' * 90);
+
+      final report = await ReadProbe().run(
+        rootPath: tempDir.path,
+        depths: const [1],
+      );
+
+      expect(report.files, report.treeFiles);
+      expect(report.corpusBytes, report.treeBytes);
+      expect(
+        report.meanFileSize,
+        report.treeMeanFileSize,
+        reason: 'the tree cannot misrepresent its own distribution',
+      );
+      for (final sample in report.samples) {
+        expect(sample.bytes, 99, reason: '${sample.mode} missed the tail');
+      }
+    },
+  );
+
   test('a corpus smaller than the cap is the whole tree', () async {
     await write('a.txt', 'a');
     await write('nested/b.txt', 'bb');
