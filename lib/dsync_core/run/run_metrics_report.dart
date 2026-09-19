@@ -87,13 +87,18 @@ String formatRunMetrics(RunMetrics metrics) {
           '${formatMetricDuration(stats.waited)} total',
         );
       }
-      // What the *peer* waited on its own sink, over the whole session. Read
-      // against the `link` column: the peer's span stops before its reply is
-      // written, so this wait is inside what that column calls the link.
+      // What the *peer* waited on its own sink, over the whole session — the
+      // part of the peer's cost that falls outside every `far` it reported,
+      // because a reply cannot carry the cost of its own flush.
+      //
+      // Printed against `far` rather than against `link`, though `link` is
+      // where it lands: both of these are peer-side sums over the same calls,
+      // while `link` is a sum over *this* side's concurrent ones, so the
+      // tempting ratio is between two different kinds of quantity.
       if (replica.peerSendWait case final wait?) {
         out.writeln(
           '  peer sink: ${formatMetricDuration(wait)} waited, '
-          'against ${formatMetricDuration(replica.linkTime)} of link',
+          'outside ${formatMetricDuration(replica.farTime)} of reported far',
         );
       }
       // Two figures rather than one, per phase, and the split is the answer

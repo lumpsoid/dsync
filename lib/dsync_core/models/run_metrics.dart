@@ -330,9 +330,9 @@ class ReplicaMetrics {
   /// wait that reply then serves behind the peer's other senders falls
   /// outside the peer's span and lands inside what this side calls the link.
   /// A frame cannot carry the cost of its own flush, so this is the session
-  /// total instead: read against [linkTime], it says whether an apparent link
-  /// latency is really the peer's send queue — which is exactly what it cost
-  /// this side to discover the hard way.
+  /// total instead: read against [farTime] — the only other peer-side sum —
+  /// it says how much of what the peer did is missing from what the peer
+  /// reported.
   final Duration? peerSendWait;
 
   /// How long this replica's transport had nothing to carry, per phase, and
@@ -394,9 +394,18 @@ class ReplicaMetrics {
       ops.values.fold(Duration.zero, (sum, stats) => sum + stats.wire);
 
   /// Every exchange's link time summed, over the calls whose peer reported a
-  /// span. Read [peerSendWait] against this.
+  /// span.
   Duration get linkTime =>
       ops.values.fold(Duration.zero, (sum, stats) => sum + stats.link);
+
+  /// Every reported far-side span summed — the peer's own time over the same
+  /// calls, and **the only figure [peerSendWait] may be read against.**
+  ///
+  /// Both are peer-side sums over overlapping spans; [linkTime] is a sum over
+  /// this side's concurrent calls and is a different kind of quantity, so
+  /// putting the two in one sentence invites a ratio that means nothing.
+  Duration get farTime =>
+      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.far);
 
   /// Mean bytes per frame sent, zero when nothing was sent. The size the
   /// protocol actually put on the link, framing included.
