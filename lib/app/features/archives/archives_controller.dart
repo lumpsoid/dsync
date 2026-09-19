@@ -24,16 +24,13 @@ import 'archives_view_state.dart';
 /// its id and says so, which is exactly the case — a run deleted from the
 /// home list, its history still on disk — this page exists to surface.
 ///
-/// **The lock `core` takes on a delete does not cover this head's own run.**
-/// SPEC §4.3's lock is an OS advisory lock: it conflicts between processes
-/// and not within one, so deleting here while this app's Run page is
-/// mid-run is not refused. What that costs is bounded and remediable — the
-/// run's store re-creates the log from what it holds in memory, the next run
-/// refuses that log as a mismatched header (SPEC §8.1), and deleting it
-/// again from this page is the way out. A head-wide "a run is in flight"
-/// flag to close the window would be a second source of truth about the Run
-/// page's own state, which the scope contract in `app_scope.dart` keeps
-/// there deliberately.
+/// **A run in this app holds its replica against this page.** The Run page
+/// syncs in the same process as this one, so "no run is using this archive"
+/// cannot be answered by an OS lock alone; `ReplicaLock` answers it for
+/// every holder on the host, this process included, and `core` refuses the
+/// delete. That refusal is rendered here as the wait it is. There is no
+/// second "a run is in flight" flag in the head to keep in step with the Run
+/// page's own state: the lock the run already takes is the fact.
 class ArchivesController {
   ArchivesController(this.app);
 

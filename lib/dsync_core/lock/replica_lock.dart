@@ -1,14 +1,35 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:path/path.dart' as p;
 
-/// Advisory OS-level lock on one replica's state directory (SPEC §4.3).
+/// Advisory lock on one replica's state directory (SPEC §4.3), held against
+/// every other holder on the host — in this process and in any other.
 ///
 /// Taken by an `Agent` before scanning and released on every exit path,
-/// including after a failed run. Backed by a real file lock rather than
-/// in-memory state, so it also serializes against a second `dsync` process on
-/// the same host — not just concurrent calls within this one.
+/// including after a failed run.
+///
+/// **Two mechanisms, because one of them does not cover both cases.** The
+/// OS file lock is what serializes against a second `dsync` process: a CLI
+/// run while the app is syncing, two `dsync sync` invocations on the same
+/// profile. It does *not* serialize against this process's own other
+/// holders — POSIX advisory locks are owned by the process, so a second
+/// descriptor opened here is granted the lock immediately (verified: a
+/// second `lock(FileLock.exclusive)` in one process returns at once). That
+/// left a real hole the moment anything but a run wanted this lock: the
+/// Flutter head runs its sync in the same process as its UI, so deleting an
+/// archive from the Archives page while that run held the replica would have
+/// been granted, and the run would have rebuilt a log the next run then
+/// refuses as a mismatched header (SPEC §8.1). [_heldInProcess] closes it —
+/// the same answer, [ReplicaLockHeldException], from whichever side the
+/// second holder comes.
 class ReplicaLock {
+  /// Canonical paths this process currently holds a lock on. Static because
+  /// the thing being excluded is a *second* [ReplicaLock] over the same
+  /// path: two instances are exactly the case the OS lock cannot see, so
+  /// per-instance state could not answer it.
+  static final Set<String> _heldInProcess = {};
+
   final File _lockFile;
   RandomAccessFile? _handle;
 
@@ -38,18 +59,32 @@ class ReplicaLock {
     );
   }
 
-  /// Takes the lock. Throws a [ReplicaLockHeldException] if another run
-  /// already holds it — fatal for the caller (SPEC §11.5 exit 3).
+  /// Takes the lock. Throws a [ReplicaLockHeldException] if anything else
+  /// already holds it — another process, or another [ReplicaLock] in this
+  /// one — which is fatal for the caller (SPEC §11.5 exit 3).
+  ///
+  /// The in-process claim is staked before the file is touched, and given
+  /// back if the OS lock is refused, so a failed acquire leaves nothing
+  /// behind for the next attempt to trip over.
   Future<void> acquire() async {
-    await _lockFile.parent.create(recursive: true);
-    final handle = await _lockFile.open(mode: FileMode.write);
-    try {
-      await handle.lock(FileLock.exclusive);
-    } on FileSystemException {
-      await handle.close();
+    final key = _key;
+    if (!_heldInProcess.add(key)) {
       throw ReplicaLockHeldException(_lockFile.path);
     }
-    _handle = handle;
+    try {
+      await _lockFile.parent.create(recursive: true);
+      final handle = await _lockFile.open(mode: FileMode.write);
+      try {
+        await handle.lock(FileLock.exclusive);
+      } on FileSystemException {
+        await handle.close();
+        throw ReplicaLockHeldException(_lockFile.path);
+      }
+      _handle = handle;
+    } catch (_) {
+      _heldInProcess.remove(key);
+      rethrow;
+    }
   }
 
   /// Releases the lock taken by [acquire]. A no-op if [acquire] was never
@@ -59,9 +94,16 @@ class ReplicaLock {
     final handle = _handle;
     if (handle == null) return;
     _handle = null;
+    _heldInProcess.remove(_key);
     await handle.unlock();
     await handle.close();
   }
+
+  /// This lock's identity within the process: the canonical path, so two
+  /// spellings of the same lock file — a trailing slash on a state
+  /// directory, a `..` in a test's temp path — are one entry rather than
+  /// two, and the in-process guard cannot be walked around by accident.
+  String get _key => p.canonicalize(_lockFile.absolute.path);
 }
 
 /// Thrown by [ReplicaLock.acquire] when another run already holds the lock

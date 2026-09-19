@@ -6,6 +6,7 @@ import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/archive_row.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -133,6 +134,39 @@ void main() {
       ], isEmpty);
     },
   );
+
+  test('a run in this app keeps its history from being deleted', () async {
+    final log = await writeLog('p1', 'a');
+    await controller.refresh();
+    // The lock `LocalAgent.lock()` holds for the length of a run — taken
+    // here in this process, exactly as the head's own Run page takes it.
+    final run = ReplicaLock(File('${tempDir.path}/dsync/p1-a.lock'));
+    await run.acquire();
+    addTearDown(run.release);
+
+    await controller.delete(log.path);
+
+    expect(await log.exists(), isTrue);
+    expect(controller.state.error, contains('Wait for it to finish'));
+    expect(titles(), ['p1']);
+  });
+
+  test('deleting all stops at a log a run is using', () async {
+    final held = await writeLog('p1', 'a');
+    await writeLog('p2', 'a');
+    await controller.refresh();
+    final run = ReplicaLock(File('${tempDir.path}/dsync/p1-a.lock'));
+    await run.acquire();
+    addTearDown(run.release);
+
+    await controller.deleteAll();
+
+    // Whichever it reached first, the locked one survived and the user was
+    // told — not left with a shorter list and no idea what was kept.
+    expect(await held.exists(), isTrue);
+    expect(controller.state.error, isNotNull);
+    expect(titles(), contains('p1'));
+  });
 
   test('deleting all before the list is read does nothing', () async {
     await writeLog('p1', 'a');

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dsync/dsync_core/archive/archive_inventory.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
@@ -135,6 +136,29 @@ void main() {
       expect(await log.exists(), isFalse);
       expect(await neighbour.exists(), isTrue);
       expect([for (final a in await inventory.list()) a.profileId], ['p2']);
+    });
+
+    test('deleting is refused while a run holds the replica', () async {
+      final log = await writeLog(
+        profileId: 'p1',
+        side: 'a',
+        rootPath: '/home/me/notes',
+      );
+      // What `LocalAgent.lock()` takes for the length of a run — here in
+      // this process, which is where the Flutter head's own run holds it.
+      final run = ReplicaLock(File('${tempDir.path}/p1-a.lock'));
+      await run.acquire();
+
+      await expectLater(
+        inventory.delete(log.path),
+        throwsA(isA<ReplicaLockHeldException>()),
+      );
+      expect(await log.exists(), isTrue);
+
+      // And it is deletable again the moment the run is done with it.
+      await run.release();
+      await inventory.delete(log.path);
+      expect(await log.exists(), isFalse);
     });
 
     test('deleting a log that is already gone is not an error', () async {

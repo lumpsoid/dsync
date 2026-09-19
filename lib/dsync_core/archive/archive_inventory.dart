@@ -25,10 +25,13 @@ import 'package:dsync/dsync_core/state_dir.dart';
 ///
 /// **Why deleting takes the replica lock.** SPEC §4.3's lock is what
 /// serializes a run against anything else touching the same replica's state,
-/// and a log deleted from under a run in progress is that. The guard is the
-/// one the rest of the project already uses, with the same reach: an OS
-/// advisory lock keeps another *process* out — a `dsync sync` on this host,
-/// the app while a run is going — which is the case worth refusing.
+/// and a log deleted from under a run in progress is exactly that: the run
+/// would rebuild the log from what it holds in memory and the next run would
+/// refuse the result as a mismatched header (SPEC §8.1). The guard is the
+/// one the rest of the project already uses, and it holds against every
+/// other holder on the host — another `dsync` process, and this process's
+/// own run, which `ReplicaLock` covers deliberately rather than by luck (see
+/// its doc comment). A delete is never granted while a run has the replica.
 class ArchiveInventory {
   /// The directory the logs live in (SPEC §8.3). Not required to exist: a
   /// host that has never synced has no state directory, and that is an empty
@@ -88,11 +91,11 @@ class ArchiveInventory {
   /// with no archive at all — see the class doc comment for what that costs
   /// and what it leaves alone.
   ///
-  /// Throws [ReplicaLockHeldException] when another process holds the
-  /// replica's lock (SPEC §4.3): a run is using the archive being asked for,
-  /// and the caller has to be told rather than have the file pulled out from
-  /// under it. A log that is already gone is not an error — the outcome
-  /// asked for is the outcome there is.
+  /// Throws [ReplicaLockHeldException] when anything holds the replica's
+  /// lock (SPEC §4.3) — another process, or a run in this one: a run is
+  /// using the archive being asked for, and the caller has to be told rather
+  /// than have the file pulled out from under it. A log that is already gone
+  /// is not an error — the outcome asked for is the outcome there is.
   ///
   /// The lock file itself is left behind. It is empty by construction — the
   /// lock is the OS's, not its contents — so it is not archive state and

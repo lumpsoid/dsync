@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:dsync/cli/commands/archive_command.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
@@ -203,6 +204,26 @@ void main() {
           buildRunner(command()).run(['archive', 'clear']),
           throwsA(isA<UsageException>()),
         );
+      },
+    );
+
+    test(
+      'clear refuses a log a run is using, and says what it freed',
+      () async {
+        final held = await log('p1', 'a');
+        final run = ReplicaLock(File('${stateDir.path}/p1-a.lock'));
+        await run.acquire();
+        addTearDown(run.release);
+
+        final exitCode = await buildRunner(command())
+            .run(['archive', 'clear', 'p1']);
+
+        // SPEC §4.3, §11.5: a run has the replica, so this stops rather than
+        // deleting the archive out from under it.
+        expect(exitCode, 3);
+        expect(await held.exists(), isTrue);
+        expect(await err.contents(), contains('a run is in progress'));
+        expect(await out.contents(), contains('freed: 0 byte(s)'));
       },
     );
 

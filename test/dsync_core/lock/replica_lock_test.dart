@@ -28,6 +28,59 @@ void main() {
       await lock.release();
     });
 
+    test('throws when this process already holds the lock', () async {
+      // The OS lock alone does not answer this: POSIX advisory locks are
+      // owned by the process, so a second descriptor here is granted at
+      // once. The Flutter head syncs in the same process as its UI, where
+      // that would mean an archive deleted out from under its own run.
+      final held = ReplicaLock(lockFile());
+      await held.acquire();
+      addTearDown(held.release);
+
+      await expectLater(
+        ReplicaLock(lockFile()).acquire(),
+        throwsA(isA<ReplicaLockHeldException>()),
+      );
+    });
+
+    test('holds against a second spelling of the same path', () async {
+      final held = ReplicaLock(lockFile());
+      await held.acquire();
+      addTearDown(held.release);
+
+      final sameFile = File('${tempDir.path}/./replica.lock');
+      await expectLater(
+        ReplicaLock(sameFile).acquire(),
+        throwsA(isA<ReplicaLockHeldException>()),
+      );
+    });
+
+    test('a release frees it for the next holder in this process', () async {
+      final first = ReplicaLock(lockFile());
+      await first.acquire();
+      await first.release();
+
+      final second = ReplicaLock(lockFile());
+      await second.acquire();
+      await second.release();
+    });
+
+    test('a refused acquire leaves the lock free for its holder', () async {
+      final held = ReplicaLock(lockFile());
+      await held.acquire();
+      await expectLater(
+        ReplicaLock(lockFile()).acquire(),
+        throwsA(isA<ReplicaLockHeldException>()),
+      );
+
+      // The refused attempt did not claim anything: releasing the real
+      // holder is still what frees the lock, and it is free afterwards.
+      await held.release();
+      final next = ReplicaLock(lockFile());
+      await next.acquire();
+      await next.release();
+    });
+
     test('throws when another process already holds the lock', () async {
       final holderScript = File('${tempDir.path}/holder.dart');
       await holderScript.writeAsString('''
