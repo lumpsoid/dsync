@@ -208,9 +208,10 @@ void main() {
     expect(stats.meanBatch, 2);
   });
 
-  test('a sender is charged what it waited behind the writes ahead', () async {
-    // The wait phase 3 removed, measured where both instants are known
-    // instead of inferred from a link latency that looked too large.
+  test('queueing and flushing are counted apart', () async {
+    // One figure over both could not answer what it was asked: flushes are
+    // strictly serial, so their total is wall time and can be read against a
+    // phase, while queueing overlaps across senders and never can be.
     var now = Duration.zero;
     final sink = _FakeSink()..holdFlushes();
     final writer = FlushedSink(sink, elapsed: () => now);
@@ -228,12 +229,18 @@ void main() {
     sink.completeHeldFlush();
     await second;
 
-    // 30 ms for the first write, and 40 ms for the sender that arrived with
-    // it and served out both — which is the whole of what a queue costs.
-    expect(writer.stats.waited, const Duration(milliseconds: 70));
+    final stats = writer.stats;
+    // Two writes of 30 ms and 10 ms, one after the other and never at once.
+    expect(stats.flushing, const Duration(milliseconds: 40));
+    expect(stats.maxFlush, const Duration(milliseconds: 30));
+    expect(stats.meanFlush, const Duration(milliseconds: 20));
+    // The second sender queued behind the first write and only that: its own
+    // flush is not its queueing, which is the split.
+    expect(stats.queued, const Duration(milliseconds: 30));
+    expect(stats.meanQueue, const Duration(milliseconds: 15));
   });
 
-  test('a failed write still charges its senders what they waited', () async {
+  test('a failed write still cost the sink what it held it for', () async {
     // A run that went wrong is exactly the one whose waiting is worth
     // knowing; dropping it would understate it.
     var now = Duration.zero;
@@ -246,7 +253,8 @@ void main() {
     sink.failHeldFlush(StateError('gone'));
     await expectLater(failing, throwsStateError);
 
-    expect(writer.stats.waited, const Duration(milliseconds: 15));
+    expect(writer.stats.flushing, const Duration(milliseconds: 15));
+    expect(writer.stats.queued, Duration.zero);
   });
 
   test('a sink that has written nothing reports no ratio', () {
@@ -256,7 +264,8 @@ void main() {
     // exists to detect if it is printed as 1.
     expect(writer.stats.writes, 0);
     expect(writer.stats.meanBatch, isNull);
-    expect(writer.stats.meanWait, isNull);
+    expect(writer.stats.meanQueue, isNull);
+    expect(writer.stats.meanFlush, isNull);
   });
 }
 

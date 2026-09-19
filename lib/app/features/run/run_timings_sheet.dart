@@ -297,6 +297,20 @@ class _ReplicaTable extends StatelessWidget {
             '${replica.sendsPerOp.toStringAsFixed(2)} sends/operation',
             style: subtitle,
           ),
+        // What the sink itself cost, which is the only figure here that is
+        // wall time: a sink never has two writes in flight, so the flush
+        // total is real seconds this connection spent on the transport and
+        // can be read straight against the phase durations above. The
+        // queueing beside it overlaps across senders and cannot be.
+        if (replica.writeStats case final stats? when stats.writes > 0)
+          Text(
+            'flush ${formatMetricSplit(stats.meanFlush)} × '
+            '${formatMetricCount(stats.writes)} = '
+            '${formatMetricDuration(stats.flushing)} serial · '
+            'max ${formatMetricDuration(stats.maxFlush)} · '
+            'queue ${formatMetricSplit(stats.meanQueue)}/send',
+            style: subtitle,
+          ),
         const SizedBox(height: 8),
         // The splits rather than one `mean`, with `total` and `max` left to
         // the copied report: they are the whole point of this table. A mean

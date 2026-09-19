@@ -182,7 +182,9 @@ class _FakeChannel implements Channel {
 SinkWriteStats _writes(int count) => SinkWriteStats(
   writes: count,
   sends: count,
-  waited: Duration.zero,
+  queued: Duration.zero,
+  flushing: Duration.zero,
+  maxFlush: Duration.zero,
   maxBatch: 1,
   batches: List.filled(batchBucketLabels.length, 0),
 );

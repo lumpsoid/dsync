@@ -70,7 +70,9 @@ class FlushedSink {
   int _writes = 0;
   int _sends = 0;
   int _maxBatch = 0;
-  Duration _waited = Duration.zero;
+  Duration _queueing = Duration.zero;
+  Duration _flushing = Duration.zero;
+  Duration _maxFlush = Duration.zero;
   final List<int> _batches = List.filled(batchBucketLabels.length, 0);
 
   /// [elapsed] is the same injected reading the recorder and the window take,
@@ -88,7 +90,9 @@ class FlushedSink {
   SinkWriteStats get stats => SinkWriteStats(
     writes: _writes,
     sends: _sends,
-    waited: _waited,
+    queued: _queueing,
+    flushing: _flushing,
+    maxFlush: _maxFlush,
     maxBatch: _maxBatch,
     batches: List.unmodifiable(_batches),
   );
@@ -133,35 +137,48 @@ class FlushedSink {
 
   /// Writes [batch] as one `add` and one `flush`, then settles every frame in
   /// it with the same outcome.
+  ///
+  /// **The two costs are counted on opposite sides of the `add`**, because
+  /// they are different quantities and one figure over both could not answer
+  /// what it was being asked (SPEC §17). What every sender in this batch
+  /// waited to get here overlaps with what the other senders waited, and sums
+  /// to more than any clock; what the flush itself takes is strictly serial,
+  /// so *that* total is real seconds this connection spent on the transport
+  /// and can be read against a phase.
   Future<void> _writeBatch(List<_Pending> batch) async {
     _writes++;
     _sends += batch.length;
     _batches[batchBucket(batch.length)]++;
     if (batch.length > _maxBatch) _maxBatch = batch.length;
+
+    final startedAt = _elapsed();
+    for (final pending in batch) {
+      _queueing += startedAt - pending.queuedAt;
+    }
     try {
       _sink.add(batch.length == 1 ? batch.single.bytes : _join(batch));
       await _sink.flush();
     } catch (error, stack) {
-      _settle(batch);
+      // Charged before the callers are told, and on the failing path too: a
+      // write that failed still held the sink for as long as it took, and a
+      // report that dropped those would understate exactly the run that went
+      // wrong.
+      _chargeFlush(startedAt);
       for (final pending in batch) {
         pending.flushed.completeError(error, stack);
       }
       return;
     }
-    _settle(batch);
+    _chargeFlush(startedAt);
     for (final pending in batch) {
       pending.flushed.complete();
     }
   }
 
-  /// Adds every frame in [batch]'s wait to the total, before its caller is
-  /// told either way — a send that failed still waited, and a report that
-  /// dropped those would understate exactly the run that went wrong.
-  void _settle(List<_Pending> batch) {
-    final now = _elapsed();
-    for (final pending in batch) {
-      _waited += now - pending.queuedAt;
-    }
+  void _chargeFlush(Duration startedAt) {
+    final took = _elapsed() - startedAt;
+    _flushing += took;
+    if (took > _maxFlush) _maxFlush = took;
   }
 
   static Uint8List _join(List<_Pending> batch) {

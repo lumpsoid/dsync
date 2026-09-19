@@ -80,11 +80,19 @@ String formatRunMetrics(RunMetrics metrics) {
             if (stats.batches[i] > 0)
               '${batchBucketLabels[i]}×${formatMetricCount(stats.batches[i])}',
         ];
+        out.writeln('  batches: ${buckets.join(' · ')} · max ${stats.maxBatch}');
+        // The two halves of what the send path costs, counted on opposite
+        // sides of the `add` because they are different quantities. `flush`
+        // is strictly serial — a sink never has two writes in flight — so
+        // its total is real seconds and is read against the phase above;
+        // `queue` overlaps across senders and is only readable per send.
         out.writeln(
-          '  writes: ${buckets.join(' · ')} · '
-          'max ${stats.maxBatch} · '
-          '${formatMetricSplit(stats.meanWait)} mean wait per send, '
-          '${formatMetricDuration(stats.waited)} total',
+          '  flush: ${formatMetricSplit(stats.meanFlush)} × '
+          '${formatMetricCount(stats.writes)} = '
+          '${formatMetricDuration(stats.flushing)} serial, '
+          'max ${formatMetricDuration(stats.maxFlush)} · '
+          'queue ${formatMetricSplit(stats.meanQueue)} per send, '
+          '${formatMetricDuration(stats.queued)} summed',
         );
       }
       // What the *peer* waited on its own sink, over the whole session — the
@@ -97,7 +105,7 @@ String formatRunMetrics(RunMetrics metrics) {
       // tempting ratio is between two different kinds of quantity.
       if (replica.peerSendWait case final wait?) {
         out.writeln(
-          '  peer sink: ${formatMetricDuration(wait)} waited, '
+          '  peer sink: ${formatMetricDuration(wait)} on its send path, '
           'outside ${formatMetricDuration(replica.farTime)} of reported far',
         );
       }

@@ -24,16 +24,33 @@ class SinkWriteStats {
   /// company.
   final int sends;
 
-  /// Summed time from a send being handed over to its bytes being flushed,
-  /// over every send.
+  /// Summed time from a send being handed over to its write beginning, over
+  /// every send — queueing behind other senders, and nothing else.
   ///
-  /// **The wait phase 3 removed, now observed rather than inferred.** With
-  /// several senders on one sink the last caller in a queue of N waited out N
-  /// sequential flushes, and that wait was charged to `wire`/`link`, where it
-  /// read as link latency. It is measured here, at the only place that knows
-  /// both instants, so a report never has to work it out by subtracting a
-  /// round trip it assumed.
-  final Duration waited;
+  /// **Overlapping spans.** Several senders queue at once, so this sums to
+  /// more than any wall clock and is read per send, against [meanQueue].
+  ///
+  /// This is the wait phase 3 removed, now observed rather than inferred:
+  /// the last caller in a queue of N waited out N sequential flushes, and
+  /// that wait was charged to `wire`/`link`, where it read as link latency.
+  final Duration queued;
+
+  /// Summed time from a write's `add` to its `flush` returning, over every
+  /// write.
+  ///
+  /// **The one figure here that is wall time**, and that is the point of
+  /// separating it: a sink never has two writes in flight — `IOSink.flush`
+  /// forbids it — so these spans are strictly serial, and the total is real
+  /// seconds the connection spent handing bytes to the transport. Read
+  /// against the phase, it says whether the sink is the ceiling. Nothing
+  /// derived from a per-send mean could say that, because a per-send mean
+  /// counts one flush once per sender waiting on it.
+  final Duration flushing;
+
+  /// The slowest single write. Kept beside [flushing] for the reason
+  /// `AgentOpStats.max` is kept beside its total: "every write is slow" and
+  /// "one write stalled" are different findings.
+  final Duration maxFlush;
 
   /// Sends carried by the largest single write.
   final int maxBatch;
@@ -49,7 +66,9 @@ class SinkWriteStats {
   const SinkWriteStats({
     required this.writes,
     required this.sends,
-    required this.waited,
+    required this.queued,
+    required this.flushing,
+    required this.maxFlush,
     required this.maxBatch,
     required this.batches,
   });
@@ -58,10 +77,21 @@ class SinkWriteStats {
   static final none = SinkWriteStats(
     writes: 0,
     sends: 0,
-    waited: Duration.zero,
+    queued: Duration.zero,
+    flushing: Duration.zero,
+    maxFlush: Duration.zero,
     maxBatch: 0,
     batches: List.filled(batchBucketLabels.length, 0),
   );
+
+  /// Everything the send path cost this side, queueing and flushing both.
+  ///
+  /// A **lower bound** on what senders experienced, not a wall time and not a
+  /// sum of one: [flushing] is counted once per write while every sender in
+  /// that write waited all of it. It exists for the one question that wants
+  /// both terms at once — what a peer's send path cost, which falls outside
+  /// the span that peer reports.
+  Duration get sendPath => queued + flushing;
 
   /// Mean sends per write, or null when nothing has been written — null
   /// rather than 1, since "nothing was written" is not a ratio.
@@ -69,10 +99,16 @@ class SinkWriteStats {
   /// Read against [batches], never instead of it: see this class's own note.
   double? get meanBatch => writes == 0 ? null : sends / writes;
 
-  /// Mean wait per send, or null when nothing has been sent.
-  Duration? get meanWait => sends == 0
+  /// Mean queueing per send, or null when nothing has been sent.
+  Duration? get meanQueue => sends == 0
       ? null
-      : Duration(microseconds: waited.inMicroseconds ~/ sends);
+      : Duration(microseconds: queued.inMicroseconds ~/ sends);
+
+  /// Mean flush per write, or null when nothing has been written — the cost
+  /// of one trip to the transport, which no per-send figure can give.
+  Duration? get meanFlush => writes == 0
+      ? null
+      : Duration(microseconds: flushing.inMicroseconds ~/ writes);
 }
 
 /// The batch sizes [SinkWriteStats.batches] counts, in its order.

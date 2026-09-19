@@ -358,7 +358,7 @@ class AgentServer {
             FarSideReport(
               span: farSide.elapsed,
               inFlight: inFlight?.call(),
-              sendWait: channel.writeStats?.waited,
+              sendWait: channel.writeStats?.sendPath,
             ),
           )
         : result;
