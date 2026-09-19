@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 import 'package:test/test.dart';
@@ -240,6 +241,72 @@ void main() {
     expect(stats.meanQueue, const Duration(milliseconds: 15));
   });
 
+  test('what a write cost is banded by the bytes it carried', () async {
+    // The question `meanFlush` cannot answer: is a write's cost fixed, or is
+    // it the bytes going over the link? One mean over a population spanning a
+    // control frame and a batch of files cannot say, and every change that
+    // sends fewer, larger buffers turns on the answer (SPEC §17).
+    var now = Duration.zero;
+    final sink = _FakeSink()..holdFlushes();
+    final writer = FlushedSink(sink, elapsed: () => now);
+
+    final small = writer.send(_bytes(List.filled(500, 7)));
+    await pumpEventQueue();
+    now += const Duration(milliseconds: 10);
+    sink.completeHeldFlush();
+    await small;
+
+    final large = writer.send(_bytes(List.filled(5000, 7)));
+    await pumpEventQueue();
+    now += const Duration(milliseconds: 20);
+    sink.completeHeldFlush();
+    await large;
+
+    final stats = writer.stats;
+    expect(stats.bands[writeBand(500)].writes, 1);
+    expect(stats.bands[writeBand(500)].meanBytes, 500);
+    expect(
+      stats.bands[writeBand(500)].meanFlush,
+      const Duration(milliseconds: 10),
+    );
+    expect(stats.bands[writeBand(5000)].writes, 1);
+    expect(stats.bands[writeBand(5000)].meanBytes, 5000);
+    expect(
+      stats.bands[writeBand(5000)].meanFlush,
+      const Duration(milliseconds: 20),
+    );
+    // Ten times the bytes for twice the time — the shape that says the
+    // per-write cost is largely fixed. Read as a rate so the bands compare.
+    expect(stats.bands[writeBand(500)].bytesPerSecond, 50000);
+    expect(stats.bands[writeBand(5000)].bytesPerSecond, 250000);
+  });
+
+  test('the bands add up to what contains them', () async {
+    // §7's containment rule, checked where the split is made: a figure that
+    // cannot fit inside its own total is the first thing to notice about it.
+    var now = Duration.zero;
+    final sink = _FakeSink()..holdFlushes();
+    final writer = FlushedSink(sink, elapsed: () => now);
+
+    for (final size in [200, 3000, 40000]) {
+      final write = writer.send(_bytes(List.filled(size, 7)));
+      await pumpEventQueue();
+      now += const Duration(milliseconds: 5);
+      sink.completeHeldFlush();
+      await write;
+    }
+
+    final stats = writer.stats;
+    var writes = 0;
+    var flushing = Duration.zero;
+    for (final band in stats.bands) {
+      writes += band.writes;
+      flushing += band.flushing;
+    }
+    expect(writes, stats.writes);
+    expect(flushing, stats.flushing);
+  });
+
   test('a failed write still cost the sink what it held it for', () async {
     // A run that went wrong is exactly the one whose waiting is worth
     // knowing; dropping it would understate it.
@@ -266,6 +333,14 @@ void main() {
     expect(writer.stats.meanBatch, isNull);
     expect(writer.stats.meanQueue, isNull);
     expect(writer.stats.meanFlush, isNull);
+    // A band no write landed in was still measured, so it is a zero with no
+    // cost rather than a missing entry.
+    for (final band in writer.stats.bands) {
+      expect(band.writes, 0);
+      expect(band.meanFlush, isNull);
+      expect(band.meanBytes, isNull);
+      expect(band.bytesPerSecond, isNull);
+    }
   });
 }
 

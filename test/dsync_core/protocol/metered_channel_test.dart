@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
@@ -187,4 +188,5 @@ SinkWriteStats _writes(int count) => SinkWriteStats(
   maxFlush: Duration.zero,
   maxBatch: 1,
   batches: List.filled(batchBucketLabels.length, 0),
+  bands: List.filled(writeBandLabels.length, const SinkWriteBand()),
 );

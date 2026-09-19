@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/run_metrics.dart';
+import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 
 /// Renders [RunMetrics] as the plain-text report both heads show (SPEC §17).
@@ -111,6 +112,24 @@ String formatRunMetrics(RunMetrics metrics) {
           'queue ${formatMetricSplit(stats.meanQueue)} per send, '
           '${formatMetricDuration(stats.queued)} summed',
         );
+        // The same writes banded by *bytes*, which is the one thing the mean
+        // above cannot say: whether a write's cost is fixed or is the bytes
+        // going over the link. Flat throughput across the bands says the link
+        // is the cost and fewer, larger writes buy nothing; throughput rising
+        // with size says the per-write cost is fixed and they buy the
+        // difference (SPEC §17). The bands sum to `writes` and to the serial
+        // total on the line above, which is the containment check §7 asks of
+        // any new split.
+        final bands = [
+          for (var i = 0; i < writeBandLabels.length; i++)
+            if (stats.bands[i].writes > 0)
+              '${writeBandLabels[i]} '
+                  '${formatMetricSplit(stats.bands[i].meanFlush)}'
+                  '×${formatMetricCount(stats.bands[i].writes)} '
+                  '(${formatMetricBytes(stats.bands[i].meanBytes!)}, '
+                  '${formatMetricRate(stats.bands[i].bytesPerSecond)})',
+        ];
+        out.writeln('  write cost: ${bands.join(' · ')}');
       }
       // What the *peer* waited on its own sink, over the whole session — the
       // part of the peer's cost that falls outside every `far` it reported,
@@ -277,6 +296,15 @@ String formatMetricBytes(int value) {
   }
   return unit == 0 ? '$value B' : '${scaled.toStringAsFixed(1)} ${units[unit]}';
 }
+
+/// Bytes a second in MiB/s, or an em dash when the span was too short to time.
+///
+/// One unit rather than the largest that fits, unlike [formatMetricBytes]:
+/// these values are read against each other across the size bands, and that
+/// comparison is the whole reason the figure exists (SPEC §17).
+String formatMetricRate(double? bytesPerSecond) => bytesPerSecond == null
+    ? '—'
+    : '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MiB/s';
 
 /// A count with thousands separators — the whole point of this report is that
 /// the interesting numbers have five digits, and `14000` and `140000` are not

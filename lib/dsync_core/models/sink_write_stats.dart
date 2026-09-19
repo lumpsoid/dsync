@@ -1,3 +1,5 @@
+import 'package:dsync/dsync_core/models/sink_write_band.dart';
+
 /// What one connection's `FlushedSink` actually did with the frames handed to
 /// it (SPEC §17).
 ///
@@ -15,6 +17,11 @@
 /// one frame and the writes that carried twenty are different populations, and
 /// only their shape distinguishes "the batching never fires" from "it fires
 /// hard on the writes that matter".
+///
+/// **And a cost curve, for the same reason one level down.** [bands] bands the
+/// same writes by *bytes* rather than by sends, because the question [meanFlush]
+/// cannot answer is whether a write's cost is fixed or proportional to what it
+/// carries — see [SinkWriteBand].
 class SinkWriteStats {
   /// `add`-and-`flush` pairs performed.
   final int writes;
@@ -63,6 +70,13 @@ class SinkWriteStats {
   /// with no writes in it *was* measured.
   final List<int> batches;
 
+  /// What writes of each size cost, bucketed by [writeBandLabels].
+  ///
+  /// Same length as [writeBandLabels] and in the same order. The bands sum to
+  /// [writes] and to [flushing], which is the containment check that makes the
+  /// curve readable at all (SPEC §17).
+  final List<SinkWriteBand> bands;
+
   const SinkWriteStats({
     required this.writes,
     required this.sends,
@@ -71,6 +85,7 @@ class SinkWriteStats {
     required this.maxFlush,
     required this.maxBatch,
     required this.batches,
+    required this.bands,
   });
 
   /// Nothing written yet — what a sink reports before its first flush.
@@ -82,6 +97,7 @@ class SinkWriteStats {
     maxFlush: Duration.zero,
     maxBatch: 0,
     batches: List.filled(batchBucketLabels.length, 0),
+    bands: List.filled(writeBandLabels.length, const SinkWriteBand()),
   );
 
   /// Everything the send path cost this side, queueing and flushing both.

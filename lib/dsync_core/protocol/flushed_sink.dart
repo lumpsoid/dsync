@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
 
@@ -74,6 +75,10 @@ class FlushedSink {
   Duration _flushing = Duration.zero;
   Duration _maxFlush = Duration.zero;
   final List<int> _batches = List.filled(batchBucketLabels.length, 0);
+  final List<SinkWriteBand> _bands = List.filled(
+    writeBandLabels.length,
+    const SinkWriteBand(),
+  );
 
   /// [elapsed] is the same injected reading the recorder and the window take,
   /// so a test can assert a queue wait with plain values instead of sleeping.
@@ -95,6 +100,7 @@ class FlushedSink {
     maxFlush: _maxFlush,
     maxBatch: _maxBatch,
     batches: List.unmodifiable(_batches),
+    bands: List.unmodifiable(_bands),
   );
 
   /// Writes [bytes] and returns once they have been flushed.
@@ -152,8 +158,10 @@ class FlushedSink {
     if (batch.length > _maxBatch) _maxBatch = batch.length;
 
     final startedAt = _elapsed();
+    var carried = 0;
     for (final pending in batch) {
       _queueing += startedAt - pending.queuedAt;
+      carried += pending.bytes.length;
     }
     try {
       _sink.add(batch.length == 1 ? batch.single.bytes : _join(batch));
@@ -163,22 +171,27 @@ class FlushedSink {
       // write that failed still held the sink for as long as it took, and a
       // report that dropped those would understate exactly the run that went
       // wrong.
-      _chargeFlush(startedAt);
+      _chargeFlush(startedAt, carried);
       for (final pending in batch) {
         pending.flushed.completeError(error, stack);
       }
       return;
     }
-    _chargeFlush(startedAt);
+    _chargeFlush(startedAt, carried);
     for (final pending in batch) {
       pending.flushed.complete();
     }
   }
 
-  void _chargeFlush(Duration startedAt) {
+  /// Charges one write's flush to the session total and to its size band, so
+  /// the bands sum to [SinkWriteStats.flushing] by construction rather than by
+  /// a reader's arithmetic (SPEC §17).
+  void _chargeFlush(Duration startedAt, int carried) {
     final took = _elapsed() - startedAt;
     _flushing += took;
     if (took > _maxFlush) _maxFlush = took;
+    final band = writeBand(carried);
+    _bands[band] = _bands[band].plus(bytes: carried, flushing: took);
   }
 
   static Uint8List _join(List<_Pending> batch) {
