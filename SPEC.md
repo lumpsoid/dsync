@@ -287,8 +287,12 @@ dsync pair list [--json]          # this host's paired devices
 dsync pair revoke <name>          # forget a device, locally (§4.4)
 dsync pair grant <name> <root>    # authorize a paired device for a replica root here (§4.4)
 dsync pair renew                  # re-issue this host's certificate under its existing key (§4.4)
+dsync archive list [--json]       # the archive logs this host keeps, and what they cost on disk (§8)
+dsync archive clear <profile>     # delete a profile's archive logs; --all for every one of them (§8)
 ```
-`status` is `sync --dry-run` under a friendlier name. `pair` alone, with no subcommand, is a usage error.
+`status` is `sync --dry-run` under a friendlier name. `pair` and `archive` alone, with no subcommand, are usage errors.
+
+`archive` is the maintenance surface over §8.3's state directory, and `clear` is the only destructive thing in it: an archive is per-replica sync history (§2), so deleting one touches no file in either replica and costs the next run over that profile a full rescan and rehash — the work its first run did. Both sides of a profile go together, because an archive kept for side `b` after side `a` is gone records a propagation the other side no longer remembers making. A log in use by a run is refused rather than pulled out from under it: `clear` takes §4.3's replica lock for each log it deletes, which is an OS advisory lock and so keeps another *process* out — a second `dsync` on this host, or the app — while leaving a same-process caller (the Flutter head's own run, §13) unblocked. The lock file itself is left where it is: it is empty by construction, so it is not archive state, and removing it would only race the next acquirer.
 
 `agent` needs exactly one transport, and none is a default: they are not spellings of the same thing — `--stdio` serves one session and ends with its input, `--listen` and `--serve` outlive any number of sessions, and only `--serve` authenticates who connects — so a bare `dsync agent` is a usage error rather than a guess, and naming two is a usage error rather than a silent precedence rule. `--serve` binds every interface on 28771 unless `--port` says otherwise (§4.4), and `--port` without `--serve` is a usage error. `--listen` and `--serve` end on SIGINT or SIGTERM (§11.5's 130 / 143), which is what lets `--listen` unlink its socket on the way out.
 
@@ -408,7 +412,8 @@ Flutter dependency leaking into the core would surface as a cycle.
 
 The `dsync_core` boundary exposes: `Location`, `Agent` (+ `LocalAgent`,
 `RemoteAgent`), `Channel` (+ `AgentListener`, the far end of the socket
-transport), `Scanner`, `Reconciler`, `Plan`, `Applier`, `ArchiveStore`,
+transport), `Scanner`, `Reconciler`, `Plan`, `Applier`, `ArchiveStore`, `ArchiveInventory`
+(what is stored in §8.3's state directory, what it costs, and deleting it),
 `RuleSet`, and a `RunController` that drives a run and emits events the heads
 render.
 
