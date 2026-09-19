@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
@@ -62,6 +63,8 @@ class RunMetricsRecorder {
   final Map<RunPhase, Duration> _phaseStarts = {};
 
   final Map<String, _ReplicaRecord> _replicas = {};
+
+  ReadAheadStats? _readAhead;
 
   /// [elapsed] defaults to a [Stopwatch] started here, which is why a head
   /// constructs this at the top of the run: [RunMetrics.elapsed] is measured
@@ -269,12 +272,18 @@ class RunMetricsRecorder {
   /// whoever wraps the agent, which is the only place that knows.
   void markRemote(String side) => _replicaRecord(side).remote = true;
 
+  /// Takes the apply's read-ahead counters, which arrive once rather than
+  /// accumulating: `ReadAhead` is built per apply and counts its own totals,
+  /// so there is nothing here to add up (SPEC §17).
+  void recordReadAhead(ReadAheadStats stats) => _readAhead = stats;
+
   /// Everything measured so far. Safe to take mid-run: a phase still open is
   /// simply not in [RunMetrics.phases] yet, and an operation still open is
   /// not yet in its side's counts.
   RunMetrics snapshot() => RunMetrics(
     elapsed: _elapsed(),
     phases: Map.unmodifiable(_phases),
+    readAhead: _readAhead,
     replicas: {
       for (final entry in _replicas.entries)
         entry.key: ReplicaMetrics(

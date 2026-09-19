@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:collection';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/apply/commit_pipeline.dart';
+import 'package:dsync/dsync_core/apply/read_ahead.dart';
 import 'package:dsync/dsync_core/models/apply_result.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 
 /// Reports one action's outcome as [Applier.apply] finishes it — `error` is
@@ -36,6 +39,12 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 /// archive to say so. `RunController` is the caller that does this (see its
 /// own doc comments).
 ///
+/// Past those, up to [Applier.concurrency] further copies may be queued with
+/// their *source* read already started (`ReadAhead`). Those touch nothing: no
+/// destination is written, nothing is committed, and a parked run simply holds
+/// their bytes — at most `ReadAhead.defaultBudgetBytes` of them — until it is
+/// collected.
+///
 /// Shaped like the callbacks already in this codebase — `RunController`'s
 /// own `Presenter` typedef, `AgentServer.serve`'s `Agent Function(ReplicaSpec)`
 /// — a plain function type, not a second interface: `Applier` still has
@@ -49,6 +58,8 @@ typedef ApplyProgress = Future<void> Function(
 
 Future<void> _noopApplyProgress(String path, ActionType type, Object? error) =>
     Future.value();
+
+void _noopReadAheadReport(ReadAheadStats stats) {}
 
 /// Executes a [Plan] against the two replicas' [Agent]s (SPEC §7).
 ///
@@ -67,12 +78,17 @@ Future<void> _noopApplyProgress(String path, ActionType type, Object? error) =>
 /// order between them. A plan holds one action per path, so no two workers
 /// can be on the same path at all.
 ///
-/// **Two stages, not one loop** (task 9d2158). A worker does an action's file
-/// work and hands the records the two archives are owed to [CommitPipeline],
-/// which sends them in batches while the workers carry on. The file work and
-/// the commit are different work against different resources — a phone's
-/// storage and a round trip carrying one line of JSON — and a worker that did
-/// both in turn spent a third of the apply waiting on the second.
+/// **Three stages, not one loop** (task 9d2158), because there are three
+/// resources and they have three different service times. [ReadAhead] reads
+/// the source ahead of the writers; [concurrency] workers do the destination's
+/// file work; [CommitPipeline] sends the records the two archives are owed,
+/// in batches, while the workers carry on. Each stage is bounded by what
+/// actually constrains it — bytes held on the source, actions in flight on the
+/// destination, records per exchange on the wire — where one `concurrency`
+/// counter used to govern all three, and each of the two stages that were
+/// split out was measured as a term a worker spent *waiting* rather than
+/// working: a third of the apply on the commit, and 53–62% of the serialized
+/// budget on the source's read.
 ///
 /// **Why overlap at all.** A single action against a remote replica is a
 /// handful of round trips with the link idle between them, and on a phone an
@@ -133,10 +149,23 @@ class Applier {
   /// reasoning about one path's commits wants to see.
   final int commitBatchSize;
 
+  /// How many source reads may be open beyond [concurrency] — see
+  /// [ReadAhead.maxStreams], which is `concurrency + readAheadLead`.
+  ///
+  /// It is not what sets how far ahead the pump runs: a read-ahead slot is
+  /// released when its writer takes the last chunk rather than when the write
+  /// finishes, so slots turn over faster than actions do and what paces the
+  /// prefetch is the queue between the pump and the workers. This is the
+  /// headroom that keeps the pump from waiting on a slot while writes are still
+  /// taking bytes, and the bound a *stalled* read runs into.
+  final int readAheadLead;
+
   Applier({
     this.concurrency = defaultConcurrency,
     this.commitBatchSize = CommitPipeline.defaultBatchSize,
-  }) : assert(concurrency >= 1, 'An applier with no workers applies nothing');
+    this.readAheadLead = ReadAhead.defaultLead,
+  }) : assert(concurrency >= 1, 'An applier with no workers applies nothing'),
+       assert(readAheadLead >= 0, 'A negative lead is fewer reads than writes');
 
   Future<ApplyResult> apply(
     Plan plan,
@@ -145,6 +174,7 @@ class Applier {
     Agent agentA,
     Agent agentB, {
     ApplyProgress onAction = _noopApplyProgress,
+    ReadAheadReport onReadAhead = _noopReadAheadReport,
   }) async {
     final a = {for (final e in onA) e.path: e};
     final b = {for (final e in onB) e.path: e};
@@ -160,7 +190,14 @@ class Applier {
     // `Future.wait` per batch: a batch is only as fast as its slowest action,
     // and a plan of 14k small files with one large one in it would spend most
     // of its time with every worker but one idle.
-    final queue = Queue<PlanAction>.of(plan.actions);
+    //
+    // Filled by the pump below rather than by the workers themselves, so that
+    // a copy arrives at a worker with its source read already under way. It is
+    // bounded, which is what makes the pump run ahead of the workers by a
+    // fixed distance instead of walking the whole plan at once.
+    final queue = _Handoff(capacity: concurrency);
+
+    final readAhead = ReadAhead(maxStreams: concurrency + readAheadLead);
 
     // Awaited by the commit stage as it reports each action, so a caller that
     // never resolves it parks the run: the batch being reported never
@@ -184,10 +221,50 @@ class Applier {
       batchSize: commitBatchSize,
     );
 
+    // Walks the plan in order — so SPEC §7.1's "started in plan order" still
+    // holds — starting each copy's source read before handing the action to a
+    // worker. It blocks in two places, and between them is the whole of what
+    // bounds the read-ahead: on a read-ahead slot, and on room in the queue.
+    Future<void> pump() async {
+      for (final action in plan.actions) {
+        final source = switch (action.type) {
+          ActionType.copyAtoB => (agent: agentA, entry: a[action.path]),
+          ActionType.copyBtoA => (agent: agentB, entry: b[action.path]),
+          _ => null,
+        };
+        // A copy whose source entry has no size cannot be reserved for, so it
+        // takes the unbuffered path and fails in the worker exactly where it
+        // failed before — the pump is not a place an action can fail, because
+        // a throw here would end the apply rather than the action.
+        final prefetch = switch (source) {
+          (agent: final agent, entry: ScanEntry(size: final size?)) =>
+            await readAhead.begin(action.path, source: agent, size: size),
+          _ => null,
+        };
+        if (!await queue.put(_Ready(action, prefetch))) {
+          // Every worker has already stopped, so nobody will ever drain this
+          // one. Releasing it is what closes the source read.
+          prefetch?.discard();
+          return;
+        }
+      }
+      queue.close();
+    }
+
     Future<void> worker() async {
-      while (queue.isNotEmpty) {
-        final action = queue.removeFirst();
-        final outcome = await _applyOne(action, a, b, agentA, agentB, emptied);
+      while (true) {
+        final ready = await queue.take();
+        if (ready == null) return;
+        final action = ready.action;
+        final outcome = await _applyOne(
+          action,
+          a,
+          b,
+          agentA,
+          agentB,
+          emptied,
+          ready.prefetch,
+        );
         // Both outcomes go to the same stage, so they are reported in the
         // order the actions finished rather than in whichever order two
         // unrelated `await`s happened to resume.
@@ -200,7 +277,20 @@ class Applier {
       }
     }
 
-    await Future.wait([for (var i = 0; i < concurrency; i++) worker()]);
+    // The workers release the pump if they all stop without draining the
+    // queue, which only an `onAction` that *throws* can cause — the documented
+    // way to stop a run is to never resolve it (see [ApplyProgress]). Without
+    // this the pump would wait forever for room nobody is going to make.
+    Future<void> workers() async {
+      try {
+        await Future.wait([for (var i = 0; i < concurrency; i++) worker()]);
+      } finally {
+        queue.abandon();
+      }
+    }
+
+    await Future.wait([pump(), workers()]);
+    onReadAhead(readAhead.stats);
     // Before the sweep, not after: an action still in a batch is an action
     // still to be reported, and `removeEmptyDirs` is a barrier that would
     // otherwise be waiting on the same connections the last commits need.
@@ -224,6 +314,7 @@ class Applier {
     Agent agentA,
     Agent agentB,
     List<_Emptied> emptied,
+    Prefetch? prefetch,
   ) async {
     try {
       switch (action.type) {
@@ -233,6 +324,7 @@ class Applier {
             source: agentA,
             dest: agentB,
             sourceEntries: a,
+            prefetch: prefetch,
           );
           return _OwedCommits(onA: onSource, onB: onDest);
         case ActionType.copyBtoA:
@@ -241,6 +333,7 @@ class Applier {
             source: agentB,
             dest: agentA,
             sourceEntries: b,
+            prefetch: prefetch,
           );
           return _OwedCommits(onA: onDest, onB: onSource);
         case ActionType.deleteOnA:
@@ -251,12 +344,26 @@ class Applier {
           return _commitOnly(action.path, a[action.path], b[action.path]);
       }
     } catch (error) {
+      // A `writeFile` that throws part-way through the stream it was given may
+      // simply drop its subscription, which would leave this prefetch's slot
+      // and its source read held for the rest of the run. Discarding is a
+      // no-op on one that finished normally.
+      prefetch?.discard();
       return _ActionFailed(error);
     }
   }
 
   /// Copy in one direction (SPEC §7.2, §7.3). [source] streams the file;
   /// [dest] writes it and reports the metadata actually observed afterward.
+  ///
+  /// **[prefetch] is that same source stream, already running** (task 9d2158
+  /// §10.3). Without it this was `dest.writeFile(path, source.readFile(path))`,
+  /// and because the stream is lazy the read did not begin until the write
+  /// subscribed: the destination waited out the whole read before it had a byte
+  /// to write. `source` is still the agent the bytes come from — it is simply
+  /// no longer this method that starts asking for them. A `null` prefetch is
+  /// the old path, taken by a copy whose source entry had no size for
+  /// [ReadAhead] to reserve against.
   ///
   /// Returns what each side is owed rather than committing it: [dest] the
   /// post-write metadata (the content didn't change, so [sourceEntry]'s
@@ -268,11 +375,12 @@ class Applier {
     required Agent source,
     required Agent dest,
     required Map<String, ScanEntry> sourceEntries,
+    required Prefetch? prefetch,
   }) async {
     final sourceEntry = sourceEntries[path]!;
     final metadata = await dest.writeFile(
       path,
-      source.readFile(path),
+      prefetch?.bytes ?? source.readFile(path),
       mtime: sourceEntry.mtime!,
       mode: sourceEntry.mode!,
     );
@@ -438,6 +546,92 @@ class TransferSizeMismatchException implements Exception {
   String toString() =>
       'Incomplete transfer of "$path": expected $expected bytes, '
       'destination has $actual';
+}
+
+/// One action, with the source read for it already under way if it is a copy.
+///
+/// The pump's unit of work and the workers': what the read-ahead stage hands
+/// the write stage.
+class _Ready {
+  final PlanAction action;
+  final Prefetch? prefetch;
+
+  const _Ready(this.action, this.prefetch);
+}
+
+/// A bounded FIFO between the pump and the workers.
+///
+/// **Bounded, because that is what makes the read-ahead a read-*ahead*.** The
+/// pump stops [capacity] items in front of the workers, so the reads it has
+/// started are the next ones to be written and not the whole plan's. Unbounded
+/// it would walk 14,471 actions at once and the read-ahead's own slot bound
+/// would be the only thing holding it, which is the same bound expressed twice
+/// and in the wrong place.
+///
+/// Plain completers rather than a `StreamController`: several workers take from
+/// this, which a single-subscription stream cannot serve, and a broadcast one
+/// would hand every worker the same action.
+class _Handoff {
+  final int capacity;
+
+  final Queue<_Ready> _items = Queue();
+  final Queue<Completer<void>> _takers = Queue();
+  final Queue<Completer<void>> _putters = Queue();
+
+  /// Set once the pump has walked the whole plan: what turns an empty queue
+  /// from "wait" into "there will be no more".
+  bool _closed = false;
+
+  /// Set when the workers have all stopped without draining. Distinct from
+  /// [_closed] — that one ends the *workers*, this one ends the *pump*.
+  bool _abandoned = false;
+
+  _Handoff({required this.capacity})
+    : assert(capacity >= 1, 'A handoff that holds nothing hands nothing over');
+
+  /// Adds [item], returning once there is room for it — `false` if there is
+  /// nobody left to take it, in which case it was not added and whatever it
+  /// holds is the caller's to release.
+  Future<bool> put(_Ready item) async {
+    while (_items.length >= capacity) {
+      if (_abandoned) return false;
+      final room = Completer<void>();
+      _putters.add(room);
+      await room.future;
+    }
+    if (_abandoned) return false;
+    _items.add(item);
+    if (_takers.isNotEmpty) _takers.removeFirst().complete();
+    return true;
+  }
+
+  /// The next action to apply, or `null` once [close] has been called and
+  /// everything put here has been taken.
+  Future<_Ready?> take() async {
+    while (_items.isEmpty) {
+      if (_closed) return null;
+      final work = Completer<void>();
+      _takers.add(work);
+      await work.future;
+    }
+    final item = _items.removeFirst();
+    if (_putters.isNotEmpty) _putters.removeFirst().complete();
+    return item;
+  }
+
+  void close() {
+    _closed = true;
+    while (_takers.isNotEmpty) {
+      _takers.removeFirst().complete();
+    }
+  }
+
+  void abandon() {
+    _abandoned = true;
+    while (_putters.isNotEmpty) {
+      _putters.removeFirst().complete();
+    }
+  }
 }
 
 /// What one action left behind for [Applier.apply] to do next: the records

@@ -267,6 +267,7 @@ class RunController {
         pending.add((path, type, error, ack));
         return ack.future;
       },
+      onReadAhead: metrics.recordReadAhead,
     );
     // Whatever apply() finishes with — normal return or, for a bug that
     // escapes Applier's own per-action try/catch, an error — `pending` must

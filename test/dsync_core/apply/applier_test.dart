@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
@@ -826,6 +827,169 @@ void main() {
     }, testOn: 'linux');
   });
 
+  group('the source read runs ahead of the write (task 9d2158 \u00a710.3)', () {
+    /// One copy per path, with the source entries the applier looks up by path.
+    (Plan, List<ScanEntry>) planFor(List<String> paths) => (
+      Plan(
+        actions: [
+          for (final path in paths)
+            PlanAction(path: path, type: ActionType.copyAtoB),
+        ],
+        conflicts: const [],
+      ),
+      [
+        for (final path in paths)
+          ScanEntry(
+            path: path,
+            reason: ScanReason.created,
+            size: 1,
+            mtime: DateTime.utc(2022, 1, 1).microsecondsSinceEpoch,
+            mode: 420,
+            hash: 'h-$path',
+          ),
+      ],
+    );
+
+    test(
+      'a later copy is already being read while an earlier write is still '
+      'going \u2014 which is what the destination used to wait for',
+      () async {
+        final source = _SlowSourceAgent({
+          'first.txt': [1],
+          'second.txt': [2],
+        });
+        final dest = _GatedWriteAgent();
+        final (plan, entries) = planFor(['first.txt', 'second.txt']);
+
+        unawaited(
+          Applier(
+            concurrency: 1,
+            commitBatchSize: 1,
+            readAheadLead: 1,
+          ).apply(plan, entries, [], source, dest),
+        );
+        await pumpEventQueue();
+
+        expect(dest.writing, ['first.txt'], reason: 'one worker, one write');
+        expect(
+          source.reads,
+          ['first.txt', 'second.txt'],
+          reason: 'the second read did not wait for the first write',
+        );
+
+        dest.release('first.txt');
+        await pumpEventQueue();
+        dest.release('second.txt');
+        await pumpEventQueue();
+        expect(dest.written, ['first.txt', 'second.txt']);
+      },
+    );
+
+    // A stalled read is what makes the bound visible: a slot is held from the
+    // moment a read starts until the writer has taken its last chunk, so a read
+    // that never delivers holds its slot and the next one can only start if
+    // there is another.
+    test('the lead is what lets a second read start behind a stalled one', () async {
+      final source = _SlowSourceAgent({
+        'second.txt': [2],
+      }, stall: {'first.txt'});
+      final (plan, entries) = planFor(['first.txt', 'second.txt']);
+
+      unawaited(
+        Applier(
+          concurrency: 1,
+          commitBatchSize: 1,
+          readAheadLead: 1,
+        ).apply(plan, entries, [], source, _GatedWriteAgent()),
+      );
+      await pumpEventQueue();
+
+      expect(source.reads, ['first.txt', 'second.txt']);
+    });
+
+    test('and without it the stalled read holds the only slot', () async {
+      final source = _SlowSourceAgent({
+        'second.txt': [2],
+      }, stall: {'first.txt'});
+      final (plan, entries) = planFor(['first.txt', 'second.txt']);
+
+      unawaited(
+        Applier(
+          concurrency: 1,
+          commitBatchSize: 1,
+          readAheadLead: 0,
+        ).apply(plan, entries, [], source, _GatedWriteAgent()),
+      );
+      await pumpEventQueue();
+
+      expect(source.reads, ['first.txt']);
+    });
+
+    test(
+      'a write that fails part-way gives its read-ahead slot back, so the '
+      'apply finishes rather than stalling',
+      () async {
+        final source = _SlowSourceAgent({
+          for (var i = 0; i < 6; i++) 'f$i.txt': [i],
+        });
+        final dest = _GatedWriteAgent(
+          failOn: {'f0.txt', 'f1.txt', 'f2.txt'},
+          gated: false,
+        );
+        final (plan, entries) = planFor([
+          for (var i = 0; i < 6; i++) 'f$i.txt',
+        ]);
+
+        // One slot in total: every failed copy has to release it or the next
+        // copy is never admitted and `apply` never returns.
+        final result = await Applier(
+          concurrency: 1,
+          commitBatchSize: 1,
+          readAheadLead: 0,
+        ).apply(plan, entries, [], source, dest);
+
+        expect(result.failed.map((f) => f.path), [
+          'f0.txt',
+          'f1.txt',
+          'f2.txt',
+        ]);
+        expect(result.applied.map((a) => a.path), [
+          'f3.txt',
+          'f4.txt',
+          'f5.txt',
+        ]);
+      },
+    );
+
+    test('the run reports what the read-ahead did', () async {
+      final source = _SlowSourceAgent({'first.txt': [1], 'second.txt': [2]});
+      final dest = _GatedWriteAgent();
+      final (plan, entries) = planFor(['first.txt', 'second.txt']);
+
+      ReadAheadStats? reported;
+      final applying = Applier(concurrency: 1, commitBatchSize: 1).apply(
+        plan,
+        entries,
+        [],
+        source,
+        dest,
+        onReadAhead: (stats) => reported = stats,
+      );
+      await pumpEventQueue();
+      dest.release('first.txt');
+      dest.release('second.txt');
+      await applying;
+
+      expect(reported?.prefetched, 2);
+      expect(
+        reported?.completeOnHandover,
+        2,
+        reason: 'both files are one chunk, read whole before their write',
+      );
+      expect(reported?.peakBufferedBytes, greaterThan(0));
+    });
+  });
+
   group('onAction callback (task e9f31c)', () {
     test('fires once per action, in plan order for one worker, including for a failed action (SPEC §7.6)', () async {
       await File('${replicaADir.path}/one.txt').writeAsString('one');
@@ -1205,4 +1369,85 @@ class _RefusingPruneAgent extends _RecordingCallsAgent {
   Future<void> removeEmptyDirs(String path) async {
     throw Exception('cannot prune $path');
   }
+}
+
+/// A source [Agent] that records the order its files were asked for, and hands
+/// each back as one chunk on a later microtask.
+///
+/// The recording is the assertion: what the read-ahead changes is *when* a read
+/// starts, and nothing about the bytes.
+class _SlowSourceAgent implements Agent {
+  final Map<String, List<int>> files;
+
+  /// Paths whose read never delivers anything, so that the slot it holds is
+  /// held for as long as the test cares to look.
+  final Set<String> stall;
+
+  final List<String> reads = [];
+
+  _SlowSourceAgent(this.files, {this.stall = const {}});
+
+  @override
+  Stream<List<int>> readFile(String path) {
+    reads.add(path);
+    if (stall.contains(path)) return StreamController<List<int>>().stream;
+    return Stream.fromFuture(Future.microtask(() => files[path]!));
+  }
+
+  @override
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    '${invocation.memberName} is not part of this test',
+  );
+}
+
+/// A destination [Agent] whose `writeFile` consumes its stream and then waits
+/// until the test lets it finish — which is how a test can look at what the
+/// stage in front of it has got up to meanwhile.
+class _GatedWriteAgent implements Agent {
+  final Set<String> failOn;
+
+  /// Whether a write waits for [release]. `false` is an ordinary destination,
+  /// for a test about what the apply *finishes* rather than about what it is
+  /// doing part-way.
+  final bool gated;
+
+  final List<String> writing = [];
+  final List<String> written = [];
+  final Map<String, Completer<void>> _gates = {};
+
+  _GatedWriteAgent({this.failOn = const {}, this.gated = true});
+
+  /// Lets the write of [path] finish, failing it if [failOn] says so.
+  void release(String path) =>
+      (_gates[path] ??= Completer<void>()).complete();
+
+  @override
+  Future<FileMetadata> writeFile(
+    String path,
+    Stream<List<int>> data, {
+    required int mtime,
+    required int mode,
+  }) async {
+    writing.add(path);
+    final bytes = <int>[];
+    await for (final chunk in data) {
+      bytes.addAll(chunk);
+    }
+    if (failOn.contains(path)) throw Exception('boom: $path');
+    if (gated) await (_gates[path] ??= Completer<void>()).future;
+    writing.remove(path);
+    written.add(path);
+    return FileMetadata(size: bytes.length, mtime: mtime, mode: mode);
+  }
+
+  @override
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    '${invocation.memberName} is not part of this test',
+  );
 }

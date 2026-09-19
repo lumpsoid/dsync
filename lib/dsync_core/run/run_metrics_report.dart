@@ -36,6 +36,21 @@ String formatRunMetrics(RunMetrics metrics) {
     );
   }
 
+  // What the source read-ahead did, printed with the phases rather than under
+  // a replica because it belongs to neither side (SPEC §17). Three counters,
+  // because a read-ahead that did not pay off has three explanations and
+  // `starved` distinguishes none of them: it never ran, it ran too late, or its
+  // byte budget was what stopped it running further ahead.
+  if (metrics.readAhead case final prefetch?) {
+    out.writeln();
+    out.writeln(
+      'read-ahead: ${formatMetricCount(prefetch.prefetched)} prefetched, '
+      '${formatMetricCount(prefetch.completeOnHandover)} read whole before '
+      'the write, ${formatMetricBytes(prefetch.peakBufferedBytes)} peak '
+      'buffered',
+    );
+  }
+
   for (final replica in metrics.replicas.values) {
     out.writeln();
     out.writeln(

@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 
@@ -567,10 +568,20 @@ class RunMetrics {
   /// run whose agents were never wrapped, one entry for each side otherwise.
   final Map<String, ReplicaMetrics> replicas;
 
+  /// What the apply's source read-ahead did (SPEC §7.2, §17), or `null` on a
+  /// run that has not finished applying — absent rather than zeroed, for the
+  /// reason a skipped phase is absent: "no prefetch happened" is a finding and
+  /// must not be spelled the same way as "the apply has not reported yet".
+  ///
+  /// One figure for the run rather than one per replica: the read-ahead sits
+  /// between the two agents and belongs to neither.
+  final ReadAheadStats? readAhead;
+
   const RunMetrics({
     required this.elapsed,
     required this.phases,
     required this.replicas,
+    this.readAhead,
   });
 
   /// Both sides' operations summed — the run's total request count.
