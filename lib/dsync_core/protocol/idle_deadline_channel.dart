@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -125,7 +126,7 @@ class IdleDeadlineChannel implements Channel {
   /// The wrapped channel's, unchanged: heartbeats go through [send] like any
   /// other frame and coalesce with them, so there is nothing to add here.
   @override
-  int? get writes => _inner.writes;
+  SinkWriteStats? get writeStats => _inner.writeStats;
 
   @override
   Future<void> close() async {

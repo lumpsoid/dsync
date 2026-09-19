@@ -7,6 +7,7 @@ import 'package:dsync/app/features/run/replica_connector.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
@@ -462,6 +463,37 @@ void main() {
       await resumed;
 
       expect(controller.state.results, hasLength(1));
+    });
+
+    test('the resumed run is measured from nothing, not on top of the '
+        'paused one', () async {
+      // Every figure a recorder holds accumulates and `elapsed` runs from its
+      // construction, so a shared one reports two attempts as one run — a
+      // doubled `scan`, an inflated `apply` — and says nothing about it.
+      // These are the numbers this project reads its phone results off.
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      final started = make(served(desktopAgent)).start(request(dryRun: false));
+      await untilAwaiting();
+      await controller.pause();
+      await started;
+
+      final paused = controller.metricsSnapshot();
+      expect(paused.phases[RunPhase.scan], isNotNull);
+
+      final resumed = controller.resume(request(dryRun: false));
+      await untilAwaiting();
+      controller.acceptAll();
+      await resumed;
+
+      final after = controller.metricsSnapshot();
+      expect(after.phases[RunPhase.connect], isNotNull);
+      // One attempt's worth of each side's operations, not two.
+      expect(
+        after.replicas['a']!.ops[AgentOp.hello]!.count,
+        1,
+        reason: 'the first attempt said hello too',
+      );
+      expect(after.elapsed, lessThan(paused.elapsed + after.elapsed));
     });
 
     test('a run that is over is neither paused nor resumed', () async {

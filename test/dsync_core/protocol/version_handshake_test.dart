@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -172,7 +173,7 @@ class _FakeChannel implements Channel {
 
   /// No sink, so no write to count (`Channel.writes`).
   @override
-  int? get writes => null;
+  SinkWriteStats? get writeStats => null;
 
   @override
   Future<void> close() async {

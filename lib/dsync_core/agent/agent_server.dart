@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -168,10 +169,25 @@ class AgentServer {
         AgentSuccess(replicaInfoToJson(info)),
         helloFrame.requestId,
         helloSpan,
+        // The prologue runs alone by construction (SPEC §4.2), so this is not
+        // a sample of anything — it is the one in-flight figure this end can
+        // state rather than measure.
+        () => 1,
       );
 
       onRequest = (frame, body) {
-        final handled = _dispatch(channel, router, agent, frame, body);
+        final handled = _dispatch(
+          channel,
+          router,
+          agent,
+          frame,
+          body,
+          // Read at reply time rather than captured now: what makes a peer's
+          // span residency rather than service time is what was running
+          // *alongside* it, and that is only known once it is over. By then
+          // this dispatch is itself in the set, so the count includes it.
+          () => inFlight.length,
+        );
         inFlight.add(handled);
         unawaited(handled.whenComplete(() => inFlight.remove(handled)));
       };
@@ -209,6 +225,7 @@ class AgentServer {
     Agent agent,
     Frame frame,
     Stream<Frame> body,
+    int Function() inFlight,
   ) async {
     final id = frame.requestId;
     // Started before the request is even decoded, because what this measures
@@ -217,7 +234,11 @@ class AgentServer {
     //
     // Wall time on this side, so on a busy agent it includes whatever else
     // this isolate's event loop was doing — the same sense in which the
-    // initiator's own per-operation mean is wall time.
+    // initiator's own per-operation mean is wall time. That makes it
+    // *residency*, not service time, which is why the reply carries the
+    // in-flight count beside it (SPEC §17): without that, a span that rose
+    // because this end got busier and one that rose because its disk got
+    // slower are the same number, and they have opposite fixes.
     final farSide = Stopwatch()..start();
     var bodyComplete = true;
     try {
@@ -226,10 +247,10 @@ class AgentServer {
         switch (request.op) {
           case 'lock':
             await agent.lock();
-            await _reply(channel, const AgentSuccess(), id, farSide);
+            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'unlock':
             await agent.unlock();
-            await _reply(channel, const AgentSuccess(), id, farSide);
+            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'scan':
             final result = await agent.scan(
               ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
@@ -268,22 +289,23 @@ class AgentServer {
               AgentSuccess({'metadata': fileMetadataToJson(metadata)}),
               id,
               farSide,
+              inFlight,
             );
           case 'delete':
             await agent.delete(request.params['path'] as String);
-            await _reply(channel, const AgentSuccess(), id, farSide);
+            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'removeEmptyDirs':
             await agent.removeEmptyDirs(request.params['path'] as String);
-            await _reply(channel, const AgentSuccess(), id, farSide);
+            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'archiveCommit':
             await agent.archiveCommit([
               for (final commit in request.params['commits'] as List)
                 archiveCommitFromJson(commit as Map<String, dynamic>),
             ]);
-            await _reply(channel, const AgentSuccess(), id, farSide);
+            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'compact':
             await agent.compact();
-            await _reply(channel, const AgentSuccess(), id, farSide);
+            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           default:
             throw FormatException('Unknown agent operation: ${request.op}');
         }
@@ -306,8 +328,8 @@ class AgentServer {
   }
 
   /// Sends [result] as the reply to [requestId], stamped — when [farSide] is
-  /// given and the operation succeeded — with how long this side took (SPEC
-  /// §17).
+  /// given and the operation succeeded — with what this side says the
+  /// exchange cost it (SPEC §17).
   ///
   /// **Success only, and only where the reply is a control frame.** A failure
   /// carries an error the initiator turns into an exception, so there is no
@@ -315,14 +337,30 @@ class AgentServer {
   /// `readFile` reply is the byte stream itself, so neither has a field to
   /// put this in. All three read as absent on the other end, which is the
   /// honest answer and is not the same as zero.
+  ///
+  /// **What the span cannot contain, stated because someone will subtract
+  /// it.** It stops here, one line before the reply is handed to the channel,
+  /// so the wait that reply serves behind this side's other senders falls
+  /// outside it — and lands in whatever the initiator calls "the link". A
+  /// frame cannot carry the cost of its own flush. What it can carry is this
+  /// side's *cumulative* flush wait up to now ([FarSideReport.sendWait]),
+  /// which is the figure that says whether an apparent link latency is
+  /// really this end's send queue.
   Future<void> _reply(
     Channel channel,
     AgentResult result,
     int requestId, [
     Stopwatch? farSide,
+    int Function()? inFlight,
   ]) {
     final stamped = farSide != null && result is AgentSuccess
-        ? result.withFarSide(farSide.elapsed)
+        ? result.withFarSide(
+            FarSideReport(
+              span: farSide.elapsed,
+              inFlight: inFlight?.call(),
+              sendWait: channel.writeStats?.waited,
+            ),
+          )
         : result;
     return channel.send(FrameCodec().encode(stamped.toFrame(requestId)));
   }

@@ -1,17 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:dsync/dsync_core/models/run_metrics.dart';
-import 'package:dsync/dsync_core/run/elapsed.dart';
-
-/// Told how long a call of [op] waited before the window let it start (SPEC
-/// §17) — the seam `RemoteAgent`'s owner uses to feed `RunMetricsRecorder`.
-///
-/// A callback rather than the recorder itself, so the window keeps knowing
-/// nothing about reporting: it hands out a number it already has, and
-/// whoever built it decides whether anything is listening.
-typedef WindowWaitSink = void Function(AgentOp op, Duration wait);
-
 /// Decides how many of a connection's operations may be outstanding at once,
 /// and which of them are allowed to overlap at all (SPEC §4.2, task 0f7dfc).
 ///
@@ -54,17 +43,6 @@ class RequestWindow {
   /// The bound. At most this many [run] bodies are in flight at once.
   final int size;
 
-  /// Where an admission delay is reported, if anyone asked (SPEC §17).
-  ///
-  /// The window is the only thing that can measure this, and measuring it is
-  /// what stops a per-operation mean from being read as a round-trip time: an
-  /// operation held here has not reached the wire, so the wait is *this*
-  /// class's cost, not the link's. Null in the tests and call sites that only
-  /// care what the window admits.
-  final WindowWaitSink? onWait;
-
-  final Elapsed _elapsed;
-
   /// Operations admitted to the window and not yet finished.
   int _admitted = 0;
 
@@ -83,9 +61,8 @@ class RequestWindow {
   /// operation is *over*, not how it ended, which is its own caller's.
   final Map<String, Future<void>> _pathTail = {};
 
-  RequestWindow({this.size = defaultSize, this.onWait, Elapsed? elapsed})
-    : _elapsed = elapsed ?? stopwatchElapsed(),
-      assert(size >= 1, 'A window of zero admits nothing');
+  RequestWindow({this.size = defaultSize})
+    : assert(size >= 1, 'A window of zero admits nothing');
 
   /// Runs [body] as one of at most [size] concurrent operations.
   ///
@@ -95,8 +72,8 @@ class RequestWindow {
   /// it must not become "whichever the window admitted first". Operations on
   /// *different* paths are free to overlap in any order, which is where the
   /// win comes from.
-  Future<T> run<T>(String path, AgentOp op, Future<T> Function() body) =>
-      runAll([path], op, body);
+  Future<T> run<T>(String path, Future<T> Function() body) =>
+      runAll([path], body);
 
   /// [run] for an operation that is about several paths at once —
   /// `archiveCommit`, which carries one record per path in its batch (SPEC
@@ -108,12 +85,8 @@ class RequestWindow {
   /// others. In an apply that costs nothing: a path's commit is only ever
   /// handed over once its own `writeFile` or `delete` has returned, so the
   /// predecessors are already gone by the time this asks.
-  Future<T> runAll<T>(
-    List<String> paths,
-    AgentOp op,
-    Future<T> Function() body,
-  ) async {
-    final release = await _enter(paths, op);
+  Future<T> runAll<T>(List<String> paths, Future<T> Function() body) async {
+    final release = await _enter(paths);
     try {
       return await body();
     } finally {
@@ -124,12 +97,8 @@ class RequestWindow {
   /// [run] for an operation whose cost is the whole stream, not the call
   /// that starts it — `readFile`, which holds its slot until the last byte
   /// or until its consumer gives up.
-  Stream<T> runStream<T>(
-    String path,
-    AgentOp op,
-    Stream<T> Function() body,
-  ) async* {
-    final release = await _enter([path], op);
+  Stream<T> runStream<T>(String path, Stream<T> Function() body) async* {
+    final release = await _enter([path]);
     try {
       yield* body();
     } finally {
@@ -153,8 +122,7 @@ class RequestWindow {
   /// an apply, and it no longer does: `Applier` sweeps emptied ancestors
   /// once, after every action has finished (SPEC §7.5), so the drain it asks
   /// for finds an empty window.
-  Future<T> runExclusive<T>(AgentOp op, Future<T> Function() body) async {
-    final queuedAt = _elapsed();
+  Future<T> runExclusive<T>(Future<T> Function() body) async {
     // Waited on before queueing, not after: an operation still held behind
     // an earlier one on its own path has not reached the queue yet, so the
     // bound below would not see it, and it would run *after* a barrier that
@@ -168,9 +136,6 @@ class RequestWindow {
     _queue.add(waiter);
     _pump();
     await waiter.admitted.future;
-    // Measured from entry, so the drain above is part of the wait: a barrier
-    // that sat behind a full window waited, whatever it was waiting on.
-    onWait?.call(op, _elapsed() - queuedAt);
     try {
       return await body();
     } finally {
@@ -182,8 +147,7 @@ class RequestWindow {
   /// Waits for a slot behind everything that must precede this operation,
   /// and hands back the callback that gives the slot up. Callers release in
   /// a `finally`, or the window never drains.
-  Future<void Function()> _enter(List<String> paths, AgentOp op) async {
-    final queuedAt = _elapsed();
+  Future<void Function()> _enter(List<String> paths) async {
     final predecessors = [for (final path in paths) ?_pathTail[path]];
     final finished = Completer<void>();
     // Recorded before the first `await`, so two calls for one path chain in
@@ -217,11 +181,6 @@ class RequestWindow {
       _queue.add(waiter);
       _pump();
       await waiter.admitted.future;
-      // Both halves of the wait, and on purpose: an operation held behind
-      // its own path's predecessor was no more on the wire than one held
-      // behind the bound, and a report that counted only the second would
-      // charge the first to the link.
-      onWait?.call(op, _elapsed() - queuedAt);
       return release;
     } catch (_) {
       // Never admitted, so there is no slot to give back — but the path

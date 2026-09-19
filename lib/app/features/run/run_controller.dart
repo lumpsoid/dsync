@@ -7,10 +7,9 @@ import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
-import 'package:dsync/dsync_core/agent/metered_agent.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
-import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
+import 'package:dsync/dsync_core/run/run_instruments.dart';
 
 import '../../app_controller.dart';
 import '../../run_request.dart';
@@ -144,26 +143,38 @@ class SyncRunController {
   /// The view state this controller renders into; owned here, disposed here.
   final SyncRunViewState state = SyncRunViewState();
 
-  /// This run's measurements (SPEC §17), read by the Timings sheet.
+  /// This attempt's measurements (SPEC §17), read by the Timings sheet.
   ///
-  /// Owned here, one per controller, for the same reason [state] is: the
-  /// page takes `runScope.create()` and disposes what it got, so a run's
-  /// numbers cannot leak into the next run's. Created with the controller
-  /// rather than in [_begin], so [RunMetrics.elapsed] covers the dial and
-  /// the TLS handshake — on a phone those are a real part of the wait, and
-  /// a clock started after them would report a run faster than the one the
-  /// user sat through.
+  /// **One per attempt, replaced at the top of [_begin]** — not one per
+  /// controller. [resume] runs the same request again after a pause or a
+  /// failure, through this same instance, and every figure a recorder holds
+  /// *accumulates*: phase spans add, operation counts add, and
+  /// [RunMetrics.elapsed] runs from construction. A recorder shared across
+  /// attempts therefore reports two runs as one, with a doubled `scan` and an
+  /// inflated `apply`, and says nothing about having done so — which for the
+  /// one report this project reads its phone numbers off is the worst
+  /// available failure.
+  ///
+  /// Built at the top of the attempt rather than after the dial, so
+  /// [RunMetrics.elapsed] still covers the dial and the TLS handshake: on a
+  /// phone those are a real part of the wait, and a clock started after them
+  /// would report a run faster than the one the user sat through.
+  ///
+  /// Null before the first attempt, which is why [metricsSnapshot] has an
+  /// empty answer to give.
+  RunInstruments? _instruments;
+
+  /// Everything measured so far in the current attempt. Safe to read mid-run
+  /// — the Timings sheet does exactly that, so a run that is taking too long
+  /// can be inspected while it is still taking too long, which is when
+  /// someone actually wants to look.
   ///
   /// Exposed as a snapshot rather than as the recorder, so nothing outside
   /// can write into it and a widget cannot accidentally hold a view that
   /// changes under it mid-build.
-  final RunMetricsRecorder _metrics = RunMetricsRecorder();
-
-  /// Everything measured so far. Safe to read mid-run — the Timings sheet
-  /// does exactly that, so a run that is taking too long can be inspected
-  /// while it is still taking too long, which is when someone actually
-  /// wants to look.
-  RunMetrics metricsSnapshot() => _metrics.snapshot();
+  RunMetrics metricsSnapshot() =>
+      _instruments?.snapshot() ??
+      const RunMetrics(elapsed: Duration.zero, phases: {}, replicas: {});
 
   StreamSubscription<RunEvent>? _subscription;
   Completer<void>? _ended;
@@ -239,6 +250,10 @@ class SyncRunController {
   }
 
   Future<void> _begin(RunRequest request) async {
+    // Before anything is measured, and before the dial: this attempt's
+    // numbers are its own, and [RunMetrics.elapsed] runs from here.
+    final instruments = RunInstruments();
+    _instruments = instruments;
     state.recordStart(dryRun: request.dryRun);
     _syncScreenWake(const SyncRunConnecting());
     final ConnectedAgents agents;
@@ -249,7 +264,7 @@ class SyncRunController {
         remoteRootPath: request.remoteRootPath,
         addressOverride: request.addressOverride,
         jobs: request.jobs,
-        metrics: _metrics,
+        instruments: instruments,
       );
     } on ReplicaConnectFailure catch (failure) {
       _recordPhase(SyncRunFailed(failure.toString()));
@@ -274,20 +289,10 @@ class SyncRunController {
       // only, so `a` is always this phone's local replica and `b` is always
       // the peer it dialled. Nothing has to be re-derived to say which of
       // the two is remote.
-      agentA: MeteredAgent(
-        agents.agentA,
-        side: 'a',
-        metrics: _metrics,
-        remote: false,
-      ),
-      agentB: MeteredAgent(
-        agents.agentB,
-        side: 'b',
-        metrics: _metrics,
-        remote: true,
-      ),
+      agentA: instruments.agent(agents.agentA, side: 'a', remote: false),
+      agentB: instruments.agent(agents.agentB, side: 'b', remote: true),
       presenter: (plan) => present(plan, request: request),
-      metrics: _metrics,
+      metrics: instruments.recorder,
     );
     await render(run.run(), request: request);
   }

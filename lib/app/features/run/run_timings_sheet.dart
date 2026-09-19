@@ -284,7 +284,7 @@ class _ReplicaTable extends StatelessWidget {
         if (replica.remote)
           Text(
             '${formatMetricCount(replica.sends)} sends · '
-            '${switch (replica.writes) {
+            '${switch (replica.writeStats?.writes) {
               final count? => '${formatMetricCount(count)} writes · ',
               null => '',
             }}'
@@ -298,17 +298,32 @@ class _ReplicaTable extends StatelessWidget {
             style: subtitle,
           ),
         const SizedBox(height: 8),
-        // `queue`, `wire` and `far` rather than one `mean`, with `total` and
-        // `max` left to the copied report: the splits are the whole point of
-        // this table. A mean that rose because the window filled up, one that
-        // rose because the link slowed, and one that rose because the
-        // destination's disk slowed look identical bundled together, and the
-        // three have different fixes. `far` is what the peer says the
-        // operation cost *it*, so `wire` minus `far` is the link — and `—`
-        // means the peer did not report, not that it was free.
+        // The splits rather than one `mean`, with `total` and `max` left to
+        // the copied report: they are the whole point of this table. A mean
+        // that rose because the window filled up, one that rose because the
+        // link slowed, and one that rose because the destination's disk
+        // slowed look identical bundled together, and the three have
+        // different fixes.
+        //
+        // `link` is printed rather than left as `wire` minus `far`, because
+        // each column is a mean over the calls that fed *it* and subtracting
+        // two of them gives a number with no population behind it. `peers` is
+        // how many requests the peer had in flight while it served these: it
+        // is what says whether `far` is the destination's own cost or only
+        // its residency, and without it the column invites exactly the
+        // reading this project has already got wrong twice. `—` everywhere
+        // means not measured, never free.
         _Row(
-          cells: const ['operation', 'count', 'queue', 'wire', 'far'],
-          flex: const [4, 2, 2, 2, 2],
+          cells: const [
+            'operation',
+            'count',
+            'queue',
+            'wire',
+            'far',
+            'link',
+            'peers',
+          ],
+          flex: const [4, 2, 2, 2, 2, 2, 2],
           header: true,
         ),
         for (final MapEntry(key: op, value: stats) in ops)
@@ -316,25 +331,40 @@ class _ReplicaTable extends StatelessWidget {
             cells: [
               op.name,
               formatMetricCount(stats.count),
-              formatMetricDuration(stats.meanQueueWait),
-              formatMetricDuration(stats.meanWireTime),
+              formatMetricSplit(stats.meanQueueWait),
+              formatMetricSplit(stats.meanWireTime),
               formatMetricSplit(stats.meanFarSide),
+              formatMetricSplit(stats.meanLinkTime),
+              stats.meanFarInFlight?.toStringAsFixed(1) ?? '—',
             ],
-            flex: const [4, 2, 2, 2, 2],
+            flex: const [4, 2, 2, 2, 2, 2, 2],
           ),
-        if (replica.remote && replica.idle.isNotEmpty) ...[
+        if (replica.remote &&
+            (replica.quiet.isNotEmpty || replica.awaiting.isNotEmpty)) ...[
           const SizedBox(height: 12),
-          // The gaps between bytes moving. A phase that went idle for most of
-          // itself was waiting on the link, and wants fewer round trips or
-          // more of them in flight; one that was busy throughout wants
-          // neither, and no byte count can tell the two apart.
-          Text('Idle link', style: theme.textTheme.titleSmall),
+          // Two columns rather than one "idle", because one could not answer
+          // the question it was being asked. `quiet` is time with nothing
+          // outstanding at all — more callers would fill it. `waiting` is
+          // time with an operation open and no send in flight — they would
+          // not. The single figure they replace counted every inbound
+          // transfer as silence, since a send is a span and a receive is an
+          // instant.
+          Text('Link not carrying', style: theme.textTheme.titleSmall),
           const SizedBox(height: 4),
+          _Row(
+            cells: const ['phase', 'quiet', 'waiting'],
+            flex: const [3, 2, 2],
+            header: true,
+          ),
           for (final phase in RunPhase.values)
-            if (replica.idle[phase] case final value?)
+            if (replica.quiet[phase] != null || replica.awaiting[phase] != null)
               _Row(
-                cells: [phase.name, formatMetricDuration(value)],
-                flex: const [3, 2],
+                cells: [
+                  phase.name,
+                  formatMetricSplit(replica.quiet[phase]),
+                  formatMetricSplit(replica.awaiting[phase]),
+                ],
+                flex: const [3, 2, 2],
               ),
         ],
       ],

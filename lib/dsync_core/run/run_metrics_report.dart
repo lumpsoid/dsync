@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/run_metrics.dart';
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 
 /// Renders [RunMetrics] as the plain-text report both heads show (SPEC §17).
 ///
@@ -57,7 +58,7 @@ String formatRunMetrics(RunMetrics metrics) {
       // as zero for a transport that reported none.
       out.writeln(
         '  wire: ${formatMetricCount(replica.sends)} sends, '
-        '${switch (replica.writes) {
+        '${switch (replica.writeStats?.writes) {
           final count? => '${formatMetricCount(count)} writes, ',
           null => '',
         }}'
@@ -69,25 +70,55 @@ String formatRunMetrics(RunMetrics metrics) {
         }}'
         '${replica.sendsPerOp.toStringAsFixed(2)} sends per operation',
       );
-      // The gaps between bytes moving, per phase — the figure that separates
-      // "this phase was waiting" from "this phase was working". A phase whose
-      // link went unused while it was idle wants fewer round trips or more of
-      // them in flight; one that used its link with no idle time wants
-      // neither.
-      if (replica.idle.isNotEmpty) {
-        final idle = [
+      // The distribution the line above is a mean of, because that mean is a
+      // bad summary of its own subject: it is diluted by every write that
+      // drained with nothing queued, and the writes that carried a crowd are
+      // the ones the coalescing exists for (SPEC §17).
+      if (replica.writeStats case final stats? when stats.writes > 0) {
+        final buckets = [
+          for (var i = 0; i < batchBucketLabels.length; i++)
+            if (stats.batches[i] > 0)
+              '${batchBucketLabels[i]}×${formatMetricCount(stats.batches[i])}',
+        ];
+        out.writeln(
+          '  writes: ${buckets.join(' · ')} · '
+          'max ${stats.maxBatch} · '
+          '${formatMetricSplit(stats.meanWait)} mean wait per send, '
+          '${formatMetricDuration(stats.waited)} total',
+        );
+      }
+      // What the *peer* waited on its own sink, over the whole session. Read
+      // against the `link` column: the peer's span stops before its reply is
+      // written, so this wait is inside what that column calls the link.
+      if (replica.peerSendWait case final wait?) {
+        out.writeln(
+          '  peer sink: ${formatMetricDuration(wait)} waited, '
+          'against ${formatMetricDuration(replica.linkTime)} of link',
+        );
+      }
+      // Two figures rather than one, per phase, and the split is the answer
+      // a single `idle` total could never give (SPEC §17): `quiet` is time
+      // with nothing outstanding at all, which more callers would fill, and
+      // `waiting` is time with an operation open and no send in flight,
+      // which they would not.
+      for (final (label, figures) in [
+        ('quiet', replica.quiet),
+        ('waiting', replica.awaiting),
+      ]) {
+        if (figures.isEmpty) continue;
+        final rows = [
           for (final phase in RunPhase.values)
-            if (replica.idle[phase] case final value?)
+            if (figures[phase] case final value?)
               '${phase.name} ${formatMetricDuration(value)}',
         ];
-        out.writeln('  idle: ${idle.join(' · ')}');
+        out.writeln('  ${label.padRight(7)} ${rows.join(' · ')}');
       }
     }
     out.writeln(
       '  ${'operation'.padRight(20)}${'count'.padLeft(8)}'
-      '${'total'.padLeft(10)}${'queue'.padLeft(10)}${'wire'.padLeft(10)}'
-      '${'far'.padLeft(10)}${'link'.padLeft(10)}'
-      '${'max'.padLeft(10)}${'content'.padLeft(11)}',
+      '${'total'.padLeft(10)}${'mean'.padLeft(10)}${'queue'.padLeft(10)}'
+      '${'wire'.padLeft(10)}${'far'.padLeft(10)}${'link'.padLeft(10)}'
+      '${'peers'.padLeft(8)}${'max'.padLeft(10)}${'content'.padLeft(11)}',
     );
     // Slowest first: the report exists to answer "where did the time go",
     // and the answer should be the first row rather than something found by
@@ -95,23 +126,31 @@ String formatRunMetrics(RunMetrics metrics) {
     final ops = replica.ops.entries.toList()
       ..sort((a, b) => b.value.total.compareTo(a.value.total));
     for (final MapEntry(key: op, value: stats) in ops) {
-      // `queue` and `wire` are per call and sum to the mean, which is why the
-      // mean itself is not a column: one number that bundles the two is what
-      // made a rising mean unreadable in the first place (SPEC §17).
+      // Every split is printed rather than left to arithmetic over the other
+      // columns, because that arithmetic is how this work picked the wrong
+      // lever twice — and because each column is divided by the count of the
+      // calls that fed *it*, so they are not each other's differences and
+      // subtracting two of them gives a number with no population.
       //
-      // `far` and `link` split `wire` the same way, and for the same reason:
-      // `far` is what the peer says it spent on the operation and `link` is
-      // what is left for the request and the reply. Printed rather than left
-      // to arithmetic over the other columns, because that arithmetic is how
-      // this work picked the wrong lever twice. Both are `—` when the peer
-      // did not report — which is not the same as a peer that cost nothing.
+      // `queue` and `wire` are per exchange; `far` and `link` are per
+      // exchange whose peer reported. All four are `—` on a local replica,
+      // which has no window and no wire, and `far`/`link` are `—` against a
+      // peer that does not report — which is not the same as one that cost
+      // nothing.
+      //
+      // `peers` is how many requests the peer had in flight while it served
+      // these, and it is what says whether `far` is the destination's cost or
+      // merely its residency. Near 1, `far` is service time; near this side's
+      // concurrency, it is not.
       out.writeln(
         '  ${op.name.padRight(20)}${formatMetricCount(stats.count).padLeft(8)}'
         '${formatMetricDuration(stats.total).padLeft(10)}'
-        '${formatMetricDuration(stats.meanQueueWait).padLeft(10)}'
-        '${formatMetricDuration(stats.meanWireTime).padLeft(10)}'
+        '${formatMetricSplit(stats.mean).padLeft(10)}'
+        '${formatMetricSplit(stats.meanQueueWait).padLeft(10)}'
+        '${formatMetricSplit(stats.meanWireTime).padLeft(10)}'
         '${formatMetricSplit(stats.meanFarSide).padLeft(10)}'
         '${formatMetricSplit(stats.meanLinkTime).padLeft(10)}'
+        '${(stats.meanFarInFlight?.toStringAsFixed(1) ?? '—').padLeft(8)}'
         '${formatMetricDuration(stats.max).padLeft(10)}'
         '${(stats.bytes == 0 ? '—' : formatMetricBytes(stats.bytes)).padLeft(11)}',
       );

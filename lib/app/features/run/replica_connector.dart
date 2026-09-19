@@ -15,10 +15,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
-import 'package:dsync/dsync_core/protocol/metered_channel.dart';
-import 'package:dsync/dsync_core/run/metered_far_side.dart';
-import 'package:dsync/dsync_core/run/metered_request_window.dart';
-import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
+import 'package:dsync/dsync_core/run/run_instruments.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/scan/case_folding.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
@@ -148,7 +145,7 @@ class ReplicaConnector {
     required String remoteRootPath,
     required PeerAddress? addressOverride,
     required int jobs,
-    required RunMetricsRecorder metrics,
+    required RunInstruments instruments,
   }) async {
     final store = await app.pairedDevices;
     final device = await store.byName(deviceName);
@@ -188,7 +185,7 @@ class ReplicaConnector {
           side: 'b',
           jobs: jobs,
         ),
-        metrics: metrics,
+        instruments: instruments,
       );
     } catch (_) {
       await _disconnectQuietly(agentA);
@@ -239,7 +236,7 @@ class ReplicaConnector {
     required DeviceIdentity ownIdentity,
     required DateTime now,
     required ReplicaSpec spec,
-    required RunMetricsRecorder metrics,
+    required RunInstruments instruments,
   }) async {
     final DialResult dialed;
     try {
@@ -291,21 +288,18 @@ class ReplicaConnector {
       // it injects count as the traffic they are — on a phone, a run that
       // spent its time waiting rather than transferring is exactly the
       // reading this report has to make possible.
-      MeteredChannel(
+      instruments.channel(
         IdleDeadlineChannel(dialed.channel, peer: deviceName),
         side: spec.side,
-        metrics: metrics,
       ),
       spec,
       deviceName: deviceName,
       address: address,
-      // SPEC §17: the window reports how long each operation waited for a
-      // slot, so this side's per-operation means split into the queueing and
-      // the exchange instead of bundling the two.
-      window: meteredRequestWindow(side: spec.side, metrics: metrics),
-      // SPEC §17: and the peer reports what each exchange cost *it*, so the
-      // wire figure splits again into the far side's own work and the link.
-      onFarSide: meteredFarSide(side: spec.side, metrics: metrics),
+      // SPEC §17: every exchange reports its own queue wait, its own wire
+      // span and what the peer said about that same call, so this side's
+      // per-operation figures are split where they happened rather than
+      // reconstructed from each other afterwards.
+      onExchange: instruments.exchanges(spec.side),
     );
   }
 
@@ -465,8 +459,7 @@ final class _PeerAgent extends RemoteAgent {
     super.spec, {
     required this.deviceName,
     required this.address,
-    required super.window,
-    required super.onFarSide,
+    required super.onExchange,
   });
 
   @override

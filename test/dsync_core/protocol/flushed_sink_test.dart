@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 import 'package:test/test.dart';
 
@@ -139,7 +140,7 @@ void main() {
     final sink = _FakeSink()..holdFlushes();
     final writer = FlushedSink(sink);
 
-    expect(writer.writes, 0);
+    expect(writer.stats.writes, 0);
 
     final pending = [
       writer.send(_bytes([1])),
@@ -152,7 +153,7 @@ void main() {
 
     // Three frames, two writes — the figure `Channel.send` cannot give,
     // since the batching happens below it (SPEC §17).
-    expect(writer.writes, 2);
+    expect(writer.stats.writes, 2);
   });
 
   test('a failed write still counts, since the link carried it', () async {
@@ -164,7 +165,7 @@ void main() {
     sink.failHeldFlush(StateError('gone'));
     await expectLater(failing, throwsStateError);
 
-    expect(writer.writes, 1);
+    expect(writer.stats.writes, 1);
   });
 
   test('a frame larger than the cap is written whole', () async {
@@ -175,6 +176,87 @@ void main() {
     await writer.send(Uint8List(oversized));
 
     expect(sink.adds.single.length, oversized);
+  });
+
+  test('the batch sizes are counted, not just averaged', () async {
+    // The mean this replaces moved 15% on the run where the effect it exists
+    // to detect moved ~2×, because it is diluted by every write that drained
+    // with nothing queued (SPEC §17). The writes that carried a crowd are
+    // the point, and only a distribution shows them.
+    final sink = _FakeSink()..holdFlushes();
+    final writer = FlushedSink(sink);
+
+    final first = writer.send(_bytes([1]));
+    await pumpEventQueue();
+    final queued = [
+      writer.send(_bytes([2])),
+      writer.send(_bytes([3])),
+      writer.send(_bytes([4])),
+    ];
+    await pumpEventQueue();
+    sink.releaseAllFlushes();
+    await Future.wait([first, ...queued]);
+
+    final stats = writer.stats;
+    expect(stats.writes, 2);
+    expect(stats.sends, 4);
+    expect(stats.maxBatch, 3);
+    // One write of one, one write of three — which a mean would report as 2,
+    // a size neither write had.
+    expect(stats.batches[batchBucket(1)], 1);
+    expect(stats.batches[batchBucket(3)], 1);
+    expect(stats.meanBatch, 2);
+  });
+
+  test('a sender is charged what it waited behind the writes ahead', () async {
+    // The wait phase 3 removed, measured where both instants are known
+    // instead of inferred from a link latency that looked too large.
+    var now = Duration.zero;
+    final sink = _FakeSink()..holdFlushes();
+    final writer = FlushedSink(sink, elapsed: () => now);
+
+    final first = writer.send(_bytes([1]));
+    await pumpEventQueue();
+    final second = writer.send(_bytes([2]));
+    await pumpEventQueue();
+
+    now += const Duration(milliseconds: 30);
+    sink.completeHeldFlush();
+    await first;
+    await pumpEventQueue();
+    now += const Duration(milliseconds: 10);
+    sink.completeHeldFlush();
+    await second;
+
+    // 30 ms for the first write, and 40 ms for the sender that arrived with
+    // it and served out both — which is the whole of what a queue costs.
+    expect(writer.stats.waited, const Duration(milliseconds: 70));
+  });
+
+  test('a failed write still charges its senders what they waited', () async {
+    // A run that went wrong is exactly the one whose waiting is worth
+    // knowing; dropping it would understate it.
+    var now = Duration.zero;
+    final sink = _FakeSink()..holdFlushes();
+    final writer = FlushedSink(sink, elapsed: () => now);
+
+    final failing = writer.send(_bytes([1]));
+    await pumpEventQueue();
+    now += const Duration(milliseconds: 15);
+    sink.failHeldFlush(StateError('gone'));
+    await expectLater(failing, throwsStateError);
+
+    expect(writer.stats.waited, const Duration(milliseconds: 15));
+  });
+
+  test('a sink that has written nothing reports no ratio', () {
+    final writer = FlushedSink(_FakeSink());
+
+    // Zero writes is not a ratio, and reads as the one outcome the figure
+    // exists to detect if it is printed as 1.
+    expect(writer.stats.writes, 0);
+    expect(writer.stats.meanBatch, isNull);
+    expect(writer.stats.meanWait, isNull);
   });
 }
 
@@ -193,7 +275,7 @@ Future<bool> _hasSettled(Future<void> future) async {
 /// flush held open so a test can decide when a write finishes.
 class _FakeSink implements IOSink {
   /// One entry per `add`, in the order they were made. Named for the sink's
-  /// method rather than for [FlushedSink.writes], which counts them.
+  /// method rather than for `SinkWriteStats.writes`, which counts them.
   final List<List<int>> adds = [];
 
   int flushes = 0;

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
@@ -120,7 +121,7 @@ class SshChannel implements Channel {
   /// What [FlushedSink] actually wrote, below the number of `send` calls by
   /// the frames that left in company (SPEC §17).
   @override
-  int get writes => _writer.writes;
+  SinkWriteStats get writeStats => _writer.stats;
 
   @override
   Future<void> close() async {

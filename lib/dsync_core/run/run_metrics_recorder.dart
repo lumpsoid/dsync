@@ -1,4 +1,6 @@
+import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
 
 export 'package:dsync/dsync_core/run/elapsed.dart' show Elapsed;
@@ -38,18 +40,20 @@ export 'package:dsync/dsync_core/run/elapsed.dart' show Elapsed;
 ///   handle [beginOp] returns, rather than to whichever operation on that
 ///   side was innermost. With one operation open at a time those were the
 ///   same thing; with a window open they are not.
-/// - **A mean is part far side.** A remote operation's mean covers the
-///   request going out, whatever the peer did with it, and the reply coming
-///   back. [countFarSide] records the middle term as the peer itself
-///   measured it, so `AgentOpStats.meanLinkTime` is what is left for the
-///   link. Absent unless the peer reports it, and absent is not zero.
-/// - **A mean is part queue.** An operation that waited for a window slot
-///   paid that wait inside its span, so [countQueueWait] records the wait
-///   separately and the report subtracts it: `AgentOpStats.meanWireTime` is
-///   the exchange, `AgentOpStats.meanQueueWait` is the queueing, and only
-///   their sum is the mean. Without the split, a mean that rose because the
-///   window filled up is indistinguishable from one that rose because the
-///   link got slower, and the two have opposite fixes.
+/// - **A remote operation's cost arrives already split.** `RemoteAgent`
+///   reports one [ExchangeRecord] per call — its own queue wait, its own wire
+///   span, and what the peer said about that same call — because it is the
+///   only object that sees all of those instants. This adds up quantities
+///   that are already separate; it never reconstructs one by subtracting
+///   another. The arrangement that preceded it took `total - queueWait` and
+///   then `meanWire - meanFar` over two different denominators, clamped both
+///   at zero, and so could not distinguish a measurement from two counters
+///   disagreeing about which calls they had seen.
+/// - **Idle is two figures, not one.** A send is a span and a receive is a
+///   point event, so a gap-based idle total counted every inbound transfer as
+///   silence. [ReplicaMetrics.quiet] and [ReplicaMetrics.awaiting] are
+///   credited from what this side has outstanding — a state, known at every
+///   instant — rather than from the gaps between events.
 class RunMetricsRecorder {
   final Elapsed _elapsed;
 
@@ -80,7 +84,7 @@ class RunMetricsRecorder {
     // the last byte and the end of the phase is credited to nothing. A phase
     // that ended waiting is exactly the one whose idle time is the point.
     for (final record in _replicas.values) {
-      if (record.busySends == 0) _creditIdle(record, phase, start, now);
+      _creditIdle(record, phase, start, now);
     }
     _phaseStarts.remove(phase);
     _phases[phase] = (_phases[phase] ?? Duration.zero) + (now - start);
@@ -123,13 +127,27 @@ class RunMetricsRecorder {
   /// thing the recorder can work out for itself.
   OpenOperation beginOp(String side, AgentOp op) {
     final record = _replicaRecord(side);
-    final open = OpenOperation._(op, _elapsed(), (operation) {
+    _markIdleBoundary(record);
+    record.openOps++;
+    return OpenOperation._(op, _elapsed(), (operation) {
+      _markIdleBoundary(record);
+      record.openOps--;
       record.ops[op] = (record.ops[op] ?? AgentOpStats.none).merge(
         _elapsed() - operation.startedAt,
         operation.bytes,
       );
     });
-    return open;
+  }
+
+  /// Records one finished exchange's measured split (SPEC §17) — called by
+  /// `RemoteAgent`, the one object that saw every instant it is made of.
+  ///
+  /// Never called for a local replica, which has neither a window nor a wire.
+  void recordExchange(String side, ExchangeRecord record) {
+    final replica = _replicaRecord(side);
+    replica.ops[record.op] = (replica.ops[record.op] ?? AgentOpStats.none)
+        .mergeExchange(record);
+    if (record.far?.sendWait case final wait?) replica.peerSendWait = wait;
   }
 
   /// Opens a flush of [bytes] framed protocol carrying [frames] frames on
@@ -151,29 +169,28 @@ class RunMetricsRecorder {
   /// figure would say nothing.
   OpenSend beginSend(String side, {required int bytes, required int frames}) {
     final record = _replicaRecord(side);
-    _markWireActivity(record);
+    _markIdleBoundary(record);
     record.wireBytesSent += bytes;
     record.sends++;
     record.framesSent += frames;
     record.busySends++;
     return OpenSend._(() {
+      _markIdleBoundary(record);
       record.busySends--;
-      // Idle only starts again once the last flush has landed, so the time
-      // spent writing is never charged to it.
-      if (record.busySends == 0) record.lastWireActivity = _elapsed();
     });
   }
 
-  /// Records that [side]'s transport has made [count] writes in total — the
-  /// `add`-and-`flush` pairs `FlushedSink` actually performed (SPEC §17).
+  /// Records what [side]'s sink has done with what it was handed — the
+  /// `add`-and-`flush` pairs `FlushedSink` actually performed, their batch
+  /// sizes, and what the senders waited (SPEC §17).
   ///
-  /// Set rather than added, because the counter it comes from is cumulative:
-  /// `MeteredChannel` reads the channel's running total on the way past, so
+  /// Set rather than merged, because what it comes from is cumulative:
+  /// `MeteredChannel` reads the channel's running figures on the way past, so
   /// the last reading is the answer and a missed one costs nothing. Absent
-  /// until a channel reports one, since a transport with no sink to flush has
-  /// no write to count and zero would read as "it coalesced nothing".
-  void countWrites(String side, int count) =>
-      _replicaRecord(side).writes = count;
+  /// until a channel reports, since a transport with no sink to flush has no
+  /// write to count and zero would read as "it coalesced nothing".
+  void countWrites(String side, SinkWriteStats stats) =>
+      _replicaRecord(side).writeStats = stats;
 
   /// Records [bytes] arriving from [side]'s transport, framing included.
   ///
@@ -182,72 +199,62 @@ class RunMetricsRecorder {
   /// "frames received" from it would be counting chunks under another name.
   void countReceive(String side, {required int bytes}) {
     final record = _replicaRecord(side);
-    _markWireActivity(record);
+    // No idle boundary: arriving bytes say nothing about whether this side
+    // had something outstanding, which is what [quiet] and [awaiting] are
+    // credited from. Treating a receive as an instant of "busy" is exactly
+    // the bias the two figures replaced.
+    record.firstActivity ??= _elapsed();
     record.wireBytesReceived += bytes;
   }
 
-  /// Credits the silence since [record]'s last traffic to every phase open
-  /// across it, then marks now as its last traffic.
+  /// Closes the idle span [record] is currently in, crediting it to every
+  /// phase open across it, and starts the next one from now.
   ///
-  /// This is the whole of how wire idle time is measured (SPEC §17): the gaps
-  /// between bytes moving. A connection with a request outstanding and no
-  /// reply yet is *idle by this measure* — and deliberately so. The question
-  /// it exists to answer is "did this phase use its link", and a phone
-  /// waiting a beacon interval for a reply is not using its link however busy
-  /// the run feels.
-  ///
-  /// Nothing is credited before a side's first byte: a transport that has not
-  /// spoken yet has not been idle, it has not been measured.
-  void _markWireActivity(_ReplicaRecord record) {
+  /// Called wherever this side's outstanding work changes — a send starting
+  /// or finishing, an operation opening or closing — because *that* is what
+  /// decides which of the two idle figures the time since the last boundary
+  /// belongs to. Nothing is credited before a side's first activity: a
+  /// transport that has not spoken yet has not been idle, it has not been
+  /// measured.
+  void _markIdleBoundary(_ReplicaRecord record) {
+    // A local replica has no link to be carrying anything, so neither figure
+    // means anything for it — and a local operation opening would otherwise
+    // start crediting `awaiting` against a side with no wire at all.
+    if (!record.remote) return;
     final now = _elapsed();
-    if (record.busySends == 0) {
-      for (final MapEntry(key: phase, value: start) in _phaseStarts.entries) {
-        _creditIdle(record, phase, start, now);
-      }
+    if (record.firstActivity == null) {
+      record.firstActivity = now;
+      record.lastBoundary = now;
+      return;
     }
-    record.lastWireActivity = now;
+    for (final MapEntry(key: phase, value: start) in _phaseStarts.entries) {
+      _creditIdle(record, phase, start, now);
+    }
+    record.lastBoundary = now;
   }
 
-  /// Adds [record]'s silence within [phase] up to [now] to that phase's idle
-  /// total, counting only from whichever is later: the phase's start, or the
-  /// last byte that moved.
+  /// Adds [record]'s share of the span ending at [now] to whichever figure
+  /// its state names, within [phase], counting only from whichever is later:
+  /// the phase's start, or the last boundary.
+  ///
+  /// A connection with a send in flight is carrying something and is neither
+  /// quiet nor awaiting. With nothing in flight it is one or the other, and
+  /// which one is the whole question: **quiet** means it had nothing to do,
+  /// so more callers would help; **awaiting** means it had something open and
+  /// was waiting on the peer or the link, so they would not.
   void _creditIdle(
     _ReplicaRecord record,
     RunPhase phase,
     Duration phaseStart,
     Duration now,
   ) {
-    final last = record.lastWireActivity;
+    if (record.busySends > 0) return;
+    final last = record.lastBoundary;
     if (last == null) return;
     final from = last > phaseStart ? last : phaseStart;
     if (now <= from) return;
-    record.idle[phase] = (record.idle[phase] ?? Duration.zero) + (now - from);
-  }
-
-  /// Records that a call of [op] on [side] waited [wait] for a window slot
-  /// (SPEC §17) — called by `RequestWindow` as it admits the operation, which
-  /// is the one place that knows both instants.
-  ///
-  /// Recorded against the operation rather than the replica because the
-  /// answer it gives is per operation: `writeFile` queueing behind the window
-  /// while `archiveCommit` does not is a different diagnosis from both
-  /// of them queueing, and a per-replica total cannot show it.
-  void countQueueWait(String side, AgentOp op, Duration wait) {
-    final record = _replicaRecord(side);
-    record.ops[op] = (record.ops[op] ?? AgentOpStats.none).mergeQueueWait(wait);
-  }
-
-  /// Records that the peer reported [span] as its own time on a call of [op]
-  /// (SPEC §17) — called by `RemoteAgent` as the reply is decoded, which is
-  /// the one place that sees the figure.
-  ///
-  /// Only calls whose reply actually carried one are recorded, so
-  /// `AgentOpStats.farSideCount` stays below `count` against a peer that does
-  /// not report and the report can say "absent" rather than "zero". Never
-  /// called for a local replica, which has no far side.
-  void countFarSide(String side, AgentOp op, Duration span) {
-    final record = _replicaRecord(side);
-    record.ops[op] = (record.ops[op] ?? AgentOpStats.none).mergeFarSide(span);
+    final into = record.openOps > 0 ? record.awaiting : record.quiet;
+    into[phase] = (into[phase] ?? Duration.zero) + (now - from);
   }
 
   /// Declares that [side] is reached over a transport (SPEC §4.1) — called by
@@ -269,9 +276,11 @@ class RunMetricsRecorder {
           wireBytesSent: entry.value.wireBytesSent,
           wireBytesReceived: entry.value.wireBytesReceived,
           sends: entry.value.sends,
-          writes: entry.value.writes,
+          writeStats: entry.value.writeStats,
+          peerSendWait: entry.value.peerSendWait,
           framesSent: entry.value.framesSent,
-          idle: Map.unmodifiable(entry.value.idle),
+          quiet: Map.unmodifiable(entry.value.quiet),
+          awaiting: Map.unmodifiable(entry.value.awaiting),
         ),
     },
   );
@@ -290,20 +299,33 @@ class _ReplicaRecord {
   int sends = 0;
   int framesSent = 0;
 
-  /// The channel's cumulative write count as last read, or null while no
-  /// channel on this side has reported one.
-  int? writes;
+  /// The sink's cumulative figures as last read, or null while no channel on
+  /// this side has reported any.
+  SinkWriteStats? writeStats;
+
+  /// The peer's own cumulative send wait as of the last reply that carried
+  /// it, or null from a peer that does not report it.
+  Duration? peerSendWait;
 
   /// Flushes handed to the transport and not yet written. While this is
-  /// above zero the link is carrying something and no idle time accrues.
+  /// above zero the link is carrying something and neither idle figure
+  /// accrues.
   int busySends = 0;
 
-  /// Per phase, how long this transport carried nothing.
-  final Map<RunPhase, Duration> idle = {};
+  /// Operations open on this side. Above zero, silence is [awaiting]; at
+  /// zero, it is [quiet].
+  int openOps = 0;
 
-  /// When a byte last moved in either direction, or null before the first
-  /// one — which is not the same as zero, and is why this is nullable.
-  Duration? lastWireActivity;
+  /// Per phase, how long this transport had nothing to carry, and how long it
+  /// had something outstanding and was waiting for it.
+  final Map<RunPhase, Duration> quiet = {};
+  final Map<RunPhase, Duration> awaiting = {};
+
+  /// When this side was first measured at all, and when its last idle span
+  /// began. Both null before the first activity — which is not the same as
+  /// zero, and is why they are nullable.
+  Duration? firstActivity;
+  Duration? lastBoundary;
 }
 
 /// One flush handed to a transport and not yet written — the handle

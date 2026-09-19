@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -23,6 +24,10 @@ void main() {
     now = Duration.zero;
     metrics = RunMetricsRecorder(elapsed: () => now);
     inner = _FakeChannel();
+    // A channel only ever reaches a remote side, and the link figures only
+    // exist for one — `MeteredAgent` declares it at construction, before
+    // anything is measured.
+    metrics.markRemote('b');
     channel = MeteredChannel(inner, side: 'b', metrics: metrics);
   });
 
@@ -55,13 +60,13 @@ void main() {
   test('the channel\'s own write count is what `writes` reports', () async {
     // The figure a send count cannot give: the batching happens below this
     // decorator, so it is read off the channel rather than counted here.
-    inner.writes = 1;
+    inner.writeStats = _writes(1);
     await channel.send(framed([control(1)]));
-    inner.writes = 1;
+    inner.writeStats = _writes(1);
     await channel.send(framed([control(2)]));
 
     expect(replica().sends, 2);
-    expect(replica().writes, 1);
+    expect(replica().writeStats?.writes, 1);
     // Two frames handed over, one write: exactly the coalescing this exists
     // to make visible.
     expect(replica().framesPerWrite, 2);
@@ -71,7 +76,7 @@ void main() {
     await channel.send(framed([control(1)]));
 
     expect(replica().sends, 1);
-    expect(replica().writes, isNull);
+    expect(replica().writeStats, isNull);
     expect(replica().framesPerWrite, isNull);
   });
 
@@ -98,7 +103,8 @@ void main() {
 
     // A rate-limited link spends real time writing, and a report that
     // counted a flush as an instant would call every run 100% idle.
-    expect(replica().idle[RunPhase.apply], isNull);
+    expect(replica().quiet[RunPhase.apply], isNull);
+    expect(replica().awaiting[RunPhase.apply], isNull);
   });
 
   test(
@@ -118,9 +124,11 @@ void main() {
       );
       metrics.endPhase(RunPhase.apply);
 
-      // 80 ms of a request outstanding with nothing on the link — which is
-      // idle by this measure on purpose: the run was waiting, not working.
-      expect(replica().idle[RunPhase.apply], const Duration(milliseconds: 80));
+      // 80 ms with nothing on the link and no operation open on this side,
+      // so it is quiet rather than waiting: there was nothing outstanding
+      // for it to be waiting on.
+      expect(replica().quiet[RunPhase.apply], const Duration(milliseconds: 80));
+      expect(replica().awaiting[RunPhase.apply], isNull);
     },
   );
 
@@ -161,10 +169,19 @@ class _FakeChannel implements Channel {
   }
 
   /// What a sink-backed channel would report, set by the test — null stands
-  /// for a transport with no write to count (`Channel.writes`).
+  /// for a transport with no sink to flush (`Channel.writeStats`).
   @override
-  int? writes;
+  SinkWriteStats? writeStats;
 
   @override
   Future<void> close() => _input.close();
 }
+
+/// A [SinkWriteStats] with only the write count a test cares about set.
+SinkWriteStats _writes(int count) => SinkWriteStats(
+  writes: count,
+  sends: count,
+  waited: Duration.zero,
+  maxBatch: 1,
+  batches: List.filled(batchBucketLabels.length, 0),
+);

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/far_side_report.dart';
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
@@ -16,15 +18,27 @@ import 'package:test/test.dart';
 void main() {
   group('the peer\'s own span', () {
     test('rides on a success frame and comes back the same', () {
-      final stamped = const AgentSuccess({
-        'metadata': {'size': 1},
-      }).withFarSide(const Duration(milliseconds: 26));
+      final stamped =
+          const AgentSuccess({
+            'metadata': {'size': 1},
+          }).withFarSide(
+            const FarSideReport(
+              span: Duration(milliseconds: 26),
+              inFlight: 4,
+              sendWait: Duration(milliseconds: 7),
+            ),
+          );
 
       final decoded = AgentResult.fromFrame(stamped.toFrame(3));
 
       expect(decoded, isA<AgentSuccess>());
       final data = (decoded as AgentSuccess).data;
-      expect(farSideFromJson(data), const Duration(milliseconds: 26));
+      final report = farSideFromJson(data)!;
+      expect(report.span, const Duration(milliseconds: 26));
+      // The two figures that say how to read the span: what else the peer
+      // was serving, and what its own sink has waited outside the span.
+      expect(report.inFlight, 4);
+      expect(report.sendWait, const Duration(milliseconds: 7));
       // Alongside the operation's own result, not instead of it.
       expect(data['metadata'], {'size': 1});
     });
@@ -289,7 +303,7 @@ class _FakeChannel implements Channel {
 
   /// No sink, so no write to count (`Channel.writes`).
   @override
-  int? get writes => null;
+  SinkWriteStats? get writeStats => null;
 
   @override
   Future<void> close() async {

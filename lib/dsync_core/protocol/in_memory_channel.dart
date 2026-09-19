@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 
 /// A [Channel] pair backed by in-memory buffers instead of a process or
@@ -34,7 +35,7 @@ class InMemoryChannel implements Channel {
   /// Null: there is no sink and no flush, so a write is not a thing this pair
   /// has — and reporting 0 would read as "it coalesced nothing" (`Channel`).
   @override
-  int? get writes => null;
+  SinkWriteStats? get writeStats => null;
 
   @override
   Future<void> close() async {

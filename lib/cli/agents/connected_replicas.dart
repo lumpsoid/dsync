@@ -5,7 +5,6 @@ import 'package:dsync/cli/output/human_renderer.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
-import 'package:dsync/dsync_core/agent/request_window.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart'
     show OwnCertificateExpiredException;
@@ -20,10 +19,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/ssh_access.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
-import 'package:dsync/dsync_core/protocol/metered_channel.dart';
-import 'package:dsync/dsync_core/run/metered_far_side.dart';
-import 'package:dsync/dsync_core/run/metered_request_window.dart';
-import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
+import 'package:dsync/dsync_core/run/run_instruments.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:dsync/dsync_core/protocol/ssh_channel.dart';
 import 'package:dsync/dsync_core/scan/case_folding.dart';
@@ -124,7 +120,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
   Future<Set<String>> Function() localAddressLookup = systemLocalAddresses,
   String sshExecutable = 'ssh',
   Duration peerConnectTimeout = _peerConnectTimeout,
-  required RunMetricsRecorder metrics,
+  required RunInstruments instruments,
 }) async {
   // Skipped entirely when neither location gives `classify` anything to ask
   // about — a plain local path, or an `ssh://` destination that is remote by
@@ -151,7 +147,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
     localAddresses: localAddresses,
     sshExecutable: sshExecutable,
     peerConnectTimeout: peerConnectTimeout,
-    metrics: metrics,
+    instruments: instruments,
   );
 
   final _ResolvedSide sideB;
@@ -167,7 +163,7 @@ Future<ConnectedReplicas> resolveReplicaAgents(
       localAddresses: localAddresses,
       sshExecutable: sshExecutable,
       peerConnectTimeout: peerConnectTimeout,
-      metrics: metrics,
+      instruments: instruments,
     );
   } catch (_) {
     await _disconnectQuietly(sideA.agent);
@@ -198,7 +194,7 @@ Future<_ResolvedSide> _resolveSide({
   required Set<String> localAddresses,
   required String sshExecutable,
   required Duration peerConnectTimeout,
-  required RunMetricsRecorder metrics,
+  required RunInstruments instruments,
 }) {
   final archivePath = resolveArchiveLogPath(
     profileId: profileId,
@@ -237,7 +233,7 @@ Future<_ResolvedSide> _resolveSide({
         jobs: jobs,
         archivePath: archivePath,
         lockPath: lockPath,
-        metrics: metrics,
+        instruments: instruments,
       ),
       LocationScheme.peer => _resolvePeerSide(
         side: side,
@@ -249,7 +245,7 @@ Future<_ResolvedSide> _resolveSide({
         archivePath: archivePath,
         lockPath: lockPath,
         connectTimeout: peerConnectTimeout,
-        metrics: metrics,
+        instruments: instruments,
       ),
       LocationScheme.ssh || LocationScheme.inferred => _resolveSshSide(
         side: side,
@@ -260,7 +256,7 @@ Future<_ResolvedSide> _resolveSide({
         sshExecutable: sshExecutable,
         archivePath: archivePath,
         lockPath: lockPath,
-        metrics: metrics,
+        instruments: instruments,
       ),
     },
   };
@@ -334,7 +330,7 @@ Future<_ResolvedSide> _resolveSshSide({
   required String sshExecutable,
   required String archivePath,
   required String lockPath,
-  required RunMetricsRecorder metrics,
+  required RunInstruments instruments,
 }) async {
   final host = location.host!; // Locality.remote guarantees a host is set.
   final user = location.user;
@@ -354,7 +350,7 @@ Future<_ResolvedSide> _resolveSshSide({
   }
 
   final agent = _DiagnosedRemoteAgent(
-    channel: MeteredChannel(channel, side: side, metrics: metrics),
+    channel: instruments.channel(channel, side: side),
     spec: _specFor(
       location: location,
       profileId: profileId,
@@ -362,10 +358,10 @@ Future<_ResolvedSide> _resolveSshSide({
       jobs: jobs,
     ),
     side: side,
-    window: meteredRequestWindow(side: side, metrics: metrics),
-    // SPEC §17: and the peer reports what each exchange cost *it*, so the
-    // wire figure splits again into the far side's own work and the link.
-    onFarSide: meteredFarSide(side: side, metrics: metrics),
+    // SPEC §17: every exchange reports its own queue wait, its own wire span
+    // and what the peer said about that same call, so this side's figures are
+    // split where they happened rather than reconstructed afterwards.
+    onExchange: instruments.exchanges(side),
     transportDiagnostics: () => channel.recentStderr,
   );
 
@@ -403,7 +399,7 @@ Future<_ResolvedSide> _resolveSocketSide({
   required int jobs,
   required String archivePath,
   required String lockPath,
-  required RunMetricsRecorder metrics,
+  required RunInstruments instruments,
 }) async {
   // Locality.remote via LocationScheme.unix guarantees a socket path is set.
   final socketPath = location.socketPath!;
@@ -416,7 +412,7 @@ Future<_ResolvedSide> _resolveSocketSide({
   }
 
   final agent = _DiagnosedRemoteAgent(
-    channel: MeteredChannel(channel, side: side, metrics: metrics),
+    channel: instruments.channel(channel, side: side),
     spec: _specFor(
       location: location,
       profileId: profileId,
@@ -424,13 +420,10 @@ Future<_ResolvedSide> _resolveSocketSide({
       jobs: jobs,
     ),
     side: side,
-    // SPEC §17: the window reports how long each operation waited for a
-    // slot, so this side's per-operation means split into the queueing and
-    // the exchange instead of bundling the two.
-    window: meteredRequestWindow(side: side, metrics: metrics),
-    // SPEC §17: and the peer reports what each exchange cost *it*, so the
-    // wire figure splits again into the far side's own work and the link.
-    onFarSide: meteredFarSide(side: side, metrics: metrics),
+    // SPEC §17: every exchange reports its own queue wait, its own wire span
+    // and what the peer said about that same call, so this side's figures are
+    // split where they happened rather than reconstructed afterwards.
+    onExchange: instruments.exchanges(side),
   );
 
   return (
@@ -492,7 +485,7 @@ Future<_ResolvedSide> _resolvePeerSide({
   required String archivePath,
   required String lockPath,
   required Duration connectTimeout,
-  required RunMetricsRecorder metrics,
+  required RunInstruments instruments,
 }) async {
   // Locality.remote via LocationScheme.peer guarantees a device name is set.
   final deviceName = location.deviceName!;
@@ -590,10 +583,9 @@ Future<_ResolvedSide> _resolvePeerSide({
     // frames it injects are counted as the traffic they are — a run that
     // spent its time waiting rather than transferring should show that in
     // the byte count, not hide it.
-    channel: MeteredChannel(
+    channel: instruments.channel(
       IdleDeadlineChannel(channel, peer: deviceName),
       side: side,
-      metrics: metrics,
     ),
     spec: _specFor(
       location: location,
@@ -602,13 +594,10 @@ Future<_ResolvedSide> _resolvePeerSide({
       jobs: jobs,
     ),
     side: side,
-    // SPEC §17: the window reports how long each operation waited for a
-    // slot, so this side's per-operation means split into the queueing and
-    // the exchange instead of bundling the two.
-    window: meteredRequestWindow(side: side, metrics: metrics),
-    // SPEC §17: and the peer reports what each exchange cost *it*, so the
-    // wire figure splits again into the far side's own work and the link.
-    onFarSide: meteredFarSide(side: side, metrics: metrics),
+    // SPEC §17: every exchange reports its own queue wait, its own wire span
+    // and what the peer said about that same call, so this side's figures are
+    // split where they happened rather than reconstructed afterwards.
+    onExchange: instruments.exchanges(side),
   );
 
   return (
@@ -728,10 +717,9 @@ class _DiagnosedRemoteAgent extends RemoteAgent {
     required Channel channel,
     required ReplicaSpec spec,
     required this._side,
-    required RequestWindow window,
-    required FarSideSink onFarSide,
+    required ExchangeSink onExchange,
     this._transportDiagnostics = _noTransportDiagnostics,
-  }) : super(channel, spec, window: window, onFarSide: onFarSide);
+  }) : super(channel, spec, onExchange: onExchange);
 
   static List<String> _noTransportDiagnostics() => const [];
 

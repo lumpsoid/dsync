@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 
@@ -48,7 +49,7 @@ class StdioChannel implements Channel {
   /// What [FlushedSink] actually wrote, below the number of `send` calls by
   /// the frames that left in company (SPEC §17).
   @override
-  int get writes => _writer.writes;
+  SinkWriteStats get writeStats => _writer.stats;
 
   /// Closes the output side. There is no way for one end of a process's own
   /// stdio to force the *input* side closed — that happens when whatever is

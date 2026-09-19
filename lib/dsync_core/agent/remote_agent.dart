@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/request_window.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -16,16 +18,17 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
+import 'package:dsync/dsync_core/run/elapsed.dart';
 
-/// Told what the peer reported as its own time for a call of [op] (SPEC
-/// §17) — the seam `RemoteAgent`'s owner uses to feed `RunMetricsRecorder`.
+/// Told what one exchange cost, split where it happened (SPEC §17) — the
+/// seam `RemoteAgent`'s owner uses to feed `RunMetricsRecorder`.
 ///
-/// A callback rather than the recorder itself, for the reason
-/// [WindowWaitSink] is one: this class hands over a number it has just
-/// decoded and knows nothing about reporting. Called only for the replies
-/// that carried the figure, so a peer that does not report leaves the
-/// recorder's count where it was rather than adding a zero.
-typedef FarSideSink = void Function(AgentOp op, Duration span);
+/// A callback rather than the recorder itself: this class hands over a record
+/// it has just finished measuring and knows nothing about reporting. Called
+/// once per completed exchange, including a failed one — a run that spent
+/// thirty seconds on requests that all threw is a run whose report should say
+/// thirty seconds.
+typedef ExchangeSink = void Function(ExchangeRecord record);
 
 /// [Agent] implementation that drives a replica over a [Channel] by
 /// exchanging framed control messages and file bytes with the agent server
@@ -56,10 +59,14 @@ class RemoteAgent implements Agent {
   final FrameRouter _router;
   final RequestWindow _window;
 
-  /// Where the peer's own span for each exchange is reported, if anyone
-  /// asked (SPEC §17). Public for the same reason `RequestWindow.onWait` is:
-  /// it is a seam the owner supplies, not internal state.
-  final FarSideSink? onFarSide;
+  /// Where each finished exchange's split is reported, if anyone asked (SPEC
+  /// §17). Public because it is a seam the owner supplies, not internal state.
+  final ExchangeSink? onExchange;
+
+  /// Where the instants every [ExchangeRecord] is made of come from.
+  /// Injected for the reason `RequestWindow`'s is: a test asserts a queue
+  /// wait with plain values instead of sleeping.
+  final Elapsed _elapsed;
 
   /// The router's read loop. Held so [disconnect] can wait for it, and its
   /// failure is swallowed here rather than left unhandled: the error has
@@ -87,15 +94,17 @@ class RemoteAgent implements Agent {
   /// [window] is injectable so a test can pin the bound it asserts against
   /// rather than restating [RequestWindow.defaultSize].
   ///
-  /// [onFarSide] is where the peer's own span for each exchange goes, when it
-  /// reports one. Null for a caller that is not measuring.
+  /// [onExchange] is where each exchange's measured split goes. Null for a
+  /// caller that is not measuring.
   RemoteAgent(
     Channel channel,
     ReplicaSpec spec, {
     RequestWindow? window,
-    this.onFarSide,
+    this.onExchange,
+    Elapsed? elapsed,
   }) : _channel = channel,
        _spec = spec,
+       _elapsed = elapsed ?? stopwatchElapsed(),
        _window = window ?? RequestWindow(),
        _router = FrameRouter(channel.input) {
     _handshakeReplies = _router.open(Frame.noRequest);
@@ -111,7 +120,7 @@ class RemoteAgent implements Agent {
   }
 
   @override
-  Future<ReplicaInfo> hello() => _window.runExclusive(AgentOp.hello, () async {
+  Future<ReplicaInfo> hello() => _exclusive(AgentOp.hello, (record) async {
     // Both version frames carry [Frame.noRequest]: the handshake precedes
     // every request, so there is no request for them to belong to.
     try {
@@ -122,27 +131,29 @@ class RemoteAgent implements Agent {
     return _exchange(
       AgentRequest(AgentOp.hello.name, {'replica': replicaSpecToJson(_spec)}),
       (id, replies) async =>
-          replicaInfoFromJson(await _awaitResult(AgentOp.hello, replies)),
+          replicaInfoFromJson(await _awaitResult(record, replies)),
     );
   });
 
   @override
-  Future<void> lock() =>
-      _window.runExclusive(AgentOp.lock, () => _call(AgentOp.lock));
+  Future<void> lock() => _exclusive(AgentOp.lock, _call);
 
   @override
-  Future<void> unlock() =>
-      _window.runExclusive(AgentOp.unlock, () => _call(AgentOp.unlock));
+  Future<void> unlock() => _exclusive(AgentOp.unlock, _call);
 
   /// The one operation whose success does not come back as a control frame
   /// (SPEC §15.3): a `scan` reply is `FrameType.scanResult`, the binary
   /// encoding in `scan_result_codec.dart`. A *failure* is still an
   /// `AgentFailure` control frame, so the frame type is what tells the two
   /// apart — which is why this cannot go through [_call].
+  ///
+  /// It is also one of the two replies with nowhere to carry what the peer
+  /// spent (SPEC §17): the record this reports has a queue wait and a wire
+  /// span and no far side at all, which is absent rather than zero.
   @override
-  Future<ScanResult> scan(RuleSet rules) => _window.runExclusive(
+  Future<ScanResult> scan(RuleSet rules) => _exclusive(
     AgentOp.scan,
-    () => _exchange(
+    (record) => _exchange(
       AgentRequest(AgentOp.scan.name, {'rules': ruleSetToJson(rules)}),
       (id, replies) async {
         final frame = await _firstReply(replies);
@@ -170,9 +181,16 @@ class RemoteAgent implements Agent {
   /// operation could be read at all, because a reply could only be matched
   /// positionally and raw file bytes would otherwise have been decoded as
   /// the next operation's control reply.
+  ///
+  /// The record covers the whole stream rather than the call that starts it,
+  /// which is also what holds the window slot — so the two agree about what
+  /// this operation's span is.
   @override
-  Stream<List<int>> readFile(String path) =>
-      _window.runStream(path, AgentOp.readFile, () async* {
+  Stream<List<int>> readFile(String path) async* {
+    final record = _Exchange(AgentOp.readFile, _elapsed);
+    try {
+      yield* _window.runStream(path, () async* {
+        record.admit();
         final id = _nextRequestId();
         final replies = _router.open(id);
         var complete = false;
@@ -184,6 +202,10 @@ class RemoteAgent implements Agent {
           _router.close(id, discardRemaining: !complete);
         }
       });
+    } finally {
+      record.report(onExchange);
+    }
+  }
 
   @override
   Future<FileMetadata> writeFile(
@@ -191,10 +213,10 @@ class RemoteAgent implements Agent {
     Stream<List<int>> data, {
     required int mtime,
     required int mode,
-  }) => _window.run(
-    path,
+  }) => _windowed(
+    [path],
     AgentOp.writeFile,
-    () => _exchange(
+    (record) => _exchange(
       AgentRequest(AgentOp.writeFile.name, {
         'path': path,
         'mtime': mtime,
@@ -202,17 +224,17 @@ class RemoteAgent implements Agent {
       }),
       (id, replies) async {
         await sendByteStream(_channel, data, requestId: id);
-        final result = await _awaitResult(AgentOp.writeFile, replies);
+        final result = await _awaitResult(record, replies);
         return fileMetadataFromJson(result['metadata'] as Map<String, dynamic>);
       },
     ),
   );
 
   @override
-  Future<void> delete(String path) => _window.run(
-    path,
+  Future<void> delete(String path) => _windowed(
+    [path],
     AgentOp.delete,
-    () => _call(AgentOp.delete, {'path': path}),
+    (record) => _call(record, {'path': path}),
   );
 
   /// A barrier, and the only windowed-out operation that is one on its own
@@ -227,9 +249,9 @@ class RemoteAgent implements Agent {
   /// caller's, and a future caller that did interleave it must not have to
   /// rediscover why that is unsafe.
   @override
-  Future<void> removeEmptyDirs(String path) => _window.runExclusive(
+  Future<void> removeEmptyDirs(String path) => _exclusive(
     AgentOp.removeEmptyDirs,
-    () => _call(AgentOp.removeEmptyDirs, {'path': path}),
+    (record) => _call(record, {'path': path}),
   );
 
   /// Windowed rather than a barrier: every record in the batch appends to
@@ -238,32 +260,68 @@ class RemoteAgent implements Agent {
   /// it carries, so it still cannot overtake the `writeFile` or `delete` that
   /// earned one of those records.
   @override
-  Future<void> archiveCommit(List<ArchiveCommit> commits) => _window.runAll(
+  Future<void> archiveCommit(List<ArchiveCommit> commits) => _windowed(
     [for (final commit in commits) commit.path],
     AgentOp.archiveCommit,
-    () => _call(AgentOp.archiveCommit, {
+    (record) => _call(record, {
       'commits': [for (final commit in commits) archiveCommitToJson(commit)],
     }),
   );
 
   @override
-  Future<void> compact() =>
-      _window.runExclusive(AgentOp.compact, () => _call(AgentOp.compact));
+  Future<void> compact() => _exclusive(AgentOp.compact, _call);
 
   @override
-  Future<void> disconnect() =>
-      _window.runExclusive(AgentOp.disconnect, () async {
-        await _channel.close();
-        // The router holds its subscription to [Channel.input] and, between
-        // frames, holds it *paused* — and a paused subscription on a pipe keeps
-        // the file descriptor registered with the event loop whatever the peer
-        // does with its end. Closing the channel is not enough to release it: a
-        // CLI run over a real ssh session printed its summary, exited
-        // `RunController`, and then sat there forever with nothing left to do.
-        // Cancelling is what lets the process exit.
-        await _router.cancel();
-        await _reading.catchError((_) {});
+  Future<void> disconnect() => _exclusive(AgentOp.disconnect, (record) async {
+    await _channel.close();
+    // The router holds its subscription to [Channel.input] and, between
+    // frames, holds it *paused* — and a paused subscription on a pipe keeps
+    // the file descriptor registered with the event loop whatever the peer
+    // does with its end. Closing the channel is not enough to release it: a
+    // CLI run over a real ssh session printed its summary, exited
+    // `RunController`, and then sat there forever with nothing left to do.
+    // Cancelling is what lets the process exit.
+    await _router.cancel();
+    await _reading.catchError((_) {});
+  });
+
+  /// Measures one barrier operation end to end and reports it (SPEC §17).
+  ///
+  /// The window's admission is marked from inside its body, so the record's
+  /// queue wait is this call's own — not a total the window accumulated for
+  /// every call of this operation and that something else would have to
+  /// divide back out.
+  Future<T> _exclusive<T>(
+    AgentOp op,
+    Future<T> Function(_Exchange record) body,
+  ) async {
+    final record = _Exchange(op, _elapsed);
+    try {
+      return await _window.runExclusive(() {
+        record.admit();
+        return body(record);
       });
+    } finally {
+      record.report(onExchange);
+    }
+  }
+
+  /// [_exclusive] for an operation that goes in the window under [paths].
+  Future<T> _windowed<T>(
+    List<String> paths,
+    AgentOp op,
+    Future<T> Function(_Exchange record) body,
+  ) async {
+    final record = _Exchange(op, _elapsed);
+    try {
+      return await _window.runAll(paths, () {
+        record.admit();
+        return body(record);
+      });
+    } finally {
+      record.report(onExchange);
+    }
+  }
 
   /// One request-and-reply exchange under a fresh id, with the route open
   /// for as long as [body] needs it.
@@ -282,14 +340,14 @@ class RemoteAgent implements Agent {
   }
 
   /// [AgentOp.name] *is* the protocol's `op` string (SPEC §15.3), so naming
-  /// the operation once names it for the wire and for the window's report
-  /// both, and the two cannot drift apart.
+  /// the operation once names it for the wire and for the record both, and
+  /// the two cannot drift apart.
   Future<Map<String, dynamic>> _call(
-    AgentOp op, [
+    _Exchange record, [
     Map<String, dynamic> params = const {},
   ]) => _exchange(
-    AgentRequest(op.name, params),
-    (id, replies) => _awaitResult(op, replies),
+    AgentRequest(record.op.name, params),
+    (id, replies) => _awaitResult(record, replies),
   );
 
   int _nextRequestId() {
@@ -317,24 +375,77 @@ class RemoteAgent implements Agent {
   /// The reply's payload, and — on the way past — whatever the peer said
   /// this exchange cost *it* (SPEC §17).
   ///
-  /// Reported here rather than in each operation because this is the one
-  /// place every control-frame reply passes through, and the figure is read
-  /// off the same decode that already happened. The two replies that do not
+  /// Stashed on [record] rather than reported straight out, because the
+  /// figure belongs to this call and the call is not over: the record leaves
+  /// as one measurement with its own queue wait, its own wire span and its
+  /// own far side, so nothing downstream ever has to pair them up again.
+  ///
+  /// Read here rather than in each operation because this is the one place
+  /// every control-frame reply passes through. The two replies that do not
   /// come through here, `scan` and `readFile`, have nowhere to carry it and
-  /// report nothing, which the recorder keeps distinguishable from zero.
+  /// report nothing, which stays distinguishable from zero.
   Future<Map<String, dynamic>> _awaitResult(
-    AgentOp op,
+    _Exchange record,
     Stream<Frame> replies,
   ) async {
     return switch (AgentResult.fromFrame(await _firstReply(replies))) {
-      AgentSuccess(:final data) => _reportFarSide(op, data),
+      AgentSuccess(:final data) => record.sawFarSide(data),
       AgentFailure(:final error) => throw AgentOperationException(error),
     };
   }
+}
 
-  Map<String, dynamic> _reportFarSide(AgentOp op, Map<String, dynamic> data) {
-    final span = farSideFromJson(data);
-    if (span != null) onFarSide?.call(op, span);
+/// One exchange being measured: the instants `RemoteAgent` owns, held until
+/// the call is over and they can leave together as an [ExchangeRecord].
+///
+/// Mutable and private. [ExchangeRecord] is the immutable shape that leaves
+/// this file, for the same reason the recorder's replica record is private.
+class _Exchange {
+  final AgentOp op;
+  final Elapsed _elapsed;
+
+  final Duration _issuedAt;
+
+  /// When the window let this call start, or null while it is still queued —
+  /// which is not the same as "it waited no time", and is why this is
+  /// nullable rather than initialised to [_issuedAt].
+  Duration? _admittedAt;
+
+  FarSideReport? _far;
+  bool _reported = false;
+
+  _Exchange(this.op, this._elapsed) : _issuedAt = _elapsed();
+
+  /// Marks the window's admission — called from inside the window's body, so
+  /// it is this call's instant and no one else's.
+  void admit() => _admittedAt ??= _elapsed();
+
+  /// Keeps what [data] says the peer spent on this call, and answers [data]
+  /// so this can sit on the decode path without a statement of its own.
+  Map<String, dynamic> sawFarSide(Map<String, dynamic> data) {
+    _far = farSideFromJson(data);
     return data;
+  }
+
+  /// Hands the finished measurement to [sink], once.
+  ///
+  /// Idempotent, so a `finally` on an abandoned `readFile` stream cannot
+  /// report the same exchange twice. A call that never reached the window —
+  /// one whose predecessor threw — reports a wire span of zero and its real
+  /// wait, which is the honest reading of an operation that was only ever
+  /// queued.
+  void report(ExchangeSink? sink) {
+    if (_reported || sink == null) return;
+    _reported = true;
+    final now = _elapsed();
+    final admitted = _admittedAt ?? now;
+    sink(
+      ExchangeRecord(
+        op: op,
+        queueWait: admitted - _issuedAt,
+        wire: now - admitted,
+        far: _far,
+      ),
+    );
   }
 }

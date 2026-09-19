@@ -3,6 +3,9 @@ import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
+import 'package:dsync/dsync_core/run/elapsed.dart';
+
 /// Turns this connection's frames into writes on an [IOSink], and owns how
 /// many of them share one write (SPEC §4.2).
 ///
@@ -62,19 +65,33 @@ class FlushedSink {
   /// the loop picks the frame up on its next pass.
   bool _draining = false;
 
+  final Elapsed _elapsed;
+
   int _writes = 0;
+  int _sends = 0;
+  int _maxBatch = 0;
+  Duration _waited = Duration.zero;
+  final List<int> _batches = List.filled(batchBucketLabels.length, 0);
 
-  FlushedSink(this._sink);
+  /// [elapsed] is the same injected reading the recorder and the window take,
+  /// so a test can assert a queue wait with plain values instead of sleeping.
+  FlushedSink(this._sink, {Elapsed? elapsed})
+    : _elapsed = elapsed ?? stopwatchElapsed();
 
-  /// How many `add`-and-`flush` pairs this has made, which is what the link
-  /// was actually asked to carry.
+  /// What this sink has actually done with what it was handed (SPEC §17).
   ///
-  /// Below the number of [send] calls by exactly the frames that left in
-  /// company, so `frames / writes` is the coalescing this class does — the
-  /// one figure that says whether it is working, and the reason it is counted
-  /// here rather than inferred above: a `Channel.send` count cannot fall when
-  /// the batching happens beneath it (SPEC §17).
-  int get writes => _writes;
+  /// Counted here rather than inferred above, because a `Channel.send` count
+  /// cannot fall when the batching happens beneath it — and the wait a sender
+  /// spent queued behind other senders' flushes is visible nowhere else at
+  /// all. Cumulative, so a run that aborts still has the figures up to where
+  /// it stopped.
+  SinkWriteStats get stats => SinkWriteStats(
+    writes: _writes,
+    sends: _sends,
+    waited: _waited,
+    maxBatch: _maxBatch,
+    batches: List.unmodifiable(_batches),
+  );
 
   /// Writes [bytes] and returns once they have been flushed.
   ///
@@ -82,7 +99,7 @@ class FlushedSink {
   /// over while a write is in flight go out in the next one, possibly
   /// alongside another sender's.
   Future<void> send(Uint8List bytes) {
-    final pending = _Pending(bytes);
+    final pending = _Pending(bytes, _elapsed());
     _queued.add(pending);
     if (!_draining) unawaited(_drain());
     return pending.flushed.future;
@@ -118,17 +135,32 @@ class FlushedSink {
   /// it with the same outcome.
   Future<void> _writeBatch(List<_Pending> batch) async {
     _writes++;
+    _sends += batch.length;
+    _batches[batchBucket(batch.length)]++;
+    if (batch.length > _maxBatch) _maxBatch = batch.length;
     try {
       _sink.add(batch.length == 1 ? batch.single.bytes : _join(batch));
       await _sink.flush();
     } catch (error, stack) {
+      _settle(batch);
       for (final pending in batch) {
         pending.flushed.completeError(error, stack);
       }
       return;
     }
+    _settle(batch);
     for (final pending in batch) {
       pending.flushed.complete();
+    }
+  }
+
+  /// Adds every frame in [batch]'s wait to the total, before its caller is
+  /// told either way — a send that failed still waited, and a report that
+  /// dropped those would understate exactly the run that went wrong.
+  void _settle(List<_Pending> batch) {
+    final now = _elapsed();
+    for (final pending in batch) {
+      _waited += now - pending.queuedAt;
     }
   }
 
@@ -150,7 +182,12 @@ class FlushedSink {
 /// One frame handed to [FlushedSink.send] and the caller waiting on it.
 class _Pending {
   final Uint8List bytes;
+
+  /// When this frame was handed over, so the wait it goes on to serve behind
+  /// the writes ahead of it is measured rather than assumed (SPEC §17).
+  final Duration queuedAt;
+
   final Completer<void> flushed = Completer<void>();
 
-  _Pending(this.bytes);
+  _Pending(this.bytes, this.queuedAt);
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -61,22 +62,34 @@ sealed class AgentResult {
   }
 }
 
-/// The key under which a peer reports how long an operation took on *its*
-/// side, in microseconds (SPEC §17) — the request frame arriving at
-/// `AgentServer` to its reply going out.
+/// The keys under which a peer reports what an exchange cost *it* (SPEC §17)
+/// — see [FarSideReport] for what each one means.
 ///
-/// **Optional, and absent is not zero.** A build that does not measure it
-/// omits the key, and [farSideFromJson] answers null rather than
+/// **Optional, and absent is not zero.** A build that does not measure them
+/// omits the keys, and [farSideFromJson] answers null rather than a report of
 /// `Duration.zero`: zero would read as "the destination cost nothing", which
-/// is exactly the conclusion this figure exists to check rather than assume.
-/// An added optional field needs no `protocolVersion` bump — a peer that
-/// omits it decodes to the absence it would have had anyway.
+/// is exactly the conclusion these figures exist to check rather than assume.
+/// Added optional fields need no `protocolVersion` bump — a peer that omits
+/// them decodes to the absence it would have had anyway, one key at a time.
 const farSideKey = 'farSideMicros';
+const farInFlightKey = 'farInFlight';
+const farSendWaitKey = 'farSendWaitMicros';
 
-/// The peer's own span for this exchange, or null if it did not report one.
-Duration? farSideFromJson(Map<String, dynamic> data) {
+/// What the peer said this exchange cost it, or null if it said nothing.
+///
+/// [FarSideReport.span] is what makes a report a report: a peer that reports
+/// its concurrency but not its span has told us nothing to attribute, so that
+/// decodes as no report at all rather than as a report with a hole in it.
+FarSideReport? farSideFromJson(Map<String, dynamic> data) {
   final micros = data[farSideKey];
-  return micros is int ? Duration(microseconds: micros) : null;
+  if (micros is! int) return null;
+  final inFlight = data[farInFlightKey];
+  final sendWait = data[farSendWaitKey];
+  return FarSideReport(
+    span: Duration(microseconds: micros),
+    inFlight: inFlight is int ? inFlight : null,
+    sendWait: sendWait is int ? Duration(microseconds: sendWait) : null,
+  );
 }
 
 /// The operation succeeded; [data] carries whatever result it returns, empty
@@ -86,11 +99,18 @@ class AgentSuccess extends AgentResult {
 
   const AgentSuccess([this.data = const {}]);
 
-  /// This result with the peer's own span for the exchange added (SPEC §17),
-  /// which is how [farSideKey] gets onto the wire without every `case` in
-  /// the dispatch having to remember it.
-  AgentSuccess withFarSide(Duration span) =>
-      AgentSuccess({...data, farSideKey: span.inMicroseconds});
+  /// This result with what the exchange cost this side added (SPEC §17),
+  /// which is how those keys get onto the wire without every `case` in the
+  /// dispatch having to remember them.
+  ///
+  /// A figure this side could not measure is left out rather than sent as
+  /// zero, so the absence the decoder preserves starts here.
+  AgentSuccess withFarSide(FarSideReport report) => AgentSuccess({
+    ...data,
+    farSideKey: report.span.inMicroseconds,
+    if (report.inFlight != null) farInFlightKey: report.inFlight!,
+    if (report.sendWait case final wait?) farSendWaitKey: wait.inMicroseconds,
+  });
 
   @override
   Frame toFrame(int requestId) => Frame(

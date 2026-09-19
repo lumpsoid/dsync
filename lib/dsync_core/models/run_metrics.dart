@@ -1,3 +1,6 @@
+import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
+
 /// One step of `RunController`'s flow (SPEC §13), in the order it drives them.
 ///
 /// The phase split is the one the flow already has, not a finer one invented
@@ -75,14 +78,26 @@ enum AgentOp {
 }
 
 /// Everything one [AgentOp] cost on one replica across a whole run.
+///
+/// **Two sources, kept apart on purpose.** [count], [total], [max] and
+/// [bytes] are the `Agent` boundary's view, recorded by `MeteredAgent` on
+/// either kind of replica. [exchanges] and everything beside it come from
+/// `RemoteAgent`'s per-call [ExchangeRecord]s and exist only on a remote one.
+///
+/// **Nothing here is a subtraction of one total from another.** Every split
+/// was taken on one call, from instants that nest, by the one object that saw
+/// all of them; this only ever adds up quantities that arrived already split,
+/// and each mean is divided by the count of the calls that contributed to
+/// *it*. The arrangement it replaces — `total − queueWait`, then
+/// `meanWire − meanFar` over two different denominators, both clamped at zero
+/// — could not tell a real figure from two counters disagreeing.
 class AgentOpStats {
-  /// How many times the operation was called.
+  /// How many times the operation was called, at the `Agent` boundary.
   final int count;
 
   /// Summed wall time of every call, measured at the `Agent` boundary — for
-  /// a local replica the filesystem call, and for a remote one the wait for a
-  /// window slot plus the exchange, which [queueWait] and [wireTime] split
-  /// apart.
+  /// a local replica the filesystem call, and for a remote one the whole of
+  /// it, queueing included.
   final Duration total;
 
   /// The slowest single call. Kept alongside [total] because a mean hides
@@ -101,59 +116,70 @@ class AgentOpStats {
   /// overhead, which is the whole point of measuring both.
   final int bytes;
 
+  /// How many exchanges of this operation reported a measured split — every
+  /// call on a remote replica, none at all on a local one, which has no
+  /// window and no wire.
+  ///
+  /// The denominator for [meanQueueWait] and [meanWireTime], and not the same
+  /// number as [count]: the two are recorded by different collaborators at
+  /// different instants, so a snapshot taken mid-run holds calls counted at
+  /// one and not yet at the other. Keeping them apart is what stops that
+  /// from showing up as a plausible-looking duration.
+  final int exchanges;
+
   /// Summed time these calls spent waiting for a `RequestWindow` slot rather
   /// than on the wire (SPEC §17) — the path predecessor they queued behind,
   /// the window's bound, or a barrier ahead of them.
   ///
-  /// Zero on a local replica, which has no window, and zero on a remote one
-  /// whose window was never full.
-  ///
-  /// **This is the split a mean stopped being readable without.** Since task
-  /// 0f7dfc several operations are outstanding at once, so [total] bundles
-  /// queueing with the exchange itself, and the two have opposite fixes: a
-  /// mean that rose because [queueWait] rose says "we are queueing — the
-  /// window or the concurrency is the bound", while one that rose because
-  /// [wireTime] rose says "the exchange itself got dearer". A single figure
-  /// cannot tell those apart, and choosing between them from arithmetic over
-  /// the figure is how the wrong one gets picked.
+  /// **The split a mean stopped being readable without.** Since task 0f7dfc
+  /// several operations are outstanding at once, and a mean that rose because
+  /// this rose says "we are queueing — the window or the concurrency is the
+  /// bound", while one that rose because [wire] rose says "the exchange
+  /// itself got dearer". A single figure cannot tell those apart.
   final Duration queueWait;
 
-  /// Summed time the *peer* spent on these calls, as the peer measured it:
-  /// from the request frame arriving at `AgentServer` to its reply going out
-  /// (SPEC §17).
-  ///
-  /// **This is the second half of a figure that used to be one.** A remote
-  /// [wireTime] covers the request going out, whatever the far side did, and
-  /// the reply coming back — three things with three different fixes. On the
-  /// measured run `writeFile` cost 40.9 ms an action and nothing could say
-  /// how much of it was the destination's own write and fsync. Subtracting
-  /// this leaves the link: `wireTime - farSide`.
-  ///
-  /// For [AgentOp.writeFile] the peer's span starts when the request frame
-  /// lands, so it *includes* draining the inbound file bytes — the transfer
-  /// is inside this figure, not outside it. What it excludes is the request
-  /// going out and the reply coming back, which is the part this split
-  /// exists to isolate.
-  final Duration farSide;
+  /// Summed time these calls spent on the wire: admitted to finished, the
+  /// request out, whatever the peer did, and the reply back.
+  final Duration wire;
 
-  /// How many of these calls came back with a [farSide] figure at all.
+  /// Summed time the *peer* spent on the calls that reported one, as the peer
+  /// measured it (SPEC §17), and how many of them did.
   ///
-  /// Separate from [count] because **absent is not zero**. A peer that does
-  /// not report its own span — an older build, or an operation like `scan`
-  /// and `readFile` whose reply is not a success control frame — must not
-  /// read as a destination that cost nothing, which is precisely the
-  /// conclusion this measurement exists to rule out. A mean over zero
-  /// samples is no mean, and the report says so rather than printing 0 ms.
-  final int farSideCount;
+  /// **Absent is not zero**, which is what [farCount] is for. A peer that
+  /// does not report its own span — an older build, or an operation like
+  /// `scan` and `readFile` whose reply is not a success control frame — must
+  /// not read as a destination that cost nothing, which is precisely the
+  /// conclusion this measurement exists to rule out.
+  ///
+  /// **And it is residency, not service time.** The peer dispatches every
+  /// arriving request concurrently, so this is wall time on an agent serving
+  /// [meanFarInFlight] requests at once. Read the two together or not at all.
+  final Duration far;
+  final int farCount;
+
+  /// Summed link time over those same calls: each one's own [wire] less its
+  /// own far-side span. Divided by [farCount], never by [count].
+  final Duration link;
+
+  /// Summed count of requests the peer had in flight across the calls that
+  /// reported one — the denominator for that is [farInFlightCount], since a
+  /// peer may report its span without reporting its concurrency.
+  final int farInFlight;
+  final int farInFlightCount;
 
   const AgentOpStats({
     required this.count,
     required this.total,
     required this.max,
     required this.bytes,
+    this.exchanges = 0,
     this.queueWait = Duration.zero,
-    this.farSide = Duration.zero,
-    this.farSideCount = 0,
+    this.wire = Duration.zero,
+    this.far = Duration.zero,
+    this.farCount = 0,
+    this.link = Duration.zero,
+    this.farInFlight = 0,
+    this.farInFlightCount = 0,
   });
 
   /// Zero of everything — the starting point [merge] accumulates onto.
@@ -164,95 +190,91 @@ class AgentOpStats {
     bytes: 0,
   );
 
-  /// This plus one more call of [elapsed] carrying [bytes] payload bytes.
-  AgentOpStats merge(Duration elapsed, int bytes) => AgentOpStats(
+  /// This plus one more call of [elapsed] carrying [bytes] payload bytes, as
+  /// the `Agent` boundary saw it.
+  AgentOpStats merge(Duration elapsed, int bytes) => _with(
     count: count + 1,
     total: total + elapsed,
     max: elapsed > max ? elapsed : max,
     bytes: this.bytes + bytes,
-    queueWait: queueWait,
-    farSide: farSide,
-    farSideCount: farSideCount,
   );
 
-  /// This plus one more call's wait for a window slot.
+  /// This plus one exchange's measured split (SPEC §17).
   ///
-  /// Separate from [merge] because the two are recorded by different things
-  /// at different moments: the window reports a wait as the operation is
-  /// admitted, while the span is recorded when it ends. A call whose wait
-  /// arrived but whose span has not yet shows here with [count] still behind
-  /// — which is the honest reading of an operation still running.
-  AgentOpStats mergeQueueWait(Duration wait) => AgentOpStats(
-    count: count,
-    total: total,
-    max: max,
-    bytes: bytes,
-    queueWait: queueWait + wait,
-    farSide: farSide,
-    farSideCount: farSideCount,
+  /// Separate from [merge] because the two arrive from different
+  /// collaborators at different instants — `RemoteAgent` reports the split as
+  /// the exchange ends, `MeteredAgent` the boundary span as the call returns
+  /// — and folding them into one counter is what made a snapshot able to hold
+  /// halves of two different populations.
+  AgentOpStats mergeExchange(ExchangeRecord record) => _with(
+    exchanges: exchanges + 1,
+    queueWait: queueWait + record.queueWait,
+    wire: wire + record.wire,
+    far: record.far == null ? far : far + record.far!.span,
+    farCount: record.far == null ? farCount : farCount + 1,
+    link: record.link == null ? link : link + record.link!,
+    farInFlight: farInFlight + (record.far?.inFlight ?? 0),
+    farInFlightCount: farInFlightCount + (record.far?.inFlight == null ? 0 : 1),
   );
 
-  /// This plus one more call whose peer reported [span] as its own time.
-  ///
-  /// Separate from [merge] for the same reason [mergeQueueWait] is: the
-  /// figure arrives from a different collaborator at a different instant —
-  /// off the reply, before the operation's own span has closed.
-  AgentOpStats mergeFarSide(Duration span) => AgentOpStats(
-    count: count,
-    total: total,
-    max: max,
-    bytes: bytes,
-    queueWait: queueWait,
-    farSide: farSide + span,
-    farSideCount: farSideCount + 1,
-  );
+  /// Mean call time at the `Agent` boundary, or null for an operation never
+  /// called — null rather than zero, so "never happened" and "was instant"
+  /// stay different answers.
+  Duration? get mean => _per(total, count);
 
-  /// Mean call time, [Duration.zero] for an operation never called.
-  ///
-  /// On a remote replica this is what one call cost end to end. It is *not*
-  /// the link's round-trip time any more — see [queueWait]; [meanWireTime] is
-  /// the figure that answers that.
-  Duration get mean => _per(total);
+  /// Mean wait for a window slot per exchange.
+  Duration? get meanQueueWait => _per(queueWait, exchanges);
 
-  /// [total] with the queueing taken out: what these calls spent on the
-  /// exchange itself.
-  ///
-  /// Clamped at zero rather than allowed to go negative. The two figures are
-  /// recorded at different instants by different collaborators, so a snapshot
-  /// taken mid-operation can hold a wait whose span has not landed yet, and a
-  /// report that showed "-3 ms" would look like a bug in the code being
-  /// measured rather than in the moment it was measured.
-  Duration get wireTime =>
-      total > queueWait ? total - queueWait : Duration.zero;
-
-  /// Mean wait for a window slot per call.
-  Duration get meanQueueWait => _per(queueWait);
-
-  /// Mean time on the wire per call — for a remote replica, one exchange:
-  /// the request out, the peer's own work, and the reply back. [meanFarSide]
-  /// is the middle term of those three when the peer reports it.
-  Duration get meanWireTime => _per(wireTime);
+  /// Mean time on the wire per exchange — the request out, the peer's own
+  /// work, and the reply back.
+  Duration? get meanWireTime => _per(wire, exchanges);
 
   /// Mean time the peer spent per call that reported one, or null when none
-  /// did — null rather than zero, for the reason [farSideCount] gives.
-  Duration? get meanFarSide => farSideCount == 0
-      ? null
-      : Duration(microseconds: farSide.inMicroseconds ~/ farSideCount);
+  /// did. Residency: read it with [meanFarInFlight].
+  Duration? get meanFarSide => _per(far, farCount);
 
-  /// [meanWireTime] with the peer's own time taken out: what one exchange
-  /// cost the *link*, request out and reply back. Null when the peer did not
-  /// report, and clamped at zero for the reason [wireTime] is — the two
-  /// figures are sampled at different instants.
-  Duration? get meanLinkTime {
-    final far = meanFarSide;
-    if (far == null) return null;
-    final wire = meanWireTime;
-    return wire > far ? wire - far : Duration.zero;
-  }
+  /// Mean link time per call that reported a far side — the request out and
+  /// the reply back, measured per call and then averaged, not averaged and
+  /// then subtracted.
+  Duration? get meanLinkTime => _per(link, farCount);
 
-  Duration _per(Duration value) => count == 0
-      ? Duration.zero
-      : Duration(microseconds: value.inMicroseconds ~/ count);
+  /// Mean number of requests the peer had in flight while serving these, or
+  /// null from a peer that does not report it. A figure near 1 says
+  /// [meanFarSide] is service time; a figure near the initiator's concurrency
+  /// says it is residency and cannot be read as the destination's own cost.
+  double? get meanFarInFlight =>
+      farInFlightCount == 0 ? null : farInFlight / farInFlightCount;
+
+  AgentOpStats _with({
+    int? count,
+    Duration? total,
+    Duration? max,
+    int? bytes,
+    int? exchanges,
+    Duration? queueWait,
+    Duration? wire,
+    Duration? far,
+    int? farCount,
+    Duration? link,
+    int? farInFlight,
+    int? farInFlightCount,
+  }) => AgentOpStats(
+    count: count ?? this.count,
+    total: total ?? this.total,
+    max: max ?? this.max,
+    bytes: bytes ?? this.bytes,
+    exchanges: exchanges ?? this.exchanges,
+    queueWait: queueWait ?? this.queueWait,
+    wire: wire ?? this.wire,
+    far: far ?? this.far,
+    farCount: farCount ?? this.farCount,
+    link: link ?? this.link,
+    farInFlight: farInFlight ?? this.farInFlight,
+    farInFlightCount: farInFlightCount ?? this.farInFlightCount,
+  );
+
+  static Duration? _per(Duration value, int count) =>
+      count == 0 ? null : Duration(microseconds: value.inMicroseconds ~/ count);
 }
 
 /// What one replica's `Agent` cost over a run, by operation.
@@ -288,33 +310,51 @@ class ReplicaMetrics {
   final int sends;
   final int framesSent;
 
-  /// How many `add`-and-`flush` pairs those buffers actually became (SPEC
+  /// What this side's `FlushedSink` actually did with those sends (SPEC
   /// §17), or null for a transport with no sink to flush.
   ///
-  /// The third number the other two cannot give, and the reason it exists:
-  /// since task 9d2158 `FlushedSink` drains everything queued behind an
-  /// in-flight write into one of them, and that happens *below* the point
-  /// [sends] is counted at, so no arithmetic over [sends] and [framesSent]
-  /// can see it. [framesPerWrite] is what says whether the coalescing bit.
+  /// The numbers [sends] and [framesSent] cannot give, and the reason they
+  /// exist: since task 9d2158 `FlushedSink` drains everything queued behind
+  /// an in-flight write into one of them, which happens *below* the point
+  /// [sends] is counted at, so no arithmetic up here can see it.
   ///
   /// **Null rather than zero**, because a channel that does not write to a
   /// sink — an in-memory pair — has no write to count, and zero there would
-  /// read as the one outcome this figure exists to detect.
-  final int? writes;
+  /// read as the one outcome these figures exist to detect.
+  final SinkWriteStats? writeStats;
 
-  /// How long this replica's transport carried nothing, per phase (SPEC §17).
+  /// The peer's own cumulative wait on *its* sink, as of the last reply that
+  /// carried the figure, or null from a peer that does not report it.
   ///
-  /// The gaps between one byte moving and the next, so a phase absent here
-  /// is one during which the connection was never measured rather than one
-  /// that was never idle. Zero for a local replica, which has no wire.
+  /// **Because `far` stops one line before the peer's reply is written.** The
+  /// wait that reply then serves behind the peer's other senders falls
+  /// outside the peer's span and lands inside what this side calls the link.
+  /// A frame cannot carry the cost of its own flush, so this is the session
+  /// total instead: read against [linkTime], it says whether an apparent link
+  /// latency is really the peer's send queue — which is exactly what it cost
+  /// this side to discover the hard way.
+  final Duration? peerSendWait;
+
+  /// How long this replica's transport had nothing to carry, per phase, and
+  /// how long it had something outstanding and was waiting for it (SPEC §17).
   ///
-  /// **This is the figure that chooses the next optimization.** A phase that
-  /// used a fraction of its link and was idle for the rest was waiting, and
-  /// the fix is fewer round trips or more of them in flight; a phase that
-  /// used a fraction of its link with no idle time was busy, and the fix is
-  /// elsewhere entirely. Nothing else here can tell those apart — a byte
-  /// count cannot, because both move the same bytes.
-  final Map<RunPhase, Duration> idle;
+  /// **Two figures rather than one, because the old single one was biased.**
+  /// A send is a span but a receive is a point event, so every byte arriving
+  /// contributed no busy time and the whole of an inbound transfer read as
+  /// silence. These are measured from what this side *has outstanding*
+  /// instead, which is a state it knows at every instant rather than
+  /// something it infers from the gaps between events:
+  ///
+  /// - [quiet] — no send in flight and no operation open. The link had
+  ///   nothing to do, and this is the figure that speaks to concurrency.
+  /// - [awaiting] — no send in flight but an operation still open. This side
+  ///   is waiting on the peer or the link, and more callers will not help.
+  ///
+  /// A phase absent from either is one during which the connection was never
+  /// measured rather than one that was never idle. Both empty for a local
+  /// replica, which has no wire.
+  final Map<RunPhase, Duration> quiet;
+  final Map<RunPhase, Duration> awaiting;
 
   const ReplicaMetrics({
     required this.side,
@@ -324,8 +364,10 @@ class ReplicaMetrics {
     required this.wireBytesReceived,
     this.sends = 0,
     this.framesSent = 0,
-    this.writes,
-    this.idle = const {},
+    this.writeStats,
+    this.peerSendWait,
+    this.quiet = const {},
+    this.awaiting = const {},
   });
 
   /// Every operation's calls summed: on a remote replica, the run's total
@@ -347,10 +389,14 @@ class ReplicaMetrics {
   Duration get queueWait =>
       ops.values.fold(Duration.zero, (sum, stats) => sum + stats.queueWait);
 
-  /// Every operation's time on the wire summed — [opTime] with the queueing
-  /// taken out.
+  /// Every operation's time on the wire summed.
   Duration get wireTime =>
-      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.wireTime);
+      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.wire);
+
+  /// Every exchange's link time summed, over the calls whose peer reported a
+  /// span. Read [peerSendWait] against this.
+  Duration get linkTime =>
+      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.link);
 
   /// Mean bytes per frame sent, zero when nothing was sent. The size the
   /// protocol actually put on the link, framing included.
@@ -363,12 +409,13 @@ class ReplicaMetrics {
   /// Frames per actual write — what [framesPerSend] would say if [sends] were
   /// counted below the coalescing instead of above it (SPEC §17).
   ///
-  /// One while nothing batches, and the figure task 9d2158's phase 3 is
-  /// judged by: it rises exactly as far as `FlushedSink` found frames queued
-  /// behind a write in flight. Null when this side reported no write count,
-  /// and null rather than 1 when it reported zero writes, since "nothing was
-  /// written" is not a ratio.
-  double? get framesPerWrite => switch (writes) {
+  /// **A poor summary of its own subject, kept for continuity.** It moved
+  /// 1.00 → 1.15 on the run where the effect it exists to detect moved ~2×,
+  /// because a mean over every write is diluted by the majority that drain
+  /// with nothing queued. [SinkWriteStats.batches] is the figure to read.
+  /// Null when this side reported no writes, and null rather than 1 when it
+  /// reported zero, since "nothing was written" is not a ratio.
+  double? get framesPerWrite => switch (writeStats?.writes) {
     null || 0 => null,
     final count => framesSent / count,
   };
@@ -383,9 +430,12 @@ class ReplicaMetrics {
   /// latency.
   double get sendsPerOp => opCount == 0 ? 0 : sends / opCount;
 
-  /// Every phase's idle time summed.
-  Duration get idleTime =>
-      idle.values.fold(Duration.zero, (sum, value) => sum + value);
+  /// Every phase's quiet and awaiting time summed.
+  Duration get quietTime =>
+      quiet.values.fold(Duration.zero, (sum, value) => sum + value);
+
+  Duration get awaitingTime =>
+      awaiting.values.fold(Duration.zero, (sum, value) => sum + value);
 }
 
 /// What one run cost, and where (SPEC §17).

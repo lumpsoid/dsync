@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
@@ -152,7 +153,7 @@ class SocketChannel implements Channel {
   /// What [FlushedSink] actually wrote, below the number of `send` calls by
   /// the frames that left in company (SPEC §17).
   @override
-  int get writes => _writer.writes;
+  SinkWriteStats get writeStats => _writer.stats;
 
   /// Closes this end: the write side first — which is the EOF that ends the
   /// peer's session (SPEC §4.2) — then the socket itself.

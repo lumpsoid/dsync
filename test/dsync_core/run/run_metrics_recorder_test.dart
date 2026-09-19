@@ -1,3 +1,6 @@
+import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/far_side_report.dart';
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 import 'package:test/test.dart';
@@ -15,6 +18,10 @@ void main() {
   setUp(() {
     now = Duration.zero;
     metrics = RunMetricsRecorder(elapsed: () => now);
+    // `b` is the remote side throughout, as every head wires it: the link
+    // figures only exist for a side that has one, and `MeteredAgent` declares
+    // this at construction, before any operation.
+    metrics.markRemote('b');
   });
 
   void advance(Duration by) => now += by;
@@ -204,19 +211,57 @@ void main() {
     });
   });
 
-  group('wire idle', () {
-    test('the gap between two bytes moving lands on the open phase', () {
+  group('the link not carrying', () {
+    test('silence with nothing outstanding is quiet, not waiting', () {
       metrics.beginPhase(RunPhase.apply);
       metrics.beginSend('b', bytes: 10, frames: 1).end();
-      advance(const Duration(milliseconds: 40));
-      metrics.countReceive('b', bytes: 10);
-      advance(const Duration(milliseconds: 10));
+      advance(const Duration(milliseconds: 50));
       metrics.beginSend('b', bytes: 10, frames: 1).end();
       metrics.endPhase(RunPhase.apply);
 
-      expect(metrics.snapshot().replicas['b']!.idle, {
-        RunPhase.apply: const Duration(milliseconds: 50),
-      });
+      final replica = metrics.snapshot().replicas['b']!;
+      expect(replica.quiet, {RunPhase.apply: const Duration(milliseconds: 50)});
+      expect(replica.awaiting, isEmpty);
+    });
+
+    test('silence with an operation open is waiting, not quiet', () {
+      // The split a single `idle` total could not make, and the one that
+      // decides whether more callers would help: this side has something
+      // outstanding, so they would not.
+      metrics.beginPhase(RunPhase.apply);
+      final operation = metrics.beginOp('b', AgentOp.writeFile);
+      metrics.beginSend('b', bytes: 10, frames: 1).end();
+      advance(const Duration(milliseconds: 70));
+      operation.end();
+      metrics.endPhase(RunPhase.apply);
+
+      final replica = metrics.snapshot().replicas['b']!;
+      expect(
+        replica.awaiting[RunPhase.apply],
+        const Duration(milliseconds: 70),
+      );
+      expect(replica.quiet[RunPhase.apply], isNull);
+    });
+
+    test('bytes arriving are not treated as the link being busy', () {
+      // A send is a span and a receive is a point event, so crediting a
+      // receive as activity made every inbound transfer read as silence
+      // ending at each chunk. What decides the figure is what this side has
+      // outstanding, and a receive says nothing about that.
+      metrics.beginPhase(RunPhase.apply);
+      final operation = metrics.beginOp('b', AgentOp.readFile);
+      advance(const Duration(milliseconds: 30));
+      metrics.countReceive('b', bytes: 4096);
+      advance(const Duration(milliseconds: 30));
+      operation.end();
+      metrics.endPhase(RunPhase.apply);
+
+      final replica = metrics.snapshot().replicas['b']!;
+      expect(
+        replica.awaiting[RunPhase.apply],
+        const Duration(milliseconds: 60),
+      );
+      expect(replica.quiet, isEmpty);
     });
 
     test('a phase that ended in silence is charged that silence', () {
@@ -228,7 +273,7 @@ void main() {
       metrics.endPhase(RunPhase.apply);
 
       expect(
-        metrics.snapshot().replicas['b']!.idle[RunPhase.apply],
+        metrics.snapshot().replicas['b']!.quiet[RunPhase.apply],
         const Duration(seconds: 3),
       );
     });
@@ -240,23 +285,40 @@ void main() {
       advance(const Duration(seconds: 2));
       metrics.endPhase(RunPhase.compact);
 
-      // Counting from the last byte rather than from the phase's own start
-      // would charge `compact` with five seconds that happened before it.
+      // Counting from the last boundary rather than from the phase's own
+      // start would charge `compact` with five seconds before it began.
       expect(
-        metrics.snapshot().replicas['b']!.idle[RunPhase.compact],
+        metrics.snapshot().replicas['b']!.quiet[RunPhase.compact],
         const Duration(seconds: 2),
       );
     });
 
-    test('a side that has not spoken yet has no idle time', () {
+    test('a local side has neither figure, having no link', () {
+      // Absent rather than zero: a replica with no wire has nothing that
+      // could be carrying or waiting, and a zero would invite the reading
+      // that its link was busy throughout.
+      metrics.beginPhase(RunPhase.apply);
+      final operation = metrics.beginOp('a', AgentOp.writeFile);
+      advance(const Duration(seconds: 2));
+      operation.end();
+      metrics.endPhase(RunPhase.apply);
+
+      final replica = metrics.snapshot().replicas['a']!;
+      expect(replica.remote, isFalse);
+      expect(replica.quiet, isEmpty);
+      expect(replica.awaiting, isEmpty);
+    });
+
+    test('a side that has not been measured yet has neither figure', () {
       // Absent rather than zero: nothing has been measured, which is not the
       // same as a link that was never idle.
       metrics.beginPhase(RunPhase.connect);
       advance(const Duration(seconds: 4));
       metrics.endPhase(RunPhase.connect);
-      metrics.beginOp('b', AgentOp.hello).end();
 
-      expect(metrics.snapshot().replicas['b']!.idle, isEmpty);
+      final replica = metrics.snapshot().replicas['b']!;
+      expect(replica.quiet, isEmpty);
+      expect(replica.awaiting, isEmpty);
     });
   });
 
@@ -284,21 +346,21 @@ void main() {
       expect(replica.framesPerSend, 2);
     });
 
-    test('writes are the channel\'s cumulative total, set not added', () {
-      // `MeteredChannel` reads a running total off the channel, so the last
-      // reading is the answer — adding them would count every write again on
-      // every send (SPEC §17).
+    test('writes are the sink\'s cumulative figures, set not merged', () {
+      // `MeteredChannel` reads running figures off the channel, so the last
+      // reading is the answer — merging them would count every write again
+      // on every send (SPEC §17).
       metrics.beginSend('b', bytes: 100, frames: 1).end();
-      metrics.countWrites('b', 1);
+      metrics.countWrites('b', _sinkWrites(1));
       metrics.beginSend('b', bytes: 100, frames: 1).end();
-      metrics.countWrites('b', 1);
+      metrics.countWrites('b', _sinkWrites(1));
       metrics.beginSend('b', bytes: 100, frames: 2).end();
-      metrics.countWrites('b', 2);
+      metrics.countWrites('b', _sinkWrites(2));
 
       final replica = metrics.snapshot().replicas['b']!;
       expect(replica.sends, 3);
       expect(replica.framesSent, 4);
-      expect(replica.writes, 2);
+      expect(replica.writeStats?.writes, 2);
       expect(replica.framesPerWrite, 2);
     });
 
@@ -306,7 +368,7 @@ void main() {
       metrics.beginSend('b', bytes: 100, frames: 1).end();
 
       final replica = metrics.snapshot().replicas['b']!;
-      expect(replica.writes, isNull);
+      expect(replica.writeStats, isNull);
       expect(replica.framesPerWrite, isNull);
     });
 
@@ -330,109 +392,159 @@ void main() {
       expect(snapshot.replicas['b']!.remote, isTrue);
     });
 
-    test('a queue wait is recorded against the operation that waited', () {
-      // SPEC §17: the span at the `Agent` boundary contains the wait, so the
-      // report subtracts one from the other rather than reading a mean as a
-      // round trip.
-      final operation = metrics.beginOp('b', AgentOp.writeFile);
-      advance(const Duration(milliseconds: 50));
-      metrics.countQueueWait(
+    test('an exchange arrives already split, and is only added up', () {
+      // SPEC §17: the queue wait, the wire span and the peer's own span come
+      // from one call's instants, measured by the one object that saw all of
+      // them. Nothing here reconstructs one figure by subtracting another.
+      metrics.recordExchange(
         'b',
-        AgentOp.writeFile,
-        const Duration(milliseconds: 20),
+        const ExchangeRecord(
+          op: AgentOp.writeFile,
+          queueWait: Duration(milliseconds: 20),
+          wire: Duration(milliseconds: 30),
+          far: FarSideReport(span: Duration(milliseconds: 18), inFlight: 5),
+        ),
       );
-      operation.end();
 
       final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
-      expect(stats.mean, const Duration(milliseconds: 50));
+      expect(stats.exchanges, 1);
       expect(stats.meanQueueWait, const Duration(milliseconds: 20));
       expect(stats.meanWireTime, const Duration(milliseconds: 30));
-    });
-
-    test('the peer\'s own span splits the wire figure', () {
-      // SPEC §17 phase 0a: `wire` covers the request out, the peer's work
-      // and the reply back. Only the peer can report the middle term, and
-      // without it the other two cannot be read at all.
-      final operation = metrics.beginOp('b', AgentOp.writeFile);
-      advance(const Duration(milliseconds: 40));
-      metrics.countFarSide(
-        'b',
-        AgentOp.writeFile,
-        const Duration(milliseconds: 25),
-      );
-      operation.end();
-
-      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
-      expect(stats.meanWireTime, const Duration(milliseconds: 40));
-      expect(stats.meanFarSide, const Duration(milliseconds: 25));
-      expect(stats.meanLinkTime, const Duration(milliseconds: 15));
+      expect(stats.meanFarSide, const Duration(milliseconds: 18));
+      expect(stats.meanLinkTime, const Duration(milliseconds: 12));
+      // What says whether that far side is the destination's cost or only
+      // its residency.
+      expect(stats.meanFarInFlight, 5);
     });
 
     test('a peer that reports nothing reads as absent, not as zero', () {
       // The conclusion this measurement exists to protect: a destination
       // that costs nothing and a destination that was never asked must not
       // look the same.
-      metrics.beginOp('b', AgentOp.writeFile).end();
+      metrics.recordExchange(
+        'b',
+        const ExchangeRecord(
+          op: AgentOp.scan,
+          queueWait: Duration.zero,
+          wire: Duration(milliseconds: 9),
+        ),
+      );
 
-      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
-      expect(stats.count, 1);
-      expect(stats.farSideCount, 0);
+      final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.scan]!;
+      expect(stats.exchanges, 1);
+      expect(stats.farCount, 0);
       expect(stats.meanFarSide, isNull);
       expect(stats.meanLinkTime, isNull);
+      expect(stats.meanFarInFlight, isNull);
     });
 
-    test('only the calls that reported are averaged', () {
+    test('link and far are averaged over the calls that reported them', () {
       // An older peer answering some operations and not others, or a mix of
-      // `writeFile` (which reports) and `scan` (which cannot): the mean is
-      // over the samples there are, not over every call.
-      for (var i = 0; i < 4; i++) {
-        metrics.beginOp('b', AgentOp.writeFile).end();
+      // `writeFile` (which reports) and `scan` (which cannot). Every mean is
+      // divided by its own population, so no two of these columns are each
+      // other's difference.
+      for (var i = 0; i < 2; i++) {
+        metrics.recordExchange(
+          'b',
+          const ExchangeRecord(
+            op: AgentOp.writeFile,
+            queueWait: Duration.zero,
+            wire: Duration(milliseconds: 40),
+          ),
+        );
       }
-      metrics.countFarSide(
+      metrics.recordExchange(
         'b',
-        AgentOp.writeFile,
-        const Duration(milliseconds: 10),
+        const ExchangeRecord(
+          op: AgentOp.writeFile,
+          queueWait: Duration.zero,
+          wire: Duration(milliseconds: 40),
+          far: FarSideReport(span: Duration(milliseconds: 10)),
+        ),
       );
-      metrics.countFarSide(
+      metrics.recordExchange(
         'b',
-        AgentOp.writeFile,
-        const Duration(milliseconds: 20),
+        const ExchangeRecord(
+          op: AgentOp.writeFile,
+          queueWait: Duration.zero,
+          wire: Duration(milliseconds: 40),
+          far: FarSideReport(span: Duration(milliseconds: 20)),
+        ),
       );
 
       final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
-      expect(stats.count, 4);
-      expect(stats.farSideCount, 2);
+      expect(stats.exchanges, 4);
+      expect(stats.farCount, 2);
       expect(stats.meanFarSide, const Duration(milliseconds: 15));
+      expect(stats.meanWireTime, const Duration(milliseconds: 40));
+      // 25 ms, not 40 − 15: the link is per call, then averaged.
+      expect(stats.meanLinkTime, const Duration(milliseconds: 25));
     });
 
     test('a far side dearer than the exchange reads as no link time', () {
-      // Mid-run, or a clock that disagrees by a hair: the two figures are
-      // sampled at different instants on different machines, and a negative
-      // link time would look like a bug in the code being measured.
-      metrics.countFarSide('b', AgentOp.delete, const Duration(seconds: 1));
+      // The peer's span is measured on another machine by another clock, so
+      // a hair of disagreement is expected; a negative link time would look
+      // like a bug in the code being measured.
+      metrics.recordExchange(
+        'b',
+        const ExchangeRecord(
+          op: AgentOp.delete,
+          queueWait: Duration.zero,
+          wire: Duration(milliseconds: 5),
+          far: FarSideReport(span: Duration(seconds: 1)),
+        ),
+      );
 
       final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.delete]!;
       expect(stats.meanLinkTime, Duration.zero);
     });
 
-    test('a wait whose span has not landed yet reads as no wire time', () {
-      // A mid-run snapshot: the window admitted the operation and reported
-      // the wait, and the operation is still running. Negative wire time
-      // would look like a bug in the code being measured.
-      metrics.countQueueWait(
+    test('an op counted at one source and not the other says so', () {
+      // A mid-run snapshot: the exchange has landed and the `Agent`
+      // boundary's span has not. The two counts are kept apart rather than
+      // divided into each other, so neither mean is over a population it
+      // does not have.
+      metrics.recordExchange(
         'b',
-        AgentOp.writeFile,
-        const Duration(seconds: 1),
+        const ExchangeRecord(
+          op: AgentOp.writeFile,
+          queueWait: Duration(seconds: 1),
+          wire: Duration.zero,
+        ),
       );
 
       final stats = metrics.snapshot().replicas['b']!.ops[AgentOp.writeFile]!;
       expect(stats.count, 0);
-      expect(stats.wireTime, Duration.zero);
-      expect(stats.meanWireTime, Duration.zero);
+      expect(stats.mean, isNull);
+      expect(stats.exchanges, 1);
+      expect(stats.meanQueueWait, const Duration(seconds: 1));
+    });
+
+    test("the peer's own sink wait is the last figure it reported", () {
+      // Cumulative on the peer, because a reply cannot carry the cost of its
+      // own flush — so the last reading is the session total.
+      for (final wait in [10, 25, 40]) {
+        metrics.recordExchange(
+          'b',
+          ExchangeRecord(
+            op: AgentOp.writeFile,
+            queueWait: Duration.zero,
+            wire: const Duration(milliseconds: 5),
+            far: FarSideReport(
+              span: const Duration(milliseconds: 1),
+              sendWait: Duration(milliseconds: wait),
+            ),
+          ),
+        );
+      }
+
+      expect(
+        metrics.snapshot().replicas['b']!.peerSendWait,
+        const Duration(milliseconds: 40),
+      );
     });
 
     test('run totals sum both sides', () {
-      metrics.markRemote('b');
       metrics.beginOp('a', AgentOp.readFile).end();
       metrics.beginOp('b', AgentOp.writeFile).end();
       metrics.beginOp('b', AgentOp.archiveCommit).end();
@@ -447,3 +559,12 @@ void main() {
     });
   });
 }
+
+/// A [SinkWriteStats] with only the write count these tests care about set.
+SinkWriteStats _sinkWrites(int count) => SinkWriteStats(
+  writes: count,
+  sends: count,
+  waited: Duration.zero,
+  maxBatch: 1,
+  batches: List.filled(batchBucketLabels.length, 0),
+);

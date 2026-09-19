@@ -6,6 +6,8 @@ import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/agent/request_window.dart';
+import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -57,7 +59,7 @@ void main() {
   });
 
   group("the peer's own span", () {
-    test('comes back with the reply, against the operation it measured', () {
+    test('comes back with the reply, against the exchange it measured', () {
       // SPEC §17 phase 0a: an exchange's cost is the request out, whatever
       // the peer did, and the reply back. This is the middle term, and only
       // the peer can measure it.
@@ -82,54 +84,87 @@ void main() {
         // The hold is the floor: the peer's span contains it, and contains
         // nothing the initiator paid.
         expect(
-          reported.single.span,
+          reported.single.far!.span,
           greaterThanOrEqualTo(const Duration(milliseconds: 15)),
         );
+        // And the link is what is left of this one call's own wire span —
+        // taken per call, so it cannot be a difference of two means over
+        // different populations.
+        expect(reported.single.link, isNotNull);
+        expect(reported.single.link, lessThanOrEqualTo(reported.single.wire));
       });
     });
 
-    test('is not reported for the replies that cannot carry it', () async {
+    test('is absent, not zero, for the replies that cannot carry it', () async {
       // `scan` answers with a binary frame and `readFile` with the byte
       // stream itself (SPEC §15.3), so neither has a field to put this in.
-      // They report nothing, which the recorder keeps distinguishable from
-      // a peer that cost nothing.
-      final reported = <({AgentOp op, Duration span})>[];
+      // The exchange is still reported — it had a queue wait and a wire span
+      // — with no far side at all, which stays distinguishable from a peer
+      // that cost nothing.
+      final reported = <ExchangeRecord>[];
       final (clientChannel, serverChannel) = InMemoryChannel.pair();
       final peer = _FakeAgent()..fileContents['a.txt'] = utf8.encode('hi');
       unawaited(AgentServer().serve(serverChannel, (_) => peer));
       final agent = RemoteAgent(
         clientChannel,
         _testSpec,
-        onFarSide: (op, span) => reported.add((op: op, span: span)),
+        onExchange: reported.add,
       );
 
       await agent.hello();
       await agent.scan(RuleSet());
       await agent.readFile('a.txt').drain<void>();
 
-      expect(reported.map((r) => r.op), isNot(contains(AgentOp.scan)));
-      expect(reported.map((r) => r.op), isNot(contains(AgentOp.readFile)));
+      final byOp = {for (final r in reported) r.op: r};
+      expect(byOp[AgentOp.scan]!.far, isNull);
+      expect(byOp[AgentOp.scan]!.link, isNull);
+      expect(byOp[AgentOp.readFile]!.far, isNull);
       // `hello` is a control-frame reply like any other, so it does report.
-      expect(reported.map((r) => r.op), contains(AgentOp.hello));
+      expect(byOp[AgentOp.hello]!.far, isNotNull);
     });
 
-    test('is not reported for a failed operation', () async {
-      // A failure carries an error the caller turns into an exception, and
-      // there is no figure to record it against.
-      final reported = <AgentOp>[];
+    test('is absent for a failed operation, which still reports', () async {
+      // A failure carries an error the caller turns into an exception, so
+      // there is no far side to record — but the call cost real time and the
+      // report should say so.
+      final reported = <ExchangeRecord>[];
       final (clientChannel, serverChannel) = InMemoryChannel.pair();
       final peer = _FakeAgent()..lockError = Exception('locked elsewhere');
       unawaited(AgentServer().serve(serverChannel, (_) => peer));
       final agent = RemoteAgent(
         clientChannel,
         _testSpec,
-        onFarSide: (op, _) => reported.add(op),
+        onExchange: reported.add,
       );
       await agent.hello();
+      reported.clear();
 
       await expectLater(agent.lock(), throwsA(isA<AgentOperationException>()));
 
-      expect(reported, isNot(contains(AgentOp.lock)));
+      expect(reported.single.op, AgentOp.lock);
+      expect(reported.single.far, isNull);
+    });
+
+    test('carries what the peer was serving alongside it', () async {
+      // Without this, a span that rose because the peer got busier and one
+      // that rose because its disk got slower are the same number (SPEC §17).
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      unawaited(AgentServer().serve(serverChannel, (_) => _FakeAgent()));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+
+      await agent.hello();
+      await agent.lock();
+
+      expect(reported.last.far!.inFlight, 1);
+      // And what the peer's own sink has waited, cumulatively — the term
+      // that falls outside its span because a reply cannot carry the cost of
+      // its own flush. An in-memory pair has no sink, so this is absent.
+      expect(reported.last.far!.sendWait, isNull);
     });
   });
 
@@ -500,7 +535,7 @@ class _WatchedInputChannel implements Channel {
   Future<void> send(Uint8List bytes) => _inner.send(bytes);
 
   @override
-  int? get writes => _inner.writes;
+  SinkWriteStats? get writeStats => _inner.writeStats;
 
   @override
   Future<void> close() => _inner.close();
@@ -509,25 +544,21 @@ class _WatchedInputChannel implements Channel {
 /// A minimal in-memory [Agent] fake — just enough to be driven through
 /// [RemoteAgent]'s wire protocol without a real filesystem or archive.
 /// Runs [body] against a peer holding `a.txt`'s commit open, with every
-/// reported far-side span collected — the shape all three of these tests
-/// need and none of them should build twice.
+/// reported exchange collected — the shape all three of these tests need and
+/// none of them should build twice.
 Future<void> _withHeldCommit(
   Future<void> Function(
     RemoteAgent agent,
     _FakeAgent backing,
-    List<({AgentOp op, Duration span})> reported,
+    List<ExchangeRecord> reported,
   )
   body,
 ) async {
-  final reported = <({AgentOp op, Duration span})>[];
+  final reported = <ExchangeRecord>[];
   final (clientChannel, serverChannel) = InMemoryChannel.pair();
   final peer = _FakeAgent()..heldCommits['a.txt'] = Completer<void>();
   unawaited(AgentServer().serve(serverChannel, (_) => peer));
-  final agent = RemoteAgent(
-    clientChannel,
-    _testSpec,
-    onFarSide: (op, span) => reported.add((op: op, span: span)),
-  );
+  final agent = RemoteAgent(clientChannel, _testSpec, onExchange: reported.add);
   await agent.hello();
   reported.clear();
 

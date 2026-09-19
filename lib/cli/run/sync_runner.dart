@@ -3,11 +3,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
-import 'package:dsync/dsync_core/agent/metered_agent.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
-import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
+import 'package:dsync/dsync_core/run/run_instruments.dart';
 import 'package:dsync/dsync_core/run/run_metrics_report.dart';
 
 import '../agents/connected_replicas.dart';
@@ -216,7 +215,7 @@ class SyncRunner {
     // `peer://` run against a phone those are a real part of what the user
     // waited for, and a clock started after them would report a run that
     // was faster than the one they sat through (SPEC §17).
-    final metrics = RunMetricsRecorder();
+    final instruments = RunInstruments();
 
     final connected = await resolveReplicaAgents(
       effective,
@@ -224,15 +223,25 @@ class SyncRunner {
       platform: platform,
       localAddressLookup: sharedLocalAddressLookup,
       sshExecutable: sshExecutable,
-      metrics: metrics,
+      instruments: instruments,
     );
 
     final controller = RunController(
-      agentA: _metered(connected.agentA, 'a', connected.diagnosticsA, metrics),
-      agentB: _metered(connected.agentB, 'b', connected.diagnosticsB, metrics),
+      agentA: _metered(
+        connected.agentA,
+        'a',
+        connected.diagnosticsA,
+        instruments,
+      ),
+      agentB: _metered(
+        connected.agentB,
+        'b',
+        connected.diagnosticsB,
+        instruments,
+      ),
       presenter: _choosePresenter(options),
       rules: effective.rules,
-      metrics: metrics,
+      metrics: instruments.recorder,
     );
 
     // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC
@@ -352,7 +361,7 @@ class SyncRunner {
     // failed or interrupted run too: those are the runs whose timings
     // someone is most likely to be asking about.
     if (options.timings) {
-      stderr.write(formatRunMetrics(metrics.snapshot()));
+      stderr.write(formatRunMetrics(instruments.snapshot()));
     }
 
     return RunOutcome(
@@ -370,17 +379,16 @@ class SyncRunner {
   /// — a wrapper there would make every one of them assert on the wrapper.
   /// This is also the layer that owns the run, so a decorator that exists to
   /// measure the run belongs to it; [ReplicaDiagnostics.locality] already
-  /// carries the local-or-remote fact [MeteredAgent] needs, so nothing has to
+  /// carries the local-or-remote fact the wrapper needs, so nothing has to
   /// be re-derived to put it on here.
   static Agent _metered(
     Agent agent,
     String side,
     ReplicaDiagnostics diagnostics,
-    RunMetricsRecorder metrics,
-  ) => MeteredAgent(
+    RunInstruments instruments,
+  ) => instruments.agent(
     agent,
     side: side,
-    metrics: metrics,
     remote: diagnostics.locality == Locality.remote,
   );
 

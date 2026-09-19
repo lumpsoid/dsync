@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
@@ -68,12 +69,12 @@ class MeteredChannel implements Channel {
   /// carrying something for as long as the write takes — which on a link slow
   /// enough for idle time to be worth measuring is not an instant.
   ///
-  /// The wrapped channel's write count is read on the way out rather than
-  /// counted here, because this side of the coalescing cannot see it: a
+  /// The wrapped channel's write figures are read on the way out rather than
+  /// counted here, because this side of the coalescing cannot see them: a
   /// `send` is a frame handed over and a write is what the link carried, and
   /// since task 9d2158 those differ (SPEC §17). Sampled per send rather than
-  /// once at the end because the counter is cumulative and a run that aborts
-  /// still gets the figure up to where it stopped.
+  /// once at the end because they are cumulative and a run that aborts still
+  /// gets the figures up to where it stopped.
   @override
   Future<void> send(Uint8List bytes) async {
     final flush = metrics.beginSend(
@@ -85,14 +86,14 @@ class MeteredChannel implements Channel {
       await _inner.send(bytes);
     } finally {
       flush.end();
-      if (_inner.writes case final count?) metrics.countWrites(side, count);
+      if (_inner.writeStats case final stats?) metrics.countWrites(side, stats);
     }
   }
 
   /// The wrapped channel's, unchanged — this decorator adds no write of its
   /// own, it only reports the ones underneath it.
   @override
-  int? get writes => _inner.writes;
+  SinkWriteStats? get writeStats => _inner.writeStats;
 
   @override
   Future<void> close() => _inner.close();
