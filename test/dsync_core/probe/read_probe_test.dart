@@ -69,108 +69,28 @@ void main() {
     }
   });
 
-  test(
-    'the corpus is capped, and capped identically for every sample',
-    () async {
-      for (var i = 0; i < 10; i++) {
-        await write('f$i.txt', '$i');
-      }
-
-      final report = await ReadProbe(fileLimit: 4)
-          .run(rootPath: tempDir.path, depths: const [1, 2]);
-
-      expect(report.files, 4);
-      for (final sample in report.samples) {
-        expect(sample.files, 4);
-        // One byte each, whichever four the stride took — and the same four
-        // on every sample. A cap that took a different four per sample would
-        // make them incomparable without the report being able to say so.
-        expect(sample.bytes, 4);
-      }
-    },
-  );
-
-  test(
-    'the corpus is spread across the tree, not taken from its front',
-    () async {
-      // Ten files of growing size in sorted order: a prefix of four averages
-      // 2.5 bytes against the tree's 5.5, which is the bias phase 0b exists to
-      // remove. A stride of every third file averages 5.5.
-      for (var i = 1; i <= 10; i++) {
-        await write('f${i.toString().padLeft(2, '0')}.txt', 'x' * i);
-      }
-
-      final report = await ReadProbe(fileLimit: 4)
-          .run(rootPath: tempDir.path, depths: const [1]);
-
-      expect(report.treeFiles, 10);
-      expect(report.treeBytes, 55);
-      expect(report.corpusBytes, 1 + 3 + 6 + 8);
-      expect(report.meanFileSize, closeTo(report.treeMeanFileSize, 1));
-    },
-  );
-
-  test(
-    "the corpus's mean tracks the tree's when size and path order disagree",
-    () async {
-      // The same ten sizes, now anti-correlated with the path order the walk
-      // returns: f01 is the largest. A stride over the path-sorted list takes
-      // 10, 8, 5 and 3 — mean 6.5 against the tree's 5.5 — while a stride over
-      // the size-ordered one takes 1, 3, 6 and 8 whichever way the names run.
-      for (var i = 1; i <= 10; i++) {
-        await write('f${i.toString().padLeft(2, '0')}.txt', 'x' * (11 - i));
-      }
-
-      final report = await ReadProbe(fileLimit: 4)
-          .run(rootPath: tempDir.path, depths: const [1]);
-
-      expect(report.corpusBytes, 1 + 3 + 6 + 8);
-      expect(report.meanFileSize, closeTo(report.treeMeanFileSize, 1));
-    },
-  );
-
-  test(
-    'uncapped, the corpus is the tree and carries its tail exactly',
-    () async {
-      // A heavy tail is where every capped corpus has gone wrong: on the real
-      // replica a 41% stride over size order kept 41% of the files that hold
-      // the bytes and landed a quarter low. Here one file holds 90% of the
-      // tree, and only an uncapped corpus is guaranteed to hold it.
-      for (var i = 1; i <= 9; i++) {
-        await write('small/f$i.txt', 'x');
-      }
-      await write('big.bin', 'x' * 90);
-
-      final report = await ReadProbe().run(
-        rootPath: tempDir.path,
-        depths: const [1],
-      );
-
-      expect(report.files, report.treeFiles);
-      expect(report.corpusBytes, report.treeBytes);
-      expect(
-        report.meanFileSize,
-        report.treeMeanFileSize,
-        reason: 'the tree cannot misrepresent its own distribution',
-      );
-      for (final sample in report.samples) {
-        expect(sample.bytes, 99, reason: '${sample.mode} missed the tail');
-      }
-    },
-  );
-
-  test('a corpus smaller than the cap is the whole tree', () async {
-    await write('a.txt', 'a');
-    await write('nested/b.txt', 'bb');
+  test('the corpus is the tree, tail included', () async {
+    // A heavy tail is where every sampled corpus went wrong: on the real
+    // replica a 41% stride over size order kept 41% of the files that hold
+    // the bytes and landed a quarter low. Here one file holds 90% of the
+    // tree, and nothing short of all of it holds that file.
+    for (var i = 1; i <= 9; i++) {
+      await write('small/f$i.txt', 'x');
+    }
+    await write('big.bin', 'x' * 90);
 
     final report = await ReadProbe().run(
       rootPath: tempDir.path,
       depths: const [1],
     );
 
-    expect(report.files, report.treeFiles);
-    expect(report.corpusBytes, report.treeBytes);
-    expect(report.meanFileSize, report.treeMeanFileSize);
+    expect(report.files, 10);
+    expect(report.bytes, 99);
+    expect(report.meanFileSize, 9.9);
+    for (final sample in report.samples) {
+      expect(sample.files, 10, reason: '${sample.mode} read a subset');
+      expect(sample.bytes, 99, reason: '${sample.mode} missed the tail');
+    }
   });
 
   test('an unreadable file is skipped rather than failing the sweep', () async {
@@ -231,7 +151,7 @@ void main() {
       expect(text, contains(readProbeModeLabel(mode)));
     }
     expect(text, contains('fastest:'));
-    expect(text, contains('corpus'), reason: 'the corpus is described');
+    expect(text, contains('tree'), reason: 'the corpus is described');
     expect(
       text,
       contains('tree'),
@@ -247,9 +167,7 @@ void main() {
       const ReadProbeReport(
         rootPath: '/nowhere',
         files: 0,
-        corpusBytes: 0,
-        treeFiles: 0,
-        treeBytes: 0,
+        bytes: 0,
         samples: [],
       ),
     );

@@ -70,20 +70,13 @@ class ReadRateSheet extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 children: [
                   Text(report.rootPath, style: theme.textTheme.bodySmall),
+                  // The mean is what the rates below are read against: cost
+                  // here is per-file dominated, so it is the number that says
+                  // what a MiB/s on this screen means.
                   Text(
-                    'Corpus ${formatMetricCount(report.files)} files, '
-                    '${formatMetricBytes(report.corpusBytes)}, mean '
+                    'Tree ${formatMetricCount(report.files)} files, '
+                    '${formatMetricBytes(report.bytes)}, mean '
                     '${formatMetricBytes(report.meanFileSize.round())}/file',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                  // Beside the corpus, always. The rates below are per-file
-                  // dominated, so the two means are what says whether they
-                  // stand for a real run or for an unrepresentative slice.
-                  Text(
-                    'Tree ${formatMetricCount(report.treeFiles)} files, '
-                    '${formatMetricBytes(report.treeBytes)}, mean '
-                    '${formatMetricBytes(report.treeMeanFileSize.round())}'
-                    '/file',
                     style: theme.textTheme.bodySmall,
                   ),
                   if (fastest != null) ...[

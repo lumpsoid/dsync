@@ -93,43 +93,32 @@ class ReadProbeReport {
   const ReadProbeReport({
     required this.rootPath,
     required this.files,
-    required this.corpusBytes,
-    required this.treeFiles,
-    required this.treeBytes,
+    required this.bytes,
     required this.samples,
   });
 
-  /// The resolved root the corpus was taken from.
+  /// The resolved root every sample read.
   final String rootPath;
 
-  /// How many files every sample read.
-  final int files;
-
-  /// The corpus in bytes, as `stat` reports it — not as the reads returned
-  /// it, so that it is the same measure as [treeBytes] and the two means
-  /// below are comparable. A sample's own [ReadProbeSample.bytes] is what
-  /// came back from the reads, and is lower by whatever could not be read.
-  final int corpusBytes;
-
-  /// Every file under the root, and their total size, whether or not the
-  /// corpus sampled them.
+  /// Every file under [rootPath], and their total size as `stat` reports it.
   ///
-  /// Here so the corpus can be checked against the thing it stands for. Cost
-  /// on this path is per-file dominated, so a corpus whose mean file is twice
-  /// the tree's reports up to ~2× the MiB/s the same device would give on a
-  /// real run — the per-mode *ratios* survive that, the absolute rates do
-  /// not, and only these two numbers can say which is being read.
-  final int treeFiles;
-  final int treeBytes;
+  /// There is no second pair to check these against and there used to be:
+  /// the probe sampled, so the report carried the corpus's mean beside the
+  /// tree's to say whether the rates stood for a real run. The sample is
+  /// gone (task 9d2158 §14), so these *are* the tree's, and a field that
+  /// could only ever equal another one is a comparison the next reader would
+  /// waste a minute on.
+  ///
+  /// A sample's own [ReadProbeSample.bytes] is what the reads handed back,
+  /// and is lower by whatever could not be read.
+  final int files;
+  final int bytes;
 
   final List<ReadProbeSample> samples;
 
-  /// Mean file size of the corpus, against [treeMeanFileSize]. Within a few
-  /// percent of each other means the absolute rates can be taken at face
-  /// value.
-  double get meanFileSize => files == 0 ? 0 : corpusBytes / files;
-
-  double get treeMeanFileSize => treeFiles == 0 ? 0 : treeBytes / treeFiles;
+  /// Mean file size of the tree. Cost on this path is per-file dominated, so
+  /// this is the number that sets what MiB/s below even means.
+  double get meanFileSize => files == 0 ? 0 : bytes / files;
 
   /// The fastest sample, which is the report's headline: the best this
   /// device gave up under any shape tried.

@@ -28,26 +28,7 @@ import 'package:dsync/dsync_core/models/read_probe_report.dart';
 /// profile is in question is a phone, and a desktop figure cannot stand in
 /// for one.
 class ReadProbe {
-  /// A cap on the corpus, or null for the whole tree — which is the default,
-  /// and the only setting whose absolute rates mean anything.
-  ///
-  /// **Why the cap is off.** A sample was capped at 6,000 files to keep a
-  /// `modes × depths` sweep short, on an estimate that the whole tree would
-  /// take an hour. Two sweeps of the real thing put a 6,000-file sweep at
-  /// 143 s, so the tree is 6–7.5 minutes — the estimate was 8–10× out, and
-  /// it bought a corpus that has now been wrong twice in opposite directions
-  /// (task 9d2158 §14). The tree is its own corpus: its mean *is* the tree's
-  /// mean and its tail *is* the tree's tail, by construction rather than by
-  /// an argument about sampling.
-  ///
-  /// **When to set it.** A replica far larger than this project's, where a
-  /// sweep would not finish, and only ever for the per-mode *ratios*. Any
-  /// absolute MiB/s off a capped run is a rate for that corpus and not for
-  /// the tree — see [_sampleCorpus] for how far that has been off in
-  /// practice.
-  final int? fileLimit;
-
-  const ReadProbe({this.fileLimit});
+  const ReadProbe();
 
   /// The depths [run] sweeps unless told otherwise: doublings, so a curve is
   /// read across a range rather than around a point, and far enough past
@@ -56,8 +37,16 @@ class ReadProbe {
   /// chart.
   static const defaultDepths = [1, 2, 4, 8, 16, 32, 64];
 
-  /// Sweeps [modes] across [depths] over the whole tree under [rootPath], or
-  /// over a [fileLimit]-file sample of it where that is set.
+  /// Sweeps [modes] across [depths] over every file under [rootPath].
+  ///
+  /// **The corpus is the tree, and there is no way to ask for less.** Three
+  /// samples of it were tried — a prefix, a stride over path order, a stride
+  /// over size order — and they reported mean file sizes of +113%, +24% and
+  /// −23% against the tree's, because the bytes sit in a tail that a partial
+  /// corpus keeps only its own fraction of. Cost here is per-file dominated
+  /// *and* byte-weighted by that tail, so the property the corpus needs is
+  /// the tree's whole distribution and not its mean; the tree is the only
+  /// thing that has it (task 9d2158 §14).
   ///
   /// [onSample] is called as each sample lands, because the sweep takes
   /// minutes on the device it exists for — 6–7.5 of them over this project's
@@ -81,8 +70,7 @@ class ReadProbe {
     void Function(ReadProbeSample sample)? onSample,
   }) async {
     final root = await Directory(rootPath).resolveSymbolicLinks();
-    final tree = await _walk(root);
-    final corpus = _sampleCorpus(tree);
+    final corpus = await _walk(root);
     final paths = [for (final file in corpus) file.path];
 
     final samples = <ReadProbeSample>[];
@@ -97,9 +85,7 @@ class ReadProbe {
     return ReadProbeReport(
       rootPath: root,
       files: corpus.length,
-      corpusBytes: _totalBytes(corpus),
-      treeFiles: tree.length,
-      treeBytes: _totalBytes(tree),
+      bytes: _totalBytes(corpus),
       samples: samples,
     );
   }
@@ -134,47 +120,6 @@ class ReadProbe {
     }
     files.sort((a, b) => a.path.compareTo(b.path));
     return files;
-  }
-
-  /// The whole tree, unless [fileLimit] caps it — then [fileLimit] files
-  /// strided over the tree ordered by *size*, handed back in path order.
-  ///
-  /// **A capped corpus is a biased corpus and both attempts prove it.** Cost
-  /// on this path is per-file dominated, so the corpus's mean file size sets
-  /// the absolute MiB/s the sweep reports. A contiguous prefix is one region
-  /// of one subtree and averaged 27.1 KiB against this replica's tree mean of
-  /// 12.7. Striding the *path*-sorted walk fixed the region and not the
-  /// distribution: 15.7 KiB, a quarter high. Striding the *size*-sorted walk
-  /// — this code — samples the distribution evenly and still landed at 9.8
-  /// KiB, a quarter **low**, because the bytes concentrate in a handful of
-  /// files and a 41% sample keeps only 41% of those: whether the few that
-  /// carry the megabytes fall on a sampled index is arbitrary. The error
-  /// grows with the tail and it does not have a reliable sign.
-  ///
-  /// **So no sampling rule fixes this, which is why the default does not
-  /// sample.** Matching the tree's mean is necessary and not sufficient — the
-  /// thing that has to match is the distribution, and only the tree matches
-  /// its own.
-  ///
-  /// Size ties break on path, and the selection is re-sorted by path before
-  /// any sample reads it: directory locality is what a stride costs, and a
-  /// spread-out read across directories is the pattern a real apply has,
-  /// since reconcile hands the `Applier` changed paths from across the tree
-  /// rather than one directory at a time. Both orderings are total, so an
-  /// unchanged tree gives the same corpus on every run — which is what makes
-  /// two sweeps subtractable.
-  List<_TreeFile> _sampleCorpus(List<_TreeFile> tree) {
-    final limit = fileLimit;
-    if (limit == null || tree.length <= limit) return tree;
-    final bySize = [...tree]..sort((a, b) {
-      final size = a.size.compareTo(b.size);
-      return size != 0 ? size : a.path.compareTo(b.path);
-    });
-    final stride = tree.length / limit;
-    final corpus = [
-      for (var i = 0; i < limit; i++) bySize[(i * stride).floor()],
-    ];
-    return corpus..sort((a, b) => a.path.compareTo(b.path));
   }
 
   Future<ReadProbeSample> _sample(

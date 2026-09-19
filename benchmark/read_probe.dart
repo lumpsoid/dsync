@@ -2,7 +2,7 @@
 // of the build.
 //
 //   dart run benchmark/read_probe.dart <root>
-//   dart run benchmark/read_probe.dart <root> --files 2000 --depths 1,4,16
+//   dart run benchmark/read_probe.dart <root> --depths 1,4,16
 //
 // The phone is where the number that matters is measured — the app's
 // Diagnostics page is that entry point, and this one cannot substitute for
@@ -23,27 +23,28 @@ Future<void> main(List<String> args) async {
   final positional = args.where((a) => !a.startsWith('--')).toList();
   if (positional.isEmpty) {
     stderr.writeln(
-      'usage: dart run benchmark/read_probe.dart <root> '
-      '[--files N] [--depths a,b,c]',
+      'usage: dart run benchmark/read_probe.dart <root> [--depths a,b,c]',
     );
     exitCode = 2;
     return;
   }
 
-  final files = int.tryParse(_flag(args, '--files') ?? '');
   final depths = _depths(_flag(args, '--depths'));
 
-  final report =
-      await ReadProbe(fileLimit: files ?? const ReadProbe().fileLimit).run(
-        rootPath: positional.first,
-        depths: depths ?? ReadProbe.defaultDepths,
-        // Printed as they land: the sweep is `modes × depths` full passes and a
-        // script that prints nothing until the end looks hung.
-        onSample: (sample) => stderr.writeln(
-          '  ${sample.mode.name} depth ${sample.depth}: '
-          '${sample.elapsed.inMilliseconds} ms',
-        ),
-      );
+  // No `--files`: the probe reads the whole tree, because every attempt to
+  // read part of one reported a different device (task 9d2158 §14). Point it
+  // at a smaller root instead — that is a tree, and its numbers are true of
+  // it.
+  final report = await const ReadProbe().run(
+    rootPath: positional.first,
+    depths: depths ?? ReadProbe.defaultDepths,
+    // Printed as they land: the sweep is `modes × depths` full passes and a
+    // script that prints nothing until the end looks hung.
+    onSample: (sample) => stderr.writeln(
+      '  ${sample.mode.name} depth ${sample.depth}: '
+      '${sample.elapsed.inMilliseconds} ms',
+    ),
+  );
 
   stdout.write(formatReadProbe(report));
 }
