@@ -1,3 +1,4 @@
+@Tags(['e2e'])
 library;
 
 import 'dart:async';

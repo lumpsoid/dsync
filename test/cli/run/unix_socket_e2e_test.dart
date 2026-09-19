@@ -24,6 +24,7 @@
 /// Not Windows: `dart:io` has no unix-domain sockets there, and the listener
 /// is ended with a POSIX signal. Every other CI host (SPEC §3) runs it.
 @TestOn('!windows')
+@Tags(['e2e'])
 library;
 
 import 'dart:convert';

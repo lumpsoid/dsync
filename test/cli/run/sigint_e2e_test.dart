@@ -3,6 +3,7 @@
 /// `kill` falls back to terminating the process outright, which is not the
 /// trap this suite exists to prove. Every other CI host (SPEC §3) runs it.
 @TestOn('!windows')
+@Tags(['e2e'])
 library;
 
 import 'dart:async';

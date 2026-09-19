@@ -42,6 +42,7 @@
 /// excluded here — a runner without an sshd fails [RealSsh.probe] and skips
 /// with that reason, the same way a Linux box without one does.
 @TestOn('!windows')
+@Tags(['e2e'])
 library;
 
 import 'dart:convert';

@@ -45,6 +45,13 @@ jobs:
 
       - run: flutter test
 
+      # The suites `dart_test.yaml` skips by default — the real CLI, a real
+      # unix socket, a real SIGINT. They are kept out of the edit loop because
+      # they AOT-compile `bin/dsync.dart` first, not because they are
+      # optional: this matrix is the only place macOS and Windows answer SPEC
+      # §3's platform questions at all.
+      - run: flutter test --tags e2e --run-skipped
+
   dart-test:
     name: dart test (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -62,3 +69,5 @@ jobs:
       - run: dart pub get
 
       - run: dart test test/dsync_core test/cli
+
+      - run: dart test --tags e2e --run-skipped test/dsync_core test/cli

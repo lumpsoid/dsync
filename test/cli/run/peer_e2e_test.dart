@@ -15,6 +15,7 @@
 /// environment (SPEC §8.3), find each other from a command line with nothing
 /// but a device name — and that a device the far end never paired is refused
 /// below `Channel` (SPEC §4.4) rather than reaching `hello`.
+@Tags(['e2e'])
 library;
 
 import 'dart:convert';
