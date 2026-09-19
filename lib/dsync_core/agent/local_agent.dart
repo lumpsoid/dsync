@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/agent/posix_chmod.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
@@ -47,22 +48,30 @@ class LocalAgent implements Agent {
   /// Starts however [isWindowsReplica] says: `true` skips straight to the
   /// no-op path from the very first call, since a Windows replica's lack of
   /// `chmod` (SPEC §3, §7.4) is known ahead of time rather than something to
-  /// discover by paying one guaranteed-to-fail process spawn per
-  /// differing-mode file. It can still *become* `true` on a non-Windows host
-  /// too, the same way it always could: a spawn throwing `ProcessException`
-  /// for some other reason latches it there instead (SPEC §3 already flags
-  /// Android's external storage as a place metadata writes can be
-  /// rejected). Either way, [_applyMode] treats it identically.
+  /// discover by paying one guaranteed-to-fail call per differing-mode file.
+  /// It can still *become* `true` on a non-Windows host too, the same way it
+  /// always could: [chmod] throwing [ChmodUnavailable] for some other reason
+  /// latches it there instead. Either way, [_applyMode] treats it
+  /// identically.
+  ///
+  /// Note what does *not* latch it: a `chmod` that ran and the filesystem
+  /// refused (SPEC §3 flags Android's external storage as exactly that).
+  /// That is a per-path outcome, and §7.4's rule — archive the mode that
+  /// landed, not the one asked for — already covers it.
   bool _chmodUnavailable;
 
-  /// The `chmod` executable [_applyMode] shells out to. A plain value
-  /// rather than the literal `'chmod'` inline, so a test can point it at a
-  /// binary guaranteed not to exist and deterministically exercise the
-  /// `ProcessException` fallback [_chmodUnavailable] latches on, without
-  /// touching this host's real `PATH` — the same "overridable for tests"
-  /// shape `SshChannel.connect`'s own `executable` parameter already uses,
-  /// for the same reason.
-  final String chmodExecutable;
+  /// How [_applyMode] sets permission bits. Defaults to [posixChmod], the
+  /// `chmod(2)` syscall through `dart:ffi`.
+  ///
+  /// A plain value rather than the call inline, so a test can hand in one
+  /// that records what it was asked for, or one that throws
+  /// [ChmodUnavailable] to exercise the latch, without a host that actually
+  /// lacks `chmod` — the same "overridable for tests" shape
+  /// `SshChannel.connect`'s own `executable` parameter uses, for the same
+  /// reason. It is the seam the old `chmodExecutable` was, one layer in:
+  /// FFI is a border a test cannot cross, where a `PATH` lookup was only a
+  /// name.
+  final Chmod chmod;
 
   /// Distinguishes this agent's scratch files from each other. See
   /// [tempPathFor].
@@ -99,7 +108,7 @@ class LocalAgent implements Agent {
     Scanner? scanner,
     this.archivePath,
     bool isWindowsReplica = false,
-    this.chmodExecutable = 'chmod',
+    this.chmod = posixChmod,
     p.Style? pathStyle,
   }) : scanner = scanner ?? Scanner(),
        _chmodUnavailable = isWindowsReplica,
@@ -198,10 +207,10 @@ class LocalAgent implements Agent {
     required int mtime,
     required int mode,
   }) async {
-    // Every step timed separately (SPEC §17). Nine filesystem round trips
+    // Every step timed separately (SPEC §17). Eight filesystem round trips
     // hide behind one `far` figure otherwise, and they have nothing in
-    // common: the directory create is removable, the mode step may be a
-    // process spawn, the rename is neither.
+    // common: the directory create is removable, the mode step is a syscall
+    // that used to be a fork, the rename is neither.
     final step = Stopwatch()..start();
     var at = Duration.zero;
     Duration since() {
@@ -218,7 +227,7 @@ class LocalAgent implements Agent {
 
     final Duration writeTaken;
     final Duration mtimeTaken;
-    final _ModeStep modeStep;
+    final Duration modeTaken;
     final Duration renameTaken;
     try {
       final sink = temp.openWrite();
@@ -237,11 +246,8 @@ class LocalAgent implements Agent {
         // actually landed, so a setter failure here isn't fatal.
       }
       mtimeTaken = since();
-      modeStep = await _applyMode(temp, mode);
-      // `_applyMode` runs its own clock, so advance this one past it —
-      // otherwise the next `since()` bills the mode step to `rename` as well
-      // and the six steps sum to more than the span that contains them.
-      since();
+      _applyMode(temp, mode);
+      modeTaken = since();
 
       await temp.rename(target.path);
       renameTaken = since();
@@ -255,8 +261,12 @@ class LocalAgent implements Agent {
       create: createTaken,
       write: writeTaken,
       mtime: mtimeTaken,
-      mode: modeStep.taken,
-      chmodSpawns: modeStep.spawned ? 1 : 0,
+      mode: modeTaken,
+      // Structurally zero now that the mode step is a syscall, and reported
+      // anyway: this is the instrument the change is gated on (task 9d2158
+      // §10.1), so it has to say zero on a real run rather than stop saying
+      // anything. It goes when that run has been read.
+      chmodSpawns: 0,
       rename: renameTaken,
       stat: since(),
     );
@@ -291,38 +301,33 @@ class LocalAgent implements Agent {
 
   /// Sets [file]'s permission bits, best-effort (SPEC §7.4).
   ///
-  /// Dart has no chmod, so this shells out — which costs a process spawn, on
-  /// a path that runs once per copied file. Three things keep that off the
-  /// common case: a freshly created file usually already carries the mode
-  /// being asked for, which a stat settles far more cheaply than a spawn;
-  /// a replica the constructor already knows is on Windows never reaches
-  /// the spawn at all — Windows has no `chmod` and no POSIX permission-bit
-  /// model to translate one into, so [_chmodUnavailable] starts `true`
-  /// there instead of this method discovering the same fact empirically,
-  /// once, at the cost of a process-spawn attempt guaranteed to fail; and a
-  /// host lacking `chmod` for some other reason (SPEC §3 flags Android
-  /// storage as a place metadata writes can be rejected) is still
-  /// discovered once instead of once per file, the same way it always was.
-  Future<_ModeStep> _applyMode(File file, int mode) async {
-    final step = Stopwatch()..start();
-    if (_chmodUnavailable) return _ModeStep(step.elapsed, spawned: false);
-
-    final current = await file.stat();
-    if (current.mode & 0xFFF == mode) {
-      return _ModeStep(step.elapsed, spawned: false);
-    }
+  /// One syscall, unconditionally, through [chmod]. It used to be a process
+  /// spawn — Dart has no chmod, so this shelled out — guarded by a `stat`
+  /// that skipped the spawn when the fresh file already carried the mode
+  /// asked for. Both are gone together: a measured run put the guard's hit
+  /// rate at zero on 14,471 files (a temp file is created under the writing
+  /// process's umask, so it essentially never carries the source's mode),
+  /// and a syscall is not worth the stat that guards it either way.
+  ///
+  /// [_chmodUnavailable] still short-circuits the whole thing, and still
+  /// means what it always did: a replica the constructor knows is on Windows
+  /// starts latched, and any other host that turns out to have no `chmod`
+  /// latches on the first [ChmodUnavailable] rather than once per file.
+  ///
+  /// Synchronous, deliberately: there is nothing to await, and the caller's
+  /// step clock reads cleanly across it as a result.
+  void _applyMode(File file, int mode) {
+    if (_chmodUnavailable) return;
 
     try {
-      await Process.run(chmodExecutable, [mode.toRadixString(8), file.path]);
-    } on ProcessException {
+      // The return value is dropped on purpose. `-1` means this filesystem
+      // refused these bits (SPEC §3, Android's shared storage), which §7.4
+      // makes non-fatal, and the `stat` the caller takes afterwards is what
+      // archives the mode that actually landed.
+      chmod(file.path, mode);
+    } on ChmodUnavailable {
       _chmodUnavailable = true;
     }
-    // Counted as a spawn whether or not it changed anything: a `chmod` that
-    // runs and silently fails to take — which is what a filesystem that does
-    // not carry POSIX modes gives — costs a fork and an exec every time, and
-    // is indistinguishable from a working one except by this count next to
-    // the mode step's total.
-    return _ModeStep(step.elapsed, spawned: true);
   }
 
   @override
@@ -445,12 +450,4 @@ class PathEscapesRootException implements Exception {
 
   @override
   String toString() => 'Path escapes the replica root $root: "$path"';
-}
-
-/// What one call of `LocalAgent._applyMode` cost, and whether it forked.
-class _ModeStep {
-  final Duration taken;
-  final bool spawned;
-
-  const _ModeStep(this.taken, {required this.spawned});
 }

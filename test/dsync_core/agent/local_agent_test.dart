@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dsync/dsync_core/agent/local_agent.dart';
+import 'package:dsync/dsync_core/agent/posix_chmod.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
@@ -208,8 +209,9 @@ void main() {
     );
 
     test('a mode the new file already has still lands correctly', () async {
-      // 0o644 is what a fresh file gets under the usual umask, so this takes
-      // the path that skips the chmod entirely.
+      // 0o644 is what a fresh file gets under the usual umask, so the chmod
+      // is a no-op — taken anyway, since a syscall is cheaper than the stat
+      // that would decide to skip it.
       final metadata = await agent().writeFile(
         'a.txt',
         Stream.value(utf8.encode('hello')),
@@ -221,7 +223,9 @@ void main() {
     }, testOn: 'linux');
 
     test('a mode requiring a change is applied', () async {
-      // 0o600 differs from the default, so chmod actually runs.
+      // 0o600 differs from the default a fresh file gets, so this is the
+      // test that the real FFI binding reaches libc and the bits actually
+      // move — the one thing no injected fake can tell us.
       final metadata = await agent().writeFile(
         'a.txt',
         Stream.value(utf8.encode('hello')),
@@ -232,38 +236,32 @@ void main() {
       expect(metadata.mode, 384);
     }, testOn: 'linux');
 
-    test('records what each step of the write cost, and whether it forked', () {
-      // SPEC §17: `far` reports nine filesystem round trips as one number,
+    test('records what each step of the write cost, and forks for none of '
+        'it', () {
+      // SPEC §17: `far` reports eight filesystem round trips as one number,
       // and they have unrelated fixes — the directory create is paid per
-      // file rather than per directory, and the mode step may be a process
-      // spawn. A total cannot say which of them to go after.
+      // file rather than per directory, and the mode step was a process
+      // spawn until it became a syscall. A total cannot say which of them to
+      // go after.
       return () async {
         final local = agent();
         final wall = Stopwatch()..start();
 
-        // 0o644 is what a fresh file gets under the usual umask, so the mode
-        // step is a stat and nothing forks.
-        await local.writeFile(
-          'a.txt',
-          Stream.value(utf8.encode('hello')),
-          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
-          mode: 420,
-        );
-
-        expect(local.writePath.files, 1);
-        expect(local.writePath.chmodSpawns, 0);
-        expect(local.writePath.total, greaterThan(Duration.zero));
-
-        // 0o600 differs, so this one does fork.
-        await local.writeFile(
-          'b.txt',
-          Stream.value(utf8.encode('hello')),
-          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
-          mode: 384,
-        );
+        // 0o644 is what a fresh file gets under the usual umask; 0o600 is
+        // not. Neither forks any more — the old code spawned `chmod` for the
+        // second and only skipped the first because a stat said so.
+        for (final (path, mode) in [('a.txt', 420), ('b.txt', 384)]) {
+          await local.writeFile(
+            path,
+            Stream.value(utf8.encode('hello')),
+            mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+            mode: mode,
+          );
+        }
 
         expect(local.writePath.files, 2);
-        expect(local.writePath.chmodSpawns, 1);
+        expect(local.writePath.chmodSpawns, 0);
+        expect(local.writePath.total, greaterThan(Duration.zero));
         // The split has to fit inside the span that contains it. Asserting
         // the total equals the sum of the parts says nothing — `total` is
         // defined as that sum, so a step timed twice stays self-consistent
@@ -350,87 +348,123 @@ void main() {
   });
 
   group('mode propagation across platforms (SPEC §3, §7.4)', () {
-    /// A stand-in for `chmod`: touches [marker] when invoked, then exits 0
-    /// — the same "record what a fake executable actually did" technique
-    /// `ssh_channel_test.dart`'s `fakeSsh` uses for `ssh`, so a test can
-    /// tell whether `_applyMode` spawned anything without reaching into
-    /// `dart:io` internals.
-    Future<String> fakeChmod(File marker) async {
-      final script = File('${tempDir.path}/fake-chmod');
-      await script.writeAsString('''
-#!/bin/sh
-touch "${marker.path}"
-exit 0
-''');
-      await Process.run('chmod', ['+x', script.path]);
-      return script.path;
+    /// A stand-in for [posixChmod] that records every call instead of
+    /// touching the filesystem, so a test can tell whether `_applyMode`
+    /// reached the syscall at all.
+    ///
+    /// The successor to the `/bin/sh` script that used to stand in for the
+    /// `chmod` binary — the seam moved from a `PATH` lookup to a function,
+    /// so the fake is a closure rather than a file, and the tests below no
+    /// longer need a POSIX shell to run.
+    (List<(String, int)>, Chmod) recordingChmod() {
+      final calls = <(String, int)>[];
+      return (
+        calls,
+        (path, mode) {
+          calls.add((path, mode));
+          return 0;
+        },
+      );
     }
 
-    test(
-      'a Windows replica never spawns chmod, even when the mode differs',
-      () async {
-        final marker = File('${tempDir.path}/chmod-ran');
-        final windowsAgent = LocalAgent(
-          rootPath: replicaDir.path,
-          archiveStore: archiveStore,
-          replicaLock: replicaLock,
-          isWindowsReplica: true,
-          chmodExecutable: await fakeChmod(marker),
-        );
-
-        // 0o600 differs from the default a fresh file gets under the usual
-        // umask — exactly the case that used to pay a spawn attempt
-        // guaranteed to fail, once per file, before the first one threw
-        // `ProcessException` and `_chmodUnavailable` latched.
-        await windowsAgent.writeFile(
-          'a.txt',
-          Stream.value(utf8.encode('hello')),
-          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
-          mode: 384,
-        );
-
-        expect(await marker.exists(), isFalse);
-      },
-      testOn: 'linux',
-    );
-
-    test('sanity check: the same fake chmod DOES run for a non-Windows '
-        'replica given the same differing mode', () async {
-      final marker = File('${tempDir.path}/chmod-ran');
-      final posixAgent = LocalAgent(
+    test('a Windows replica never calls chmod, even when the mode '
+        'differs', () async {
+      final (calls, chmod) = recordingChmod();
+      final windowsAgent = LocalAgent(
         rootPath: replicaDir.path,
         archiveStore: archiveStore,
         replicaLock: replicaLock,
-        chmodExecutable: await fakeChmod(marker),
+        isWindowsReplica: true,
+        chmod: chmod,
       );
 
-      await posixAgent.writeFile(
+      // 0o600 differs from the default a fresh file gets under the usual
+      // umask — exactly the case that used to pay an attempt guaranteed to
+      // fail, once per file, before the first one raised and
+      // `_chmodUnavailable` latched.
+      await windowsAgent.writeFile(
         'a.txt',
         Stream.value(utf8.encode('hello')),
         mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
         mode: 384,
       );
 
-      // Without this, the Windows test above would prove nothing: it
-      // would pass just as well if the marker technique itself never
-      // worked. This confirms the same mode, on a replica the
-      // constructor was not told is Windows, does reach a spawn.
-      expect(await marker.exists(), isTrue);
-    }, testOn: 'linux');
+      expect(calls, isEmpty);
+    });
+
+    test('sanity check: the same fake chmod DOES run for a non-Windows '
+        'replica, and for a mode the file already has', () async {
+      final (calls, chmod) = recordingChmod();
+      final posixAgent = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        chmod: chmod,
+      );
+
+      // 0o644 is what the umask leaves, so the old code's stat guard would
+      // have skipped this one. There is no guard now: the call is
+      // unconditional, which is the change (task 9d2158 §10.1).
+      await posixAgent.writeFile(
+        'a.txt',
+        Stream.value(utf8.encode('hello')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 420,
+      );
+
+      // Without this, the Windows test above would prove nothing: it would
+      // pass just as well if the recording technique itself never worked.
+      // The scratch path, not the destination: the mode is applied before
+      // the rename, so a write that fails leaves nothing half-permissioned
+      // at the real path.
+      expect(calls, [(tempPathFor('${replicaDir.path}/a.txt', 0), 420)]);
+    });
+
+    test('a chmod that runs and the filesystem refuses is not fatal and does '
+        'not latch — SPEC §7.4, and the Android external-storage case '
+        '(SPEC §3)', () async {
+      var calls = 0;
+      final refusingAgent = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        // What `chmod(2)` returns on a filesystem with no POSIX modes: it
+        // ran, it failed, and it will be asked again for the next path.
+        chmod: (path, mode) {
+          calls++;
+          return -1;
+        },
+      );
+
+      for (final path in ['a.txt', 'b.txt']) {
+        await refusingAgent.writeFile(
+          path,
+          Stream.value(utf8.encode('hello')),
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+          mode: 384,
+        );
+        expect(await File('${replicaDir.path}/$path').readAsString(), 'hello');
+      }
+
+      expect(calls, 2);
+    });
 
     test('a host that genuinely lacks chmod for some other reason still '
         'succeeds, recording whatever mode actually landed rather than the '
         'one that was asked for (SPEC §7.4) — the pre-existing '
         '_chmodUnavailable fallback, unchanged', () async {
+      var calls = 0;
       final missingChmodAgent = LocalAgent(
         rootPath: replicaDir.path,
         archiveStore: archiveStore,
         replicaLock: replicaLock,
-        // A path Process.run cannot start at all (ENOENT), deterministically
-        // forcing the same ProcessException a host truly missing `chmod`
-        // would throw, without touching this host's real PATH or its real
-        // chmod.
-        chmodExecutable: '${tempDir.path}/no-such-chmod-binary',
+        // What a host with no `chmod` symbol to bind raises — the successor
+        // to the `ProcessException` a missing binary threw, and the one
+        // outcome that latches.
+        chmod: (path, mode) {
+          calls++;
+          throw const ChmodUnavailable('no chmod here');
+        },
       );
 
       final first = await missingChmodAgent.writeFile(
@@ -456,6 +490,9 @@ exit 0
       );
       expect(await File('${replicaDir.path}/b.txt').readAsString(), 'world');
       expect(second.mode, isNot(448));
+      // Once, not once per file — which is the whole point of the latch and
+      // the thing the old marker-file technique could not see.
+      expect(calls, 1);
     }, testOn: 'linux');
   });
 

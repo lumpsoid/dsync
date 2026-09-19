@@ -1,13 +1,13 @@
 /// What one replica's `writeFile` has actually spent, step by step, over a
 /// whole session (SPEC §17).
 ///
-/// **Because `far` minus `starved` is one number for nine syscalls.** A
+/// **Because `far` minus `starved` is one number for eight syscalls.** A
 /// `writeFile` on the receiving end creates the parent directory, opens a
-/// temporary file, writes it, closes it, stamps an mtime, reads a stat and
-/// maybe shells out to `chmod`, renames, and stats again. Those have wildly
-/// different fixes — the directory create is removable outright, the `chmod`
-/// is a process spawn, the rename is not — and until they are separated the
-/// only honest thing to say about the destination's cost is its total.
+/// temporary file, writes it, closes it, stamps an mtime, chmods, renames,
+/// and stats. Those have wildly different fixes — the directory create is
+/// removable outright, the `chmod` was a process spawn until it became a
+/// syscall, the rename is neither — and until they are separated the only
+/// honest thing to say about the destination's cost is its total.
 ///
 /// **Cumulative, and reported once.** Every figure here is a session total
 /// rather than a per-call split, for the reason [FarSideReport.sendWait] is:
@@ -44,16 +44,19 @@ class WritePathStats {
   /// `setLastModified` on the temporary file (SPEC §7.4).
   final Duration mtime;
 
-  /// Reading the current mode and, when it differs, applying the intended
-  /// one — which is a **process spawn**, counted by [chmodSpawns].
+  /// Applying the intended mode — one `chmod(2)` through `dart:ffi`, taken
+  /// unconditionally (SPEC §7.4).
   final Duration mode;
 
   /// How many `chmod` processes were actually started.
   ///
-  /// The figure that says whether the mode step is a stat or a fork: a fresh
-  /// temporary file's mode is whatever the umask leaves, so it matches the
-  /// source's on some filesystems and never on others, and one spawn per
-  /// file is a different order of cost from one stat per file.
+  /// The figure that said whether the mode step was a stat or a fork, back
+  /// when it could be either. It answered "a fork, every time": 14,471
+  /// spawns for 14,471 files, because a fresh temporary file carries the
+  /// umask's mode and not the source's, so the stat that guarded the spawn
+  /// never hit. Both are gone — the step is a syscall now — so this is zero
+  /// by construction and stays only until the run that confirms it has been
+  /// read (task 9d2158 §10.1).
   final int chmodSpawns;
 
   /// Renaming the temporary file over the destination (SPEC §7.2).

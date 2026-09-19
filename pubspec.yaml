@@ -138,6 +138,16 @@ dependencies:
   # identity — and every pairing recorded against it — that is no longer
   # found, not a cosmetic difference. `dsync_core/` never imports it
   # (SPEC §3); only the app head does.
+  # The allocator `dart:ffi` itself does not ship: `LocalAgent`'s mode step
+  # is `chmod(2)` through FFI rather than a process spawn
+  # (`lib/dsync_core/agent/posix_chmod.dart`), and that needs a C string,
+  # which means `malloc` and `free`. Pure Dart over `dart:ffi`, no native
+  # build step, no plugin — so it carries to every v1 target (SPEC §3) and
+  # costs `dart compile exe` nothing. Already in the closure transitively
+  # before this; named here now that `lib/` imports it directly. Pinned, not
+  # a range, for the reason every other pin here gives.
+  ffi: 2.2.0
+
   path_provider: 2.1.6
   # The iOS/macOS half of `path_provider` above, pinned one step below its
   # current release on purpose, and named here rather than left to resolve
