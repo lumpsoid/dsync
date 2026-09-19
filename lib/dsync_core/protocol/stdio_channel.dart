@@ -35,8 +35,8 @@ class StdioChannel implements Channel {
     : _input = input ?? stdin.cast<Uint8List>(),
       _output = output ?? stdout;
 
-  /// One frame on the wire at a time, however many operations are sending
-  /// (SPEC §4.2) — see [FlushedSink].
+  /// One write on the wire at a time, however many operations are sending,
+  /// carrying every frame queued behind it (SPEC §4.2) — see [FlushedSink].
   late final FlushedSink _writer = FlushedSink(_output);
 
   @override
@@ -44,6 +44,11 @@ class StdioChannel implements Channel {
 
   @override
   Future<void> send(Uint8List bytes) => _writer.send(bytes);
+
+  /// What [FlushedSink] actually wrote, below the number of `send` calls by
+  /// the frames that left in company (SPEC §17).
+  @override
+  int get writes => _writer.writes;
 
   /// Closes the output side. There is no way for one end of a process's own
   /// stdio to force the *input* side closed — that happens when whatever is

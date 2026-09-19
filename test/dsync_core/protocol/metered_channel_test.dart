@@ -31,6 +31,9 @@ void main() {
 
   ReplicaMetrics replica() => metrics.snapshot().replicas['b']!;
 
+  Frame control(int requestId) =>
+      Frame(type: FrameType.control, requestId: requestId, payload: [1]);
+
   test(
     'a send is counted as bytes, one flush and the frames it carried',
     () async {
@@ -48,6 +51,29 @@ void main() {
       expect(replica().framesSent, 2);
     },
   );
+
+  test('the channel\'s own write count is what `writes` reports', () async {
+    // The figure a send count cannot give: the batching happens below this
+    // decorator, so it is read off the channel rather than counted here.
+    inner.writes = 1;
+    await channel.send(framed([control(1)]));
+    inner.writes = 1;
+    await channel.send(framed([control(2)]));
+
+    expect(replica().sends, 2);
+    expect(replica().writes, 1);
+    // Two frames handed over, one write: exactly the coalescing this exists
+    // to make visible.
+    expect(replica().framesPerWrite, 2);
+  });
+
+  test('a channel with no write to count reports absent, not zero', () async {
+    await channel.send(framed([control(1)]));
+
+    expect(replica().sends, 1);
+    expect(replica().writes, isNull);
+    expect(replica().framesPerWrite, isNull);
+  });
 
   test('bytes arriving are counted without a frame count', () async {
     // A chunk boundary carries no meaning, so "frames received" would be
@@ -133,6 +159,11 @@ class _FakeChannel implements Channel {
     sent.add(bytes);
     await hold?.future;
   }
+
+  /// What a sink-backed channel would report, set by the test — null stands
+  /// for a transport with no write to count (`Channel.writes`).
+  @override
+  int? writes;
 
   @override
   Future<void> close() => _input.close();

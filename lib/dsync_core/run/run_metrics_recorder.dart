@@ -164,6 +164,17 @@ class RunMetricsRecorder {
     });
   }
 
+  /// Records that [side]'s transport has made [count] writes in total — the
+  /// `add`-and-`flush` pairs `FlushedSink` actually performed (SPEC §17).
+  ///
+  /// Set rather than added, because the counter it comes from is cumulative:
+  /// `MeteredChannel` reads the channel's running total on the way past, so
+  /// the last reading is the answer and a missed one costs nothing. Absent
+  /// until a channel reports one, since a transport with no sink to flush has
+  /// no write to count and zero would read as "it coalesced nothing".
+  void countWrites(String side, int count) =>
+      _replicaRecord(side).writes = count;
+
   /// Records [bytes] arriving from [side]'s transport, framing included.
   ///
   /// No frame count: a chunk boundary carries no meaning (`Channel.input`),
@@ -258,6 +269,7 @@ class RunMetricsRecorder {
           wireBytesSent: entry.value.wireBytesSent,
           wireBytesReceived: entry.value.wireBytesReceived,
           sends: entry.value.sends,
+          writes: entry.value.writes,
           framesSent: entry.value.framesSent,
           idle: Map.unmodifiable(entry.value.idle),
         ),
@@ -277,6 +289,10 @@ class _ReplicaRecord {
   int wireBytesReceived = 0;
   int sends = 0;
   int framesSent = 0;
+
+  /// The channel's cumulative write count as last read, or null while no
+  /// channel on this side has reported one.
+  int? writes;
 
   /// Flushes handed to the transport and not yet written. While this is
   /// above zero the link is carrying something and no idle time accrues.

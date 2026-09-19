@@ -34,8 +34,8 @@ import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 class SocketChannel implements Channel {
   final Socket _socket;
 
-  /// One frame on the wire at a time, however many operations are sending
-  /// (SPEC §4.2) — see [FlushedSink].
+  /// One write on the wire at a time, however many operations are sending,
+  /// carrying every frame queued behind it (SPEC §4.2) — see [FlushedSink].
   late final FlushedSink _writer = FlushedSink(_socket);
 
   SocketChannel(this._socket) {
@@ -148,6 +148,11 @@ class SocketChannel implements Channel {
 
   @override
   Future<void> send(Uint8List bytes) => _writer.send(bytes);
+
+  /// What [FlushedSink] actually wrote, below the number of `send` calls by
+  /// the frames that left in company (SPEC §17).
+  @override
+  int get writes => _writer.writes;
 
   /// Closes this end: the write side first — which is the EOF that ends the
   /// peer's session (SPEC §4.2) — then the socket itself.

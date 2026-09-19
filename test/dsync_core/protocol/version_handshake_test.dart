@@ -170,6 +170,10 @@ class _FakeChannel implements Channel {
     outbox.add(bytes);
   }
 
+  /// No sink, so no write to count (`Channel.writes`).
+  @override
+  int? get writes => null;
+
   @override
   Future<void> close() async {
     await outbox.close();

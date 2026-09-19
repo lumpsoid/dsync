@@ -122,6 +122,11 @@ class IdleDeadlineChannel implements Channel {
     return _inner.send(bytes);
   }
 
+  /// The wrapped channel's, unchanged: heartbeats go through [send] like any
+  /// other frame and coalesce with them, so there is nothing to add here.
+  @override
+  int? get writes => _inner.writes;
+
   @override
   Future<void> close() async {
     _closed = true;

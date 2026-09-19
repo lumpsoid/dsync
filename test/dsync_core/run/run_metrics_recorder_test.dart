@@ -284,6 +284,32 @@ void main() {
       expect(replica.framesPerSend, 2);
     });
 
+    test('writes are the channel\'s cumulative total, set not added', () {
+      // `MeteredChannel` reads a running total off the channel, so the last
+      // reading is the answer — adding them would count every write again on
+      // every send (SPEC §17).
+      metrics.beginSend('b', bytes: 100, frames: 1).end();
+      metrics.countWrites('b', 1);
+      metrics.beginSend('b', bytes: 100, frames: 1).end();
+      metrics.countWrites('b', 1);
+      metrics.beginSend('b', bytes: 100, frames: 2).end();
+      metrics.countWrites('b', 2);
+
+      final replica = metrics.snapshot().replicas['b']!;
+      expect(replica.sends, 3);
+      expect(replica.framesSent, 4);
+      expect(replica.writes, 2);
+      expect(replica.framesPerWrite, 2);
+    });
+
+    test('a side that reported no write has none, not zero', () {
+      metrics.beginSend('b', bytes: 100, frames: 1).end();
+
+      final replica = metrics.snapshot().replicas['b']!;
+      expect(replica.writes, isNull);
+      expect(replica.framesPerWrite, isNull);
+    });
+
     test('sends per operation divides the flushes by the work', () {
       metrics.beginOp('b', AgentOp.writeFile).end();
       metrics.beginOp('b', AgentOp.archiveCommit).end();

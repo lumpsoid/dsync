@@ -31,6 +31,11 @@ class InMemoryChannel implements Channel {
     _outbox.add(bytes);
   }
 
+  /// Null: there is no sink and no flush, so a write is not a thing this pair
+  /// has — and reporting 0 would read as "it coalesced nothing" (`Channel`).
+  @override
+  int? get writes => null;
+
   @override
   Future<void> close() async {
     await _outbox.close();

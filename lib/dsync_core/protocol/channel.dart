@@ -36,6 +36,22 @@ abstract class Channel {
   /// middle by someone else's is not decodable by anyone.
   Future<void> send(Uint8List bytes);
 
+  /// How many writes on the underlying transport the frames handed to [send]
+  /// have become so far, or null for a channel that has no write to count.
+  ///
+  /// The measurement `send` alone cannot give (SPEC §17). A `send` is a frame
+  /// handed over; a write is what the link was asked to carry, and since
+  /// `FlushedSink` drains everything queued behind an in-flight write into
+  /// one of them the two differ under load. Counting sends above the
+  /// coalescing and writes below it is what makes the batching observable
+  /// rather than assumed.
+  ///
+  /// **Null rather than zero**, and required rather than defaulted, so that
+  /// "this channel does not write to a sink" — an in-memory pair, a test
+  /// fake — is an answer an implementation gives on purpose instead of a
+  /// default that reads as "it coalesced nothing".
+  int? get writes;
+
   /// Closes both directions of the stream.
   Future<void> close();
 }

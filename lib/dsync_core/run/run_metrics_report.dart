@@ -50,10 +50,23 @@ String formatRunMetrics(RunMetrics metrics) {
       // a flush and costs about one link latency whatever rides on it, so
       // frames-per-send and sends-per-operation are what say whether the
       // protocol's shape or the link's latency is the ceiling.
+      // `writes` and frames-per-write are the pair that judges the
+      // coalescing of task 9d2158: a send is a frame handed over, a write is
+      // what the link was asked to carry, and the batching happens between
+      // them so no figure above it can show it. Omitted rather than printed
+      // as zero for a transport that reported none.
       out.writeln(
         '  wire: ${formatMetricCount(replica.sends)} sends, '
+        '${switch (replica.writes) {
+          final count? => '${formatMetricCount(count)} writes, ',
+          null => '',
+        }}'
         '${formatMetricCount(replica.framesSent)} frames, '
         '${formatMetricBytes(replica.meanFrameBytes.round())} mean frame, '
+        '${switch (replica.framesPerWrite) {
+          final ratio? => '${ratio.toStringAsFixed(2)} frames per write, ',
+          null => '',
+        }}'
         '${replica.sendsPerOp.toStringAsFixed(2)} sends per operation',
       );
       // The gaps between bytes moving, per phase — the figure that separates

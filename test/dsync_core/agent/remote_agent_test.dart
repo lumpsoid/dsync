@@ -500,6 +500,9 @@ class _WatchedInputChannel implements Channel {
   Future<void> send(Uint8List bytes) => _inner.send(bytes);
 
   @override
+  int? get writes => _inner.writes;
+
+  @override
   Future<void> close() => _inner.close();
 }
 

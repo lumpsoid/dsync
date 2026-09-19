@@ -67,6 +67,13 @@ class MeteredChannel implements Channel {
   /// Opened before the flush and closed after it, so the link counts as
   /// carrying something for as long as the write takes — which on a link slow
   /// enough for idle time to be worth measuring is not an instant.
+  ///
+  /// The wrapped channel's write count is read on the way out rather than
+  /// counted here, because this side of the coalescing cannot see it: a
+  /// `send` is a frame handed over and a write is what the link carried, and
+  /// since task 9d2158 those differ (SPEC §17). Sampled per send rather than
+  /// once at the end because the counter is cumulative and a run that aborts
+  /// still gets the figure up to where it stopped.
   @override
   Future<void> send(Uint8List bytes) async {
     final flush = metrics.beginSend(
@@ -78,8 +85,14 @@ class MeteredChannel implements Channel {
       await _inner.send(bytes);
     } finally {
       flush.end();
+      if (_inner.writes case final count?) metrics.countWrites(side, count);
     }
   }
+
+  /// The wrapped channel's, unchanged — this decorator adds no write of its
+  /// own, it only reports the ones underneath it.
+  @override
+  int? get writes => _inner.writes;
 
   @override
   Future<void> close() => _inner.close();

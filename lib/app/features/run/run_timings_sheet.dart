@@ -275,11 +275,25 @@ class _ReplicaTable extends StatelessWidget {
         // carried (SPEC §17): a send is a flush and costs about a link
         // latency whatever rides on it, so these are what say whether the
         // ceiling is the protocol's shape or the radio.
+        //
+        // `writes` and frames/write are on this side of the copy button and
+        // not only in the copied report, because the phone is the only place
+        // §4.2's coalescing can be measured at all — a flush there costs TLS
+        // and a radio, which is what makes frames queue behind it. Omitted
+        // rather than shown as zero for a transport that reported none.
         if (replica.remote)
           Text(
             '${formatMetricCount(replica.sends)} sends · '
+            '${switch (replica.writes) {
+              final count? => '${formatMetricCount(count)} writes · ',
+              null => '',
+            }}'
             '${formatMetricCount(replica.framesSent)} frames · '
             '${formatMetricBytes(replica.meanFrameBytes.round())} mean frame · '
+            '${switch (replica.framesPerWrite) {
+              final ratio? => '${ratio.toStringAsFixed(2)} frames/write · ',
+              null => '',
+            }}'
             '${replica.sendsPerOp.toStringAsFixed(2)} sends/operation',
             style: subtitle,
           ),

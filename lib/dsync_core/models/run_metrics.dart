@@ -288,6 +288,20 @@ class ReplicaMetrics {
   final int sends;
   final int framesSent;
 
+  /// How many `add`-and-`flush` pairs those buffers actually became (SPEC
+  /// §17), or null for a transport with no sink to flush.
+  ///
+  /// The third number the other two cannot give, and the reason it exists:
+  /// since task 9d2158 `FlushedSink` drains everything queued behind an
+  /// in-flight write into one of them, and that happens *below* the point
+  /// [sends] is counted at, so no arithmetic over [sends] and [framesSent]
+  /// can see it. [framesPerWrite] is what says whether the coalescing bit.
+  ///
+  /// **Null rather than zero**, because a channel that does not write to a
+  /// sink — an in-memory pair — has no write to count, and zero there would
+  /// read as the one outcome this figure exists to detect.
+  final int? writes;
+
   /// How long this replica's transport carried nothing, per phase (SPEC §17).
   ///
   /// The gaps between one byte moving and the next, so a phase absent here
@@ -310,6 +324,7 @@ class ReplicaMetrics {
     required this.wireBytesReceived,
     this.sends = 0,
     this.framesSent = 0,
+    this.writes,
     this.idle = const {},
   });
 
@@ -344,6 +359,19 @@ class ReplicaMetrics {
   /// Frames per flush. One until something coalesces them; the number the
   /// coalescing case is judged by afterwards.
   double get framesPerSend => sends == 0 ? 0 : framesSent / sends;
+
+  /// Frames per actual write — what [framesPerSend] would say if [sends] were
+  /// counted below the coalescing instead of above it (SPEC §17).
+  ///
+  /// One while nothing batches, and the figure task 9d2158's phase 3 is
+  /// judged by: it rises exactly as far as `FlushedSink` found frames queued
+  /// behind a write in flight. Null when this side reported no write count,
+  /// and null rather than 1 when it reported zero writes, since "nothing was
+  /// written" is not a ratio.
+  double? get framesPerWrite => switch (writes) {
+    null || 0 => null,
+    final count => framesSent / count,
+  };
 
   /// Flushes per `Agent` operation — how many times this replica's exchanges
   /// made the transport wait on the link, per unit of work asked of it.
