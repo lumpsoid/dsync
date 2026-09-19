@@ -474,9 +474,7 @@ void main() {
 
       expect(
         tester
-            .widget<IconButton>(
-              find.byKey(const Key('run-setup-diagnostics')),
-            )
+            .widget<IconButton>(find.byKey(const Key('run-setup-diagnostics')))
             .onPressed,
         isNull,
       );

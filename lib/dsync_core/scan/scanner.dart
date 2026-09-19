@@ -300,7 +300,9 @@ class Scanner {
     if (pending.isEmpty) return;
     final batch = [...pending];
     pending.clear();
-    final stats = await Future.wait([for (final (file, _) in batch) file.stat()]);
+    final stats = await Future.wait([
+      for (final (file, _) in batch) file.stat(),
+    ]);
     for (var i = 0; i < batch.length; i++) {
       final (file, relativePath) = batch[i];
       await _recordFile(file, relativePath, stats[i], context);
@@ -528,7 +530,11 @@ class Scanner {
     final count = totalBytes < _isolateBatchFloorBytes
         ? 1
         : jobs.clamp(1, candidates.length);
-    if (count == 1) return [[for (var i = 0; i < candidates.length; i++) i]];
+    if (count == 1) {
+      return [
+        [for (var i = 0; i < candidates.length; i++) i],
+      ];
+    }
 
     final order = [for (var i = 0; i < candidates.length; i++) i]
       ..sort((a, b) => candidates[b].size.compareTo(candidates[a].size));

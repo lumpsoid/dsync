@@ -16,7 +16,6 @@ import 'dart:typed_data';
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 
-
 /// The name to offer for *this* device — what the desktop will list it as.
 ///
 /// `Platform.localHostname` first, which is what `dsync pair accept`

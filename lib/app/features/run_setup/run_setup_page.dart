@@ -133,13 +133,11 @@ class _RunSetupPageState extends State<RunSetupPage> {
     if (_controller.state.outcome is RunSetupSaved) widget.onSaved();
   }
 
-  Future<void> _openDiagnostics(String rootPath) =>
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) =>
-              DiagnosticsPage(rootPath: rootPath, blockedReason: null),
-        ),
-      );
+  Future<void> _openDiagnostics(String rootPath) => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => DiagnosticsPage(rootPath: rootPath, blockedReason: null),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -440,11 +438,7 @@ class _SectionLabel extends StatelessWidget {
 /// address — can only be provoked from inside an open disclosure, so folding
 /// one away never hides a message the user has not seen.
 class _Disclosure extends StatelessWidget {
-  const _Disclosure({
-    super.key,
-    required this.title,
-    required this.children,
-  });
+  const _Disclosure({super.key, required this.title, required this.children});
 
   final String title;
   final List<Widget> children;

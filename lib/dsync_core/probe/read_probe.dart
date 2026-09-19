@@ -42,7 +42,7 @@ class ReadProbe {
 
   /// The depths [run] sweeps unless told otherwise: doublings, so a curve is
   /// read across a range rather than around a point, and far enough past
-  /// `Applier.defaultConcurrency` (16) that a limit at the depth a run
+  /// `Applier.defaultConcurrency` that a limit at the depth a run
   /// happens to use is visible as a limit rather than as the end of the
   /// chart.
   static const defaultDepths = [1, 2, 4, 8, 16, 32, 64];

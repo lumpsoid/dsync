@@ -111,13 +111,11 @@ class _PairPageState extends State<PairPage> {
     _localName.text = offered;
   }
 
-  void _localNameEdited() => pairScope.controller.localNameEdited(
-    _localName.text,
-  );
+  void _localNameEdited() =>
+      pairScope.controller.localNameEdited(_localName.text);
 
-  void _proposedNameEdited() => pairScope.controller.proposedNameEdited(
-    _proposedName.text,
-  );
+  void _proposedNameEdited() =>
+      pairScope.controller.proposedNameEdited(_proposedName.text);
 
   /// The clipboard, as the payload field's own button: the `dsync-pair:v1:`
   /// line reaches a phone by being copied out of something else, and a long
@@ -189,9 +187,8 @@ class _PairPageState extends State<PairPage> {
   void _leaveIfPaired(PairController controller) {
     if (!mounted) return;
     if (controller.state.outcome case PairSucceeded(:final deviceName)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Paired with $deviceName.')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Paired with $deviceName.')));
       widget.onPaired();
     }
   }

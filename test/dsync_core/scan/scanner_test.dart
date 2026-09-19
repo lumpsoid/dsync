@@ -579,10 +579,8 @@ void main() {
       ];
 
       for (final jobs in [1, 3, 4, 7, 64]) {
-        final result = await Scanner(jobs: jobs).scan(
-          rootPath: tempDir.path,
-          archive: archiveOf({}),
-        );
+        final result = await Scanner(jobs: jobs)
+            .scan(rootPath: tempDir.path, archive: archiveOf({}));
 
         expect(
           result.entries.map((e) => e.path),
@@ -599,8 +597,7 @@ void main() {
       }
       await File('${tempDir.path}/target.txt').writeAsString('target');
       // `m_link` sorts between `a5.txt` and `target.txt`.
-      await Link('${tempDir.path}/m_link')
-          .create('${tempDir.path}/target.txt');
+      await Link('${tempDir.path}/m_link').create('${tempDir.path}/target.txt');
 
       final result = await Scanner(jobs: 4).scan(
         rootPath: tempDir.path,
@@ -637,10 +634,8 @@ void main() {
       }
 
       for (final jobs in [1, 2, 3, 8]) {
-        final result = await Scanner(jobs: jobs).scan(
-          rootPath: tempDir.path,
-          archive: archiveOf({}),
-        );
+        final result = await Scanner(jobs: jobs)
+            .scan(rootPath: tempDir.path, archive: archiveOf({}));
 
         expect(
           result.entries.map((e) => e.path).toList()..sort(),
@@ -656,7 +651,6 @@ void main() {
         }
       }
     });
-
   });
 
   group('jobs', () {
@@ -765,19 +759,21 @@ void main() {
       expect(result.unreadableCount, 1);
     }, testOn: 'linux');
 
-    test('no entry ever carries FileStat\'s not-found sentinel as a size',
-        () async {
-      await File('${tempDir.path}/ok.txt').writeAsString('hello');
+    test(
+      'no entry ever carries FileStat\'s not-found sentinel as a size',
+      () async {
+        await File('${tempDir.path}/ok.txt').writeAsString('hello');
 
-      final result = await Scanner().scan(
-        rootPath: tempDir.path,
-        archive: archiveOf({}),
-      );
+        final result = await Scanner().scan(
+          rootPath: tempDir.path,
+          archive: archiveOf({}),
+        );
 
-      for (final entry in result.entries) {
-        expect(entry.size, isNot(isNegative), reason: entry.path);
-      }
-    });
+        for (final entry in result.entries) {
+          expect(entry.size, isNot(isNegative), reason: entry.path);
+        }
+      },
+    );
 
     test('a vanished file with an archive entry is not reported deleted — '
         'SPEC §5 excludes an unread path from reconciliation rather than '
@@ -930,15 +926,13 @@ void main() {
         return;
       }
 
-      final result = await Scanner(jobs: 4).scan(
-        rootPath: tempDir.path,
-        archive: archiveOf({}),
-      );
+      final result = await Scanner(jobs: 4)
+          .scan(rootPath: tempDir.path, archive: archiveOf({}));
 
-      expect(
-        result.entries.map((e) => e.path).toList()..sort(),
-        ['big.bin', 'ok.txt'],
-      );
+      expect(result.entries.map((e) => e.path).toList()..sort(), [
+        'big.bin',
+        'ok.txt',
+      ]);
       expect(result.skippedPaths.single.path, 'locked.txt');
       expect(result.skippedPaths.single.detail, 'Permission denied');
     }, testOn: 'linux');
@@ -956,10 +950,8 @@ void main() {
         return;
       }
 
-      final result = await Scanner(jobs: 3).scan(
-        rootPath: tempDir.path,
-        archive: archiveOf({}),
-      );
+      final result = await Scanner(jobs: 3)
+          .scan(rootPath: tempDir.path, archive: archiveOf({}));
 
       expect(result.skippedPaths.map((s) => s.path), [
         'a.txt',

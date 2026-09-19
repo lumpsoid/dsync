@@ -122,7 +122,6 @@ extension ScanProbeLayerWalk on ScanProbeLayer {
   /// Whether the rung stats each file.
   bool get statsFiles => this != ScanProbeLayer.list;
 
-
   /// Whether the rung builds root-relative paths and applies SPEC §5.1's
   /// per-path decisions to them.
   bool get appliesRules => switch (this) {
