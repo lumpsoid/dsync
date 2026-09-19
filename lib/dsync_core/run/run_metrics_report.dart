@@ -191,6 +191,7 @@ String formatRunMetrics(RunMetrics metrics) {
       '${'total'.padLeft(10)}${'mean'.padLeft(10)}${'queue'.padLeft(10)}'
       '${'wire'.padLeft(10)}${'far'.padLeft(10)}${'starved'.padLeft(10)}'
       '${'link'.padLeft(10)}'
+      '${'held'.padLeft(10)}${'own'.padLeft(10)}'
       '${'settle'.padLeft(10)}${'peers'.padLeft(8)}'
       '${'max'.padLeft(10)}${'content'.padLeft(11)}',
     );
@@ -222,6 +223,18 @@ String formatRunMetrics(RunMetrics metrics) {
       // destination was waiting on the link; near zero its disk is the cost.
       // `—` for every operation that sends nothing but its request.
       //
+      // `held` and `own` split the boundary span of a streamed operation the
+      // way `starved` splits the peer's: `held` is how long the call sat
+      // parked on a `yield` because its consumer had not come back for the
+      // next chunk, and `own` is `mean` less that — what producing the bytes
+      // actually cost. Since the read-ahead landed, a `readFile`'s `held` is
+      // the send path's backpressure arriving through the prefetch buffer, so
+      // without the split a read that got slower and a wire that got slower
+      // are the same number. `—` for every operation that hands back no
+      // stream. `own` is printed rather than subtracted for the reason the
+      // note above gives, and appears only when every counted call reported a
+      // hold, so the two figures share a population.
+      //
       // `settle` is the only column that is this side's own event loop: the
       // reply's bytes arriving to this call finishing. It is not a share of
       // any other column and must not be subtracted from one — it is a span
@@ -236,6 +249,8 @@ String formatRunMetrics(RunMetrics metrics) {
         '${formatMetricSplit(stats.meanFarSide).padLeft(10)}'
         '${formatMetricSplit(stats.meanFarInbound).padLeft(10)}'
         '${formatMetricSplit(stats.meanLinkTime).padLeft(10)}'
+        '${formatMetricSplit(stats.meanHeld).padLeft(10)}'
+        '${formatMetricSplit(stats.meanUnheld).padLeft(10)}'
         '${formatMetricSplit(stats.meanSettle).padLeft(10)}'
         '${(stats.meanFarInFlight?.toStringAsFixed(1) ?? '—').padLeft(8)}'
         '${formatMetricDuration(stats.max).padLeft(10)}'

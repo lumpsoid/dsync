@@ -202,6 +202,30 @@ class AgentOpStats {
   final Duration settle;
   final int settleCount;
 
+  /// Summed time these calls spent **held by whoever was consuming them**,
+  /// over the calls that could report it, and how many did.
+  ///
+  /// **The split `readFile` stopped being readable without (task 9d2158).**
+  /// A streamed read's span at the `Agent` boundary runs from the call to the
+  /// last chunk being taken, so it contains two unrelated things: the device
+  /// reading its own storage, and the read sitting paused because its
+  /// consumer had not asked for more. Since the read-ahead landed, the second
+  /// is the send path applying backpressure through the prefetch buffer —
+  /// `ReadAhead` pauses the source at 64 KiB per stream (SPEC §7.2) — so a
+  /// `readFile` mean that rose because the *wire* got slower is
+  /// indistinguishable from one that rose because the *flash* did, and the
+  /// two have opposite fixes. `total` less this is what the read itself cost.
+  ///
+  /// This is `starved` seen from the other end of the same pipe: there, the
+  /// destination waiting on our bytes; here, our read waiting on the
+  /// destination's pace.
+  ///
+  /// Its denominator is [heldCount], not [count]: only a streamed operation
+  /// has a consumer to be held by, so every other row is absent rather than
+  /// zero.
+  final Duration held;
+  final int heldCount;
+
   const AgentOpStats({
     required this.count,
     required this.total,
@@ -219,6 +243,8 @@ class AgentOpStats {
     this.settleCount = 0,
     this.farInbound = Duration.zero,
     this.farInboundCount = 0,
+    this.held = Duration.zero,
+    this.heldCount = 0,
   });
 
   /// Zero of everything — the starting point [merge] accumulates onto.
@@ -231,11 +257,16 @@ class AgentOpStats {
 
   /// This plus one more call of [elapsed] carrying [bytes] payload bytes, as
   /// the `Agent` boundary saw it.
-  AgentOpStats merge(Duration elapsed, int bytes) => _with(
+  /// [held] is the part of [elapsed] the call spent waiting on its consumer,
+  /// for a streamed operation that measured it, and null for one with no
+  /// consumer to wait on — which is every operation but `readFile`.
+  AgentOpStats merge(Duration elapsed, int bytes, {Duration? held}) => _with(
     count: count + 1,
     total: total + elapsed,
     max: elapsed > max ? elapsed : max,
     bytes: this.bytes + bytes,
+    held: held == null ? this.held : this.held + held,
+    heldCount: held == null ? heldCount : heldCount + 1,
   );
 
   /// This plus one exchange's measured split (SPEC §17).
@@ -304,6 +335,24 @@ class AgentOpStats {
   double? get meanFarInFlight =>
       farInFlightCount == 0 ? null : farInFlight / farInFlightCount;
 
+  /// Mean time one call was held by its consumer, per call that could report
+  /// it, or null when none could — which is every operation that hands back
+  /// no stream.
+  Duration? get meanHeld => _per(held, heldCount);
+
+  /// Mean time one call spent on its own work: its boundary span less what
+  /// its consumer held it for, over the same population as [meanHeld].
+  ///
+  /// Printed rather than left to a reader's subtraction, because [total] and
+  /// [held] are divided by different counts and subtracting one printed mean
+  /// from another gives a number with no population behind it (SPEC §17).
+  /// Null unless every counted call reported a hold, which is the containment
+  /// this figure needs: netting a total over one population against a total
+  /// over another is exactly the arithmetic §17 forbids, and a snapshot taken
+  /// mid-call holds the two at different counts.
+  Duration? get meanUnheld =>
+      heldCount == 0 || heldCount != count ? null : _per(total - held, count);
+
   AgentOpStats _with({
     int? count,
     Duration? total,
@@ -321,6 +370,8 @@ class AgentOpStats {
     int? settleCount,
     Duration? farInbound,
     int? farInboundCount,
+    Duration? held,
+    int? heldCount,
   }) => AgentOpStats(
     count: count ?? this.count,
     total: total ?? this.total,
@@ -338,6 +389,8 @@ class AgentOpStats {
     settleCount: settleCount ?? this.settleCount,
     farInbound: farInbound ?? this.farInbound,
     farInboundCount: farInboundCount ?? this.farInboundCount,
+    held: held ?? this.held,
+    heldCount: heldCount ?? this.heldCount,
   );
 
   static Duration? _per(Duration value, int count) =>

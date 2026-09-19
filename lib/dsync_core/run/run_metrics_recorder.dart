@@ -139,6 +139,7 @@ class RunMetricsRecorder {
       record.ops[op] = (record.ops[op] ?? AgentOpStats.none).merge(
         _elapsed() - operation.startedAt,
         operation.bytes,
+        held: operation.held,
       );
     });
   }
@@ -373,6 +374,13 @@ class OpenOperation {
   final void Function(OpenOperation) _record;
 
   int bytes = 0;
+
+  /// How long this call sat waiting on its consumer, or null for one with no
+  /// consumer to wait on (SPEC §17). Null rather than zero: "nothing held it"
+  /// and "nothing could have held it" are different answers, and only a
+  /// streamed operation can give the first.
+  Duration? held;
+
   bool _closed = false;
 
   OpenOperation._(this.op, this.startedAt, this._record);
@@ -382,6 +390,15 @@ class OpenOperation {
   void countBytes(int count) {
     if (_closed) return;
     bytes += count;
+  }
+
+  /// Attributes the part of this call's span that its consumer held it for,
+  /// so the span can be read as the two things it is made of rather than as
+  /// one number meaning both (SPEC §17). Set, not accumulated: the caller
+  /// holds the running total and reports it once, at the end.
+  void countHeld(Duration value) {
+    if (_closed) return;
+    held = value;
   }
 
   /// Closes the operation and records its span. Idempotent: `readFile`'s

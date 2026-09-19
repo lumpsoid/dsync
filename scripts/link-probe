@@ -1,0 +1,148 @@
+#!/bin/sh
+# link-probe — what this pair's link actually carries, phone to desktop,
+# measured by nothing of ours.
+#
+# Why it exists. Every throughput figure in task 9d2158 comes from dsync's own
+# §17 report, and the apply's largest serialized term is now the phone's send
+# path at ~16 MiB/s. Three independent measurements agree on that order —
+# dsync's small-file apply, dsync streaming one large file (12.8), and `rsync`
+# over ssh (16.6) — and the driver's own estimate says the link should carry
+# 66-96. Nothing so far separates the candidates, and they have completely
+# different consequences:
+#
+#   the link/radio      -> ~16 MiB/s is the ceiling, the apply's byte term is
+#                          already optimal, and no protocol change touches it
+#   crypto on the phone -> TLS on one core is the ceiling; that is seconds of
+#                          the apply and it is ours to fix
+#   dsync's own path    -> framing, chunking or the event loop
+#
+# This probe removes the last two: `dd` from /dev/zero into `nc`. No TLS, no
+# ssh, no dsync, no filesystem read on either end. What it measures is TCP over
+# the air plus a memcpy. If it lands near 16 MiB/s the link is the answer and
+# §5's rsync/Unison disagreement stops mattering; if it lands near 60+ the
+# ceiling is above us and the gap is crypto or code.
+#
+# **It is verified from outside the tool**, which is the thing §5 said was
+# missing and never took: the desktop's own NIC counter is read either side, so
+# the byte total does not depend on `nc`, on `dd`, or on anyone's clock but the
+# kernel's. A tool-independent count is what makes this quotable at all —
+# Unison's 54 MiB/s is not, because its progress counts bytes of the *file* it
+# processed through an rsync-style delta rather than bytes it put on the wire,
+# and `rsync`'s 16.6 may have been ssh crypto-bound on the phone's single core.
+# Neither settles the link. This does.
+#
+# **Read the topology before the number.** `ip route get` prints the interface
+# and address this desktop reaches the phone on. If that interface is wireless,
+# the flow crosses the air *twice* — phone to AP, AP to desktop — on one radio
+# and one channel, so the two hops halve the airtime between them and the
+# ceiling is roughly half a single station's goodput before anything else is
+# blamed. The script prints the interface for exactly that reason. A wired
+# desktop is the control for it and costs a cable.
+#
+# Usage:
+#   scripts/link-probe [megabytes]      # default 256
+#
+# Needs: adb with the device authorised, `nc` on both ends (Android's toybox
+# has one), and nothing installed on the phone — so the app's All-files grant
+# is untouched.
+
+set -e
+
+MB=${1:-256}
+PORT=${PORT:-47654}
+
+command -v adb >/dev/null || { echo "link-probe: adb not found" >&2; exit 1; }
+[ -n "$(adb devices | sed -n '2p')" ] || {
+  echo "link-probe: no device attached" >&2; exit 1; }
+
+phone=$(adb shell ip -4 addr show wlan0 |
+  sed -n 's@.*inet \([0-9.]*\)/.*@\1@p' | head -1)
+[ -n "$phone" ] || { echo "link-probe: no wlan0 address on the device" >&2
+  exit 1; }
+
+route=$(ip -4 route get "$phone")
+iface=$(echo "$route" | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+host=$(echo "$route" | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+[ -n "$iface" ] && [ -n "$host" ] || {
+  echo "link-probe: no route from here to $phone" >&2; exit 1; }
+
+wireless=no
+[ -d "/sys/class/net/$iface/wireless" ] && wireless=yes
+
+counter=/sys/class/net/$iface/statistics/rx_bytes
+[ -r "$counter" ] || { echo "link-probe: cannot read $counter" >&2; exit 1; }
+
+echo "phone      $phone"
+echo "desktop    $host on $iface (wireless: $wireless)"
+echo "payload    ${MB} MiB, /dev/zero -> nc, no TLS and no filesystem"
+echo
+
+radio_before=$(mktemp)
+radio_after=$(mktemp)
+trap 'rm -f "$radio_before" "$radio_after"' EXIT
+here=$(dirname "$0")
+"$here/phone-radio" > "$radio_before" 2>/dev/null || true
+
+# The listener is started first and discards everything: a receiver that wrote
+# to disk would put this desktop's storage inside the measurement.
+nc -l "$PORT" > /dev/null &
+listener=$!
+# Give the bind a moment; connecting before it is up fails the run rather than
+# producing a wrong number, which is the preferred failure.
+sleep 1
+
+rx_before=$(cat "$counter")
+wall_start=$(date +%s%N)
+
+# Timed on the phone, so the adb round trip over USB is outside the span.
+# Seconds and nanoseconds are read and subtracted *separately*: `date +%s%N` is
+# a nineteen-digit number and Android's shell wraps it, which showed up as a
+# negative span rather than as an error. `10#` forces base ten, since `%N` is
+# zero-padded and would otherwise be read as octal.
+took_ms=$(adb shell "
+  s1=\$(date +%s); n1=\$(date +%N)
+  dd if=/dev/zero bs=1M count=$MB 2>/dev/null | nc -w 5 $host $PORT
+  s2=\$(date +%s); n2=\$(date +%N)
+  echo \$(( (s2 - s1) * 1000 + (10#\$n2 - 10#\$n1) / 1000000 ))
+" | tr -d '\r')
+
+wait "$listener" 2>/dev/null || true
+wall_ms=$(( ($(date +%s%N) - wall_start) / 1000000 ))
+rx_after=$(cat "$counter")
+"$here/phone-radio" "$radio_before" > "$radio_after" 2>/dev/null || true
+
+# The phone's clock is preferred because it excludes the USB round trip; the
+# desktop's wall clock stands in when the device's arithmetic fails, and is
+# printed either way so the two can be compared.
+clock=phone
+case "$took_ms" in
+  ''|*[!0-9]*|0) clock=desktop; took_ms=$wall_ms ;;
+esac
+[ "$took_ms" -gt 0 ] || { echo "link-probe: span too short to time" >&2
+  exit 1; }
+
+rx_delta=$((rx_after - rx_before))
+
+# Integer arithmetic throughout, in KiB/s to keep a decimal without floats.
+payload_kib=$((MB * 1024))
+sent_rate=$((payload_kib * 1000 / took_ms))
+nic_kib=$((rx_delta / 1024))
+nic_rate=$((nic_kib * 1000 / took_ms))
+
+fmt() { echo "$(( $1 / 1024 )).$(( ($1 % 1024) * 10 / 1024 ))"; }
+
+echo "elapsed    ${took_ms} ms, on the ${clock}'s clock (desktop wall ${wall_ms} ms)"
+echo "payload    $(fmt $sent_rate) MiB/s  (${MB} MiB of /dev/zero)"
+echo "NIC rx     $(fmt $nic_rate) MiB/s  ($rx_delta bytes on $iface)"
+echo
+# The NIC figure is the one to quote. It is higher than the payload by TCP,
+# IP and 802.11 framing plus whatever else this interface received during the
+# span, so a large gap means the link was carrying someone else's traffic too
+# and the run should be repeated.
+echo "Quote the NIC figure. It exceeds the payload by framing and by anything"
+echo "else this interface received in the span; a gap much over ~5% means the"
+echo "link was shared and the run is not clean."
+echo
+echo "radio, before and after (§10.6 — both snapshots, the counters are"
+echo "cumulative since boot so only their delta describes the run):"
+sed 's/^/  /' "$radio_after"

@@ -5,6 +5,7 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/run/elapsed.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 
 /// An [Agent] decorator that times every operation into a
@@ -43,14 +44,23 @@ class MeteredAgent implements Agent {
   /// here distinguishes a `LocalAgent` from a `RemoteAgent` — that is the
   /// point of [Agent] (SPEC §4.1) — and the caller that built the agent is
   /// the one place that knows.
+  ///
+  /// [elapsed] is the reading the held/own split of [readFile] is taken on,
+  /// injectable for the reason `FlushedSink`'s is: a test can then assert the
+  /// split with plain values instead of sleeping. Defaults to a `Stopwatch`
+  /// started here, which is all a real run needs — the split is a difference
+  /// of two readings of it, never an absolute.
   MeteredAgent(
     this._inner, {
     required this.side,
     required this.metrics,
     required bool remote,
-  }) {
+    Elapsed? elapsed,
+  }) : _elapsed = elapsed ?? stopwatchElapsed() {
     if (remote) metrics.markRemote(side);
   }
+
+  final Elapsed _elapsed;
 
   @override
   Future<ReplicaInfo> hello() => _timed(AgentOp.hello, _inner.hello);
@@ -76,15 +86,44 @@ class MeteredAgent implements Agent {
   /// and which `RemoteAgent.readFile` documents at length — closes the
   /// operation through this `finally` as it goes, instead of leaving it open
   /// for the rest of the run.
+  ///
+  /// **And the span is split where the consumer takes over (task 9d2158).**
+  /// It contains two unrelated things: the replica producing bytes, and this
+  /// generator parked on a `yield` because its consumer had not asked for the
+  /// next chunk. Since the read-ahead landed, that second term is the send
+  /// path applying backpressure up through the prefetch buffer — `ReadAhead`
+  /// pauses the source at 64 KiB a stream (SPEC §7.2) — so a `readFile` mean
+  /// that rose because the wire got slower reads identically to one that rose
+  /// because the flash did, and the fixes are opposite. The clock therefore
+  /// runs only across the `yield`, which is exactly the instants the consumer
+  /// owns, and is reported as `held`.
+  ///
+  /// Measured here rather than in `ReadAhead`, for the reason every other
+  /// split in SPEC §17 is measured where it is: this is the one object that
+  /// sees both sides of the handover, and it already sees every call. It is
+  /// also the only place that covers the unbuffered path, where `Applier`
+  /// hands `source.readFile(path)` straight to the write with no prefetch in
+  /// between.
   @override
   Stream<List<int>> readFile(String path) async* {
     final operation = metrics.beginOp(side, AgentOp.readFile);
+    var held = Duration.zero;
+    // Set while this generator is parked on a `yield`, so the interval is
+    // still chargeable if the consumer cancels instead of coming back.
+    Duration? handedAt;
     try {
       await for (final chunk in _inner.readFile(path)) {
         operation.countBytes(chunk.length);
+        handedAt = _elapsed();
         yield chunk;
+        held += _elapsed() - handedAt;
+        handedAt = null;
       }
     } finally {
+      // A consumer that walked away held this call for the wait it never came
+      // back from, and dropping that would credit the read with it.
+      if (handedAt case final at?) held += _elapsed() - at;
+      operation.countHeld(held);
       operation.end();
     }
   }
