@@ -126,30 +126,43 @@ class ReadProbe {
     return files;
   }
 
-  /// [fileLimit] files spread evenly across the whole sorted walk — every
-  /// `n`th file, taken from the front.
+  /// [fileLimit] files strided over the tree ordered by *size*, then handed
+  /// back in path order.
   ///
-  /// **Why not the first N.** The tree's cost profile is per-file dominated,
-  /// so the corpus's mean file size sets the absolute MiB/s the sweep
-  /// reports. A contiguous prefix is one region of one subtree, and on this
-  /// project's own replica that region averaged 27.1 KiB against the tree's
-  /// 12.7 — flattering every rate by up to ~2×. A stride takes from every
-  /// region instead, which is what makes the absolute number usable.
+  /// **Why size orders the selection.** The tree's cost profile is per-file
+  /// dominated, so the corpus's mean file size sets the absolute MiB/s the
+  /// sweep reports, and only a corpus whose mean sits on the tree's reports a
+  /// rate a real run could see. A contiguous prefix is one region of one
+  /// subtree, and on this project's own replica that region averaged 27.1 KiB
+  /// against the tree's 12.7 — flattering every rate by up to ~2×. Striding
+  /// the *path*-sorted walk fixed the region and not the distribution: it
+  /// landed at 15.7 KiB, still a quarter high, because path order says
+  /// nothing about size. A stride over the size-ordered list samples the
+  /// distribution evenly, so the corpus's mean *and* its tail land on the
+  /// tree's — including a long tail of very small files, which no scaling of
+  /// one mean by another can stand in for.
   ///
-  /// **What it costs.** Directory locality, deliberately. A prefix reads
-  /// whole directories in order; a stride skips between them, so every
-  /// sample pays whatever a spread-out read pattern costs on emulated
-  /// storage. That is the pattern a real apply has — reconcile hands the
-  /// `Applier` changed paths from across the tree, not one directory at a
-  /// time — so it is the more honest corpus as well as the more
-  /// representative one.
+  /// **Why path orders the reading.** Directory locality is what a stride
+  /// costs, and it is worth buying back: sorting the selection by path before
+  /// any sample reads it restores a spread-out read across directories. That
+  /// is the pattern a real apply has — reconcile hands the `Applier` changed
+  /// paths from across the tree, not one directory at a time — so it is the
+  /// more honest read pattern as well as the more representative one.
   ///
-  /// Deterministic: the same tree gives the same corpus on every run, which
-  /// is what makes two sweeps subtractable.
+  /// Deterministic: size ties break on path so the ordering is total whatever
+  /// the sort does with equal keys, and an unchanged tree therefore gives the
+  /// same corpus on every run, which is what makes two sweeps subtractable.
   List<_TreeFile> _sampleCorpus(List<_TreeFile> tree) {
     if (tree.length <= fileLimit) return tree;
+    final bySize = [...tree]..sort((a, b) {
+      final size = a.size.compareTo(b.size);
+      return size != 0 ? size : a.path.compareTo(b.path);
+    });
     final stride = tree.length / fileLimit;
-    return [for (var i = 0; i < fileLimit; i++) tree[(i * stride).floor()]];
+    final corpus = [
+      for (var i = 0; i < fileLimit; i++) bySize[(i * stride).floor()],
+    ];
+    return corpus..sort((a, b) => a.path.compareTo(b.path));
   }
 
   Future<ReadProbeSample> _sample(

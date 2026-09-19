@@ -110,6 +110,25 @@ void main() {
     },
   );
 
+  test(
+    "the corpus's mean tracks the tree's when size and path order disagree",
+    () async {
+      // The same ten sizes, now anti-correlated with the path order the walk
+      // returns: f01 is the largest. A stride over the path-sorted list takes
+      // 10, 8, 5 and 3 — mean 6.5 against the tree's 5.5 — while a stride over
+      // the size-ordered one takes 1, 3, 6 and 8 whichever way the names run.
+      for (var i = 1; i <= 10; i++) {
+        await write('f${i.toString().padLeft(2, '0')}.txt', 'x' * (11 - i));
+      }
+
+      final report = await ReadProbe(fileLimit: 4)
+          .run(rootPath: tempDir.path, depths: const [1]);
+
+      expect(report.corpusBytes, 1 + 3 + 6 + 8);
+      expect(report.meanFileSize, closeTo(report.treeMeanFileSize, 1));
+    },
+  );
+
   test('a corpus smaller than the cap is the whole tree', () async {
     await write('a.txt', 'a');
     await write('nested/b.txt', 'bb');
