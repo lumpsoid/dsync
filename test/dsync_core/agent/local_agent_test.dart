@@ -285,6 +285,54 @@ void main() {
       );
     });
 
+    test('creates a parent once per session, and forgets it when a write '
+        'against it fails', () async {
+      final local = agent();
+      Future<void> write(String name) => local.writeFile(
+        'sub/$name',
+        Stream.value(utf8.encode('x')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 420,
+      );
+
+      await write('a.txt');
+      // Removed behind the agent's back, which the replica lock does not
+      // prevent (SPEC §4.3 locks replicas, not the filesystem).
+      await Directory('${replicaDir.path}/sub').delete(recursive: true);
+
+      // The cache is what this asserts: a `create(recursive: true)` per file
+      // would have put the directory straight back and this would pass.
+      await expectLater(write('b.txt'), throwsA(isA<FileSystemException>()));
+
+      // And the failure is what invalidates it, so the run recovers on the
+      // next path under that directory rather than losing all of them
+      // (SPEC §7.6).
+      await write('c.txt');
+      expect(await File('${replicaDir.path}/sub/c.txt').readAsString(), 'x');
+    });
+
+    test('a directory this run pruned is recreated rather than trusted — '
+        'removeEmptyDirs forgets what it removes', () async {
+      final local = agent();
+      Future<void> write(String name) => local.writeFile(
+        'sub/$name',
+        Stream.value(utf8.encode('x')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 420,
+      );
+
+      // SPEC §7.1 runs deletes and copies in one apply, so this order is
+      // ordinary rather than contrived: a directory emptied by a delete and
+      // pruned, then written into again by a later action.
+      await write('a.txt');
+      await local.delete('sub/a.txt');
+      await local.removeEmptyDirs('sub/a.txt');
+      expect(await Directory('${replicaDir.path}/sub').exists(), isFalse);
+
+      await write('b.txt');
+      expect(await File('${replicaDir.path}/sub/b.txt').readAsString(), 'x');
+    });
+
     test('overwrites an existing target atomically', () async {
       final target = File('${replicaDir.path}/a.txt');
       await target.writeAsString('old');

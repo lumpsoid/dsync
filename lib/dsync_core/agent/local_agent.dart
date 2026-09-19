@@ -77,6 +77,16 @@ class LocalAgent implements Agent {
   /// [tempPathFor].
   int _nextTempSequence = 0;
 
+  /// Absolute native paths of the destination directories this session has
+  /// already created. See [_ensureParent].
+  ///
+  /// Keyed on the *parent*, not the file, so it holds one entry per directory
+  /// the apply writes into rather than one per file — a few thousand strings
+  /// on a tree of 14,471 files, which is the only reason an unbounded set is
+  /// acceptable on the memory-constrained end (SPEC §7.2). It is per-session
+  /// state, dropped with the agent.
+  final Set<String> _createdParents = {};
+
   /// What [writeFile] has spent, step by step, over this session (SPEC §17).
   ///
   /// **Held here rather than handed to a recorder**, for the reason
@@ -221,7 +231,8 @@ class LocalAgent implements Agent {
     }
 
     final target = File(_absolute(path));
-    await target.parent.create(recursive: true);
+    final parent = target.parent;
+    await _ensureParent(parent);
     final createTaken = since();
     final temp = File(tempPathFor(target.path, _nextTempSequence++));
 
@@ -252,6 +263,18 @@ class LocalAgent implements Agent {
       await temp.rename(target.path);
       renameTaken = since();
     } catch (_) {
+      // Forget the parent. A write failing is the only signal this agent
+      // gets that a remembered directory may no longer be there, so the
+      // next path under it pays a `create` again instead of failing for the
+      // same reason. SPEC §7.6's blast radius is what makes that enough: a
+      // directory that cannot be created fails the paths under it, not the
+      // run, and here it costs one path rather than all of them.
+      //
+      // It forgets on *any* failure, not only a `FileSystemException` that
+      // names the parent — a wrongly forgotten entry costs one redundant
+      // `create` on a path that was already failing, and there is no cheap
+      // way to tell the two apart from here.
+      _createdParents.remove(parent.path);
       if (await temp.exists()) await temp.delete();
       rethrow;
     }
@@ -299,6 +322,35 @@ class LocalAgent implements Agent {
     );
   }
 
+  /// Creates [parent] unless this session already did.
+  ///
+  /// `create(recursive: true)` used to run once per copied file against a
+  /// directory that had existed since the first file in it — 14,471 calls
+  /// for a few thousand directories, and 618 µs of the destination's 8.6 ms
+  /// of own work per file.
+  ///
+  /// **What it costs is that the answer can go stale**, and there are two
+  /// ways it can. The one this agent causes itself is [removeEmptyDirs],
+  /// which prunes directories a delete emptied — it forgets what it removes,
+  /// so a later write into the same path creates it again. The other is
+  /// something outside the run removing a directory under us, which the
+  /// replica lock (SPEC §4.3) does not prevent. That one surfaces as a write
+  /// failure, and [writeFile] forgets the parent there.
+  ///
+  /// **Not retried on the spot, which is a deviation from the plan** (task
+  /// 9d2158 §10.2) **and not a choice.** The failure cannot surface before
+  /// `addStream` has subscribed to the caller's byte stream, and that stream
+  /// is single-subscription, so there is nothing left to retry *with*. A
+  /// real retry needs the write opened eagerly through a `RandomAccessFile`,
+  /// which is the restructure §10.5 owns. Invalidating means the next path
+  /// under that directory succeeds instead of every one of them failing,
+  /// which is the recovery the bullet was actually after.
+  Future<void> _ensureParent(Directory parent) async {
+    if (_createdParents.contains(parent.path)) return;
+    await parent.create(recursive: true);
+    _createdParents.add(parent.path);
+  }
+
   /// Sets [file]'s permission bits, best-effort (SPEC §7.4).
   ///
   /// One syscall, unconditionally, through [chmod]. It used to be a process
@@ -344,6 +396,12 @@ class LocalAgent implements Agent {
       final dir = Directory(_absolute(ancestor));
       if (!await dir.exists() || !await dir.list().isEmpty) break;
       await dir.delete();
+      // The one stale-cache case this agent causes itself, rather than
+      // races with: SPEC §7.1 runs deletes and copies in the same apply, so
+      // a directory emptied and pruned here can be written into again
+      // afterwards. Forgetting it is what makes the next `_ensureParent`
+      // recreate it instead of trusting a directory it just removed.
+      _createdParents.remove(dir.path);
       ancestor = _parentOf(ancestor);
     }
   }
