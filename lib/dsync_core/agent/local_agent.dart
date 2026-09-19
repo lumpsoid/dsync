@@ -232,7 +232,13 @@ class LocalAgent implements Agent {
 
     final target = File(_absolute(path));
     final parent = target.parent;
-    await _ensureParent(parent);
+    // Tested here rather than inside the call, so that a directory this
+    // session already created costs a set lookup and **no `await` at all**.
+    // An `await` on a future with nothing to do still suspends the action,
+    // and with 16 of them in flight the step clock above would bill whatever
+    // the scheduler ran next to `create` — which is exactly what hid this
+    // change's effect the first time it was measured.
+    if (!_createdParents.contains(parent.path)) await _createParent(parent);
     final createTaken = since();
     final temp = File(tempPathFor(target.path, _nextTempSequence++));
 
@@ -322,7 +328,8 @@ class LocalAgent implements Agent {
     );
   }
 
-  /// Creates [parent] unless this session already did.
+  /// Creates [parent] and remembers it. Only reached on a miss — [writeFile]
+  /// does the lookup, so a hit never enters an `async` frame.
   ///
   /// `create(recursive: true)` used to run once per copied file against a
   /// directory that had existed since the first file in it — 14,471 calls
@@ -345,8 +352,9 @@ class LocalAgent implements Agent {
   /// which is the restructure §10.5 owns. Invalidating means the next path
   /// under that directory succeeds instead of every one of them failing,
   /// which is the recovery the bullet was actually after.
-  Future<void> _ensureParent(Directory parent) async {
-    if (_createdParents.contains(parent.path)) return;
+  Future<void> _createParent(Directory parent) async {
+    // Recorded after the call, never before, so a create that throws leaves
+    // nothing remembered.
     await parent.create(recursive: true);
     _createdParents.add(parent.path);
   }
