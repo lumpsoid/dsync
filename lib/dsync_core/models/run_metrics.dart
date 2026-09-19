@@ -605,10 +605,23 @@ class ReplicaMetrics {
 /// A snapshot, not a live view: a head that wants a progress ticker takes a
 /// fresh one each time rather than holding this and watching it change.
 class RunMetrics {
-  /// Wall time since the recorder was created, which a head starts at the
-  /// top of the run. Not the sum of [phases] — the gaps between phases are
-  /// the run's own bookkeeping, and a phase still running is not in there at
-  /// all.
+  /// How long the run was *running*: time accrued while at least one phase
+  /// was open, plus the open stretch if this was taken mid-run.
+  ///
+  /// **Not wall time from the top of the run**, because a run has a person in
+  /// it. `RunController` is a generator, so between `present` and `apply` it
+  /// parks on a `yield` while the head shows the plan and waits for someone
+  /// to confirm it, and it stays alive afterwards while the report is read.
+  /// Timed as wall clock this figure carried both, which made it ~1.3 s
+  /// longer than the phases it contains and useless for comparing one run
+  /// with another (task 9d2158 §18).
+  ///
+  /// Phases do not overlap, so in practice **this is their sum**, and the
+  /// containment check that used to compare the two can no longer fail. That
+  /// is the deliberate trade: the check was only ever catching the operator,
+  /// and work that happens outside every phase is now invisible here rather
+  /// than showing up as an unexplained remainder. Anything worth seeing gets
+  /// a phase of its own.
   final Duration elapsed;
 
   /// How long each completed phase took. A phase the run never reached — a

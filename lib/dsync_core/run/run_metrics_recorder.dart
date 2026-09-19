@@ -62,20 +62,39 @@ class RunMetricsRecorder {
   final Map<RunPhase, Duration> _phases = {};
   final Map<RunPhase, Duration> _phaseStarts = {};
 
+  /// Time accrued while at least one phase was open, and when the current
+  /// such stretch began — null whenever nothing is open.
+  ///
+  /// The run's clock is not wall time from construction, because the run is
+  /// not the only thing on it: `RunController` is a generator, so between
+  /// `present` and `apply` it is parked on a `yield` while the head shows a
+  /// plan and waits for a person to confirm it, and it stays alive after the
+  /// last phase while a report is read. Both are outside the run — timing
+  /// them measures how fast someone reads (task 9d2158 §18).
+  Duration _running = Duration.zero;
+  Duration? _openSince;
+
   final Map<String, _ReplicaRecord> _replicas = {};
 
   ReadAheadStats? _readAhead;
 
-  /// [elapsed] defaults to a [Stopwatch] started here, which is why a head
-  /// constructs this at the top of the run: [RunMetrics.elapsed] is measured
-  /// from this moment, not from the first phase.
+  /// [elapsed] defaults to a [Stopwatch] started here. It is the reading
+  /// every span is taken against; what it is *not* is [RunMetrics.elapsed],
+  /// which accrues only while a phase is open — see [_running].
   RunMetricsRecorder({Elapsed? elapsed})
     : _elapsed = elapsed ?? stopwatchElapsed();
 
   /// Marks [phase] as starting now. A phase begun twice without an
   /// [endPhase] keeps the later start, which is the honest reading of a run
   /// that re-entered a step.
-  void beginPhase(RunPhase phase) => _phaseStarts[phase] = _elapsed();
+  void beginPhase(RunPhase phase) {
+    final now = _elapsed();
+    // The first phase to open starts the run's clock; one opening while
+    // another is already open changes nothing, which is what keeps this
+    // correct if phases ever nest.
+    _openSince ??= now;
+    _phaseStarts[phase] = now;
+  }
 
   /// Marks [phase] as finished, adding its span to the total. Ending a phase
   /// that never began is ignored rather than recorded as zero — see
@@ -92,6 +111,10 @@ class RunMetricsRecorder {
     }
     _phaseStarts.remove(phase);
     _phases[phase] = (_phases[phase] ?? Duration.zero) + (now - start);
+    if (_phaseStarts.isEmpty) {
+      _running += now - _openSince!;
+      _openSince = null;
+    }
   }
 
   /// Closes every phase still open, as of now.
@@ -278,11 +301,17 @@ class RunMetricsRecorder {
   /// so there is nothing here to add up (SPEC §17).
   void recordReadAhead(ReadAheadStats stats) => _readAhead = stats;
 
+  /// [_running] including the stretch that is open right now, if one is, so
+  /// a mid-run snapshot reads as a clock rather than as the last phase
+  /// boundary.
+  Duration _runningAsOfNow() =>
+      _openSince == null ? _running : _running + (_elapsed() - _openSince!);
+
   /// Everything measured so far. Safe to take mid-run: a phase still open is
   /// simply not in [RunMetrics.phases] yet, and an operation still open is
   /// not yet in its side's counts.
   RunMetrics snapshot() => RunMetrics(
-    elapsed: _elapsed(),
+    elapsed: _runningAsOfNow(),
     phases: Map.unmodifiable(_phases),
     readAhead: _readAhead,
     replicas: {

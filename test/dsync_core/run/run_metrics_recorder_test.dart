@@ -551,12 +551,43 @@ void main() {
       metrics.beginOp('b', AgentOp.archiveCommit).end();
       metrics.beginSend('b', bytes: 10, frames: 1).end();
       metrics.countReceive('b', bytes: 5);
+      metrics.beginPhase(RunPhase.apply);
       advance(const Duration(seconds: 7));
+      metrics.endPhase(RunPhase.apply);
 
       final snapshot = metrics.snapshot();
       expect(snapshot.opCount, 3);
       expect(snapshot.wireBytes, 15);
       expect(snapshot.elapsed, const Duration(seconds: 7));
+    });
+
+    test('the clock does not run while no phase is open', () {
+      // The gap this exists for is a person: `RunController` parks on a
+      // `yield` between `present` and `apply` while the head shows the plan
+      // and waits to be told to go on, and it outlives the last phase while
+      // the report is read. Both used to be in the total.
+      advance(const Duration(seconds: 3)); // setup, before the first phase
+      metrics.beginPhase(RunPhase.present);
+      advance(const Duration(seconds: 1));
+      metrics.endPhase(RunPhase.present);
+      advance(const Duration(seconds: 30)); // someone reading the plan
+      metrics.beginPhase(RunPhase.apply);
+      advance(const Duration(seconds: 2));
+      metrics.endPhase(RunPhase.apply);
+      advance(const Duration(seconds: 9)); // someone reading the report
+
+      expect(metrics.snapshot().elapsed, const Duration(seconds: 3));
+    });
+
+    test('a mid-run snapshot reads as a clock, not as the last boundary', () {
+      metrics.beginPhase(RunPhase.apply);
+      advance(const Duration(seconds: 4));
+
+      expect(
+        metrics.snapshot().elapsed,
+        const Duration(seconds: 4),
+        reason: 'the open stretch counts before the phase ends',
+      );
     });
   });
 }
