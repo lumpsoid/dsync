@@ -80,7 +80,9 @@ String formatRunMetrics(RunMetrics metrics) {
             if (stats.batches[i] > 0)
               '${batchBucketLabels[i]}×${formatMetricCount(stats.batches[i])}',
         ];
-        out.writeln('  batches: ${buckets.join(' · ')} · max ${stats.maxBatch}');
+        out.writeln(
+          '  batches: ${buckets.join(' · ')} · max ${stats.maxBatch}',
+        );
         // The two halves of what the send path costs, counted on opposite
         // sides of the `add` because they are different quantities. `flush`
         // is strictly serial — a sink never has two writes in flight — so
