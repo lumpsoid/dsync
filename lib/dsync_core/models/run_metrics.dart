@@ -167,6 +167,23 @@ class AgentOpStats {
   final int farInFlight;
   final int farInFlightCount;
 
+  /// Summed time between a reply's bytes arriving on this side's transport
+  /// and the call that was waiting for it finishing, over the calls that
+  /// measured it (SPEC §17), and how many did.
+  ///
+  /// **The one column that names this side's own event loop.** Everything
+  /// else on a remote row is either the peer's, the link's, or — for the
+  /// per-action figures — an identity over concurrency and throughput. This
+  /// is a span on one clock between two events in one process, so a mean in
+  /// the tens of milliseconds says the isolate reading the connection is the
+  /// bound and no amount of window or link is going to move it.
+  ///
+  /// [settleCount] is not [exchanges]: a `readFile` holds its slot for a
+  /// whole stream and has no single reply to stamp, so it contributes to one
+  /// and not the other.
+  final Duration settle;
+  final int settleCount;
+
   const AgentOpStats({
     required this.count,
     required this.total,
@@ -180,6 +197,8 @@ class AgentOpStats {
     this.link = Duration.zero,
     this.farInFlight = 0,
     this.farInFlightCount = 0,
+    this.settle = Duration.zero,
+    this.settleCount = 0,
   });
 
   /// Zero of everything — the starting point [merge] accumulates onto.
@@ -215,6 +234,8 @@ class AgentOpStats {
     link: record.link == null ? link : link + record.link!,
     farInFlight: farInFlight + (record.far?.inFlight ?? 0),
     farInFlightCount: farInFlightCount + (record.far?.inFlight == null ? 0 : 1),
+    settle: record.settle == null ? settle : settle + record.settle!,
+    settleCount: record.settle == null ? settleCount : settleCount + 1,
   );
 
   /// Mean call time at the `Agent` boundary, or null for an operation never
@@ -242,6 +263,12 @@ class AgentOpStats {
   /// null from a peer that does not report it. A figure near 1 says
   /// [meanFarSide] is service time; a figure near the initiator's concurrency
   /// says it is residency and cannot be read as the destination's own cost.
+  /// Mean time between having a reply's bytes and finishing the call, per
+  /// call that measured it, or null when none did — a `readFile`-only
+  /// operation has no single reply to stamp, and null there is the honest
+  /// answer rather than zero.
+  Duration? get meanSettle => _per(settle, settleCount);
+
   double? get meanFarInFlight =>
       farInFlightCount == 0 ? null : farInFlight / farInFlightCount;
 
@@ -258,6 +285,8 @@ class AgentOpStats {
     Duration? link,
     int? farInFlight,
     int? farInFlightCount,
+    Duration? settle,
+    int? settleCount,
   }) => AgentOpStats(
     count: count ?? this.count,
     total: total ?? this.total,
@@ -271,6 +300,8 @@ class AgentOpStats {
     link: link ?? this.link,
     farInFlight: farInFlight ?? this.farInFlight,
     farInFlightCount: farInFlightCount ?? this.farInFlightCount,
+    settle: settle ?? this.settle,
+    settleCount: settleCount ?? this.settleCount,
   );
 
   static Duration? _per(Duration value, int count) =>
@@ -406,6 +437,15 @@ class ReplicaMetrics {
   /// putting the two in one sentence invites a ratio that means nothing.
   Duration get farTime =>
       ops.values.fold(Duration.zero, (sum, stats) => sum + stats.far);
+
+  /// Every exchange's settle time summed — this side's own time between
+  /// having a reply and finishing the call, over the calls that measured it.
+  ///
+  /// Read against [wireTime] rather than against [linkTime]: both are sums
+  /// over this side's concurrent calls, where [linkTime] is what is left of
+  /// `wire` after the peer's own span and a different population.
+  Duration get settleTime =>
+      ops.values.fold(Duration.zero, (sum, stats) => sum + stats.settle);
 
   /// Mean bytes per frame sent, zero when nothing was sent. The size the
   /// protocol actually put on the link, framing included.

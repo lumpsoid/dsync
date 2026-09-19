@@ -168,6 +168,103 @@ void main() {
     });
   });
 
+  group('what this side spent after the reply arrived', () {
+    test('is a span inside the wire span, and not the peer\'s time', () {
+      // SPEC §17: `wire` per action is concurrency over throughput, so any
+      // split of it is arguable; this is not. It is two readings of one
+      // clock in one process — the reply's bytes arriving, and the call
+      // finishing — and holding the peer for 20 ms must not land in it.
+      return _withHeldCommit((agent, backing, reported) async {
+        final commit = agent.archiveCommit(const [
+          ArchiveUpsert(
+            ArchiveEntry(
+              path: 'a.txt',
+              size: 1,
+              mtime: 1,
+              mode: 0x81a4,
+              hash: 'h',
+            ),
+          ),
+        ]);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        backing.heldCommits['a.txt']!.complete();
+        await commit;
+
+        final settle = reported.single.settle;
+        expect(settle, isNotNull);
+        expect(settle, lessThanOrEqualTo(reported.single.wire));
+        // The hold is the peer's, and it is over before the reply's bytes
+        // are stamped. What is left is decoding, delivery and the microtask
+        // hops, which on an in-memory pair is nothing like 20 ms.
+        expect(settle, lessThan(const Duration(milliseconds: 15)));
+      });
+    });
+
+    test('is absent, not zero, for a stream with no single reply', () async {
+      // A `readFile` holds its window slot for the whole transfer and is
+      // consumed at the caller's pace — the other replica's `writeFile` sits
+      // inside that span — so there is no instant here that means "this side
+      // had the answer". Absent says so; zero would claim the opposite.
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final peer = _FakeAgent()..fileContents['a.txt'] = utf8.encode('hi');
+      unawaited(AgentServer().serve(serverChannel, (_) => peer));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+
+      await agent.hello();
+      await agent.scan(RuleSet());
+      await agent.readFile('a.txt').drain<void>();
+
+      final byOp = {for (final r in reported) r.op: r};
+      expect(byOp[AgentOp.readFile]!.settle, isNull);
+      // `scan` has no far side to report but it does have one reply frame,
+      // so this side's own tail is measurable there like anywhere else.
+      expect(byOp[AgentOp.scan]!.settle, isNotNull);
+      expect(byOp[AgentOp.hello]!.settle, isNotNull);
+    });
+
+    test('is absent for a call whose reply never came', () async {
+      // Nothing arrived, so there is no arrival to measure from. The
+      // exchange still reports — it cost a real wait (SPEC §17).
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      final stalled = _FakeAgent()..heldCommits['a.txt'] = Completer<void>();
+      unawaited(AgentServer().serve(serverChannel, (_) => stalled));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+      await agent.hello();
+      reported.clear();
+
+      final pending = expectLater(
+        agent.archiveCommit(const [
+          ArchiveUpsert(
+            ArchiveEntry(
+              path: 'a.txt',
+              size: 1,
+              mtime: 1,
+              mode: 0x81a4,
+              hash: 'h',
+            ),
+          ),
+        ]),
+        throwsA(isA<Object>()),
+      );
+      await pumpEventQueue();
+      await serverChannel.close();
+      await pending;
+
+      expect(reported.single.op, AgentOp.archiveCommit);
+      expect(reported.single.settle, isNull);
+    });
+  });
+
   group('lock / unlock', () {
     test('dispatch to the backing agent', () async {
       await remote.lock();

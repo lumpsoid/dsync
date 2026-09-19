@@ -33,11 +33,32 @@ class ExchangeRecord {
   /// (SPEC §15.3). Absent, never zero.
   final FarSideReport? far;
 
+  /// The reply's bytes arriving at `Channel.input` to this call's future
+  /// completing — what *this* side spent on a reply it already had (SPEC
+  /// §17).
+  ///
+  /// **The one figure on this path that is not an identity.** Per-action
+  /// `wire` is concurrency over throughput by construction, so any split of
+  /// it into a link term and a peer term is arguable; this is a span between
+  /// two events on one clock, entirely inside this process, and it covers
+  /// precisely what neither `far` nor a link latency can contain: decoding
+  /// the frame, the route's delivery, the microtask hops, the window slot
+  /// being released — plus any wait behind a paused subscription, since the
+  /// stamp is taken when the reader was finally given the chunk. All of it
+  /// serialises on one isolate's event loop, which is the constraint a
+  /// concurrency figure hides.
+  ///
+  /// Null when the reply was not stamped: a `readFile`, whose frames are
+  /// consumed at the caller's pace and would put the other replica's
+  /// `writeFile` inside this span, and any reply that never arrived at all.
+  final Duration? settle;
+
   const ExchangeRecord({
     required this.op,
     required this.queueWait,
     required this.wire,
     this.far,
+    this.settle,
   });
 
   /// [wire] with the peer's own span taken out: what this one exchange cost

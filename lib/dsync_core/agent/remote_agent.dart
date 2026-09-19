@@ -56,8 +56,13 @@ typedef ExchangeSink = void Function(ExchangeRecord record);
 class RemoteAgent implements Agent {
   final Channel _channel;
   final ReplicaSpec _spec;
-  final FrameRouter _router;
   final RequestWindow _window;
+
+  /// Reads this connection and stamps every frame it decodes with [_elapsed],
+  /// so a reply's arrival and this call's completion are two readings of one
+  /// clock (SPEC §17). Built in the body rather than the initialiser list for
+  /// that reason: it has to be handed the clock this object settled on.
+  late final FrameRouter _router;
 
   /// Where each finished exchange's split is reported, if anyone asked (SPEC
   /// §17). Public because it is a seam the owner supplies, not internal state.
@@ -105,8 +110,8 @@ class RemoteAgent implements Agent {
   }) : _channel = channel,
        _spec = spec,
        _elapsed = elapsed ?? stopwatchElapsed(),
-       _window = window ?? RequestWindow(),
-       _router = FrameRouter(channel.input) {
+       _window = window ?? RequestWindow() {
+    _router = FrameRouter(channel.input, elapsed: _elapsed);
     _handshakeReplies = _router.open(Frame.noRequest);
     _reading = _router.run(
       // A frame under an id nothing is waiting for is dropped, not fatal.
@@ -157,6 +162,7 @@ class RemoteAgent implements Agent {
       AgentRequest(AgentOp.scan.name, {'rules': ruleSetToJson(rules)}),
       (id, replies) async {
         final frame = await _firstReply(replies);
+        record.sawReply(frame);
         if (frame.type == FrameType.scanResult) {
           return decodeScanResult(frame.payload);
         }
@@ -388,7 +394,9 @@ class RemoteAgent implements Agent {
     _Exchange record,
     Stream<Frame> replies,
   ) async {
-    return switch (AgentResult.fromFrame(await _firstReply(replies))) {
+    final frame = await _firstReply(replies);
+    record.sawReply(frame);
+    return switch (AgentResult.fromFrame(frame)) {
       AgentSuccess(:final data) => record.sawFarSide(data),
       AgentFailure(:final error) => throw AgentOperationException(error),
     };
@@ -412,6 +420,11 @@ class _Exchange {
   Duration? _admittedAt;
 
   FarSideReport? _far;
+
+  /// When the reply's bytes arrived at the channel, or null for an exchange
+  /// whose reply was never stamped — see [sawReply].
+  Duration? _replyArrivedAt;
+
   bool _reported = false;
 
   _Exchange(this.op, this._elapsed) : _issuedAt = _elapsed();
@@ -419,6 +432,18 @@ class _Exchange {
   /// Marks the window's admission — called from inside the window's body, so
   /// it is this call's instant and no one else's.
   void admit() => _admittedAt ??= _elapsed();
+
+  /// Keeps when [frame]'s bytes arrived, so [report] can say what this side
+  /// spent between having the reply and finishing the call (SPEC §17).
+  ///
+  /// Called for the *one* frame that answers a request, never for a
+  /// `readFile`'s stream: the span is only a measure of this isolate while
+  /// nothing else is inside it, and between a file frame arriving and that
+  /// call ending sits the consumer, which is the other replica's `writeFile`.
+  ///
+  /// A frame with no stamp leaves the span absent rather than zero — this
+  /// side did not measure, which is not the same as having taken no time.
+  void sawReply(Frame frame) => _replyArrivedAt = frame.arrivedAt;
 
   /// Keeps what [data] says the peer spent on this call, and answers [data]
   /// so this can sit on the decode path without a statement of its own.
@@ -439,12 +464,14 @@ class _Exchange {
     _reported = true;
     final now = _elapsed();
     final admitted = _admittedAt ?? now;
+    final arrived = _replyArrivedAt;
     sink(
       ExchangeRecord(
         op: op,
         queueWait: admitted - _issuedAt,
         wire: now - admitted,
         far: _far,
+        settle: arrived == null ? null : now - arrived,
       ),
     );
   }

@@ -96,15 +96,23 @@ class FrameDecoder {
 
   /// Buffers [chunk] and returns every frame now complete, in order.
   ///
+  /// [arrivedAt] is when this chunk arrived, on the reader's own elapsed
+  /// clock; every frame this call completes carries it as [Frame.arrivedAt].
+  /// Taken by the caller rather than read here, because the instant that
+  /// matters is when the *bytes* arrived at the channel, not when a decoder
+  /// got round to them — and the reader is the only one holding the clock
+  /// the span is measured against (SPEC §17). Omitted by a caller that is
+  /// not measuring, and then the frames say so rather than saying zero.
+  ///
   /// Throws [FrameDecodeException] when the bytes are not this protocol at
   /// all.
-  List<Frame> add(Uint8List chunk) {
+  List<Frame> add(Uint8List chunk, {Duration? arrivedAt}) {
     _pending.add(chunk);
     final frames = <Frame>[];
-    var frame = _tryDecodeOne(_pending);
+    var frame = _tryDecodeOne(_pending, arrivedAt);
     while (frame != null) {
       frames.add(frame);
-      frame = _tryDecodeOne(_pending);
+      frame = _tryDecodeOne(_pending, arrivedAt);
     }
     return frames;
   }
@@ -113,7 +121,7 @@ class FrameDecoder {
   /// past it, if a complete frame is buffered yet.
   ///
   /// Throws [FrameDecodeException] when [pending] is not this protocol at all.
-  Frame? _tryDecodeOne(_PendingBytes pending) {
+  Frame? _tryDecodeOne(_PendingBytes pending, Duration? arrivedAt) {
     if (pending.length < _FrameHeader.length) return null;
 
     // Checked before the length field below, not after it. A stream that is
@@ -139,7 +147,12 @@ class FrameDecoder {
     // loop — `Applier` streams it into the destination's `writeFile`.
     final payload = pending.copyRange(_FrameHeader.length, end);
     pending.skip(end);
-    return Frame(type: type, requestId: requestId, payload: payload);
+    return Frame(
+      type: type,
+      requestId: requestId,
+      payload: payload,
+      arrivedAt: arrivedAt,
+    );
   }
 
   /// The frame type [byte] names, or `null` if it names none — reported by

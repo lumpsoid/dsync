@@ -133,7 +133,8 @@ String formatRunMetrics(RunMetrics metrics) {
       '  ${'operation'.padRight(20)}${'count'.padLeft(8)}'
       '${'total'.padLeft(10)}${'mean'.padLeft(10)}${'queue'.padLeft(10)}'
       '${'wire'.padLeft(10)}${'far'.padLeft(10)}${'link'.padLeft(10)}'
-      '${'peers'.padLeft(8)}${'max'.padLeft(10)}${'content'.padLeft(11)}',
+      '${'settle'.padLeft(10)}${'peers'.padLeft(8)}'
+      '${'max'.padLeft(10)}${'content'.padLeft(11)}',
     );
     // Slowest first: the report exists to answer "where did the time go",
     // and the answer should be the first row rather than something found by
@@ -157,6 +158,12 @@ String formatRunMetrics(RunMetrics metrics) {
       // these, and it is what says whether `far` is the destination's cost or
       // merely its residency. Near 1, `far` is service time; near this side's
       // concurrency, it is not.
+      //
+      // `settle` is the only column that is this side's own event loop: the
+      // reply's bytes arriving to this call finishing. It is not a share of
+      // any other column and must not be subtracted from one — it is a span
+      // inside `wire`, over a population of its own, and a `readFile` has no
+      // single reply to stamp so it shows `—`.
       out.writeln(
         '  ${op.name.padRight(20)}${formatMetricCount(stats.count).padLeft(8)}'
         '${formatMetricDuration(stats.total).padLeft(10)}'
@@ -165,6 +172,7 @@ String formatRunMetrics(RunMetrics metrics) {
         '${formatMetricSplit(stats.meanWireTime).padLeft(10)}'
         '${formatMetricSplit(stats.meanFarSide).padLeft(10)}'
         '${formatMetricSplit(stats.meanLinkTime).padLeft(10)}'
+        '${formatMetricSplit(stats.meanSettle).padLeft(10)}'
         '${(stats.meanFarInFlight?.toStringAsFixed(1) ?? '—').padLeft(8)}'
         '${formatMetricDuration(stats.max).padLeft(10)}'
         '${(stats.bytes == 0 ? '—' : formatMetricBytes(stats.bytes)).padLeft(11)}',

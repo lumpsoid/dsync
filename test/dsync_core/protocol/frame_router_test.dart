@@ -237,6 +237,56 @@ void main() {
     );
   });
 
+  group('arrival stamps', () {
+    test(
+      'every frame carries the reading taken when its chunk arrived',
+      () async {
+        // SPEC §17: the span from a reply's bytes arriving to the call that
+        // wanted them finishing is measured, not inferred — and it is only a
+        // span at all if both readings come off the same clock, which is why
+        // the reader is handed one rather than starting its own.
+        var now = Duration.zero;
+        final stamped = FrameRouter(wire.stream, elapsed: () => now);
+        unawaited(
+          stamped
+              .run(onUnrouted: (frame, _) => unrouted.add(frame))
+              .catchError((_) {}),
+        );
+        final first = stamped.open(1).first;
+        final second = stamped.open(2).first;
+
+        now = const Duration(milliseconds: 5);
+        wire.add(
+          codec.encode(
+            const Frame(type: FrameType.control, requestId: 1, payload: [1]),
+          ),
+        );
+        await pumpEventQueue();
+        now = const Duration(milliseconds: 9);
+        wire.add(
+          codec.encode(
+            const Frame(type: FrameType.control, requestId: 2, payload: [2]),
+          ),
+        );
+        await pumpEventQueue();
+
+        expect((await first).arrivedAt, const Duration(milliseconds: 5));
+        expect((await second).arrivedAt, const Duration(milliseconds: 9));
+      },
+    );
+
+    test('a router given no clock stamps nothing, rather than zero', () async {
+      unawaited(start());
+      final reply = router.open(1).first;
+
+      await send(FrameType.control, 1, [1]);
+
+      // Absent says "nobody timed this". Zero would say the bytes arrived at
+      // the origin of a clock that was never started.
+      expect((await reply).arrivedAt, isNull);
+    });
+  });
+
   group('backpressure', () {
     test('nothing more is read while a route\'s consumer is behind', () async {
       unawaited(start());

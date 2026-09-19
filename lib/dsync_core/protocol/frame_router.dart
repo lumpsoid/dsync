@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
+import 'package:dsync/dsync_core/run/elapsed.dart';
 
 /// Reads one connection's frames and hands each to the exchange its
 /// [Frame.requestId] names (SPEC §4.2, task 0f7dfc).
@@ -38,6 +39,17 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 class FrameRouter {
   final Stream<Uint8List> _input;
   final FrameDecoder _decoder = FrameDecoder();
+
+  /// Where the arrival instant stamped on every decoded frame comes from
+  /// (SPEC §17), or null for a reader that is not measuring.
+  ///
+  /// **It must be the same clock whoever reads [Frame.arrivedAt] measures
+  /// against**, which is why it is injected rather than started here: the
+  /// figure it exists for is `RemoteAgent`'s, the span from a reply's bytes
+  /// arriving to that operation's future completing, and two stopwatches
+  /// started a moment apart would turn that span into a difference of two
+  /// origins.
+  final Elapsed? _clock;
 
   final Map<int, _Route> _routes = {};
 
@@ -76,7 +88,9 @@ class FrameRouter {
   /// resumes only on the pass that empties the queue.
   bool _paused = false;
 
-  FrameRouter(Stream<Uint8List> input) : _input = input;
+  FrameRouter(Stream<Uint8List> input, {Elapsed? elapsed})
+    : _input = input,
+      _clock = elapsed;
 
   /// Opens a route for [requestId]. Every frame arriving under that id is
   /// delivered on the returned stream until [close] is called for it.
@@ -155,7 +169,13 @@ class FrameRouter {
     if (_closed) return;
     final List<Frame> frames;
     try {
-      frames = _decoder.add(chunk);
+      // Read here, at the top of the listener, because this is as close to
+      // "the bytes arrived" as anything on this side gets — and because the
+      // subscription is *paused* while a route's consumer is behind, so a
+      // chunk that waited for the head of the line to clear is stamped when
+      // it was finally read, and that wait lands in the span rather than
+      // disappearing out of it.
+      frames = _decoder.add(chunk, arrivedAt: _clock?.call());
     } catch (error, stackTrace) {
       _finish(error, stackTrace);
       return;

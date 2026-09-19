@@ -56,9 +56,28 @@ class Frame {
 
   final List<int> payload;
 
+  /// When the chunk that completed this frame was handed to the decoder, on
+  /// the reader's own elapsed clock — or null for a frame this side built
+  /// rather than decoded.
+  ///
+  /// **Not on the wire, and not the peer's clock.** It is this side's receipt
+  /// instant, set by `FrameDecoder` because that is the only place that knows
+  /// which chunk finished which frame, and it exists so that the span from a
+  /// reply's bytes arriving to the operation's future completing can be
+  /// measured rather than inferred (SPEC §17). Everything in that span —
+  /// decoding, the route's delivery, the microtask hops, the window slot
+  /// being released — happens on one isolate's event loop, which is exactly
+  /// the thing a `wire` figure cannot separate from the link.
+  ///
+  /// Null rather than zero for an unstamped frame, for the reason every other
+  /// absent measurement here is: a frame nobody timed must not read as one
+  /// that arrived at the origin of the clock.
+  final Duration? arrivedAt;
+
   const Frame({
     required this.type,
     required this.payload,
     this.requestId = noRequest,
+    this.arrivedAt,
   });
 }
