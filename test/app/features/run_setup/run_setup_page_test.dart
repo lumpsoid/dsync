@@ -21,9 +21,9 @@ import '../../../support/fake_folder_picker.dart';
 /// Rendering tests for the Run setup page, driven the way the scope
 /// contract in `app_scope.dart` intends: the controllers are pinned with
 /// `setController` and the page is pumped directly. The page's `initState`
-/// calls `load`, which reads the store and lists the documents dir — real
-/// I/O, so every test first waits for it under `runAsync`, then writes the
-/// case it is about into the view state as the controller would.
+/// calls `load`, which reads the store — real I/O, so every test first waits
+/// for it under `runAsync`, then writes the case it is about into the view
+/// state as the controller would.
 void main() {
   late Directory tempDir;
   late AppController app;
@@ -127,8 +127,8 @@ void main() {
   }
 
   /// Taps the pick button and lets the chooser, the probe and the grant —
-  /// all real async work — finish, up to the state [until] names: a folder
-  /// added to the list, or the refusal that kept it out.
+  /// all real async work — finish, up to the state [until] names: the
+  /// folder taken as the local root, or the refusal that kept it out.
   Future<void> pickFolder(
     WidgetTester tester, {
     required bool Function() until,
@@ -288,23 +288,22 @@ void main() {
     expect(find.text('Save profile'), findsNothing);
   });
 
-  testWidgets('folders are listed and the selection follows the view state', (
-    tester,
-  ) async {
+  testWidgets('the folder is shown as a value, and the button beside it '
+      'says whether there is one to change', (tester) async {
     await pumpLoaded(tester);
-    expect(find.text('Pick a folder'), findsOneWidget);
+    expect(find.text('No folder chosen'), findsOneWidget);
+    expect(find.text('Pick a folder…'), findsOneWidget);
 
-    controller.state.recordLocalFolders(const [
-      LocalFolderChoice(path: '/documents/notes', label: 'notes'),
-      LocalFolderChoice(path: '/sdcard/photos', label: '/sdcard/photos'),
-    ], selected: '/sdcard/photos');
+    controller.state.recordLocalRoot('/sdcard/photos');
     await tester.pump();
 
     expect(find.text('/sdcard/photos'), findsOneWidget);
-    expect(find.text('Pick a folder'), findsNothing);
+    expect(find.text('No folder chosen'), findsNothing);
+    expect(find.text('Pick a folder…'), findsNothing);
+    expect(find.text('Change'), findsOneWidget);
   });
 
-  testWidgets('the pick button offers the folder the chooser returned', (
+  testWidgets('the pick button shows the folder the chooser returned', (
     tester,
   ) async {
     final picked = '${tempDir.path}/elsewhere/camera';
@@ -314,8 +313,8 @@ void main() {
 
     await pickFolder(
       tester,
-      until: () => controller.state.localFolders.any((f) => f.path == picked),
-      what: 'the picked folder to join the list',
+      until: () => controller.state.localRoot == picked,
+      what: 'the picked folder to become the local root',
     );
 
     expect(picker.pickCount, 1);
@@ -338,9 +337,9 @@ void main() {
     expect(find.textContaining('no-such-tree'), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
     expect(
-      find.text('Pick a folder'),
+      find.text('No folder chosen'),
       findsOneWidget,
-      reason: 'nothing chosen',
+      reason: 'a refusal falls back to nothing: there is no other folder',
     );
 
     // The snackbar is still sliding in; its action is not hittable until
@@ -505,8 +504,8 @@ void main() {
 
     await pickFolder(
       tester,
-      until: () => controller.state.selectedLocalFolder == picked,
-      what: 'the picked folder to be selected',
+      until: () => controller.state.localRoot == picked,
+      what: 'the picked folder to become the local root',
     );
     expect(find.text(picked), findsOneWidget);
 
@@ -556,11 +555,15 @@ void main() {
 
     testWidgets('opens over the chosen folder, ready to measure — this is '
         'the only way in before a run', (tester) async {
+      final picked = '${tempDir.path}/elsewhere/notes';
+      Directory(picked).createSync(recursive: true);
+      picker.onPick = () => picked;
       await pumpLoaded(tester);
-      await tester.runAsync(() async {
-        await controller.createLocalFolder('notes');
-      });
-      await tester.pump();
+      await pickFolder(
+        tester,
+        until: () => controller.state.localRoot == picked,
+        what: 'the picked folder to become the local root',
+      );
 
       await tester.tap(find.byKey(const Key('run-setup-diagnostics')));
       await tester.pumpAndSettle();

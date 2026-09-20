@@ -26,7 +26,8 @@ class RunRequest {
     required this.dryRun,
   });
 
-  /// Side `a`: an absolute path under `AppPaths.documentsDir`.
+  /// Side `a`: an absolute path on this device, the folder the user
+  /// chose through the platform's folder chooser.
   final String localRootPath;
 
   /// This device's own name for the peer, what `ReplicaConnector.connect`

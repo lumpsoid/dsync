@@ -118,49 +118,23 @@ final class RunSetupStarted extends RunSetupOutcome {
   final RunRequest request;
 }
 
-/// One row of the local-folder chooser: the absolute path a run would sync
-/// ([path]) and the line the user reads ([label]) — the bare name for a
-/// folder in the app's own documents directory, the whole path for one the
-/// user picked elsewhere, since that is the only part of it they chose.
-///
-/// A rendered pair, not a model: the controller decides which label a path
-/// gets, so the page has nothing to ask (the view-state role in
-/// `app_scope.dart`).
-class LocalFolderChoice {
-  const LocalFolderChoice({required this.path, required this.label});
-
-  final String path;
-  final String label;
-
-  @override
-  bool operator ==(Object other) =>
-      other is LocalFolderChoice && other.path == path && other.label == label;
-
-  @override
-  int get hashCode => Object.hash(path, label);
-
-  @override
-  String toString() => 'LocalFolderChoice($label -> $path)';
-}
-
 /// The rendered values of the Run setup page: picking the two locations a
 /// run syncs (SPEC §2, §4.4, §11.2).
 ///
 /// Holds only what the page displays — see the view-state role in
-/// `app_scope.dart`: the peer's rendered case, the folders that can be a
-/// local replica, the field the user picked from them, each field's
-/// validation line, the dry-run switch's position, and the [outcome] of the
-/// last start. The remote root and address text are the widgets'
-/// (`TextEditingController`s), not copied here.
+/// `app_scope.dart`: the peer's rendered case, the folder chosen as the
+/// local replica, each field's validation line, the dry-run switch's
+/// position, and the [outcome] of the last start. The remote root and
+/// address text are the widgets' (`TextEditingController`s), not copied
+/// here.
 ///
-/// [selectedLocalFolder] *is* here, unlike the text fields, because the
-/// controller acts on it: it is what a new folder is selected into.
+/// [localRoot] *is* here, unlike the text fields, because the controller
+/// writes it: the platform chooser is the only thing that sets it, so the
+/// page has no editable copy of its own.
 class RunSetupViewState extends ChangeNotifier {
   RunSetupPeer _peer = const RunSetupPeerLoading();
-  List<LocalFolderChoice> _localFolders = const [];
-  String? _selectedLocalFolder;
+  String? _localRoot;
   String? _localFolderError;
-  String? _newFolderError;
   String? _folderAccessError;
   String? _remoteRootError;
   String? _addressError;
@@ -170,26 +144,20 @@ class RunSetupViewState extends ChangeNotifier {
 
   RunSetupPeer get peer => _peer;
 
-  /// Every folder that can be the local replica: the directories under
-  /// `AppPaths.documentsDir`, sorted by name, then the folders the user
-  /// picked through the platform chooser this visit.
-  List<LocalFolderChoice> get localFolders => _localFolders;
-
-  /// The absolute path of the folder the user picked from [localFolders], or
-  /// `null`. A path, not a name: a picked folder is anywhere on the device.
-  String? get selectedLocalFolder => _selectedLocalFolder;
+  /// The absolute path of the folder this run would sync on this device,
+  /// or `null` when none has been chosen. Whole path, not a name: the user
+  /// picks it through the platform chooser, so it is anywhere on the
+  /// device, and the path is the only part of it they chose.
+  String? get localRoot => _localRoot;
 
   /// The line under the folder picker, or `null` when it validated.
   String? get localFolderError => _localFolderError;
-
-  /// The line under the new-folder field, or `null` when it validated.
-  String? get newFolderError => _newFolderError;
 
   /// Why the folder the user just picked cannot be used, or `null` when the
   /// last pick worked or there has not been one. Shown transiently — the
   /// page reads it after `RunSetupController.pickLocalFolder` returns and
   /// raises a snackbar — because it is about a folder that never made it
-  /// into [localFolders], so there is no field to hang it under.
+  /// [localRoot], so there is no field to hang it under.
   String? get folderAccessError => _folderAccessError;
 
   /// The line under the remote root field, or `null` when it validated.
@@ -215,15 +183,10 @@ class RunSetupViewState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Replaces the folder list and the selection at once — one notification
-  /// for one listing. `RunSetupController` only.
-  ///
-  void recordLocalFolders(
-    List<LocalFolderChoice> folders, {
-    required String? selected,
-  }) {
-    _localFolders = List.unmodifiable(folders);
-    _selectedLocalFolder = selected;
+  /// Records the folder this run would sync on this device, or clears it.
+  /// `RunSetupController` only.
+  void recordLocalRoot(String? path) {
+    _localRoot = path;
     notifyListeners();
   }
 
@@ -237,12 +200,6 @@ class RunSetupViewState extends ChangeNotifier {
     _localFolderError = localFolder;
     _remoteRootError = remoteRoot;
     _addressError = address;
-    notifyListeners();
-  }
-
-  /// Records the new-folder field's line. `RunSetupController` only.
-  void recordNewFolderError(String? message) {
-    _newFolderError = message;
     notifyListeners();
   }
 

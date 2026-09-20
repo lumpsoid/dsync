@@ -17,9 +17,9 @@ import '../../../support/fake_folder_picker.dart';
 
 /// The Run setup controller over a real `AppController` and a real
 /// `PairedDeviceStore` in a temporary directory — the setup
-/// `devices_controller_test.dart` uses — with the documents directory a
-/// sibling under the same temp dir, so every folder it lists or creates is
-/// on a real filesystem.
+/// `devices_controller_test.dart` uses — with every folder the chooser
+/// hands back created under the same temp dir, so the probe that decides
+/// whether a picked folder can be a replica runs on a real filesystem.
 void main() {
   late Directory tempDir;
   late AppController app;
@@ -55,7 +55,16 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  String documents() => '${tempDir.path}/documents';
+  /// The folder the fake chooser hands back in the tests that need a local
+  /// root. Under the temp dir, so the probe passes.
+  String notes() => '${tempDir.path}/picked/notes';
+
+  /// Picks [notes] the only way there is: through the chooser.
+  Future<void> pickNotes() async {
+    Directory(notes()).createSync(recursive: true);
+    picker.onPick = notes;
+    await controller.pickLocalFolder();
+  }
 
   PairedDeviceStore store() =>
       PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'));
@@ -64,9 +73,6 @@ void main() {
     await store().add(desktop);
     await controller.load(RunSetupFromDevice(desktop.deviceId));
   }
-
-  List<String> labels() =>
-      controller.state.localFolders.map((f) => f.label).toList();
 
   List<RunRequest> requests() => [
     if (controller.state.outcome case RunSetupStarted(:final request)) request,
@@ -105,96 +111,47 @@ void main() {
       expect((peer as RunSetupPeerMissing).message, contains('dead:beef'));
     });
 
-    test('lists the directories under the documents dir, sorted, files '
-        'excluded, and creates the documents dir on demand', () async {
-      expect(Directory(documents()).existsSync(), isFalse);
-      Directory('${documents()}/zeta').createSync(recursive: true);
-      Directory('${documents()}/alpha').createSync(recursive: true);
-      File('${documents()}/not-a-folder.txt').writeAsStringSync('');
-
-      await loadDesktop();
-
-      expect(labels(), ['alpha', 'zeta']);
-      expect(controller.state.selectedLocalFolder, isNull);
-    });
-
-    test('lists nothing but still creates the documents dir', () async {
-      await loadDesktop();
-
-      expect(labels(), isEmpty);
-      expect(Directory(documents()).existsSync(), isTrue);
-    });
-
     test('a second load starts a fresh visit', () async {
-      Directory('${documents()}/notes').createSync(recursive: true);
       await loadDesktop();
-      controller.selectLocalFolder('${documents()}/notes');
+      await pickNotes();
       controller.setDryRun(true);
       await controller.start(remoteRoot: '', address: '', profileName: '');
       expect(controller.state.remoteRootError, isNotNull);
 
       await controller.load(RunSetupFromDevice(desktop.deviceId));
 
-      expect(controller.state.selectedLocalFolder, isNull);
+      expect(controller.state.localRoot, isNull);
       expect(controller.state.remoteRootError, isNull);
       expect(controller.state.dryRun, isFalse);
     });
-  });
 
-  group('createLocalFolder', () {
-    test('refuses an empty name', () async {
+    test('a blank form starts with no folder: the page guesses none', () async {
       await loadDesktop();
 
-      await controller.createLocalFolder('   ');
-
-      expect(controller.state.newFolderError, isNotNull);
-      expect(labels(), isEmpty);
-    });
-
-    test('refuses a separator and the dot names', () async {
-      await loadDesktop();
-
-      for (final name in ['a/b', '.', '..']) {
-        await controller.createLocalFolder(name);
-        expect(controller.state.newFolderError, isNotNull, reason: name);
-      }
-      expect(labels(), isEmpty);
-    });
-
-    test('creates the folder under the documents dir, lists it, selects it '
-        'and clears the field error', () async {
-      await loadDesktop();
-      await controller.createLocalFolder('');
-      expect(controller.state.newFolderError, isNotNull);
-
-      await controller.createLocalFolder(' notes ');
-
-      expect(Directory('${documents()}/notes').existsSync(), isTrue);
-      expect(labels(), ['notes']);
-      expect(controller.state.selectedLocalFolder, '${documents()}/notes');
-      expect(controller.state.newFolderError, isNull);
+      expect(controller.state.localRoot, isNull);
+      expect(controller.state.localFolderError, isNull);
     });
   });
 
   group('pickLocalFolder', () {
-    /// A folder outside the documents directory, as the platform chooser
+    /// A folder somewhere else on the device, as the platform chooser
     /// would hand one over.
     String elsewhere(String name) => '${tempDir.path}/elsewhere/$name';
 
     test('a dismissed chooser changes nothing', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
+      picker.onPick = () => null;
 
       await controller.pickLocalFolder();
 
-      expect(picker.pickCount, 1);
+      expect(picker.pickCount, 2);
       expect(picker.requestAccessCount, 0);
-      expect(labels(), ['notes']);
-      expect(controller.state.selectedLocalFolder, '${documents()}/notes');
+      expect(controller.state.localRoot, notes());
       expect(controller.state.folderAccessError, isNull);
     });
 
-    test('a folder it can read and write is listed by path, selected, and '
+    test('a folder it can read and write becomes the local root, and is '
         'left without probe leftovers', () async {
       await loadDesktop();
       final picked = elsewhere('camera');
@@ -204,25 +161,39 @@ void main() {
       await controller.pickLocalFolder();
 
       expect(controller.state.folderAccessError, isNull);
-      expect(labels(), [picked]);
-      expect(controller.state.selectedLocalFolder, picked);
+      expect(controller.state.localRoot, picked);
       expect(picker.requestAccessCount, 0, reason: 'the probe already passed');
       expect(Directory(picked).listSync(), isEmpty);
     });
 
-    test('a folder it cannot use: refused with a line, not listed, and the '
+    test('a folder it cannot use: refused with a line, not taken, and the '
         'grant asked for once', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
       final picked = elsewhere('no-such-tree');
       picker.onPick = () => picked;
 
       await controller.pickLocalFolder();
 
       expect(controller.state.folderAccessError, contains(picked));
+      expect(controller.state.folderAccessError, contains('all files'));
       expect(picker.requestAccessCount, 1);
-      expect(labels(), ['notes'], reason: 'the refused folder is not offered');
-      expect(controller.state.selectedLocalFolder, '${documents()}/notes');
+      expect(
+        controller.state.localRoot,
+        notes(),
+        reason: 'the refusal leaves the folder that was already chosen',
+      );
+    });
+
+    test('a refusal with nothing chosen before it leaves no local root — '
+        'there is no fallback folder to drop back to', () async {
+      await loadDesktop();
+      picker.onPick = () => elsewhere('no-such-tree');
+
+      await controller.pickLocalFolder();
+
+      expect(controller.state.folderAccessError, isNotNull);
+      expect(controller.state.localRoot, isNull);
     });
 
     test(
@@ -240,7 +211,7 @@ void main() {
 
         expect(controller.state.folderAccessError, isNull);
         expect(picker.requestAccessCount, 1);
-        expect(controller.state.selectedLocalFolder, picked);
+        expect(controller.state.localRoot, picked);
       },
     );
 
@@ -251,35 +222,20 @@ void main() {
       await controller.pickLocalFolder();
 
       expect(controller.state.folderAccessError, contains('no activity'));
-      expect(labels(), isEmpty);
+      expect(controller.state.localRoot, isNull);
     });
 
-    test(
-      'a picked folder under the documents dir is listed once, by name',
-      () async {
-        await loadDesktop();
-        await controller.createLocalFolder('notes');
-        picker.onPick = () => '${documents()}/notes';
-
-        await controller.pickLocalFolder();
-
-        expect(labels(), ['notes']);
-        expect(controller.state.selectedLocalFolder, '${documents()}/notes');
-      },
-    );
-
-    test('a second load drops the folders picked in the last visit', () async {
+    test('a second load drops the folder picked in the last visit', () async {
       await loadDesktop();
       final picked = elsewhere('camera');
       Directory(picked).createSync(recursive: true);
       picker.onPick = () => picked;
       await controller.pickLocalFolder();
-      expect(labels(), [picked]);
+      expect(controller.state.localRoot, picked);
 
       await controller.load(RunSetupFromDevice(desktop.deviceId));
 
-      expect(labels(), isEmpty);
-      expect(controller.state.selectedLocalFolder, isNull);
+      expect(controller.state.localRoot, isNull);
     });
 
     test('openAccessSettings goes to the platform', () async {
@@ -318,7 +274,7 @@ void main() {
 
     test('empty remote root: the remote line, no request', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.start(remoteRoot: '  ', address: '', profileName: '');
 
@@ -330,7 +286,7 @@ void main() {
     test('a location where a path was expected: the remote line names the '
         'prefixes', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       for (final remote in [
         'peer://desktop:~/notes',
@@ -353,7 +309,7 @@ void main() {
 
     test('an address with a non-numeric port: the address line', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.start(
         remoteRoot: '~/notes',
@@ -369,7 +325,7 @@ void main() {
       "an address PeerAddress refuses: its own line, not a re-check here",
       () async {
         await loadDesktop();
-        await controller.createLocalFolder('notes');
+        await pickNotes();
 
         await controller.start(
           remoteRoot: '~/notes',
@@ -391,7 +347,7 @@ void main() {
     test('a valid setup produces exactly one request with the fields as '
         'given, the remote root unexpanded', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
       var started = 0;
       controller.state.addListener(() {
         if (controller.state.outcome is RunSetupStarted) started++;
@@ -408,7 +364,7 @@ void main() {
       expect(controller.state.remoteRootError, isNull);
       expect(controller.state.addressError, isNull);
       final request = requests().single;
-      expect(request.localRootPath, '${documents()}/notes');
+      expect(request.localRootPath, notes());
       expect(request.deviceName, 'desktop');
       expect(request.peerDeviceId, desktop.deviceId);
       expect(request.remoteRootPath, '~/notes');
@@ -420,7 +376,7 @@ void main() {
     test('a typed address becomes the override, with the default port when '
         'none is given', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.start(
         remoteRoot: '/srv/notes',
@@ -439,10 +395,10 @@ void main() {
       expect(requests().single.addressOverride?.port, 4242);
     });
 
-    test('recreates a folder removed since it was listed', () async {
+    test('recreates a folder removed since it was chosen', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
-      Directory('${documents()}/notes').deleteSync();
+      await pickNotes();
+      Directory(notes()).deleteSync();
 
       await controller.start(
         remoteRoot: '~/notes',
@@ -450,13 +406,13 @@ void main() {
         profileName: '',
       );
 
-      expect(Directory('${documents()}/notes').existsSync(), isTrue);
+      expect(Directory(notes()).existsSync(), isTrue);
       expect(requests(), hasLength(1));
     });
 
     test('carries the dry-run switch as it stands', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
       controller.setDryRun(true);
 
       await controller.start(
@@ -475,7 +431,7 @@ void main() {
       await loadDesktop();
       expect(controller.state.dryRun, isFalse);
 
-      await controller.createLocalFolder('notes');
+      await pickNotes();
       controller.remoteRootChanged('~/notes');
       expect(controller.state.dryRun, isFalse);
 
@@ -499,7 +455,7 @@ void main() {
     test('a named start saves the run under the id the archive will be keyed '
         'under, and the home list sees it at once', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.start(
         remoteRoot: '~/notes',
@@ -509,14 +465,14 @@ void main() {
 
       final saved = await profileStore().byId(
         ReplicaConnector.profileIdFor(
-          localRootPath: '${documents()}/notes',
+          localRootPath: notes(),
           peerDeviceId: desktop.deviceId,
           remoteRootPath: '~/notes',
         ),
       );
       expect(saved, isNotNull);
       expect(saved!.name, 'weekly');
-      expect(saved.localRootPath, '${documents()}/notes');
+      expect(saved.localRootPath, notes());
       expect(saved.peerDeviceId, desktop.deviceId);
       expect(saved.remoteRootPath, '~/notes');
       expect(saved.jobs, 4);
@@ -528,7 +484,7 @@ void main() {
 
     test('an unnamed start saves nothing — a one-off run', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.start(
         remoteRoot: '~/notes',
@@ -553,9 +509,9 @@ void main() {
       expect(await profileStore().load(), isEmpty);
     });
 
-    test('opened from a profile: the form is pre-filled, the folder '
-        'selected, the per-run choices not carried over', () async {
-      final localRoot = Directory('${documents()}/notes')
+    test('opened from a profile: the form is pre-filled, its folder is the '
+        'form\'s value, the per-run choices not carried over', () async {
+      final localRoot = Directory(notes())
         ..createSync(recursive: true);
       final id = ReplicaConnector.profileIdFor(
         localRootPath: localRoot.path,
@@ -580,17 +536,14 @@ void main() {
       expect(peer.name, 'desktop');
       expect(controller.state.prefill!.profileName, 'weekly');
       expect(controller.state.prefill!.remoteRoot, '~/notes');
-      expect(controller.state.selectedLocalFolder, localRoot.path);
-      // A root chosen in an earlier visit is listed again, as its path.
-      expect(
-        controller.state.localFolders.map((c) => c.path),
-        contains(localRoot.path),
-      );
+      // The profile's root is the form's value, not a re-pick: a profile
+      // that did not show the folder it syncs would force one every visit.
+      expect(controller.state.localRoot, localRoot.path);
       expect(controller.state.dryRun, isFalse);
     });
 
     test('a start from a profile saves over its id, not beside it', () async {
-      final localRoot = Directory('${documents()}/notes')
+      final localRoot = Directory(notes())
         ..createSync(recursive: true);
       final id = ReplicaConnector.profileIdFor(
         localRootPath: localRoot.path,
@@ -627,7 +580,7 @@ void main() {
 
     test('save persists the profile and does not start a run', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.save(
         remoteRoot: '~/notes',
@@ -637,14 +590,14 @@ void main() {
 
       final saved = await profileStore().byId(
         ReplicaConnector.profileIdFor(
-          localRootPath: '${documents()}/notes',
+          localRootPath: notes(),
           peerDeviceId: desktop.deviceId,
           remoteRootPath: '~/notes',
         ),
       );
       expect(saved, isNotNull);
       expect(saved!.name, 'weekly');
-      expect(saved.localRootPath, '${documents()}/notes');
+      expect(saved.localRootPath, notes());
       expect(saved.remoteRootPath, '~/notes');
       expect(app.state.profiles.single.name, 'weekly');
       expect(requests(), isEmpty);
@@ -654,7 +607,7 @@ void main() {
     test('a save the form does not validate writes nothing and shows the '
         'field line', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.save(remoteRoot: '', address: '', profileName: 'weekly');
 
@@ -665,7 +618,7 @@ void main() {
 
     test('an unnamed save is refused: there is nothing to save', () async {
       await loadDesktop();
-      await controller.createLocalFolder('notes');
+      await pickNotes();
 
       await controller.save(
         remoteRoot: '~/notes',
@@ -678,7 +631,7 @@ void main() {
     });
 
     test('a save from a profile saves over its id, not beside it', () async {
-      final localRoot = Directory('${documents()}/notes')
+      final localRoot = Directory(notes())
         ..createSync(recursive: true);
       final id = ReplicaConnector.profileIdFor(
         localRootPath: localRoot.path,
@@ -729,7 +682,7 @@ void main() {
     test(
       'a second load from a device clears the previous visit\'s pre-fill',
       () async {
-        final localRoot = Directory('${documents()}/notes')
+        final localRoot = Directory(notes())
           ..createSync(recursive: true);
         final id = ReplicaConnector.profileIdFor(
           localRootPath: localRoot.path,
@@ -753,7 +706,7 @@ void main() {
         await controller.load(RunSetupFromDevice(desktop.deviceId));
 
         expect(controller.state.prefill, isNull);
-        expect(controller.state.selectedLocalFolder, isNull);
+        expect(controller.state.localRoot, isNull);
       },
     );
   });

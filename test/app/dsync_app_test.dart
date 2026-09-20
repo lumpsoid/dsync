@@ -68,6 +68,7 @@ void main() {
   late PairController pair;
   late ProfilesController profiles;
   late RunSetupController runSetup;
+  late FakeFolderPicker runSetupPicker;
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('dsync_app_test');
@@ -88,7 +89,8 @@ void main() {
       }) => throw StateError('no enrolment in this test'),
     );
     profiles = ProfilesController(app, picker: FakeFolderPicker());
-    runSetup = RunSetupController(app, picker: FakeFolderPicker());
+    runSetupPicker = FakeFolderPicker();
+    runSetup = RunSetupController(app, picker: runSetupPicker);
     appScope.setController(app);
     devicesScope.setController(devices);
     pairScope.setController(pair);
@@ -356,7 +358,7 @@ void main() {
       pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
       lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
     );
-    final localRoot = Directory('${tempDir.path}/documents/notes')
+    final localRoot = Directory('${tempDir.path}/notes')
       ..createSync(recursive: true);
     final profileId = ReplicaConnector.profileIdFor(
       localRootPath: localRoot.path,
@@ -390,9 +392,7 @@ void main() {
       await tester.pump();
       await runRealTimeUntil(
         tester,
-        () => runSetup.state.localFolders.any(
-          (choice) => choice.path == localRoot.path,
-        ),
+        () => runSetup.state.peer is RunSetupPeerLoaded,
       );
     });
     await tester.pump(const Duration(seconds: 1));
@@ -405,7 +405,7 @@ void main() {
     // controller's selection.
     expect(fieldText(tester, 'run-setup-profile-name'), 'weekly');
     expect(fieldText(tester, 'run-setup-remote-root'), '~/notes');
-    expect(runSetup.state.selectedLocalFolder, localRoot.path);
+    expect(runSetup.state.localRoot, localRoot.path);
     // The per-run choices did not come along: the address is empty and the
     // switch is off. Both live under Options, a disclosure below the
     // required pair, so it is opened before the field can be read.
@@ -430,7 +430,7 @@ void main() {
       pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
       lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
     );
-    final localRoot = Directory('${tempDir.path}/documents/notes')
+    final localRoot = Directory('${tempDir.path}/notes')
       ..createSync(recursive: true);
 
     ready();
@@ -476,22 +476,28 @@ void main() {
       // device's own page now, and Run setup is the button beside it.
       await tester.tap(find.text('Set up run'));
       await tester.pump();
-      // `load` records the peer *before* it lists the folders and keeps
-      // going afterwards, so waiting for the peer case alone leaves its
-      // `_listLocalFolders(selected: null)` free to land after the selection
-      // below and clear it — which it does under a loaded machine. The
-      // folder list is the last thing `load` writes about this form.
+      // `load` records the peer last and nothing of the visit is in
+      // flight past it, so this is the whole of the form being ready.
       await runRealTimeUntil(
         tester,
-        () => runSetup.state.localFolders.any(
-          (choice) => choice.path == localRoot.path,
-        ),
+        () => runSetup.state.peer is RunSetupPeerLoaded,
       );
 
+      // The condition is the state write; the form is rendered over it a
+      // frame later, and the push animation has to land before the pick
+      // button is where a tap can reach it.
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+
       // A local folder, then the two fields the task is about — the folder
-      // the way the dropdown reports it, the text through the fields, since
-      // the text is what the page's own `State` holds.
-      runSetup.selectLocalFolder(localRoot.path);
+      // the only way there is, through the chooser, and the text through
+      // the fields, since the text is what the page's own `State` holds.
+      runSetupPicker.onPick = () => localRoot.path;
+      await tester.tap(find.byKey(const Key('run-setup-pick-folder')));
+      await runRealTimeUntil(
+        tester,
+        () => runSetup.state.localRoot == localRoot.path,
+      );
       await tester.pump();
       await tester.enterText(
         find.byKey(const Key('run-setup-remote-root')),
@@ -530,7 +536,7 @@ void main() {
     // form it holds is the one the user left.
     expect(find.byType(RunSetupPage), findsOneWidget);
     expect(find.byType(RunPage), findsNothing);
-    expect(runSetup.state.selectedLocalFolder, localRoot.path);
+    expect(runSetup.state.localRoot, localRoot.path);
     expect(fieldText(tester, 'run-setup-remote-root'), '~/notes');
     expect(fieldText(tester, 'run-setup-address'), '10.0.0.9:4242');
 

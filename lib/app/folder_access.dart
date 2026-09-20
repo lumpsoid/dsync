@@ -23,7 +23,6 @@ Future<String?> folderAccessRefusal(String path) async {
     return null;
   } on FileSystemException catch (e) {
     return 'dsync cannot use $path: ${e.osError?.message ?? e.message}. '
-        'Grant it access to all files, or pick a folder in the app\'s own '
-        'documents instead.';
+        'Grant dsync access to all files, then choose it again.';
   }
 }

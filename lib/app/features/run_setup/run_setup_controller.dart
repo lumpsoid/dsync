@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
-import 'package:path/path.dart' as p;
 
 import '../../app_controller.dart';
 import '../../folder_access.dart';
@@ -22,17 +21,18 @@ import 'run_setup_view_state.dart';
 /// opens no socket: [start] validates and builds a [RunRequest] — the only
 /// place one is constructed — and the Run feature is what connects.
 ///
-/// **The local side is any folder this head can prove it can read and
-/// write.** Two ways in: a directory under `AppPaths.documentsDir`, created
-/// on demand ([createLocalFolder]) and listed for selection ([load]), which
-/// needs no grant on either platform; or one the user chooses through the
-/// platform's own folder chooser ([pickLocalFolder]), which is how a replica
-/// lands somewhere a file manager can also see — on Android the documents
-/// directory is app-private, so it alone would confine every sync to files
-/// the user cannot otherwise reach.
+/// **The local side is one folder, and the user names it.** There is a
+/// single way in — the platform's own folder chooser ([pickLocalFolder]) —
+/// so a replica lands where the user pointed and where a file manager can
+/// reach it. The page once also listed every directory under
+/// `AppPaths.documentsDir` as a candidate, and that guessed: on Android and
+/// iOS that directory is app-private, so a replica in it is one no other
+/// app can open, while on desktop it is the user's own `~/Documents`, so
+/// the control enumerated their data as if each folder in it were a sync
+/// candidate. Which folder to sync is the user's to state.
 ///
 /// A picked folder is *probed*, not trusted: [pickLocalFolder] lists it and
-/// writes and deletes one entry in it before offering it as a choice. The
+/// writes and deletes one entry in it before taking it as the root. The
 /// probe is plain `dart:io`, which is exactly what `Scanner` and
 /// `LocalAgent` scan and write a replica with, so a folder that passes it is
 /// scannable by construction and a folder that fails it is refused here —
@@ -45,7 +45,11 @@ import 'run_setup_view_state.dart';
 /// asking for that grant once (`FolderPicker.requestAccess`) and probing
 /// again. Paths that convert to no filesystem at all — the Downloads
 /// provider, a cloud document provider — simply fail the probe, which is the
-/// refusal working.
+/// refusal working. A refused folder leaves the form with no local root and
+/// says why (`RunSetupViewState.folderAccessError`, raised as a snackbar
+/// with the way to the Settings screen): there is deliberately no fallback
+/// to a folder the user did not choose, because the only one always
+/// available is the app-private one no file manager can reach.
 ///
 /// Either way the local root is an absolute path, so it is safe to use
 /// unexpanded: `Location.expandedPath` — which throws when `HOME` is unset,
@@ -54,9 +58,9 @@ import 'run_setup_view_state.dart';
 /// A picked folder lasts the visit unless the run is saved: the
 /// saved-profile work is here now, and [start] is what stores a replica
 /// root — in a [SyncProfile], when the run is given a name — so a folder
-/// picked once comes back pre-selected the next time its profile is
-/// opened. Nothing persists it for a run left unnamed; that run was a
-/// one-off.
+/// picked once comes back as the form's value the next time its profile is
+/// opened, rather than forcing a re-pick. Nothing persists it for a run
+/// left unnamed; that run was a one-off.
 ///
 /// **The remote root is sent exactly as typed, never expanded.** The desktop
 /// resolves `~` in its own environment (`ReplicaSpec.rootPath`,
@@ -115,39 +119,33 @@ class RunSetupController {
   /// it. Set by [load], cleared with it.
   String? _profileId;
 
-  /// The folders picked through the chooser this visit, in the order they
-  /// were picked. Reset by [load], like every other per-visit choice.
-  final List<String> _pickedRoots = [];
-
   /// Reads what the page was opened for — the device the Devices page
-  /// named, or the saved profile the home list named, via [source] — and
-  /// lists the folders that can be a local replica. A device id that
-  /// matches nothing, or a profile id that names a deleted profile, is
-  /// rendered as [RunSetupPeerMissing], not thrown.
+  /// named, or the saved profile the home list named, via [source]. A
+  /// device id that matches nothing, or a profile id that names a deleted
+  /// profile, is rendered as [RunSetupPeerMissing], not thrown.
   ///
-  /// A profile's values pre-fill the form: its local root is selected
-  /// (added to the visit's picks first, so a root chosen in an earlier
-  /// visit is listed again) and its name and remote root go out as
-  /// [RunSetupViewState.prefill] for the page's text fields. Its id is kept
-  /// in [_profileId] for [start]. What is *not* carried over is the
+  /// A profile's values pre-fill the form: its local root becomes the
+  /// form's chosen folder — a profile that did not show the folder it syncs
+  /// would force a re-pick on every visit — and its name and remote root go
+  /// out as [RunSetupViewState.prefill] for the page's text fields. Its id
+  /// is kept in [_profileId] for [start]. What is *not* carried over is the
   /// per-run state: the dry-run switch resets, and the address field stays
   /// empty — the cached address is what empty means, and the profile does
   /// not save one (SPEC §4.4's hatch is per run).
   ///
-  /// Starts a visit: the selection, the typed remote root and the dry-run
-  /// choice are this device's, not carried over from the last one opened.
+  /// Starts a visit: the chosen folder, the typed remote root and the
+  /// dry-run choice are this device's, not carried over from the last one
+  /// opened.
   Future<void> load(RunSetupSource source) async {
-    _pickedRoots.clear();
+    state.recordLocalRoot(null);
     state.recordDryRun(false);
     state.recordFieldErrors(localFolder: null, remoteRoot: null, address: null);
-    state.recordNewFolderError(null);
     state.recordFolderAccessError(null);
     state.recordOutcome(const RunSetupIdle());
     state.recordPeer(const RunSetupPeerLoading());
     state.recordPrefill(null);
 
     final String deviceId;
-    String? profileLocalRoot;
     switch (source) {
       case RunSetupFromDevice(deviceId: final id):
         _profileId = null;
@@ -166,8 +164,7 @@ class RunSetupController {
         }
         deviceId = profile.peerDeviceId;
         _profileId = profile.id;
-        profileLocalRoot = profile.localRootPath;
-        _pickedRoots.add(profileLocalRoot);
+        state.recordLocalRoot(profile.localRootPath);
         state.recordPrefill(
           RunSetupPrefill(
             profileName: profile.name,
@@ -187,31 +184,21 @@ class RunSetupController {
       return;
     }
     _peerDeviceId = device.deviceId;
-    // Last, after the folders are listed: [RunSetupPeerLoaded] is what the
-    // page renders the whole form on, so recording it earlier would claim
-    // the form was ready while its only choice was still being read — a
-    // frame of empty dropdown, and a "loaded" state that did not mean
-    // loaded. Nothing is in flight once this lands, which is also what lets
-    // a caller treat the state as the end of the visit's loading.
-    await _listLocalFolders(selected: profileLocalRoot);
+    // Last: [RunSetupPeerLoaded] is what the page renders the whole form
+    // on, and nothing about this visit is still in flight once it lands,
+    // which is what lets a caller treat it as the end of the loading.
     state.recordPeer(RunSetupPeerLoaded(name: device.name));
   }
 
-  /// Picks [path] from `RunSetupViewState.localFolders`, or nothing.
-  void selectLocalFolder(String? path) {
-    state.recordLocalFolders(state.localFolders, selected: path);
-    state.recordOutcome(const RunSetupIdle());
-  }
-
   /// Opens the platform folder chooser and, if the user picks a folder,
-  /// proves this head can read and write it before offering it as a replica
-  /// root and selecting it.
+  /// proves this head can read and write it before taking it as the local
+  /// replica root.
   ///
   /// A dismissed chooser changes nothing. A folder that fails the probe —
-  /// even after the grant the probe's failure prompts for — is not added:
+  /// even after the grant the probe's failure prompts for — is not taken:
   /// `RunSetupViewState.folderAccessError` carries the reason and the page
   /// raises it, with the way to fix it, over a form that still holds
-  /// whatever was selected before. See the class doc comment for why the
+  /// whatever folder it held before. See the class doc comment for why the
   /// verdict is a filesystem probe rather than a permission check.
   Future<void> pickLocalFolder() async {
     state.recordFolderAccessError(null);
@@ -237,42 +224,13 @@ class RunSetupController {
       return;
     }
 
-    if (!_pickedRoots.contains(picked)) _pickedRoots.add(picked);
-    await _listLocalFolders(selected: picked);
+    state.recordLocalRoot(picked);
     state.recordOutcome(const RunSetupIdle());
   }
 
   /// Opens the OS settings page that grants access to folders outside the
   /// app's own container — what the page's snackbar offers after a refusal.
   Future<void> openAccessSettings() => picker.openSettings();
-
-  /// Creates `<documentsDir>/<name>` and selects it. [name] is one path
-  /// segment — no separator, not `.` or `..` — because the folder must sit
-  /// directly under the documents directory for the restriction the class
-  /// doc comment describes to hold; anything else is a field error.
-  Future<void> createLocalFolder(String name) async {
-    final folder = name.trim();
-    if (folder.isEmpty) {
-      state.recordNewFolderError('Give the new folder a name.');
-      return;
-    }
-    if (folder == '.' || folder == '..' || folder.contains('/')) {
-      state.recordNewFolderError(
-        'A folder name cannot contain `/` or be `.` or `..`.',
-      );
-      return;
-    }
-    final paths = await app.paths;
-    try {
-      await Directory(p.join(paths.documentsDir, folder)).create();
-    } on FileSystemException catch (e) {
-      state.recordNewFolderError('Could not create $folder: ${e.message}');
-      return;
-    }
-    state.recordNewFolderError(null);
-    await _listLocalFolders(selected: p.join(paths.documentsDir, folder));
-    state.recordOutcome(const RunSetupIdle());
-  }
 
   /// A keystroke in the remote root field: the last attempt's outcome is
   /// stale. Validation waits for [start].
@@ -396,7 +354,7 @@ class RunSetupController {
   }
 
   /// The one validation pass, shared by [start] and [save] so the two
-  /// cannot drift: the loaded peer, the picked local folder, the typed
+  /// cannot drift: the loaded peer, the chosen local folder, the typed
   /// remote root and the address override, as a single value when all of
   /// them hold. Records every field's line either way, and answers `null` —
   /// with the outcome reset — when any of them did not.
@@ -413,7 +371,7 @@ class RunSetupController {
       return null;
     }
 
-    final localRootPath = state.selectedLocalFolder;
+    final localRootPath = state.localRoot;
     final remote = remoteRoot.trim();
     // A blank address field is the per-run override left empty, which is
     // the normal case: `null` here means "dial the address the device was
@@ -446,29 +404,6 @@ class RunSetupController {
       peerDeviceId: peerDeviceId,
       remoteRootPath: remote,
       addressOverride: addressOverride,
-    );
-  }
-
-  /// The documents directory's own folders, by name, then this visit's
-  /// picked ones, by whole path. A picked folder that happens to sit under
-  /// the documents directory is listed once, as its name.
-  Future<void> _listLocalFolders({required String? selected}) async {
-    final documents = Directory((await app.paths).documentsDir);
-    await documents.create(recursive: true);
-    final own = [
-      await for (final entry in documents.list(followLinks: false))
-        if (entry is Directory)
-          LocalFolderChoice(path: entry.path, label: p.basename(entry.path)),
-    ]..sort((a, b) => a.label.compareTo(b.label));
-    final paths = own.map((choice) => choice.path).toSet();
-    final choices = [
-      ...own,
-      for (final root in _pickedRoots)
-        if (paths.add(root)) LocalFolderChoice(path: root, label: root),
-    ];
-    state.recordLocalFolders(
-      choices,
-      selected: paths.contains(selected) ? selected : null,
     );
   }
 
@@ -525,7 +460,7 @@ class _ValidatedForm {
 /// the profile saved beside it, so a save and a start agree.
 final int _jobs = Scanner().jobs;
 
-const _localFolderRequired = 'Pick a folder on this device, or create one.';
+const _localFolderRequired = 'Pick the folder to sync on this device.';
 const _profileNameRequired =
     'Name this run to save it — an unnamed run is a one-off, so there is '
     'nothing to save.';

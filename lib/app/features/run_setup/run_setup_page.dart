@@ -7,9 +7,10 @@ import 'run_setup_scope.dart';
 import 'run_setup_view_state.dart';
 
 /// The Run setup page: pick the two locations a run syncs (SPEC §2, §4.4,
-/// §11.2). Widgets only, per the page role in `app_scope.dart`: a folder
-/// picker, four text fields, a switch, two buttons, and switches over the
-/// rendered [RunSetupPeer] and [RunSetupOutcome].
+/// §11.2). Widgets only, per the page role in `app_scope.dart`: the chosen
+/// folder with the button that changes it, three text fields, a switch, two
+/// buttons, and switches over the rendered [RunSetupPeer] and
+/// [RunSetupOutcome].
 ///
 /// The layout is the decision order, in flat sections with no box drawn
 /// around them — the heading groups the fields under it, as the Run page's
@@ -166,7 +167,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
           ListenableBuilder(
             listenable: _controller.state,
             builder: (context, _) {
-              final rootPath = _controller.state.selectedLocalFolder;
+              final rootPath = _controller.state.localRoot;
               return IconButton(
                 key: const Key('run-setup-diagnostics'),
                 icon: const Icon(Icons.biotech_outlined),
@@ -266,49 +267,41 @@ class _RunSetupForm extends StatelessWidget {
               // disclosure is three frames drawn around two decisions.
               _SectionLabel('On this device'),
               const SizedBox(height: 8),
-              // A plain `DropdownButton` under an `InputDecorator` rather
-              // than a `DropdownButtonFormField`: the form field keeps its
-              // own copy of the selection and would not follow the
-              // controller selecting a folder it just created.
-              InputDecorator(
-                decoration: InputDecoration(
-                  labelText: 'Folder',
-                  errorText: state.localFolderError,
-                ),
-                child: DropdownButton<String>(
-                  key: const Key('run-setup-local-folder'),
-                  value: state.selectedLocalFolder,
-                  isExpanded: true,
-                  underline: const SizedBox.shrink(),
-                  hint: const Text('Pick a folder'),
-                  items: [
-                    for (final folder in state.localFolders)
-                      DropdownMenuItem(
-                        value: folder.path,
-                        child: Text(
-                          folder.label,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+              // The chosen folder shown as a value, not a control: there
+              // is one way to set it — the platform chooser — so there is
+              // no list to choose from and nothing to type. The button
+              // beside it is that one way, in the open.
+              Row(
+                children: [
+                  Expanded(
+                    child: InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: 'Folder',
+                        errorText: state.localFolderError,
                       ),
-                  ],
-                  onChanged: starting ? null : controller.selectLocalFolder,
-                ),
-              ),
-              const SizedBox(height: 8),
-              // The one way to add a folder, in the open. The platform
-              // chooser already creates a folder on the way through if the
-              // user wants a new one, and a replica the user cannot reach
-              // from a file manager is not one they asked for — on Android
-              // this app's documents directory is private, so a folder made
-              // in there would be exactly that.
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  key: const Key('run-setup-pick-folder'),
-                  onPressed: starting ? null : onPickFolder,
-                  icon: const Icon(Icons.folder_open),
-                  label: const Text('Pick a folder…'),
-                ),
+                      child: Text(
+                        key: const Key('run-setup-local-folder'),
+                        state.localRoot ?? 'No folder chosen',
+                        overflow: TextOverflow.ellipsis,
+                        style: state.localRoot == null
+                            ? TextStyle(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              )
+                            : null,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    key: const Key('run-setup-pick-folder'),
+                    onPressed: starting ? null : onPickFolder,
+                    child: Text(
+                      state.localRoot == null ? 'Pick a folder…' : 'Change',
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 24),
               _SectionLabel('On $deviceName'),
