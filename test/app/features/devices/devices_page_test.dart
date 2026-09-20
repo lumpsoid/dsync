@@ -71,8 +71,8 @@ void main() {
     peerName: 'phone',
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
-    localRootLabel: '/on-device/notes',
-    remoteRootLabel: '~/notes',
+    localRootLabel: PathLabel.of('/on-device/notes'),
+    remoteRootLabel: PathLabel.of('~/notes'),
     breakage: null,
   );
 

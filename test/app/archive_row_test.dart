@@ -1,4 +1,5 @@
 import 'package:dsync/app/archive_row.dart';
+import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/dsync_core/models/stored_archive.dart';
 import 'package:test/test.dart';
@@ -24,8 +25,8 @@ void main() {
     peerName: peerName,
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
-    localRootLabel: '/on-device/notes',
-    remoteRootLabel: '~/notes',
+    localRootLabel: PathLabel.of('/on-device/notes'),
+    remoteRootLabel: PathLabel.of('~/notes'),
     breakage: null,
   );
 

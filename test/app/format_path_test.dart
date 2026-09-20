@@ -42,4 +42,48 @@ void main() {
   test('an empty path is empty', () {
     expect(elidePath(''), '');
   });
+
+  group('PathLabel', () {
+    test('splits off the leaf and keeps the pair readable as one path', () {
+      final label = PathLabel.of('/on-device/notes');
+
+      expect(label.parent, '/on-device/');
+      expect(label.leaf, 'notes');
+      expect('${label.parent}${label.leaf}', '/on-device/notes');
+    });
+
+    test('the parent gives way, the leaf never does', () {
+      const path = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
+      final label = PathLabel.of(path);
+
+      expect(label.leaf, 'notes');
+      expect(label.parent, startsWith('/…/'));
+      expect(label.parent, endsWith('/'));
+      expect(
+        label.parent.length + label.leaf.length,
+        lessThanOrEqualTo(defaultPathLabelLength),
+      );
+    });
+
+    test('a leaf wider than the budget leaves the parent a bare marker', () {
+      final label = PathLabel.of('/one/two/${'x' * 60}', maxLength: 10);
+
+      expect(label.leaf, 'x' * 60);
+      expect(label.parent, '/…/');
+    });
+
+    test('a path with nothing above its leaf has only the root marker', () {
+      expect(PathLabel.of('/notes').parent, '/');
+      expect(PathLabel.of('~/notes').parent, '~/');
+      expect(PathLabel.of('notes').parent, '');
+      expect(PathLabel.of('notes').leaf, 'notes');
+    });
+
+    test('an empty path is an empty leaf', () {
+      final label = PathLabel.of('');
+
+      expect(label.parent, '');
+      expect(label.leaf, '');
+    });
+  });
 }

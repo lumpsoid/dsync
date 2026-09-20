@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../format_path.dart';
 import '../../profile_breakage.dart';
 import '../../profile_row.dart';
 import 'profiles_controller.dart';
@@ -226,62 +227,132 @@ class _ProfileTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final breakage = row.breakage;
-    return ListTile(
-      title: Text(row.name),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // The device first, on its own line: a profile is bound to one
-          // paired device, and which one is the thing that tells two
-          // similarly-named runs apart — it used to be readable only by
-          // picking the middle out of the path pair below. A revoked
-          // device has no name on this host any more, only an id, and the
-          // row says so rather than leaving a blank where a name was.
-          Text(
-            row.peerName ?? 'unpaired device ${row.peerDeviceId}',
-            style: Theme.of(context).textTheme.titleSmall,
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 4, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      row.name,
+                      style: theme.textTheme.titleMedium,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    tooltip: 'Delete profile',
+                    onPressed: onDelete,
+                  ),
+                ],
+              ),
+              // The pair, one side per block, headed the way Run setup
+              // heads the same two fields ("On this device" / "On
+              // <device>"): the two screens describe one run, and a row
+              // that named the sides differently would read as a
+              // different thing. It also puts the device where it belongs
+              // — on the side that *is* the device — instead of on a line
+              // of its own above a pair of anonymous paths. A revoked
+              // device has no name on this host any more, only an id, and
+              // the heading says so rather than leaving a blank where a
+              // name was.
+              _PairSide(label: 'On this device', path: row.localRootLabel),
+              const SizedBox(height: 8),
+              _PairSide(
+                label:
+                    'On ${row.peerName ?? 'unpaired device ${row.peerDeviceId}'}',
+                path: row.remoteRootLabel,
+              ),
+              if (breakage != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  breakage.message,
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: switch (breakage) {
+                    ProfileLocalRootUnusable() => TextButton(
+                      key: Key('profile-pick-folder-${row.id}'),
+                      onPressed: onPickFolder,
+                      child: const Text('Choose folder'),
+                    ),
+                    ProfileDeviceUnpaired() => TextButton(
+                      key: Key('profile-pair-again-${row.id}'),
+                      onPressed: onPairAgain,
+                      child: const Text('Pair again'),
+                    ),
+                  },
+                ),
+              ],
+            ],
           ),
-          // One line per root rather than the pair joined into one string.
-          // Joined, the two roots shared a single line's width and the
-          // remote one was clipped away entirely on a long local path —
-          // the side of the run that is *not* on this device vanished. A
-          // line each gives both the full width, so each is elided only
-          // against its own length. The labels are already middle-elided
-          // by `ProfileRow.render`; `ellipsis` stays as the backstop for
-          // the width the character count cannot know about.
-          Text(row.localRootLabel, overflow: TextOverflow.ellipsis),
-          Text('↔ ${row.remoteRootLabel}', overflow: TextOverflow.ellipsis),
-          if (breakage != null) ...[
-            Text(
-              breakage.message,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: switch (breakage) {
-                ProfileLocalRootUnusable() => TextButton(
-                  key: Key('profile-pick-folder-${row.id}'),
-                  onPressed: onPickFolder,
-                  child: const Text('Choose folder'),
-                ),
-                ProfileDeviceUnpaired() => TextButton(
-                  key: Key('profile-pair-again-${row.id}'),
-                  onPressed: onPairAgain,
-                  child: const Text('Pair again'),
-                ),
-              },
-            ),
-          ],
-        ],
+        ),
       ),
-      isThreeLine: true,
-      onTap: onTap,
-      trailing: IconButton(
-        icon: const Icon(Icons.delete_outline),
-        tooltip: 'Delete profile',
-        onPressed: onDelete,
-      ),
+    );
+  }
+}
+
+/// One side of the pair: where it is, and the folder it is.
+///
+/// The path is drawn in two weights out of [PathLabel] — the parent quiet,
+/// the leaf in the body colour and bolder. Every folder on a device shares
+/// a long prefix, so printed at one weight the shared part is what the eye
+/// lands on and the leaf, the only part that tells two saved runs apart, is
+/// what it has to hunt for. Two weights put the distinguishing part first
+/// in reading order without moving it in the path.
+///
+/// One `Text.rich`, not two `Text`s in a `Row`: the pair is one path and
+/// wants one text layout, so the line breaks where a path line should and
+/// the parent's elision stays the character-budget one `PathLabel` already
+/// applied, with `ellipsis` as the backstop for the width a character count
+/// cannot know about.
+class _PairSide extends StatelessWidget {
+  const _PairSide({required this.label, required this.path});
+
+  final String label;
+  final PathLabel path;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+        Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: path.parent,
+                style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              TextSpan(
+                text: path.leaf,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ],
+            style: theme.textTheme.bodyMedium,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
     );
   }
 }

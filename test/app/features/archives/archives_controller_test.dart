@@ -7,6 +7,7 @@ import 'package:dsync/app/archive_row.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
+import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -51,8 +52,8 @@ void main() {
         peerName: peerName,
         localRootPath: '/on-device/notes',
         remoteRootPath: '~/notes',
-        localRootLabel: '/on-device/notes',
-        remoteRootLabel: '~/notes',
+        localRootLabel: PathLabel.of('/on-device/notes'),
+        remoteRootLabel: PathLabel.of('~/notes'),
         breakage: null,
       );
 

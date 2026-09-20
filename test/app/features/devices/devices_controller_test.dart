@@ -4,6 +4,7 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
+import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
@@ -136,8 +137,8 @@ void main() {
       peerName: 'phone',
       localRootPath: '/on-device/notes',
       remoteRootPath: '~/notes',
-      localRootLabel: '/on-device/notes',
-      remoteRootLabel: '~/notes',
+      localRootLabel: PathLabel.of('/on-device/notes'),
+      remoteRootLabel: PathLabel.of('~/notes'),
       breakage: null,
     );
 

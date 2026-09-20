@@ -59,8 +59,8 @@ class ProfileRow {
       peerName: device?.name,
       localRootPath: profile.localRootPath,
       remoteRootPath: profile.remoteRootPath,
-      localRootLabel: elidePath(profile.localRootPath),
-      remoteRootLabel: elidePath(profile.remoteRootPath),
+      localRootLabel: PathLabel.of(profile.localRootPath),
+      remoteRootLabel: PathLabel.of(profile.remoteRootPath),
       breakage: broken,
     );
   }
@@ -88,15 +88,15 @@ class ProfileRow {
   /// Side `b`, unexpanded.
   final String remoteRootPath;
 
-  /// [localRootPath] as the row prints it: middle-elided by [elidePath], so
-  /// what shows is the end of the path — the part that tells two runs apart
-  /// — and not the prefix every folder on the device shares.
-  final String localRootLabel;
+  /// [localRootPath] as the row prints it: split by [PathLabel] into the
+  /// leaf that tells two runs apart and the prefix every folder on the
+  /// device shares, so the row can draw the one loud and the other quiet.
+  final PathLabel localRootLabel;
 
   /// [remoteRootLabel] is [remoteRootPath] under the same rule. Rendered
   /// here rather than in the tile for the reason the rest of this class
   /// exists: the page draws values, it does not derive them.
-  final String remoteRootLabel;
+  final PathLabel remoteRootLabel;
 
   /// Why this profile cannot be run any more and what fixes it, or `null`
   /// while it can be run.

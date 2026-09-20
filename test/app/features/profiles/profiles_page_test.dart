@@ -9,6 +9,7 @@ import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/profile_breakage.dart';
+import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -75,33 +76,33 @@ void main() {
     peerName: 'desktop',
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
-    localRootLabel: '/on-device/notes',
-    remoteRootLabel: '~/notes',
+    localRootLabel: PathLabel.of('/on-device/notes'),
+    remoteRootLabel: PathLabel.of('~/notes'),
     breakage: null,
   );
 
-  ProfileRow broken() => const ProfileRow(
+  ProfileRow broken() => ProfileRow(
     id: 'p2',
     name: 'revoked',
     peerDeviceId: 'dead:beef',
     peerName: null,
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
-    localRootLabel: '/on-device/notes',
-    remoteRootLabel: '~/notes',
-    breakage: ProfileDeviceUnpaired(),
+    localRootLabel: PathLabel.of('/on-device/notes'),
+    remoteRootLabel: PathLabel.of('~/notes'),
+    breakage: const ProfileDeviceUnpaired(),
   );
 
-  ProfileRow folderLost() => const ProfileRow(
+  ProfileRow folderLost() => ProfileRow(
     id: 'p3',
     name: 'no folder',
     peerDeviceId: 'a1b2:c3d4',
     peerName: 'desktop',
     localRootPath: '/on-device/gone',
     remoteRootPath: '~/notes',
-    localRootLabel: '/on-device/gone',
-    remoteRootLabel: '~/notes',
-    breakage: ProfileLocalRootUnusable(),
+    localRootLabel: PathLabel.of('/on-device/gone'),
+    remoteRootLabel: PathLabel.of('~/notes'),
+    breakage: const ProfileLocalRootUnusable(),
   );
 
   testWidgets('an empty list is the first-run state, pointing at Devices', (
@@ -159,15 +160,30 @@ void main() {
     await pumpPage(tester);
 
     expect(find.text('weekly'), findsOneWidget);
-    // The device the profile is bound to gets its own line: a profile is
-    // bound to one paired device, and which one is what tells two
-    // similarly-named runs apart.
-    expect(find.text('desktop'), findsOneWidget);
-    // A line per root, so a long local path cannot clip the remote one
-    // away entirely.
-    expect(find.text('/on-device/notes'), findsOneWidget);
-    expect(find.text('↔ ~/notes'), findsOneWidget);
+    // A block per side, each headed where it is — the same two headings
+    // Run setup uses, so one run reads the same on both screens. The peer
+    // is named in the heading of the side that is the peer, not on a line
+    // of its own above two anonymous paths.
+    expect(find.text('On this device'), findsOneWidget);
+    expect(find.text('On desktop'), findsOneWidget);
+    // Each path is one line of two weights — parent quiet, leaf loud — so
+    // it is one `Text.rich`, not two widgets, and the plain text of it is
+    // the path.
+    expect(find.text('/on-device/notes', findRichText: true), findsOneWidget);
+    expect(find.text('~/notes', findRichText: true), findsOneWidget);
     expect(find.textContaining('no longer paired'), findsNothing);
+  });
+
+  testWidgets('a revoked device is named in its side\'s heading, by id', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordProfiles([broken()]);
+    await pumpPage(tester);
+
+    // A revoked device has no name on this host any more, so the heading
+    // says what it still knows rather than leaving a blank.
+    expect(find.text('On unpaired device dead:beef'), findsOneWidget);
   });
 
   testWidgets('a tap opens Run setup for the profile, by id', (tester) async {
@@ -191,12 +207,16 @@ void main() {
 
     // The row is there; the tap is not. `onTap` is null on the widget —
     // the rendering of "unrunnable" — so the callback cannot fire.
-    final tile = tester.widget<ListTile>(
-      find.ancestor(of: find.text('revoked'), matching: find.byType(ListTile)),
+    final tile = tester.widget<InkWell>(
+      find
+          .ancestor(of: find.text('revoked'), matching: find.byType(InkWell))
+          .first,
     );
     expect(tile.onTap, isNull);
-    final okTile = tester.widget<ListTile>(
-      find.ancestor(of: find.text('weekly'), matching: find.byType(ListTile)),
+    final okTile = tester.widget<InkWell>(
+      find
+          .ancestor(of: find.text('weekly'), matching: find.byType(InkWell))
+          .first,
     );
     expect(okTile.onTap, isNotNull);
     expect(opened, isEmpty);
