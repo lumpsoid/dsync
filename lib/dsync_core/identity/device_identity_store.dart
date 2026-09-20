@@ -113,9 +113,19 @@ class DeviceIdentityStore {
   /// truncated one. Throws [DeviceIdentityIncompleteException] via
   /// [loadOrCreate] when there is nothing to renew; [now] is injectable for
   /// the same reason [renewDeviceIdentity]'s is.
-  Future<DeviceIdentity> renew({DateTime? now}) async {
+  ///
+  /// [commonName] re-issues under a different name instead of the persisted
+  /// one — renaming this device. It is the same write, at the same cost, for
+  /// the reason [renewDeviceIdentity] gives: the name lives in the
+  /// certificate, so changing it means new bytes, and new bytes mean every
+  /// peer has to meet them before this host can connect to it again.
+  Future<DeviceIdentity> renew({DateTime? now, String? commonName}) async {
     final existing = await loadOrCreate(commonName: 'unused');
-    final renewed = renewDeviceIdentity(existing, now: now);
+    final renewed = renewDeviceIdentity(
+      existing,
+      now: now,
+      commonName: commonName,
+    );
     final scratch = File(tempPathFor(_certificateFile.path, 0));
     await scratch.writeAsString(renewed.certificatePem, flush: true);
     await scratch.rename(_certificateFile.path);

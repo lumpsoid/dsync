@@ -462,4 +462,126 @@ void main() {
       );
     });
   });
+
+  group('revokeRoot', () {
+    test('withdraws one root and keeps the rest', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(
+        deviceA(agreedReplicaRoots: const {'/home/me/notes', '/home/me/pics'}),
+      );
+
+      await store.revokeRoot(deviceA().deviceId, '/home/me/notes');
+
+      final found = await store.byDeviceId(deviceA().deviceId);
+      expect(found!.agreedReplicaRoots, {'/home/me/pics'});
+      // The pairing itself is untouched: withdrawing a grant is not
+      // revoking a device.
+      expect(found.name, deviceA().name);
+      expect(found.pairedAt, deviceA().pairedAt);
+    });
+
+    test('a root that was never granted is not an error', () async {
+      // The post-condition a caller wants is "this device does not serve
+      // that root", and it already holds.
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(agreedReplicaRoots: const {'/home/me/notes'}));
+
+      await store.revokeRoot(deviceA().deviceId, '/home/me/elsewhere');
+
+      final found = await store.byDeviceId(deviceA().deviceId);
+      expect(found!.agreedReplicaRoots, {'/home/me/notes'});
+    });
+
+    test('an unpaired device id is refused', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA());
+
+      expect(
+        () => store.revokeRoot(deviceB().deviceId, '/home/me/notes'),
+        throwsA(isA<PairedDeviceNotFoundException>()),
+      );
+    });
+
+    test('survives a reload', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(agreedReplicaRoots: const {'/home/me/notes'}));
+
+      await store.revokeRoot(deviceA().deviceId, '/home/me/notes');
+
+      final reloaded = await PairedDeviceStore(storeFile()).load();
+      expect(reloaded.single.agreedReplicaRoots, isEmpty);
+    });
+  });
+
+  group('rename', () {
+    test('relabels the device, everything else unchanged', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(name: 'phone'));
+
+      await store.rename(deviceA().deviceId, 'work phone');
+
+      final found = await store.byDeviceId(deviceA().deviceId);
+      expect(found!.name, 'work phone');
+      expect(found.certificatePem, certA);
+      expect(found.pairedAt, deviceA().pairedAt);
+      expect(found.agreedReplicaRoots, deviceA().agreedReplicaRoots);
+      // The id is the certificate's, so a rename cannot move it — which is
+      // the whole reason a pairing survives one.
+      expect(found.deviceId, deviceA().deviceId);
+    });
+
+    test('is addressable by the new name afterwards', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(name: 'phone'));
+
+      await store.rename(deviceA().deviceId, 'work phone');
+
+      expect(await store.byName('work phone'), isNotNull);
+      expect(await store.byName('phone'), isNull);
+    });
+
+    test("a name another paired device already holds is refused", () async {
+      // The same uniqueness `add` enforces: `pair grant <name>` and
+      // `peer://<name>` address a device by it.
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(name: 'phone'));
+      await store.add(deviceB(name: 'laptop'));
+
+      expect(
+        () => store.rename(deviceA().deviceId, 'laptop'),
+        throwsA(isA<PairedDeviceCollisionException>()),
+      );
+      expect((await store.byDeviceId(deviceA().deviceId))!.name, 'phone');
+    });
+
+    test('renaming a device to the name it already has is allowed', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(name: 'phone'));
+
+      await store.rename(deviceA().deviceId, 'phone');
+
+      expect((await store.byDeviceId(deviceA().deviceId))!.name, 'phone');
+    });
+
+    test('an unpaired device id is refused', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA());
+
+      expect(
+        () => store.rename(deviceB().deviceId, 'laptop'),
+        throwsA(isA<PairedDeviceNotFoundException>()),
+      );
+    });
+
+    test('an empty name is refused by the model, not written', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA(name: 'phone'));
+
+      expect(
+        () => store.rename(deviceA().deviceId, '  '),
+        throwsA(isA<FormatException>()),
+      );
+      expect((await store.byDeviceId(deviceA().deviceId))!.name, 'phone');
+    });
+  });
 }

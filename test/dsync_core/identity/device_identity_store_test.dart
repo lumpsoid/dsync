@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
@@ -168,6 +169,18 @@ void main() {
         );
       },
     );
+
+    test('a commonName renames the device in place, keeping its id', () async {
+      final store = DeviceIdentityStore(tempDir);
+      final original = await store.loadOrCreate(commonName: 'studio');
+
+      final renamed = await store.renew(commonName: 'workshop');
+      final reloaded = await store.loadOrCreate(commonName: 'ignored');
+
+      expect(certificateCommonNameFromDer(reloaded.certificateDer), 'workshop');
+      expect(renamed.deviceId, original.deviceId);
+      expect(reloaded.privateKeyPem, original.privateKeyPem);
+    });
 
     test('refuses when there is no identity to renew', () async {
       final store = DeviceIdentityStore(tempDir);

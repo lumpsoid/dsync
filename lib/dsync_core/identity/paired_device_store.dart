@@ -248,6 +248,56 @@ class PairedDeviceStore {
     await _save(devices);
   }
 
+  /// Withdraws [rootPath] from the device pinned to [deviceId] — the
+  /// withdrawal half of [grant], and the only way back from one that does not
+  /// also throw the pairing away the way [revoke] does.
+  ///
+  /// Withdrawal is local, like the grant it undoes and like [revoke]: nothing
+  /// is told to the peer, and it takes effect starting with the next
+  /// [byDeviceId] or [load] a `hello` handler makes, per the class doc
+  /// comment's freshness guarantee. A run already in flight over that root
+  /// keeps its channel — the check happens at `hello`, not per request.
+  ///
+  /// Throws [PairedDeviceNotFoundException] if no device with that id is
+  /// paired, the same as [grant]. A [rootPath] that was never granted is
+  /// *not* an error: the caller asked for this device not to serve that root,
+  /// and it does not. [PairedDevice.withoutRoot] says the same.
+  Future<void> revokeRoot(String deviceId, String rootPath) async {
+    final devices = await load();
+    final index = devices.indexWhere((d) => d.deviceId == deviceId);
+    if (index == -1) throw PairedDeviceNotFoundException(deviceId);
+    devices[index] = devices[index].withoutRoot(rootPath);
+    await _save(devices);
+  }
+
+  /// Relabels the device pinned to [deviceId] as [name] (SPEC §4.4: the name
+  /// is this host's own, local, and not agreed with the peer).
+  ///
+  /// Rejected, not silently disambiguated, when [name] is already another
+  /// paired device's — the same uniqueness [add] enforces, for the same
+  /// reason: `dsync pair grant <name> <path>` and `peer://<name>` address a
+  /// device by it, so two entries sharing one name is an ambiguity the store
+  /// must not be able to hold. Renaming a device to the name it already has
+  /// is a no-op write, not a collision with itself.
+  ///
+  /// Throws [PairedDeviceNotFoundException] if no device with that id is
+  /// paired, the same as [grant] and [recordConnection]. An empty [name] is
+  /// refused by [PairedDevice]'s constructor, as it is everywhere else.
+  Future<void> rename(String deviceId, String name) async {
+    final devices = await load();
+    final index = devices.indexWhere((d) => d.deviceId == deviceId);
+    if (index == -1) throw PairedDeviceNotFoundException(deviceId);
+    for (final existing in devices) {
+      if (existing.name == name && existing.deviceId != deviceId) {
+        throw PairedDeviceCollisionException(
+          'a device named "$name" is already paired',
+        );
+      }
+    }
+    devices[index] = devices[index].withName(name);
+    await _save(devices);
+  }
+
   List<PairedDevice> _parseDocument(String raw) {
     final decoded = jsonDecode(raw);
     if (decoded is! Map<String, dynamic>) {

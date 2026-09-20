@@ -86,12 +86,21 @@ DeviceIdentity generateDeviceIdentity({
 ///
 /// The private key is the one thing this reads back rather than makes: the
 /// PKCS#8 [_pkcs8] wrote, decoded to the scalar it was built from. The
-/// common name is read off the existing certificate so that renewal changes
-/// nothing a human would notice in `openssl x509 -text` besides the serial
-/// and the dates. [random] and [now] are injectable exactly as on
-/// [generateDeviceIdentity].
+/// common name defaults to the one read off the existing certificate, so
+/// that a plain renewal changes nothing a human would notice in `openssl
+/// x509 -text` besides the serial and the dates. [random] and [now] are
+/// injectable exactly as on [generateDeviceIdentity].
+///
+/// Pass [commonName] to re-issue under a different name — renaming this
+/// device. The name is cosmetic (SPEC §4.4 says so outright: a peer pins the
+/// public key, not the subject), but the certificate is the only place this
+/// host records what it calls *itself*, so changing it is a re-issue and not
+/// a field write somewhere else. It costs exactly what a renewal costs, and
+/// for the same reason: the bytes change, so every peer has to meet the new
+/// certificate before this host can connect to it again.
 DeviceIdentity renewDeviceIdentity(
   DeviceIdentity existing, {
+  String? commonName,
   SecureRandom? random,
   DateTime? now,
   Duration validFor = defaultCertificateValidity,
@@ -99,7 +108,8 @@ DeviceIdentity renewDeviceIdentity(
   final rng = random ?? _seededFortuna();
   return _assembleIdentity(
     keyPair: _keyPairFromPkcs8Pem(existing.privateKeyPem),
-    commonName: certificateCommonNameFromDer(existing.certificateDer),
+    commonName:
+        commonName ?? certificateCommonNameFromDer(existing.certificateDer),
     random: rng,
     now: now,
     validFor: validFor,

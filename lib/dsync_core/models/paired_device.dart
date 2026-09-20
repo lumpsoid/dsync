@@ -145,4 +145,40 @@ class PairedDevice {
     pairedAt: pairedAt,
     lastKnownAddress: lastKnownAddress,
   );
+
+  /// This device with [rootPath] taken out of its agreed replica roots,
+  /// everything else unchanged — the withdrawal half of [withAdditionalRoot],
+  /// what [PairedDeviceStore.revokeRoot] persists.
+  ///
+  /// A grant is the whole of what lets a peer name a root in its `hello`
+  /// (SPEC §4.4), so it has to be withdrawable by the host that made it;
+  /// until now the only way back was [PairedDeviceStore.revoke], which throws
+  /// the pairing away with the grant. Removing from a `Set`, so a [rootPath]
+  /// that was never granted leaves the set as it was rather than failing —
+  /// the post-condition a caller wants either way is "this device does not
+  /// serve that root".
+  PairedDevice withoutRoot(String rootPath) => PairedDevice(
+    certificatePem: certificatePem,
+    name: name,
+    agreedReplicaRoots: {...agreedReplicaRoots}..remove(rootPath),
+    pairedAt: pairedAt,
+    lastKnownAddress: lastKnownAddress,
+  );
+
+  /// This device under [name], everything else unchanged — what
+  /// [PairedDeviceStore.rename] persists.
+  ///
+  /// The name is this host's own label (see [PairedDevice.name]): changing it
+  /// tells the peer nothing, moves no pin, and cannot change [deviceId],
+  /// which is derived from the certificate alone. Uniqueness within the
+  /// paired set is the store's to enforce, here as at [PairedDeviceStore.add],
+  /// because it needs every other device to decide; an empty name is refused
+  /// by the constructor as it is everywhere else.
+  PairedDevice withName(String name) => PairedDevice(
+    certificatePem: certificatePem,
+    name: name,
+    agreedReplicaRoots: agreedReplicaRoots,
+    pairedAt: pairedAt,
+    lastKnownAddress: lastKnownAddress,
+  );
 }

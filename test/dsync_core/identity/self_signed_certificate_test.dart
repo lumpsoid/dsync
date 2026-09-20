@@ -121,6 +121,26 @@ void main() {
       );
     });
 
+    test('a commonName re-issues under the new name, same key and id', () {
+      // Renaming this device: SPEC §4.4 calls the name cosmetic, and the
+      // certificate is the only place it is recorded — so the rename *is*
+      // a renewal, and the id, which is the key's hash, cannot move.
+      final original = generateDeviceIdentity(
+        commonName: 'studio',
+        now: DateTime.utc(2026, 1, 1),
+      );
+
+      final renamed = renewDeviceIdentity(
+        original,
+        commonName: 'workshop',
+        now: DateTime.utc(2026, 6, 1),
+      );
+
+      expect(certificateCommonNameFromDer(renamed.certificateDer), 'workshop');
+      expect(renamed.deviceId, original.deviceId);
+      expect(renamed.privateKeyPem, original.privateKeyPem);
+    });
+
     test('the renewed certificate is one dart:io accepts with the old key', () {
       final renewed = renewDeviceIdentity(
         generateDeviceIdentity(commonName: 'dsync-renew'),
