@@ -9,7 +9,7 @@ final class RunSetupScope extends Scope<RunSetupController> {
     : super(
         () => RunSetupController(
           appScope.controller,
-          picker: const PlatformFolderPicker(),
+          picker: PlatformFolderPicker.forThisHost(),
         ),
       );
 }

@@ -9,7 +9,7 @@ final class ProfilesScope extends Scope<ProfilesController> {
     : super(
         () => ProfilesController(
           appScope.controller,
-          picker: const PlatformFolderPicker(),
+          picker: PlatformFolderPicker.forThisHost(),
         ),
       );
 }

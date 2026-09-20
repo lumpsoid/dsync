@@ -59,6 +59,87 @@ void main() {
       expect(archive.path, isNot(contains('/dsync/dsync')));
     });
 
+    test('android and iOS resolve under the app-private support dir', () {
+      // The host-supplied branch: `core` refuses to derive these, so the
+      // head hands down what `path_provider` answered.
+      final paths = AppPaths.forHost(
+        'android',
+        environment: const {'HOME': '/root'},
+        supportDir: '/data/user/0/app/files',
+        documentsDir: '/data/user/0/app/app_flutter',
+      );
+
+      expect(paths.stateDir, '/data/user/0/app/files/dsync');
+      expect(paths.configDir, '/data/user/0/app/files/dsync');
+    });
+
+    test('linux resolves the CLI\'s own state and config dirs', () {
+      // The point of the desktop branch: one machine, one device identity.
+      // These are exactly the paths `resolveStateDir`/`resolveConfigDir`
+      // give the CLI head from the same environment.
+      final paths = AppPaths.forHost(
+        'linux',
+        environment: const {'HOME': '/home/me'},
+        supportDir: '/home/me/.local/share/dsync-app',
+        documentsDir: '/home/me/Documents',
+      );
+
+      expect(paths.stateDir, '/home/me/.local/state/dsync');
+      expect(paths.configDir, '/home/me/.config/dsync');
+      // The support dir the plugin answered is deliberately unused here.
+      expect(paths.stateDir, isNot(contains('dsync-app')));
+    });
+
+    test('macOS and Windows resolve their own platform conventions', () {
+      final macOs = AppPaths.forHost(
+        'macos',
+        environment: const {'HOME': '/Users/me'},
+        supportDir: '/unused',
+        documentsDir: '/Users/me/Documents',
+      );
+      final windows = AppPaths.forHost(
+        'windows',
+        environment: const {r'LOCALAPPDATA': r'C:/Users/me/AppData/Local'},
+        supportDir: '/unused',
+        documentsDir: r'C:/Users/me/Documents',
+      );
+
+      expect(macOs.stateDir, '/Users/me/Library/Application Support/dsync');
+      expect(windows.stateDir, r'C:/Users/me/AppData/Local/dsync');
+    });
+
+    test('an archive resolved on desktop lands in the CLI state dir', () {
+      // The double-`/dsync` trap, on the branch that derives its state dir:
+      // `stateDirPlatform` is built over the *parent*, so `resolveStateDir`
+      // joining `dsync` lands back on `stateDir` rather than under it.
+      final paths = AppPaths.forHost(
+        'linux',
+        environment: const {'HOME': '/home/me'},
+        supportDir: '/unused',
+        documentsDir: '/home/me/Documents',
+      );
+
+      final archive = resolveArchiveLogPath(
+        profileId: 'p',
+        side: 'a',
+        platform: paths.stateDirPlatform,
+      );
+
+      expect(archive.path, '/home/me/.local/state/dsync/p-a.jsonl');
+    });
+
+    test('a platform with no app head fails loudly', () {
+      expect(
+        () => AppPaths.forHost(
+          'fuchsia',
+          environment: const {},
+          supportDir: '/base',
+          documentsDir: '/docs',
+        ),
+        throwsStateError,
+      );
+    });
+
     test('an empty base dir is refused at construction', () {
       // `core` refuses it (`ArgumentError`) rather than resolving to a bare
       // `/dsync`; the head must not have wrapped that check away.

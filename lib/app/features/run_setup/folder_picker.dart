@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -37,14 +39,39 @@ abstract interface class FolderPicker {
 
 /// [FolderPicker] over `file_picker` and `permission_handler` — the one
 /// place this head touches either plugin.
+///
+/// [asksForFileAccess] is what separates the two kinds of host this head now
+/// runs on, and it is a fact about the *platform*, not a preference. On
+/// Android and iOS a folder outside the app's own container is reachable
+/// through `dart:io` only under a grant the user gives on a Settings screen
+/// (SPEC §3, §16), so there is something to ask for and somewhere to send
+/// them. On Linux, macOS and Windows there is not: the process runs as the
+/// user, a folder it cannot open is one the *filesystem* refused, and
+/// `permission_handler` has no implementation there at all — calling it
+/// would throw a `MissingPluginException` out of the chooser rather than
+/// answer anything. So on desktop both grant methods are inert, and a
+/// refusal from `folderAccessRefusal` stands as the final answer, which is
+/// exactly what it is.
 final class PlatformFolderPicker implements FolderPicker {
-  const PlatformFolderPicker();
+  const PlatformFolderPicker({required this.asksForFileAccess});
+
+  /// Reads the platform at this one edge and hands a plain value down, the
+  /// way `AppPaths.forThisDevice` and `hostPlatform()` do. Production only;
+  /// a test constructs the case it is about with the plain constructor.
+  factory PlatformFolderPicker.forThisHost() => PlatformFolderPicker(
+    asksForFileAccess: Platform.isAndroid || Platform.isIOS,
+  );
+
+  /// Whether this platform has a file-access grant to ask for — see the
+  /// class doc comment.
+  final bool asksForFileAccess;
 
   @override
   Future<String?> pick() => FilePicker.getDirectoryPath();
 
   @override
   Future<bool> requestAccess() async {
+    if (!asksForFileAccess) return false;
     // API 30+: the Settings-screen grant, which is the one that matters for
     // a path outside the app's own container. Requested first because it
     // subsumes the legacy one where it exists.
@@ -55,5 +82,8 @@ final class PlatformFolderPicker implements FolderPicker {
   }
 
   @override
-  Future<void> openSettings() => openAppSettings();
+  Future<void> openSettings() async {
+    if (!asksForFileAccess) return;
+    await openAppSettings();
+  }
 }
