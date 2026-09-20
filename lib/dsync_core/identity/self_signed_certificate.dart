@@ -284,7 +284,7 @@ ASN1Sequence _subjectPublicKeyInfo(ECPublicKey key) {
 /// subject it rebuilds is the same subject. Putting it in `serialNumber`
 /// rather than appending it to the common name keeps the name a human name:
 /// it is what a pairing screen offers as the device's label
-/// (`desktopNameFromPayload`), and `studio-4f3a91c2` is not what anyone
+/// (`desktopNameFor`), and `studio-4f3a91c2` is not what anyone
 /// would call their desktop.
 ASN1Sequence _name(String commonName, String distinguisher) => _sequence([
   ASN1Set(

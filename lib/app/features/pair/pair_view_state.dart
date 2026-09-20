@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'pair_code.dart';
+
 /// Where the Pair page's one action stands (SPEC §4.4). A sealed hierarchy
 /// rather than `bool submitting` beside a nullable message, for the reason
 /// `AppBootstrap` gives: "submitting with an error" and "failed without
@@ -45,14 +47,21 @@ final class PairSucceeded extends PairOutcome {
 /// `dsync-pair:v1:` payload (SPEC §4.4).
 ///
 /// Holds only what the page displays — see the view-state role in
-/// `app_scope.dart`: the two name fields' validation lines and the
-/// [outcome] of the last submit. The field text itself is the widgets'
-/// (`TextEditingController`s), not copied here; this is what the controller
-/// decided about it.
+/// `app_scope.dart`: the [code] that was scanned or pasted, the two name
+/// fields' validation lines and the [outcome] of the last submit. The name
+/// text itself is the widgets' (`TextEditingController`s), not copied here;
+/// this is what the controller decided about it.
 class PairViewState extends ChangeNotifier {
   String? _localNameError;
   String? _proposedNameError;
+  PairCode _code = const PairCodeMissing();
   PairOutcome _outcome = const PairIdle();
+
+  /// The payload the page is holding, as the page shows it. Unlike the
+  /// names, this *is* kept here: the page renders a card describing it and
+  /// the submit redeems it, and a raw line living in a `TextEditingController`
+  /// would leave the two to re-derive the same decode.
+  PairCode get code => _code;
 
   /// The line under the local-name field, or `null` when it validated.
   String? get localNameError => _localNameError;
@@ -86,6 +95,13 @@ class PairViewState extends ChangeNotifier {
   /// [recordLocalNameError]. `PairController` only.
   void recordProposedNameError(String? error) {
     _proposedNameError = error;
+    notifyListeners();
+  }
+
+  /// Records the payload the page is holding — or that there is none, or
+  /// that what arrived could not be read. `PairController` only.
+  void recordCode(PairCode code) {
+    _code = code;
     notifyListeners();
   }
 

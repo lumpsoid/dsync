@@ -8,6 +8,7 @@ import 'features/archives/archives_page.dart';
 import 'features/device_detail/device_detail_page.dart';
 import 'features/devices/devices_page.dart';
 import 'features/pair/pair_page.dart';
+import 'features/pair/scan_code_page.dart';
 import 'features/profiles/profiles_page.dart';
 import 'features/run/run_page.dart';
 import 'features/run_setup/run_setup_page.dart';
@@ -153,9 +154,9 @@ class _BootstrapGate extends StatelessWidget {
   /// anywhere from it, and it holds no id because the page is about this
   /// host rather than any one peer.
   Future<void> _openSharedFolders(BuildContext context) {
-    return Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const SharedFoldersPage()),
-    );
+    return Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const SharedFoldersPage()));
   }
 
   /// The Sync history page. A leaf: it takes no callbacks because nothing

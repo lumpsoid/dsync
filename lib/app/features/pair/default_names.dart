@@ -64,8 +64,7 @@ String thisDeviceNameFor({
 }
 
 /// The name to offer for the *desktop* — what this device will list it as —
-/// read out of [payloadText] itself, or `null` while there is no payload to
-/// read it out of.
+/// read out of [payload] itself.
 ///
 /// The subject common name of the certificate the payload carries is the
 /// desktop's own host name: `dsync pair show` generates its identity with
@@ -75,17 +74,11 @@ String thisDeviceNameFor({
 ///
 /// Falls back to the payload's address hint — an IP, usually — when the
 /// certificate carries no readable name: an address is a poor name but a
-/// true one, and both are editable. Nothing here validates the payload;
-/// `PairController.submitPayload` is the one place that decides whether a
-/// payload is usable, and this stays silent (`null`) about every text it
-/// cannot read rather than rendering a verdict of its own.
-String? desktopNameFromPayload(String payloadText) {
-  final PairingPayload payload;
-  try {
-    payload = PairingPayload.decode(payloadText);
-  } on FormatException {
-    return null;
-  }
+/// true one, and both are editable. Takes a decoded payload rather than the
+/// line it came from because `PairController.codeEntered` is the one place
+/// that decides whether a text is a payload at all, and a second decode
+/// here would be a second verdict.
+String desktopNameFor(PairingPayload payload) {
   final name = _withoutLocalSuffix(_commonName(payload.certificateDer).trim());
   return name.isEmpty ? payload.address.host : name;
 }

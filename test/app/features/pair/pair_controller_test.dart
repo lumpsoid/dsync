@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
@@ -88,15 +89,19 @@ void main() {
     }) async => throw error;
   }
 
+  /// The page's two steps, as every test that pairs takes them: a code is
+  /// read in first, and only then is anything submitted.
   Future<void> submit({
     String? payloadText,
     String localName = 'desktop',
     String proposedName = 'phone',
-  }) => controller.submitPayload(
-    payloadText: payloadText ?? payload().encode(),
-    localName: localName,
-    proposedName: proposedName,
-  );
+  }) {
+    controller.codeEntered(payloadText ?? payload().encode());
+    return controller.submitPayload(
+      localName: localName,
+      proposedName: proposedName,
+    );
+  }
 
   String failedMessage() {
     final outcome = controller.state.outcome;
@@ -171,27 +176,51 @@ void main() {
     });
   });
 
-  group('FormatException', () {
-    test('a malformed payload renders as not a dsync payload', () async {
-      await submit(payloadText: 'hello world');
+  group('a code coming in', () {
+    /// What the page shows for the code it is holding, as a read one.
+    PairCodeRead readCode() {
+      final code = controller.state.code;
+      expect(code, isA<PairCodeRead>());
+      return code as PairCodeRead;
+    }
 
-      final message = failedMessage();
-      expect(message, contains('Not a dsync pairing payload'));
-      expect(message, isNot(contains('version')));
+    test('nothing has been read until something is', () {
+      expect(controller.state.code, isA<PairCodeMissing>());
     });
 
-    test('a wrong version renders its own, distinct message', () async {
-      final v2 = payload().encode().replaceFirst(':v1:', ':v2:');
+    test(
+      'a payload names the device and the address it will be reached at',
+      () {
+        controller.codeEntered(payload(host: '10.0.0.9', port: 4242).encode());
 
-      await submit(payloadText: v2);
+        expect(readCode().desktopName, 'desktop');
+        expect(readCode().address, '10.0.0.9:4242');
+      },
+    );
 
-      final message = failedMessage();
+    test('a malformed payload is unreadable, not a failed pairing', () {
+      controller.codeEntered('hello world');
+
+      final code = controller.state.code;
+      expect(code, isA<PairCodeUnreadable>());
+      expect(
+        (code as PairCodeUnreadable).message,
+        contains('Not a dsync pairing payload'),
+      );
+      // Nothing was attempted, so there is no verdict to render either.
+      expect(controller.state.outcome, isA<PairIdle>());
+    });
+
+    test('a wrong version says so, distinctly', () {
+      controller.codeEntered(payload().encode().replaceFirst(':v1:', ':v2:'));
+
+      final message = (controller.state.code as PairCodeUnreadable).message;
       expect(message, contains('Unsupported pairing payload version "v2"'));
       expect(message, contains('v1'));
       expect(message, isNot(contains('Not a dsync pairing payload')));
     });
 
-    test('never reaches the exchange', () async {
+    test('no code means no exchange, whatever the names say', () async {
       var called = false;
       enrol = ({
         required payload,
@@ -201,10 +230,33 @@ void main() {
         required pairedDeviceStore,
       }) async => called = true;
 
-      await submit(payloadText: 'dsync-pair:v1:not-base64!');
+      await controller.submitPayload(
+        localName: 'desktop',
+        proposedName: 'phone',
+      );
 
-      expect(failedMessage(), contains('base64'));
+      expect(failedMessage(), contains('Scan or paste'));
       expect(called, isFalse);
+    });
+
+    test('clearing puts the page back to having nothing', () {
+      controller.codeEntered(payload().encode());
+      controller.state.recordOutcome(const PairFailed('stale'));
+
+      controller.clearCode();
+
+      expect(controller.state.code, isA<PairCodeMissing>());
+      // The verdict of an attempt on the code that has just gone does not
+      // sit over the one that replaces it.
+      expect(controller.state.outcome, isA<PairIdle>());
+    });
+
+    test('a new code clears the last attempt\'s verdict', () {
+      controller.state.recordOutcome(const PairFailed('stale'));
+
+      controller.codeEntered(payload().encode());
+
+      expect(controller.state.outcome, isA<PairIdle>());
     });
   });
 
@@ -345,85 +397,31 @@ void main() {
     });
   });
 
-  /// The camera's entry point, over the same fakes: `onPayloadScanned` is
-  /// `submitPayload` plus the guard a source that fires on every frame needs,
-  /// so each case here is either "it is the same path" or "the repeat was
-  /// dropped", and never a second implementation of the exchange.
+  /// The camera, over the same fakes. `ScanCodePage` hands raw text back
+  /// and the page feeds it to [PairController.codeEntered], so a scan is
+  /// the paste path's text arriving by another road — there is no second
+  /// implementation of the exchange to test, only the promise that a scan
+  /// on its own sends nothing.
   group('a payload from the camera', () {
-    Future<void> scan({
-      String? payloadText,
-      String localName = 'desktop',
-      String proposedName = 'phone',
-    }) => controller.onPayloadScanned(
-      payloadText ?? payload().encode(),
-      localName: localName,
-      proposedName: proposedName,
-    );
+    test('a scan fills the page in and starts no exchange by itself', () async {
+      var called = false;
+      enrol = ({
+        required payload,
+        required ownIdentity,
+        required proposedName,
+        required localName,
+        required pairedDeviceStore,
+      }) async => called = true;
 
-    test('redeems through the same path the pasted line takes', () async {
-      PairingPayload? seenPayload;
-      String? seenLocal;
-      enrol =
-          ({
-            required payload,
-            required ownIdentity,
-            required proposedName,
-            required localName,
-            required pairedDeviceStore,
-          }) async {
-            seenPayload = payload;
-            seenLocal = localName;
-            await pairedDeviceStore.add(
-              PairedDevice(
-                certificatePem: desktopCertificatePem,
-                name: localName,
-                agreedReplicaRoots: const {},
-                pairedAt: DateTime.utc(2026, 9, 16),
-                lastKnownAddress: payload.address,
-              ),
-            );
-          };
+      controller.codeEntered(payload().encode());
 
-      await scan(localName: ' my desktop ', proposedName: ' my phone ');
-
-      expect(seenLocal, 'my desktop');
-      expect(seenPayload?.address.port, 28771);
-      expect(controller.state.outcome, isA<PairSucceeded>());
-      expect(app.state.devices.map((d) => d.name), ['my desktop']);
+      expect(controller.state.code, isA<PairCodeRead>());
+      expect(controller.state.outcome, isA<PairIdle>());
+      expect(called, isFalse);
     });
 
-    test('a scan while one is in flight starts no second exchange', () async {
-      final started = Completer<void>();
-      final release = Completer<void>();
-      var calls = 0;
-      enrol =
-          ({
-            required payload,
-            required ownIdentity,
-            required proposedName,
-            required localName,
-            required pairedDeviceStore,
-          }) async {
-            calls++;
-            started.complete();
-            await release.future;
-          };
-
-      final first = scan();
-      await started.future;
-      expect(controller.state.outcome, isA<PairSubmitting>());
-
-      // The camera keeps reporting the same code while the exchange runs;
-      // a second attempt would carry a token the desktop has just burned.
-      await scan();
-      expect(calls, 1);
-
-      release.complete();
-      await first;
-      expect(controller.state.outcome, isA<PairSucceeded>());
-    });
-
-    test('a scan of an already-paired payload does not dial again', () async {
+    test('the same code read twice is still one exchange, because reading '
+        'is not submitting', () async {
       var calls = 0;
       enrol =
           ({
@@ -436,90 +434,18 @@ void main() {
             calls++;
           };
 
-      await scan();
-      expect(controller.state.outcome, isA<PairSucceeded>());
-      expect(calls, 1);
-
-      // Every frame after the successful one: dropped before anything
-      // starts, so the far end's refusal of the burned token is never even
-      // provoked — which is what "ignored" has to mean to be worth anything.
-      final seen = <PairOutcome>[];
-      controller.state.addListener(() => seen.add(controller.state.outcome));
-
-      await scan();
-
-      expect(calls, 1);
-      expect(seen, isEmpty);
-    });
-
-    test('a refusal does not latch: a later scan is submitted', () async {
-      enrolThrows(const EnrolmentRefusedException('token expired at 11:21'));
-      await scan();
-      expect(
-        (controller.state.outcome as PairFailed).message,
-        contains('token expired at 11:21'),
+      // Every frame the code is in view, were the page not a route that
+      // closes on the first one.
+      controller.codeEntered(payload().encode());
+      controller.codeEntered(payload().encode());
+      controller.codeEntered(payload().encode());
+      await controller.submitPayload(
+        localName: 'desktop',
+        proposedName: 'phone',
       );
 
-      // A fresh code after a refusal is exactly the retry the rendered
-      // message asks for, so the guard must not be holding it back.
-      var calls = 0;
-      enrol =
-          ({
-            required payload,
-            required ownIdentity,
-            required proposedName,
-            required localName,
-            required pairedDeviceStore,
-          }) async {
-            calls++;
-          };
-      await scan();
-
       expect(calls, 1);
       expect(controller.state.outcome, isA<PairSucceeded>());
     });
-
-    test(
-      'a scan with no names is a field error, like the paste path',
-      () async {
-        var called = false;
-        enrol = ({
-          required payload,
-          required ownIdentity,
-          required proposedName,
-          required localName,
-          required pairedDeviceStore,
-        }) async => called = true;
-
-        await scan(localName: '   ');
-
-        expect(controller.state.localNameError, isNotNull);
-        expect(controller.state.proposedNameError, isNull);
-        expect(controller.state.outcome, isA<PairIdle>());
-        expect(called, isFalse);
-      },
-    );
-
-    test(
-      'scanned text that is not a payload is refused by the same decode',
-      () async {
-        var called = false;
-        enrol = ({
-          required payload,
-          required ownIdentity,
-          required proposedName,
-          required localName,
-          required pairedDeviceStore,
-        }) async => called = true;
-
-        await scan(payloadText: 'https://example.com/not-a-payload');
-
-        expect(
-          (controller.state.outcome as PairFailed).message,
-          contains('Not a dsync pairing payload'),
-        );
-        expect(called, isFalse);
-      },
-    );
   });
 }

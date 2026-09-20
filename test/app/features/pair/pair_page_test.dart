@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_page.dart';
 import 'package:dsync/app/features/pair/pair_scope.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
+import 'package:dsync/app/features/pair/scan_code_page.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
@@ -20,9 +22,13 @@ import 'package:flutter_test/flutter_test.dart';
 /// `app_scope.dart` intends: the controllers are pinned with
 /// `setController` and the page is pumped directly. Outcomes are written
 /// into the view state by the test standing in for the controller's own
-/// verdicts, except for the two submits that go through the controller:
-/// one stops at name validation, the other runs the whole path over a
-/// temporary state dir and an enrolment fake that accepts.
+/// verdicts, except for the submits that go through the controller: one
+/// stops at name validation, the others run the whole path over a temporary
+/// state dir and an enrolment fake that accepts.
+///
+/// The page is two steps, so most tests start by getting a code in: by
+/// camera where that is the point, and otherwise through the Paste button
+/// over a mocked clipboard.
 void main() {
   late Directory tempDir;
   late AppController app;
@@ -56,6 +62,15 @@ void main() {
     );
     appScope.setController(app);
     pairScope.setController(controller);
+    // The clipboard, as the way a test gets a code in when how it arrived
+    // is not the point of the test. Overridden where it is.
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async => call.method == 'Clipboard.getData'
+              ? <String, dynamic>{'text': payloadText}
+              : null,
+        );
     enrolCalls = 0;
     paired = 0;
   });
@@ -66,6 +81,10 @@ void main() {
   tearDown(pairScope.reset);
   tearDown(() => controller.dispose());
   tearDown(() => tempDir.delete(recursive: true));
+  tearDown(
+    () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null),
+  );
 
   /// The page's camera, as a test hands it over. The default fails loudly,
   /// because the page mounts the camera only when the user asks for it: a
@@ -75,8 +94,8 @@ void main() {
       fail('the page mounted its camera in a test that did not ask for one');
 
   /// A camera stand-in: one button that fires [raw] through whatever the
-  /// page handed it. Reading a code and passing the text on is the whole of
-  /// what this page asks of a scanner.
+  /// scan page handed it. Reading a code and passing the text on is the
+  /// whole of what this flow asks of a scanner.
   PairScanner scanning(String raw) =>
       (onScanned) => TextButton(
         onPressed: () => onScanned(raw),
@@ -84,11 +103,9 @@ void main() {
       );
 
   Future<void> pumpPage(WidgetTester tester, {PairScanner? scanner}) async {
-    // Tall enough to hold the whole form. On the default 800x600 surface the
-    // camera note and the scan button push the last two fields out of the
-    // viewport, and a `ListView` does not build what it cannot show — so a
-    // test would be asserting against a page the user cannot see either, or
-    // scrolling its way around a layout question it is not about.
+    // Tall enough to hold the whole form: a `ListView` does not build what
+    // it cannot show, so a short surface would have a test asserting
+    // against a page the user cannot see either.
     tester.view.physicalSize = const Size(900, 1600);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -100,6 +117,15 @@ void main() {
         ),
       ),
     );
+  }
+
+  /// A code already read in, when how it arrived is not what the test is
+  /// about: through the Paste button, so the page fills itself in exactly
+  /// as it does for a user.
+  Future<void> withCode(WidgetTester tester) async {
+    await tester.tap(find.byKey(const Key('pair-paste')));
+    await tester.pump();
+    await tester.pump();
   }
 
   /// Taps [target] under real time and waits for the page to leave, which is
@@ -118,28 +144,44 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('idle: three fields, the instruction, and an enabled button', (
+  /// The text a field is showing, by key.
+  String fieldText(WidgetTester tester, String key) =>
+      tester.widget<TextField>(find.byKey(Key(key))).controller!.text;
+
+  testWidgets('nothing read yet: two ways in, and nothing to confirm', (
     tester,
   ) async {
     await pumpPage(tester);
 
-    expect(find.byKey(const Key('pair-payload')), findsOneWidget);
-    expect(find.byKey(const Key('pair-local-name')), findsOneWidget);
-    expect(find.byKey(const Key('pair-proposed-name')), findsOneWidget);
+    expect(find.byKey(const Key('pair-scan')), findsOneWidget);
+    expect(find.byKey(const Key('pair-paste')), findsOneWidget);
     expect(find.textContaining('dsync pair show'), findsOneWidget);
-    // The camera is offered, not mounted: the button is what asks for it.
-    expect(find.byKey(const Key('pair-show-camera')), findsOneWidget);
+    // Nothing to name and nothing to send until a code is there — and no
+    // camera mounted merely by opening the page.
+    expect(find.byKey(const Key('pair-local-name')), findsNothing);
+    expect(find.byKey(const Key('pair-proposed-name')), findsNothing);
+    expect(find.byKey(const Key('pair-submit')), findsNothing);
     expect(find.text('scan'), findsNothing);
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).enabled,
-      isTrue,
-    );
-    expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
-  /// The text a field is showing, by key.
-  String fieldText(WidgetTester tester, String key) =>
-      tester.widget<TextField>(find.byKey(Key(key))).controller!.text;
+  testWidgets('a code that was read says which device and where, before '
+      'anything is sent', (tester) async {
+    await pumpPage(tester);
+
+    await withCode(tester);
+
+    expect(find.byKey(const Key('pair-code-card')), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('pair-code-card')),
+        matching: find.text('desktop'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('192.168.1.5:28771'), findsOneWidget);
+    expect(find.byKey(const Key('pair-submit')), findsOneWidget);
+    expect(enrolCalls, 0);
+  });
 
   testWidgets('this device is offered under the name in its own certificate, '
       'which is what renaming it writes', (tester) async {
@@ -149,41 +191,41 @@ void main() {
     );
 
     await pumpPage(tester);
+    await withCode(tester);
 
     expect(fieldText(tester, 'pair-proposed-name'), 'renamed phone');
   });
 
   testWidgets('the two names arrive filled in: this device from the host when '
-      'it has no certificate name yet, the desktop from the payload it sent', (
+      'it has no certificate name yet, the desktop from the code it read', (
     tester,
   ) async {
     // No `recordReadyIdentity`: the gate is still loading, so there is no
     // certificate name to offer and the host-name rule stands in.
     await pumpPage(tester);
+    await withCode(tester);
 
     expect(fieldText(tester, 'pair-proposed-name'), defaultThisDeviceName());
     expect(fieldText(tester, 'pair-proposed-name'), isNotEmpty);
-    // Nothing to read a desktop name out of until a payload is there.
-    expect(fieldText(tester, 'pair-local-name'), isEmpty);
-
-    await tester.enterText(find.byKey(const Key('pair-payload')), payloadText);
-    await tester.pump();
-
     // The common name of the certificate the payload carries.
     expect(fieldText(tester, 'pair-local-name'), 'desktop');
   });
 
-  testWidgets('a name the user typed survives a payload arriving after it', (
+  testWidgets('a name the user typed survives a second code arriving', (
     tester,
   ) async {
     await pumpPage(tester);
+    await withCode(tester);
 
     await tester.enterText(
       find.byKey(const Key('pair-local-name')),
       'the big one',
     );
-    await tester.enterText(find.byKey(const Key('pair-payload')), payloadText);
+    // Put that code back and read the same one again: the offer is the
+    // page's to make only while the field is still showing the last one.
+    await tester.tap(find.byKey(const Key('pair-clear-code')));
     await tester.pump();
+    await withCode(tester);
 
     expect(fieldText(tester, 'pair-local-name'), 'the big one');
   });
@@ -192,6 +234,7 @@ void main() {
     tester,
   ) async {
     await pumpPage(tester);
+    await withCode(tester);
     expect(controller.state.proposedNameError, isNull);
 
     await tester.enterText(find.byKey(const Key('pair-proposed-name')), '  ');
@@ -210,7 +253,7 @@ void main() {
     expect(enrolCalls, 0);
   });
 
-  testWidgets('the paste button fills the payload field from the clipboard', (
+  testWidgets('the paste button reads the code out of the clipboard', (
     tester,
   ) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -219,51 +262,104 @@ void main() {
           ? <String, dynamic>{'text': '  $payloadText\n'}
           : null,
     );
-    addTearDown(
-      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        SystemChannels.platform,
-        null,
-      ),
-    );
     await pumpPage(tester);
 
-    await tester.tap(find.byKey(const Key('pair-payload-paste')));
+    await tester.tap(find.byKey(const Key('pair-paste')));
     await tester.pump();
     await tester.pump();
 
     // Trimmed: a line copied out of a terminal brings its newline along.
-    expect(fieldText(tester, 'pair-payload'), payloadText);
-    // And the pasted payload names the desktop, as a scanned one does.
+    expect(controller.state.code, isA<PairCodeRead>());
+    expect(find.text('192.168.1.5:28771'), findsOneWidget);
+    // And the pasted code names the desktop, as a scanned one does.
     expect(fieldText(tester, 'pair-local-name'), 'desktop');
+    expect(enrolCalls, 0);
+  });
+
+  testWidgets('the camera is a page of its own, and what it reads is shown '
+      'rather than sent', (tester) async {
+    var built = 0;
+    await pumpPage(
+      tester,
+      scanner: (onScanned) {
+        built++;
+        return scanning(payloadText)(onScanned);
+      },
+    );
+    expect(built, 0);
+
+    await tester.tap(find.byKey(const Key('pair-scan')));
+    await tester.pumpAndSettle();
+
+    expect(built, 1);
+    expect(find.text('Scan the pairing code'), findsOneWidget);
+    // The form is not underneath it: this is a route, not a preview wedged
+    // into the page.
+    expect(find.byKey(const Key('pair-scan')), findsNothing);
+
+    await tester.tap(find.text('scan'));
+    await tester.pumpAndSettle();
+
+    // Back on the Pair page, holding the code and waiting to be told to go.
+    expect(find.text('scan'), findsNothing);
+    expect(find.byKey(const Key('pair-code-card')), findsOneWidget);
+    expect(fieldText(tester, 'pair-local-name'), 'desktop');
+    expect(enrolCalls, 0);
+    expect(paired, 0);
+  });
+
+  testWidgets('a scanned code that is not a payload says so, with both ways '
+      'back in', (tester) async {
+    await pumpPage(tester, scanner: scanning('https://example.test/'));
+
+    await tester.tap(find.byKey(const Key('pair-scan')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('scan'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Not a dsync pairing payload'), findsOneWidget);
+    expect(find.byKey(const Key('pair-scan')), findsOneWidget);
+    expect(find.byKey(const Key('pair-paste')), findsOneWidget);
+    // Nothing to name, and no failed pairing to explain: nothing was tried.
+    expect(find.byKey(const Key('pair-submit')), findsNothing);
+    expect(controller.state.outcome, isA<PairIdle>());
+  });
+
+  testWidgets('a code can be put back for a different one', (tester) async {
+    await pumpPage(tester);
+    await withCode(tester);
+
+    await tester.tap(find.byKey(const Key('pair-clear-code')));
+    await tester.pump();
+
+    expect(find.byKey(const Key('pair-code-card')), findsNothing);
+    expect(find.byKey(const Key('pair-scan')), findsOneWidget);
+    expect(find.byKey(const Key('pair-submit')), findsNothing);
   });
 
   testWidgets('submitting: inputs and button disabled, progress shown', (
     tester,
   ) async {
     await pumpPage(tester);
+    await withCode(tester);
 
     controller.state.recordOutcome(const PairSubmitting());
     await tester.pump();
 
     expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).enabled,
+      tester.widget<FilledButton>(find.byKey(const Key('pair-submit'))).enabled,
       isFalse,
     );
-    // Asking for the camera waits for the exchange too: two submissions
-    // racing over one payload is what the controller's guard exists for.
+    // The code cannot be swapped out from under an exchange either.
     expect(
       tester
-          .widget<TextButton>(find.byKey(const Key('pair-show-camera')))
+          .widget<TextButton>(find.byKey(const Key('pair-clear-code')))
           .enabled,
       isFalse,
     );
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(find.text('Connecting to the desktop…'), findsOneWidget);
-    for (final key in const [
-      'pair-payload',
-      'pair-local-name',
-      'pair-proposed-name',
-    ]) {
+    for (final key in const ['pair-local-name', 'pair-proposed-name']) {
       expect(tester.widget<TextField>(find.byKey(Key(key))).enabled, isFalse);
     }
   });
@@ -273,6 +369,7 @@ void main() {
   ) async {
     final semantics = tester.ensureSemantics();
     await pumpPage(tester);
+    await withCode(tester);
 
     controller.state.recordOutcome(const PairSubmitting());
     await tester.pump();
@@ -288,6 +385,7 @@ void main() {
     tester,
   ) async {
     await pumpPage(tester);
+    await withCode(tester);
     expect(find.text('Could not reach 10.0.0.9:4242'), findsNothing);
 
     controller.state.recordOutcome(
@@ -297,7 +395,7 @@ void main() {
 
     expect(find.text('Could not reach 10.0.0.9:4242'), findsOneWidget);
     expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).enabled,
+      tester.widget<FilledButton>(find.byKey(const Key('pair-submit'))).enabled,
       isTrue,
     );
     expect(find.byType(CircularProgressIndicator), findsNothing);
@@ -305,6 +403,7 @@ void main() {
 
   testWidgets('field errors render under their own field', (tester) async {
     await pumpPage(tester);
+    await withCode(tester);
     expect(find.text('local missing'), findsNothing);
 
     controller.state.recordNameErrors(
@@ -323,15 +422,13 @@ void main() {
     );
   });
 
-  testWidgets('tapping Pair with empty names shows the field errors and does '
-      'not leave', (tester) async {
+  testWidgets('tapping Pair with an emptied name shows the field error and '
+      'does not leave', (tester) async {
     await pumpPage(tester);
+    await withCode(tester);
 
-    await tester.enterText(
-      find.byKey(const Key('pair-payload')),
-      'dsync-pair:v1:AAAA',
-    );
-    await tester.tap(find.text('Pair'));
+    await tester.enterText(find.byKey(const Key('pair-local-name')), '');
+    await tester.tap(find.byKey(const Key('pair-submit')));
     await tester.pump();
 
     expect(controller.state.localNameError, isNotNull);
@@ -342,6 +439,7 @@ void main() {
 
   testWidgets('a stale success does not leave by itself', (tester) async {
     await pumpPage(tester);
+    await withCode(tester);
 
     controller.state.recordOutcome(const PairSucceeded('desktop'));
     await tester.pump();
@@ -357,21 +455,14 @@ void main() {
     tester,
   ) async {
     await pumpPage(tester);
+    await withCode(tester);
 
-    await tester.enterText(find.byKey(const Key('pair-payload')), payloadText);
     await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
     await tester.enterText(
       find.byKey(const Key('pair-proposed-name')),
       'phone',
     );
-    // The pasted payload wraps to many lines and scrolls the button off.
-    await tester.scrollUntilVisible(
-      find.byType(FilledButton),
-      200,
-      // The text fields have scrollables of their own; the list's is first.
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tapAndLeave(tester, find.byType(FilledButton));
+    await tapAndLeave(tester, find.byKey(const Key('pair-submit')));
 
     expect(enrolCalls, 1);
     expect(controller.state.outcome, isA<PairSucceeded>());
@@ -384,115 +475,34 @@ void main() {
     expect(find.text('Paired with desktop.'), findsOneWidget);
   });
 
-  testWidgets('asking for the camera mounts it, and putting it away unmounts '
-      'it', (tester) async {
-    var built = 0;
-    await pumpPage(
-      tester,
-      scanner: (onScanned) {
-        built++;
-        return scanning('scanned')(onScanned);
-      },
-    );
-    expect(built, 0);
-
-    await tester.tap(find.byKey(const Key('pair-show-camera')));
-    await tester.pump();
-
-    expect(built, 1);
-    expect(find.text('scan'), findsOneWidget);
-    expect(find.byKey(const Key('pair-hide-camera')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('pair-hide-camera')));
-    await tester.pump();
-
-    expect(find.text('scan'), findsNothing);
-    expect(find.byKey(const Key('pair-show-camera')), findsOneWidget);
-  });
-
-  testWidgets('a scan reaches the controller and leaves through onPaired, '
-      'once', (tester) async {
-    await pumpPage(tester, scanner: scanning(payloadText));
-
-    await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
-    await tester.enterText(
-      find.byKey(const Key('pair-proposed-name')),
-      'phone',
-    );
-    await tester.tap(find.byKey(const Key('pair-show-camera')));
-    await tester.pump();
-    await tapAndLeave(tester, find.text('scan'));
-
-    expect(enrolCalls, 1);
-    expect(controller.state.outcome, isA<PairSucceeded>());
-    expect(paired, 1);
-    // The text that was read is in the field, so a refused scan can be seen
-    // next to the reason it was refused.
-    expect(
-      tester
-          .widget<TextField>(find.byKey(const Key('pair-payload')))
-          .controller
-          ?.text,
-      payloadText,
-    );
-  });
-
-  testWidgets('a scan with a name emptied is a field error, and starts no '
-      'exchange', (tester) async {
-    await pumpPage(tester, scanner: scanning(payloadText));
-    // The name for this device arrives filled in, so the only way to reach
-    // the validation path is to take it away again.
-    await tester.enterText(find.byKey(const Key('pair-proposed-name')), '');
-    await tester.tap(find.byKey(const Key('pair-show-camera')));
-    await tester.pump();
-
-    await tester.tap(find.text('scan'));
-    await tester.pump();
-
-    expect(controller.state.proposedNameError, isNotNull);
-    expect(find.text(controller.state.proposedNameError!), findsOneWidget);
-    expect(enrolCalls, 0);
-    expect(paired, 0);
-  });
-
-  testWidgets('a camera that will not start says so, and the paste field still '
+  testWidgets('a camera that will not start says so, and the clipboard still '
       'pairs', (tester) async {
     await pumpPage(
       tester,
       // What a builder hands back when there is no camera to show — the
-      // page's fake of `QrScanner`'s own note.
+      // test's stand-in for `QrScanner`'s own note.
       scanner: (onScanned) => const Text(
         'This build has no camera access, so the QR code cannot be '
-        'scanned. Paste the `dsync-pair:v1:` line instead.',
+        'scanned. Go back and paste the `dsync-pair:v1:` line instead.',
       ),
     );
-    await tester.tap(find.byKey(const Key('pair-show-camera')));
-    await tester.pump();
 
-    // The camera area says why, and nothing else on the page changed: the
-    // page is not blocked on it.
+    await tester.tap(find.byKey(const Key('pair-scan')));
+    await tester.pumpAndSettle();
     expect(find.textContaining('no camera'), findsOneWidget);
-    expect(
-      tester.widget<TextField>(find.byKey(const Key('pair-payload'))).enabled,
-      isTrue,
-    );
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).enabled,
-      isTrue,
-    );
 
-    await tester.enterText(find.byKey(const Key('pair-payload')), payloadText);
+    // Back out of the camera, and the other way in is untouched: the flow
+    // is not blocked on it.
+    await tester.tap(find.byType(CloseButton));
+    await tester.pumpAndSettle();
+    await withCode(tester);
+
     await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
     await tester.enterText(
       find.byKey(const Key('pair-proposed-name')),
       'phone',
     );
-    await tester.scrollUntilVisible(
-      find.byType(FilledButton),
-      200,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tapAndLeave(tester, find.byType(FilledButton));
+    await tapAndLeave(tester, find.byKey(const Key('pair-submit')));
 
     expect(enrolCalls, 1);
     expect(paired, 1);

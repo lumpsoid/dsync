@@ -1,73 +1,66 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'default_names.dart';
+import 'pair_code.dart';
 import 'pair_controller.dart';
 import 'pair_scope.dart';
 import 'pair_view_state.dart';
-
-/// The camera, as the Pair page's second input method (SPEC §4.4):
-/// built by the route that opens the page (`dsync_app.dart`, from the real
-/// `mobile_scanner` widget below) and by a test from whatever stands in for
-/// one — a widget test host has no camera and no plugin behind it, so a page
-/// that built the real one would be testing the plugin's channel rather than
-/// this page.
-///
-/// The page hands [onScanned] over and says nothing else about what comes
-/// back: whether that is a preview, a permission prompt, or a line saying
-/// this build has no camera is the builder's business. What it must not do
-/// is decide anything about what it read.
-typedef PairScanner = Widget Function(ValueChanged<String> onScanned);
+import 'scan_code_page.dart';
 
 /// The Pair page: enrol against a `dsync-pair:v1:` payload (SPEC §4.4).
-/// Widgets only, per the page role in `app_scope.dart`: a camera, three text
-/// fields, one button, and a switch over the rendered [PairOutcome].
+/// Widgets only, per the page role in `app_scope.dart`: two ways to get a
+/// code, a card describing the one that was read, two name fields, one
+/// button, and a switch over the rendered [PairOutcome].
 ///
-/// The payload arrives two ways — the line `dsync pair show` prints beside
-/// its QR, typed or pasted in, and the QR itself, read by the camera — and
-/// both leave through `PairController`: the pasted text through
-/// `submitPayload`, the scanned text through `onPayloadScanned`, which is
-/// that same path with the guard a source that fires repeatedly needs. Which
-/// of the two a user uses is the whole of their choice; nothing else on this
-/// page knows which one produced the payload it is showing.
+/// **The page is two steps, and the first one commits to nothing.** A
+/// payload arrives either way the user likes — the QR read by the camera on
+/// [ScanCodePage], or the line `dsync pair show` prints beside it, pasted
+/// from the clipboard — and both land in `PairController.codeEntered`,
+/// which decodes it and says what it is. Only then does the rest of the page
+/// appear: the device the code names, the address it says to reach it at,
+/// and the two names, with a button that is the only thing here that sends
+/// anything. A scan that arrives is something to look at, not a decision
+/// that has already been taken on the user's behalf.
 ///
-/// **Neither name is something the user has to invent.** The two name
-/// fields arrive filled in from what is already known — this device's own
-/// certificate name (its host name only when that cannot be read), and the
-/// desktop's, read out of the certificate inside the payload it printed
-/// (`default_names.dart`) — so the page can be completed
-/// by pasting one line and pressing one button. Both stay ordinary editable
-/// fields: what is offered is overwritten by whatever the user types, and
-/// the field that is emptied says so at the keyboard rather than after a
-/// tap that did nothing (`PairController.localNameEdited`).
+/// The base64 line itself is never shown. It cannot be checked by reading
+/// it, and the card above the names says the two things about it a person
+/// can actually check — which device, and where.
 ///
-/// **The camera is mounted by the tap, not when the page opens.** Starting
+/// **Neither name is something the user has to invent.** Both fields arrive
+/// filled in from what is already known — this device's own certificate name
+/// (its host name only when that cannot be read), and the desktop's, read
+/// out of the payload it printed (`default_names.dart`) — so the page can be
+/// completed by scanning one code and pressing one button. Both stay
+/// ordinary editable fields: what is offered is overwritten by whatever the
+/// user types, and the field that is emptied says so at the keyboard rather
+/// than after a tap that did nothing (`PairController.localNameEdited`).
+///
+/// **The camera is mounted by the tap, and on a route of its own.** Starting
 /// `MobileScanner` is what asks the OS for the camera, so a page that built
 /// it unconditionally would put a permission prompt in front of someone who
-/// came to paste a line — and on a build with no camera behind the plugin,
-/// which is every desktop build of this head, there would be a failing
-/// widget on a page that otherwise works. The button asks for the camera
-/// first, and every way the camera can fail — denied, no camera, no plugin
-/// for this platform — lands as a line saying so, with the paste field still
-/// right under it. Nothing on this page is ever blocked on the camera.
+/// came to paste a line. Every way the camera can fail — denied, no camera,
+/// no plugin for this platform — lands as a line on that page saying so,
+/// with this one, and its Paste button, still underneath. Nothing here is
+/// ever blocked on the camera.
 ///
 /// [onPaired] is the seam back to Devices: the controller has refreshed
 /// `AppState.devices` by the time it fires, so the destination needs
 /// nothing handed to it. The entrypoint wires it to a pop; this page holds
-/// no `Navigator` of its own — and the confirmation naming the device it
-/// paired with is shown just before, through the app's `ScaffoldMessenger`,
-/// so it is still on screen once Devices is.
+/// no `Navigator` of its own other than the scan route it pushes and the
+/// scan route pops — and the confirmation naming the device it paired with
+/// is shown just before, through the app's `ScaffoldMessenger`, so it is
+/// still on screen once Devices is.
 class PairPage extends StatefulWidget {
   const PairPage({super.key, required this.onPaired, required this.scanner});
 
   /// Called once after a successful pairing, when the page should leave.
   final VoidCallback onPaired;
 
-  /// The camera, as the page's second input method — named at the route the
-  /// way the scope names the real `enrolWithPeer`, so the real one is what a
-  /// production build gets and a fake cannot arrive by omission.
+  /// The camera, handed on to [ScanCodePage] when the user asks for it —
+  /// named at the route the way the scope names the real `enrolWithPeer`,
+  /// so the real one is what a production build gets and a fake cannot
+  /// arrive by omission.
   final PairScanner scanner;
 
   @override
@@ -75,13 +68,8 @@ class PairPage extends StatefulWidget {
 }
 
 class _PairPageState extends State<PairPage> {
-  final _payload = TextEditingController();
   final _localName = TextEditingController();
   final _proposedName = TextEditingController();
-
-  /// Whether the camera is on screen. Off until the user asks for it, for
-  /// the reason the class doc comment gives.
-  bool _scanning = false;
 
   /// The desktop name this page last put in the field itself, so it can tell
   /// its own offer from a name the user typed — and never overwrite the
@@ -102,20 +90,8 @@ class _PairPageState extends State<PairPage> {
     // to read: before bootstrap, and a certificate with no readable subject.
     final ownName = pairScope.controller.ownName;
     _proposedName.text = ownName.isEmpty ? defaultThisDeviceName() : ownName;
-    _payload.addListener(_offerDesktopName);
     _localName.addListener(_localNameEdited);
     _proposedName.addListener(_proposedNameEdited);
-  }
-
-  /// The desktop names itself in the payload it printed, so the field for
-  /// that name fills itself in as soon as one is readable — pasted, scanned
-  /// or typed. Left alone once the user has put something else there.
-  void _offerDesktopName() {
-    final offered = desktopNameFromPayload(_payload.text);
-    if (offered == null) return;
-    if (_localName.text != (_offeredDesktopName ?? '')) return;
-    _offeredDesktopName = offered;
-    _localName.text = offered;
   }
 
   void _localNameEdited() =>
@@ -124,25 +100,50 @@ class _PairPageState extends State<PairPage> {
   void _proposedNameEdited() =>
       pairScope.controller.proposedNameEdited(_proposedName.text);
 
-  /// The clipboard, as the payload field's own button: the `dsync-pair:v1:`
-  /// line reaches a phone by being copied out of something else, and a long
-  /// press on a text field is an affordance only to someone who already
-  /// knows it is there.
+  /// A text that should be a payload, however it was got: the controller
+  /// decides what it is, and the desktop names itself inside it, so the
+  /// field for that name fills itself in as soon as one is readable. Left
+  /// alone once the user has put something else there.
+  void _codeEntered(String text) {
+    final controller = pairScope.controller;
+    controller.codeEntered(text);
+    if (controller.state.code case PairCodeRead(:final desktopName)) {
+      if (_localName.text != (_offeredDesktopName ?? '')) return;
+      _offeredDesktopName = desktopName;
+      _localName.text = desktopName;
+    }
+  }
+
+  /// The camera, on a page of its own, which closes on the first code it
+  /// reads and hands its text back. Nothing is sent: what comes back fills
+  /// this page in, and the user still presses the button.
+  Future<void> _scan() async {
+    final raw = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => ScanCodePage(scanner: widget.scanner),
+        fullscreenDialog: true,
+      ),
+    );
+    if (raw == null || !mounted) return;
+    _codeEntered(raw);
+  }
+
+  /// The clipboard, as the second way in: the `dsync-pair:v1:` line reaches
+  /// a phone by being copied out of something else, and a long press on a
+  /// text field is an affordance only to someone who already knows it is
+  /// there.
   ///
-  /// Pasting fills the field and nothing more — the exchange still starts
-  /// from the button, so a mis-paste is looked at before it is sent. The
-  /// text is trimmed because a line copied out of a terminal carries the
+  /// The text is trimmed because a line copied out of a terminal carries the
   /// newline that ended it.
   Future<void> _paste() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim();
     if (text == null || text.isEmpty || !mounted) return;
-    _payload.text = text;
+    _codeEntered(text);
   }
 
   @override
   void dispose() {
-    _payload.dispose();
     _localName.dispose();
     _proposedName.dispose();
     super.dispose();
@@ -151,26 +152,6 @@ class _PairPageState extends State<PairPage> {
   Future<void> _submit() async {
     final controller = pairScope.controller;
     await controller.submitPayload(
-      payloadText: _payload.text,
-      localName: _localName.text,
-      proposedName: _proposedName.text,
-    );
-    _leaveIfPaired(controller);
-  }
-
-  /// A scan from the camera: raw text straight to the controller, which is
-  /// the only thing here that decodes or judges it.
-  ///
-  /// The field is filled in as well, so what a refused scan was looking at
-  /// is on screen next to the reason it was refused — a code that is not
-  /// ours, a code read at the wrong angle, and a code whose pairing has
-  /// expired all render differently, and only some of them are worth
-  /// retrying.
-  Future<void> _onScanned(String raw) async {
-    _payload.text = raw;
-    final controller = pairScope.controller;
-    await controller.onPayloadScanned(
-      raw,
       localName: _localName.text,
       proposedName: _proposedName.text,
     );
@@ -209,13 +190,9 @@ class _PairPageState extends State<PairPage> {
         listenable: controller.state,
         builder: (context, _) => _PairForm(
           state: controller.state,
-          scanner: widget.scanner,
-          onScanned: _onScanned,
-          scanning: _scanning,
-          onShowScanner: () => setState(() => _scanning = true),
-          onHideScanner: () => setState(() => _scanning = false),
-          payload: _payload,
+          onScan: _scan,
           onPaste: _paste,
+          onClearCode: controller.clearCode,
           localName: _localName,
           proposedName: _proposedName,
           onSubmit: _submit,
@@ -228,13 +205,9 @@ class _PairPageState extends State<PairPage> {
 class _PairForm extends StatelessWidget {
   const _PairForm({
     required this.state,
-    required this.scanner,
-    required this.onScanned,
-    required this.scanning,
-    required this.onShowScanner,
-    required this.onHideScanner,
-    required this.payload,
+    required this.onScan,
     required this.onPaste,
+    required this.onClearCode,
     required this.localName,
     required this.proposedName,
     required this.onSubmit,
@@ -242,17 +215,9 @@ class _PairForm extends StatelessWidget {
 
   final PairViewState state;
 
-  /// The camera, and where its text goes. Built only in the branch below:
-  /// what mounts it is the tap, so a page that is merely open has not asked
-  /// the OS for a camera.
-  final PairScanner scanner;
-  final ValueChanged<String> onScanned;
-
-  final bool scanning;
-  final VoidCallback onShowScanner;
-  final VoidCallback onHideScanner;
-  final TextEditingController payload;
+  final VoidCallback onScan;
   final VoidCallback onPaste;
+  final VoidCallback onClearCode;
   final TextEditingController localName;
   final TextEditingController proposedName;
   final VoidCallback onSubmit;
@@ -264,221 +229,220 @@ class _PairForm extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       children: [
         const Text(
-          'On the desktop, run `dsync pair show` and paste the '
-          '`dsync-pair:v1:` line it prints — or scan the QR code beside it.',
+          'On the desktop, run `dsync pair show`. Scan the QR code it '
+          'prints, or paste the `dsync-pair:v1:` line beside it.',
         ),
         const SizedBox(height: 16),
-        if (scanning) ...[
-          scanner(onScanned),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              key: const Key('pair-hide-camera'),
-              onPressed: onHideScanner,
-              child: const Text('Hide the camera'),
+        switch (state.code) {
+          PairCodeMissing() => _CodeActions(
+            onScan: onScan,
+            onPaste: onPaste,
+            enabled: !submitting,
+          ),
+          PairCodeUnreadable(:final message) => _UnreadableCode(
+            message: message,
+            onScan: onScan,
+            onPaste: onPaste,
+            enabled: !submitting,
+          ),
+          PairCodeRead(:final desktopName, :final address) => _CodeCard(
+            desktopName: desktopName,
+            address: address,
+            onClear: submitting ? null : onClearCode,
+          ),
+        },
+        // The names and the button belong to a code: there is nothing to
+        // name, and nothing to send, until one has been read.
+        if (state.code is PairCodeRead) ...[
+          const SizedBox(height: 24),
+          TextField(
+            key: const Key('pair-local-name'),
+            controller: localName,
+            enabled: !submitting,
+            decoration: InputDecoration(
+              labelText: 'Name for the desktop',
+              helperText: 'What this device will show it as.',
+              errorText: state.localNameError,
             ),
           ),
-        ] else
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              key: const Key('pair-show-camera'),
-              onPressed: submitting ? null : onShowScanner,
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('Scan the QR code with the camera'),
+          const SizedBox(height: 16),
+          TextField(
+            key: const Key('pair-proposed-name'),
+            controller: proposedName,
+            enabled: !submitting,
+            decoration: InputDecoration(
+              labelText: 'Name for this device',
+              helperText: 'What the desktop will show this device as.',
+              errorText: state.proposedNameError,
             ),
           ),
-        const SizedBox(height: 16),
-        TextField(
-          key: const Key('pair-payload'),
-          controller: payload,
-          enabled: !submitting,
-          maxLines: null,
-          decoration: InputDecoration(
-            labelText: 'Pairing payload',
-            hintText: 'dsync-pair:v1:…',
-            suffixIcon: IconButton(
-              key: const Key('pair-payload-paste'),
-              onPressed: submitting ? null : onPaste,
-              icon: const Icon(Icons.content_paste),
-              tooltip: 'Paste',
-            ),
+          const SizedBox(height: 24),
+          _OutcomeLine(state.outcome),
+          FilledButton(
+            key: const Key('pair-submit'),
+            onPressed: submitting ? null : onSubmit,
+            child: submitting
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    // The spinner stands in for the button's 'Pair' label
+                    // while the request is in flight.
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      semanticsLabel: 'Pairing',
+                    ),
+                  )
+                : const Text('Pair'),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// The two ways to get a code, side by side and weighted: the camera is the
+/// one the desktop's own output points at, and pasting is for the user who
+/// already has the line somewhere.
+class _CodeActions extends StatelessWidget {
+  const _CodeActions({
+    required this.onScan,
+    required this.onPaste,
+    required this.enabled,
+  });
+
+  final VoidCallback onScan;
+  final VoidCallback onPaste;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: FilledButton.tonalIcon(
+            key: const Key('pair-scan'),
+            onPressed: enabled ? onScan : null,
+            icon: const Icon(Icons.qr_code_scanner),
+            label: const Text('Scan QR code'),
           ),
         ),
-        const SizedBox(height: 16),
-        TextField(
-          key: const Key('pair-local-name'),
-          controller: localName,
-          enabled: !submitting,
-          decoration: InputDecoration(
-            labelText: 'Name for the desktop',
-            helperText: 'What this device will show it as.',
-            errorText: state.localNameError,
+        const SizedBox(width: 12),
+        Expanded(
+          child: OutlinedButton.icon(
+            key: const Key('pair-paste'),
+            onPressed: enabled ? onPaste : null,
+            icon: const Icon(Icons.content_paste),
+            label: const Text('Paste line'),
           ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          key: const Key('pair-proposed-name'),
-          controller: proposedName,
-          enabled: !submitting,
-          decoration: InputDecoration(
-            labelText: 'Name for this device',
-            helperText: 'What the desktop will show this device as.',
-            errorText: state.proposedNameError,
-          ),
-        ),
-        const SizedBox(height: 24),
-        _OutcomeLine(state.outcome),
-        FilledButton(
-          onPressed: submitting ? null : onSubmit,
-          child: submitting
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  // The spinner stands in for the button's 'Pair' label
-                  // while the request is in flight.
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    semanticsLabel: 'Pairing',
-                  ),
-                )
-              : const Text('Pair'),
         ),
       ],
     );
   }
 }
 
-/// The camera itself: `mobile_scanner`, and nothing between it and
-/// `PairController.onPayloadScanned`.
-///
-/// `mobile_scanner` is the *decoder* — it reads a symbol, and this hands the
-/// text on. It is not the `qr` package pinned in `pubspec.yaml`, which is the
-/// *encoder* the CLI's terminal renderer draws `dsync pair show`'s symbol
-/// with: one turns a payload into a symbol, the other turns a symbol back
-/// into a payload, and neither replaces the other. The CLI never links this
-/// one; the four v1 targets with no `app` head are untouched by it (SPEC §3).
-///
-/// What this widget deliberately does not do:
-///
-/// - No payload decode, no version check, no validation of the text. A code
-///   that is not a dsync payload is a code whose text this hands over like
-///   any other, and `PairingPayload.decode` decides — so a user who points
-///   the camera at the wrong code gets "that is not a dsync pairing payload"
-///   rather than silence.
-/// - No narrowing of the reader to QR symbols either. That would be this
-///   widget deciding which scans are legitimate, and there is a page already
-///   showing the answer for a code that turns out not to be ours.
-/// - No debounce. Frames repeat while a code is in view; the guard for that
-///   is in the controller, where the state that says "in flight" and "done"
-///   already lives.
-///
-/// When the camera cannot be used, the widget renders why in place of the
-/// preview: a denied permission, no camera at all, or a platform the plugin
-/// has no implementation for — which is checked rather than discovered from
-/// a failed channel call, since nothing on Linux or Windows answers one and
-/// an unanswered platform channel throws.
-class QrScanner extends StatefulWidget {
-  const QrScanner(this.onScanned, {super.key});
+/// A text that was read but is not a payload this build can use — the wrong
+/// QR code, a half-copied line. Says what it was and leaves both ways in
+/// right underneath, because the fix is always to fetch another one.
+class _UnreadableCode extends StatelessWidget {
+  const _UnreadableCode({
+    required this.message,
+    required this.onScan,
+    required this.onPaste,
+    required this.enabled,
+  });
 
-  /// Where a read code's text goes, raw.
-  final ValueChanged<String> onScanned;
-
-  @override
-  State<QrScanner> createState() => _QrScannerState();
-}
-
-class _QrScannerState extends State<QrScanner> {
-  /// The camera session. Owned here because one is passed to
-  /// `MobileScanner`: given a controller of its own the widget disposes it,
-  /// given this one it does not — it stops the camera on unmount and leaves
-  /// the object to its owner. Disposing here is what stops the camera when
-  /// the page hides it or leaves.
-  final _controller = MobileScannerController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  /// The text of the first code in the frame that carries any, and nothing
-  /// about the rest. One code in front of the camera is the case worth
-  /// handling; a frame holding two is answered by the controller's own
-  /// guard, which ignores everything after the first exchange has started.
-  void _onDetect(BarcodeCapture capture) {
-    for (final barcode in capture.barcodes) {
-      final raw = barcode.rawValue;
-      if (raw != null) {
-        widget.onScanned(raw);
-        return;
-      }
-    }
-  }
+  final String message;
+  final VoidCallback onScan;
+  final VoidCallback onPaste;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
-    if (!_cameraPlatform) return const _CameraNote(_noCameraHere);
-    return ValueListenableBuilder<MobileScannerState>(
-      valueListenable: _controller,
-      builder: (context, state, _) {
-        final error = state.error;
-        // The preview is replaced by the reason, not covered by it: the
-        // paste field under this widget is the fallback, and a note takes
-        // less room than a dead rectangle.
-        if (error != null) return _CameraNote(_unavailable(error.errorCode));
-        // 4:3 rather than a fixed height: the `ListView` hands this all the
-        // width it has and no height at all, and `MobileScanner` sizes
-        // itself to the constraints it is given.
-        return AspectRatio(
-          aspectRatio: 4 / 3,
-          child: MobileScanner(controller: _controller, onDetect: _onDetect),
-        );
-      },
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline, color: colors.error),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(message, style: TextStyle(color: colors.error)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _CodeActions(onScan: onScan, onPaste: onPaste, enabled: enabled),
+      ],
     );
   }
 }
 
-/// Whether a camera is behind the plugin on this build: the two platforms
-/// this head ships on (`app` is Android and iOS, SPEC §3), and only those.
-/// The plugin also carries macOS and web code, but neither is a v1 target
-/// for the head, and building the preview against a channel nothing answers
-/// is a thrown platform exception rather than a failure this widget could
-/// render.
-bool get _cameraPlatform =>
-    defaultTargetPlatform == TargetPlatform.android ||
-    defaultTargetPlatform == TargetPlatform.iOS;
+/// What the code turned out to say: the device about to be paired with, and
+/// where it is answering. The whole point of the redesign — this is on
+/// screen, with the names under it, before anything is sent.
+class _CodeCard extends StatelessWidget {
+  const _CodeCard({
+    required this.desktopName,
+    required this.address,
+    required this.onClear,
+  });
 
-const _noCameraHere =
-    'This build has no camera access, so the QR code cannot be scanned. '
-    'Paste the `dsync-pair:v1:` line instead.';
+  final String desktopName;
+  final String address;
 
-/// What to say for a camera that is there and would not start. A denied
-/// permission is the one case with a fix the user has to go and perform, so
-/// it is the one case that names it; everything else is the plugin's own
-/// wording, followed by the way out that is on this same page.
-String _unavailable(MobileScannerErrorCode code) => switch (code) {
-  MobileScannerErrorCode.permissionDenied =>
-    'Dsync is not allowed to use the camera — $_permissionFix. Paste the '
-        '`dsync-pair:v1:` line instead.',
-  _ =>
-    'The camera could not be used: ${code.message} Paste the '
-        '`dsync-pair:v1:` line instead.',
-};
-
-const _permissionFix = 'allow the camera for Dsync in this device\'s settings';
-
-/// A line where the camera preview would be: what went wrong, and what to do
-/// instead. Plain on purpose — this is not an error page, it is a page that
-/// still works without the camera.
-class _CameraNote extends StatelessWidget {
-  const _CameraNote(this.message);
-
-  final String message;
+  /// `null` while the exchange is in flight: swapping the code out from
+  /// under a submit is the one thing this button must not do.
+  final VoidCallback? onClear;
 
   @override
-  Widget build(BuildContext context) =>
-      Text(message, style: Theme.of(context).textTheme.bodyMedium);
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      key: const Key('pair-code-card'),
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.check_circle_outline,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(desktopName, style: theme.textTheme.titleMedium),
+                      Text(
+                        address,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: const Key('pair-clear-code'),
+                onPressed: onClear,
+                child: const Text('Use a different code'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// The line above the button for the outcome that has one. Success shows

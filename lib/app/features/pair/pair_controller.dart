@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/models/device_identity.dart';
 
 import '../../app_bootstrap.dart';
 import '../../app_controller.dart';
+import 'pair_code.dart';
 import 'pair_view_state.dart';
 
 /// The enrolment exchange as [PairController] takes it: the exact shape of
@@ -49,26 +50,51 @@ class PairController {
   /// The view state this controller renders into; owned here, disposed here.
   final PairViewState state = PairViewState();
 
-  /// Redeems [payloadText] — the `dsync-pair:v1:<base64>` line `dsync pair
-  /// show` prints beside its QR — recording the desktop as [localName] here
-  /// and asking it to record this device as [proposedName] (SPEC §4.4: each
-  /// side names the other for itself, so the two need not agree).
+  /// Takes in a text that should be a `dsync-pair:v1:<base64>` line — read
+  /// off the QR by the camera, or pasted from the clipboard — and decides
+  /// what it is. The one place a payload is decoded.
   ///
-  /// The entry point for a payload however it arrived. The text field calls
-  /// it with what was pasted; [onPayloadScanned] — the camera's entry point,
-  /// which adds only the guard a repeating source needs — calls it with what
-  /// was scanned, undecoded. Decoding and validation happen here and nowhere
-  /// else.
+  /// Nothing is sent: a code arriving is an input, not a confirmation. What
+  /// it decoded to is recorded on [PairViewState.code] for the page to show
+  /// — which device, at which address — so the user can see what they are
+  /// about to pair with before the exchange starts, and can change either
+  /// name first. A text that is not a payload lands as
+  /// [PairCodeUnreadable] carrying `PairingPayload.decode`'s own message,
+  /// which is already specific: "not a dsync pairing payload" and
+  /// "unsupported version" are different problems with different fixes.
+  ///
+  /// The outcome goes back to idle either way, so the verdict of an earlier
+  /// attempt does not sit under a code that has just replaced the one it
+  /// was about.
+  void codeEntered(String text) {
+    try {
+      state.recordCode(PairCodeRead(PairingPayload.decode(text)));
+    } on FormatException catch (e) {
+      state.recordCode(PairCodeUnreadable(e.message));
+    }
+    state.recordOutcome(const PairIdle());
+  }
+
+  /// Puts the page back to having no code — the user rejecting what they
+  /// were shown, and asking for the camera or the clipboard again.
+  void clearCode() {
+    state.recordCode(const PairCodeMissing());
+    state.recordOutcome(const PairIdle());
+  }
+
+  /// Redeems the payload the page is holding ([PairViewState.code], put
+  /// there by [codeEntered]), recording the desktop as [localName] here and
+  /// asking it to record this device as [proposedName] (SPEC §4.4: each
+  /// side names the other for itself, so the two need not agree).
   ///
   /// Names are validated first, without touching the payload: an empty
   /// name is a field error, not an outcome — the outcome goes back to idle
   /// so an earlier verdict does not sit under the new attempt — and no
   /// exchange starts until both are present. Then, in order:
   ///
-  /// - `FormatException` from `PairingPayload.decode`, before any network
-  ///   call. Its own message is carried through because it is already
-  ///   specific — "not a dsync pairing payload" and "unsupported version"
-  ///   are different problems with different fixes.
+  /// - No readable code. The page does not offer the button in that state,
+  ///   so this is the belt to its braces rather than a line anyone should
+  ///   see.
   /// - `SocketException`: nothing answered at the payload's address hint.
   ///   Names the host and port so the user can check it is the right
   ///   network.
@@ -94,7 +120,6 @@ class PairController {
   /// but" — the pairing itself held — with `core`'s own line naming the
   /// file.
   Future<void> submitPayload({
-    required String payloadText,
     required String localName,
     required String proposedName,
   }) async {
@@ -109,16 +134,22 @@ class PairController {
       return;
     }
 
-    state.recordOutcome(const PairSubmitting());
-
-    final PairingPayload payload;
-    try {
-      payload = PairingPayload.decode(payloadText);
-    } on FormatException catch (e) {
-      state.recordOutcome(PairFailed(e.message));
+    if (state.code case PairCodeRead(:final payload)) {
+      state.recordOutcome(const PairSubmitting());
+      await _enrol(payload, localName: local, proposedName: proposed);
       return;
     }
+    state.recordOutcome(const PairFailed(_codeRequired));
+  }
 
+  /// The exchange itself, over a payload that has already decoded and names
+  /// that have already validated. Split out so [submitPayload] reads as the
+  /// two questions it asks before committing to it.
+  Future<void> _enrol(
+    PairingPayload payload, {
+    required String localName,
+    required String proposedName,
+  }) async {
     final identity = await app.loadOrCreateIdentity();
     final store = await app.pairedDevices;
     final address = '${payload.address.host}:${payload.address.port}';
@@ -126,8 +157,8 @@ class PairController {
       await enrol(
         payload: payload,
         ownIdentity: identity,
-        proposedName: proposed,
-        localName: local,
+        proposedName: proposedName,
+        localName: localName,
         pairedDeviceStore: store,
       );
     } on SocketException catch (e) {
@@ -176,7 +207,7 @@ class PairController {
       );
       return;
     }
-    state.recordOutcome(PairSucceeded(local));
+    state.recordOutcome(PairSucceeded(localName));
   }
 
   /// The desktop's name as it is being typed.
@@ -212,51 +243,6 @@ class PairController {
     _ => '',
   };
 
-  /// The other input method of this page: a payload the camera read off the
-  /// QR that `dsync pair show` prints beside that line.
-  ///
-  /// The scanner does no decoding and no validation — it hands the code's
-  /// text over as it stands — so [raw] goes to [submitPayload] exactly as a
-  /// pasted line would: one implementation of the exchange, one set of
-  /// rendered messages, whoever produced the text. The two names come from
-  /// the page because the fields holding them are the widgets'
-  /// ([PairViewState] keeps only what the page displays).
-  ///
-  /// **The guard is what this method adds, and it is not optional.**
-  /// `MobileScanner` reports every frame the code is in view, so one code in
-  /// front of one camera is many calls to this method per second, each
-  /// carrying the same payload — and the enrolment token inside it is
-  /// single-use, burned by the desktop on its first successful redemption
-  /// (SPEC §4.4). A repeat would therefore be refused by the far end, and the
-  /// user would be shown [EnrolmentRefusedException]'s line — "the desktop
-  /// refused this pairing" — over a pairing that had in fact just succeeded,
-  /// with a template that tells them to run `dsync pair show` again. So a
-  /// scan is ignored while an exchange is in flight and once one has
-  /// succeeded. That is a read of [state]'s own [PairOutcome] rather than a
-  /// second flag beside it: [PairSubmitting] is the first case and
-  /// [PairSucceeded] the second, and a flag kept in step with them would be
-  /// one more thing that can drift.
-  ///
-  /// A *failed* attempt is not ignored: the outcome is [PairFailed] again by
-  /// then, so pointing the camera at a fresh code after a refusal works, and
-  /// a scan whose names have not been filled in is answered with the field
-  /// errors exactly as the paste path is. The paste path needs none of this:
-  /// its button is disabled while an exchange is in flight, where the camera
-  /// keeps firing whether one is running or not.
-  Future<void> onPayloadScanned(
-    String raw, {
-    required String localName,
-    required String proposedName,
-  }) async {
-    final outcome = state.outcome;
-    if (outcome is PairSubmitting || outcome is PairSucceeded) return;
-    await submitPayload(
-      payloadText: raw,
-      localName: localName,
-      proposedName: proposedName,
-    );
-  }
-
   void dispose() => state.dispose();
 }
 
@@ -264,3 +250,5 @@ const _localNameRequired = 'Give the desktop a name to show it as here.';
 const _proposedNameRequired =
     'Give this device a name for the desktop to '
     'show it as.';
+const _codeRequired =
+    'Scan or paste a pairing code from `dsync pair show` first.';

@@ -7,8 +7,8 @@
 /// difference that both ends run in-process, as the pairing test does:
 /// nothing here needs the far side to outlive a command, so a child process
 /// would buy only the machinery of one. The head's side is exactly what
-/// its pages call — `PairController.submitPayload` (or `onPayloadScanned`,
-/// the camera's entry point into it) with the real `enrolWithPeer`, then
+/// its pages call — `PairController.codeEntered` then `submitPayload`,
+/// with the real `enrolWithPeer`, then
 /// `SyncRunController.start` with the real `dialPeer`
 /// — and the desktop's side is the two `core` listeners the CLI wraps, over
 /// their own identity and paired-device store in a second state directory.
@@ -27,6 +27,7 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
 import 'package:dsync/app/features/run/replica_connector.dart';
@@ -138,17 +139,14 @@ void main() {
       token: token,
     );
     // Both stay up past this setUp: the pairing round below is what the rest
-    // of this file drives from, and the scan case is about what a *second*
-    // call on the same controller — the page's, which lives as long as the
-    // pairing does — must not do, with the listener that already spent this
-    // payload's token still able to answer it.
+    // of this file drives from, and the re-read case is about what a
+    // *second* code on the same controller — the page's, which lives as
+    // long as the pairing does — must not do, with the listener that
+    // already spent this payload's token still able to answer it.
     pair = PairController(app, enrol: enrolWithPeer);
+    pair.codeEntered(pairingPayload.encode());
     await pair
-        .submitPayload(
-          payloadText: pairingPayload.encode(),
-          localName: 'desktop',
-          proposedName: 'phone',
-        )
+        .submitPayload(localName: 'desktop', proposedName: 'phone')
         .timeout(_startupDeadline);
     final outcome = pair.state.outcome;
     expect(
@@ -265,38 +263,32 @@ void main() {
     expect(app.state.devices.map((row) => row.name), ['desktop']);
   });
 
-  test('the same code scanned again, its token already burned, is dropped '
-      'rather than refused (SPEC §4.4)', () async {
+  test('the same code read again, its token already burned, dials nothing '
+      '(SPEC §4.4)', () async {
     // The premise is the desktop's own, and it is live: this payload's token
     // was spent by the round in `setUp`, and the listener that spent it is
-    // still listening. So an unguarded repeat gets exactly what the task
-    // named — a connection, and an `EnrolmentRefusedException` back — and
-    // the Pair page would go from "paired" to "the desktop refused this
-    // pairing" while the camera kept firing at the code that had just
-    // worked. What the guard has to make true instead: nothing starts.
+    // still listening. So anything that dialled on a re-read would get
+    // exactly what that costs — a connection, and an
+    // `EnrolmentRefusedException` back — and the Pair page would go from
+    // "paired" to "the desktop refused this pairing" over a pairing that
+    // had just worked. What reading a code has to be instead: an input.
     final seen = <PairOutcome>[];
     pair.state.addListener(() => seen.add(pair.state.outcome));
 
-    await pair
-        .onPayloadScanned(
-          pairingPayload.encode(),
-          localName: 'desktop',
-          proposedName: 'phone',
-        )
-        .timeout(_startupDeadline);
+    pair.codeEntered(pairingPayload.encode());
 
     expect(
-      pair.state.outcome,
-      isA<PairSucceeded>(),
-      reason: 'a repeat scan was dialled: ${seen.join(' -> ')}',
+      pair.state.code,
+      isA<PairCodeRead>(),
+      reason: 'the burned code still decodes; it is the token that is spent',
     );
     expect(
-      seen,
+      seen.whereType<PairSubmitting>(),
       isEmpty,
-      reason: 'a repeat scan must be dropped before it starts, not dialled',
+      reason: 'reading a code must start no exchange: ${seen.join(' -> ')}',
     );
-    // Still one entry on the desktop's side: the repeat never reached the
-    // store, as a refused second redemption could not have added one either.
+    // Still one entry on the desktop's side: nothing was dialled, as a
+    // refused second redemption could not have added one either.
     expect((await desktopStore.load()).length, 1);
   });
 

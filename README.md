@@ -132,9 +132,11 @@ replica itself. From nothing to a first sync:
 
 1. On the desktop, `dsync pair show`. It prints a `dsync-pair:v1:…` line and
    waits five minutes for the peer.
-2. In the app, open **Pair a device** and either paste that line or tap
-   **Scan the QR code with the camera** and point the phone at the code on the
-   desktop's terminal. Name the desktop, then pair.
+2. In the app, open **Pair a device** and tap **Scan QR code** — pointing the
+   phone at the code on the desktop's terminal — or **Paste line** for the
+   `dsync-pair:v1:…` line. Either way the app then shows which desktop the
+   code names and the address it will be reached at; check it, adjust the two
+   names, and pair.
 3. On the desktop, `dsync pair grant <app-name> <root>` for the folder the app
    may reach. Pairing and granting are two steps (SPEC §4.4): without this the
    run is refused, and the app cannot grant itself anything.

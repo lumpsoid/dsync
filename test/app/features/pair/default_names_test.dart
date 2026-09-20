@@ -9,16 +9,16 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// The two defaults the Pair page's name fields arrive filled with. Both
 /// rules are pure, so both are exercised with plain values: the device-name
-/// rule over a host name and an OS string, the desktop-name rule over the
-/// payload text itself.
+/// rule over a host name and an OS string, the desktop-name rule over a
+/// decoded payload.
 void main() {
-  String payloadFor(String commonName) => PairingPayload(
+  PairingPayload payloadFor(String commonName) => PairingPayload(
     certificateDer: certificateDerFromPem(
       generateDeviceIdentity(commonName: commonName).certificatePem,
     ),
     address: PeerAddress(host: '192.168.1.5', port: 28771),
     token: Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]),
-  ).encode();
+  );
 
   group('thisDeviceNameFor', () {
     test('a host with a name of its own is that name', () {
@@ -54,9 +54,9 @@ void main() {
     });
   });
 
-  group('desktopNameFromPayload', () {
+  group('desktopNameFor', () {
     test('is the name the desktop gave its own certificate', () {
-      expect(desktopNameFromPayload(payloadFor('studio')), 'studio');
+      expect(desktopNameFor(payloadFor('studio')), 'studio');
     });
 
     test('falls back to the address hint when the certificate carries no '
@@ -65,20 +65,9 @@ void main() {
         certificateDer: Uint8List.fromList(const [9, 9, 9]),
         address: PeerAddress(host: '192.168.1.5', port: 28771),
         token: Uint8List.fromList(const [1, 2, 3, 4]),
-      ).encode();
-
-      expect(desktopNameFromPayload(payload), '192.168.1.5');
-    });
-
-    test('offers nothing for text that is not a payload', () {
-      expect(desktopNameFromPayload(''), isNull);
-      expect(desktopNameFromPayload('dsync-pair:v1:'), isNull);
-      expect(desktopNameFromPayload('https://example.test/'), isNull);
-      // A half-typed payload is not a payload either.
-      expect(
-        desktopNameFromPayload(payloadFor('studio').substring(0, 30)),
-        isNull,
       );
+
+      expect(desktopNameFor(payload), '192.168.1.5');
     });
   });
 }
