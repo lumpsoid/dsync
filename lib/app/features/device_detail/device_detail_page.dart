@@ -111,6 +111,26 @@ class _DeviceDetailBody extends StatelessWidget {
           onTap: () => _rename(context, device),
         ),
         ListTile(
+          key: const Key('device-address'),
+          leading: const Icon(Icons.wifi_tethering),
+          title: const Text('Address'),
+          subtitle: const Text(
+            'Where this device is reached. Correct it here when it has '
+            'moved, and it is remembered — there is no need to re-enter it '
+            'for each run.',
+          ),
+          onTap: () => _editAddress(context, device),
+        ),
+        ListTile(
+          key: const Key('device-test-connection'),
+          leading: const Icon(Icons.network_check),
+          title: const Text('Test connection'),
+          subtitle: const Text(
+            'Dial this device at the address above and report what answered.',
+          ),
+          onTap: controller.testConnection,
+        ),
+        ListTile(
           key: const Key('device-revoke'),
           leading: Icon(
             Icons.link_off,
@@ -132,6 +152,17 @@ class _DeviceDetailBody extends StatelessWidget {
       builder: (context) => _RenameDialog(initialName: device.name),
     );
     if (name != null) await controller.rename(name);
+  }
+
+  Future<void> _editAddress(
+    BuildContext context,
+    PairedDeviceRow device,
+  ) async {
+    final address = await showDialog<String>(
+      context: context,
+      builder: (context) => _AddressDialog(initialAddress: device.address),
+    );
+    if (address != null) await controller.updateAddress(address);
   }
 
   Future<void> _revoke(BuildContext context, PairedDeviceRow device) async {
@@ -373,6 +404,64 @@ class _RenameDialogState extends State<_RenameDialog> {
           key: const Key('device-rename-confirm'),
           onPressed: () => Navigator.of(context).pop(_name.text),
           child: const Text('Rename'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Where to reach the device: `host`, or `host:port` when it listens
+/// somewhere other than the default. Pops the typed text, or nothing when
+/// cancelled — what counts as an address is `parsePeerAddress`'s and
+/// `PeerAddress`'s, decided once in the controller, so this dialog holds no
+/// rule of its own and a bad address comes back as the page's own error
+/// line rather than as two disagreeing validations.
+///
+/// Pre-filled with what is on file, because correcting an address is
+/// usually changing one octet of it.
+class _AddressDialog extends StatefulWidget {
+  const _AddressDialog({required this.initialAddress});
+
+  final String initialAddress;
+
+  @override
+  State<_AddressDialog> createState() => _AddressDialogState();
+}
+
+class _AddressDialogState extends State<_AddressDialog> {
+  late final TextEditingController _address = TextEditingController(
+    text: widget.initialAddress,
+  );
+
+  @override
+  void dispose() {
+    _address.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Address'),
+      content: TextField(
+        key: const Key('device-address-field'),
+        controller: _address,
+        autofocus: true,
+        decoration: const InputDecoration(
+          labelText: 'Address',
+          hintText: '10.0.0.7:28771',
+        ),
+        onSubmitted: (value) => Navigator.of(context).pop(value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('device-address-confirm'),
+          onPressed: () => Navigator.of(context).pop(_address.text),
+          child: const Text('Save'),
         ),
       ],
     );

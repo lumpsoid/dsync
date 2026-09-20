@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
 
 import 'app_bootstrap.dart';
 import 'app_paths.dart';
@@ -180,7 +181,31 @@ class AppController {
     );
   }
 
-  /// The shape [grantRoot] and [revokeRoot] share: one store write whose
+  /// Records [address] as where the device with [deviceId] was last reached
+  /// (SPEC §4.4) and re-renders the list — the same write a successful
+  /// connection makes, because it is the same fact: this is where to dial
+  /// this device next time.
+  ///
+  /// Deliberately `recordConnection` rather than a second write of its own.
+  /// The field has one meaning and one writer in `core`; a correction typed
+  /// on the Device page and an address proved by a run have to land in the
+  /// same place or the cache would depend on which of the two happened
+  /// last. The consequence is that a typed address overwrites a proved one
+  /// before anything has answered at it — which is what correcting an
+  /// address *is*, and why the page offers a check beside the field.
+  ///
+  /// Returns `null` on success, or the message to show when nothing matched
+  /// — the same rendered refusal [grantRoot] returns, for the same stale-row
+  /// reason.
+  Future<String?> updateDeviceAddress(String deviceId, PeerAddress address) {
+    return _rootWrite(
+      deviceId,
+      (store) => store.recordConnection(deviceId, address),
+    );
+  }
+
+  /// The shape [grantRoot], [revokeRoot] and [updateDeviceAddress] share:
+  /// one store write whose
   /// only rendered refusal is "no such device", then a refresh either way.
   Future<String?> _rootWrite(
     String deviceId,

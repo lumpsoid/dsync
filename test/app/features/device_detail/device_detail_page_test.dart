@@ -7,8 +7,13 @@ import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_page.dart';
 import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
+import 'package:dsync/app/features/device_detail/peer_probe.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/paired_device_row.dart';
+import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
+import 'package:dsync/dsync_core/models/device_identity.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,22 +22,45 @@ import 'package:flutter_test/flutter_test.dart';
 /// contract. What a write does to the store is
 /// `device_detail_controller_test.dart`'s.
 void main() {
+  late Directory tempDir;
   late AppController app;
   late DeviceDetailController controller;
+  late _FakeProbe probe;
+  late PairedDevice phone;
   var gone = 0;
 
-  setUp(() {
+  setUpAll(() {
+    // The one paired device these tests write against, under a real
+    // certificate: `deviceId` is the hash of its key, so the rows pushed
+    // into `AppState` have to carry the id the store will answer to.
+    phone = PairedDevice(
+      certificatePem: generateDeviceIdentity(commonName: 'desktop')
+          .certificatePem,
+      name: 'desktop',
+      agreedReplicaRoots: const {'/home/me/notes'},
+      pairedAt: DateTime(2026, 9, 15),
+      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
+    );
+  });
+
+  setUp(() async {
+    // A real state dir per test, because the check's reachable case writes
+    // the address it reached through to the store — the same
+    // `recordConnection` a run's dial writes.
+    tempDir = await Directory.systemTemp.createTemp('device_detail_page_test');
+    await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
+        .add(phone);
     app = AppController(
-      () async => AppPaths(
-        Directory.systemTemp.path,
-        documentsDir: '${Directory.systemTemp.path}/documents',
-      ),
+      () async =>
+          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
       now: DateTime.now,
     );
+    probe = _FakeProbe();
     controller = DeviceDetailController(
       app,
       environment: const {'HOME': '/home/me'},
       picker: _NoPicker(),
+      probe: probe,
     );
     appScope.setController(app);
     deviceDetailScope.setController(controller);
@@ -42,13 +70,14 @@ void main() {
   tearDown(appScope.reset);
   tearDown(deviceDetailScope.reset);
   tearDown(() => controller.dispose());
+  tearDown(() => tempDir.delete(recursive: true));
 
   PairedDeviceRow row({
     List<String> agreedRoots = const ['/home/me/notes'],
     String? certificateWarning,
   }) => PairedDeviceRow(
     name: 'desktop',
-    deviceId: 'a1b2:c3d4',
+    deviceId: phone.deviceId,
     address: '10.0.0.7:28771',
     pairedAt: DateTime(2026, 9, 15),
     agreedRoots: agreedRoots,
@@ -57,9 +86,56 @@ void main() {
     certificateWarning: certificateWarning,
   );
 
+  /// Brings an action below the fold into the tree: the page is a
+  /// `ListView`, which does not build what it has not scrolled to.
+  Future<void> scrollTo(WidgetTester tester, Key key) =>
+      tester.scrollUntilVisible(
+        find.byKey(key),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+
+  /// Taps an action below the fold: the page is a `ListView` and the
+  /// actions at its bottom are not built until they are scrolled to.
+  Future<void> tapAction(WidgetTester tester, Key key) async {
+    await scrollTo(tester, key);
+    await tester.tap(find.byKey(key));
+    await tester.pumpAndSettle();
+  }
+
+  /// Taps an action whose work is real I/O — reading this device's
+  /// identity, writing the store — and waits for the outcome it renders.
+  ///
+  /// A widget test's own zone fakes time, so `pumpAndSettle` can return
+  /// with a `dart:io` future still outstanding and the page still idle;
+  /// `runAsync` is what lets the real event loop deliver it. Alternating
+  /// the two is what carries an action from tap to rendered line. Bounded,
+  /// so an action that never lands fails the expectation rather than
+  /// hanging the suite.
+  Future<void> awaitOutcome(WidgetTester tester, Key key) async {
+    await tester.tap(find.byKey(key));
+    for (var i = 0; i < 200; i++) {
+      await tester.pumpAndSettle();
+      if (controller.state.outcome is! DeviceDetailIdle) return;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+  }
+
+  /// Scrolls back to the top, where the page's outcome line is: a
+  /// `ListView` does not keep the rows it has scrolled past, so an action
+  /// taken below the fold has to be read back up there.
+  Future<void> scrollToOutcome(WidgetTester tester) =>
+      tester.scrollUntilVisible(
+        find.byKey(const Key('device-detail-id')),
+        -200,
+        scrollable: find.byType(Scrollable).first,
+      );
+
   Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
     MaterialApp(
-      home: DeviceDetailPage(deviceId: 'a1b2:c3d4', onGone: () => gone++),
+      home: DeviceDetailPage(deviceId: phone.deviceId, onGone: () => gone++),
     ),
   );
 
@@ -129,12 +205,102 @@ void main() {
     expect(field.controller!.text, 'desktop');
   });
 
+  testWidgets('the address dialog opens filled with the address on file', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-address'));
+
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('device-address-field')),
+    );
+    expect(field.controller!.text, '10.0.0.7:28771');
+  });
+
+  testWidgets('a saved address is written through and shown back', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-address'));
+    await tester.enterText(
+      find.byKey(const Key('device-address-field')),
+      '10.0.0.9:9100',
+    );
+    await awaitOutcome(tester, const Key('device-address-confirm'));
+    await scrollToOutcome(tester);
+    expect(find.textContaining('reached at 10.0.0.9:9100'), findsOneWidget);
+    expect(find.textContaining('10.0.0.9:9100'), findsWidgets);
+  });
+
+  testWidgets('an address that will not parse is refused, not written', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-address'));
+    await tester.enterText(
+      find.byKey(const Key('device-address-field')),
+      '10.0.0.9:http',
+    );
+    await awaitOutcome(tester, const Key('device-address-confirm'));
+    await scrollToOutcome(tester);
+    expect(find.textContaining('Not a valid address'), findsOneWidget);
+    expect(find.textContaining('10.0.0.7:28771'), findsOneWidget);
+  });
+
+  testWidgets('a reachable peer reports where it was reached', (tester) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await scrollTo(tester, const Key('device-test-connection'));
+    await awaitOutcome(tester, const Key('device-test-connection'));
+    await scrollToOutcome(tester);
+    expect(find.text('Reached desktop at 10.0.0.7:28771.'), findsOneWidget);
+  });
+
+  testWidgets('an unreachable peer says so, with the address it tried', (
+    tester,
+  ) async {
+    probe.result = const PeerUnreachable('Connection refused');
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await scrollTo(tester, const Key('device-test-connection'));
+    await awaitOutcome(tester, const Key('device-test-connection'));
+    await scrollToOutcome(tester);
+    expect(
+      find.textContaining('Could not reach desktop at 10.0.0.7:28771'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a certificate that is not the pinned one gets its own line', (
+    tester,
+  ) async {
+    probe.result = const PeerCertificateRefused('unknown certificate');
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await scrollTo(tester, const Key('device-test-connection'));
+    await awaitOutcome(tester, const Key('device-test-connection'));
+    await scrollToOutcome(tester);
+    expect(
+      find.textContaining('did not present the certificate'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Could not reach'), findsNothing);
+  });
+
   testWidgets('revoke asks first and says it is one-sided', (tester) async {
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
-    await tester.tap(find.byKey(const Key('device-revoke')));
-    await tester.pumpAndSettle();
+    await tapAction(tester, const Key('device-revoke'));
 
     expect(find.text('Revoke desktop?'), findsOneWidget);
     expect(
@@ -180,6 +346,20 @@ void main() {
 
     expect(find.textContaining('expires in 3 days'), findsOneWidget);
   });
+}
+
+/// A `PeerProbe` that answers with whatever the test set, so the check runs
+/// with no socket at all.
+class _FakeProbe implements PeerProbe {
+  PeerProbeResult result = const PeerReachable();
+
+  @override
+  Future<PeerProbeResult> probe({
+    required PeerAddress address,
+    required String expectedPeerDeviceId,
+    required DeviceIdentity ownIdentity,
+    required DateTime now,
+  }) async => result;
 }
 
 /// The page never opens the chooser in these tests; a picker that would

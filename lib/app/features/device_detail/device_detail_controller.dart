@@ -1,10 +1,13 @@
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/location.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
 
 import '../../app_controller.dart';
 import '../../paired_device_row.dart';
+import '../../peer_address_text.dart';
 import '../run_setup/folder_picker.dart';
 import 'device_detail_view_state.dart';
+import 'peer_probe.dart';
 
 /// Input methods of the Device page: one paired device, and everything this
 /// host decides about it (SPEC §4.4, §13) — what it is called here, which
@@ -36,9 +39,17 @@ class DeviceDetailController {
     this.app, {
     required this.environment,
     required this.picker,
+    required this.probe,
   });
 
   final AppController app;
+
+  /// The dial behind [testConnection] — a socket, and the one thing on this
+  /// page a test cannot run, which is what earns it an interface (see
+  /// [PeerProbe]). Required rather than defaulted, as `ReplicaConnector`'s
+  /// `dial` is and for the same reason: the scope names the real one, so a
+  /// fake cannot arrive in production by omission.
+  final PeerProbe probe;
 
   /// The platform's folder chooser, borrowed from Run setup rather than
   /// declared again here: it is the same question — which folder on this
@@ -103,6 +114,113 @@ class DeviceDetailController {
       () => app.renameDevice(id, trimmed),
       done: 'Renamed to "$trimmed".',
     );
+  }
+
+  /// Corrects where this device is reached (SPEC §4.4's manual re-entry
+  /// hatch: there is no mDNS in v1, so a peer that moved is re-entered by
+  /// hand — and remembered, which is the difference between this and Run
+  /// setup's per-run override).
+  ///
+  /// [rawAddress] is `host` or `host:port`, read by [parsePeerAddress] — the
+  /// head's one rule for an address a user typed. Blank text and a text that
+  /// will not parse are both field errors rendered here rather than refusals
+  /// from the store: the page has a field the user can fix, and an empty
+  /// field on *this* page means nothing was typed, not "use the cached
+  /// address".
+  Future<void> updateAddress(String rawAddress) async {
+    final id = _deviceId;
+    if (id == null) return;
+    final PeerAddress? address;
+    try {
+      address = parsePeerAddress(rawAddress);
+    } on FormatException catch (e) {
+      state.recordOutcome(
+        DeviceDetailFailed('Not a valid address: ${e.message}'),
+      );
+      return;
+    }
+    if (address == null) {
+      state.recordOutcome(
+        const DeviceDetailFailed('Give an address, as host or host:port.'),
+      );
+      return;
+    }
+    final target = address;
+    await _write(
+      () => app.updateDeviceAddress(id, target),
+      done:
+          'This device will be reached at '
+          '${target.host}:${target.port}.',
+    );
+  }
+
+  /// Dials the device at the address on file and says which of SPEC §4.4's
+  /// three answers came back: it answered and presented the pinned key, the
+  /// address did not answer, or something answered with a certificate this
+  /// host has not pinned.
+  ///
+  /// The third is told apart from the second on purpose — the address is
+  /// right in that case and the fix is on the pairing, so reporting it as
+  /// "unreachable" would send the user to re-type an address that was
+  /// already correct.
+  ///
+  /// Fetching and deciding are kept apart, per CLAUDE.md: everything the
+  /// dial needs — the row, this device's identity, the clock — is loaded
+  /// here and handed down, and [PeerProbe] only reports what the dial
+  /// established. A reachable answer is then recorded through the same
+  /// `recordConnection` path a run's successful dial writes, so an address
+  /// typed on this page and proved from it stops needing Run setup's
+  /// per-run override.
+  Future<void> testConnection() async {
+    final id = _deviceId;
+    final row = device;
+    if (id == null || row == null) return;
+    final PeerAddress? address;
+    try {
+      address = parsePeerAddress(row.address);
+    } on FormatException catch (e) {
+      state.recordOutcome(
+        DeviceDetailFailed('Not a valid address: ${e.message}'),
+      );
+      return;
+    }
+    if (address == null) {
+      state.recordOutcome(
+        const DeviceDetailFailed(
+          'No address on file for this device. Enter one first.',
+        ),
+      );
+      return;
+    }
+    final target = address;
+    final result = await probe.probe(
+      address: target,
+      expectedPeerDeviceId: id,
+      ownIdentity: await app.loadOrCreateIdentity(),
+      now: app.now(),
+    );
+    final where = '${target.host}:${target.port}';
+    switch (result) {
+      case PeerReachable():
+        await _write(
+          () => app.updateDeviceAddress(id, target),
+          done: 'Reached ${row.name} at $where.',
+        );
+      case PeerUnreachable(:final cause):
+        state.recordOutcome(
+          DeviceDetailFailed(
+            'Could not reach ${row.name} at $where: $cause. Check that it is '
+            'awake and on the same network, or enter its address by hand.',
+          ),
+        );
+      case PeerCertificateRefused(:final detail):
+        state.recordOutcome(
+          DeviceDetailFailed(
+            'Something answered at $where, but it did not present the '
+            'certificate this device pinned for ${row.name}: $detail',
+          ),
+        );
+    }
   }
 
   /// Authorizes this device to reach [rawPath] on this host — pairing's

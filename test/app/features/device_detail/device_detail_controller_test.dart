@@ -4,9 +4,11 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
+import 'package:dsync/app/features/device_detail/peer_probe.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
+import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:test/test.dart';
 
@@ -23,6 +25,7 @@ void main() {
   late AppController app;
   late DeviceDetailController controller;
   late _FakePicker picker;
+  late _FakeProbe probe;
   late String certA;
   late String certB;
 
@@ -39,10 +42,12 @@ void main() {
       now: DateTime.now,
     );
     picker = _FakePicker();
+    probe = _FakeProbe();
     controller = DeviceDetailController(
       app,
       environment: const {'HOME': '/home/me'},
       picker: picker,
+      probe: probe,
     );
   });
 
@@ -200,6 +205,114 @@ void main() {
     });
   });
 
+  group('updateAddress', () {
+    test('records a typed host:port as where the device is reached', () async {
+      await selectPhone();
+
+      await controller.updateAddress(' 10.0.0.9:9100 ');
+
+      expect(controller.device!.address, '10.0.0.9:9100');
+      expect(
+        (controller.state.outcome as DeviceDetailDone).message,
+        contains('10.0.0.9:9100'),
+      );
+    });
+
+    test('a bare host keeps PeerAddress\'s default port', () async {
+      await selectPhone();
+
+      await controller.updateAddress('desktop.local');
+
+      expect(controller.device!.address, 'desktop.local:28771');
+    });
+
+    test(
+      'an unreadable port is a field error, and nothing is written',
+      () async {
+        await selectPhone();
+
+        await controller.updateAddress('10.0.0.9:http');
+
+        expect(failure(), contains('Not a valid address'));
+        expect(controller.device!.address, '10.0.0.7:28771');
+      },
+    );
+
+    test(
+      'a port out of range comes back as PeerAddress\'s own refusal',
+      () async {
+        await selectPhone();
+
+        await controller.updateAddress('10.0.0.9:99999');
+
+        expect(failure(), contains('Not a valid address'));
+        expect(controller.device!.address, '10.0.0.7:28771');
+      },
+    );
+
+    test('blank text is refused before the store', () async {
+      await selectPhone();
+
+      await controller.updateAddress('   ');
+
+      expect(failure(), 'Give an address, as host or host:port.');
+      expect(controller.device!.address, '10.0.0.7:28771');
+    });
+  });
+
+  group('testConnection', () {
+    test('dials the address on file, pinned to this device\'s id', () async {
+      final id = await selectPhone();
+      await controller.updateAddress('10.0.0.9:9100');
+
+      await controller.testConnection();
+
+      expect(probe.dialed!.host, '10.0.0.9');
+      expect(probe.dialed!.port, 9100);
+      expect(probe.pinnedTo, id);
+    });
+
+    test('a reachable peer records the address it answered at', () async {
+      await selectPhone();
+      await controller.updateAddress('10.0.0.9:9100');
+
+      await controller.testConnection();
+
+      expect(
+        (controller.state.outcome as DeviceDetailDone).message,
+        'Reached phone at 10.0.0.9:9100.',
+      );
+      expect(controller.device!.address, '10.0.0.9:9100');
+    });
+
+    test(
+      'an address that does not answer names the address, not the pin',
+      () async {
+        await selectPhone();
+        probe.result = const PeerUnreachable('Connection refused');
+
+        await controller.testConnection();
+
+        expect(failure(), contains('Could not reach phone at 10.0.0.7:28771'));
+        expect(failure(), contains('Connection refused'));
+      },
+    );
+
+    test(
+      'a certificate that is not the pinned one is its own answer',
+      () async {
+        await selectPhone();
+        probe.result = const PeerCertificateRefused('unknown certificate');
+
+        await controller.testConnection();
+
+        expect(failure(), contains('Something answered at 10.0.0.7:28771'));
+        expect(failure(), contains('did not present the certificate'));
+        expect(failure(), isNot(contains('Could not reach')));
+      },
+    );
+  });
+
   group('revokeRoot', () {
     test('withdraws one root and keeps the pairing', () async {
       await selectPhone(roots: const {'/home/me/notes', '/home/me/photos'});
@@ -210,6 +323,27 @@ void main() {
       expect(controller.device!.name, 'phone');
     });
   });
+}
+
+/// A `PeerProbe` that answers with whatever the test set and records what
+/// it was asked to dial — the socket the real one opens is exactly what a
+/// unit test cannot run, which is what earns the interface.
+class _FakeProbe implements PeerProbe {
+  PeerProbeResult result = const PeerReachable();
+  PeerAddress? dialed;
+  String? pinnedTo;
+
+  @override
+  Future<PeerProbeResult> probe({
+    required PeerAddress address,
+    required String expectedPeerDeviceId,
+    required DeviceIdentity ownIdentity,
+    required DateTime now,
+  }) async {
+    dialed = address;
+    pinnedTo = expectedPeerDeviceId;
+    return result;
+  }
 }
 
 /// A `FolderPicker` that answers with whatever the test set — the platform
