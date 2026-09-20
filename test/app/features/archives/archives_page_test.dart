@@ -238,6 +238,104 @@ void main() {
     expect(controller.deletedAll, 1);
   });
 
+  testWidgets('a long press picks a row and the bar says how many', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    controller.state.recordListing(ArchivesReady([row('one'), row('two')]));
+    await tester.pump();
+
+    await tester.longPress(
+      find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 selected'), findsOneWidget);
+    // "Delete all" is not the button to leave next to a count of one.
+    expect(find.byKey(const Key('archives-delete-all')), findsNothing);
+
+    // Once selecting, a plain tap is enough to add the second.
+    await tester.tap(
+      find.byKey(const Key('archive-row-/state/dsync/two-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('2 selected'), findsOneWidget);
+  });
+
+  testWidgets('deleting the picked rows asks first, then deletes them', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    controller.state.recordListing(
+      ArchivesReady([row('one'), row('two'), row('three')]),
+    );
+    await tester.pump();
+
+    await tester.longPress(
+      find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('archive-row-/state/dsync/three-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('archives-delete-selected')));
+    await tester.pumpAndSettle();
+    expect(controller.deletedSelected, 0, reason: 'the dialog comes first');
+    expect(find.text('Delete 2 histories?'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('archives-confirm-delete-selected')));
+    await tester.pumpAndSettle();
+
+    expect(controller.deletedSelected, 1);
+    expect(controller.state.selected, {
+      '/state/dsync/one-a.jsonl',
+      '/state/dsync/three-a.jsonl',
+    });
+  });
+
+  testWidgets('unticking the last row leaves selection mode', (tester) async {
+    await pumpPage(tester);
+    controller.state.recordListing(ArchivesReady([row('one')]));
+    await tester.pump();
+
+    await tester.longPress(
+      find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Sync history'), findsOneWidget);
+    expect(find.byKey(const Key('archives-delete-all')), findsOneWidget);
+    // The per-row delete is back, and was gone while selecting.
+    expect(
+      find.byKey(const Key('archive-delete-/state/dsync/one-a.jsonl')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('stopping deletes nothing and gives the page back', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    controller.state.recordListing(ArchivesReady([row('one')]));
+    await tester.pump();
+
+    await tester.longPress(
+      find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('archives-selection-cancel')));
+    await tester.pumpAndSettle();
+
+    expect(controller.deletedSelected, 0);
+    expect(find.text('Sync history'), findsOneWidget);
+  });
+
   testWidgets('a refused delete is shown above the list it left alone', (
     tester,
   ) async {
@@ -259,6 +357,7 @@ class _RecordingArchivesController extends ArchivesController {
 
   int refreshes = 0;
   int deletedAll = 0;
+  int deletedSelected = 0;
   final List<String> deleted = [];
 
   @override
@@ -269,4 +368,7 @@ class _RecordingArchivesController extends ArchivesController {
 
   @override
   Future<void> deleteAll() async => deletedAll++;
+
+  @override
+  Future<void> deleteSelected() async => deletedSelected++;
 }

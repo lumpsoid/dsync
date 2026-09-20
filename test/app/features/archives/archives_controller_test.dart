@@ -195,6 +195,81 @@ void main() {
     expect(titles(), contains('p1'));
   });
 
+  test('deleting the ticked ones leaves the rest alone', () async {
+    final gone = await writeLog('p1', 'a');
+    final kept = await writeLog('p2', 'a');
+    final alsoGone = await writeLog('p3', 'a');
+    await controller.refresh();
+
+    controller.toggleSelection(gone.path);
+    controller.toggleSelection(alsoGone.path);
+    await controller.deleteSelected();
+
+    expect(await gone.exists(), isFalse);
+    expect(await alsoGone.exists(), isFalse);
+    expect(await kept.exists(), isTrue);
+    expect(titles(), ['p2']);
+    expect(controller.state.error, isNull);
+    // Everything ticked is gone, so the page is out of selection mode with
+    // no second thing to clear.
+    expect(controller.state.isSelecting, isFalse);
+  });
+
+  test(
+    'a ticked log a run is using stops the delete and stays ticked',
+    () async {
+      final held = await writeLog('p1', 'a');
+      final other = await writeLog('p2', 'a');
+      await controller.refresh();
+      final run = ReplicaLock(File('${tempDir.path}/dsync/p1-a.lock'));
+      await run.acquire();
+      addTearDown(run.release);
+
+      controller.toggleSelection(held.path);
+      controller.toggleSelection(other.path);
+      await controller.deleteSelected();
+
+      expect(await held.exists(), isTrue);
+      expect(controller.state.error, contains('Wait for it to finish'));
+      // What is still ticked is exactly what was not deleted: trying again
+      // after the run ends is the same button.
+      expect(controller.state.selected, {held.path});
+    },
+  );
+
+  test('unticking the last row leaves selection mode', () async {
+    final log = await writeLog('p1', 'a');
+    await controller.refresh();
+
+    controller.toggleSelection(log.path);
+    expect(controller.state.isSelecting, isTrue);
+    controller.toggleSelection(log.path);
+
+    expect(controller.state.isSelecting, isFalse);
+  });
+
+  test('a row deleted from under a tick drops the tick', () async {
+    final log = await writeLog('p1', 'a');
+    await controller.refresh();
+    controller.toggleSelection(log.path);
+
+    await log.delete();
+    await controller.refresh();
+
+    expect(controller.state.selected, isEmpty);
+  });
+
+  test(
+    'deleting the ticked ones before the list is read does nothing',
+    () async {
+      await writeLog('p1', 'a');
+
+      await controller.deleteSelected();
+
+      expect((controller.state.listing as ArchivesReady).rows, hasLength(1));
+    },
+  );
+
   test('deleting all before the list is read does nothing', () async {
     await writeLog('p1', 'a');
 

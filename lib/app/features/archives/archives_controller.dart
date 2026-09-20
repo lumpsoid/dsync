@@ -85,6 +85,38 @@ class ArchivesController {
     await refresh();
   }
 
+  /// Ticks or unticks one row, and leaves selection mode when the last tick
+  /// goes. The page calls this rather than the view state directly, per the
+  /// controller role in `app_scope.dart`.
+  void toggleSelection(String logPath) => state.toggleSelection(logPath);
+
+  /// Leaves selection mode without deleting anything.
+  void clearSelection() => state.clearSelection();
+
+  /// Deletes every ticked archive — the several-at-once delete, for the case
+  /// the per-row button makes tedious and "delete all" makes too blunt: a
+  /// device with a dozen histories where three runs are gone.
+  ///
+  /// Deletes in the order the list shows rather than the order they were
+  /// ticked, and stops at the first log a run is using, for [deleteAll]'s
+  /// reason. What the refusal leaves ticked is exactly what was not deleted:
+  /// the refresh drops the rest of the selection with the rows it removed,
+  /// so trying again after the run ends is the same button.
+  Future<void> deleteSelected() async {
+    if (state.listing case ArchivesReady(:final rows)) {
+      for (final row in rows) {
+        if (!state.isSelected(row.logPath)) continue;
+        if (await _deleteQuietly(row.logPath) case final failure?) {
+          state.recordError(failure);
+          await refresh();
+          return;
+        }
+      }
+      state.clearError();
+    }
+    await refresh();
+  }
+
   /// Deletes every archive currently listed — "start over as if this device
   /// had never synced". Stops at the first log a run is using, for the
   /// reason `dsync archive clear` stops there: the rest of the list is about

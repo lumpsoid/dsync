@@ -18,6 +18,7 @@ import '../../format_bytes.dart';
 class ArchivesViewState extends ChangeNotifier {
   ArchivesListing _listing = const ArchivesLoading();
   String? _error;
+  final Set<String> _selected = <String>{};
 
   /// What the last read of the state directory found.
   ArchivesListing get listing => _listing;
@@ -29,9 +30,55 @@ class ArchivesViewState extends ChangeNotifier {
   /// which the user fixes by waiting, not by leaving the page.
   String? get error => _error;
 
-  /// Records what a read found. `ArchivesController` only.
+  /// The log paths ticked for a delete of several at once, empty when the
+  /// page is not selecting. Selection lives here rather than in the page's
+  /// `State` because a delete is a controller's to run, and the set it runs
+  /// over has to survive the rebuild each delete's refresh causes.
+  ///
+  /// A path is dropped the moment a read stops listing it, so "selected"
+  /// cannot outlive the row it points at: there is no second list of ids to
+  /// keep in step with the rows.
+  Set<String> get selected => Set.unmodifiable(_selected);
+
+  /// Whether the page is in selection mode — which is exactly "something is
+  /// ticked". There is no separate mode flag to disagree with the set.
+  bool get isSelecting => _selected.isNotEmpty;
+
+  /// Whether [logPath] is ticked.
+  bool isSelected(String logPath) => _selected.contains(logPath);
+
+  /// Records what a read found, dropping any selection the new listing no
+  /// longer holds — the archives just deleted, and every path at all when
+  /// the read failed and there is no list left to have picked from.
+  ///
+  /// A read still running drops nothing: every refresh passes through
+  /// [ArchivesLoading] on its way, and clearing there would throw the
+  /// selection away between a delete and its result. `ArchivesController`
+  /// only.
   void recordListing(ArchivesListing listing) {
     _listing = listing;
+    switch (listing) {
+      case ArchivesLoading():
+        break;
+      case ArchivesReady(:final rows):
+        final surviving = {for (final row in rows) row.logPath};
+        _selected.removeWhere((logPath) => !surviving.contains(logPath));
+      case ArchivesFailed():
+        _selected.clear();
+    }
+    notifyListeners();
+  }
+
+  /// Ticks or unticks one row. `ArchivesController` only.
+  void toggleSelection(String logPath) {
+    if (!_selected.remove(logPath)) _selected.add(logPath);
+    notifyListeners();
+  }
+
+  /// Unticks everything — leaving selection mode. `ArchivesController` only.
+  void clearSelection() {
+    if (_selected.isEmpty) return;
+    _selected.clear();
     notifyListeners();
   }
 

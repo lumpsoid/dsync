@@ -17,6 +17,12 @@ import 'archives_view_state.dart';
 /// keeps SPEC's word (`dsync archive list`), where the reader is a person
 /// who has read SPEC.
 ///
+/// **Rows can be ticked, and the ticked ones deleted together.** Long press
+/// starts it; the app bar then says how many are picked and carries the
+/// delete. It exists for the middle case the other two buttons miss: three
+/// dead histories out of a dozen, where deleting each in turn is four taps
+/// apiece and "delete all" costs the nine that are still earning their keep.
+///
 /// Loads on mounting and refreshes on pull, like the home list. It takes no
 /// navigation callbacks: nothing leads anywhere from here.
 class ArchivesPage extends StatefulWidget {
@@ -48,22 +54,53 @@ class _ArchivesPageState extends State<ArchivesPage> {
 
   Widget _scaffold(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Sync history'),
-        actions: [
-          // Only over a list that has rows: "delete everything" is not an
-          // action to offer while the page is still reading, or over nothing.
-          if (_controller.state.listing case ArchivesReady(:final rows)
-              when rows.isNotEmpty)
-            IconButton(
-              key: const Key('archives-delete-all'),
-              icon: const Icon(Icons.delete_sweep_outlined),
-              tooltip: 'Delete all history',
-              onPressed: () => _confirmDeleteAll(context, rows.length),
-            ),
-        ],
-      ),
+      appBar: _controller.state.isSelecting
+          ? _selectionAppBar(context)
+          : _titleAppBar(context),
       body: _ArchivesBody(controller: _controller),
+    );
+  }
+
+  AppBar _titleAppBar(BuildContext context) {
+    return AppBar(
+      title: const Text('Sync history'),
+      actions: [
+        // Only over a list that has rows: "delete everything" is not an
+        // action to offer while the page is still reading, or over nothing.
+        if (_controller.state.listing case ArchivesReady(:final rows)
+            when rows.isNotEmpty)
+          IconButton(
+            key: const Key('archives-delete-all'),
+            icon: const Icon(Icons.delete_sweep_outlined),
+            tooltip: 'Delete all history',
+            onPressed: () => _confirmDeleteAll(context, rows.length),
+          ),
+      ],
+    );
+  }
+
+  /// The bar while rows are ticked: what is ticked, a way out that deletes
+  /// nothing, and the delete. "Delete all" is gone from it on purpose —
+  /// having picked three of a dozen, the button next to the count should
+  /// not be the one that takes the other nine.
+  AppBar _selectionAppBar(BuildContext context) {
+    final count = _controller.state.selected.length;
+    return AppBar(
+      leading: IconButton(
+        key: const Key('archives-selection-cancel'),
+        icon: const Icon(Icons.close),
+        tooltip: 'Stop selecting',
+        onPressed: _controller.clearSelection,
+      ),
+      title: Text('$count selected'),
+      actions: [
+        IconButton(
+          key: const Key('archives-delete-selected'),
+          icon: const Icon(Icons.delete_outline),
+          tooltip: 'Delete selected history',
+          onPressed: () => _confirmDeleteSelected(context, count),
+        ),
+      ],
     );
   }
 
@@ -73,6 +110,14 @@ class _ArchivesPageState extends State<ArchivesPage> {
       builder: (context) => _DeleteAllDialog(count: count),
     );
     if (confirmed ?? false) await _controller.deleteAll();
+  }
+
+  Future<void> _confirmDeleteSelected(BuildContext context, int count) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => _DeleteSelectedDialog(count: count),
+    );
+    if (confirmed ?? false) await _controller.deleteSelected();
   }
 }
 
@@ -103,6 +148,10 @@ class _ArchivesBody extends StatelessWidget {
               for (final row in rows)
                 _ArchiveTile(
                   row: row,
+                  isSelecting: controller.state.isSelecting,
+                  isSelected: controller.state.isSelected(row.logPath),
+                  onToggleSelection: () =>
+                      controller.toggleSelection(row.logPath),
                   onDelete: () => _confirmDelete(context, row),
                 ),
               const _Explanation(),
@@ -206,9 +255,23 @@ class _TotalTile extends StatelessWidget {
 /// The peer line is absent, not empty, when no saved run claims the
 /// archive: there is no device to name then, and the remark says why.
 class _ArchiveTile extends StatelessWidget {
-  const _ArchiveTile({required this.row, required this.onDelete});
+  const _ArchiveTile({
+    required this.row,
+    required this.isSelecting,
+    required this.isSelected,
+    required this.onToggleSelection,
+    required this.onDelete,
+  });
 
   final ArchiveRow row;
+
+  /// Whether any row on the page is ticked. While that holds, a tap ticks
+  /// this row rather than doing nothing, and the per-row delete gives way to
+  /// the one in the bar — two deletes on screen, one over this row and one
+  /// over the selection, is a way to delete the wrong thing.
+  final bool isSelecting;
+  final bool isSelected;
+  final VoidCallback onToggleSelection;
   final VoidCallback onDelete;
 
   @override
@@ -217,6 +280,18 @@ class _ArchiveTile extends StatelessWidget {
     final note = row.note;
     final peerLine = row.peerLine;
     return ListTile(
+      key: Key('archive-row-${row.logPath}'),
+      selected: isSelected,
+      // Long press starts selecting, the platform's own gesture for it; once
+      // selecting, a plain tap is enough.
+      onLongPress: onToggleSelection,
+      onTap: isSelecting ? onToggleSelection : null,
+      leading: isSelecting
+          ? Icon(
+              isSelected ? Icons.check_circle : Icons.circle_outlined,
+              color: isSelected ? theme.colorScheme.primary : null,
+            )
+          : null,
       title: Text(row.title),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -229,12 +304,14 @@ class _ArchiveTile extends StatelessWidget {
         ],
       ),
       isThreeLine: true,
-      trailing: IconButton(
-        key: Key('archive-delete-${row.logPath}'),
-        icon: const Icon(Icons.delete_outline),
-        tooltip: 'Delete history',
-        onPressed: onDelete,
-      ),
+      trailing: isSelecting
+          ? null
+          : IconButton(
+              key: Key('archive-delete-${row.logPath}'),
+              icon: const Icon(Icons.delete_outline),
+              tooltip: 'Delete history',
+              onPressed: onDelete,
+            ),
     );
   }
 }
@@ -321,6 +398,39 @@ class _DeleteAllDialog extends StatelessWidget {
           key: const Key('archives-confirm-delete-all'),
           onPressed: () => Navigator.of(context).pop(true),
           child: const Text('Delete all'),
+        ),
+      ],
+    );
+  }
+}
+
+/// The confirmation before deleting the ticked archives — the same sentences
+/// as over all of them, over however many were picked.
+class _DeleteSelectedDialog extends StatelessWidget {
+  const _DeleteSelectedDialog({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        count == 1 ? 'Delete 1 history?' : 'Delete $count histories?',
+      ),
+      content: const Text(
+        'This does not touch any of your files.\n\n'
+        'Each run whose history goes reads and rehashes its whole folder '
+        'once more and treats every file as new, as it did the first time.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('archives-confirm-delete-selected'),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Delete'),
         ),
       ],
     );
