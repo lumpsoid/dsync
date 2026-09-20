@@ -13,11 +13,18 @@ v0, in development. The core engine, the CLI and the Flutter head are
 implemented; the head pairs by pasting the payload line or by scanning the QR
 beside it (SPEC §4.4).
 
+The Flutter head also runs on Linux, macOS and Windows, where it manages the
+device rather than syncing from a phone: it reads and writes the *same* state
+directory the CLI does (SPEC §3, §8.3), so this device's identity and
+certificate, each pairing's certificate and name, and which replica roots each
+paired device may reach are all editable from the app and enforced by
+`dsync agent`. It binds no listener of its own (SPEC §16).
+
 | Area | State |
 |---|---|
 | `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
 | `lib/cli/` — args, profile, prompts, output | implemented |
-| `lib/app/` — Flutter head: profiles home, devices, pair, run setup, run | implemented |
+| `lib/app/` — Flutter head: profiles home, devices, device, this device, pair, run setup, run | implemented |
 
 ## Using it
 
