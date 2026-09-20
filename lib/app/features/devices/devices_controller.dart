@@ -11,8 +11,8 @@ import 'devices_view_state.dart';
 /// Takes the [AppController] it borrows the application from as a
 /// constructor argument, per the controller role in `app_scope.dart`. The
 /// device rows themselves are `AppState`'s and the page reads them from
-/// there; this controller turns the outcomes of what the page asks for —
-/// refresh, revoke — into the rendered values on [state], and renders the
+/// there; this controller turns the outcome of the one thing the page asks
+/// for — a refresh — into the rendered values on [state], and renders the
 /// lines that are a join over more of `AppState` than one row holds
 /// ([ownCertificateWarning], [savedRunLines]) as getters over it, so they
 /// are never a second copy of what they are derived from.
@@ -94,26 +94,6 @@ class DevicesController {
       return;
     }
     state.clearError();
-  }
-
-  /// Revokes [deviceId] locally (SPEC §4.4) and re-renders the list. The
-  /// confirmation happens before this is called; by here the user has been
-  /// told the revocation is one-sided. An id that matches nothing is a
-  /// stale row, shown as a message while the refresh removes the row; a
-  /// store that has gone corrupt is shown as [refresh] shows it.
-  Future<void> revoke(String deviceId) async {
-    final String? failure;
-    try {
-      failure = await app.revoke(deviceId);
-    } on PairedDeviceStoreCorruptException catch (e) {
-      state.recordError(e.toString());
-      return;
-    }
-    if (failure == null) {
-      state.clearError();
-    } else {
-      state.recordError(failure);
-    }
   }
 
   void dispose() => state.dispose();

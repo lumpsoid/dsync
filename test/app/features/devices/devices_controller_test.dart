@@ -20,11 +20,9 @@ void main() {
   late AppController app;
   late DevicesController controller;
   late String certA;
-  late String certB;
 
   setUpAll(() {
     certA = generateDeviceIdentity(commonName: 'phone-a').certificatePem;
-    certB = generateDeviceIdentity(commonName: 'phone-b').certificatePem;
   });
 
   setUp(() async {
@@ -56,53 +54,6 @@ void main() {
       );
 
   Iterable<String> listedNames() => app.state.devices.map((d) => d.name);
-
-  group('revoke', () {
-    test('clears the row, keeps the others, and reports no error', () async {
-      await store().add(device(certA, name: 'phone'));
-      await store().add(device(certB, name: 'laptop'));
-      await app.bootstrap();
-
-      await controller.revoke(device(certA, name: 'phone').deviceId);
-
-      // Positive control: 'laptop' is still listed, so a query that returns
-      // nothing could not pass this.
-      expect(listedNames(), ['laptop']);
-      expect(controller.state.error, isNull);
-    });
-
-    test('renders an unknown id into the view state, not a throw', () async {
-      await store().add(device(certA, name: 'phone'));
-      await app.bootstrap();
-
-      await controller.revoke('dead:beef');
-
-      expect(controller.state.error, contains('dead:beef'));
-      expect(listedNames(), ['phone']);
-    });
-
-    test('a later success clears the message', () async {
-      await store().add(device(certA, name: 'phone'));
-      await app.bootstrap();
-      await controller.revoke('dead:beef');
-      expect(controller.state.error, isNotNull);
-
-      await controller.revoke(device(certA, name: 'phone').deviceId);
-
-      expect(controller.state.error, isNull);
-      expect(listedNames(), isEmpty);
-    });
-
-    test('renders a corrupt store as an error, not a throw', () async {
-      await store().add(device(certA, name: 'phone'));
-      await app.bootstrap();
-      storeFile().writeAsStringSync('not json');
-
-      await controller.revoke(device(certA, name: 'phone').deviceId);
-
-      expect(controller.state.error, contains(storeFile().path));
-    });
-  });
 
   group('refresh', () {
     test('renders a corrupt store as an error and keeps the rows', () async {
