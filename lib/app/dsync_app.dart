@@ -9,6 +9,7 @@ import 'features/device_detail/device_detail_page.dart';
 import 'features/devices/devices_page.dart';
 import 'features/pair/pair_page.dart';
 import 'features/pair/scan_code_page.dart';
+import 'features/pair_show/pair_show_page.dart';
 import 'features/profiles/profiles_page.dart';
 import 'features/run/run_page.dart';
 import 'features/run_setup/run_setup_page.dart';
@@ -173,8 +174,29 @@ class _BootstrapGate extends StatelessWidget {
         // The camera is named here, the way a scope names the real
         // `enrolWithPeer`: the page takes it as a dependency and a widget
         // test hands it a fake (`PairScanner`).
-        builder: (_) =>
-            PairPage(onPaired: navigator.pop, scanner: QrScanner.new),
+        builder: (_) => PairPage(
+          onPaired: navigator.pop,
+          onShowOwnCode: () => _openPairShow(navigator),
+          scanner: QrScanner.new,
+        ),
+      ),
+    );
+  }
+
+  /// This device's own code, for the pairing where the other device does
+  /// the scanning (SPEC §4.4). Pushed over Pair, and a success there lands
+  /// on Devices rather than back on Pair: both routes are done once a
+  /// device has enrolled, and the row it produced is on the list under
+  /// them.
+  Future<void> _openPairShow(NavigatorState navigator) {
+    return navigator.push(
+      MaterialPageRoute<void>(
+        builder: (_) => PairShowPage(
+          onPaired: () {
+            navigator.pop(); // this page
+            navigator.pop(); // Pair
+          },
+        ),
       ),
     );
   }

@@ -44,6 +44,13 @@ import 'scan_code_page.dart';
 /// with this one, and its Paste button, still underneath. Nothing here is
 /// ever blocked on the camera.
 ///
+/// **The other end of the same exchange is one tap away.** `Show this
+/// device's code` leads to the page that binds an endpoint here and offers
+/// this device's own payload (`features/pair_show/`), for the pairing where
+/// the camera is on the *other* device. It sits under the two ways in rather
+/// than beside them: reading someone else's code is what this page is for,
+/// and showing one is the other way round.
+///
 /// [onPaired] is the seam back to Devices: the controller has refreshed
 /// `AppState.devices` by the time it fires, so the destination needs
 /// nothing handed to it. The entrypoint wires it to a pop; this page holds
@@ -52,10 +59,19 @@ import 'scan_code_page.dart';
 /// is shown just before, through the app's `ScaffoldMessenger`, so it is
 /// still on screen once Devices is.
 class PairPage extends StatefulWidget {
-  const PairPage({super.key, required this.onPaired, required this.scanner});
+  const PairPage({
+    super.key,
+    required this.onPaired,
+    required this.onShowOwnCode,
+    required this.scanner,
+  });
 
   /// Called once after a successful pairing, when the page should leave.
   final VoidCallback onPaired;
+
+  /// Opens the page that shows this device's own pairing code, for the
+  /// pairing that goes the other way round.
+  final VoidCallback onShowOwnCode;
 
   /// The camera, handed on to [ScanCodePage] when the user asks for it —
   /// named at the route the way the scope names the real `enrolWithPeer`,
@@ -192,6 +208,7 @@ class _PairPageState extends State<PairPage> {
           state: controller.state,
           onScan: _scan,
           onPaste: _paste,
+          onShowOwnCode: widget.onShowOwnCode,
           onClearCode: controller.clearCode,
           localName: _localName,
           proposedName: _proposedName,
@@ -207,6 +224,7 @@ class _PairForm extends StatelessWidget {
     required this.state,
     required this.onScan,
     required this.onPaste,
+    required this.onShowOwnCode,
     required this.onClearCode,
     required this.localName,
     required this.proposedName,
@@ -217,6 +235,7 @@ class _PairForm extends StatelessWidget {
 
   final VoidCallback onScan;
   final VoidCallback onPaste;
+  final VoidCallback onShowOwnCode;
   final VoidCallback onClearCode;
   final TextEditingController localName;
   final TextEditingController proposedName;
@@ -251,6 +270,24 @@ class _PairForm extends StatelessWidget {
             onClear: submitting ? null : onClearCode,
           ),
         },
+        // The way round this page is not for, offered only while it is
+        // still open which way round this pairing goes: once a code has been
+        // read, showing one instead would throw it away.
+        if (state.code is! PairCodeRead) ...[
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text(
+            'No code to hand? Let the other device scan this one instead.',
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            key: const Key('pair-show-own-code'),
+            onPressed: onShowOwnCode,
+            icon: const Icon(Icons.qr_code_2),
+            label: const Text("Show this device's code"),
+          ),
+        ],
         // The names and the button belong to a code: there is nothing to
         // name, and nothing to send, until one has been read.
         if (state.code is PairCodeRead) ...[

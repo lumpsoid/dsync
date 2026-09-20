@@ -115,6 +115,18 @@ Uint8List generateEnrolmentToken() =>
 /// minutes later even before anyone has revoked anything.
 const defaultEnrolmentTokenTtl = Duration(minutes: 5);
 
+/// The refusal reason [EnrolmentListener._redeemToken] itself produces —
+/// the only [EnrolmentRefused] reason reachable *before* the real token has
+/// been redeemed, so it is the one a caller waiting out a pairing window
+/// must ignore.
+///
+/// Exported because both things that show a payload and then wait —
+/// `dsync pair show` and the Flutter head's pairing window — need to tell
+/// "a stranger guessed and was turned away" (keep waiting) from "the token
+/// was spent and the enrolment behind it still failed" (stop, and say why).
+/// Neither re-spells the string.
+const enrolmentTokenRejectedReason = 'Enrolment token rejected.';
+
 class EnrolmentListener {
   final SecureServerSocket _server;
   final PairedDeviceStore _pairedDeviceStore;
@@ -236,7 +248,7 @@ class EnrolmentListener {
     SecureSocket socket,
   ) async {
     if (!_redeemToken(request.token)) {
-      return const EnrolmentRefused('Enrolment token rejected.');
+      return const EnrolmentRefused(enrolmentTokenRejectedReason);
     }
 
     try {

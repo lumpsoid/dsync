@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:dsync/dsync_core/identity/advertisable_address.dart';
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/enrolment_listener.dart';
 import 'package:dsync/dsync_core/identity/enrolment_message.dart';
@@ -11,7 +12,6 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:qr/qr.dart' show InputTooLongException;
 
-import '../agents/local_addresses.dart';
 import '../output/qr_terminal_renderer.dart';
 import '../stop_signals.dart';
 
@@ -60,15 +60,15 @@ import '../stop_signals.dart';
 ///
 /// [onError]'s refusal reason is filtered the same way: only a refusal
 /// reached *after* the real token was actually redeemed — anything other
-/// than [EnrolmentListener]'s own `'Enrolment token rejected.'` text —
+/// than [EnrolmentListener]'s own [enrolmentTokenRejectedReason] text —
 /// ends the wait. A wrong-token guess, a reused/expired-token retry, or a
 /// connection that never got as far as presenting a token (a port scan, a
 /// bare TLS probe) is not the enrolment this command is waiting for, and
-/// must not cut short a legitimate peer that has not connected yet. This
-/// does couple to `EnrolmentListener`'s exact wording for that one message;
-/// documented here rather than silently relied on, since it is the price of
-/// not adding a distinguishing field to a class this task was told to leave
-/// alone.
+/// must not cut short a legitimate peer that has not connected yet. The
+/// wording of that one refusal is therefore [EnrolmentListener]'s own
+/// exported constant rather than a copy of the string, since the Flutter
+/// head's pairing window (`lib/app/features/pair_show/`) filters refusals
+/// by the same rule.
 class PairShowCommand extends Command<int> {
   @override
   final name = 'show';
@@ -77,12 +77,6 @@ class PairShowCommand extends Command<int> {
   final description =
       'Generate a pairing payload for this device and wait for one other '
       'device to redeem it (SPEC §4.4).';
-
-  /// The only refusal reason [EnrolmentListener._redeemToken] itself
-  /// produces (`enrolment_listener.dart`) — every other [EnrolmentRefused]
-  /// reason is only reachable once the real token has already been
-  /// redeemed. See this class's doc comment.
-  static const _tokenRejectedReason = 'Enrolment token rejected.';
 
   /// Which port the payload tells the other device to dial *afterwards* —
   /// this host's `dsync agent --serve` port, not the enrolment listener's.
@@ -176,7 +170,7 @@ class PairShowCommand extends Command<int> {
       pairedDeviceStore: pairedDeviceStore,
       onError: (error, _) {
         if (error is EnrolmentRefusedException &&
-            error.reason != _tokenRejectedReason &&
+            error.reason != enrolmentTokenRejectedReason &&
             !refused.isCompleted) {
           refused.complete(error.reason);
         }

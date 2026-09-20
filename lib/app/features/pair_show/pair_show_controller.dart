@@ -1,0 +1,311 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:dsync/dsync_core/identity/advertisable_address.dart';
+import 'package:dsync/dsync_core/identity/enrolment_listener.dart';
+import 'package:dsync/dsync_core/identity/enrolment_message.dart';
+import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/identity/pairing_payload.dart';
+import 'package:dsync/dsync_core/models/device_identity.dart';
+import 'package:dsync/dsync_core/models/paired_device.dart';
+
+import '../../app_controller.dart';
+import 'pair_show_view_state.dart';
+import 'pairing_offer.dart';
+
+/// Binding the enrolment endpoint, as [PairShowController] takes it: the
+/// arguments `EnrolmentListener.bind` needs that only the controller knows,
+/// with the address and port it does not decide left to the function itself.
+///
+/// A callback rather than an interface, for the reason [EnrolWithPeer] in
+/// `pair_controller.dart` gives: the real one binds a `SecureServerSocket`
+/// on every interface, and a one-method interface over a single static
+/// method would be a rename of it. A test hands in a closure that binds the
+/// same real listener on the loopback interface instead.
+typedef BindEnrolmentListener = Future<EnrolmentListener> Function({
+  required DeviceIdentity ownIdentity,
+  required Uint8List token,
+  required DateTime tokenExpiresAt,
+  required PairedDeviceStore pairedDeviceStore,
+  required EnrolmentErrorHandler onError,
+});
+
+/// The production [BindEnrolmentListener]: every IPv4 interface, on an
+/// ephemeral port.
+///
+/// Ephemeral for the reason `PairShowCommand.port` documents: this endpoint
+/// is a one-shot distinct from SPEC §4.4's fixed 28771 (which is the
+/// *paired-replica* listener's port), so there is no number to coordinate
+/// and nothing to collide with. The port it actually landed on is read back
+/// off the bound socket and carried inside the payload.
+Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
+  required DeviceIdentity ownIdentity,
+  required Uint8List token,
+  required DateTime tokenExpiresAt,
+  required PairedDeviceStore pairedDeviceStore,
+  required EnrolmentErrorHandler onError,
+}) => EnrolmentListener.bind(
+  InternetAddress.anyIPv4,
+  0,
+  ownIdentity: ownIdentity,
+  token: token,
+  tokenExpiresAt: tokenExpiresAt,
+  pairedDeviceStore: pairedDeviceStore,
+  onError: onError,
+);
+
+/// `dsync pair show` in the Flutter head (SPEC §4.4): generate a token, bind
+/// the enrolment endpoint, offer this device's payload as a symbol and a
+/// line, and wait for one device to redeem it.
+///
+/// The other half of the Pair page, and the same exchange seen from the
+/// other end: there, this device reads someone else's code and dials them;
+/// here, it shows its own and is dialled. Which end shows the code is a
+/// question of which device has a camera and which has a keyboard, not of
+/// which one is "the desktop" — so both heads can do both.
+///
+/// **The endpoint exists only while this window is open.** That is the
+/// property SPEC §4.4 asks for — "off by default and open only for the
+/// duration of one pairing operation" — and it is [stop], called by the page
+/// on the way out, plus the `finally` in [show], that make it true here;
+/// `PairShowCommand` does the same with its signal trap. Nothing else in the
+/// head binds a listener (SPEC §16: the head serves no replica), and this
+/// one accepts exactly one enrolment by construction of the token gate.
+///
+/// **No names are asked for.** The device that redeems the payload is the
+/// one that names both ends (`PairController.submitPayload` on the other
+/// head, `dsync pair accept` on the other CLI): it proposes what this device
+/// should be listed as there, and picks what to list this device's peer as
+/// locally. This side only says yes, which is why this page has no fields
+/// and the Pair page has two.
+///
+/// **What the wait ends on**, raced rather than polled: the listener
+/// reporting the one enrolment it can accept, a refusal that happened after
+/// the real token was already spent, the token's own expiry, and the page
+/// leaving. A wrong-token guess is deliberately not one of them —
+/// [enrolmentTokenRejectedReason] is filtered out — because a stranger's
+/// failed probe must not close a window the legitimate peer is still walking
+/// across the room to use. `PairShowCommand`'s doc comment carries the same
+/// reasoning at length.
+class PairShowController {
+  PairShowController(
+    this.app, {
+    required this.bind,
+    this.advertisableAddress = preferredAdvertisableAddress,
+    this.servicePort = PeerAddress.defaultPort,
+    this.window = defaultEnrolmentTokenTtl,
+  });
+
+  final AppController app;
+
+  /// How the endpoint is bound; the scope names the real one.
+  final BindEnrolmentListener bind;
+
+  /// This device's own best-effort advertisable address (SPEC §4.4's address
+  /// hint) — see [preferredAdvertisableAddress]'s own doc comment.
+  /// Overridable so a test can pin it rather than depend on the machine's
+  /// real interfaces.
+  final Future<String?> Function() advertisableAddress;
+
+  /// Which port the payload tells the other device to dial *afterwards* —
+  /// where this device's `dsync agent --serve` answers, not the enrolment
+  /// endpoint bound below, which is gone the moment this window closes.
+  /// `dsync pair show --serve-port` is the CLI's way of saying the same
+  /// thing; the head has no field for it because it has no way to run an
+  /// agent on anything but the default yet.
+  final int servicePort;
+
+  /// How long a code stays redeemable (SPEC §4.4's short window).
+  /// [defaultEnrolmentTokenTtl] everywhere but a test, which shortens it so
+  /// the expiry path can be asserted in milliseconds rather than minutes.
+  final Duration window;
+
+  /// The view state this controller renders into; owned here, disposed here.
+  final PairShowViewState state = PairShowViewState();
+
+  /// The open window's endpoint, while there is one. Held so [stop] can
+  /// close it from outside the [show] call that bound it.
+  EnrolmentListener? _listener;
+
+  /// Completed by [stop]: the arm of [show]'s race that means "the page is
+  /// gone", and the flag that keeps a late outcome from being recorded into
+  /// a view state nobody is reading any more.
+  Completer<void>? _stopped;
+
+  /// Opens a pairing window and waits out its token.
+  ///
+  /// Called by the page when it appears, and again by its Show-a-new-code
+  /// button: a token is single-use and time-bounded, so "try again" is
+  /// always a fresh window rather than a retry of the old one. A second call
+  /// while one is open closes the first, so two endpoints can never be bound
+  /// at once.
+  ///
+  /// Every way this ends lands on [PairShowViewState.status]: paired,
+  /// expired, or failed with the line that names the remedy. The one
+  /// exception is the page leaving ([stop]), which records nothing because
+  /// there is nobody left to read it.
+  Future<void> show() async {
+    await stop();
+    final stopped = _stopped = Completer<void>();
+    _record(stopped, const PairShowStarting());
+
+    final identity = await app.loadOrCreateIdentity();
+    final pairedDeviceStore = await app.pairedDevices;
+    final token = generateEnrolmentToken();
+    final expiresAt = DateTime.now().add(window);
+
+    // Completed when a refusal happened *after* the real token was redeemed
+    // — see the class doc comment. Once the token is burned no later
+    // connection can succeed, so continuing to wait out the window would
+    // only make the user sit through five minutes for an answer that is
+    // already known.
+    final refused = Completer<String>();
+
+    final EnrolmentListener listener;
+    try {
+      listener = await bind(
+        ownIdentity: identity,
+        token: token,
+        tokenExpiresAt: expiresAt,
+        pairedDeviceStore: pairedDeviceStore,
+        onError: (error, _) {
+          if (error is EnrolmentRefusedException &&
+              error.reason != enrolmentTokenRejectedReason &&
+              !refused.isCompleted) {
+            refused.complete(error.reason);
+          }
+        },
+      );
+    } on SocketException catch (e) {
+      _record(
+        stopped,
+        PairShowFailed(
+          'This device could not open a pairing endpoint: ${e.message}. '
+          'Pair the other way round instead — scan or paste that device\'s '
+          'code from the Pair page.',
+        ),
+      );
+      return;
+    }
+    if (stopped.isCompleted) {
+      // The page left while the socket was being bound: nothing is watching
+      // this window, so close it rather than leave it open for its token's
+      // full five minutes.
+      await listener.close();
+      return;
+    }
+    _listener = listener;
+
+    final expired = Completer<void>();
+    final expiryTimer = Timer(expiresAt.difference(DateTime.now()), () {
+      if (!expired.isCompleted) expired.complete();
+    });
+
+    try {
+      final host =
+          await advertisableAddress() ?? InternetAddress.loopbackIPv4.address;
+      final payload = PairingPayload(
+        certificateDer: identity.certificateDer,
+        address: PeerAddress(host: host, port: _portOf(listener.address)),
+        servicePort: servicePort,
+        token: token,
+      );
+      _record(
+        stopped,
+        PairShowWaiting(
+          PairingOffer.forPayload(
+            payload.encode(),
+            address: '$host:${_portOf(listener.address)}',
+            expiresAt: expiresAt,
+          ),
+        ),
+      );
+
+      // Four ways this ends, raced against each other. Nothing polls: the
+      // listener reports the one enrolment it can ever accept, rather than
+      // this re-reading the store to discover what the object in front of it
+      // already knows. Each arm is distinguished by the type it yields,
+      // except the two that yield nothing and are told apart by which
+      // completer completed.
+      final outcome = await Future.any<Object?>([
+        listener.enrolled,
+        refused.future,
+        expired.future.then((_) => null),
+        stopped.future.then((_) => null),
+      ]);
+
+      if (stopped.isCompleted) return;
+      if (outcome is PairedDevice) {
+        await _recordPaired(outcome, stopped);
+        return;
+      }
+      if (outcome is String) {
+        _record(
+          stopped,
+          PairShowFailed(
+            'The other device was turned away: $outcome. The code is used '
+            'up either way — show a new one and try again.',
+          ),
+        );
+        return;
+      }
+      _record(stopped, const PairShowExpired());
+    } finally {
+      expiryTimer.cancel();
+      if (_listener == listener) _listener = null;
+      await listener.close();
+    }
+  }
+
+  /// Closes the window, if one is open, and stops anything it was waiting
+  /// on from being recorded. Called by the page on the way out, and by
+  /// [show] before it opens the next one; safe to call when nothing is
+  /// open.
+  Future<void> stop() async {
+    final stopped = _stopped;
+    if (stopped != null && !stopped.isCompleted) stopped.complete();
+    final listener = _listener;
+    _listener = null;
+    await listener?.close();
+  }
+
+  /// The enrolment happened and the store already holds it: re-read the list
+  /// so the new row is there when the page leaves, and say who it was.
+  ///
+  /// A store that went corrupt between the add and the re-read is reported
+  /// as "paired, but" — the pairing itself held — with `core`'s own line
+  /// naming the file, the same way `PairController` reports it from the
+  /// other end.
+  Future<void> _recordPaired(PairedDevice device, Completer<void> stopped) async {
+    try {
+      await app.refreshDevices();
+    } on PairedDeviceStoreCorruptException catch (e) {
+      _record(
+        stopped,
+        PairShowFailed('Paired, but the device list could not be re-read: $e'),
+      );
+      return;
+    }
+    _record(stopped, PairShowPaired(device.name));
+  }
+
+  /// Records [status], unless the window it belongs to has been stopped —
+  /// which is also how this page is disposed, so every write goes through
+  /// here rather than risk a notification out of a torn-down view state.
+  void _record(Completer<void> stopped, PairShowStatus status) {
+    if (stopped.isCompleted) return;
+    state.recordStatus(status);
+  }
+
+  /// The port out of an `EnrolmentListener.address`, which is `host:port`
+  /// with the host already rendered — the ephemeral number the OS picked,
+  /// which is what the payload has to carry.
+  int _portOf(String address) =>
+      int.parse(address.substring(address.lastIndexOf(':') + 1));
+
+  void dispose() {
+    unawaited(stop());
+    state.dispose();
+  }
+}

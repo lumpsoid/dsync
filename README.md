@@ -10,21 +10,24 @@ behaviour, and every module's doc comments reference its section numbers.
 ## Status
 
 v0, in development. The core engine, the CLI and the Flutter head are
-implemented; the head pairs by pasting the payload line or by scanning the QR
-beside it (SPEC §4.4).
+implemented; the head pairs either way round — by pasting the payload line or
+scanning the QR beside it, or by showing its own code for the other device to
+scan or paste (SPEC §4.4).
 
 The Flutter head also runs on Linux, macOS and Windows, where it manages the
 device rather than syncing from a phone: it reads and writes the *same* state
 directory the CLI does (SPEC §3, §8.3), so this device's identity and
 certificate, each pairing's certificate and name, and which replica roots each
 paired device may reach are all editable from the app and enforced by
-`dsync agent`. It binds no listener of its own (SPEC §16).
+`dsync agent`. It serves no replica of its own (SPEC §16); the one socket it
+binds is the enrolment endpoint behind **Show this device's code**, open only
+while that page is (SPEC §4.4).
 
 | Area | State |
 |---|---|
 | `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
 | `lib/cli/` — args, profile, prompts, output | implemented |
-| `lib/app/` — Flutter head: profiles home, devices, device, this device, pair, run setup, run | implemented |
+| `lib/app/` — Flutter head: profiles home, devices, device, this device, pair, pair show, run setup, run | implemented |
 
 ## Using it
 
@@ -80,7 +83,10 @@ A paired peer is a replica location: `peer://<device-name>:<path>` (SPEC §2)
 against a `dsync agent --serve` on that device. `dsync pair show` prints its
 payload as a text line on stdout and, when the terminal can show one, as a QR
 on stderr; the text is what a desktop-to-server pair exchanges (neither end
-has a camera), and the Flutter head takes either form (below).
+has a camera), and the Flutter head takes either form (below). The head shows
+the same payload itself, as a symbol and a copyable line, from **Pair a
+device → Show this device's code** — for the pairing where the camera is on
+the other device.
 
 Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
 archives, locks, this device's identity, the paired-device set and the

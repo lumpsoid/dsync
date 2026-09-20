@@ -36,6 +36,7 @@ void main() {
   late String payloadText;
   var enrolCalls = 0;
   var paired = 0;
+  var showOwnCodeTaps = 0;
 
   setUpAll(() {
     payloadText = PairingPayload(
@@ -74,6 +75,7 @@ void main() {
         );
     enrolCalls = 0;
     paired = 0;
+    showOwnCodeTaps = 0;
   });
 
   // Scopes are process-global: reset both so a pin cannot leak into the
@@ -114,6 +116,7 @@ void main() {
       MaterialApp(
         home: PairPage(
           onPaired: () => paired++,
+          onShowOwnCode: () => showOwnCodeTaps++,
           scanner: scanner ?? noCameraAskedFor,
         ),
       ),
@@ -163,6 +166,21 @@ void main() {
     expect(find.byKey(const Key('pair-proposed-name')), findsNothing);
     expect(find.byKey(const Key('pair-submit')), findsNothing);
     expect(find.text('scan'), findsNothing);
+  });
+
+  testWidgets('the other way round is offered until a code is read', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('pair-show-own-code')));
+    await tester.pump();
+    expect(showOwnCodeTaps, 1);
+
+    // Gone once there is a code to redeem: showing one instead would throw
+    // away the one that has just been read.
+    await withCode(tester);
+    expect(find.byKey(const Key('pair-show-own-code')), findsNothing);
   });
 
   testWidgets('a code that was read says which device and where, before '
