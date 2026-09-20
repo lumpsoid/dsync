@@ -32,11 +32,7 @@ void main() {
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('profiles_controller');
     picker = FakeFolderPicker();
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     controller = ProfilesController(app, picker: picker);
     phone = PairedDevice(
       certificatePem: certA,

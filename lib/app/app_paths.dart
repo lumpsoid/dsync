@@ -42,26 +42,25 @@ import 'package:path_provider/path_provider.dart';
 /// every read and buying nothing. So the untestable calls happen exactly
 /// once, in [forThisDevice], and everything after them is a value.
 ///
-/// [documentsDir] is the third directory, and the one user data lives in:
-/// where this head creates a local replica that needs no OS grant. It is not
-/// the only place one can be — `RunSetupController` also takes a folder the
-/// user chooses through the platform chooser, once a `dart:io` probe has
-/// proved this head can read and write it — but it is the place that always
-/// works, and the fallback offered when a chosen folder is refused.
+/// **There is no third directory for user data.** An earlier version
+/// resolved `getApplicationDocumentsDirectory()` here and Run setup offered
+/// every folder under it as a replica location. That guessed, and guessed
+/// differently per platform — app-private on Android and iOS, the user's
+/// own `~/Documents` on desktop — so it went with the control that listed
+/// it. A local replica is now the folder the user picks through the
+/// platform chooser (`RunSetupController`), and this class resolves nothing
+/// on its behalf.
 class AppPaths {
   /// Composes both `core` directories from [baseDir], the platform's
   /// application support directory — the Android and iOS branch (see the
   /// class doc comment). `core` joins `dsync` onto it, the same as every
   /// other branch; an empty [baseDir] is refused by `core` at construction
   /// (`ArgumentError`) rather than resolving to a bare `/dsync`.
-  /// [documentsDir] is carried as handed over: replica folders go directly
-  /// under it, and nothing of `dsync`'s own is written there.
-  AppPaths(String baseDir, {required String documentsDir})
+  AppPaths(String baseDir)
     : this._(
         HostSuppliedConfigDir(baseDir),
         const {},
         HostSuppliedStateDir(baseDir),
-        documentsDir: documentsDir,
       );
 
   /// The desktop branch: the same directories the CLI head resolves, from
@@ -77,13 +76,7 @@ class AppPaths {
     required StateDirPlatform stateDirPlatform,
     required ConfigDirPlatform configDirPlatform,
     required Map<String, String> environment,
-    required String documentsDir,
-  }) : this._(
-         configDirPlatform,
-         environment,
-         stateDirPlatform,
-         documentsDir: documentsDir,
-       );
+  }) : this._(configDirPlatform, environment, stateDirPlatform);
 
   /// Positional, and private: the two fields it keeps for [configDir]'s
   /// lazy resolution are private, and Dart has no private *named*
@@ -91,17 +84,16 @@ class AppPaths {
   AppPaths._(
     this._configDirPlatform,
     this._environment,
-    StateDirPlatform stateDirPlatform, {
-    required this.documentsDir,
-  }) : stateDir = resolveStateDir(_environment, stateDirPlatform);
+    StateDirPlatform stateDirPlatform,
+  ) : stateDir = resolveStateDir(_environment, stateDirPlatform);
 
   final ConfigDirPlatform _configDirPlatform;
   final Map<String, String> _environment;
 
   /// The single place the head touches the plugin and the platform: asks
-  /// which OS this is, asks `path_provider` for the two directories only it
-  /// can answer for, and hands both to [forHost]. Requires a Flutter
-  /// binding, so it is production-only.
+  /// which OS this is, asks `path_provider` for the directory only it can
+  /// answer for, and hands both to [forHost]. Requires a Flutter binding,
+  /// so it is production-only.
   ///
   /// The support directory is read on every platform, including the desktop
   /// ones that do not use it, because the call is cheap and asking for it
@@ -111,7 +103,6 @@ class AppPaths {
     Platform.operatingSystem,
     environment: Platform.environment,
     supportDir: (await getApplicationSupportDirectory()).path,
-    documentsDir: (await getApplicationDocumentsDirectory()).path,
   );
 
   /// [forThisDevice]'s rule over plain values: which `core` directory rule
@@ -132,39 +123,28 @@ class AppPaths {
     String operatingSystem, {
     required Map<String, String> environment,
     required String supportDir,
-    required String documentsDir,
   }) => switch (operatingSystem) {
-    'android' || 'ios' => AppPaths(supportDir, documentsDir: documentsDir),
+    'android' || 'ios' => AppPaths(supportDir),
     'linux' => AppPaths.forDesktop(
       stateDirPlatform: const LinuxStateDir(),
       configDirPlatform: const LinuxConfigDir(),
       environment: environment,
-      documentsDir: documentsDir,
     ),
     'macos' => AppPaths.forDesktop(
       stateDirPlatform: const MacOsStateDir(),
       configDirPlatform: const MacOsConfigDir(),
       environment: environment,
-      documentsDir: documentsDir,
     ),
     'windows' => AppPaths.forDesktop(
       stateDirPlatform: const WindowsStateDir(),
       configDirPlatform: const WindowsConfigDir(),
       environment: environment,
-      documentsDir: documentsDir,
     ),
     final other => throw StateError(
       'No dsync state directory rule for "$other" (SPEC §3, §8.3): the five '
       'v1 targets are linux, macos, windows, android and ios.',
     ),
   };
-
-  /// The platform's application documents directory — app-private on
-  /// Android, the app's own `Documents` on iOS, the user's on desktop. Where
-  /// local replica folders are created when the user does not pick one
-  /// elsewhere; distinct from [stateDir] so a user's synced files never sit
-  /// beside the identity and archives.
-  final String documentsDir;
 
   /// Where the device identity, the paired-device store, and the archives
   /// and their locks live (SPEC §8.3). On desktop this is the CLI's own

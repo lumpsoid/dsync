@@ -30,10 +30,7 @@ void main() {
 
   setUp(() {
     app = AppController(
-      () async => AppPaths(
-        Directory.systemTemp.path,
-        documentsDir: '${Directory.systemTemp.path}/documents',
-      ),
+      () async => AppPaths(Directory.systemTemp.path),
       now: DateTime.now,
     );
     controller = DevicesController(app);

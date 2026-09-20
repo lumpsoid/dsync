@@ -57,11 +57,7 @@ void main() {
     );
     await store.add(desktop);
     await store.add(laptop);
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     picker = _FakePicker();
     controller = SharedFoldersController(
       app,

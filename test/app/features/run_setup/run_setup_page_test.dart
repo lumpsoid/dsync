@@ -40,11 +40,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('run_setup_page_test');
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     picker = FakeFolderPicker();
     controller = RunSetupController(app, picker: picker);
     desktop = PairedDevice(

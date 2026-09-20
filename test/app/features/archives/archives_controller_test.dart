@@ -22,11 +22,7 @@ void main() {
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('dsync_archives_ctrl_');
     await Directory('${tempDir.path}/dsync').create(recursive: true);
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     controller = ArchivesController(app);
   });
 
@@ -49,16 +45,16 @@ void main() {
 
   ProfileRow profile(String id, String name, {String? peerName = 'desktop'}) =>
       ProfileRow(
-    id: id,
-    name: name,
-    peerDeviceId: 'a1b2:c3d4',
-    peerName: peerName,
-    localRootPath: '/on-device/notes',
-    remoteRootPath: '~/notes',
-    localRootLabel: '/on-device/notes',
-    remoteRootLabel: '~/notes',
-    breakage: null,
-  );
+        id: id,
+        name: name,
+        peerDeviceId: 'a1b2:c3d4',
+        peerName: peerName,
+        localRootPath: '/on-device/notes',
+        remoteRootPath: '~/notes',
+        localRootLabel: '/on-device/notes',
+        remoteRootLabel: '~/notes',
+        breakage: null,
+      );
 
   List<ArchiveRow> rows() => (controller.state.listing as ArchivesReady).rows;
 
@@ -85,9 +81,7 @@ void main() {
 
   test('a run whose device was revoked keeps the id as its peer', () async {
     await writeLog('p1', 'a');
-    app.state.recordProfiles([
-      profile('p1', 'weekly notes', peerName: null),
-    ]);
+    app.state.recordProfiles([profile('p1', 'weekly notes', peerName: null)]);
 
     await controller.refresh();
 

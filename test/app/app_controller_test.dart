@@ -32,8 +32,7 @@ void main() {
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('app_controller_test');
     controller = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+      () async => AppPaths(tempDir.path),
       now: DateTime.now,
     );
   });
@@ -110,8 +109,7 @@ void main() {
         // A fresh controller over the same paths: the identity must come from
         // disk, not from anything the first controller cached in memory.
         final again = AppController(
-          () async =>
-              AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+          () async => AppPaths(tempDir.path),
           now: DateTime.now,
         );
         final second = await again.loadOrCreateIdentity();
@@ -132,10 +130,7 @@ void main() {
         final otherDir = await Directory.systemTemp.createTemp('app_ctl_other');
         addTearDown(() => otherDir.delete(recursive: true));
         final other = AppController(
-          () async => AppPaths(
-            otherDir.path,
-            documentsDir: '${otherDir.path}/documents',
-          ),
+          () async => AppPaths(otherDir.path),
           now: DateTime.now,
         );
 
@@ -192,8 +187,7 @@ void main() {
         final notAfter = certificateValidityFromDer(identity.certificateDer)
             .notAfter;
         final nearExpiry = AppController(
-          () async =>
-              AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+          () async => AppPaths(tempDir.path),
           now: () => notAfter.subtract(const Duration(days: 10)),
         );
 
@@ -432,7 +426,7 @@ void main() {
     var calls = 0;
     final counted = AppController(now: DateTime.now, () async {
       calls++;
-      return AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents');
+      return AppPaths(tempDir.path);
     });
 
     await counted.paths;

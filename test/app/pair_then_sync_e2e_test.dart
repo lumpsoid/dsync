@@ -104,10 +104,7 @@ void main() {
     // Two independent state directories (SPEC §8.3): the head's, resolved
     // through `AppPaths` the way the scope does it, and the desktop's.
     app = AppController(
-      () async => AppPaths(
-        '${tempDir.path}/phone',
-        documentsDir: '${tempDir.path}/phone-documents',
-      ),
+      () async => AppPaths('${tempDir.path}/phone'),
       now: DateTime.now,
     );
     localRoot = await Directory('${tempDir.path}/phone-documents/notes')

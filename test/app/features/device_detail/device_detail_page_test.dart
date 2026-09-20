@@ -51,11 +51,7 @@ void main() {
     tempDir = await Directory.systemTemp.createTemp('device_detail_page_test');
     await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
         .add(phone);
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     probe = _FakeProbe();
     controller = DeviceDetailController(
       app,
@@ -180,7 +176,9 @@ void main() {
     tester,
   ) async {
     const long = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
-    app.state.recordDevices([row(agreedRoots: const [long])]);
+    app.state.recordDevices([
+      row(agreedRoots: const [long]),
+    ]);
 
     await pumpPage(tester);
     await scrollTo(tester, const Key('device-root-$long'));
@@ -217,7 +215,9 @@ void main() {
     expect(
       tester.getTopLeft(find.byKey(const Key('device-revoke'))).dy,
       lessThan(
-        tester.getTopLeft(find.byKey(const Key('device-root-/home/me/notes'))).dy,
+        tester
+            .getTopLeft(find.byKey(const Key('device-root-/home/me/notes')))
+            .dy,
       ),
     );
   });
@@ -251,10 +251,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.state.outcome, isA<DeviceDetailIdle>());
-    expect(
-      find.byKey(const Key('device-root-/home/me/notes')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const Key('device-root-/home/me/notes')), findsOneWidget);
   });
 
   testWidgets('a confirmed withdrawal writes and reports the folder', (

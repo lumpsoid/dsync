@@ -25,8 +25,7 @@ import 'sync_profile_store.dart';
 /// lookup (`AppPaths.forThisDevice`) is asynchronous and a scope's factory
 /// is not: the scope can construct the controller synchronously and the
 /// paths are resolved once, on first use, by whichever bootstrap step needs
-/// them first. A test passes `() async => AppPaths(tempDir.path,
-/// documentsDir: ...)`.
+/// them first. A test passes `() async => AppPaths(tempDir.path)`.
 ///
 /// [now] is the clock the SPEC §4.4 expiry rule reads — the same callback
 /// shape `pair list` takes — so a test can present a nearly-expired

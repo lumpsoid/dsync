@@ -34,11 +34,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('pair_controller_test');
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     await app.bootstrap();
     // Each test swaps `enrol` before submitting; a test that forgets gets a
     // loud failure rather than a silent success.

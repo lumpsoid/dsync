@@ -48,11 +48,7 @@ void main() {
   setUp(() async {
     screenWake = FakeScreenWake();
     tempDir = await Directory.systemTemp.createTemp('sync_run_controller_test');
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     localRoot = Directory('${tempDir.path}/documents/notes')
       ..createSync(recursive: true);
     remoteRoot = Directory('${tempDir.path}/desktop/notes')
@@ -189,8 +185,7 @@ void main() {
     test("this device's expired certificate names this device", () async {
       app.dispose();
       app = AppController(
-        () async =>
-            AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
+        () async => AppPaths(tempDir.path),
         now: () => DateTime.now().add(const Duration(days: 365 * 20)),
       );
       await make(served(desktopAgent)).start(request(dryRun: true));

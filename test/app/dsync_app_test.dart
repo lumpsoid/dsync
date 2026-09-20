@@ -72,11 +72,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('dsync_app_test');
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     devices = DevicesController(app);
     pair = PairController(
       app,

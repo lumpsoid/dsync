@@ -285,9 +285,9 @@ class _RunSetupForm extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: state.localRoot == null
                             ? TextStyle(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurfaceVariant,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
                               )
                             : null,
                       ),

@@ -34,11 +34,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('run_setup_controller');
-    app = AppController(
-      () async =>
-          AppPaths(tempDir.path, documentsDir: '${tempDir.path}/documents'),
-      now: DateTime.now,
-    );
+    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     picker = FakeFolderPicker();
     controller = RunSetupController(app, picker: picker);
     desktop = PairedDevice(
@@ -511,8 +507,7 @@ void main() {
 
     test('opened from a profile: the form is pre-filled, its folder is the '
         'form\'s value, the per-run choices not carried over', () async {
-      final localRoot = Directory(notes())
-        ..createSync(recursive: true);
+      final localRoot = Directory(notes())..createSync(recursive: true);
       final id = ReplicaConnector.profileIdFor(
         localRootPath: localRoot.path,
         peerDeviceId: desktop.deviceId,
@@ -543,8 +538,7 @@ void main() {
     });
 
     test('a start from a profile saves over its id, not beside it', () async {
-      final localRoot = Directory(notes())
-        ..createSync(recursive: true);
+      final localRoot = Directory(notes())..createSync(recursive: true);
       final id = ReplicaConnector.profileIdFor(
         localRootPath: localRoot.path,
         peerDeviceId: desktop.deviceId,
@@ -631,8 +625,7 @@ void main() {
     });
 
     test('a save from a profile saves over its id, not beside it', () async {
-      final localRoot = Directory(notes())
-        ..createSync(recursive: true);
+      final localRoot = Directory(notes())..createSync(recursive: true);
       final id = ReplicaConnector.profileIdFor(
         localRootPath: localRoot.path,
         peerDeviceId: desktop.deviceId,
@@ -682,8 +675,7 @@ void main() {
     test(
       'a second load from a device clears the previous visit\'s pre-fill',
       () async {
-        final localRoot = Directory(notes())
-          ..createSync(recursive: true);
+        final localRoot = Directory(notes())..createSync(recursive: true);
         final id = ReplicaConnector.profileIdFor(
           localRootPath: localRoot.path,
           peerDeviceId: desktop.deviceId,
