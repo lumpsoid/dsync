@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../shared_folder_row.dart';
-import '../device_detail/withdraw_root_dialog.dart';
+import '../../withdraw_root_dialog.dart';
 import 'shared_folders_controller.dart';
 import 'shared_folders_scope.dart';
 import 'shared_folders_view_state.dart';

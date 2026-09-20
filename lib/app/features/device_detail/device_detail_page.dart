@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../format_date.dart';
 import '../../paired_device_row.dart';
+import '../../withdraw_root_dialog.dart';
 import 'device_detail_controller.dart';
 import 'device_detail_scope.dart';
 import 'device_detail_view_state.dart';
-import 'withdraw_root_dialog.dart';
 
 /// One paired device, and everything this host decides about it (SPEC §4.4,
 /// §13): its name here, the certificate this host pins it by, the replica

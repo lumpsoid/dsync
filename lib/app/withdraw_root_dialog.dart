@@ -16,10 +16,10 @@ import 'package:flutter/material.dart';
 /// refused. Nothing on disk moves, which is the other half of what a user
 /// hesitating over this button is afraid of.
 ///
-/// Lives in `device_detail/` because that is where withdrawing a grant
-/// first had a page, and is imported by `shared_folders/` rather than
-/// copied there: two dialogs saying almost the same thing about the same
-/// write is how a user learns that one of the two is lying.
+/// Lives in `app/` beside the other cross-feature pieces because both the
+/// device page and the Shared folders page withdraw a grant, and neither
+/// owns this more than the other: two dialogs saying almost the same thing
+/// about the same write is how a user learns that one of the two is lying.
 ///
 /// Pops `true` to withdraw and `false` to keep sharing; a dismissal pops
 /// nothing, and every caller treats that as "keep sharing".

@@ -4,10 +4,10 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 import '../../app_controller.dart';
 import '../../paired_device_row.dart';
 import '../../peer_address_text.dart';
+import '../../root_path_expansion.dart';
 import '../run_setup/folder_picker.dart';
 import 'device_detail_view_state.dart';
 import 'peer_probe.dart';
-import 'root_path_expansion.dart';
 
 /// Input methods of the Device page: one paired device, and everything this
 /// host decides about it (SPEC §4.4, §13) — what it is called here, which

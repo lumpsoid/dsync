@@ -1,8 +1,8 @@
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 
 import '../../app_controller.dart';
+import '../../root_path_expansion.dart';
 import '../../shared_folder_row.dart';
-import '../device_detail/root_path_expansion.dart';
 import '../run_setup/folder_picker.dart';
 import 'shared_folders_view_state.dart';
 
