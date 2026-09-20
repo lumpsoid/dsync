@@ -471,6 +471,60 @@ void main() {
     expect(sessionErrors, isEmpty);
   });
 
+  test('a warmed-up security context is invalidated by the next store '
+      'write, in both directions', () async {
+    // The listener caches the `SecurityContext` it builds and reuses it
+    // while the store's certificates are unchanged (task 1b935d), so that an
+    // unauthenticated probe does not cost a certificate parse per paired
+    // device. What must survive that: the freshness the per-connection
+    // rebuild bought in the first place. This warms the cache *first* — a
+    // run of accepts that all hit it — and only then changes the store, so
+    // the assertions below are about a cache with something in it to go
+    // stale, which the tests above, hitting a cold cache, are not.
+    final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+    final doomed = generateDeviceIdentity(commonName: 'dsync-doomed');
+    await store.add(
+      pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+    );
+    await store.add(
+      pairedDeviceFor(doomed, name: 'doomed', roots: {allowedRoot}),
+    );
+    final listener = await bind();
+    addTearDown(listener.close);
+
+    for (var i = 0; i < 3; i++) {
+      final warm = await connectAs(phone, listener, rootPath: allowedRoot);
+      await expectLater(warm.hello(), completes);
+      await warm.disconnect();
+    }
+    expect(sessionErrors, isEmpty);
+
+    // A pairing made against a warm cache is honoured on the very next
+    // attempt: the store read comes back with a certificate the cached
+    // context was not built from, so it is rebuilt.
+    final newcomer = generateDeviceIdentity(commonName: 'dsync-newcomer');
+    await store.add(
+      pairedDeviceFor(newcomer, name: 'newcomer', roots: {allowedRoot}),
+    );
+    final fresh = await connectAs(newcomer, listener, rootPath: allowedRoot);
+    await expectLater(fresh.hello(), completes);
+    await fresh.disconnect();
+    expect(sessionErrors, isEmpty);
+
+    // And so is a revocation — the direction a stale cache would get
+    // dangerously wrong, by keeping a revoked device trusted.
+    await store.revoke(deviceIdFromCertificateDer(doomed.certificateDer));
+    expect(await attemptAndObserveFailure(doomed, listener), isTrue);
+    expect(sessionErrors.single, isA<HandshakeException>());
+    sessionErrors.clear();
+
+    // The devices that are still paired are unaffected by either rebuild.
+    final after = await connectAs(phone, listener, rootPath: allowedRoot);
+    await expectLater(after.hello(), completes);
+    await after.disconnect();
+    expect(sessionErrors, isEmpty);
+  });
+
   test(
     'a live session survives a pairing and a revocation made under it',
     () async {

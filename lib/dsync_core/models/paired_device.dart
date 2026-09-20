@@ -46,9 +46,9 @@ class PairedDevice {
   /// The peer's self-signed identity certificate, PEM-encoded.
   ///
   /// PEM, not DER, for the same reason `DeviceIdentity.certificatePem` is:
-  /// `SecurityContext.setTrustedCertificatesBytes` and
-  /// `setClientAuthoritiesBytes` — what `d0e960` installs a pin through — both
-  /// read PEM, and PEM is also the shape the certificate travels in across a
+  /// `SecurityContext.setTrustedCertificatesBytes` — what `d0e960` installs a
+  /// pin through — reads PEM, and PEM is also the shape the certificate
+  /// travels in across a
   /// pairing exchange (the QR, task 65fbb7). [certificateDer] derives the
   /// bytes `d0e960` compares `X509Certificate.der` against and [deviceId]
   /// derives its hash the same way — both unambiguous, standard PEM framing,

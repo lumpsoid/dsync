@@ -76,7 +76,7 @@ typedef SessionErrorHandler = void Function(
 ///
 /// **A rejection has two different shapes, and only one of them is a
 /// session.** A stranger's certificate — not a currently paired device's, so
-/// never installed as a trusted client authority for that connection — fails
+/// never installed as a trust anchor for that connection — fails
 /// BoringSSL's own verification during the TLS handshake, before any session
 /// code here sees the connection at all; [bindSecure] performs that handshake
 /// itself, per accepted connection, and catches its failure the same way
@@ -123,10 +123,15 @@ class AgentListener {
     Map<String, String> environment,
   ) : _closeServer = server.close,
       _boundAddress = '${server.address.address}:${server.port}' {
+    // One cache per listener, not one per connection: it is what makes an
+    // accept cost a store read rather than a store read plus a certificate
+    // parse per paired device (see [_SecurityContextCache]).
+    final contextCache = _SecurityContextCache(ownIdentity);
     _connections = server.listen(
       (socket) => _upgradeAndServe(
         socket,
         ownIdentity,
+        contextCache,
         buildAgent,
         pairedDeviceStore,
         environment,
@@ -176,10 +181,11 @@ class AgentListener {
   /// holding [ownIdentity]'s certificate and key as this listener's own
   /// credential, `requireClientCertificate: true` so an anonymous peer never
   /// completes a handshake at all, and — this is the part that is easy to get
-  /// backwards — every currently paired device's certificate installed as
-  /// **both** a trusted client authority and a trusted certificate via
-  /// [SecurityContext.setClientAuthoritiesBytes] and
-  /// [SecurityContext.setTrustedCertificatesBytes]. The server side of TLS
+  /// backwards — every currently paired device's certificate installed as a
+  /// trusted certificate via [SecurityContext.setTrustedCertificatesBytes],
+  /// and only that (see [_SecurityContextCache] on why
+  /// [SecurityContext.setClientAuthoritiesBytes] is not also called, and how
+  /// that was settled). The server side of TLS
   /// has no `onBadCertificate` hook: BoringSSL verifies a peer's certificate
   /// before any code here sees the connection, and a self-signed certificate
   /// can only pass that verification by standing in as its own trust anchor —
@@ -197,19 +203,21 @@ class AgentListener {
   /// and does the TLS accept itself, in [_upgradeAndServe], reading
   /// [pairedDeviceStore] anew for every accepted socket and building that
   /// connection's [SecurityContext] from what the store holds at that
-  /// moment. `setClientAuthoritiesBytes` has no "add one more, later" form,
-  /// so the alternative — one context handed to `SecureServerSocket.bind` —
-  /// would have fixed the anchors at bind time, and keeping them current
-  /// would have meant rebinding the socket under live sessions. Doing the
-  /// accept per connection needs nothing rebound and nothing drained: a
-  /// session already in flight holds its own upgraded socket and is
-  /// untouched by any later store change; a device paired while this is
-  /// serving connects on its next attempt; a device revoked while this is
-  /// serving is refused on its next attempt, during the handshake itself,
-  /// exactly as a stranger is. The cost is one store read and one context
-  /// build per accept, which at this transport's connection rate — a handful
-  /// of syncs a day, not a request per millisecond — is nothing worth
-  /// avoiding. [_resolvePeer] still re-reads the store for its pin check,
+  /// moment. `setTrustedCertificatesBytes` has no "take one back, later"
+  /// form, so the alternative — one context handed to
+  /// `SecureServerSocket.bind` — would have fixed the anchors at bind time,
+  /// and keeping them current would have meant rebinding the socket under
+  /// live sessions. Doing the accept per connection needs nothing rebound
+  /// and nothing drained: a session already in flight holds its own upgraded
+  /// socket and is untouched by any later store change; a device paired
+  /// while this is serving connects on its next attempt; a device revoked
+  /// while this is serving is refused on its next attempt, during the
+  /// handshake itself, exactly as a stranger is. The cost is one store read
+  /// per accept — the context itself is only rebuilt when that read comes
+  /// back different, which is what [_SecurityContextCache] is for, and what
+  /// keeps an unauthenticated probe from a host on a public address costing
+  /// a certificate parse per paired device.
+  /// [_resolvePeer] still re-reads the store for its pin check,
   /// rather than reusing the list the context was built from, so that the
   /// two layers stay independently correct rather than sharing one snapshot.
   ///
@@ -319,10 +327,11 @@ class AgentListener {
 
   /// What [bindSecure] does with every socket its plain server accepts — the
   /// TLS accept itself (SPEC §4.4): builds this connection's
-  /// [SecurityContext] via [_securityContextFor], upgrades [socket] with
-  /// [SecureSocket.secureServer], requiring a client certificate, and hands
-  /// the result to [_serveSecureSession]. See [bindSecure]'s doc comment for
-  /// why the context is built here, per connection, and not once at bind.
+  /// [SecurityContext] via [_SecurityContextCache.contextFor], upgrades
+  /// [socket] with [SecureSocket.secureServer], requiring a client
+  /// certificate, and hands the result to [_serveSecureSession]. See
+  /// [bindSecure]'s doc comment for why the context is a function of the
+  /// store as read here, per connection, and not fixed once at bind.
   ///
   /// Either step can fail, and both failures go to [_onSessionError] rather
   /// than past this method — but what happens to the raw socket differs, and
@@ -352,6 +361,7 @@ class AgentListener {
   Future<void> _upgradeAndServe(
     Socket socket,
     DeviceIdentity ownIdentity,
+    _SecurityContextCache contextCache,
     Agent Function(ReplicaSpec spec) buildAgent,
     PairedDeviceStore pairedDeviceStore,
     Map<String, String> environment,
@@ -369,7 +379,7 @@ class AgentListener {
     try {
       secured = await SecureSocket.secureServer(
         socket,
-        _securityContextFor(ownIdentity, devices),
+        contextCache.contextFor(devices),
         requireClientCertificate: true,
       );
     } catch (error, stackTrace) {
@@ -398,28 +408,6 @@ class AgentListener {
       pairedDeviceStore,
       environment,
     );
-  }
-
-  /// The [SecurityContext] for one connection: [ownIdentity]'s certificate
-  /// and key as this listener's own credential, plus each of [devices] —
-  /// what the store held at the moment this connection was accepted —
-  /// installed as both a trusted certificate and a trusted client authority
-  /// (see [bindSecure]'s doc comment on why both, and why `cA: TRUE` matters
-  /// for it). Pure: a function of the values it is given.
-  static SecurityContext _securityContextFor(
-    DeviceIdentity ownIdentity,
-    List<PairedDevice> devices,
-  ) {
-    final context = SecurityContext(withTrustedRoots: false)
-      ..useCertificateChainBytes(utf8.encode(ownIdentity.certificatePem))
-      ..usePrivateKeyBytes(utf8.encode(ownIdentity.privateKeyPem));
-    for (final device in devices) {
-      final certificateBytes = utf8.encode(device.certificatePem);
-      context
-        ..setTrustedCertificatesBytes(certificateBytes)
-        ..setClientAuthoritiesBytes(certificateBytes);
-    }
-    return context;
   }
 
   /// What [bindSecure] does with a socket whose TLS handshake already
@@ -467,10 +455,11 @@ class AgentListener {
   /// enough).
   ///
   /// Reached only after BoringSSL has already verified [socket]'s peer
-  /// certificate against the trust anchors [_securityContextFor] built for this
-  /// very connection, so a certificate that was not a paired device's at
-  /// accept time never gets here — it is refused during the handshake and
-  /// reported by [_upgradeAndServe] instead (see the class doc comment). This
+  /// certificate against the trust anchors [_SecurityContextCache] held for
+  /// this very connection's accept-time view of the store, so a certificate
+  /// that was not a paired device's at accept time never gets here — it is
+  /// refused during the handshake and reported by [_upgradeAndServe] instead
+  /// (see the class doc comment). This
   /// method's own [PairedDeviceStore.byDeviceId] lookup reads the store
   /// again rather than reusing the accept-time list: the key pin below is
   /// a separate decision from trust, and keeping its read separate is what
@@ -568,6 +557,93 @@ class AgentListener {
       return;
     }
     throw SocketAlreadyServedException(socketPath);
+  }
+}
+
+/// The [SecurityContext] [AgentListener.bindSecure] hands every accepted
+/// connection: its listener's own certificate and key as that listener's
+/// credential, plus every currently paired device's certificate as a trusted
+/// certificate — rebuilt only when the paired set it was built from has
+/// actually changed.
+///
+/// **The freshness property [AgentListener.bindSecure] documents is kept
+/// exactly, not approximated.** Every accept still reads the store, and the
+/// answer [contextFor] gives is still a function of what that read returned;
+/// the cache only skips *re-deriving* a context from certificate bytes it has
+/// already derived one from. Pair, revoke and renew all write the store, so
+/// the next accept loads a different list and gets a rebuilt context — a
+/// device paired, granted or revoked while the agent is serving is still
+/// honoured on its very next attempt, with nothing rebound.
+///
+/// **Why it is worth having.** Building a context is not free: it parses this
+/// host's own EC private key and every paired device's PEM, per call. On a
+/// LAN, at a handful of syncs a day, that cost is invisible — but a host with
+/// a public address collects a continuous trickle of internet background
+/// scanning, and every probe reaches this before the peer has authenticated
+/// anything. Keyed on the certificates themselves rather than on a clock or a
+/// generation counter, so nothing has to remember to invalidate it.
+///
+/// The key is the ordered list of certificate PEMs because that is the whole
+/// of what a [PairedDevice] contributes to a context — a store rewritten with
+/// the same devices in a different order costs one needless rebuild, and
+/// never a wrong answer.
+class _SecurityContextCache {
+  final DeviceIdentity _ownIdentity;
+
+  List<String> _certificatePems = const [];
+  SecurityContext? _context;
+
+  _SecurityContextCache(this._ownIdentity);
+
+  /// The context for a connection accepted while the store held exactly
+  /// [devices] — the cached one when [devices] carries the same
+  /// certificates as the load that built it, a freshly built one otherwise.
+  SecurityContext contextFor(List<PairedDevice> devices) {
+    final certificatePems = [
+      for (final device in devices) device.certificatePem,
+    ];
+    final cached = _context;
+    if (cached != null && _sameCertificates(certificatePems)) return cached;
+
+    final context = _build(certificatePems);
+    _certificatePems = certificatePems;
+    _context = context;
+    return context;
+  }
+
+  bool _sameCertificates(List<String> certificatePems) {
+    if (certificatePems.length != _certificatePems.length) return false;
+    for (var i = 0; i < certificatePems.length; i++) {
+      if (certificatePems[i] != _certificatePems[i]) return false;
+    }
+    return true;
+  }
+
+  /// Pure: a function of [_ownIdentity] and the bytes it is given.
+  ///
+  /// Only [SecurityContext.setTrustedCertificatesBytes] is called, not
+  /// [SecurityContext.setClientAuthoritiesBytes]. The two do different
+  /// things: the first installs a trust anchor, which is what makes a
+  /// self-signed paired certificate verifiable at all, while the second only
+  /// sets the subject DN list this server advertises in its
+  /// `CertificateRequest`, so that a client holding several certificates can
+  /// pick one to present. dsync's client has exactly one identity
+  /// certificate and presents it unconditionally
+  /// ([SocketChannel.connectSecure]), so the advertisement buys nothing —
+  /// confirmed empirically, the way `cA: TRUE` was, by dropping the call and
+  /// running `agent_listener_secure_test.dart`: a paired peer still connects
+  /// and a stranger is still refused during the handshake. Dropping it also
+  /// stops handing the paired set's subject DNs — each carrying a device's
+  /// name and the first eight hex of its device id — to peers that have not
+  /// authenticated.
+  SecurityContext _build(List<String> certificatePems) {
+    final context = SecurityContext(withTrustedRoots: false)
+      ..useCertificateChainBytes(utf8.encode(_ownIdentity.certificatePem))
+      ..usePrivateKeyBytes(utf8.encode(_ownIdentity.privateKeyPem));
+    for (final certificatePem in certificatePems) {
+      context.setTrustedCertificatesBytes(utf8.encode(certificatePem));
+    }
+    return context;
   }
 }
 

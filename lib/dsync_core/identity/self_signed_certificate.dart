@@ -268,15 +268,15 @@ ASN1Sequence _subjectPublicKeyInfo(ECPublicKey key) {
 ///
 /// **Why the second attribute is not optional.** A peer is trusted by having
 /// its self-signed certificate installed as a trust anchor
-/// (`AgentListener._securityContextFor`), and BoringSSL's trust store looks
-/// an issuer up **by subject name**. Two paired devices whose subjects are
-/// byte-identical collide there: the store answers the lookup with whichever
-/// was added first, its signature does not verify the other's certificate,
-/// and the second device is refused with `CERTIFICATE_VERIFY_FAILED: self
-/// signed certificate` — an error that says nothing about the real cause.
-/// That is not hypothetical: the Flutter head names every identity it
-/// generates `dsync-app`, so a desktop paired with two phones could talk to
-/// exactly one of them.
+/// (`AgentListener`'s `_SecurityContextCache`), and BoringSSL's trust store
+/// looks an issuer up **by subject name**. Two paired devices whose subjects
+/// are byte-identical collide there: the store answers the lookup with
+/// whichever was added first, its signature does not verify the other's
+/// certificate, and the second device is refused with
+/// `CERTIFICATE_VERIFY_FAILED: self signed certificate` — an error that says
+/// nothing about the real cause. That is not hypothetical: the Flutter head
+/// names every identity it generates `dsync-app`, so a desktop paired with
+/// two phones could talk to exactly one of them.
 ///
 /// [distinguisher] is derived from the public key ([_subjectDistinguisher]),
 /// so it is unique per identity without a second source of randomness, and
