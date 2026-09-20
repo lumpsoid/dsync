@@ -1,0 +1,460 @@
+import 'package:flutter/material.dart';
+
+import '../../format_date.dart';
+import '../../paired_device_row.dart';
+import 'device_detail_controller.dart';
+import 'device_detail_scope.dart';
+import 'device_detail_view_state.dart';
+
+/// One paired device, and everything this host decides about it (SPEC §4.4,
+/// §13): its name here, the certificate this host pins it by, the replica
+/// roots it may reach, and whether it is trusted at all.
+///
+/// Widgets only, per the page role in `app_scope.dart`: the device arrives
+/// as a `PairedDeviceRow` of strings, counts and dates, and the branches
+/// here are over that row's absence and the sealed [DeviceDetailOutcome].
+///
+/// **Opened by id, not by row** — the handoff rule. The controller reads
+/// the row back out of `AppState.devices`, so a rename made here shows
+/// immediately and a device revoked here (or elsewhere) empties the page
+/// instead of leaving a row that no longer exists on screen.
+///
+/// [onGone] is the seam back: it fires once the device this page was opened
+/// for is no longer paired, which is what a revoke produces. The page does
+/// not pop itself — it has no `Navigator` of its own, per this head's
+/// navigation rule — and the entrypoint wires it to one.
+class DeviceDetailPage extends StatefulWidget {
+  const DeviceDetailPage({
+    super.key,
+    required this.deviceId,
+    required this.onGone,
+  });
+
+  /// Which device this page is about — the whole of the handoff.
+  final String deviceId;
+
+  /// Called when the device stops being paired, so the route that pushed
+  /// this page can leave it.
+  final VoidCallback onGone;
+
+  @override
+  State<DeviceDetailPage> createState() => _DeviceDetailPageState();
+}
+
+class _DeviceDetailPageState extends State<DeviceDetailPage> {
+  final DeviceDetailController _controller = deviceDetailScope.controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.select(widget.deviceId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(_controller.device?.name ?? 'Device')),
+      body: ListenableBuilder(
+        listenable: Listenable.merge([
+          _controller.app.state,
+          _controller.state,
+        ]),
+        builder: (context, _) =>
+            _DeviceDetailBody(controller: _controller, onGone: widget.onGone),
+      ),
+    );
+  }
+}
+
+class _DeviceDetailBody extends StatelessWidget {
+  const _DeviceDetailBody({required this.controller, required this.onGone});
+
+  final DeviceDetailController controller;
+  final VoidCallback onGone;
+
+  @override
+  Widget build(BuildContext context) {
+    final device = controller.device;
+    if (device == null) {
+      // Revoked — here, or in another window against the same store. The
+      // page has nothing left to show, so it says so and offers the way
+      // back rather than popping under the user's finger.
+      return _Gone(onGone: onGone);
+    }
+    return ListView(
+      children: [
+        _IdentityTile(device),
+        if (device.certificateWarning case final warning?)
+          _NoticeTile(warning, isError: false),
+        switch (controller.state.outcome) {
+          DeviceDetailDone(:final message) => _NoticeTile(
+            message,
+            isError: false,
+          ),
+          DeviceDetailFailed(:final message) => _NoticeTile(
+            message,
+            isError: true,
+          ),
+          DeviceDetailIdle() => const SizedBox.shrink(),
+        },
+        const Divider(),
+        _RootsSection(device: device, controller: controller),
+        const Divider(),
+        ListTile(
+          key: const Key('device-rename'),
+          leading: const Icon(Icons.edit_outlined),
+          title: const Text('Rename'),
+          subtitle: const Text(
+            'What this device is called here. The other device is not told '
+            'and keeps its own name for this one.',
+          ),
+          onTap: () => _rename(context, device),
+        ),
+        ListTile(
+          key: const Key('device-revoke'),
+          leading: Icon(
+            Icons.link_off,
+            color: Theme.of(context).colorScheme.error,
+          ),
+          title: const Text('Revoke pairing'),
+          subtitle: const Text(
+            'Stop trusting this device and refuse its connections.',
+          ),
+          onTap: () => _revoke(context, device),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _rename(BuildContext context, PairedDeviceRow device) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => _RenameDialog(initialName: device.name),
+    );
+    if (name != null) await controller.rename(name);
+  }
+
+  Future<void> _revoke(BuildContext context, PairedDeviceRow device) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => _RevokeDialog(name: device.name),
+    );
+    if (confirmed ?? false) await controller.revoke();
+  }
+}
+
+/// What this host knows the device by: the address it was last reached at,
+/// when the pairing happened, the certificate window it is pinned under,
+/// and the grouped hex id — last, because it is how the device is addressed
+/// rather than how anyone recognises it, and selectable because reading it
+/// aloud across a pairing is what it is for.
+class _IdentityTile extends StatelessWidget {
+  const _IdentityTile(this.device);
+
+  final PairedDeviceRow device;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      children: [
+        ListTile(
+          title: Text(device.name, style: theme.textTheme.titleLarge),
+          subtitle: Text(
+            '${device.address}\npaired ${formatDate(device.pairedAt)}',
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.verified_user_outlined),
+          title: const Text('Pinned certificate'),
+          subtitle: Text(
+            'issued ${formatDate(device.certificateIssuedAt)} · '
+            'expires ${formatDate(device.certificateExpiresAt)}',
+          ),
+        ),
+        ListTile(
+          title: const Text('Device id'),
+          subtitle: SelectableText(
+            device.deviceId,
+            key: const Key('device-detail-id'),
+            style: theme.textTheme.bodyMedium,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The replica roots this host serves to this device (SPEC §4.4's second
+/// step), with the two writes that change the set.
+///
+/// The empty case is a sentence rather than a blank space, because "this
+/// device may reach nothing here" is a real and common state — pairing and
+/// authorizing are deliberately two steps — and the row above it says
+/// nothing about which.
+class _RootsSection extends StatelessWidget {
+  const _RootsSection({required this.device, required this.controller});
+
+  final PairedDeviceRow device;
+  final DeviceDetailController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ListTile(
+          title: const Text('Folders this device may reach'),
+          subtitle: Text(
+            'Paths on this device that it is allowed to sync. Pairing and '
+            'authorizing are separate: a paired device reaches nothing '
+            'until a folder is added here.',
+            style: theme.textTheme.bodySmall,
+          ),
+          trailing: IconButton(
+            key: const Key('device-grant-root'),
+            icon: const Icon(Icons.add),
+            tooltip: 'Share a folder',
+            onPressed: () => _grant(context),
+          ),
+        ),
+        if (device.agreedRoots.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text('No folders shared with this device.'),
+          )
+        else
+          for (final root in device.agreedRoots)
+            ListTile(
+              key: Key('device-root-$root'),
+              leading: const Icon(Icons.folder_shared_outlined),
+              title: Text(root),
+              trailing: IconButton(
+                icon: const Icon(Icons.remove_circle_outline),
+                tooltip: 'Stop sharing',
+                onPressed: () => controller.revokeRoot(root),
+              ),
+            ),
+      ],
+    );
+  }
+
+  Future<void> _grant(BuildContext context) async {
+    final path = await showDialog<String>(
+      context: context,
+      builder: (context) => _GrantDialog(onBrowse: controller.picker.pick),
+    );
+    if (path != null) await controller.grantRoot(path);
+  }
+}
+
+/// The folder to share: typed, or filled in from the platform chooser.
+/// Both land in the same field and are stored through the same expansion,
+/// so `~/Sync` typed here and `~/Sync` typed into `dsync pair grant` record
+/// the same string.
+class _GrantDialog extends StatefulWidget {
+  const _GrantDialog({required this.onBrowse});
+
+  /// Opens the platform chooser and returns what was picked. Taken as a
+  /// callback rather than reached for here, so a widget test drives this
+  /// dialog without a platform channel.
+  final Future<String?> Function() onBrowse;
+
+  @override
+  State<_GrantDialog> createState() => _GrantDialogState();
+}
+
+class _GrantDialogState extends State<_GrantDialog> {
+  final TextEditingController _path = TextEditingController();
+
+  @override
+  void dispose() {
+    _path.dispose();
+    super.dispose();
+  }
+
+  Future<void> _browse() async {
+    final String? picked;
+    try {
+      picked = await widget.onBrowse();
+    } catch (_) {
+      // A chooser that will not open is reported by the controller when a
+      // grant is actually attempted; here it only means the field stays
+      // empty and the user types the path instead.
+      return;
+    }
+    if (picked != null) _path.text = picked;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Share a folder'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            key: const Key('device-grant-path-field'),
+            controller: _path,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Folder on this device',
+              hintText: '~/Sync',
+            ),
+            onSubmitted: (value) => Navigator.of(context).pop(value),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              key: const Key('device-grant-browse'),
+              onPressed: _browse,
+              icon: const Icon(Icons.folder_open),
+              label: const Text('Choose folder'),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('device-grant-confirm'),
+          onPressed: () => Navigator.of(context).pop(_path.text),
+          child: const Text('Share'),
+        ),
+      ],
+    );
+  }
+}
+
+/// The new local label. Pops the typed name, or nothing when cancelled; the
+/// empty-name and already-taken refusals are the controller's and the
+/// store's, so there is one rule about each rather than two.
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final TextEditingController _name = TextEditingController(
+    text: widget.initialName,
+  );
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename device'),
+      content: TextField(
+        key: const Key('device-name-field'),
+        controller: _name,
+        autofocus: true,
+        decoration: const InputDecoration(labelText: 'Name'),
+        onSubmitted: (value) => Navigator.of(context).pop(value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('device-rename-confirm'),
+          onPressed: () => Navigator.of(context).pop(_name.text),
+          child: const Text('Rename'),
+        ),
+      ],
+    );
+  }
+}
+
+/// The confirmation before a revoke. Its text carries SPEC §4.4's
+/// one-sidedness in the user's words: revoking here only makes this device
+/// forget the peer; the peer keeps its own entry and is told nothing.
+class _RevokeDialog extends StatelessWidget {
+  const _RevokeDialog({required this.name});
+
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Revoke $name?'),
+      content: Text(
+        'This device will stop trusting $name and will refuse its '
+        'connections.\n\n'
+        'This only changes this device. $name is not told and still trusts '
+        'this device until you revoke there too.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Revoke'),
+        ),
+      ],
+    );
+  }
+}
+
+/// What is left once the device is no longer paired.
+class _Gone extends StatelessWidget {
+  const _Gone({required this.onGone});
+
+  final VoidCallback onGone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('This device is no longer paired.'),
+            const SizedBox(height: 16),
+            FilledButton(
+              key: const Key('device-detail-back'),
+              onPressed: onGone,
+              child: const Text('Back to devices'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// An error, warning or confirmation line, in the theme's colour for it.
+class _NoticeTile extends StatelessWidget {
+  const _NoticeTile(this.message, {required this.isError});
+
+  final String message;
+  final bool isError;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListTile(
+      leading: Icon(
+        isError ? Icons.error_outline : Icons.info_outline,
+        color: isError ? scheme.error : scheme.tertiary,
+      ),
+      title: Text(message),
+    );
+  }
+}

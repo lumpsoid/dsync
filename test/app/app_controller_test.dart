@@ -156,8 +156,8 @@ void main() {
       expect(ready, isA<AppBootstrapReady>());
       ready as AppBootstrapReady;
       final identity = await controller.loadOrCreateIdentity();
-      expect(ready.deviceId, identity.deviceId);
-      expect(ready.certificateWarning, isNull);
+      expect(ready.identity.deviceId, identity.deviceId);
+      expect(ready.identity.certificateWarning, isNull);
       expect(controller.state.devices, isEmpty);
     });
 
@@ -201,7 +201,7 @@ void main() {
 
         final ready = nearExpiry.state.bootstrap as AppBootstrapReady;
         expect(
-          ready.certificateWarning,
+          ready.identity.certificateWarning,
           'certificate for this host expires in 10 days',
         );
       },

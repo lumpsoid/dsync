@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_bootstrap.dart';
+import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
@@ -20,7 +21,9 @@ void main() {
   late AppController app;
   late DevicesController controller;
   final opened = <String>[];
+  final devicesOpened = <String>[];
   var pairOpened = 0;
+  var thisDeviceOpened = 0;
 
   setUp(() {
     app = AppController(
@@ -34,7 +37,9 @@ void main() {
     appScope.setController(app);
     devicesScope.setController(controller);
     opened.clear();
+    devicesOpened.clear();
     pairOpened = 0;
+    thisDeviceOpened = 0;
   });
 
   // Scopes are process-global: reset both so a pin cannot leak into the
@@ -46,35 +51,47 @@ void main() {
   PairedDeviceRow row(
     String name, {
     String? certificateWarning,
-    int agreedRootCount = 1,
+    List<String> agreedRoots = const ['/srv/notes'],
   }) => PairedDeviceRow(
     name: name,
     deviceId: 'a1b2:c3d4:$name',
     address: '10.0.0.7:28771',
     pairedAt: DateTime(2026, 9, 15, 11, 21),
-    agreedRootCount: agreedRootCount,
+    agreedRoots: agreedRoots,
+    certificateIssuedAt: DateTime(2026, 1, 1),
+    certificateExpiresAt: DateTime(2027, 1, 1),
     certificateWarning: certificateWarning,
   );
 
   void ready({String? certificateWarning}) => app.state.recordBootstrap(
     AppBootstrapReady(
-      deviceId: 'ffff:0000',
-      certificateWarning: certificateWarning,
+      DeviceIdentityRow(
+        name: 'this device',
+        deviceId: 'ffff:0000',
+        issuedAt: DateTime(2026, 1, 1),
+        expiresAt: DateTime(2027, 1, 1),
+        certificateWarning: certificateWarning,
+      ),
     ),
   );
 
   Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
     MaterialApp(
       home: DevicesPage(
+        onOpenDevice: devicesOpened.add,
         onOpenRunSetup: opened.add,
         onOpenPair: () => pairOpened++,
+        onOpenThisDevice: () => thisDeviceOpened++,
       ),
     ),
   );
 
   testWidgets('lists every row with its rendered fields', (tester) async {
     ready();
-    app.state.recordDevices([row('phone'), row('laptop', agreedRootCount: 0)]);
+    app.state.recordDevices([
+      row('phone'),
+      row('laptop', agreedRoots: const []),
+    ]);
 
     await pumpPage(tester);
 
@@ -83,11 +100,10 @@ void main() {
     expect(find.text('a1b2:c3d4:phone'), findsOneWidget);
     expect(find.text('10.0.0.7:28771'), findsNWidgets(2));
     expect(find.text('paired 2026-09-15'), findsNWidgets(2));
-    expect(find.text('1 replica root'), findsOneWidget);
-    // The zero row prints no roots line at all: the count is what this
-    // device granted the peer, which the head can never set.
-    expect(find.textContaining('replica root'), findsOneWidget);
-    expect(find.textContaining('dsync pair grant'), findsNothing);
+    expect(find.text('1 folder shared'), findsOneWidget);
+    // Zero is a line of its own now that the head grants and withdraws
+    // roots itself: a device that can reach nothing has to say so.
+    expect(find.text('no folders shared'), findsOneWidget);
     expect(find.text('No paired devices.'), findsNothing);
   });
 
@@ -177,7 +193,7 @@ void main() {
     await pumpPage(tester);
 
     expect(find.textContaining('this host expires in 10 days'), findsOneWidget);
-    expect(find.textContaining('dsync pair renew'), findsOneWidget);
+    expect(find.textContaining('Renew it under This device.'), findsOneWidget);
   });
 
   testWidgets('shows no own-certificate warning when there is none', (
@@ -204,14 +220,28 @@ void main() {
     expect(find.text('laptop'), findsOneWidget);
   });
 
-  testWidgets('tapping a row opens Run setup with its id', (tester) async {
+  testWidgets("tapping a row opens that device's page with its id", (
+    tester,
+  ) async {
     ready();
     app.state.recordDevices([row('phone'), row('laptop')]);
     await pumpPage(tester);
 
     await tester.tap(find.text('laptop'));
 
-    expect(opened, ['a1b2:c3d4:laptop']);
+    expect(devicesOpened, ['a1b2:c3d4:laptop']);
+    // Syncing is the separate, named action: a tap is about managing the
+    // device, not running against it.
+    expect(opened, isEmpty);
+  });
+
+  testWidgets('the app bar opens This device', (tester) async {
+    ready();
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('devices-open-this-device')));
+
+    expect(thisDeviceOpened, 1);
   });
 
   testWidgets('revoke asks first and says it is one-sided', (tester) async {

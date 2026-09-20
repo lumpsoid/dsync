@@ -232,9 +232,18 @@ class _ProfileTile extends StatelessWidget {
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // The device first, on its own line: a profile is bound to one
+          // paired device, and which one is the thing that tells two
+          // similarly-named runs apart — it used to be readable only by
+          // picking the middle out of the path pair below. A revoked
+          // device has no name on this host any more, only an id, and the
+          // row says so rather than leaving a blank where a name was.
           Text(
-            '${row.localRootPath} ↔ '
-            '${row.peerName ?? row.peerDeviceId}:${row.remoteRootPath}',
+            row.peerName ?? 'unpaired device ${row.peerDeviceId}',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          Text(
+            '${row.localRootPath} ↔ ${row.remoteRootPath}',
             overflow: TextOverflow.ellipsis,
           ),
           if (breakage != null) ...[

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../format_date.dart';
 import '../../paired_device_row.dart';
 import 'devices_controller.dart';
 import 'devices_scope.dart';
@@ -14,25 +15,37 @@ import 'devices_scope.dart';
 /// notifier — the application state for the list and the gate, the view
 /// state for this page's own error line.
 ///
-/// [onOpenRunSetup] and [onOpenPair] are the seams to the two features a
-/// tap leads to: Run setup for a device, Pair from either the app-bar
-/// action or the empty state's button. Both
-/// take the destination as an id (or nothing) rather than a row — the
-/// destination loads what it needs — and both are the entrypoint's to wire
-/// to routes, so this page needs no `Navigator` of its own.
+/// [onOpenDevice], [onOpenRunSetup], [onOpenPair] and [onOpenThisDevice]
+/// are the seams to the features a tap leads to: the device's own page for
+/// managing it, Run setup for syncing with it, Pair from either the app-bar
+/// action or the empty state's button, and this installation's own identity
+/// from the app bar. Each takes the destination as an id (or nothing)
+/// rather than a row — the destination loads what it needs — and all are
+/// the entrypoint's to wire to routes, so this page needs no `Navigator` of
+/// its own.
 class DevicesPage extends StatelessWidget {
   const DevicesPage({
     super.key,
+    required this.onOpenDevice,
     required this.onOpenRunSetup,
     required this.onOpenPair,
+    required this.onOpenThisDevice,
   });
 
-  /// Opens Run setup for the tapped device, by id.
+  /// Opens the tapped device's own page — its certificate, the folders it
+  /// may reach, its name here — by id.
+  final void Function(String deviceId) onOpenDevice;
+
+  /// Opens Run setup for a device, by id.
   final void Function(String deviceId) onOpenRunSetup;
 
   /// Opens the Pair page. Reached from the app-bar action at any list
   /// length, and from the empty state's button on a first run.
   final VoidCallback onOpenPair;
+
+  /// Opens the This device page, where this installation's own identity is
+  /// shown and its certificate renewed.
+  final VoidCallback onOpenThisDevice;
 
   @override
   Widget build(BuildContext context) {
@@ -41,6 +54,12 @@ class DevicesPage extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Devices'),
         actions: [
+          IconButton(
+            key: const Key('devices-open-this-device'),
+            icon: const Icon(Icons.badge_outlined),
+            tooltip: 'This device',
+            onPressed: onOpenThisDevice,
+          ),
           IconButton(
             key: const Key('devices-open-pair'),
             icon: const Icon(Icons.add),
@@ -53,6 +72,7 @@ class DevicesPage extends StatelessWidget {
         listenable: Listenable.merge([controller.app.state, controller.state]),
         builder: (context, _) => _DevicesBody(
           controller: controller,
+          onOpenDevice: onOpenDevice,
           onOpenRunSetup: onOpenRunSetup,
           onOpenPair: onOpenPair,
         ),
@@ -64,11 +84,13 @@ class DevicesPage extends StatelessWidget {
 class _DevicesBody extends StatelessWidget {
   const _DevicesBody({
     required this.controller,
+    required this.onOpenDevice,
     required this.onOpenRunSetup,
     required this.onOpenPair,
   });
 
   final DevicesController controller;
+  final void Function(String deviceId) onOpenDevice;
   final void Function(String deviceId) onOpenRunSetup;
   final VoidCallback onOpenPair;
 
@@ -92,7 +114,8 @@ class _DevicesBody extends StatelessWidget {
             for (final row in devices)
               _DeviceTile(
                 row: row,
-                onTap: () => onOpenRunSetup(row.deviceId),
+                onTap: () => onOpenDevice(row.deviceId),
+                onRunSetup: () => onOpenRunSetup(row.deviceId),
                 onRevoke: () => _confirmRevoke(context, row),
               ),
         ],
@@ -159,18 +182,26 @@ class _EmptyState extends StatelessWidget {
 /// It stays on the row (a revoke is addressed by it) but reads as a
 /// footnote, in the muted label style.
 ///
-/// Tapping anywhere on the row opens Run setup. That is invisible on a plain
-/// list tile, so [_runSetupLabel] says it in words next to the revoke action
-/// and runs the same callback.
+/// Tapping anywhere on the row opens the device's own page — where its
+/// certificate, the folders it may reach and its name here are managed.
+/// Syncing with it is the separate, named action beside the revoke icon:
+/// the two are different intents, and a row that meant both depending on
+/// where it was tapped would be guessing.
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
     required this.row,
     required this.onTap,
+    required this.onRunSetup,
     required this.onRevoke,
   });
 
   final PairedDeviceRow row;
+
+  /// Opens the device's own page.
   final VoidCallback onTap;
+
+  /// Opens Run setup for this device.
+  final VoidCallback onRunSetup;
   final VoidCallback onRevoke;
 
   @override
@@ -183,8 +214,8 @@ class _DeviceTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(row.address),
-          Text('paired ${_formatPairedAt(row.pairedAt)}'),
-          if (_rootsLine(row.agreedRootCount) case final roots?) Text(roots),
+          Text('paired ${formatDate(row.pairedAt)}'),
+          Text(_rootsLine(row.agreedRootCount)),
           if (warning != null)
             Text(warning, style: TextStyle(color: theme.colorScheme.tertiary)),
           Text(
@@ -200,7 +231,7 @@ class _DeviceTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          TextButton(onPressed: onTap, child: const Text(_runSetupLabel)),
+          TextButton(onPressed: onRunSetup, child: const Text(_runSetupLabel)),
           IconButton(
             icon: const Icon(Icons.delete_outline),
             tooltip: 'Revoke',
@@ -247,24 +278,14 @@ class _RevokeDialog extends StatelessWidget {
   }
 }
 
-/// `pairedAt` as a local calendar date. A locale question the widget owns
-/// (see `PairedDeviceRow.pairedAt`), kept to the date because the minute a
-/// pairing happened is not something anyone acts on.
-String _formatPairedAt(DateTime pairedAt) {
-  final local = pairedAt.toLocal();
-  String two(int n) => n.toString().padLeft(2, '0');
-  return '${local.year}-${two(local.month)}-${two(local.day)}';
-}
-
-/// The agreed-roots count as a line, or `null` for zero — no line at all.
-/// The count is what this device grants the peer, and the head has no way to
-/// grant anything, so zero here is structural rather than a fact about the
-/// pairing: printing it told a device whose sync works that nothing was
-/// granted. `dsync pair list` still shows its zero, where the set is the
-/// host's own grants. Pluralisation over an already-rendered count, not a
-/// rule about it.
-String? _rootsLine(int count) => switch (count) {
-  0 => null,
-  1 => '1 replica root',
-  _ => '$count replica roots',
+/// The agreed-roots count as a line. Zero is a line now, not a silence: the
+/// head grants and withdraws roots itself, so "no folders shared" is a fact
+/// about this pairing and the first thing to fix on a device that cannot
+/// reach anything — it used to be structural, and saying nothing was the
+/// honest answer only while nothing here could grant. Pluralisation over an
+/// already-rendered count, not a rule about it.
+String _rootsLine(int count) => switch (count) {
+  0 => 'no folders shared',
+  1 => '1 folder shared',
+  _ => '$count folders shared',
 };

@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart';
 
+import 'package:dsync/dsync_core/models/device_identity.dart';
+
 import 'app_bootstrap.dart';
+import 'device_identity_row.dart';
 import 'paired_device_row.dart';
 import 'profile_row.dart';
 
@@ -51,6 +54,20 @@ class AppState extends ChangeNotifier {
   void recordBootstrap(AppBootstrap bootstrap) {
     _bootstrap = bootstrap;
     notifyListeners();
+  }
+
+  /// Records [identity] as this head's own, rendered as of [now], and the
+  /// gate as ready — the one place a `DeviceIdentity` becomes an
+  /// [AppBootstrapReady]. `AppController` only.
+  ///
+  /// Both the first bootstrap and every later re-issue (a renew, a rename)
+  /// come through here, so the gate's identity is always the rendering of
+  /// the certificate that is on disk *now*, and there is no second copy to
+  /// keep in step with it.
+  void recordReadyIdentity(DeviceIdentity identity, {required DateTime now}) {
+    recordBootstrap(
+      AppBootstrapReady(DeviceIdentityRow.render(identity, now: now)),
+    );
   }
 
   /// Replaces the device list with a freshly rendered one. `AppController`

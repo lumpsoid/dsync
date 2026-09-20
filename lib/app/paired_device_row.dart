@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
+import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 
 /// One paired device as the head displays it (SPEC §4.4, §13): every field
@@ -23,7 +24,9 @@ class PairedDeviceRow {
     required this.deviceId,
     required this.address,
     required this.pairedAt,
-    required this.agreedRootCount,
+    required this.agreedRoots,
+    required this.certificateIssuedAt,
+    required this.certificateExpiresAt,
     required this.certificateWarning,
   });
 
@@ -32,14 +35,18 @@ class PairedDeviceRow {
   /// peer — the same rule `pair list` and the run header use.
   factory PairedDeviceRow.render(PairedDevice device, {required DateTime now}) {
     final address = device.lastKnownAddress;
+    final der = device.certificateDer;
+    final validity = certificateValidityFromDer(der);
     return PairedDeviceRow(
       name: device.name,
       deviceId: device.deviceId,
       address: '${address.host}:${address.port}',
       pairedAt: device.pairedAt,
-      agreedRootCount: device.agreedReplicaRoots.length,
+      agreedRoots: device.agreedReplicaRoots.toList()..sort(),
+      certificateIssuedAt: validity.notBefore,
+      certificateExpiresAt: validity.notAfter,
       certificateWarning: certificateExpiryWithin(
-        device.certificateDer,
+        der,
         owner: device.name,
         now: now,
       )?.message,
@@ -57,11 +64,30 @@ class PairedDeviceRow {
 
   final DateTime pairedAt;
 
-  /// How many replica roots *this* device has granted the peer — what it
-  /// serves, never what the peer serves back (SPEC §4.4 keeps that from the
-  /// peer on purpose). Zero is not shown: the head never calls
-  /// `PairedDeviceStore.grant`, so zero says nothing about the pairing.
-  final int agreedRootCount;
+  /// The replica roots *this* device has granted the peer — what this host
+  /// serves to it, never what the peer serves back (SPEC §4.4 keeps that
+  /// from the peer on purpose). Sorted, so the order on screen is the set's
+  /// and not the JSON document's.
+  ///
+  /// The whole set rather than a count, now that the head grants and
+  /// withdraws them itself: a count is what a list row shows, and the paths
+  /// are what the device's own page shows.
+  final List<String> agreedRoots;
+
+  /// How many roots this host serves to the peer — what the list row shows
+  /// in place of the paths themselves. A getter, so the count and the list
+  /// cannot disagree.
+  int get agreedRootCount => agreedRoots.length;
+
+  /// The pinned certificate's `notBefore` — when the peer last issued the
+  /// identity this host holds for it. A pairing whose certificate has since
+  /// been renewed on the peer shows the date this host *knows about*, which
+  /// is the honest answer: the renewed bytes arrive only when the peer next
+  /// connects here (SPEC §4.4).
+  final DateTime certificateIssuedAt;
+
+  /// The pinned certificate's `notAfter`.
+  final DateTime certificateExpiresAt;
 
   /// SPEC §4.4's warning line for this device's certificate, or `null`
   /// while its expiry is further off than the warning window.

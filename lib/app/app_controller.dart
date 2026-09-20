@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
@@ -100,16 +99,101 @@ class AppController {
       state.recordBootstrap(AppBootstrapFailed(e.toString()));
       return;
     }
-    state.recordBootstrap(
-      AppBootstrapReady(
-        deviceId: identity.deviceId,
-        certificateWarning: certificateExpiryWithin(
-          identity.certificateDer,
-          owner: CertificateExpiry.thisHost,
-          now: now(),
-        )?.message,
-      ),
+    state.recordReadyIdentity(identity, now: now());
+  }
+
+  /// Re-issues this device's certificate under its existing private key
+  /// (SPEC §4.4, the same write `dsync pair renew` makes) and records the
+  /// re-rendered identity, so the dates and the expiry warning every page
+  /// shows are the new ones without a reload.
+  ///
+  /// The device id does not move — it is the hash of the public key, and the
+  /// key is kept — so no pairing has to be redone. The *bytes* do move, and
+  /// a peer pins bytes: until each peer has met the new certificate by
+  /// connecting to this host, runs started from here to that peer are
+  /// refused. That cost is the caller's to put in front of the user before
+  /// calling this; by here it has been accepted.
+  ///
+  /// Returns `null` on success, or the message to show when there is no
+  /// identity to renew — a `DeviceIdentityIncompleteException` rendered
+  /// rather than thrown, the same treatment [revoke] gives its own
+  /// not-found. The gate is left as it was on that path: a half-written
+  /// identity is a failed bootstrap's business, and this head has already
+  /// passed one.
+  Future<String?> renewIdentity({String? commonName}) async {
+    final stateDir = Directory((await paths).stateDir);
+    final DeviceIdentity renewed;
+    try {
+      renewed = await DeviceIdentityStore(stateDir)
+          .renew(commonName: commonName);
+    } on DeviceIdentityIncompleteException catch (e) {
+      return e.toString();
+    }
+    state.recordReadyIdentity(renewed, now: now());
+    return null;
+  }
+
+  /// Renames the device with [deviceId] to [name] (SPEC §4.4: the name is
+  /// this host's own label for the peer, local and not agreed with it) and
+  /// re-renders the list.
+  ///
+  /// Returns `null` on success, or the message to show — a name another
+  /// paired device already holds, or an id that matches nothing. Both are
+  /// `core`'s own rendered refusals rather than defects: the first is a
+  /// choice the user has to make again, the second a stale row renamed
+  /// after the device was revoked elsewhere. The list is refreshed on every
+  /// path, so a stale row goes away with its message.
+  Future<String?> renameDevice(String deviceId, String name) async {
+    String? failure;
+    try {
+      await (await pairedDevices).rename(deviceId, name);
+    } on PairedDeviceNotFoundException catch (e) {
+      failure = e.toString();
+    } on PairedDeviceCollisionException catch (e) {
+      failure = e.toString();
+    } on FormatException catch (e) {
+      failure = e.message;
+    }
+    await refreshDevices();
+    return failure;
+  }
+
+  /// Authorizes the device with [deviceId] to reach [rootPath] on this host
+  /// — pairing's second step (SPEC §4.4), the write `dsync pair grant`
+  /// makes — and re-renders the list. [rootPath] is expected already
+  /// expanded, as `PairedDeviceStore.grant` documents.
+  ///
+  /// Returns `null` on success, or the message to show when nothing
+  /// matched, rendered as [renameDevice] renders its own.
+  Future<String?> grantRoot(String deviceId, String rootPath) async {
+    return _rootWrite(deviceId, (store) => store.grant(deviceId, rootPath));
+  }
+
+  /// Withdraws [rootPath] from the device with [deviceId] and re-renders
+  /// the list — the undo of [grantRoot], local and told to nobody, exactly
+  /// as the grant was. Returns `null` on success, or the message to show
+  /// when nothing matched.
+  Future<String?> revokeRoot(String deviceId, String rootPath) async {
+    return _rootWrite(
+      deviceId,
+      (store) => store.revokeRoot(deviceId, rootPath),
     );
+  }
+
+  /// The shape [grantRoot] and [revokeRoot] share: one store write whose
+  /// only rendered refusal is "no such device", then a refresh either way.
+  Future<String?> _rootWrite(
+    String deviceId,
+    Future<void> Function(PairedDeviceStore) write,
+  ) async {
+    String? failure;
+    try {
+      await write(await pairedDevices);
+    } on PairedDeviceNotFoundException catch (e) {
+      failure = e.toString();
+    }
+    await refreshDevices();
+    return failure;
   }
 
   /// Re-reads the store and re-renders [AppState.devices] — the call the

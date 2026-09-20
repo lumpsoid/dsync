@@ -29,7 +29,28 @@ void main() {
     expect(row.address, 'phone.local:28771');
     expect(row.pairedAt, issued);
     expect(row.agreedRootCount, 2);
+    // Sorted, so the order on screen is the set's rather than the JSON
+    // document's — a `Set` has none of its own to promise.
+    expect(row.agreedRoots, ['/a', '/b']);
+    expect(row.certificateIssuedAt, isNot(row.certificateExpiresAt));
+    expect(row.certificateExpiresAt, issued.add(const Duration(days: 60)));
     expect(row.certificateWarning, isNull);
+  });
+
+  test('the count is the list\'s, so the two cannot disagree', () {
+    final unsorted = PairedDeviceRow.render(
+      PairedDevice(
+        certificatePem: identity.certificatePem,
+        name: 'phone',
+        agreedReplicaRoots: const {'/z', '/a'},
+        pairedAt: issued,
+        lastKnownAddress: PeerAddress(host: 'phone.local', port: 28771),
+      ),
+      now: issued,
+    );
+
+    expect(unsorted.agreedRoots, ['/a', '/z']);
+    expect(unsorted.agreedRootCount, unsorted.agreedRoots.length);
   });
 
   test('carries the rendered expiry warning once inside the window', () {

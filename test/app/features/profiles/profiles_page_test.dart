@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_bootstrap.dart';
+import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
@@ -49,7 +50,15 @@ void main() {
   tearDown(() => controller.dispose());
 
   void ready() => app.state.recordBootstrap(
-    const AppBootstrapReady(deviceId: 'ffff:0000', certificateWarning: null),
+    AppBootstrapReady(
+      DeviceIdentityRow(
+        name: 'this device',
+        deviceId: 'ffff:0000',
+        issuedAt: DateTime(2026, 1, 1),
+        expiresAt: DateTime(2027, 1, 1),
+        certificateWarning: null,
+      ),
+    ),
   );
 
   Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
@@ -147,7 +156,11 @@ void main() {
     await pumpPage(tester);
 
     expect(find.text('weekly'), findsOneWidget);
-    expect(find.text('/on-device/notes ↔ desktop:~/notes'), findsOneWidget);
+    // The device the profile is bound to gets its own line: a profile is
+    // bound to one paired device, and which one is what tells two
+    // similarly-named runs apart.
+    expect(find.text('desktop'), findsOneWidget);
+    expect(find.text('/on-device/notes ↔ ~/notes'), findsOneWidget);
     expect(find.textContaining('no longer paired'), findsNothing);
   });
 

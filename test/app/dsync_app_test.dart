@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_bootstrap.dart';
+import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
@@ -113,7 +114,15 @@ void main() {
   });
 
   void ready() => app.state.recordBootstrap(
-    const AppBootstrapReady(deviceId: 'ffff:0000', certificateWarning: null),
+    AppBootstrapReady(
+      DeviceIdentityRow(
+        name: 'this device',
+        deviceId: 'ffff:0000',
+        issuedAt: DateTime(2026, 1, 1),
+        expiresAt: DateTime(2027, 1, 1),
+        certificateWarning: null,
+      ),
+    ),
   );
 
   /// Pumped frames plus real time, until [condition] holds. For waits that
@@ -297,7 +306,9 @@ void main() {
         deviceId: 'a1b2:c3d4',
         address: '10.0.0.7:28771',
         pairedAt: DateTime(2026, 9, 15),
-        agreedRootCount: 1,
+        agreedRoots: const ['/srv/notes'],
+        certificateIssuedAt: DateTime(2026, 1, 1),
+        certificateExpiresAt: DateTime(2027, 1, 1),
         certificateWarning: null,
       ),
     ]);
@@ -309,7 +320,9 @@ void main() {
     // `run_setup_page_test.dart` does, rather than tearing the tree down
     // under it.
     await tester.runAsync(() async {
-      await tester.tap(find.text('desktop'));
+      // The named action, not the row: a tap on the row opens the
+      // device's own page now, and Run setup is the button beside it.
+      await tester.tap(find.text('Set up run'));
       // One frame builds the pushed route, which is what starts `load`.
       await tester.pump();
       await runRealTimeUntil(
@@ -427,7 +440,9 @@ void main() {
         deviceId: desktop.deviceId,
         address: '10.0.0.7:28771',
         pairedAt: DateTime(2026, 9, 15),
-        agreedRootCount: 1,
+        agreedRoots: const ['/srv/notes'],
+        certificateIssuedAt: DateTime(2026, 1, 1),
+        certificateExpiresAt: DateTime(2027, 1, 1),
         certificateWarning: null,
       ),
     ]);
@@ -457,7 +472,9 @@ void main() {
       await tester.pumpWidget(const DsyncApp());
       await tester.tap(find.byKey(const Key('profiles-open-devices')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('desktop'));
+      // The named action, not the row: a tap on the row opens the
+      // device's own page now, and Run setup is the button beside it.
+      await tester.tap(find.text('Set up run'));
       await tester.pump();
       // `load` records the peer *before* it lists the folders and keeps
       // going afterwards, so waiting for the peer case alone leaves its

@@ -5,16 +5,18 @@ import 'package:flutter/material.dart';
 import 'app_bootstrap.dart';
 import 'app_scope.dart';
 import 'features/archives/archives_page.dart';
+import 'features/device_detail/device_detail_page.dart';
 import 'features/devices/devices_page.dart';
 import 'features/pair/pair_page.dart';
 import 'features/profiles/profiles_page.dart';
 import 'features/run/run_page.dart';
 import 'features/run_setup/run_setup_page.dart';
+import 'features/this_device/this_device_page.dart';
 import 'features/run_setup/run_setup_view_state.dart';
 import 'run_request.dart';
 
 /// The Flutter head's root: the bootstrap gate and the routes between the
-/// six pages (SPEC §4.4, §13).
+/// pages (SPEC §4.4, §13).
 ///
 /// This file is still where a Flutter dependency leaking into `dsync_core/`
 /// would show up: it is the one root that imports both, so anything
@@ -113,12 +115,35 @@ class _BootstrapGate extends StatelessWidget {
     return navigator.push(
       MaterialPageRoute<void>(
         builder: (_) => DevicesPage(
+          onOpenDevice: (deviceId) => _openDeviceDetail(context, deviceId),
           onOpenRunSetup: (deviceId) =>
               _openRunSetup(context, RunSetupFromDevice(deviceId)),
           onOpenPair: () => _openPair(context),
+          onOpenThisDevice: () => _openThisDevice(context),
         ),
       ),
     );
+  }
+
+  /// One paired device's own page: its certificate, the folders this host
+  /// shares with it, its name here, and the revoke. Carries the device id
+  /// and nothing else, per the handoff rule; [DeviceDetailPage.onGone] pops
+  /// it once the device stops being paired, which a revoke there produces.
+  Future<void> _openDeviceDetail(BuildContext context, String deviceId) {
+    final navigator = Navigator.of(context);
+    return navigator.push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            DeviceDetailPage(deviceId: deviceId, onGone: navigator.pop),
+      ),
+    );
+  }
+
+  /// This installation's own identity. A leaf: it takes no callbacks
+  /// because nothing leads anywhere from it.
+  Future<void> _openThisDevice(BuildContext context) {
+    return Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const ThisDevicePage()));
   }
 
   /// The Sync history page. A leaf: it takes no callbacks because nothing

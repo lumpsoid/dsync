@@ -2,6 +2,7 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 
 import '../../app_bootstrap.dart';
 import '../../app_controller.dart';
+import '../../device_identity_row.dart';
 import 'devices_view_state.dart';
 
 /// Input methods of the Devices page: the paired device list, the home page
@@ -34,14 +35,15 @@ class DevicesController {
   /// `core` renders the fact (`certificate for this host expires in N
   /// days`) and the remedy is appended here rather than in the widget or in
   /// `AppBootstrapReady`: what to do about it is a decision about this head
-  /// — it cannot renew its own certificate, that is `dsync pair renew` on a
-  /// desktop with the same state dir (SPEC §4.4) — and `AppState` carries
-  /// facts, not advice. A getter over `AppState.bootstrap` rather than a
-  /// field on [state] so the line is never a second copy of the gate.
+  /// — it is the This device page's Renew action, on this head, since the
+  /// head owns the identity store it would re-issue from — and `AppState`
+  /// carries facts, not advice. A getter over `AppState.bootstrap` rather
+  /// than a field on [state] so the line is never a second copy of the gate.
   String? get ownCertificateWarning => switch (app.state.bootstrap) {
-    AppBootstrapReady(:final certificateWarning?) =>
-      '$certificateWarning. This app cannot renew it: run '
-          '`dsync pair renew` on the desktop.',
+    AppBootstrapReady(
+      identity: DeviceIdentityRow(:final certificateWarning?),
+    ) =>
+      '$certificateWarning. Renew it under This device.',
     AppBootstrapReady() ||
     AppBootstrapLoading() ||
     AppBootstrapFailed() => null,

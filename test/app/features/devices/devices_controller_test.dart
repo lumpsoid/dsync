@@ -159,7 +159,7 @@ void main() {
       expect(controller.ownCertificateWarning, isNull);
     });
 
-    test("carries core's line and names `dsync pair renew`", () async {
+    test("carries core's line and names the This device page", () async {
       final identity = await app.loadOrCreateIdentity();
       final notAfter = certificateValidityFromDer(identity.certificateDer)
           .notAfter;
@@ -175,7 +175,9 @@ void main() {
       final warning = near.ownCertificateWarning;
 
       expect(warning, contains('certificate for this host expires in 10 days'));
-      expect(warning, contains('dsync pair renew'));
+      // The remedy is on this head now, not on a desktop command line:
+      // the app owns the identity store it would re-issue from.
+      expect(warning, contains('Renew it under This device.'));
     });
   });
 }

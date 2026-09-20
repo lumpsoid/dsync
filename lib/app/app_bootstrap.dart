@@ -1,3 +1,5 @@
+import 'device_identity_row.dart';
+
 /// Whether the head has bootstrapped far enough to show a page (SPEC §13):
 /// the gate `AppController.bootstrap()` moves through, and the one thing
 /// the entrypoint reads before routing anywhere.
@@ -17,26 +19,21 @@ final class AppBootstrapLoading extends AppBootstrap {
 }
 
 /// Bootstrap finished and every page may render. Carries what was learned
-/// about this installation's own identity on the way — the device id and
-/// the SPEC §4.4 expiry warning for its certificate — because those facts
-/// exist exactly when this case does: keeping them as nullable fields on
-/// `AppState` would be a second copy of "are we ready" that had to be kept
-/// in step with this one.
+/// about this installation's own identity on the way — [identity], already
+/// rendered — because that fact exists exactly when this case does: keeping
+/// it as a nullable field on `AppState` would be a second copy of "are we
+/// ready" that had to be kept in step with this one.
+///
+/// The row is *this case's* value, not a snapshot taken once: renewing or
+/// renaming this device records a fresh [AppBootstrapReady] with the
+/// re-rendered row, so the gate and the identity every page shows can never
+/// disagree.
 final class AppBootstrapReady extends AppBootstrap {
-  const AppBootstrapReady({
-    required this.deviceId,
-    required this.certificateWarning,
-  });
+  const AppBootstrapReady(this.identity);
 
-  /// This device's id as SPEC §4.4 renders it: lowercase hex in four-char
-  /// groups, ready to display and to read aloud across a pairing.
-  final String deviceId;
-
-  /// SPEC §4.4's warning for this device's own certificate — `certificate
-  /// for this host expires in N days` — or `null` while expiry is further
-  /// off than the warning window. Already the line to show, not the
-  /// duration to compute it from.
-  final String? certificateWarning;
+  /// This device's name, id, certificate dates and SPEC §4.4 expiry
+  /// warning, as the widgets display them.
+  final DeviceIdentityRow identity;
 }
 
 /// Bootstrap could not complete and no page may render: the identity is
