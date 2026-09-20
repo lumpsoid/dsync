@@ -97,17 +97,36 @@ void main() {
 
     expect(find.text('phone'), findsOneWidget);
     expect(find.text('laptop'), findsOneWidget);
-    expect(find.text('a1b2:c3d4:phone'), findsOneWidget);
     expect(find.text('10.0.0.7:28771'), findsNWidgets(2));
-    expect(find.text('paired 2026-09-15'), findsNWidgets(2));
-    expect(find.text('1 folder shared'), findsOneWidget);
-    // Zero is a line of its own now that the head grants and withdraws
-    // roots itself: a device that can reach nothing has to say so.
-    expect(find.text('no folders shared'), findsOneWidget);
     expect(find.text('No paired devices.'), findsNothing);
+    // The row is name, address, warnings and the run action. The pairing
+    // date, the grouped id and a non-zero roots count are on the device's
+    // own page, one tap away.
+    expect(find.text('a1b2:c3d4:phone'), findsNothing);
+    expect(find.text('paired 2026-09-15'), findsNothing);
+    expect(find.text('1 folder shared'), findsNothing);
   });
 
-  testWidgets('leads with the address and demotes the id below it', (
+  testWidgets('warns on the row when a pairing shares no folders', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordDevices([
+      row('phone'),
+      row('laptop', agreedRoots: const []),
+    ]);
+
+    await pumpPage(tester);
+
+    // A pairing that grants nothing is why a run finds nothing, and the
+    // list is the only place it would otherwise be invisible.
+    expect(find.text('no folders shared'), findsOneWidget);
+    final line = tester.widget<Text>(find.text('no folders shared')).style;
+    final theme = Theme.of(tester.element(find.text('laptop')));
+    expect(line?.color, theme.colorScheme.tertiary);
+  });
+
+  testWidgets('leads with the name and puts the address under it', (
     tester,
   ) async {
     ready();
@@ -115,15 +134,9 @@ void main() {
 
     await pumpPage(tester);
 
+    final name = tester.getTopLeft(find.text('phone')).dy;
     final address = tester.getTopLeft(find.text('10.0.0.7:28771')).dy;
-    final id = tester.getTopLeft(find.text('a1b2:c3d4:phone')).dy;
-    expect(address, lessThan(id));
-    // The id is still there — a revoke is addressed by it — but in the
-    // muted label style rather than as the first thing read.
-    final idStyle = tester.widget<Text>(find.text('a1b2:c3d4:phone')).style;
-    final theme = Theme.of(tester.element(find.text('phone')));
-    expect(idStyle?.fontSize, theme.textTheme.labelSmall?.fontSize);
-    expect(idStyle?.color, theme.colorScheme.onSurfaceVariant);
+    expect(name, lessThan(address));
   });
 
   testWidgets('every row names what a tap does and opens Run setup', (
@@ -244,22 +257,16 @@ void main() {
     expect(thisDeviceOpened, 1);
   });
 
-  testWidgets('revoke asks first and says it is one-sided', (tester) async {
+  testWidgets('the row does not offer revoke', (tester) async {
     ready();
     app.state.recordDevices([row('phone')]);
+
     await pumpPage(tester);
 
-    await tester.tap(find.byTooltip('Revoke'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Revoke phone?'), findsOneWidget);
-    expect(find.textContaining('phone is not told'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    expect(find.text('Revoke phone?'), findsNothing);
-    // Cancelling touched nothing: the row is still there and no error line
-    // appeared.
-    expect(find.text('phone'), findsOneWidget);
+    // Revoking is on the device's own page, behind a confirmation: it sat
+    // one mis-tap from "Set up run" here.
+    expect(find.byTooltip('Revoke'), findsNothing);
+    expect(find.byIcon(Icons.delete_outline), findsNothing);
     expect(controller.state.error, isNull);
   });
 

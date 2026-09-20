@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../format_date.dart';
 import '../../paired_device_row.dart';
 import 'devices_controller.dart';
 import 'devices_scope.dart';
@@ -116,19 +115,10 @@ class _DevicesBody extends StatelessWidget {
                 row: row,
                 onTap: () => onOpenDevice(row.deviceId),
                 onRunSetup: () => onOpenRunSetup(row.deviceId),
-                onRevoke: () => _confirmRevoke(context, row),
               ),
         ],
       ),
     );
-  }
-
-  Future<void> _confirmRevoke(BuildContext context, PairedDeviceRow row) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => _RevokeDialog(row: row),
-    );
-    if (confirmed ?? false) await controller.revoke(row.deviceId);
   }
 }
 
@@ -175,24 +165,31 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-/// One paired device. The lines are ordered by how much a person can do
-/// with them: the address they would recognise, when the pairing happened,
-/// what it grants, any warning — and only then the grouped hex id, which is
-/// how `revoke` addresses the device rather than how anyone recognises it.
-/// It stays on the row (a revoke is addressed by it) but reads as a
-/// footnote, in the muted label style.
+/// One paired device, cut down to what a list row is for: recognising the
+/// device, noticing something wrong with it, and starting a run with it.
+/// So the row carries the name, the address it answers on, a certificate
+/// warning when there is one, "no folders shared" when the pairing grants
+/// nothing, and the named run action — nothing else.
 ///
-/// Tapping anywhere on the row opens the device's own page — where its
-/// certificate, the folders it may reach and its name here are managed.
-/// Syncing with it is the separate, named action beside the revoke icon:
-/// the two are different intents, and a row that meant both depending on
-/// where it was tapped would be guessing.
+/// Everything dropped from here (when the pairing happened, the grouped hex
+/// id, the folders themselves, the revoke) is on the device's own page,
+/// which a tap opens. A list row that repeats a detail page costs every
+/// reader height and attention on every scroll to save one tap for the rare
+/// reader who wanted it.
+///
+/// "No folders shared" stays because it is not a detail: it is the reason a
+/// run against a perfectly healthy-looking pairing finds nothing, and it is
+/// invisible anywhere else in the list. It is rendered only at zero and in
+/// the warning colour, beside the certificate warning, because both say the
+/// same thing — this pairing needs attention before a run.
+///
+/// Revoking is deliberately not here. It sat one mis-tap from "Set up run"
+/// on a dense row; it lives on the device's page, behind a confirmation.
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
     required this.row,
     required this.onTap,
     required this.onRunSetup,
-    required this.onRevoke,
   });
 
   final PairedDeviceRow row;
@@ -202,42 +199,33 @@ class _DeviceTile extends StatelessWidget {
 
   /// Opens Run setup for this device.
   final VoidCallback onRunSetup;
-  final VoidCallback onRevoke;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final warning = row.certificateWarning;
+    final sharesNothing = row.agreedRootCount == 0;
     return ListTile(
       title: Text(row.name),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(row.address),
-          Text('paired ${formatDate(row.pairedAt)}'),
-          Text(_rootsLine(row.agreedRootCount)),
           if (warning != null)
             Text(warning, style: TextStyle(color: theme.colorScheme.tertiary)),
-          Text(
-            row.deviceId,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
+          if (sharesNothing)
+            Text(
+              _noRootsLine,
+              style: TextStyle(color: theme.colorScheme.tertiary),
             ),
-          ),
         ],
       ),
-      isThreeLine: true,
+      // Two lines normally; a third only when a warning line is showing.
+      isThreeLine: warning != null || sharesNothing,
       onTap: onTap,
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextButton(onPressed: onRunSetup, child: const Text(_runSetupLabel)),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: 'Revoke',
-            onPressed: onRevoke,
-          ),
-        ],
+      trailing: TextButton(
+        onPressed: onRunSetup,
+        child: const Text(_runSetupLabel),
       ),
     );
   }
@@ -246,46 +234,9 @@ class _DeviceTile extends StatelessWidget {
 /// What a tap on a device row does, in the user's words.
 const _runSetupLabel = 'Set up run';
 
-/// The confirmation before a revoke. Its text carries SPEC §4.4's
-/// one-sidedness in the user's words: revoking here only makes this device
-/// forget the peer; the peer keeps its own entry and is told nothing.
-class _RevokeDialog extends StatelessWidget {
-  const _RevokeDialog({required this.row});
-
-  final PairedDeviceRow row;
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Revoke ${row.name}?'),
-      content: Text(
-        'This device will stop trusting ${row.name} and will refuse its '
-        'connections.\n\n'
-        'This only changes this device. ${row.name} is not told and still '
-        'trusts this device until you revoke there too.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Revoke'),
-        ),
-      ],
-    );
-  }
-}
-
-/// The agreed-roots count as a line. Zero is a line now, not a silence: the
-/// head grants and withdraws roots itself, so "no folders shared" is a fact
-/// about this pairing and the first thing to fix on a device that cannot
-/// reach anything — it used to be structural, and saying nothing was the
-/// honest answer only while nothing here could grant. Pluralisation over an
-/// already-rendered count, not a rule about it.
-String _rootsLine(int count) => switch (count) {
-  0 => 'no folders shared',
-  1 => '1 folder shared',
-  _ => '$count folders shared',
-};
+/// The one roots fact a list row keeps. A pairing that grants nothing can
+/// reach nothing, so a run against it fails with nothing else visibly wrong
+/// — the head grants and withdraws roots itself, so this is fixable from
+/// here. Counts above zero are not a warning and belong on the device's own
+/// page with the roots themselves.
+const _noRootsLine = 'no folders shared';
