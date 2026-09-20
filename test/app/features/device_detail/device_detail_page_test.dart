@@ -9,6 +9,7 @@ import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
 import 'package:dsync/app/features/device_detail/peer_probe.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
+import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
@@ -80,7 +81,7 @@ void main() {
     deviceId: phone.deviceId,
     address: '10.0.0.7:28771',
     pairedAt: DateTime(2026, 9, 15),
-    agreedRoots: agreedRoots,
+    agreedRootLabels: {for (final root in agreedRoots) root: elidePath(root)},
     certificateIssuedAt: DateTime(2026, 1, 15),
     certificateExpiresAt: DateTime(2027, 1, 15),
     certificateWarning: certificateWarning,
@@ -96,9 +97,14 @@ void main() {
       );
 
   /// Taps an action below the fold: the page is a `ListView` and the
-  /// actions at its bottom are not built until they are scrolled to.
+  /// actions at its bottom are not built until they are scrolled to —
+  /// and `scrollUntilVisible` stops as soon as an edge of the target is
+  /// on screen, which is not enough for a tap to hit it, so the target is
+  /// brought fully into view before the tap.
   Future<void> tapAction(WidgetTester tester, Key key) async {
     await scrollTo(tester, key);
+    await tester.ensureVisible(find.byKey(key));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(key));
     await tester.pumpAndSettle();
   }
@@ -160,6 +166,7 @@ void main() {
     ]);
 
     await pumpPage(tester);
+    await scrollTo(tester, const Key('device-root-/home/me/photos'));
 
     expect(find.byKey(const Key('device-root-/home/me/notes')), findsOneWidget);
     expect(
@@ -169,25 +176,101 @@ void main() {
     expect(find.byTooltip('Stop sharing'), findsNWidgets(2));
   });
 
+  testWidgets('a long folder keeps its end, not its shared prefix', (
+    tester,
+  ) async {
+    const long = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
+    app.state.recordDevices([row(agreedRoots: const [long])]);
+
+    await pumpPage(tester);
+    await scrollTo(tester, const Key('device-root-$long'));
+
+    // The row is keyed by the stored path — what a withdrawal is addressed
+    // by — but reads as the elided label, which keeps the leaf.
+    expect(find.text(long), findsNothing);
+    expect(find.text(elidePath(long)), findsOneWidget);
+    expect(find.textContaining('notes'), findsWidgets);
+  });
+
   testWidgets('a device with no grants says so, rather than showing nothing', (
     tester,
   ) async {
     app.state.recordDevices([row(agreedRoots: const [])]);
 
     await pumpPage(tester);
+    await scrollTo(tester, const Key('device-grant-root'));
 
     expect(find.text('No folders shared with this device.'), findsOneWidget);
   });
 
-  testWidgets('the grant dialog takes a typed path', (tester) async {
+  testWidgets('the folders section sits below the pairing-wide revoke', (
+    tester,
+  ) async {
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
-    await tester.tap(find.byKey(const Key('device-grant-root')));
-    await tester.pumpAndSettle();
+    await scrollTo(tester, const Key('device-root-/home/me/notes'));
+
+    // Overshooting a folder's withdraw must not land on the revoke of the
+    // whole pairing, so the growing list is last and the revoke is above
+    // the section header.
+    expect(
+      tester.getTopLeft(find.byKey(const Key('device-revoke'))).dy,
+      lessThan(
+        tester.getTopLeft(find.byKey(const Key('device-root-/home/me/notes'))).dy,
+      ),
+    );
+  });
+
+  testWidgets('the grant dialog leads with the chooser and still takes a '
+      'typed path', (tester) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-grant-root'));
 
     expect(find.byKey(const Key('device-grant-path-field')), findsOneWidget);
-    expect(find.byKey(const Key('device-grant-browse')), findsOneWidget);
+    final browse = find.byKey(const Key('device-grant-browse'));
+    expect(browse, findsOneWidget);
+    // The chooser is the filled button; typing is the fallback under it.
+    expect(tester.widget(browse), isA<FilledButton>());
+  });
+
+  testWidgets('withdrawing a folder asks first, and a cancel keeps it', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-withdraw-/home/me/notes'));
+    expect(find.text('Stop sharing /home/me/notes?'), findsOneWidget);
+    expect(find.textContaining('desktop is not told'), findsOneWidget);
+    expect(find.textContaining('next time it asks for it'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('withdraw-root-cancel')));
+    await tester.pumpAndSettle();
+
+    expect(controller.state.outcome, isA<DeviceDetailIdle>());
+    expect(
+      find.byKey(const Key('device-root-/home/me/notes')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a confirmed withdrawal writes and reports the folder', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-withdraw-/home/me/notes'));
+    await awaitOutcome(tester, const Key('withdraw-root-confirm'));
+    await scrollToOutcome(tester);
+
+    expect(
+      find.textContaining('No longer sharing /home/me/notes'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('the rename dialog opens filled with the current name', (

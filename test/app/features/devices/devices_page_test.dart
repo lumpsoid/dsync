@@ -8,6 +8,7 @@ import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
+import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -57,7 +58,7 @@ void main() {
     deviceId: 'a1b2:c3d4:$name',
     address: '10.0.0.7:28771',
     pairedAt: DateTime(2026, 9, 15, 11, 21),
-    agreedRoots: agreedRoots,
+    agreedRootLabels: {for (final root in agreedRoots) root: elidePath(root)},
     certificateIssuedAt: DateTime(2026, 1, 1),
     certificateExpiresAt: DateTime(2027, 1, 1),
     certificateWarning: certificateWarning,

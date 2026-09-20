@@ -5,6 +5,7 @@ import '../../paired_device_row.dart';
 import 'device_detail_controller.dart';
 import 'device_detail_scope.dart';
 import 'device_detail_view_state.dart';
+import 'withdraw_root_dialog.dart';
 
 /// One paired device, and everything this host decides about it (SPEC §4.4,
 /// §13): its name here, the certificate this host pins it by, the replica
@@ -98,8 +99,6 @@ class _DeviceDetailBody extends StatelessWidget {
           DeviceDetailIdle() => const SizedBox.shrink(),
         },
         const Divider(),
-        _RootsSection(device: device, controller: controller),
-        const Divider(),
         ListTile(
           key: const Key('device-rename'),
           leading: const Icon(Icons.edit_outlined),
@@ -142,6 +141,16 @@ class _DeviceDetailBody extends StatelessWidget {
           ),
           onTap: () => _revoke(context, device),
         ),
+        const Divider(),
+        // Last on the page, and the one section that grows without bound.
+        // Every other tile here is a single action against the pairing as a
+        // whole; this is a list as long as the grants are, and when it sat
+        // between them a scroll that overshot a folder's "Stop sharing"
+        // landed on "Revoke pairing" — two taps apart, one destroying a
+        // grant and the other the pairing. Below everything, an overshoot
+        // runs out of page instead, and reaching the pairing-wide actions
+        // from here means scrolling back up past the section header.
+        _RootsSection(device: device, controller: controller),
       ],
     );
   }
@@ -223,6 +232,15 @@ class _IdentityTile extends StatelessWidget {
 /// device may reach nothing here" is a real and common state — pairing and
 /// authorizing are deliberately two steps — and the row above it says
 /// nothing about which.
+///
+/// Each row shows the *elided* label off the device's own row and is keyed
+/// and withdrawn by the stored path beside it: the label is for reading,
+/// the path is what the write is addressed by, and the two travel together
+/// from `PairedDeviceRow.agreedRootLabels` so nothing here computes either.
+///
+/// Withdrawing asks first, through [WithdrawRootDialog] — the same
+/// confirmation the host-level Shared folders page asks, because it is the
+/// same write with the same consequence.
 class _RootsSection extends StatelessWidget {
   const _RootsSection({required this.device, required this.controller});
 
@@ -250,21 +268,22 @@ class _RootsSection extends StatelessWidget {
             onPressed: () => _grant(context),
           ),
         ),
-        if (device.agreedRoots.isEmpty)
+        if (device.agreedRootLabels.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Text('No folders shared with this device.'),
           )
         else
-          for (final root in device.agreedRoots)
+          for (final root in device.agreedRootLabels.entries)
             ListTile(
-              key: Key('device-root-$root'),
+              key: Key('device-root-${root.key}'),
               leading: const Icon(Icons.folder_shared_outlined),
-              title: Text(root),
+              title: Text(root.value, overflow: TextOverflow.ellipsis),
               trailing: IconButton(
+                key: Key('device-withdraw-${root.key}'),
                 icon: const Icon(Icons.remove_circle_outline),
                 tooltip: 'Stop sharing',
-                onPressed: () => controller.revokeRoot(root),
+                onPressed: () => _withdraw(context, root.key, root.value),
               ),
             ),
       ],
@@ -278,12 +297,43 @@ class _RootsSection extends StatelessWidget {
     );
     if (path != null) await controller.grantRoot(path);
   }
+
+  /// Confirms, then withdraws by the *stored* path — [label] is only what
+  /// the dialog names the folder as.
+  Future<void> _withdraw(
+    BuildContext context,
+    String rootPath,
+    String label,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) =>
+          WithdrawRootDialog(rootLabel: label, deviceName: device.name),
+    );
+    if (confirmed ?? false) await controller.revokeRoot(rootPath);
+  }
 }
 
-/// The folder to share: typed, or filled in from the platform chooser.
-/// Both land in the same field and are stored through the same expansion,
-/// so `~/Sync` typed here and `~/Sync` typed into `dsync pair grant` record
-/// the same string.
+/// The folder to share: chosen from the platform folder chooser, or typed
+/// when the chooser cannot reach it.
+///
+/// The chooser leads. Choosing is the answer for almost every grant — the
+/// folder exists, the user can see it, and a typed path is a chance to
+/// misspell a path nobody will be told was wrong. So it is the first thing
+/// in the dialog, it is the filled button, and a folder picked from it pops
+/// the dialog straight away: choosing *is* the grant, not a way of filling
+/// a field that then has to be confirmed.
+///
+/// Typing stays, underneath, because the chooser cannot answer every case:
+/// a removable card the platform will not hand back a path for, a folder on
+/// a desktop this phone is only managing the store for, and — the reason
+/// the controller refuses to probe — a root that does not exist yet on the
+/// host that will serve it. A grant is authorization, not reachability, so
+/// a path the chooser could not show is still a legitimate grant.
+///
+/// Both land in the same place and are stored through the same expansion,
+/// so `~/Sync` chosen here and `~/Sync` typed into `dsync pair grant`
+/// record the same string.
 class _GrantDialog extends StatefulWidget {
   const _GrantDialog({required this.onBrowse});
 
@@ -305,44 +355,52 @@ class _GrantDialogState extends State<_GrantDialog> {
     super.dispose();
   }
 
+  /// Opens the chooser and, if a folder came back, grants it — the dialog
+  /// closes on the choice rather than asking the user to confirm what they
+  /// just picked.
   Future<void> _browse() async {
+    final navigator = Navigator.of(context);
     final String? picked;
     try {
       picked = await widget.onBrowse();
     } catch (_) {
       // A chooser that will not open is reported by the controller when a
-      // grant is actually attempted; here it only means the field stays
-      // empty and the user types the path instead.
+      // grant is actually attempted; here it only means the dialog stays
+      // open on the typed field, which is the fallback for exactly this.
       return;
     }
-    if (picked != null) _path.text = picked;
+    if (picked != null) navigator.pop(picked);
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return AlertDialog(
       title: const Text('Share a folder'),
       content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
+          FilledButton.icon(
+            key: const Key('device-grant-browse'),
+            onPressed: _browse,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('Choose folder'),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Or type a path — a folder that is not on this device, or does '
+            'not exist here yet, can still be authorized.',
+            style: theme.textTheme.bodySmall,
+          ),
           TextField(
             key: const Key('device-grant-path-field'),
             controller: _path,
-            autofocus: true,
             decoration: const InputDecoration(
               labelText: 'Folder on this device',
               hintText: '~/Sync',
             ),
             onSubmitted: (value) => Navigator.of(context).pop(value),
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              key: const Key('device-grant-browse'),
-              onPressed: _browse,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Choose folder'),
-            ),
           ),
         ],
       ),

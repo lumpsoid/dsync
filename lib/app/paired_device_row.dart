@@ -2,6 +2,8 @@ import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 
+import 'format_path.dart';
+
 /// One paired device as the head displays it (SPEC §4.4, §13): every field
 /// is the value a widget puts on screen, not the fact it would derive it
 /// from.
@@ -24,7 +26,7 @@ class PairedDeviceRow {
     required this.deviceId,
     required this.address,
     required this.pairedAt,
-    required this.agreedRoots,
+    required this.agreedRootLabels,
     required this.certificateIssuedAt,
     required this.certificateExpiresAt,
     required this.certificateWarning,
@@ -42,7 +44,10 @@ class PairedDeviceRow {
       deviceId: device.deviceId,
       address: '${address.host}:${address.port}',
       pairedAt: device.pairedAt,
-      agreedRoots: device.agreedReplicaRoots.toList()..sort(),
+      agreedRootLabels: {
+        for (final root in device.agreedReplicaRoots.toList()..sort())
+          root: elidePath(root),
+      },
       certificateIssuedAt: validity.notBefore,
       certificateExpiresAt: validity.notAfter,
       certificateWarning: certificateExpiryWithin(
@@ -66,18 +71,29 @@ class PairedDeviceRow {
 
   /// The replica roots *this* device has granted the peer — what this host
   /// serves to it, never what the peer serves back (SPEC §4.4 keeps that
-  /// from the peer on purpose). Sorted, so the order on screen is the set's
+  /// from the peer on purpose) — each mapped to the label a one-line row
+  /// shows it under. Sorted by path, so the order on screen is the set's
   /// and not the JSON document's.
   ///
-  /// The whole set rather than a count, now that the head grants and
-  /// withdraws them itself: a count is what a list row shows, and the paths
-  /// are what the device's own page shows.
-  final List<String> agreedRoots;
+  /// One map rather than a list of paths beside a list of labels: the two
+  /// would be an index-alignment nobody can see, and a row whose label
+  /// belongs to another path is exactly the mistake that ends in a grant
+  /// withdrawn from the wrong folder. The key is the stored path, byte for
+  /// byte — it is what `revokeRoot` is addressed by and what a `hello`
+  /// handler compares against, so it is never elided. The value is that
+  /// path through [elidePath]: every folder on a device shares a long
+  /// prefix, so the end is the part that tells two of them apart.
+  final Map<String, String> agreedRootLabels;
+
+  /// The stored paths alone, in the same order. A getter over
+  /// [agreedRootLabels], so a path can never be listed without its label
+  /// or survive the label it was rendered from.
+  List<String> get agreedRoots => agreedRootLabels.keys.toList();
 
   /// How many roots this host serves to the peer — what the list row shows
   /// in place of the paths themselves. A getter, so the count and the list
   /// cannot disagree.
-  int get agreedRootCount => agreedRoots.length;
+  int get agreedRootCount => agreedRootLabels.length;
 
   /// The pinned certificate's `notBefore` — when the peer last issued the
   /// identity this host holds for it. A pairing whose certificate has since
