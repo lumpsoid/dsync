@@ -7,7 +7,9 @@ import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
+import 'package:dsync/dsync_core/protocol/byte_socket.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
+import 'package:dsync/dsync_core/protocol/io_byte_socket.dart';
 import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 
 /// A [Channel] over a real socket, talking to a `dsync agent --listen` on the
@@ -33,13 +35,20 @@ import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 /// and a peer that is not speaking the protocol is caught by the version
 /// handshake like any other.
 class SocketChannel implements Channel {
-  final Socket _socket;
+  final ByteSocket _socket;
 
   /// One write on the wire at a time, however many operations are sending,
   /// carrying every frame queued behind it (SPEC §4.2) — see [FlushedSink].
-  late final FlushedSink _writer = FlushedSink(_socket);
+  late final FlushedSink _writer = FlushedSink.over(_socket);
 
-  SocketChannel(this._socket) {
+  /// Over a `dart:io` [Socket]: a unix socket, a dialed TCP one, or the
+  /// [SecureSocket] [connectSecure] returns, which is one.
+  SocketChannel(Socket socket) : this.over(IoByteSocket(socket));
+
+  /// Over any byte stream that can carry the protocol — the accepted
+  /// `peer://` end is a `RawSecureSocket`, which no [Socket] can be made out
+  /// of (see [ByteSocket]).
+  SocketChannel.over(this._socket) {
     _disableNagle(_socket);
   }
 
@@ -139,13 +148,10 @@ class SocketChannel implements Channel {
   /// The certificate the far end presented, once [connectSecure] accepted
   /// it — what a caller that pinned an older certificate for the same key
   /// stores in its place (SPEC §4.4, renewal). `null` on any other transport.
-  X509Certificate? get peerCertificate => switch (_socket) {
-    SecureSocket s => s.peerCertificate,
-    _ => null,
-  };
+  X509Certificate? get peerCertificate => _socket.peerCertificate;
 
   @override
-  Stream<Uint8List> get input => _socket;
+  Stream<Uint8List> get input => _socket.input;
 
   @override
   Future<void> send(Uint8List bytes) => _writer.send(bytes);
@@ -158,8 +164,9 @@ class SocketChannel implements Channel {
   /// Closes this end: the write side first — which is the EOF that ends the
   /// peer's session (SPEC §4.2) — then the socket itself.
   ///
-  /// [Socket.close] only half-closes: it completes as soon as this side's
-  /// queued bytes are out and its `FIN` is sent, without waiting on the peer,
+  /// [ByteSocket.closeWrite] only half-closes: it completes as soon as this
+  /// side's queued bytes are out and its `FIN` is sent, without waiting on
+  /// the peer,
   /// so there is nothing here needing [SshChannel]'s grace-then-kill. But it
   /// leaves the *read* side registered with the event loop, and the one
   /// caller that matters has already cancelled the subscription that would
@@ -167,10 +174,10 @@ class SocketChannel implements Channel {
   /// ever read the peer's own `FIN`, and the fd stays registered forever. A
   /// CLI run then prints its summary and hangs with nothing left to do, the
   /// exact failure `RemoteAgent.disconnect`'s own doc comment describes for
-  /// the ssh path. [Socket.destroy] is what actually releases it.
+  /// the ssh path. [ByteSocket.destroy] is what actually releases it.
   @override
   Future<void> close() async {
-    await _socket.close();
+    await _socket.closeWrite();
     _socket.destroy();
   }
 }
@@ -199,8 +206,8 @@ class SocketChannel implements Channel {
 /// the first place, so there is nothing to lose by skipping it there;
 /// `socket_channel_test.dart` pins that refusal so this branch does not read
 /// as superstition.
-void _disableNagle(Socket socket) {
-  if (socket.address.type == InternetAddressType.unix) return;
+void _disableNagle(ByteSocket socket) {
+  if (socket.addressType == InternetAddressType.unix) return;
   socket.setOption(SocketOption.tcpNoDelay, true);
 }
 

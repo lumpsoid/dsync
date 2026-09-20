@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/sink_write_band.dart';
+import 'package:dsync/dsync_core/protocol/byte_sink.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
 
@@ -57,7 +58,7 @@ class FlushedSink {
   /// is still written whole: the cap joins fewer frames, it never splits one.
   static const int maxBatchBytes = 1024 * 1024;
 
-  final IOSink _sink;
+  final ByteSink _sink;
 
   /// Frames handed over and not yet written, oldest first.
   final Queue<_Pending> _queued = Queue<_Pending>();
@@ -80,9 +81,18 @@ class FlushedSink {
     const SinkWriteBand(),
   );
 
+  /// Over a `dart:io` sink — an ssh process's stdin, this process's own
+  /// stdout — which is the shape most callers have.
+  ///
   /// [elapsed] is the same injected reading the recorder and the window take,
   /// so a test can assert a queue wait with plain values instead of sleeping.
-  FlushedSink(this._sink, {Elapsed? elapsed})
+  FlushedSink(IOSink sink, {Elapsed? elapsed})
+    : this.over(_IOSinkBytes(sink), elapsed: elapsed);
+
+  /// Over anything that takes bytes and flushes them — what `SocketChannel`
+  /// uses, since the accepted `peer://` end is a `RawSecureSocket` and no
+  /// `IOSink` can be made out of one (see [ByteSocket]).
+  FlushedSink.over(this._sink, {Elapsed? elapsed})
     : _elapsed = elapsed ?? stopwatchElapsed();
 
   /// What this sink has actually done with what it was handed (SPEC §17).
@@ -220,4 +230,21 @@ class _Pending {
   final Completer<void> flushed = Completer<void>();
 
   _Pending(this.bytes, this.queuedAt);
+}
+
+/// A `dart:io` [IOSink] seen as the two methods [FlushedSink] uses of it.
+///
+/// `IOSink` is already abstract, so this adds no testability — it is here
+/// only because a [RawSecureSocket]-backed sink cannot be an `IOSink`, and
+/// one write loop serving both has to name the half they share.
+class _IOSinkBytes implements ByteSink {
+  final IOSink _sink;
+
+  _IOSinkBytes(this._sink);
+
+  @override
+  void add(List<int> bytes) => _sink.add(bytes);
+
+  @override
+  Future<void> flush() => _sink.flush();
 }
