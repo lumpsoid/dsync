@@ -24,6 +24,11 @@ import 'archives_view_state.dart';
 /// its id and says so, which is exactly the case — a run deleted from the
 /// home list, its history still on disk — this page exists to surface.
 ///
+/// The whole matching row is handed to [ArchiveRow.render], not its name:
+/// a `ProfileRow` already carries the peer this host derived for it, so the
+/// device an archive syncs with is the same lookup, with no second store
+/// read and no second null to keep in step with the first.
+///
 /// **A run in this app holds its replica against this page.** The Run page
 /// syncs in the same process as this one, so "no run is using this archive"
 /// cannot be answered by an OS lock alone; `ReplicaLock` answers it for
@@ -50,12 +55,12 @@ class ArchivesController {
     final List<ArchiveRow> rows;
     try {
       final archives = await (await _inventory).list();
-      final names = {
-        for (final profile in app.state.profiles) profile.id: profile.name,
+      final profiles = {
+        for (final profile in app.state.profiles) profile.id: profile,
       };
       rows = [
         for (final archive in archives)
-          ArchiveRow.render(archive, profileName: names[archive.profileId]),
+          ArchiveRow.render(archive, profile: profiles[archive.profileId]),
       ];
     } on FileSystemException catch (e) {
       state.recordListing(ArchivesFailed(e.toString()));

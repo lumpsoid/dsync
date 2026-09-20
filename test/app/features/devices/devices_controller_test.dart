@@ -4,6 +4,7 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
+import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
@@ -178,6 +179,59 @@ void main() {
       // The remedy is on this head now, not on a desktop command line:
       // the app owns the identity store it would re-issue from.
       expect(warning, contains('Renew it under This device.'));
+    });
+  });
+
+  group('savedRunLines', () {
+    ProfileRow profile(String id, {required String peerDeviceId}) => ProfileRow(
+      id: id,
+      name: 'run $id',
+      peerDeviceId: peerDeviceId,
+      peerName: 'phone',
+      localRootPath: '/on-device/notes',
+      remoteRootPath: '~/notes',
+      localRootLabel: '/on-device/notes',
+      remoteRootLabel: '~/notes',
+      breakage: null,
+    );
+
+    test('counts the saved runs that name each device', () {
+      app.state.recordProfiles([
+        profile('p1', peerDeviceId: 'aaaa'),
+        profile('p2', peerDeviceId: 'aaaa'),
+        profile('p3', peerDeviceId: 'bbbb'),
+      ]);
+
+      expect(controller.savedRunLines, {
+        'aaaa': '2 saved runs',
+        'bbbb': '1 saved run',
+      });
+    });
+
+    test('a device no saved run names has no line at all', () {
+      app.state.recordProfiles([profile('p1', peerDeviceId: 'aaaa')]);
+
+      // Absent, not "no saved runs": the row's run action already says
+      // there is nothing yet.
+      expect(controller.savedRunLines['bbbb'], isNull);
+    });
+
+    test('an empty home list leaves every device without a line', () {
+      app.state.recordProfiles(const []);
+
+      expect(controller.savedRunLines, isEmpty);
+    });
+
+    test('the line follows the home list without a device refresh', () {
+      app.state.recordProfiles([profile('p1', peerDeviceId: 'aaaa')]);
+      expect(controller.savedRunLines['aaaa'], '1 saved run');
+
+      app.state.recordProfiles([
+        profile('p1', peerDeviceId: 'aaaa'),
+        profile('p2', peerDeviceId: 'aaaa'),
+      ]);
+
+      expect(controller.savedRunLines['aaaa'], '2 saved runs');
     });
   });
 }

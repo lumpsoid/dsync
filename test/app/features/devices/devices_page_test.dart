@@ -10,6 +10,7 @@ import 'package:dsync/app/features/devices/devices_page.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
+import 'package:dsync/app/profile_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -66,6 +67,18 @@ void main() {
     certificateWarning: certificateWarning,
   );
 
+  ProfileRow profile(String id, {required String peerDeviceId}) => ProfileRow(
+    id: id,
+    name: 'run $id',
+    peerDeviceId: peerDeviceId,
+    peerName: 'phone',
+    localRootPath: '/on-device/notes',
+    remoteRootPath: '~/notes',
+    localRootLabel: '/on-device/notes',
+    remoteRootLabel: '~/notes',
+    breakage: null,
+  );
+
   void ready({String? certificateWarning}) => app.state.recordBootstrap(
     AppBootstrapReady(
       DeviceIdentityRow(
@@ -103,12 +116,57 @@ void main() {
     expect(find.text('laptop'), findsOneWidget);
     expect(find.text('10.0.0.7:28771'), findsNWidgets(2));
     expect(find.text('No paired devices.'), findsNothing);
-    // The row is name, address, warnings and the run action. The pairing
-    // date, the grouped id and a non-zero roots count are on the device's
-    // own page, one tap away.
+    // The row is name, address, the saved-run count, warnings and the run
+    // action. The pairing date, the grouped id and a non-zero roots count
+    // are on the device's own page, one tap away.
     expect(find.text('a1b2:c3d4:phone'), findsNothing);
     expect(find.text('paired 2026-09-15'), findsNothing);
     expect(find.text('1 folder shared'), findsNothing);
+  });
+
+  testWidgets('a row says how many saved runs name that device', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordDevices([row('phone'), row('laptop')]);
+    app.state.recordProfiles([
+      profile('p1', peerDeviceId: 'a1b2:c3d4:phone'),
+      profile('p2', peerDeviceId: 'a1b2:c3d4:phone'),
+      profile('p3', peerDeviceId: 'a1b2:c3d4:laptop'),
+    ]);
+
+    await pumpPage(tester);
+
+    // The saved runs live on the home list, keyed by device id; nothing
+    // else on this page or the device's own page says a device is used.
+    expect(find.text('2 saved runs'), findsOneWidget);
+    expect(find.text('1 saved run'), findsOneWidget);
+  });
+
+  testWidgets('a device no saved run names carries no run line', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordDevices([row('phone')]);
+    app.state.recordProfiles(const []);
+
+    await pumpPage(tester);
+
+    // Zero says only what "Set up run" beside it already says.
+    expect(find.textContaining('saved run'), findsNothing);
+    expect(find.text('Set up run'), findsOneWidget);
+  });
+
+  testWidgets('the run count follows the home list', (tester) async {
+    ready();
+    app.state.recordDevices([row('phone')]);
+    await pumpPage(tester);
+    expect(find.textContaining('saved run'), findsNothing);
+
+    app.state.recordProfiles([profile('p1', peerDeviceId: 'a1b2:c3d4:phone')]);
+    await tester.pump();
+
+    expect(find.text('1 saved run'), findsOneWidget);
   });
 
   testWidgets('warns on the row when a pairing shares no folders', (

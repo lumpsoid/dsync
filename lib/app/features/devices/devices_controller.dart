@@ -11,8 +11,11 @@ import 'devices_view_state.dart';
 /// Takes the [AppController] it borrows the application from as a
 /// constructor argument, per the controller role in `app_scope.dart`. The
 /// device rows themselves are `AppState`'s and the page reads them from
-/// there; this controller only turns the outcomes of what the page asks for
-/// — refresh, revoke — into the rendered values on [state].
+/// there; this controller turns the outcomes of what the page asks for —
+/// refresh, revoke — into the rendered values on [state], and renders the
+/// lines that are a join over more of `AppState` than one row holds
+/// ([ownCertificateWarning], [savedRunLines]) as getters over it, so they
+/// are never a second copy of what they are derived from.
 ///
 /// Navigation is not an input here. Tapping a row opens Run setup and the
 /// empty state points at Pair, but both destinations are other features and
@@ -48,6 +51,35 @@ class DevicesController {
     AppBootstrapLoading() ||
     AppBootstrapFailed() => null,
   };
+
+  /// How many saved runs name each paired device, as the line the list row
+  /// shows, keyed by device id. A device no saved run names is absent from
+  /// the map rather than present with a zero: nothing is owed to a device
+  /// that has never been run with — the row's own "Set up run" action is
+  /// already the whole of what there is to say about it.
+  ///
+  /// **This join lives here and not on `PairedDeviceRow.render` because it
+  /// spans both of `AppState`'s lists.** `AppController.refreshProfiles`
+  /// already renders a `ProfileRow` *from* the paired-device store, so a
+  /// device row that rendered itself from the profile list would make the
+  /// two refreshes depend on each other in both directions and the order
+  /// they ran in would start to matter. A controller sits above both lists
+  /// and holds neither, so the join is a read of two things the head
+  /// already has, re-derived on every build from whatever is current.
+  ///
+  /// A `Map` rather than a per-row call so the page pays one pass over the
+  /// profiles for the whole list, and so the page still only looks a
+  /// rendered line up rather than counting anything itself.
+  Map<String, String> get savedRunLines {
+    final counts = <String, int>{};
+    for (final profile in app.state.profiles) {
+      counts.update(profile.peerDeviceId, (n) => n + 1, ifAbsent: () => 1);
+    }
+    return {
+      for (final MapEntry(key: deviceId, value: count) in counts.entries)
+        deviceId: count == 1 ? '1 saved run' : '$count saved runs',
+    };
+  }
 
   /// Re-reads the store into `AppState.devices`, for a pull-to-refresh or
   /// to pick up a change made behind this process's back. A store that has

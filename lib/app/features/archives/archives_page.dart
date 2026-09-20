@@ -197,9 +197,14 @@ class _TotalTile extends StatelessWidget {
 }
 
 /// One archive. The name comes first because it is what the user recognises,
-/// the folder and the size next because they are what the decision is made
-/// on, and the remark — if any — last, in the error colour it deserves: an
-/// archive no saved run points at is the one worth deleting.
+/// the device the run talks to under it — two histories of the same size
+/// are told apart by the machine, not the byte count — the folder and the
+/// size next because they are what the decision is made on, and the remark
+/// — if any — last, in the error colour it deserves: an archive no saved
+/// run points at is the one worth deleting.
+///
+/// The peer line is absent, not empty, when no saved run claims the
+/// archive: there is no device to name then, and the remark says why.
 class _ArchiveTile extends StatelessWidget {
   const _ArchiveTile({required this.row, required this.onDelete});
 
@@ -210,11 +215,13 @@ class _ArchiveTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final note = row.note;
+    final peerLine = row.peerLine;
     return ListTile(
       title: Text(row.title),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (peerLine != null) Text(peerLine),
           Text(row.location, overflow: TextOverflow.ellipsis),
           Text('${row.sizeLabel} · last written ${row.lastWritten}'),
           if (note != null)

@@ -37,9 +37,10 @@ void main() {
   tearDown(archivesScope.reset);
   tearDown(() => controller.dispose());
 
-  ArchiveRow row(String title, {String? note}) => ArchiveRow(
+  ArchiveRow row(String title, {String? note, String? peerLine}) => ArchiveRow(
     logPath: '/state/dsync/$title-a.jsonl',
     title: title,
+    peerLine: peerLine,
     location: '/on-device/notes',
     sizeLabel: '4.2 MiB',
     sizeBytes: 4404019,
@@ -89,6 +90,58 @@ void main() {
     expect(find.byKey(const Key('archives-total')), findsOneWidget);
     expect(find.text('8.4 MiB'), findsOneWidget);
     expect(find.text('across 2 stored histories'), findsOneWidget);
+  });
+
+  testWidgets('a row names the device its run syncs with, under the run', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    controller.state.recordListing(
+      ArchivesReady([row('weekly notes', peerLine: 'syncs with desktop')]),
+    );
+    await tester.pump();
+
+    expect(find.text('syncs with desktop'), findsOneWidget);
+    final title = tester.getTopLeft(find.text('weekly notes')).dy;
+    final peer = tester.getTopLeft(find.text('syncs with desktop')).dy;
+    final size = tester
+        .getTopLeft(find.text('4.2 MiB · last written 2026-09-15'))
+        .dy;
+    expect(title, lessThan(peer));
+    expect(peer, lessThan(size));
+  });
+
+  testWidgets('a run whose device was revoked reads as an unpaired id', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    controller.state.recordListing(
+      ArchivesReady([
+        row('weekly notes', peerLine: 'syncs with unpaired device a1b2:c3d4'),
+      ]),
+    );
+    await tester.pump();
+
+    expect(find.text('syncs with unpaired device a1b2:c3d4'), findsOneWidget);
+  });
+
+  testWidgets('an archive no saved run points at names no device', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    controller.state.recordListing(
+      ArchivesReady([
+        row('p9', note: 'No saved run uses this history any more.'),
+      ]),
+    );
+    await tester.pump();
+
+    // No run, so no device: the remark is the whole of what is known.
+    expect(find.textContaining('syncs with'), findsNothing);
+    expect(
+      find.text('No saved run uses this history any more.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('an archive no saved run points at carries its remark', (

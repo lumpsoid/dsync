@@ -112,6 +112,7 @@ class _DevicesBody extends StatelessWidget {
     final devices = controller.app.state.devices;
     final error = controller.state.error;
     final ownWarning = controller.ownCertificateWarning;
+    final savedRunLines = controller.savedRunLines;
     return RefreshIndicator(
       onRefresh: controller.refresh,
       child: ListView(
@@ -127,6 +128,7 @@ class _DevicesBody extends StatelessWidget {
             for (final row in devices)
               _DeviceTile(
                 row: row,
+                savedRunLine: savedRunLines[row.deviceId],
                 onTap: () => onOpenDevice(row.deviceId),
                 onRunSetup: () => onOpenRunSetup(row.deviceId),
               ),
@@ -180,16 +182,33 @@ class _EmptyState extends StatelessWidget {
 }
 
 /// One paired device, cut down to what a list row is for: recognising the
-/// device, noticing something wrong with it, and starting a run with it.
-/// So the row carries the name, the address it answers on, a certificate
-/// warning when there is one, "no folders shared" when the pairing grants
-/// nothing, and the named run action — nothing else.
+/// device, noticing something wrong with it, knowing whether it is already
+/// wired into saved runs, and starting a run with it. So the row carries
+/// the name, the address it answers on, how many saved runs name it when
+/// any do, a certificate warning when there is one, "no folders shared"
+/// when the pairing grants nothing, and the named run action — nothing
+/// else.
 ///
 /// Everything dropped from here (when the pairing happened, the grouped hex
 /// id, the folders themselves, the revoke) is on the device's own page,
 /// which a tap opens. A list row that repeats a detail page costs every
 /// reader height and attention on every scroll to save one tap for the rare
 /// reader who wanted it.
+///
+/// **The saved-run count earns its line against that rule** because it is
+/// not on the detail page and is not derivable from anything else on
+/// screen: the saved runs live on the home list, keyed by device id, and a
+/// device's own page says nothing about them. It is also what "Set up run"
+/// next to it is missing — whether this is a first run with the device or
+/// the fourth — and what makes revoking it a decision rather than a guess.
+/// It is a line and not a trailing figure because the trailing slot is the
+/// run action, and a bare number beside a button reads as part of it.
+///
+/// Zero renders nothing at all. A count of none says only what the run
+/// action already says, and a first-run device would otherwise carry a line
+/// on every row saying so. [savedRunLine] is therefore `null` rather than
+/// "no saved runs", decided in `DevicesController.savedRunLines` — the join
+/// over both of `AppState`'s lists — and never counted here.
 ///
 /// "No folders shared" stays because it is not a detail: it is the reason a
 /// run against a perfectly healthy-looking pairing finds nothing, and it is
@@ -202,11 +221,16 @@ class _EmptyState extends StatelessWidget {
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
     required this.row,
+    required this.savedRunLine,
     required this.onTap,
     required this.onRunSetup,
   });
 
   final PairedDeviceRow row;
+
+  /// How many saved runs name this device, already rendered, or `null`
+  /// when none do.
+  final String? savedRunLine;
 
   /// Opens the device's own page.
   final VoidCallback onTap;
@@ -218,6 +242,7 @@ class _DeviceTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final warning = row.certificateWarning;
+    final savedRuns = savedRunLine;
     final sharesNothing = row.agreedRootCount == 0;
     return ListTile(
       title: Text(row.name),
@@ -225,6 +250,7 @@ class _DeviceTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(row.address),
+          if (savedRuns != null) Text(savedRuns),
           if (warning != null)
             Text(warning, style: TextStyle(color: theme.colorScheme.tertiary)),
           if (sharesNothing)
@@ -234,8 +260,8 @@ class _DeviceTile extends StatelessWidget {
             ),
         ],
       ),
-      // Two lines normally; a third only when a warning line is showing.
-      isThreeLine: warning != null || sharesNothing,
+      // Two lines normally; a third only when a further line is showing.
+      isThreeLine: savedRuns != null || warning != null || sharesNothing,
       onTap: onTap,
       trailing: TextButton(
         onPressed: onRunSetup,

@@ -47,11 +47,12 @@ void main() {
     return file;
   }
 
-  ProfileRow profile(String id, String name) => ProfileRow(
+  ProfileRow profile(String id, String name, {String? peerName = 'desktop'}) =>
+      ProfileRow(
     id: id,
     name: name,
     peerDeviceId: 'a1b2:c3d4',
-    peerName: 'desktop',
+    peerName: peerName,
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
     localRootLabel: '/on-device/notes',
@@ -71,6 +72,35 @@ void main() {
 
     expect(titles(), ['weekly notes']);
     expect(rows().single.note, isNull);
+  });
+
+  test('an archive names the device its run syncs with', () async {
+    await writeLog('p1', 'a');
+    app.state.recordProfiles([profile('p1', 'weekly notes')]);
+
+    await controller.refresh();
+
+    expect(rows().single.peerLine, 'syncs with desktop');
+  });
+
+  test('a run whose device was revoked keeps the id as its peer', () async {
+    await writeLog('p1', 'a');
+    app.state.recordProfiles([
+      profile('p1', 'weekly notes', peerName: null),
+    ]);
+
+    await controller.refresh();
+
+    expect(rows().single.peerLine, 'syncs with unpaired device a1b2:c3d4');
+  });
+
+  test('an archive no saved run points at has no device to name', () async {
+    await writeLog('p9', 'a');
+    app.state.recordProfiles(const []);
+
+    await controller.refresh();
+
+    expect(rows().single.peerLine, isNull);
   });
 
   test('an archive no saved run points at says so', () async {
