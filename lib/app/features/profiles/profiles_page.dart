@@ -242,10 +242,16 @@ class _ProfileTile extends StatelessWidget {
             row.peerName ?? 'unpaired device ${row.peerDeviceId}',
             style: Theme.of(context).textTheme.titleSmall,
           ),
-          Text(
-            '${row.localRootPath} ↔ ${row.remoteRootPath}',
-            overflow: TextOverflow.ellipsis,
-          ),
+          // One line per root rather than the pair joined into one string.
+          // Joined, the two roots shared a single line's width and the
+          // remote one was clipped away entirely on a long local path —
+          // the side of the run that is *not* on this device vanished. A
+          // line each gives both the full width, so each is elided only
+          // against its own length. The labels are already middle-elided
+          // by `ProfileRow.render`; `ellipsis` stays as the backstop for
+          // the width the character count cannot know about.
+          Text(row.localRootLabel, overflow: TextOverflow.ellipsis),
+          Text('↔ ${row.remoteRootLabel}', overflow: TextOverflow.ellipsis),
           if (breakage != null) ...[
             Text(
               breakage.message,

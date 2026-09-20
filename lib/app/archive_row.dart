@@ -1,6 +1,7 @@
 import 'package:dsync/dsync_core/models/stored_archive.dart';
 
 import 'format_bytes.dart';
+import 'format_path.dart';
 
 /// One archive log as the Archives page shows it: already-rendered values
 /// only, per the view-state role in `app_scope.dart`. The page draws these
@@ -22,6 +23,11 @@ class ArchiveRow {
   final String title;
 
   /// The replica root this archive records, or why it cannot be named.
+  ///
+  /// A path here is middle-elided by [elidePath]: two archives of the same
+  /// run differ only at the end of their root, so the end is what this line
+  /// has to show. The "no readable header" sentence is prose, not a path,
+  /// and is left whole.
   final String location;
 
   /// What the log costs on disk, as a person reads it.
@@ -52,12 +58,13 @@ class ArchiveRow {
   /// Renders [archive] against the saved run it belongs to, [profileName],
   /// which is `null` when the home list has no run under that id any more.
   static ArchiveRow render(StoredArchive archive, {String? profileName}) {
+    final rootPath = archive.rootPath;
     return ArchiveRow(
       logPath: archive.logPath,
       title: profileName ?? archive.profileId,
-      location:
-          archive.rootPath ??
-          'Folder unknown — this log has no readable header',
+      location: rootPath == null
+          ? 'Folder unknown — this log has no readable header'
+          : elidePath(rootPath),
       sizeLabel: formatBytes(archive.sizeBytes),
       sizeBytes: archive.sizeBytes,
       lastWritten: _formatDay(archive.lastModified),

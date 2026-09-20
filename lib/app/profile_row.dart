@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/paired_device.dart';
 
+import 'format_path.dart';
 import 'profile_breakage.dart';
 import 'sync_profile.dart';
 
@@ -29,6 +30,8 @@ class ProfileRow {
     required this.peerName,
     required this.localRootPath,
     required this.remoteRootPath,
+    required this.localRootLabel,
+    required this.remoteRootLabel,
     required this.breakage,
   });
 
@@ -56,6 +59,8 @@ class ProfileRow {
       peerName: device?.name,
       localRootPath: profile.localRootPath,
       remoteRootPath: profile.remoteRootPath,
+      localRootLabel: elidePath(profile.localRootPath),
+      remoteRootLabel: elidePath(profile.remoteRootPath),
       breakage: broken,
     );
   }
@@ -82,6 +87,16 @@ class ProfileRow {
 
   /// Side `b`, unexpanded.
   final String remoteRootPath;
+
+  /// [localRootPath] as the row prints it: middle-elided by [elidePath], so
+  /// what shows is the end of the path — the part that tells two runs apart
+  /// — and not the prefix every folder on the device shares.
+  final String localRootLabel;
+
+  /// [remoteRootLabel] is [remoteRootPath] under the same rule. Rendered
+  /// here rather than in the tile for the reason the rest of this class
+  /// exists: the page draws values, it does not derive them.
+  final String remoteRootLabel;
 
   /// Why this profile cannot be run any more and what fixes it, or `null`
   /// while it can be run.

@@ -54,6 +54,8 @@ void main() {
     peerName: 'desktop',
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
+    localRootLabel: '/on-device/notes',
+    remoteRootLabel: '~/notes',
     breakage: null,
   );
 

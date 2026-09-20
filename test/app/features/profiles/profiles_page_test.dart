@@ -78,6 +78,8 @@ void main() {
     peerName: 'desktop',
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
+    localRootLabel: '/on-device/notes',
+    remoteRootLabel: '~/notes',
     breakage: null,
   );
 
@@ -88,6 +90,8 @@ void main() {
     peerName: null,
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
+    localRootLabel: '/on-device/notes',
+    remoteRootLabel: '~/notes',
     breakage: ProfileDeviceUnpaired(),
   );
 
@@ -98,6 +102,8 @@ void main() {
     peerName: 'desktop',
     localRootPath: '/on-device/gone',
     remoteRootPath: '~/notes',
+    localRootLabel: '/on-device/gone',
+    remoteRootLabel: '~/notes',
     breakage: ProfileLocalRootUnusable(),
   );
 
@@ -160,7 +166,10 @@ void main() {
     // bound to one paired device, and which one is what tells two
     // similarly-named runs apart.
     expect(find.text('desktop'), findsOneWidget);
-    expect(find.text('/on-device/notes ↔ ~/notes'), findsOneWidget);
+    // A line per root, so a long local path cannot clip the remote one
+    // away entirely.
+    expect(find.text('/on-device/notes'), findsOneWidget);
+    expect(find.text('↔ ~/notes'), findsOneWidget);
     expect(find.textContaining('no longer paired'), findsNothing);
   });
 
