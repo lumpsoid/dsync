@@ -14,6 +14,7 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The Shared folders page as a rendering test: devices are pushed into
@@ -27,6 +28,7 @@ void main() {
   late _FakePicker picker;
   late PairedDevice desktop;
   late PairedDevice laptop;
+  String? copied;
 
   setUpAll(() {
     desktop = PairedDevice(
@@ -66,7 +68,20 @@ void main() {
     );
     appScope.setController(app);
     sharedFoldersScope.setController(controller);
+    copied = null;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied = (call.arguments as Map)['text'] as String?;
+          }
+          return null;
+        });
   });
+
+  tearDown(
+    () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null),
+  );
 
   tearDown(appScope.reset);
   tearDown(sharedFoldersScope.reset);
@@ -139,6 +154,23 @@ void main() {
 
     expect(find.text(long), findsNothing);
     expect(find.text(elidePath(long)), findsOneWidget);
+  });
+
+  testWidgets('copying a folder gives the stored path, not the label', (
+    tester,
+  ) async {
+    const long = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
+    app.state.recordDevices([
+      row(desktop, agreedRoots: const [long]),
+      row(laptop),
+    ]);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('shared-folder-copy-$long')));
+    await tester.pumpAndSettle();
+
+    expect(copied, long);
+    expect(find.text('Folder path copied.'), findsOneWidget);
   });
 
   testWidgets('says which of the two empty cases this is', (tester) async {
