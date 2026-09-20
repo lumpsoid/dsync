@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
+import 'package:dsync/dsync_core/models/device_verification.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:test/test.dart';
 
@@ -96,6 +97,77 @@ void main() {
       final granted = original.withAdditionalRoot('/home/me/notes');
 
       expect(granted.agreedReplicaRoots, {'/home/me/notes'});
+    });
+  });
+
+  group('verification', () {
+    test('a fresh pairing carries none', () {
+      expect(device().verifiedAt, isNull);
+      expect(device().verification, isNull);
+    });
+
+    test('withVerification stamps the id currently pinned', () {
+      final confirmed = device().withVerification(DateTime.utc(2026, 9, 20));
+
+      expect(confirmed.verifiedAt, DateTime.utc(2026, 9, 20));
+      expect(confirmed.verification!.deviceId, confirmed.deviceId);
+    });
+
+    test('withVerification changes nothing else', () {
+      final original = device();
+      final confirmed = original.withVerification(DateTime.utc(2026, 9, 20));
+
+      expect(confirmed.name, original.name);
+      expect(confirmed.certificatePem, original.certificatePem);
+      expect(confirmed.agreedReplicaRoots, original.agreedReplicaRoots);
+      expect(confirmed.pairedAt, original.pairedAt);
+      expect(confirmed.deviceId, original.deviceId);
+      // A new value, not a mutation — the original never became verified.
+      expect(original.verifiedAt, isNull);
+    });
+
+    test('a confirmation made about another key does not apply', () {
+      final stale = PairedDevice(
+        certificatePem: certificatePem,
+        name: 'phone',
+        agreedReplicaRoots: const {'/home/me/notes'},
+        pairedAt: DateTime.utc(2026, 9, 15),
+        lastKnownAddress: PeerAddress(host: '192.168.1.5'),
+        verification: DeviceVerification(
+          deviceId: 'ffff:0000:ffff:0000',
+          at: DateTime.utc(2026, 9, 20),
+        ),
+      );
+
+      expect(stale.verifiedAt, isNull);
+    });
+
+    test('renaming, granting and moving all carry the confirmation', () {
+      final confirmed = device().withVerification(DateTime.utc(2026, 9, 20));
+
+      expect(confirmed.withName('desk').verifiedAt, isNotNull);
+      expect(confirmed.withAdditionalRoot('/home/me/photos').verifiedAt,
+          isNotNull);
+      expect(
+        confirmed
+            .withLastKnownAddress(PeerAddress(host: '10.0.0.9'))
+            .verifiedAt,
+        isNotNull,
+      );
+    });
+
+    test('withoutVerification takes it back off', () {
+      final confirmed = device().withVerification(DateTime.utc(2026, 9, 20));
+
+      expect(confirmed.withoutVerification().verifiedAt, isNull);
+      expect(confirmed.withoutVerification().name, confirmed.name);
+    });
+
+    test('rejects an empty verified id', () {
+      expect(
+        () => DeviceVerification(deviceId: '  ', at: DateTime.utc(2026)),
+        throwsFormatException,
+      );
     });
   });
 }

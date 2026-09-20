@@ -309,6 +309,52 @@ void main() {
     );
   });
 
+  group('verification', () {
+    test('confirming records the date and shows on the row', () async {
+      final id = await selectPhone();
+
+      await controller.confirmDeviceId();
+
+      expect(controller.device!.verifiedAt, isNotNull);
+      expect(controller.device!.isVerified, isTrue);
+      expect((await store().byDeviceId(id))!.verifiedAt, isNotNull);
+      expect(
+        (controller.state.outcome as DeviceDetailDone).message,
+        'Device id confirmed.',
+      );
+    });
+
+    test('clearing takes it back off without touching the pairing', () async {
+      final id = await selectPhone();
+      await controller.confirmDeviceId();
+
+      await controller.clearVerification();
+
+      expect(controller.device!.verifiedAt, isNull);
+      expect((await store().byDeviceId(id))!.agreedReplicaRoots, {
+        '/home/me/notes',
+      });
+    });
+
+    test('a mismatch writes nothing and says what to do', () async {
+      final id = await selectPhone();
+
+      controller.reportDeviceIdMismatch();
+
+      expect((await store().byDeviceId(id))!.verifiedAt, isNull);
+      expect(failure(), contains('revoke it below and pair again'));
+    });
+
+    test('a device revoked elsewhere is refused, not confirmed', () async {
+      final id = await selectPhone();
+      await store().revoke(id);
+
+      await controller.confirmDeviceId();
+
+      expect(failure(), contains('No paired device'));
+    });
+  });
+
   group('revokeRoot', () {
     test('withdraws one root and keeps the pairing', () async {
       await selectPhone(roots: const {'/home/me/notes', '/home/me/photos'});

@@ -72,6 +72,7 @@ void main() {
   PairedDeviceRow row({
     List<String> agreedRoots = const ['/home/me/notes'],
     String? certificateWarning,
+    DateTime? verifiedAt,
   }) => PairedDeviceRow(
     name: 'desktop',
     deviceId: phone.deviceId,
@@ -81,6 +82,7 @@ void main() {
     certificateIssuedAt: DateTime(2026, 1, 15),
     certificateExpiresAt: DateTime(2027, 1, 15),
     certificateWarning: certificateWarning,
+    verifiedAt: verifiedAt,
   );
 
   /// Brings an action below the fold into the tree: the page is a
@@ -385,6 +387,68 @@ void main() {
     expect(find.text('Revoke desktop?'), findsOneWidget);
     expect(
       find.textContaining('still trusts this device until you revoke'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the id check asks rather than offering a button to press', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-verify'));
+
+    expect(find.byKey(const Key('device-verify-id')), findsOneWidget);
+    expect(find.textContaining('read the id on its This-device page'),
+        findsOneWidget);
+    expect(find.byKey(const Key('device-verify-match')), findsOneWidget);
+    expect(find.byKey(const Key('device-verify-differ')), findsOneWidget);
+    // Nothing to clear until something has been confirmed.
+    expect(find.byKey(const Key('device-verify-clear')), findsNothing);
+  });
+
+  testWidgets('an unconfirmed pairing shows no mark and no notice', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+
+    await pumpPage(tester);
+
+    expect(find.byKey(const Key('device-detail-verified')), findsNothing);
+    expect(find.text('Check device id'), findsOneWidget);
+  });
+
+  testWidgets('a confirmed pairing carries the mark and the date', (
+    tester,
+  ) async {
+    app.state.recordDevices([row(verifiedAt: DateTime(2026, 9, 20))]);
+
+    await pumpPage(tester);
+
+    expect(find.byKey(const Key('device-detail-verified')), findsOneWidget);
+    await scrollTo(tester, const Key('device-verify'));
+    expect(find.text('Device id confirmed'), findsOneWidget);
+    expect(
+      find.textContaining('You confirmed this id on 2026-09-20'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('"they differ" writes nothing and says to re-pair', (
+    tester,
+  ) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+    await tapAction(tester, const Key('device-verify'));
+
+    await tester.tap(find.byKey(const Key('device-verify-differ')));
+    await tester.pumpAndSettle();
+
+    expect(controller.device!.isVerified, isFalse);
+    await scrollToOutcome(tester);
+    expect(
+      find.textContaining('revoke it below and pair again'),
       findsOneWidget,
     );
   });

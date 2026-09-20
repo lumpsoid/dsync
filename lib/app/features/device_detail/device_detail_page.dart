@@ -82,6 +82,7 @@ class _DeviceDetailBody extends StatelessWidget {
       // back rather than popping under the user's finger.
       return _Gone(onGone: onGone);
     }
+    final confirmedAt = device.verifiedAt;
     return ListView(
       children: [
         _IdentityTile(device),
@@ -130,6 +131,20 @@ class _DeviceDetailBody extends StatelessWidget {
           onTap: controller.testConnection,
         ),
         ListTile(
+          key: const Key('device-verify'),
+          leading: const Icon(Icons.fingerprint),
+          title: Text(
+            confirmedAt == null ? 'Check device id' : 'Device id confirmed',
+          ),
+          subtitle: Text(
+            confirmedAt == null
+                ? 'Compare the id above with the one this device shows on '
+                      'its own This-device page.'
+                : 'You confirmed this id on ${formatDate(confirmedAt)}.',
+          ),
+          onTap: () => _verify(context, device),
+        ),
+        ListTile(
           key: const Key('device-revoke'),
           leading: Icon(
             Icons.link_off,
@@ -172,6 +187,27 @@ class _DeviceDetailBody extends StatelessWidget {
       builder: (context) => _AddressDialog(initialAddress: device.address),
     );
     if (address != null) await controller.updateAddress(address);
+  }
+
+  /// Asks the one question this host cannot answer for itself, and records
+  /// whichever answer comes back. Cancelling writes nothing — a user who
+  /// opened the dialog to read the id and closed it again has not claimed to
+  /// have compared anything.
+  Future<void> _verify(BuildContext context, PairedDeviceRow device) async {
+    final answer = await showDialog<_VerifyAnswer>(
+      context: context,
+      builder: (context) => _VerifyDialog(device: device),
+    );
+    switch (answer) {
+      case null:
+        return;
+      case _VerifyAnswer.match:
+        await controller.confirmDeviceId();
+      case _VerifyAnswer.mismatch:
+        controller.reportDeviceIdMismatch();
+      case _VerifyAnswer.clear:
+        await controller.clearVerification();
+    }
   }
 
   Future<void> _revoke(BuildContext context, PairedDeviceRow device) async {
@@ -219,6 +255,17 @@ class _IdentityTile extends StatelessWidget {
             key: const Key('device-detail-id'),
             style: theme.textTheme.bodyMedium,
           ),
+          // Present only once the user has confirmed the id: an unconfirmed
+          // pairing is the ordinary state and says nothing here, so there is
+          // no empty slot and no absence to read into.
+          trailing: device.verifiedAt == null
+              ? null
+              : Icon(
+                  Icons.verified,
+                  key: const Key('device-detail-verified'),
+                  color: theme.colorScheme.primary,
+                  semanticLabel: 'Device id confirmed',
+                ),
         ),
       ],
     );
@@ -520,6 +567,98 @@ class _AddressDialogState extends State<_AddressDialog> {
           key: const Key('device-address-confirm'),
           onPressed: () => Navigator.of(context).pop(_address.text),
           child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+/// What the user said when they compared the two screens — or that they
+/// took an earlier answer back.
+///
+/// Three cases rather than a `bool?`, because "they differ" is not the
+/// absence of "they match": one is a pairing to throw away and the other is
+/// a dialog the user closed, and the page does something different with
+/// each.
+enum _VerifyAnswer { match, mismatch, clear }
+
+/// The id this host pinned, beside the question only the user can answer:
+/// is this what the other device shows?
+///
+/// **It asks, rather than offering a "Verify" button to press.** A button
+/// that turns a pairing green because it was tapped teaches the user that
+/// green means "I tapped it", and the one prompt that should ever stop them
+/// becomes the one they click through fastest. So the dialog leads with the
+/// id, names where to find its counterpart, and offers both answers —
+/// "they differ" being a real outcome with a real consequence, not a
+/// cancel.
+///
+/// **And it says what verifying is not for.** Pairing already pins this
+/// device's key; nothing here is what makes a connection safe, and a user
+/// who never opens this dialog is not doing anything wrong. Saying so is
+/// what keeps this an optional tool rather than a chore with a badge
+/// attached.
+class _VerifyDialog extends StatelessWidget {
+  const _VerifyDialog({required this.device});
+
+  final PairedDeviceRow device;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final confirmedAt = device.verifiedAt;
+    return AlertDialog(
+      title: const Text('Check device id'),
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Open ${device.name} and read the id on its This-device page. '
+            'It should be exactly this:',
+          ),
+          const SizedBox(height: 12),
+          SelectableText(
+            device.deviceId,
+            key: const Key('device-verify-id'),
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'This is optional. Pairing already pins this device\'s key — '
+            'comparing the two screens is how you tell that the key pinned '
+            'here is the one that device actually holds.',
+            style: theme.textTheme.bodySmall,
+          ),
+          if (confirmedAt != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Confirmed on ${formatDate(confirmedAt)}.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        if (confirmedAt != null)
+          TextButton(
+            key: const Key('device-verify-clear'),
+            onPressed: () =>
+                Navigator.of(context).pop(_VerifyAnswer.clear),
+            child: const Text('Clear'),
+          ),
+        TextButton(
+          key: const Key('device-verify-differ'),
+          onPressed: () => Navigator.of(context).pop(_VerifyAnswer.mismatch),
+          style: TextButton.styleFrom(
+            foregroundColor: theme.colorScheme.error,
+          ),
+          child: const Text('They differ'),
+        ),
+        FilledButton(
+          key: const Key('device-verify-match'),
+          onPressed: () => Navigator.of(context).pop(_VerifyAnswer.match),
+          child: const Text('They match'),
         ),
       ],
     );

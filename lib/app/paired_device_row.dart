@@ -30,6 +30,7 @@ class PairedDeviceRow {
     required this.certificateIssuedAt,
     required this.certificateExpiresAt,
     required this.certificateWarning,
+    required this.verifiedAt,
   });
 
   /// [device] as of [now]: the one place a `PairedDevice` becomes a row,
@@ -55,6 +56,7 @@ class PairedDeviceRow {
         owner: device.name,
         now: now,
       )?.message,
+      verifiedAt: device.verifiedAt,
     );
   }
 
@@ -108,4 +110,21 @@ class PairedDeviceRow {
   /// SPEC §4.4's warning line for this device's certificate, or `null`
   /// while its expiry is further off than the warning window.
   final String? certificateWarning;
+
+  /// When the user confirmed this device's id out of band, or `null` when
+  /// they have not — `PairedDevice.verifiedAt`, which is already `null` for
+  /// a confirmation that no longer applies to the pinned key, so nothing on
+  /// screen compares ids itself.
+  ///
+  /// A `DateTime` rather than a rendered line, for [pairedAt]'s reason:
+  /// formatting is the widget layer's. Its *absence* carries the whole of
+  /// the unverified state — there is no "not verified" string here, because
+  /// there is nothing to show for it. Verifying is a tool the user may
+  /// reach for; not having reached for it is not a finding, and a pairing
+  /// that renders a line saying so would be nagging about a choice.
+  final DateTime? verifiedAt;
+
+  /// Whether this device carries the user's confirmation — a getter over
+  /// [verifiedAt], so the badge and the date can never disagree.
+  bool get isVerified => verifiedAt != null;
 }

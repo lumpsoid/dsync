@@ -223,6 +223,57 @@ class DeviceDetailController {
     }
   }
 
+  /// Records that the user compared this host's id for the device against
+  /// the id the device itself shows, and found them equal (SPEC §4.4).
+  ///
+  /// The comparison itself happens on two screens and in the user's head —
+  /// nothing here dials anything or could check it, which is exactly why it
+  /// is worth recording: it is the one fact about a pairing this host cannot
+  /// establish for itself. What it changes is the page and the list row.
+  /// What it does not change is whether this device is trusted: that was
+  /// settled by the pin at pairing time and is not this button's to move.
+  Future<void> confirmDeviceId() async {
+    final id = _deviceId;
+    if (id == null) return;
+    await _write(
+      () => app.markDeviceVerified(id),
+      done: 'Device id confirmed.',
+    );
+  }
+
+  /// The other answer to the same question: the id on the peer's screen is
+  /// not the id this host pinned.
+  ///
+  /// Writes nothing — there is no "failed verification" to record, and a
+  /// pairing the user cannot vouch for is not a different pairing, it is one
+  /// they should throw away. So this says so, and leaves the revoking to the
+  /// user: it is one tap further down the same page, behind its own
+  /// confirmation, and doing it for them here would revoke on a user who
+  /// tapped the wrong button while comparing two long strings.
+  void reportDeviceIdMismatch() {
+    final row = device;
+    if (row == null) return;
+    state.recordOutcome(
+      DeviceDetailFailed(
+        'The id ${row.name} shows is not the id pinned here. Whatever this '
+        'pairing reaches, it is not the device you meant to pair with — '
+        'revoke it below and pair again, in person.',
+      ),
+    );
+  }
+
+  /// Takes a confirmation back off this device — for one made in haste, or
+  /// against the wrong screen. The pairing is left exactly as trusted as it
+  /// was.
+  Future<void> clearVerification() async {
+    final id = _deviceId;
+    if (id == null) return;
+    await _write(
+      () => app.clearDeviceVerification(id),
+      done: 'Confirmation cleared.',
+    );
+  }
+
   /// Authorizes this device to reach [rawPath] on this host — pairing's
   /// second step (SPEC §4.4), the same write `dsync pair grant` makes.
   ///

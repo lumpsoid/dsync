@@ -53,6 +53,7 @@ void main() {
     String name, {
     String? certificateWarning,
     List<String> agreedRoots = const ['/srv/notes'],
+    DateTime? verifiedAt,
   }) => PairedDeviceRow(
     name: name,
     deviceId: 'a1b2:c3d4:$name',
@@ -62,6 +63,7 @@ void main() {
     certificateIssuedAt: DateTime(2026, 1, 1),
     certificateExpiresAt: DateTime(2027, 1, 1),
     certificateWarning: certificateWarning,
+    verifiedAt: verifiedAt,
   );
 
   ProfileRow profile(String id, {required String peerDeviceId}) => ProfileRow(
@@ -350,5 +352,25 @@ void main() {
     await tester.pump();
 
     expect(find.text('No paired device with id x'), findsOneWidget);
+  });
+
+  testWidgets('a confirmed device carries a mark; an unconfirmed one does not',
+      (tester) async {
+    ready();
+    app.state.recordDevices([
+      row('phone', verifiedAt: DateTime(2026, 9, 20)),
+      row('laptop'),
+    ]);
+
+    await pumpPage(tester);
+
+    expect(
+      find.byKey(const Key('device-verified-a1b2:c3d4:phone')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('device-verified-a1b2:c3d4:laptop')),
+      findsNothing,
+    );
   });
 }

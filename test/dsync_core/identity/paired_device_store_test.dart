@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
@@ -582,6 +583,161 @@ void main() {
         throwsA(isA<FormatException>()),
       );
       expect((await store.byDeviceId(deviceA().deviceId))!.name, 'phone');
+    });
+  });
+
+  group('verification', () {
+    test('records a confirmation and survives a reload', () async {
+      final store = PairedDeviceStore(storeFile());
+      final phone = deviceA();
+      await store.add(phone);
+
+      await store.recordVerification(
+        phone.deviceId,
+        DateTime.utc(2026, 9, 20, 9, 30),
+      );
+
+      final reloaded = await PairedDeviceStore(
+        storeFile(),
+      ).byDeviceId(phone.deviceId);
+      expect(reloaded!.verifiedAt, DateTime.utc(2026, 9, 20, 9, 30));
+    });
+
+    test('clearing takes it back off', () async {
+      final store = PairedDeviceStore(storeFile());
+      final phone = deviceA();
+      await store.add(phone);
+      await store.recordVerification(phone.deviceId, DateTime.utc(2026, 9, 20));
+
+      await store.clearVerification(phone.deviceId);
+
+      expect((await store.byDeviceId(phone.deviceId))!.verifiedAt, isNull);
+    });
+
+    test('clearing a device that was never verified is not an error', () async {
+      final store = PairedDeviceStore(storeFile());
+      final phone = deviceA();
+      await store.add(phone);
+
+      await store.clearVerification(phone.deviceId);
+
+      expect((await store.byDeviceId(phone.deviceId))!.verifiedAt, isNull);
+    });
+
+    test('leaves every other device alone', () async {
+      final store = PairedDeviceStore(storeFile());
+      final phone = deviceA();
+      final laptop = deviceB();
+      await store.add(phone);
+      await store.add(laptop);
+
+      await store.recordVerification(phone.deviceId, DateTime.utc(2026, 9, 20));
+
+      expect((await store.byDeviceId(laptop.deviceId))!.verifiedAt, isNull);
+      expectSameDevice(await store.byDeviceId(laptop.deviceId), laptop);
+    });
+
+    test('an unknown device id is refused', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA());
+
+      expect(
+        () => store.recordVerification('ffff:0000', DateTime.utc(2026)),
+        throwsA(isA<PairedDeviceNotFoundException>()),
+      );
+      expect(
+        () => store.clearVerification('ffff:0000'),
+        throwsA(isA<PairedDeviceNotFoundException>()),
+      );
+    });
+
+    test('a renewed certificate keeps the confirmation', () async {
+      // The pin is the key, so a renewal is the same device — and the id the
+      // user compared has not moved.
+      final store = PairedDeviceStore(storeFile());
+      final phone = deviceA();
+      await store.add(phone);
+      await store.recordVerification(phone.deviceId, DateTime.utc(2026, 9, 20));
+
+      await store.recordCertificate(phone.deviceId, certA);
+
+      expect(
+        (await store.byDeviceId(phone.deviceId))!.verifiedAt,
+        DateTime.utc(2026, 9, 20),
+      );
+    });
+
+    test('a pairing redone from scratch does not inherit one', () async {
+      final store = PairedDeviceStore(storeFile());
+      final phone = deviceA();
+      await store.add(phone);
+      await store.recordVerification(phone.deviceId, DateTime.utc(2026, 9, 20));
+
+      // The phone was wiped and paired again: same name here, new key.
+      await store.revoke(phone.deviceId);
+      await store.add(deviceB(name: 'phone'));
+
+      final devices = await store.load();
+      expect(devices.single.verifiedAt, isNull);
+    });
+
+    test('a document written before the field existed loads unverified',
+        () async {
+      // Byte-for-byte the shape this store wrote before verification was
+      // added: schema version 1, no "verification" key. It must load as a
+      // pairing nobody has confirmed, not as corruption.
+      await storeFile().writeAsString(
+        jsonEncode({
+          'schemaVersion': 1,
+          'devices': [
+            {
+              'certificatePem': certA,
+              'name': 'phone',
+              'agreedReplicaRoots': ['/home/me/notes'],
+              'pairedAt': '2026-09-15T11:21:00.000Z',
+              'lastKnownAddress': {'host': '192.168.1.5', 'port': 28771},
+            },
+          ],
+        }),
+      );
+
+      final devices = await PairedDeviceStore(storeFile()).load();
+
+      expect(devices.single.verifiedAt, isNull);
+    });
+
+    test('an unverified pairing writes no verification key at all', () async {
+      final store = PairedDeviceStore(storeFile());
+      await store.add(deviceA());
+
+      final written = jsonDecode(await storeFile().readAsString());
+      expect(
+        (written as Map<String, dynamic>)['devices'][0],
+        isNot(contains('verification')),
+      );
+    });
+
+    test('a malformed verification is corruption, not an absent one', () async {
+      await storeFile().writeAsString(
+        jsonEncode({
+          'schemaVersion': 1,
+          'devices': [
+            {
+              'certificatePem': certA,
+              'name': 'phone',
+              'agreedReplicaRoots': <String>[],
+              'pairedAt': '2026-09-15T11:21:00.000Z',
+              'lastKnownAddress': {'host': '192.168.1.5', 'port': 28771},
+              'verification': 'yes',
+            },
+          ],
+        }),
+      );
+
+      expect(
+        PairedDeviceStore(storeFile()).load(),
+        throwsA(isA<PairedDeviceStoreCorruptException>()),
+      );
     });
   });
 }

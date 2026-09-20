@@ -203,9 +203,31 @@ class AppController {
     );
   }
 
-  /// The shape [grantRoot], [revokeRoot] and [updateDeviceAddress] share:
-  /// one store write whose
-  /// only rendered refusal is "no such device", then a refresh either way.
+  /// Records that the user compared this host's id for the device with
+  /// [deviceId] against the id that device shows, and found them equal
+  /// (SPEC §4.4), then re-renders the list.
+  ///
+  /// Stamped with this controller's [now], the same clock every other
+  /// rendered date on the list comes from. Returns `null` on success, or the
+  /// message to show when nothing matched — the same stale-row refusal
+  /// [grantRoot] returns.
+  Future<String?> markDeviceVerified(String deviceId) {
+    return _rootWrite(
+      deviceId,
+      (store) => store.recordVerification(deviceId, now()),
+    );
+  }
+
+  /// Takes that confirmation back off the device with [deviceId] and
+  /// re-renders the list — the undo of [markDeviceVerified]. Nothing about
+  /// what this host trusts changes either way.
+  Future<String?> clearDeviceVerification(String deviceId) {
+    return _rootWrite(deviceId, (store) => store.clearVerification(deviceId));
+  }
+
+  /// The shape [grantRoot], [revokeRoot], [updateDeviceAddress] and the two
+  /// verification writes share: one store write whose only rendered refusal
+  /// is "no such device", then a refresh either way.
   Future<String?> _rootWrite(
     String deviceId,
     Future<void> Function(PairedDeviceStore) write,

@@ -245,7 +245,27 @@ class _DeviceTile extends StatelessWidget {
     final savedRuns = savedRunLine;
     final sharesNothing = row.agreedRootCount == 0;
     return ListTile(
-      title: Text(row.name),
+      // The name, and — only once the user has confirmed this device's id —
+      // a mark beside it. Inline rather than in the tile's leading slot, so
+      // the unconfirmed rows around it are not indented past an empty
+      // square: an unconfirmed pairing is the ordinary state and costs
+      // nothing on screen, which is the whole point of the confirmation
+      // being optional.
+      title: Row(
+        children: [
+          Flexible(child: Text(row.name, overflow: TextOverflow.ellipsis)),
+          if (row.isVerified) ...[
+            const SizedBox(width: 6),
+            Icon(
+              Icons.verified,
+              key: Key('device-verified-${row.deviceId}'),
+              size: 16,
+              color: theme.colorScheme.primary,
+              semanticLabel: 'Device id confirmed',
+            ),
+          ],
+        ],
+      ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

@@ -308,6 +308,7 @@ void main() {
         certificateIssuedAt: DateTime(2026, 1, 1),
         certificateExpiresAt: DateTime(2027, 1, 1),
         certificateWarning: null,
+        verifiedAt: null,
       ),
     ]);
     await tester.pumpWidget(const DsyncApp());
@@ -440,6 +441,7 @@ void main() {
         certificateIssuedAt: DateTime(2026, 1, 1),
         certificateExpiresAt: DateTime(2027, 1, 1),
         certificateWarning: null,
+        verifiedAt: null,
       ),
     ]);
 

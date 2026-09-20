@@ -16,6 +16,7 @@ void main() {
     certificateIssuedAt: DateTime.utc(2026, 1, 1),
     certificateExpiresAt: DateTime.utc(2027, 1, 1),
     certificateWarning: null,
+    verifiedAt: null,
   );
 
   test('one row per folder, sorted, whichever devices hold it', () {

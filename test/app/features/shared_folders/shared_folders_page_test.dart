@@ -100,6 +100,7 @@ void main() {
     certificateIssuedAt: DateTime(2026, 1, 1),
     certificateExpiresAt: DateTime(2027, 1, 1),
     certificateWarning: null,
+    verifiedAt: null,
   );
 
   Future<void> pumpPage(WidgetTester tester) =>

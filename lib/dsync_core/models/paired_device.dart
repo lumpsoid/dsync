@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/identity/device_id.dart';
+import 'package:dsync/dsync_core/models/device_verification.dart';
 
 /// A host and port this installation last reached a paired device at (SPEC
 /// §4.4) — seeded from the QR at pairing time and overwritten on every
@@ -73,12 +74,22 @@ class PairedDevice {
   /// from the QR at pairing time. See [withLastKnownAddress].
   final PeerAddress lastKnownAddress;
 
+  /// The user's own out-of-band check on this pairing, or `null` while they
+  /// have not made one — see [DeviceVerification] and [verifiedAt].
+  ///
+  /// Nullable rather than a `bool` beside a date, because "verified" and
+  /// "when" are one fact: a pairing either carries a comparison the user
+  /// made or it does not, and a flag set with no date (or a date with the
+  /// flag clear) would be a state nothing could render.
+  final DeviceVerification? verification;
+
   PairedDevice({
     required this.certificatePem,
     required this.name,
     required Set<String> agreedReplicaRoots,
     required this.pairedAt,
     required this.lastKnownAddress,
+    this.verification,
   }) : agreedReplicaRoots = Set.unmodifiable(agreedReplicaRoots) {
     if (name.trim().isEmpty) {
       throw const FormatException('Empty device name');
@@ -100,6 +111,22 @@ class PairedDevice {
   /// `X509Certificate.der` against.
   Uint8List get certificateDer => certificateDerFromPem(certificatePem);
 
+  /// When the user confirmed this device's id out of band, or `null` when
+  /// they have not — or when they did and the pairing has since been redone
+  /// against a different key.
+  ///
+  /// Derived from [verification] against the *current* [deviceId] rather
+  /// than read straight off it, so a stale confirmation cannot outlive the
+  /// key it was made about: a revoke-and-re-pair produces a different id, and
+  /// this goes back to `null` on its own. Renewal keeps the key, so it keeps
+  /// the confirmation — which is right, since it is the key the user
+  /// compared.
+  DateTime? get verifiedAt {
+    final made = verification;
+    if (made == null || made.deviceId != deviceId) return null;
+    return made.at;
+  }
+
   /// Whether [rootPath] is one this device is agreed to reach — what a
   /// `hello` handler checks a `ReplicaSpec`'s expanded root against (SPEC
   /// §4.4).
@@ -114,6 +141,7 @@ class PairedDevice {
     agreedReplicaRoots: agreedReplicaRoots,
     pairedAt: pairedAt,
     lastKnownAddress: address,
+    verification: verification,
   );
 
   /// This device with [rootPath] added to its agreed replica roots,
@@ -136,6 +164,7 @@ class PairedDevice {
     agreedReplicaRoots: agreedReplicaRoots,
     pairedAt: pairedAt,
     lastKnownAddress: lastKnownAddress,
+    verification: verification,
   );
 
   PairedDevice withAdditionalRoot(String rootPath) => PairedDevice(
@@ -144,6 +173,7 @@ class PairedDevice {
     agreedReplicaRoots: {...agreedReplicaRoots, rootPath},
     pairedAt: pairedAt,
     lastKnownAddress: lastKnownAddress,
+    verification: verification,
   );
 
   /// This device with [rootPath] taken out of its agreed replica roots,
@@ -163,6 +193,7 @@ class PairedDevice {
     agreedReplicaRoots: {...agreedReplicaRoots}..remove(rootPath),
     pairedAt: pairedAt,
     lastKnownAddress: lastKnownAddress,
+    verification: verification,
   );
 
   /// This device under [name], everything else unchanged — what
@@ -175,6 +206,38 @@ class PairedDevice {
   /// because it needs every other device to decide; an empty name is refused
   /// by the constructor as it is everywhere else.
   PairedDevice withName(String name) => PairedDevice(
+    certificatePem: certificatePem,
+    name: name,
+    agreedReplicaRoots: agreedReplicaRoots,
+    pairedAt: pairedAt,
+    lastKnownAddress: lastKnownAddress,
+    verification: verification,
+  );
+
+  /// This device recorded as verified at [at] — the user compared this
+  /// host's [deviceId] for it against the id the device itself shows, and
+  /// said they matched. What [PairedDeviceStore.recordVerification]
+  /// persists.
+  ///
+  /// The id stamped in is [deviceId] as it is *now*, so the record is about
+  /// the key currently pinned and nothing else (see [verifiedAt]).
+  PairedDevice withVerification(DateTime at) => PairedDevice(
+    certificatePem: certificatePem,
+    name: name,
+    agreedReplicaRoots: agreedReplicaRoots,
+    pairedAt: pairedAt,
+    lastKnownAddress: lastKnownAddress,
+    verification: DeviceVerification(deviceId: deviceId, at: at),
+  );
+
+  /// This device with the user's confirmation taken back off it — the undo
+  /// of [withVerification], for a check made in haste or against the wrong
+  /// screen.
+  ///
+  /// Nothing else changes: the pairing is exactly as trusted as it was,
+  /// because the confirmation was never what made it trusted (see
+  /// [DeviceVerification]).
+  PairedDevice withoutVerification() => PairedDevice(
     certificatePem: certificatePem,
     name: name,
     agreedReplicaRoots: agreedReplicaRoots,

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/models/device_verification.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
@@ -70,6 +71,16 @@ class PairedDeviceStore {
   /// different version is corruption, not a format this store degrades
   /// gracefully from — there is exactly one shape this store has ever
   /// written.
+  ///
+  /// **Not bumped for `"verification"`** (see
+  /// [PairedDevice.verification]), which was added after this store had
+  /// already written documents without it. The field is optional on read and
+  /// omitted on write when absent, so a document from before it existed
+  /// parses as what it actually says — a set of pairings nobody has
+  /// confirmed out of band — which is the truth, not a degraded reading of
+  /// it. Bumping would have made every existing store corrupt, and this
+  /// store has no migration path back from that: it refuses a document whose
+  /// version it does not know rather than rewriting it.
   static const schemaVersion = 1;
 
   final File _file;
@@ -270,6 +281,41 @@ class PairedDeviceStore {
     await _save(devices);
   }
 
+  /// Records that the user compared [deviceId] against the id the device
+  /// itself shows and found them equal, at [at] (SPEC §4.4).
+  ///
+  /// Local metadata and nothing else: no connection is made, the peer is
+  /// told nothing, and no later decision in this codebase reads it. A
+  /// pairing is trusted because its key is pinned — see [DeviceVerification]
+  /// for why this is worth recording anyway.
+  ///
+  /// Same read-replace-rewrite shape as [recordConnection], and the same
+  /// [PairedDeviceNotFoundException] for an id nothing matches: a
+  /// confirmation cannot be recorded against a pairing this store does not
+  /// have.
+  Future<void> recordVerification(String deviceId, DateTime at) async {
+    final devices = await load();
+    final index = devices.indexWhere((d) => d.deviceId == deviceId);
+    if (index == -1) throw PairedDeviceNotFoundException(deviceId);
+    devices[index] = devices[index].withVerification(at);
+    await _save(devices);
+  }
+
+  /// Takes the user's confirmation back off the device pinned to [deviceId]
+  /// — the undo of [recordVerification], for a check made against the wrong
+  /// screen.
+  ///
+  /// Clearing a device that was never verified is not an error, for
+  /// [revokeRoot]'s reason: the post-condition the caller wants either way is
+  /// "this pairing carries no confirmation", and it does.
+  Future<void> clearVerification(String deviceId) async {
+    final devices = await load();
+    final index = devices.indexWhere((d) => d.deviceId == deviceId);
+    if (index == -1) throw PairedDeviceNotFoundException(deviceId);
+    devices[index] = devices[index].withoutVerification();
+    await _save(devices);
+  }
+
   /// Relabels the device pinned to [deviceId] as [name] (SPEC §4.4: the name
   /// is this host's own, local, and not agreed with the peer).
   ///
@@ -336,6 +382,22 @@ class PairedDeviceStore {
         host: address['host'] as String,
         port: address['port'] as int,
       ),
+      verification: _verificationFromJson(entry['verification']),
+    );
+  }
+
+  /// A device entry's optional out-of-band confirmation. Absent — a pairing
+  /// written before the field existed, or one nobody has checked — is
+  /// `null`, the ordinary case; present but not this shape is corruption
+  /// like any other malformed entry, and throws.
+  DeviceVerification? _verificationFromJson(Object? entry) {
+    if (entry == null) return null;
+    if (entry is! Map<String, dynamic>) {
+      throw const FormatException('"verification" is not a JSON object');
+    }
+    return DeviceVerification(
+      deviceId: entry['deviceId'] as String,
+      at: DateTime.parse(entry['at'] as String),
     );
   }
 
@@ -348,6 +410,14 @@ class PairedDeviceStore {
       'host': device.lastKnownAddress.host,
       'port': device.lastKnownAddress.port,
     },
+    // Omitted rather than written as null for an unverified pairing: this
+    // is the state every document written before the field existed is in,
+    // and the two should be the same bytes on disk.
+    if (device.verification case final made?)
+      'verification': {
+        'deviceId': made.deviceId,
+        'at': made.at.toIso8601String(),
+      },
   };
 
   /// Rewrites the whole document with exactly [devices] and no others,
