@@ -62,12 +62,19 @@ void main() {
     return int.parse(address.substring(address.lastIndexOf(':') + 1));
   }
 
-  PairingPayload payloadFor(EnrolmentListener listener, Uint8List token) =>
-      PairingPayload(
-        certificateDer: certificateDerFromPem(serverIdentity.certificatePem),
-        address: PeerAddress(host: '127.0.0.1', port: portOf(listener)),
-        token: token,
-      );
+  /// [servicePort] is where the far end says its `dsync agent --serve`
+  /// answers — deliberately never [portOf] the one-shot enrolment listener,
+  /// which is the distinction the client's cache seeding depends on.
+  PairingPayload payloadFor(
+    EnrolmentListener listener,
+    Uint8List token, {
+    int servicePort = 28771,
+  }) => PairingPayload(
+    certificateDer: certificateDerFromPem(serverIdentity.certificatePem),
+    address: PeerAddress(host: '127.0.0.1', port: portOf(listener)),
+    servicePort: servicePort,
+    token: token,
+  );
 
   test('a successful enrolment writes a PairedDevice on both sides', () async {
     final token = generateEnrolmentToken();
@@ -98,6 +105,33 @@ void main() {
 
     expect(listenerErrors, isEmpty);
   });
+
+  test(
+    "the client caches the peer's serving address, not the enrolment one",
+    () async {
+      // The enrolment listener is one-shot on an ephemeral port, so caching
+      // the port this exchange connected to would store an address that
+      // cannot answer the first sync — the payload says where the peer
+      // serves, and that is what is kept.
+      final token = generateEnrolmentToken();
+      final listener = await bind(token: token);
+      addTearDown(listener.close);
+      final phoneIdentity = generateDeviceIdentity(commonName: 'dsync-phone');
+
+      await enrolWithPeer(
+        payload: payloadFor(listener, token, servicePort: 29000),
+        ownIdentity: phoneIdentity,
+        proposedName: 'phone',
+        localName: 'desktop',
+        pairedDeviceStore: clientStore,
+      );
+
+      final onClient = await clientStore.byDeviceId(serverIdentity.deviceId);
+      expect(onClient!.lastKnownAddress.host, '127.0.0.1');
+      expect(onClient.lastKnownAddress.port, 29000);
+      expect(onClient.lastKnownAddress.port, isNot(portOf(listener)));
+    },
+  );
 
   test('a wrong token is refused', () async {
     final token = generateEnrolmentToken();
@@ -219,6 +253,7 @@ void main() {
         payload: PairingPayload(
           certificateDer: impostorCertificateDer,
           address: PeerAddress(host: '127.0.0.1', port: portOf(listener)),
+          servicePort: 28771,
           token: token,
         ),
         ownIdentity: phoneIdentity,

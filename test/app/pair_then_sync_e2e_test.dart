@@ -119,6 +119,19 @@ void main() {
     );
     desktopSessionErrors = [];
 
+    // `dsync agent --serve`'s half, bound first because the payload has to
+    // name the port it serves on: the same identity the payload pins, the
+    // same store the enrolment writes to, an ephemeral port read back.
+    agent = await AgentListener.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      ownIdentity: desktopIdentity,
+      pairedDeviceStore: desktopStore,
+      buildAgent: desktopAgent,
+      onSessionError: (error, _) => desktopSessionErrors.add(error),
+    );
+    agentPort = _portOf(agent.address);
+
     // The pairing, driven through the head's own controller against a real
     // enrolment listener — `dsync pair show`'s half, minus the printing.
     final token = generateEnrolmentToken();
@@ -136,6 +149,9 @@ void main() {
     pairingPayload = PairingPayload(
       certificateDer: certificateDerFromPem(desktopIdentity.certificatePem),
       address: PeerAddress(host: '127.0.0.1', port: enrolmentPort),
+      // What `dsync pair show --serve-port` puts in the payload: where the
+      // agent answers, never the one-shot enrolment listener's own port.
+      servicePort: agentPort,
       token: token,
     );
     // Both stay up past this setUp: the pairing round below is what the rest
@@ -159,17 +175,6 @@ void main() {
     );
     phoneIdentity = await app.loadOrCreateIdentity();
 
-    // `dsync agent --serve`'s half: the same identity the payload pinned,
-    // the same store the enrolment wrote to, an ephemeral port read back.
-    agent = await AgentListener.bindSecure(
-      InternetAddress.loopbackIPv4,
-      0,
-      ownIdentity: desktopIdentity,
-      pairedDeviceStore: desktopStore,
-      buildAgent: desktopAgent,
-      onSessionError: (error, _) => desktopSessionErrors.add(error),
-    );
-    agentPort = _portOf(agent.address);
   });
 
   tearDown(() async {
@@ -180,17 +185,17 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  /// What the Run setup page would hand over for [remoteRootPath]: the
-  /// agent's port entered by hand (SPEC §4.4's re-entry hatch), because the
-  /// address the pairing cached is the *enrolment* listener's, which is
-  /// gone — exactly the situation a user is in after `dsync pair show`
-  /// exits and `dsync agent --serve` starts on its own port.
+  /// What the Run setup page would hand over for [remoteRootPath]: no
+  /// address at all, so the run dials what the pairing cached. That is the
+  /// point of the payload carrying the serving port — after `dsync pair
+  /// show` exits and `dsync agent --serve` keeps running, the first sync
+  /// works without anyone re-entering a port.
   RunRequest request(String remoteRootPath) => RunRequest(
     localRootPath: localRoot.path,
     deviceName: 'desktop',
     peerDeviceId: desktopIdentity.deviceId,
     remoteRootPath: remoteRootPath,
-    addressOverride: PeerAddress(host: '127.0.0.1', port: agentPort),
+    addressOverride: null,
     jobs: 2,
     dryRun: false,
   );
@@ -242,13 +247,16 @@ void main() {
   test('pairing records each side under its own chosen name, with no roots '
       'agreed (SPEC §4.4)', () async {
     // The head's store: the desktop, under the name the head chose, with
-    // the enrolment address cached as the first thing to try.
+    // the *serving* address cached as the first thing to try — not the
+    // enrolment listener's ephemeral port, which is gone the moment
+    // pairing ends.
     final onPhone = await (await app.pairedDevices).byName('desktop');
     expect(onPhone, isNotNull);
     expect(onPhone!.deviceId, desktopIdentity.deviceId);
     expect(onPhone.agreedReplicaRoots, isEmpty);
     expect(onPhone.lastKnownAddress.host, '127.0.0.1');
-    expect(onPhone.lastKnownAddress.port, enrolmentPort);
+    expect(onPhone.lastKnownAddress.port, agentPort);
+    expect(onPhone.lastKnownAddress.port, isNot(enrolmentPort));
     // Names are local to the side that chose them: the head never sees
     // "phone", and the desktop never sees "desktop".
     expect(await (await app.pairedDevices).byName('phone'), isNull);
@@ -292,8 +300,8 @@ void main() {
     expect((await desktopStore.load()).length, 1);
   });
 
-  test('a granted root syncs both ways over loopback TLS, and the address '
-      'entered by hand is what the store caches (SPEC §2, §4.4)', () async {
+  test('a granted root syncs both ways over loopback TLS, over the address '
+      'the pairing cached (SPEC §2, §4.4)', () async {
     await desktopStore.grant(phoneIdentity.deviceId, remoteRoot.path);
     await File('${localRoot.path}/top.txt').writeAsString('from phone');
     await Directory('${localRoot.path}/deep').create();
@@ -338,8 +346,7 @@ void main() {
     expect(await archivesIn((await app.paths).stateDir), hasLength(1));
     expect(await archivesIn(desktopStateDir), hasLength(1));
 
-    // The address that worked replaces the enrolment one the pairing
-    // cached, so the next run setup offers the agent's port by default.
+    // The address that worked is what stays on file for the next run.
     final onPhone = await (await app.pairedDevices).byName('desktop');
     expect(onPhone!.lastKnownAddress.port, agentPort);
   });
@@ -377,7 +384,7 @@ void main() {
     // The head still trusts the desktop, but its own certificate is no
     // longer a trust anchor over there, so the handshake fails before any
     // frame is exchanged: `ReplicaConnector` renders that as the peer not
-    // answering, with the hand-entered address named.
+    // answering, with the cached address named.
     expect(phase, isA<SyncRunFailed>());
     expect(
       (phase as SyncRunFailed).message,

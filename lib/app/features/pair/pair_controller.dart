@@ -28,7 +28,7 @@ typedef EnrolWithPeer = Future<void> Function({
   required PairedDeviceStore pairedDeviceStore,
 });
 
-/// Input methods of the Pair page: enrolling against a `dsync-pair:v1:`
+/// Input methods of the Pair page: enrolling against a `dsync-pair:v2:`
 /// payload (SPEC §4.4).
 ///
 /// Takes the [AppController] it borrows the application from and the
@@ -50,7 +50,7 @@ class PairController {
   /// The view state this controller renders into; owned here, disposed here.
   final PairViewState state = PairViewState();
 
-  /// Takes in a text that should be a `dsync-pair:v1:<base64>` line — read
+  /// Takes in a text that should be a `dsync-pair:v2:<base64>` line — read
   /// off the QR by the camera, or pasted from the clipboard — and decides
   /// what it is. The one place a payload is decoded.
   ///

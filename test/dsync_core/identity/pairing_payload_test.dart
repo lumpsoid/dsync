@@ -19,11 +19,13 @@ void main() {
   PairingPayload payload({
     Uint8List? certificate,
     String host = '192.168.1.5',
-    int port = 28771,
+    int port = 51234,
+    int servicePort = 28771,
     List<int> token = const [1, 2, 3, 4, 5, 6, 7, 8],
   }) => PairingPayload(
     certificateDer: certificate ?? certificateDer,
     address: PeerAddress(host: host, port: port),
+    servicePort: servicePort,
     token: Uint8List.fromList(token),
   );
 
@@ -33,10 +35,34 @@ void main() {
         () => PairingPayload(
           certificateDer: Uint8List(0),
           address: PeerAddress(host: 'h'),
+          servicePort: 28771,
           token: Uint8List.fromList([1]),
         ),
         throwsFormatException,
       );
+    });
+
+    test('rejects a service port outside the range a socket could use', () {
+      expect(
+        () => PairingPayload(
+          certificateDer: certificateDer,
+          address: PeerAddress(host: 'h'),
+          servicePort: 0,
+          token: Uint8List.fromList([1]),
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('serves from the same host as the enrolment endpoint', () {
+      // One host, two ports: the enrolment listener is one-shot on an
+      // ephemeral port, the serving listener is the address every later
+      // connection dials (SPEC §4.4).
+      final p = payload(host: '10.0.0.9', port: 51234, servicePort: 28771);
+
+      expect(p.serviceAddress.host, '10.0.0.9');
+      expect(p.serviceAddress.port, 28771);
+      expect(p.address.port, 51234);
     });
 
     test('rejects an empty token', () {
@@ -44,6 +70,7 @@ void main() {
         () => PairingPayload(
           certificateDer: certificateDer,
           address: PeerAddress(host: 'h'),
+          servicePort: 28771,
           token: Uint8List(0),
         ),
         throwsFormatException,
@@ -52,12 +79,12 @@ void main() {
   });
 
   group('encode', () {
-    test('is one line of ASCII text: dsync-pair:v1:<base64>', () {
+    test('is one line of ASCII text: dsync-pair:v2:<base64>', () {
       final text = payload().encode();
 
       expect(text.contains('\n'), isFalse, reason: 'must be a single line');
-      expect(text, startsWith('dsync-pair:v1:'));
-      final body = text.substring('dsync-pair:v1:'.length);
+      expect(text, startsWith('dsync-pair:v2:'));
+      final body = text.substring('dsync-pair:v2:'.length);
       expect(() => base64.decode(body), returnsNormally);
       expect(
         body.runes.every(
@@ -78,13 +105,15 @@ void main() {
 
   group('round trip', () {
     test('decode(encode(payload)) reproduces every field', () {
-      final original = payload(host: '10.0.0.9', port: 9000);
+      final original = payload(host: '10.0.0.9', port: 9000, servicePort: 40);
 
       final decoded = PairingPayload.decode(original.encode());
 
       expect(decoded.certificateDer, original.certificateDer);
       expect(decoded.address.host, original.address.host);
       expect(decoded.address.port, original.address.port);
+      expect(decoded.serviceAddress.host, original.address.host);
+      expect(decoded.serviceAddress.port, 40);
       expect(decoded.token, original.token);
     });
 
@@ -116,14 +145,14 @@ void main() {
   group('decode — malformed input', () {
     test('rejects text with the wrong magic prefix', () {
       expect(
-        () => PairingPayload.decode('not-dsync-pair:v1:AAAA'),
+        () => PairingPayload.decode('not-dsync-pair:v2:AAAA'),
         throwsFormatException,
       );
     });
 
     test('rejects a missing segment', () {
       expect(
-        () => PairingPayload.decode('dsync-pair:v1'),
+        () => PairingPayload.decode('dsync-pair:v2'),
         throwsFormatException,
       );
     });
@@ -136,18 +165,18 @@ void main() {
       final body = payload().encode().split(':')[2];
 
       expect(
-        () => PairingPayload.decode('dsync-pair:v2:$body'),
+        () => PairingPayload.decode('dsync-pair:v1:$body'),
         throwsFormatException,
       );
       expect(
-        () => PairingPayload.decode('dsync-pair:v0:$body'),
+        () => PairingPayload.decode('dsync-pair:v3:$body'),
         throwsFormatException,
       );
     });
 
     test('rejects corrupt base64', () {
       expect(
-        () => PairingPayload.decode('dsync-pair:v1:not-valid-base64!!!'),
+        () => PairingPayload.decode('dsync-pair:v2:not-valid-base64!!!'),
         throwsFormatException,
       );
     });
@@ -163,7 +192,7 @@ void main() {
       final truncated = base64.encode(bytes.sublist(0, 4));
 
       expect(
-        () => PairingPayload.decode('dsync-pair:v1:$truncated'),
+        () => PairingPayload.decode('dsync-pair:v2:$truncated'),
         throwsFormatException,
       );
     });
@@ -181,7 +210,7 @@ void main() {
 
         expect(
           () => PairingPayload.decode(
-            'dsync-pair:v1:${base64.encode(corrupted)}',
+            'dsync-pair:v2:${base64.encode(corrupted)}',
           ),
           throwsFormatException,
         );

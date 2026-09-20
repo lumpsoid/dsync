@@ -130,11 +130,14 @@ on one head file, `flutter test test/app/<file>.dart`.
 The app is a client of `dsync agent --serve` on a desktop; it cannot serve a
 replica itself. From nothing to a first sync:
 
-1. On the desktop, `dsync pair show`. It prints a `dsync-pair:v1:…` line and
-   waits five minutes for the peer.
+1. On the desktop, `dsync pair show`. It prints a `dsync-pair:v2:…` line and
+   waits five minutes for the peer. Add `--serve-port <port>` if this
+   desktop's `dsync agent --serve` runs on anything but 28771: the payload
+   tells the app where to reach it from then on, so this is the number the
+   app stores and dials.
 2. In the app, open **Pair a device** and tap **Scan QR code** — pointing the
    phone at the code on the desktop's terminal — or **Paste line** for the
-   `dsync-pair:v1:…` line. Either way the app then shows which desktop the
+   `dsync-pair:v2:…` line. Either way the app then shows which desktop the
    code names and the address it will be reached at; check it, adjust the two
    names, and pair.
 3. On the desktop, `dsync pair grant <app-name> <root>` for the folder the app

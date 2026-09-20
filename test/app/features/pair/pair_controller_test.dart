@@ -71,12 +71,16 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  PairingPayload payload({String host = '192.168.1.5', int port = 28771}) =>
-      PairingPayload(
-        certificateDer: certificateDerFromPem(desktopCertificatePem),
-        address: PeerAddress(host: host, port: port),
-        token: Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]),
-      );
+  PairingPayload payload({
+    String host = '192.168.1.5',
+    int port = 51234,
+    int servicePort = 28771,
+  }) => PairingPayload(
+    certificateDer: certificateDerFromPem(desktopCertificatePem),
+    address: PeerAddress(host: host, port: port),
+    servicePort: servicePort,
+    token: Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]),
+  );
 
   /// A fake that throws [error] on every call.
   void enrolThrows(Object error) {
@@ -191,10 +195,15 @@ void main() {
     test(
       'a payload names the device and the address it will be reached at',
       () {
-        controller.codeEntered(payload(host: '10.0.0.9', port: 4242).encode());
+        // The serving address, not the enrolment endpoint this pairing is
+        // redeemed against: the card shows the address the pairing leaves
+        // behind.
+        controller.codeEntered(
+          payload(host: '10.0.0.9', port: 4242, servicePort: 28771).encode(),
+        );
 
         expect(readCode().desktopName, 'desktop');
-        expect(readCode().address, '10.0.0.9:4242');
+        expect(readCode().address, '10.0.0.9:28771');
       },
     );
 
@@ -212,11 +221,11 @@ void main() {
     });
 
     test('a wrong version says so, distinctly', () {
-      controller.codeEntered(payload().encode().replaceFirst(':v1:', ':v2:'));
+      controller.codeEntered(payload().encode().replaceFirst(':v2:', ':v1:'));
 
       final message = (controller.state.code as PairCodeUnreadable).message;
-      expect(message, contains('Unsupported pairing payload version "v2"'));
-      expect(message, contains('v1'));
+      expect(message, contains('Unsupported pairing payload version "v1"'));
+      expect(message, contains('v2'));
       expect(message, isNot(contains('Not a dsync pairing payload')));
     });
 

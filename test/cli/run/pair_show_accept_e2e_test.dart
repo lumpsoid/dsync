@@ -6,6 +6,7 @@ import 'package:dsync/cli/commands/pair_accept_command.dart';
 import 'package:dsync/cli/commands/pair_show_command.dart';
 import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
+import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:test/test.dart';
 
@@ -194,6 +195,84 @@ void main() {
       showErrText,
       contains('not detected as supporting'),
       reason: 'expected the stated fallback note on stderr:\n$showErrText',
+    );
+  });
+  test('the payload names the port --serve binds, so the pairing leaves an '
+      'address the next sync can dial', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final serverEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/server'};
+    final clientEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/client'};
+
+    final showOut = BufferSink();
+    final showErr = BufferSink();
+    final showCommand = PairShowCommand(
+      environment: serverEnvironment,
+      platform: const LinuxStateDir(),
+      out: showOut.sink,
+      err: showErr.sink,
+      advertisableAddress: () async => '127.0.0.1',
+      hasTerminal: () => false,
+    );
+
+    final showExitCode = _runnerFor(
+      showCommand,
+    ).run(['show', '--serve-port', '29000']);
+
+    final payloadLine = await _awaitLine(
+      showOut,
+      (line) => line.startsWith('dsync-pair:'),
+      diagnostics: showErr,
+    );
+
+    final acceptCommand = PairAcceptCommand(
+      environment: clientEnvironment,
+      platform: const LinuxStateDir(),
+      out: BufferSink().sink,
+      err: BufferSink().sink,
+    );
+    final acceptExitCode = await _runnerFor(acceptCommand)
+        .run(['accept', '--name', 'desktop', payloadLine]);
+
+    expect(acceptExitCode, 0);
+    expect(
+      await showExitCode,
+      0,
+      reason: 'show said:\n${await showErr.contents()}',
+    );
+
+    // The enrolment listener this pairing was redeemed against is bound on
+    // an ephemeral port and is gone now; what the client cached is where
+    // `dsync agent --serve` answers.
+    final enrolmentPort = PairingPayload.decode(payloadLine).address.port;
+    final onClient = await PairedDeviceStore.forStateDir(
+      environment: clientEnvironment,
+      platform: const LinuxStateDir(),
+    ).byName('desktop');
+    expect(onClient!.lastKnownAddress.host, '127.0.0.1');
+    expect(onClient.lastKnownAddress.port, 29000);
+    expect(onClient.lastKnownAddress.port, isNot(enrolmentPort));
+  });
+
+  test('a --serve-port that is not a port is a usage error, before anything '
+      'is bound', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final showErr = BufferSink();
+    final showCommand = PairShowCommand(
+      environment: {'XDG_STATE_HOME': '${tempDir.path}/server'},
+      platform: const LinuxStateDir(),
+      out: BufferSink().sink,
+      err: showErr.sink,
+      advertisableAddress: () async => '127.0.0.1',
+      hasTerminal: () => false,
+    );
+
+    await expectLater(
+      _runnerFor(showCommand).run(['show', '--serve-port', 'http']),
+      throwsA(isA<UsageException>()),
     );
   });
 }

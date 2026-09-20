@@ -8,7 +8,7 @@ import 'pair_scope.dart';
 import 'pair_view_state.dart';
 import 'scan_code_page.dart';
 
-/// The Pair page: enrol against a `dsync-pair:v1:` payload (SPEC §4.4).
+/// The Pair page: enrol against a `dsync-pair:v2:` payload (SPEC §4.4).
 /// Widgets only, per the page role in `app_scope.dart`: two ways to get a
 /// code, a card describing the one that was read, two name fields, one
 /// button, and a switch over the rendered [PairOutcome].
@@ -128,7 +128,7 @@ class _PairPageState extends State<PairPage> {
     _codeEntered(raw);
   }
 
-  /// The clipboard, as the second way in: the `dsync-pair:v1:` line reaches
+  /// The clipboard, as the second way in: the `dsync-pair:v2:` line reaches
   /// a phone by being copied out of something else, and a long press on a
   /// text field is an affordance only to someone who already knows it is
   /// there.
@@ -230,7 +230,7 @@ class _PairForm extends StatelessWidget {
       children: [
         const Text(
           'On the desktop, run `dsync pair show`. Scan the QR code it '
-          'prints, or paste the `dsync-pair:v1:` line beside it.',
+          'prints, or paste the `dsync-pair:v2:` line beside it.',
         ),
         const SizedBox(height: 16),
         switch (state.code) {

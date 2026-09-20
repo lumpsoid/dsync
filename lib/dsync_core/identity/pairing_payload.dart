@@ -1,7 +1,8 @@
 /// What a QR — or a pasted line of text, for the camera-less
 /// desktop-to-server case (SPEC §4.4) — carries to start a pairing: the
-/// enrolling host's own identity certificate, an address hint to try first,
-/// and a single-use, time-bounded enrolment token.
+/// enrolling host's own identity certificate, where its enrolment listener
+/// and its serving listener each answer, and a single-use, time-bounded
+/// enrolment token.
 ///
 /// **Pure, and separate from the connection that consumes it.** Encoding and
 /// decoding this is parsing, nothing more: no socket, no store, no clock.
@@ -23,11 +24,12 @@ const _magic = 'dsync-pair';
 /// Bumped when the binary layout [PairingPayload.encode] writes changes. A
 /// payload whose text names a different version is a build speaking a
 /// different shape, not a corrupt one — see [PairingPayload.decode].
-const _version = 1;
+const _version = 2;
 
 /// One pairing invitation (SPEC §4.4): the DER of the host's identity
-/// certificate, where to try connecting first, and the enrolment token that
-/// proves the bearer saw this payload.
+/// certificate, the enrolment endpoint to redeem it against, the address a
+/// later sync should dial, and the enrolment token that proves the bearer
+/// saw this payload.
 ///
 /// Nothing here is secret. The certificate is a trust anchor, public by
 /// nature (SPEC §4.4); the token is short-lived, single-use, and meaningless
@@ -46,10 +48,26 @@ class PairingPayload {
   /// [PairedDevice], which is the one place PEM is the required shape.
   final Uint8List certificateDer;
 
-  /// Where to try connecting first (SPEC §4.4's address hint) — the seed for
-  /// the paired-device store's last-known-address cache once pairing
-  /// succeeds.
+  /// Where the enrolment listener this payload came from is answering —
+  /// the one connection `enrolWithPeer` makes, and nothing beyond it. That
+  /// listener is one-shot and bound on an ephemeral port (`dsync pair
+  /// show`), so this address is *not* what a later sync dials: see
+  /// [serviceAddress].
   final PeerAddress address;
+
+  /// Where that same host's paired-replica listener answers (`dsync agent
+  /// --serve`) — the seed for the paired-device store's last-known-address
+  /// cache once pairing succeeds (SPEC §4.4's address hint).
+  ///
+  /// **Carried separately from [address] because the two ports are never
+  /// the same number.** The enrolment listener exists only for the duration
+  /// of one pairing and takes whatever ephemeral port the OS hands it;
+  /// seeding the cache from that port guarantees a stored address that
+  /// cannot be dialed, so the first sync after every pairing failed until
+  /// the user edited the port by hand. The serving side is the only one that
+  /// knows which port it serves on — it may not be the default — so it says
+  /// so here rather than leaving the far end to assume.
+  final PeerAddress serviceAddress;
 
   /// The single-use, time-bounded enrolment token (SPEC §4.4): proof the
   /// bearer saw this payload, not a credential good for anything past the one
@@ -59,8 +77,9 @@ class PairingPayload {
   PairingPayload({
     required this.certificateDer,
     required this.address,
+    required int servicePort,
     required this.token,
-  }) {
+  }) : serviceAddress = PeerAddress(host: address.host, port: servicePort) {
     if (certificateDer.isEmpty) {
       throw const FormatException('Empty certificate');
     }
@@ -69,7 +88,7 @@ class PairingPayload {
     }
   }
 
-  /// One line of ASCII text: `dsync-pair:v1:<base64>`.
+  /// One line of ASCII text: `dsync-pair:v2:<base64>`.
   ///
   /// **Why one base64 run behind a bare text prefix, and not a QR-specific
   /// shape.** SPEC §4.4 is explicit that pairing a desktop with a headless
@@ -80,7 +99,7 @@ class PairingPayload {
   /// scannable image by the head that renders it, which owns that step, not
   /// this file. A single base64 run has no embedded newlines to break when a
   /// terminal wraps it and nothing shell-special to escape when it is pasted
-  /// as an argument; the `dsync-pair:v1:` prefix is plain ASCII a human can
+  /// as an argument; the `dsync-pair:v2:` prefix is plain ASCII a human can
   /// recognize on sight and a `grep` can find, and gives [decode] a version
   /// to reject on a bare string compare before it has parsed a single byte
   /// of the payload proper.
@@ -116,6 +135,7 @@ class PairingPayload {
 /// [u16 certificateLength][certificate DER]
 /// [u8 hostLength][host UTF-8]
 /// [u16 port]
+/// [u16 servicePort]
 /// [u8 tokenLength][token bytes]
 /// ```
 ///
@@ -153,6 +173,7 @@ Uint8List _encodeBytes(PairingPayload payload) {
     ..addByte(host.length)
     ..add(host)
     ..add(_uint16(payload.address.port))
+    ..add(_uint16(payload.serviceAddress.port))
     ..addByte(token.length)
     ..add(token);
   return writer.toBytes();
@@ -163,10 +184,12 @@ PairingPayload _decodeBytes(Uint8List bytes) {
   final certificate = reader.bytes(reader.uint16());
   final host = utf8.decode(reader.bytes(reader.uint8()));
   final port = reader.uint16();
+  final servicePort = reader.uint16();
   final token = reader.bytes(reader.uint8());
   return PairingPayload(
     certificateDer: certificate,
     address: PeerAddress(host: host, port: port),
+    servicePort: servicePort,
     token: token,
   );
 }

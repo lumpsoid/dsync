@@ -106,7 +106,11 @@ Future<void> enrolWithPeer({
       // this call only performs the first, on both sides.
       agreedReplicaRoots: const {},
       pairedAt: DateTime.now(),
-      lastKnownAddress: payload.address,
+      // The far end's *serving* address, never the enrolment endpoint this
+      // call just connected to: that listener is one-shot and on an
+      // ephemeral port, so caching it would store an address guaranteed not
+      // to answer the next sync — see [PairingPayload.serviceAddress].
+      lastKnownAddress: payload.serviceAddress,
     ),
   );
 }

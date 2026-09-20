@@ -44,7 +44,7 @@ final class PairSucceeded extends PairOutcome {
 }
 
 /// The rendered values of the Pair page: enrolling against a
-/// `dsync-pair:v1:` payload (SPEC §4.4).
+/// `dsync-pair:v2:` payload (SPEC §4.4).
 ///
 /// Holds only what the page displays — see the view-state role in
 /// `app_scope.dart`: the [code] that was scanned or pasted, the two name

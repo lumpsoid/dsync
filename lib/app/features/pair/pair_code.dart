@@ -2,7 +2,7 @@ import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 
 import 'default_names.dart';
 
-/// What the Pair page has to pair *with*: the `dsync-pair:v1:` payload the
+/// What the Pair page has to pair *with*: the `dsync-pair:v2:` payload the
 /// user scanned or pasted, as the page shows it (SPEC §4.4).
 ///
 /// A sealed hierarchy rather than a nullable payload beside a nullable
@@ -44,7 +44,8 @@ final class PairCodeUnreadable extends PairCode {
 final class PairCodeRead extends PairCode {
   PairCodeRead(this.payload)
     : desktopName = desktopNameFor(payload),
-      address = '${payload.address.host}:${payload.address.port}';
+      address =
+          '${payload.serviceAddress.host}:${payload.serviceAddress.port}';
 
   /// The decoded payload, redeemed by `PairController.submitPayload`.
   final PairingPayload payload;
@@ -53,8 +54,11 @@ final class PairCodeRead extends PairCode {
   /// to list it under here.
   final String desktopName;
 
-  /// `host:port` — the address hint the desktop printed, shown because a
-  /// device on the wrong network is the failure this flow has most of, and
-  /// it is visible here before anything is sent.
+  /// `host:port` — where the desktop says it will answer from now on
+  /// ([PairingPayload.serviceAddress]), not the one-shot enrolment endpoint
+  /// this pairing redeems against. Shown because a device on the wrong
+  /// network is the failure this flow has most of, and because this is the
+  /// address the pairing leaves behind, so the user sees it before anything
+  /// is sent rather than after the first sync fails.
   final String address;
 }

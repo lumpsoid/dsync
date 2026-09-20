@@ -16,7 +16,8 @@ void main() {
     certificateDer: certificateDerFromPem(
       generateDeviceIdentity(commonName: commonName).certificatePem,
     ),
-    address: PeerAddress(host: '192.168.1.5', port: 28771),
+    address: PeerAddress(host: '192.168.1.5', port: 51234),
+    servicePort: 28771,
     token: Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]),
   );
 
@@ -63,7 +64,8 @@ void main() {
         'readable name', () {
       final payload = PairingPayload(
         certificateDer: Uint8List.fromList(const [9, 9, 9]),
-        address: PeerAddress(host: '192.168.1.5', port: 28771),
+        address: PeerAddress(host: '192.168.1.5', port: 51234),
+        servicePort: 28771,
         token: Uint8List.fromList(const [1, 2, 3, 4]),
       );
 

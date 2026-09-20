@@ -84,6 +84,12 @@ class PairShowCommand extends Command<int> {
   /// redeemed. See this class's doc comment.
   static const _tokenRejectedReason = 'Enrolment token rejected.';
 
+  /// Which port the payload tells the other device to dial *afterwards* —
+  /// this host's `dsync agent --serve` port, not the enrolment listener's.
+  /// See [PairingPayload.serviceAddress]: the two are never the same number,
+  /// and only this side knows whether its agent serves on the default.
+  static const optionServePort = 'serve-port';
+
   final Map<String, String> environment;
   final StateDirPlatform platform;
   final IOSink out;
@@ -120,13 +126,24 @@ class PairShowCommand extends Command<int> {
     this.advertisableAddress = preferredAdvertisableAddress,
     this.hasTerminal = stderrHasTerminal,
   }) : out = out ?? stdout,
-       err = err ?? stderr;
+       err = err ?? stderr {
+    argParser.addOption(
+      optionServePort,
+      valueHelp: 'port',
+      defaultsTo: '${PeerAddress.defaultPort}',
+      help:
+          "The port this device's `dsync agent --serve` listens on. Goes "
+          'into the payload as the address the paired device dials from then '
+          'on, so give it here if --serve runs on a non-default port.',
+    );
+  }
 
   @override
   Future<int> run() async {
     if (argResults!.rest.isNotEmpty) {
       usageException('dsync pair show takes no arguments.');
     }
+    final servePort = _parseServePort(argResults!.option(optionServePort));
 
     final identity = await DeviceIdentityStore.forStateDir(
       environment: environment,
@@ -180,6 +197,7 @@ class PairShowCommand extends Command<int> {
       final payload = PairingPayload(
         certificateDer: identity.certificateDer,
         address: PeerAddress(host: host, port: boundPort),
+        servicePort: servePort,
         token: token,
       );
 
@@ -272,6 +290,20 @@ class PairShowCommand extends Command<int> {
       await listener.close();
       await signals.cancel();
     }
+  }
+
+  /// [optionServePort]'s value as a dialable port. A value that is not one
+  /// is a usage error — caught before the listener is bound, the same
+  /// bucket `dsync agent --port` puts it in — rather than a
+  /// [FormatException] out of [PeerAddress] once a payload is being built.
+  int _parseServePort(String? argument) {
+    final port = argument == null ? null : int.tryParse(argument);
+    if (port == null || port < 1 || port > 65535) {
+      usageException(
+        '--$optionServePort needs a number from 1 to 65535, not "$argument".',
+      );
+    }
+    return port;
   }
 
   /// Starts trapping SIGINT/SIGTERM, in the same shape
