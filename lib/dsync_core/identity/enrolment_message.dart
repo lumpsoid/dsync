@@ -114,6 +114,18 @@ Uint8List _encodeMessage(Map<String, dynamic> body) {
 Map<String, dynamic> _decodeMessage(Uint8List bytes) =>
     Map<String, dynamic>.from(jsonDecode(utf8.decode(bytes)) as Map);
 
+/// The largest payload [readEnrolmentMessage] will buffer, in bytes.
+///
+/// A legitimate enrolment message is a token, a PEM certificate and a name —
+/// low tens of kilobytes at the outside — so 1 MiB is orders of magnitude of
+/// headroom for anything this protocol will ever legitimately carry. It is a
+/// constant rather than a parameter on purpose: the read it guards happens
+/// *before* the peer has been authenticated by anything (`EnrolmentListener`
+/// leaves `requireClientCertificate` at false, and the token is only checked
+/// once a whole message has been read), so there is no caller who has earned
+/// the right to raise it and no deployment that needs it raised.
+const int maxEnrolmentMessageBytes = 1024 * 1024;
+
 /// Reads exactly one [_encodeMessage]-shaped message off [input], buffering
 /// across chunk boundaries — every socket this protocol accepts carries
 /// exactly one, so unlike `FrameCodec.decode` this returns a single value
@@ -123,15 +135,27 @@ Map<String, dynamic> _decodeMessage(Uint8List bytes) =>
 /// `FrameCodec`'s in-place-growth optimization to earn back.
 ///
 /// Throws [FormatException] if [input] closes before a complete message has
-/// arrived.
+/// arrived, or if the peer announces or sends more than
+/// [maxEnrolmentMessageBytes] — an unauthenticated peer must not be able to
+/// make this process buffer arbitrarily much.
 Future<Uint8List> readEnrolmentMessage(Stream<Uint8List> input) async {
   final buffered = <int>[];
   await for (final chunk in input) {
     buffered.addAll(chunk);
+    if (buffered.length > 4 + maxEnrolmentMessageBytes) {
+      throw const FormatException(
+        'Enrolment message exceeds $maxEnrolmentMessageBytes bytes',
+      );
+    }
     if (buffered.length < 4) continue;
     final length = ByteData.sublistView(
       Uint8List.fromList(buffered.sublist(0, 4)),
     ).getUint32(0, Endian.big);
+    if (length > maxEnrolmentMessageBytes) {
+      throw const FormatException(
+        'Enrolment message exceeds $maxEnrolmentMessageBytes bytes',
+      );
+    }
     if (buffered.length >= 4 + length) {
       return Uint8List.fromList(buffered.sublist(4, 4 + length));
     }
