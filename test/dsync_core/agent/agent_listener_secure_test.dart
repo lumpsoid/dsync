@@ -82,13 +82,21 @@ void main() {
     );
   }
 
-  Future<AgentListener> bind() => AgentListener.bindSecure(
+  Future<AgentListener> bind({
+    Duration handshakeDeadline = AgentListener.defaultHandshakeDeadline,
+    int maxUnauthenticatedConnections =
+        AgentListener.defaultMaxUnauthenticatedConnections,
+    int maxAbandonedConnections = AgentListener.defaultMaxAbandonedConnections,
+  }) => AgentListener.bindSecure(
     InternetAddress.loopbackIPv4,
     0,
     ownIdentity: serverIdentity,
     pairedDeviceStore: store,
     buildAgent: buildAgent,
     onSessionError: (error, _) => sessionErrors.add(error),
+    handshakeDeadline: handshakeDeadline,
+    maxUnauthenticatedConnections: maxUnauthenticatedConnections,
+    maxAbandonedConnections: maxAbandonedConnections,
   );
 
   int portOf(AgentListener listener) {
@@ -737,6 +745,149 @@ void main() {
       );
     },
   );
+
+  group('bounds on connections that have not authenticated (task 224ffa)', () {
+    /// Completes TCP and then says nothing at all — a peer that never starts
+    /// the TLS handshake it was accepted for. Answers the socket, and a
+    /// future that completes when the listener drops it.
+    Future<(Socket, Future<void>)> connectAndStall(
+      AgentListener listener,
+    ) async {
+      final socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        portOf(listener),
+      );
+      final dropped = Completer<void>();
+      void drop([Object? _]) {
+        if (!dropped.isCompleted) dropped.complete();
+      }
+
+      socket.listen((_) {}, onError: drop, onDone: drop, cancelOnError: true);
+      return (socket, dropped.future);
+    }
+
+    /// Sends a TLS record header announcing more bytes than it then supplies
+    /// and stops there, so the handshake is genuinely under way — past the
+    /// point `dart:io` detaches the socket, which is what makes this
+    /// connection one the listener can no longer close (see
+    /// `secure_socket_detach_characterization_test.dart`).
+    Future<Socket> connectAndStallMidHandshake(AgentListener listener) async {
+      final socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        portOf(listener),
+      );
+      socket.listen((_) {}, onError: (Object _) {}, cancelOnError: true);
+      socket.add(const [0x16, 0x03, 0x01, 0x00, 0x2a, 0x01, 0x00]);
+      await socket.flush();
+      return socket;
+    }
+
+    test('a peer that stalls mid-handshake is destroyed at the deadline, and '
+        'the listener keeps serving', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      final listener = await bind(
+        handshakeDeadline: const Duration(milliseconds: 100),
+      );
+      addTearDown(listener.close);
+
+      final (socket, dropped) = await connectAndStall(listener);
+      addTearDown(socket.destroy);
+
+      await dropped.timeout(const Duration(seconds: 5));
+      expect(sessionErrors.single, isA<HandshakeDeadlineExceededException>());
+
+      final agent = await connectAs(phone, listener, rootPath: allowedRoot);
+      await expectLater(agent.hello(), completes);
+      await agent.disconnect();
+    });
+
+    test('a connection over the cap is destroyed at accept, and its slot is '
+        'reusable once freed', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      final listener = await bind(
+        handshakeDeadline: const Duration(seconds: 5),
+        maxUnauthenticatedConnections: 1,
+      );
+      addTearDown(listener.close);
+
+      // The holder has to be mid-handshake before the next connection is
+      // accepted, or there is nothing for the cap to count.
+      final (holder, _) = await connectAndStall(listener);
+      addTearDown(holder.destroy);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final (overCap, droppedOverCap) = await connectAndStall(listener);
+      addTearDown(overCap.destroy);
+      await droppedOverCap.timeout(const Duration(seconds: 5));
+      expect(
+        sessionErrors.single,
+        isA<TooManyUnauthenticatedConnectionsException>(),
+      );
+
+      // Freeing the one slot lets a real peer through again, which is what
+      // proves the counter is decremented and not merely incremented.
+      holder.destroy();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final agent = await connectAs(phone, listener, rootPath: allowedRoot);
+      await expectLater(agent.hello(), completes);
+      await agent.disconnect();
+    });
+
+    test('a handshake abandoned past the deadline frees its in-flight slot, '
+        'so a real peer still connects', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      // One in-flight slot, so a stalled peer that kept it would leave this
+      // listener unable to serve anyone — which is the failure this bound is
+      // shaped to avoid.
+      final listener = await bind(
+        handshakeDeadline: const Duration(milliseconds: 100),
+        maxUnauthenticatedConnections: 1,
+        maxAbandonedConnections: 8,
+      );
+      addTearDown(listener.close);
+
+      final stalled = await connectAndStallMidHandshake(listener);
+      addTearDown(stalled.destroy);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(sessionErrors.single, isA<HandshakeDeadlineExceededException>());
+
+      final agent = await connectAs(phone, listener, rootPath: allowedRoot);
+      await expectLater(agent.hello(), completes);
+      await agent.disconnect();
+    });
+
+    test('at the ceiling on sockets it cannot close, the listener stops '
+        'accepting', () async {
+      final phone = generateDeviceIdentity(commonName: 'dsync-phone');
+      await store.add(
+        pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
+      );
+      final listener = await bind(
+        handshakeDeadline: const Duration(milliseconds: 100),
+        maxAbandonedConnections: 1,
+      );
+      addTearDown(listener.close);
+
+      final stalled = await connectAndStallMidHandshake(listener);
+      addTearDown(stalled.destroy);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(sessionErrors.single, isA<HandshakeDeadlineExceededException>());
+
+      final (overCeiling, droppedOverCeiling) = await connectAndStall(listener);
+      addTearDown(overCeiling.destroy);
+      await droppedOverCeiling.timeout(const Duration(seconds: 5));
+      expect(sessionErrors.last, isA<TooManyAbandonedConnectionsException>());
+    });
+  });
 }
 
 SecurityContext _clientOnlyContext(DeviceIdentity identity) =>

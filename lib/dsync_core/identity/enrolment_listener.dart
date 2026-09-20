@@ -57,6 +57,17 @@
 ///   the *correct* token — returns `false`, which [_enrol] turns into
 ///   [EnrolmentRefused] rather than a connection that just looks like it
 ///   failed for no reason.
+/// - **Bounded in time and in number, before any token is checked (task
+///   224ffa).** A connection that has not presented a complete enrolment
+///   message within [EnrolmentListener.defaultRequestDeadline] is destroyed,
+///   and one accepted while
+///   [EnrolmentListener.defaultMaxUnauthenticatedConnections] are already
+///   waiting is destroyed at accept. Neither adds a parser or a demux in
+///   front of the handshake — they are a timer and a counter, which is what
+///   keeps the isolation argument above intact. Both start where this class
+///   does, at an accepted [SecureSocket]: the TLS handshake itself happens
+///   inside [SecureServerSocket] before anything here sees a connection, and
+///   `dart:io` offers no hook to bound a peer that stalls inside it.
 /// - **Unreachable once pairing has happened.** The token can succeed
 ///   exactly once, so even a listener left bound past its one legitimate use
 ///   accepts connections that can never complete one. The caller should
@@ -128,16 +139,47 @@ const defaultEnrolmentTokenTtl = Duration(minutes: 5);
 const enrolmentTokenRejectedReason = 'Enrolment token rejected.';
 
 class EnrolmentListener {
+  /// How long an accepted connection has to present its enrolment message
+  /// before its socket is destroyed (task 224ffa).
+  ///
+  /// The same shape, and the same injectability, as
+  /// `IdleDeadlineChannel.defaultDeadline`: a named constant for the default
+  /// and a parameter on [bind] so a test can drive a short one. There is
+  /// nothing to tune — the message is one small write a real peer sends the
+  /// instant its handshake completes, so ten seconds is generous for a slow
+  /// link and still bounds a peer that connects and then says nothing, which
+  /// would otherwise hold a socket for as long as this listener stays bound.
+  /// It is the time half of the bound on this read; its size half is
+  /// `maxEnrolmentMessageBytes`.
+  static const defaultRequestDeadline = Duration(seconds: 10);
+
+  /// How many accepted connections may be waiting to present a valid token
+  /// at once before a further one is destroyed at accept (task 224ffa).
+  ///
+  /// The deadline above alone bounds concurrent unauthenticated sockets to
+  /// (attacker's connect rate x deadline), which is barely a bound; this
+  /// makes the bound independent of that rate. Sixteen is about two orders of
+  /// magnitude of headroom for an endpoint whose legitimate traffic is one
+  /// connection, once.
+  static const defaultMaxUnauthenticatedConnections = 16;
+
   final SecureServerSocket _server;
   final PairedDeviceStore _pairedDeviceStore;
   final Uint8List _token;
   final DateTime _tokenExpiresAt;
   final EnrolmentErrorHandler _onError;
+  final Duration _requestDeadline;
+  final int _maxUnauthenticatedConnections;
   late final StreamSubscription<void> _connections;
 
   final Completer<PairedDevice> _enrolled = Completer<PairedDevice>();
 
   bool _tokenConsumed = false;
+
+  /// How many accepted connections are past accept and have not yet finished
+  /// presenting a token — incremented at accept, decremented once the token
+  /// has been judged or the connection has died (see [_handleConnection]).
+  int _unauthenticatedConnections = 0;
 
   EnrolmentListener._(
     this._server,
@@ -145,6 +187,8 @@ class EnrolmentListener {
     this._token,
     this._tokenExpiresAt,
     this._onError,
+    this._requestDeadline,
+    this._maxUnauthenticatedConnections,
   ) {
     _connections = _server.listen(_handleConnection, onError: _onError);
   }
@@ -162,6 +206,11 @@ class EnrolmentListener {
   /// (or shows the pasteable text) — this method does not build that payload
   /// itself, since it has no opinion on which address a peer should be told
   /// to try, only on which token to accept.
+  ///
+  /// [requestDeadline] and [maxUnauthenticatedConnections] bound what a peer
+  /// that has presented no token at all can cost this process (task 224ffa):
+  /// how long one may hold a socket, and how many may hold one at once.
+  /// Neither is a policy knob — see the constants they default to.
   static Future<EnrolmentListener> bind(
     InternetAddress address,
     int port, {
@@ -170,6 +219,8 @@ class EnrolmentListener {
     required DateTime tokenExpiresAt,
     required PairedDeviceStore pairedDeviceStore,
     required EnrolmentErrorHandler onError,
+    Duration requestDeadline = defaultRequestDeadline,
+    int maxUnauthenticatedConnections = defaultMaxUnauthenticatedConnections,
   }) async {
     final context = SecurityContext(withTrustedRoots: false)
       ..useCertificateChainBytes(utf8.encode(ownIdentity.certificatePem))
@@ -183,6 +234,8 @@ class EnrolmentListener {
       token,
       tokenExpiresAt,
       onError,
+      requestDeadline,
+      maxUnauthenticatedConnections,
     );
   }
 
@@ -218,15 +271,41 @@ class EnrolmentListener {
     await _connections.cancel();
   }
 
+  /// Reads one connection's enrolment message, judges it, and answers — with
+  /// both halves of task 224ffa's bound around the part of that which happens
+  /// before any token has been checked.
+  ///
+  /// The cap is checked at accept, before the read is even started, so it
+  /// bounds sockets rather than only the work done on them; the deadline
+  /// covers the read and the judgement, and a connection that misses it is
+  /// destroyed, since nothing else would ever close a socket whose peer is
+  /// deliberately silent. Both are released before the reply is written: by
+  /// then the token has been judged, so the write is no longer a cost an
+  /// unauthenticated peer can impose at will.
   Future<void> _handleConnection(SecureSocket socket) async {
+    if (_unauthenticatedConnections >= _maxUnauthenticatedConnections) {
+      _onError(
+        const TooManyEnrolmentConnectionsException(),
+        StackTrace.current,
+      );
+      socket.destroy();
+      return;
+    }
+
+    _unauthenticatedConnections++;
     final EnrolmentReply reply;
     try {
-      final requestBytes = await readEnrolmentMessage(socket);
+      final requestBytes = await readEnrolmentMessage(socket).timeout(
+        _requestDeadline,
+        onTimeout: () => throw const EnrolmentDeadlineExceededException(),
+      );
       reply = await _enrol(EnrolmentRequest.decode(requestBytes), socket);
     } catch (error, stackTrace) {
       _onError(error, stackTrace);
       socket.destroy();
       return;
+    } finally {
+      _unauthenticatedConnections--;
     }
 
     try {
@@ -331,6 +410,40 @@ class EnrolmentListener {
     if (valid) _tokenConsumed = true;
     return valid;
   }
+}
+
+/// Reported to [EnrolmentErrorHandler] when an accepted connection did not
+/// present a complete enrolment message within
+/// [EnrolmentListener.defaultRequestDeadline] (task 224ffa) — a peer that
+/// completed the TLS handshake and then said nothing, or said only part of a
+/// message.
+///
+/// Its socket is destroyed: nothing else would ever close a connection whose
+/// peer is deliberately silent, and this read happens before any token has
+/// been checked, so the peer is anybody at all.
+class EnrolmentDeadlineExceededException implements Exception {
+  const EnrolmentDeadlineExceededException();
+
+  @override
+  String toString() =>
+      'Destroyed a connection that did not present an enrolment message '
+      'within the request deadline.';
+}
+
+/// Reported to [EnrolmentErrorHandler] when a connection is accepted while
+/// the listener's cap on connections that have not yet presented a token is
+/// already reached (task 224ffa).
+///
+/// The deadline above bounds how long one such connection may live; this
+/// bounds how many may live at once, which is what makes the bound
+/// independent of how fast an attacker can open connections.
+class TooManyEnrolmentConnectionsException implements Exception {
+  const TooManyEnrolmentConnectionsException();
+
+  @override
+  String toString() =>
+      'Destroyed a connection: too many connections are already waiting to '
+      'present an enrolment token.';
 }
 
 /// Compares [a] and [b] without stopping at the first differing byte, so how

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -46,6 +47,9 @@ void main() {
   Future<EnrolmentListener> bind({
     required Uint8List token,
     DateTime? tokenExpiresAt,
+    Duration requestDeadline = EnrolmentListener.defaultRequestDeadline,
+    int maxUnauthenticatedConnections =
+        EnrolmentListener.defaultMaxUnauthenticatedConnections,
   }) => EnrolmentListener.bind(
     InternetAddress.loopbackIPv4,
     0,
@@ -55,6 +59,8 @@ void main() {
         tokenExpiresAt ?? DateTime.now().add(defaultEnrolmentTokenTtl),
     pairedDeviceStore: serverStore,
     onError: (error, _) => listenerErrors.add(error),
+    requestDeadline: requestDeadline,
+    maxUnauthenticatedConnections: maxUnauthenticatedConnections,
   );
 
   int portOf(EnrolmentListener listener) {
@@ -279,5 +285,85 @@ void main() {
       pairedDeviceStore: clientStore,
     );
     expect(await serverStore.byDeviceId(phoneIdentity.deviceId), isNotNull);
+  });
+
+  group('bounds on peers that have presented no token (task 224ffa)', () {
+    /// Connects and completes the TLS handshake, then says nothing —
+    /// everything a real enrolling peer does up to the point where it would
+    /// send its message. Answers the socket, and a future that completes
+    /// when the listener drops it.
+    Future<(SecureSocket, Future<void>)> connectAndStall(
+      EnrolmentListener listener,
+    ) async {
+      final socket = await SecureSocket.connect(
+        InternetAddress.loopbackIPv4,
+        portOf(listener),
+        onBadCertificate: (_) => true,
+      );
+      final dropped = Completer<void>();
+      void drop([Object? _]) {
+        if (!dropped.isCompleted) dropped.complete();
+      }
+
+      socket.listen((_) {}, onError: drop, onDone: drop, cancelOnError: true);
+      return (socket, dropped.future);
+    }
+
+    test('a peer that stalls instead of presenting a message is dropped at '
+        'the deadline', () async {
+      final token = generateEnrolmentToken();
+      final listener = await bind(
+        token: token,
+        requestDeadline: const Duration(milliseconds: 100),
+      );
+      addTearDown(listener.close);
+
+      final (socket, dropped) = await connectAndStall(listener);
+      addTearDown(socket.destroy);
+
+      await dropped.timeout(const Duration(seconds: 5));
+      expect(listenerErrors.single, isA<EnrolmentDeadlineExceededException>());
+      // The token was never presented, so it was never spent.
+      expect(await serverStore.load(), isEmpty);
+    });
+
+    test('a connection over the cap is refused at accept, and its slot is '
+        'reusable once freed', () async {
+      final token = generateEnrolmentToken();
+      final listener = await bind(
+        token: token,
+        maxUnauthenticatedConnections: 1,
+        requestDeadline: const Duration(seconds: 5),
+      );
+      addTearDown(listener.close);
+
+      // The holder has to be inside the handler before the next connection
+      // is accepted, or there is nothing for the cap to count.
+      final (holder, _) = await connectAndStall(listener);
+      addTearDown(holder.destroy);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final (overCap, droppedOverCap) = await connectAndStall(listener);
+      addTearDown(overCap.destroy);
+      await droppedOverCap.timeout(const Duration(seconds: 5));
+      expect(
+        listenerErrors.single,
+        isA<TooManyEnrolmentConnectionsException>(),
+      );
+
+      // Freeing the one slot makes the endpoint usable again, which is what
+      // proves the counter is decremented and not merely incremented.
+      holder.destroy();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final phoneIdentity = generateDeviceIdentity(commonName: 'dsync-phone');
+      await enrolWithPeer(
+        payload: payloadFor(listener, token),
+        ownIdentity: phoneIdentity,
+        proposedName: 'phone',
+        localName: 'desktop',
+        pairedDeviceStore: clientStore,
+      );
+      expect(await serverStore.byDeviceId(phoneIdentity.deviceId), isNotNull);
+    });
   });
 }
