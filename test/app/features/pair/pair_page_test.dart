@@ -141,8 +141,24 @@ void main() {
   String fieldText(WidgetTester tester, String key) =>
       tester.widget<TextField>(find.byKey(Key(key))).controller!.text;
 
-  testWidgets('the two names arrive filled in: this device from the host, '
-      'the desktop from the payload it sent', (tester) async {
+  testWidgets('this device is offered under the name in its own certificate, '
+      'which is what renaming it writes', (tester) async {
+    app.state.recordReadyIdentity(
+      generateDeviceIdentity(commonName: 'renamed phone'),
+      now: DateTime.now(),
+    );
+
+    await pumpPage(tester);
+
+    expect(fieldText(tester, 'pair-proposed-name'), 'renamed phone');
+  });
+
+  testWidgets('the two names arrive filled in: this device from the host when '
+      'it has no certificate name yet, the desktop from the payload it sent', (
+    tester,
+  ) async {
+    // No `recordReadyIdentity`: the gate is still loading, so there is no
+    // certificate name to offer and the host-name rule stands in.
     await pumpPage(tester);
 
     expect(fieldText(tester, 'pair-proposed-name'), defaultThisDeviceName());

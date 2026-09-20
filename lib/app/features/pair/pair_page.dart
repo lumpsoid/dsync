@@ -35,8 +35,9 @@ typedef PairScanner = Widget Function(ValueChanged<String> onScanned);
 ///
 /// **Neither name is something the user has to invent.** The two name
 /// fields arrive filled in from what is already known — this device's own
-/// host name, and the desktop's, read out of the certificate inside the
-/// payload it printed (`default_names.dart`) — so the page can be completed
+/// certificate name (its host name only when that cannot be read), and the
+/// desktop's, read out of the certificate inside the payload it printed
+/// (`default_names.dart`) — so the page can be completed
 /// by pasting one line and pressing one button. Both stay ordinary editable
 /// fields: what is offered is overwritten by whatever the user types, and
 /// the field that is emptied says so at the keyboard rather than after a
@@ -94,7 +95,13 @@ class _PairPageState extends State<PairPage> {
     super.initState();
     // Filled before the listeners are attached: an untouched field is not an
     // edited one, and it is editing a name away that earns the line under it.
-    _proposedName.text = defaultThisDeviceName();
+    //
+    // This device's own certificate name first, so the rename on This device
+    // is what the next pairing offers — which is exactly what that page says
+    // it does. The host-name rule stands in only where there is no such name
+    // to read: before bootstrap, and a certificate with no readable subject.
+    final ownName = pairScope.controller.ownName;
+    _proposedName.text = ownName.isEmpty ? defaultThisDeviceName() : ownName;
     _payload.addListener(_offerDesktopName);
     _localName.addListener(_localNameEdited);
     _proposedName.addListener(_proposedNameEdited);

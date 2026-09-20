@@ -5,6 +5,7 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 
+import '../../app_bootstrap.dart';
 import '../../app_controller.dart';
 import 'pair_view_state.dart';
 
@@ -195,6 +196,21 @@ class PairController {
   void proposedNameEdited(String value) => state.recordProposedNameError(
     value.trim().isEmpty ? _proposedNameRequired : null,
   );
+
+  /// What this device calls itself: the common name in its own certificate,
+  /// which the This device page's rename writes and describes as "the name
+  /// offered to devices you pair with from now on" — so this is the name the
+  /// page offers as the proposed one, and that promise is kept.
+  ///
+  /// Empty when there is no name to read: before bootstrap has produced an
+  /// identity, and for a certificate whose subject carries no readable name
+  /// (see `DeviceIdentityRow.name`). The page, not this getter, decides what
+  /// to offer instead — the fallback reads the platform, and this class is
+  /// testable with plain values.
+  String get ownName => switch (app.state.bootstrap) {
+    AppBootstrapReady(:final identity) => identity.name,
+    _ => '',
+  };
 
   /// The other input method of this page: a payload the camera read off the
   /// QR that `dsync pair show` prints beside that line.

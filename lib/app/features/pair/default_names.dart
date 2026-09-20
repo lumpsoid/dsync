@@ -3,7 +3,8 @@
 /// is exactly why neither has to be *invented* either).
 ///
 /// Both defaults are read off something that already exists: this device's
-/// own host name for the name the desktop will show, and the far end's own
+/// own host name for the name the desktop will show — a fallback for the
+/// certificate name the page prefers — and the far end's own
 /// certificate for the name this device will show it as. Nothing here is
 /// authoritative — every value is a starting point in an editable field —
 /// so a fact that cannot be read is an empty offer, never a thrown error or
@@ -16,7 +17,10 @@ import 'dart:typed_data';
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 
-/// The name to offer for *this* device — what the desktop will list it as.
+/// The name to offer for *this* device — what the desktop will list it as —
+/// when its own certificate carries no readable name to offer instead. The
+/// certificate's name is the page's first choice (`PairController.ownName`),
+/// because that is the one the This device page renames.
 ///
 /// `Platform.localHostname` first, which is what `dsync pair accept`
 /// defaults its `--as` to (`lib/cli/commands/pair_accept_command.dart`), so
