@@ -144,6 +144,11 @@ void main() {
       token: token,
       tokenExpiresAt: DateTime.now().add(defaultEnrolmentTokenTtl),
       pairedDeviceStore: desktopStore,
+      // The operator at the desktop compares the phone's id and says yes
+      // (task 23344d). This file is about what a pairing then makes
+      // possible, not about the confirmation itself, which
+      // `enrolment_test.dart` covers.
+      confirm: (_) async => true,
       onError: (error, _) => enrolmentErrors.add(error),
     );
     enrolmentPort = _portOf(enrolment.address);

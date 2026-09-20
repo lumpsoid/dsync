@@ -211,6 +211,82 @@ void main() {
     );
   });
 
+  testWidgets('puts the redeeming device\'s id up to be compared', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await openWindow(tester);
+
+    controller.state.recordStatus(
+      const PairShowConfirming(
+        deviceId: 'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90:'
+            'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90',
+        peerName: 'my laptop',
+      ),
+    );
+    await tester.pump();
+
+    // Every group of it, wrapped rather than cut: a comparison that cannot
+    // see the whole id is not a comparison (SPEC §4.4).
+    expect(
+      tester
+          .widget<SelectableText>(find.byKey(const Key('pair-show-device-id')))
+          .data,
+      'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90:'
+      'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90',
+    );
+    expect(find.textContaining('my laptop'), findsOneWidget);
+    expect(find.byKey(const Key('pair-show-confirm')), findsOneWidget);
+    expect(find.byKey(const Key('pair-show-refuse')), findsOneWidget);
+  });
+
+  /// Drives the page as far as the comparison and taps [key], returning
+  /// what the controller was told. One page per answer: the two buttons are
+  /// mutually exclusive, and a second `pumpWidget` of the same page reuses
+  /// its `State` rather than starting over.
+  Future<bool?> tapAnswer(WidgetTester tester, String key) async {
+    final recording = _RecordingController(app);
+    pairShowScope.setController(recording);
+    await pumpPage(tester);
+    await openWindow(tester);
+    recording.state.recordStatus(
+      const PairShowConfirming(deviceId: 'a1b2:c3d4', peerName: 'my laptop'),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(Key(key)));
+    await tester.pump();
+    return recording.answered;
+  }
+
+  testWidgets('a matching id answers yes', (tester) async {
+    expect(await tapAnswer(tester, 'pair-show-confirm'), isTrue);
+  });
+
+  testWidgets('an id that is not the operator\'s device answers no', (
+    tester,
+  ) async {
+    expect(await tapAnswer(tester, 'pair-show-refuse'), isFalse);
+  });
+
+  testWidgets('a declined device says so and offers a fresh code', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await openWindow(tester);
+
+    controller.state.recordStatus(const PairShowDeclined());
+    await tester.pump();
+
+    // Not an error: turning away a device that was not the one meant is the
+    // feature working.
+    expect(find.byKey(const Key('pair-show-declined')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pair-show-retry')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('pair-show-name')), findsOneWidget);
+  });
+
   testWidgets('a pairing confirms itself and leaves', (tester) async {
     await pumpPage(tester);
     await openWindow(tester);
@@ -233,8 +309,16 @@ class _RecordingController extends PairShowController {
 
   String? shownFor;
 
+  /// What the page last answered the comparison with, or `null` while it
+  /// has not answered one — the real controller hands it to a live
+  /// enrolment, which there is none of here.
+  bool? answered;
+
   @override
   Future<void> show({required String peerName}) async => shownFor = peerName;
+
+  @override
+  void answerConfirmation({required bool confirmed}) => answered = confirmed;
 }
 
 /// A bind that never answers, so the window the page opens on `initState`
@@ -246,6 +330,7 @@ Future<EnrolmentListener> _neverBinds({
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
+  required ConfirmEnrolment confirm,
   required EnrolmentErrorHandler onError,
 }) {
   boundPeerName = peerName;

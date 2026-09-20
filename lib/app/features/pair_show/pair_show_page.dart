@@ -39,6 +39,13 @@ import 'qr_symbol.dart';
 /// the CLI prints, for the same reason: which one is usable depends on which
 /// devices are in the room, and neither replaces the other.
 ///
+/// **One question before anything is recorded.** A device that redeems the
+/// code does not get stored on the strength of that alone (task 23344d):
+/// the page shows the id it presented and asks the operator to compare it
+/// against the id that device shows itself. Refusing records nothing, and
+/// comes back to the same retry the other endings do, because the code is
+/// spent either way.
+///
 /// [onPaired] is the seam back to Devices: `AppState.devices` already holds
 /// the new row by the time it fires, so the destination needs nothing handed
 /// to it. The confirmation naming the device goes through the app's
@@ -134,6 +141,22 @@ class _PairShowPageState extends State<PairShowPage> {
                 PairShowWaiting(:final offer) => _Offer(
                   offer: offer,
                   onCopy: () => _copy(offer.payloadLine),
+                ),
+                PairShowConfirming(:final deviceId, :final peerName) =>
+                  _Confirm(
+                    deviceId: deviceId,
+                    peerName: peerName,
+                    onAnswer: (confirmed) =>
+                        _controller.answerConfirmation(confirmed: confirmed),
+                  ),
+                PairShowDeclined() => _Ended(
+                  key: const Key('pair-show-declined'),
+                  message:
+                      'You turned that device away, so nothing was recorded. '
+                      'The code is used up either way — show a new one when '
+                      'the device you meant is ready.',
+                  isError: false,
+                  onRetry: () => unawaited(_showAnother()),
                 ),
                 // Rendered as the window it is: the page is leaving, and says so
                 // through the snackbar `_statusChanged` raises.
@@ -307,6 +330,84 @@ class _Offer extends StatelessWidget {
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The question that decides the pairing (task 23344d, SPEC §4.4): the id
+/// of whatever redeemed the code, against the id that device shows on its
+/// own screen.
+///
+/// Both answers are buttons of equal weight, and neither is pre-selected.
+/// The id is the whole content — grouped hex, monospaced, wrapped rather
+/// than truncated, because a comparison that cannot see every group is not
+/// a comparison. Nothing has been recorded at the moment this is on screen;
+/// refusing records nothing at all.
+class _Confirm extends StatelessWidget {
+  const _Confirm({
+    required this.deviceId,
+    required this.peerName,
+    required this.onAnswer,
+  });
+
+  final String deviceId;
+  final String peerName;
+  final void Function(bool confirmed) onAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          'A device used the code. Before it is paired, check that it is '
+          'the one you meant: this is the id it presented.',
+        ),
+        const SizedBox(height: 16),
+        Card(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: SelectableText(
+              deviceId,
+              key: const Key('pair-show-device-id'),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'That device shows the same id on its own screen. Pair only if '
+          'every group matches — if it does not, somebody else got to the '
+          'code first. Paired, it will be listed here as "$peerName".',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 24),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                key: const Key('pair-show-refuse'),
+                onPressed: () => onAnswer(false),
+                child: const Text('Not my device'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: FilledButton(
+                key: const Key('pair-show-confirm'),
+                onPressed: () => onAnswer(true),
+                child: const Text('Ids match — pair'),
+              ),
+            ),
+          ],
         ),
       ],
     );

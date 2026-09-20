@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
@@ -57,6 +58,23 @@ import '../stop_signals.dart';
 /// It completes only on success, which is the property this command needs —
 /// a stranger's failed probe must not end a window a legitimate peer is
 /// still walking across the room to use.
+///
+/// **And it waits for an answer before it stores anything (task 23344d).**
+/// A redeemed token says somebody saw the payload, not that they are the
+/// device the operator meant — SPEC §4.4 says plainly that a leaked payload
+/// lets a stranger try. So `EnrolmentListener` hands this command the id of
+/// whoever redeemed it, and this command prints it and asks, on stderr and
+/// stdin: the operator compares four groups of hex against what the other
+/// device shows and answers `y` or `n`. That is the camera-less
+/// desktop-to-server case SPEC §4.4 calls primary, done in two terminals.
+///
+/// The cost, stated rather than hidden: pairing is now two-sided. A
+/// `dsync pair show` left running in a terminal nobody is at no longer
+/// completes on its own — it holds the connection open until the token's
+/// window closes, and then refuses. That is also why this command refuses
+/// to start at all when [stdinIsTerminal] says there is nobody behind
+/// stdin to answer, rather than binding an endpoint whose one prompt could
+/// only ever time out.
 ///
 /// [onError]'s refusal reason is filtered the same way: only a refusal
 /// reached *after* the real token was actually redeemed — anything other
@@ -126,6 +144,19 @@ class PairShowCommand extends Command<int> {
   /// depending on this process's real streams.
   final bool Function() hasTerminal;
 
+  /// Whether stdin has somebody behind it to answer the confirmation prompt
+  /// (task 23344d) — the stdin half of [hasTerminal], injected for the same
+  /// reason and checked the same way `InteractivePresenter` checks its own
+  /// `isTerminal`: a test process never has a terminal, so a real round
+  /// trip could not otherwise reach the prompt at all.
+  final bool Function() stdinIsTerminal;
+
+  /// One line of input per prompt. A factory rather than a [Stream] so the
+  /// real one — a transform over the process's own `stdin` — is not built
+  /// for a run that never gets as far as asking, and is subscribed to
+  /// exactly once when it does.
+  final Stream<String> Function() confirmationLines;
+
   PairShowCommand({
     required this.environment,
     required this.platform,
@@ -134,6 +165,8 @@ class PairShowCommand extends Command<int> {
     this.port = 0,
     this.advertisableAddress = preferredAdvertisableAddress,
     this.hasTerminal = stderrHasTerminal,
+    this.stdinIsTerminal = _stdinHasTerminal,
+    this.confirmationLines = _stdinLines,
   }) : out = out ?? stdout,
        err = err ?? stderr {
     argParser
@@ -171,6 +204,23 @@ class PairShowCommand extends Command<int> {
     }
     final servePort = _parseServePort(argResults!.option(optionServePort));
 
+    // Checked before anything is bound or printed (task 23344d): this
+    // command's pairing cannot complete without somebody answering the
+    // confirmation prompt, so a run with nothing behind stdin would bind an
+    // endpoint, print a payload, and then refuse whoever redeemed it. Say so
+    // now instead. SPEC §11.5 fatal — the same bucket `NonInteractiveStdinError`
+    // puts interactive review in, for the same reason: never imply consent
+    // nobody gave.
+    if (!stdinIsTerminal()) {
+      err.writeln(
+        'dsync pair show: stdin is not a terminal, so there is nobody to '
+        'confirm the device that redeems this payload (SPEC §4.4). Run it '
+        'from a terminal, or pair the other way round with '
+        '`dsync pair accept` on this device.',
+      );
+      return 3;
+    }
+
     final identity = await DeviceIdentityStore.forStateDir(
       environment: environment,
       platform: platform,
@@ -193,6 +243,16 @@ class PairShowCommand extends Command<int> {
     // the guard stays because a `Completer` completed twice throws.
     final refused = Completer<String>();
 
+    // Completed by the expiry timer below — but only while the token is
+    // still unredeemed. Once a peer has redeemed it and the prompt is up,
+    // "nothing used this code" has stopped being true, and the outcome is
+    // whatever the operator answers (or `EnrolmentListener`'s own refusal
+    // when they answer nothing); letting the timer win there would print
+    // "no device enrolled" over a pairing that was in fact being recorded.
+    final expired = Completer<void>();
+    var redeemed = false;
+
+    final input = StreamIterator<String>(confirmationLines());
     final listener = await EnrolmentListener.bind(
       InternetAddress.anyIPv4,
       port,
@@ -201,6 +261,10 @@ class PairShowCommand extends Command<int> {
       token: token,
       tokenExpiresAt: tokenExpiresAt,
       pairedDeviceStore: pairedDeviceStore,
+      confirm: (deviceId) {
+        redeemed = true;
+        return _confirm(deviceId, peerName, input);
+      },
       onError: (error, _) {
         if (error is EnrolmentRefusedException &&
             error.reason != enrolmentTokenRejectedReason &&
@@ -283,13 +347,20 @@ class PairShowCommand extends Command<int> {
       // Each arm is distinguished by the type it yields, which is what lets
       // one `Future.any` carry all four without a flag to sort them out
       // afterwards.
-      final outcome = await Future.any<Object?>([
-        listener.enrolled,
-        refused.future,
-        signals.code,
-        Future<void>.delayed(tokenExpiresAt.difference(DateTime.now()))
-            .then((_) => null),
-      ]);
+      final expiryTimer = Timer(tokenExpiresAt.difference(DateTime.now()), () {
+        if (!redeemed && !expired.isCompleted) expired.complete();
+      });
+      final Object? outcome;
+      try {
+        outcome = await Future.any<Object?>([
+          listener.enrolled,
+          refused.future,
+          signals.code,
+          expired.future.then((_) => null),
+        ]);
+      } finally {
+        expiryTimer.cancel();
+      }
 
       if (outcome is PairedDevice) {
         err.writeln(
@@ -316,6 +387,50 @@ class PairShowCommand extends Command<int> {
       // needs true in practice (see the class doc comment).
       await listener.close();
       await signals.cancel();
+      await input.cancel();
+    }
+  }
+
+  /// SPEC §4.4's out-of-band check, as two terminals (task 23344d): print
+  /// the id of whoever redeemed the payload, and wait for a `y` or an `n`.
+  ///
+  /// The id goes to stderr with the rest of this command's commentary —
+  /// stdout stays the parseable payload line and nothing else (SPEC §11.4),
+  /// which is what `dsync pair accept` and any wrapper script read.
+  ///
+  /// An input stream that ends before an answer arrives is a refusal, not
+  /// an acceptance: with nobody left to ask, refusing is the only answer
+  /// that does not record a device on a decision nobody made — the same
+  /// rule `InteractivePresenter` applies when its own input closes.
+  /// Anything that is neither `y` nor `n` re-prompts rather than guessing.
+  Future<bool> _confirm(
+    String deviceId,
+    String peerName,
+    StreamIterator<String> input,
+  ) async {
+    err
+      ..writeln()
+      ..writeln(
+        'dsync pair show: a device redeemed the payload and says it is:',
+      )
+      ..writeln('  $deviceId')
+      ..writeln(
+        'Check that against the id "$peerName" shows on its own screen — '
+        '`dsync pair accept` prints it as it connects. Pair only if every '
+        'group matches; if they do not, somebody else got there first '
+        '(SPEC §4.4).',
+      );
+
+    while (true) {
+      err.write('  [y] pair  [n] refuse > ');
+      if (!await input.moveNext()) {
+        err.writeln();
+        return false;
+      }
+      final answer = input.current.trim().toLowerCase();
+      if (answer == 'y') return true;
+      if (answer == 'n') return false;
+      err.writeln('Not understood: "${input.current}". Enter y or n.');
     }
   }
 
@@ -350,3 +465,12 @@ class PairShowCommand extends Command<int> {
     return (code: stopped.future, cancel: subscription.cancel);
   }
 }
+
+/// The real [PairShowCommand.stdinIsTerminal].
+bool _stdinHasTerminal() => stdin.hasTerminal;
+
+/// The real [PairShowCommand.confirmationLines]: this process's own stdin,
+/// one line per element — the same transform `SyncRunner` builds for
+/// `InteractivePresenter`.
+Stream<String> _stdinLines() =>
+    stdin.transform(utf8.decoder).transform(const LineSplitter());

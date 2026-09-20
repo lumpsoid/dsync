@@ -59,6 +59,11 @@ void main() {
         err: showErr.sink,
         advertisableAddress: () async => '127.0.0.1',
         hasTerminal: () => true,
+        // The operator compares the id `show` prints against the one
+        // `accept` prints and says yes (task 23344d). A test process has no
+        // terminal on either stream, so both seams are forced.
+        stdinIsTerminal: () => true,
+        confirmationLines: () => Stream.value('y'),
       );
 
       // Not awaited: `show` blocks until one enrolment arrives, which is
@@ -160,6 +165,8 @@ void main() {
       err: showErr.sink,
       advertisableAddress: () async => '127.0.0.1',
       hasTerminal: () => false,
+      stdinIsTerminal: () => true,
+      confirmationLines: () => Stream.value('y'),
     );
 
     final showExitCode = _runnerFor(showCommand)
@@ -219,6 +226,8 @@ void main() {
       err: showErr.sink,
       advertisableAddress: () async => '127.0.0.1',
       hasTerminal: () => false,
+      stdinIsTerminal: () => true,
+      confirmationLines: () => Stream.value('y'),
     );
 
     final showExitCode = _runnerFor(showCommand)
@@ -257,6 +266,92 @@ void main() {
     expect(onClient!.lastKnownAddress.host, '127.0.0.1');
     expect(onClient.lastKnownAddress.port, 29000);
     expect(onClient.lastKnownAddress.port, isNot(enrolmentPort));
+  });
+
+  test('show refuses a device the operator does not recognise, and records '
+      'nothing (task 23344d)', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final serverEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/server'};
+    final clientEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/client'};
+
+    final showOut = BufferSink();
+    final showErr = BufferSink();
+    final showCommand = PairShowCommand(
+      environment: serverEnvironment,
+      platform: const LinuxStateDir(),
+      out: showOut.sink,
+      err: showErr.sink,
+      advertisableAddress: () async => '127.0.0.1',
+      hasTerminal: () => false,
+      stdinIsTerminal: () => true,
+      // The ids did not match, so the operator says no — SPEC §4.4's
+      // leaked-payload race, caught before the store write.
+      confirmationLines: () => Stream.value('n'),
+    );
+
+    final showExitCode = _runnerFor(showCommand)
+        .run(['show', '--name', 'phone']);
+
+    final payloadLine = await _awaitLine(
+      showOut,
+      (line) => line.startsWith('dsync-pair:'),
+      diagnostics: showErr,
+    );
+
+    final acceptErr = BufferSink();
+    final acceptExitCode = await _runnerFor(
+      PairAcceptCommand(
+        environment: clientEnvironment,
+        platform: const LinuxStateDir(),
+        out: BufferSink().sink,
+        err: acceptErr.sink,
+      ),
+    ).run(['accept', '--name', 'desktop', payloadLine]);
+
+    expect(acceptExitCode, 3);
+    expect(await acceptErr.contents(), contains('enrolment refused'));
+    expect(await showExitCode, 3);
+
+    // The id was put in front of the operator before anything was written,
+    // and nothing was written.
+    final showErrText = await showErr.contents();
+    expect(showErrText, contains('redeemed the payload'));
+    expect(
+      await PairedDeviceStore.forStateDir(
+        environment: serverEnvironment,
+        platform: const LinuxStateDir(),
+      ).load(),
+      isEmpty,
+    );
+  });
+
+  test('show will not start when there is nobody behind stdin to confirm '
+      '(task 23344d)', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final showOut = BufferSink();
+    final showErr = BufferSink();
+    final exitCode = await _runnerFor(
+      PairShowCommand(
+        environment: {'XDG_STATE_HOME': '${tempDir.path}/server'},
+        platform: const LinuxStateDir(),
+        out: showOut.sink,
+        err: showErr.sink,
+        advertisableAddress: () async => '127.0.0.1',
+        hasTerminal: () => false,
+        stdinIsTerminal: () => false,
+      ),
+    ).run(['show', '--name', 'phone']);
+
+    // SPEC §11.5 fatal, and nothing printed on stdout: no endpoint was
+    // bound and no payload exists, because the one prompt it would lead to
+    // could only ever have timed out.
+    expect(exitCode, 3);
+    expect(await showOut.contents(), isEmpty);
+    expect(await showErr.contents(), contains('stdin is not a terminal'));
   });
 
   test('show without a name for its peer is a usage error, before anything '

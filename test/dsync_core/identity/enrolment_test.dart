@@ -48,6 +48,7 @@ void main() {
   Future<EnrolmentListener> bind({
     required Uint8List token,
     String peerName = 'phone',
+    ConfirmEnrolment confirm = _confirmed,
     DateTime? tokenExpiresAt,
     Duration requestDeadline = EnrolmentListener.defaultRequestDeadline,
     int maxUnauthenticatedConnections =
@@ -61,6 +62,7 @@ void main() {
     tokenExpiresAt:
         tokenExpiresAt ?? DateTime.now().add(defaultEnrolmentTokenTtl),
     pairedDeviceStore: serverStore,
+    confirm: confirm,
     onError: (error, _) => listenerErrors.add(error),
     requestDeadline: requestDeadline,
     maxUnauthenticatedConnections: maxUnauthenticatedConnections,
@@ -403,4 +405,165 @@ void main() {
       expect(await serverStore.byDeviceId(phoneIdentity.deviceId), isNotNull);
     });
   });
+
+  group('the showing side confirms the device before it is stored (task '
+      '23344d)', () {
+    test('the id put to the operator is the one the peer presented', () async {
+      final token = generateEnrolmentToken();
+      final asked = <String>[];
+      final listener = await bind(
+        token: token,
+        confirm: (deviceId) async {
+          asked.add(deviceId);
+          return true;
+        },
+      );
+      addTearDown(listener.close);
+      final phoneIdentity = generateDeviceIdentity(commonName: 'dsync-phone');
+
+      await enrolWithPeer(
+        payload: payloadFor(listener, token),
+        ownIdentity: phoneIdentity,
+        localName: 'desktop',
+        pairedDeviceStore: clientStore,
+      );
+
+      // The grouped-hex id the phone shows on its own screen, which is what
+      // makes the comparison SPEC §4.4 asks for possible at all.
+      expect(asked, [phoneIdentity.deviceId]);
+    });
+
+    test('a declined device is refused and never reaches the store', () async {
+      final token = generateEnrolmentToken();
+      final listener = await bind(token: token, confirm: (_) async => false);
+      addTearDown(listener.close);
+      final intruder = generateDeviceIdentity(commonName: 'dsync-intruder');
+
+      await expectLater(
+        enrolWithPeer(
+          payload: payloadFor(listener, token),
+          ownIdentity: intruder,
+          localName: 'desktop',
+          pairedDeviceStore: clientStore,
+        ),
+        throwsA(
+          isA<EnrolmentRefusedException>().having(
+            (e) => e.reason,
+            'reason',
+            enrolmentDeclinedReason,
+          ),
+        ),
+      );
+
+      // The point of the whole task: a won race leaves nothing trusted
+      // behind, so there is no certificate for a later handshake to resolve.
+      expect(await serverStore.byDeviceId(intruder.deviceId), isNull);
+    });
+
+    test('a decline still burns the token, so a retry needs a fresh one',
+        () async {
+      // `_redeemToken` is deliberately decoupled from what happens after it
+      // (its own doc comment): the operator saying no is not a reason to
+      // hand the one live token back to whoever is holding it.
+      final token = generateEnrolmentToken();
+      final listener = await bind(token: token, confirm: (_) async => false);
+      addTearDown(listener.close);
+
+      for (final name in ['first', 'second']) {
+        await expectLater(
+          enrolWithPeer(
+            payload: payloadFor(listener, token),
+            ownIdentity: generateDeviceIdentity(commonName: name),
+            localName: name,
+            pairedDeviceStore: PairedDeviceStore(
+              File('${tempDir.path}/$name.json'),
+            ),
+          ),
+          throwsA(isA<EnrolmentRefusedException>()),
+        );
+      }
+
+      expect(
+        listenerErrors.whereType<EnrolmentRefusedException>().map(
+          (e) => e.reason,
+        ),
+        [enrolmentDeclinedReason, enrolmentTokenRejectedReason],
+      );
+    });
+
+    test('a confirmation nobody answers is refused when the window closes',
+        () async {
+      // The token's own expiry is the bound — `requestDeadline` deliberately
+      // covers only the read, so a human wait cannot trip it.
+      final token = generateEnrolmentToken();
+      final listener = await bind(
+        token: token,
+        tokenExpiresAt: DateTime.now().add(const Duration(milliseconds: 300)),
+        confirm: (_) => Completer<bool>().future,
+      );
+      addTearDown(listener.close);
+
+      await expectLater(
+        enrolWithPeer(
+          payload: payloadFor(listener, token),
+          ownIdentity: generateDeviceIdentity(commonName: 'dsync-phone'),
+          localName: 'desktop',
+          pairedDeviceStore: clientStore,
+        ),
+        throwsA(
+          isA<EnrolmentRefusedException>().having(
+            (e) => e.reason,
+            'reason',
+            enrolmentUnconfirmedReason,
+          ),
+        ),
+      );
+    });
+
+    test('a malformed certificate is refused without asking anyone', () async {
+      final token = generateEnrolmentToken();
+      var asked = false;
+      final listener = await bind(
+        token: token,
+        confirm: (_) async {
+          asked = true;
+          return true;
+        },
+      );
+      addTearDown(listener.close);
+
+      final socket = await SecureSocket.connect(
+        InternetAddress.loopbackIPv4,
+        portOf(listener),
+        onBadCertificate: (_) => true,
+      );
+      final body = utf8.encode(
+        jsonEncode({
+          'token': base64.encode(token),
+          'certificatePem': '-----BEGIN CERTIFICATE-----\nnope\n'
+              '-----END CERTIFICATE-----',
+        }),
+      );
+      final framed = Uint8List(4 + body.length);
+      ByteData.sublistView(framed, 0, 4).setUint32(0, body.length, Endian.big);
+      framed.setRange(4, framed.length, body);
+      socket.add(framed);
+      await socket.flush();
+      final reply = EnrolmentReply.decode(await readEnrolmentMessage(socket));
+      await socket.close();
+      socket.destroy();
+
+      // There is no id to compare against anything, so there is no question
+      // worth putting in front of a human.
+      expect(reply, isA<EnrolmentRefused>());
+      expect(asked, isFalse);
+    });
+  });
+
 }
+
+/// The confirmation an operator gives when the id on this screen matches the
+/// one the other device shows (task 23344d) — the default for every test
+/// here that is about something else, so only the ones about the
+/// confirmation itself pass their own.
+Future<bool> _confirmed(String deviceId) async => true;

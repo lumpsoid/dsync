@@ -29,6 +29,7 @@ typedef BindEnrolmentListener = Future<EnrolmentListener> Function({
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
+  required ConfirmEnrolment confirm,
   required EnrolmentErrorHandler onError,
 });
 
@@ -46,6 +47,7 @@ Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
+  required ConfirmEnrolment confirm,
   required EnrolmentErrorHandler onError,
 }) => EnrolmentListener.bind(
   InternetAddress.anyIPv4,
@@ -55,6 +57,7 @@ Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
   token: token,
   tokenExpiresAt: tokenExpiresAt,
   pairedDeviceStore: pairedDeviceStore,
+  confirm: confirm,
   onError: onError,
 );
 
@@ -87,6 +90,16 @@ Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
 /// end's own choice (`PairController.submitPayload` there, or
 /// `dsync pair accept --name`), which is why this side asks for one name
 /// and the Pair page asks for two.
+///
+/// **Nothing is recorded until the operator confirms the device (task
+/// 23344d).** A redeemed code says somebody saw it, not that they are the
+/// device the operator meant — SPEC §4.4 says plainly that a leaked payload
+/// lets a stranger try, and the token being single-use only makes that
+/// *visible*. So the id derived from the certificate the redeeming device
+/// presented goes on screen as [PairShowConfirming], against the id that
+/// device shows on its own, and [answerConfirmation] is the answer;
+/// declining records nothing at all. The code is spent either way, so both
+/// answers end this window and the retry is a fresh one.
 ///
 /// **What the wait ends on**, raced rather than polled: the listener
 /// reporting the one enrolment it can accept, a refusal that happened after
@@ -141,6 +154,12 @@ class PairShowController {
   /// a view state nobody is reading any more.
   Completer<void>? _stopped;
 
+  /// The question on screen, while there is one: completed by
+  /// [answerConfirmation] with what the operator tapped, or by [stop] with
+  /// `false` so a page that leaves mid-question refuses rather than leaving
+  /// the far end's socket waiting out the whole window.
+  Completer<bool>? _confirmation;
+
   /// Opens a pairing window and waits out its token.
   ///
   /// Called by the page once the operator has said what to call the device
@@ -172,6 +191,16 @@ class PairShowController {
     // already known.
     final refused = Completer<String>();
 
+    // Set the moment a confirmation is asked for, which is the observable
+    // form of "the token has been redeemed": from then on the expiry timer
+    // below must not fire, because "nothing used this code" has stopped
+    // being true and the outcome is whatever the operator answers.
+    var redeemed = false;
+    // Which of the two refusals this window ended in, when it ended in one.
+    // The operator saying no is the feature working and gets its own words;
+    // anything else is reported as the far end being turned away.
+    var declined = false;
+
     final EnrolmentListener listener;
     try {
       listener = await bind(
@@ -180,6 +209,16 @@ class PairShowController {
         token: token,
         tokenExpiresAt: expiresAt,
         pairedDeviceStore: pairedDeviceStore,
+        confirm: (deviceId) async {
+          redeemed = true;
+          final confirmed = await _askConfirmation(
+            stopped,
+            deviceId: deviceId,
+            peerName: peerName,
+          );
+          declined = !confirmed;
+          return confirmed;
+        },
         onError: (error, _) {
           if (error is EnrolmentRefusedException &&
               error.reason != enrolmentTokenRejectedReason &&
@@ -210,7 +249,7 @@ class PairShowController {
 
     final expired = Completer<void>();
     final expiryTimer = Timer(expiresAt.difference(DateTime.now()), () {
-      if (!expired.isCompleted) expired.complete();
+      if (!redeemed && !expired.isCompleted) expired.complete();
     });
 
     try {
@@ -254,10 +293,12 @@ class PairShowController {
       if (outcome is String) {
         _record(
           stopped,
-          PairShowFailed(
-            'The other device was turned away: $outcome. The code is used '
-            'up either way — show a new one and try again.',
-          ),
+          declined
+              ? const PairShowDeclined()
+              : PairShowFailed(
+                  'The other device was turned away: $outcome. The code is '
+                  'used up either way — show a new one and try again.',
+                ),
         );
         return;
       }
@@ -269,13 +310,50 @@ class PairShowController {
     }
   }
 
-  /// Closes the window, if one is open, and stops anything it was waiting
-  /// on from being recorded. Called by the page on the way out, and by
+  /// Puts the redeeming device's id on screen and waits for a tap.
+  ///
+  /// Unbounded here on purpose: `EnrolmentListener` already bounds this wait
+  /// by the token's own expiry, and a second, shorter timer in the head
+  /// would only be a different number for the same thing. A window already
+  /// stopped answers `false` without showing anything — the page is gone,
+  /// so there is nobody to ask and nothing to record.
+  Future<bool> _askConfirmation(
+    Completer<void> stopped, {
+    required String deviceId,
+    required String peerName,
+  }) {
+    if (stopped.isCompleted) return Future.value(false);
+    final confirmation = _confirmation = Completer<bool>();
+    _record(
+      stopped,
+      PairShowConfirming(deviceId: deviceId, peerName: peerName),
+    );
+    return confirmation.future;
+  }
+
+  /// The operator's answer to [PairShowConfirming]. `PairShowPage` only.
+  ///
+  /// Ignored when nothing is being asked, so a second tap — or one that
+  /// lands after the token's window closed and `EnrolmentListener` gave up
+  /// waiting — cannot complete a completer twice.
+  void answerConfirmation({required bool confirmed}) {
+    final confirmation = _confirmation;
+    _confirmation = null;
+    if (confirmation == null || confirmation.isCompleted) return;
+    confirmation.complete(confirmed);
+  }
+
+  /// Closes the window, if one is open, refuses any confirmation still on
+  /// screen, and stops anything it was waiting on from being recorded. Called by the page on the way out, and by
   /// [show] before it opens the next one; safe to call when nothing is
   /// open.
   Future<void> stop() async {
     final stopped = _stopped;
     if (stopped != null && !stopped.isCompleted) stopped.complete();
+    // A question nobody is left to answer is a refusal: it lets the far
+    // end's connection end now with a reply, instead of holding it open
+    // until the token expires.
+    answerConfirmation(confirmed: false);
     final listener = _listener;
     _listener = null;
     await listener?.close();

@@ -108,6 +108,18 @@ class PairAcceptCommand extends Command<int> {
       platform: platform,
     );
 
+    // Printed before the connection, not after it (task 23344d): the far
+    // end holds this device's certificate the moment the token is redeemed
+    // and asks whoever is standing there to confirm the id derived from it,
+    // so the operator needs this line in front of them *while* that prompt
+    // is up. stderr, since SPEC §11.4 keeps stdout for the one result line
+    // at the bottom of this method.
+    err.writeln(
+      'dsync pair accept: this device is ${identity.deviceId}. The device '
+      'that showed the payload will ask whoever is there to confirm that '
+      'id before it records the pairing (SPEC §4.4).',
+    );
+
     try {
       await enrolWithPeer(
         payload: payload,

@@ -26,6 +26,36 @@ final class PairShowWaiting extends PairShowStatus {
   final PairingOffer offer;
 }
 
+/// A device redeemed the token and is waiting on an answer: it presented
+/// the certificate [deviceId] was derived from, and nothing has been
+/// recorded yet (task 23344d, SPEC §4.4).
+///
+/// Its own status rather than a flag on [PairShowWaiting], because the two
+/// cannot both be true and the page shows nothing in common between them:
+/// waiting has a code to display and no question, confirming has a question
+/// and a code that is already spent.
+final class PairShowConfirming extends PairShowStatus {
+  const PairShowConfirming({required this.deviceId, required this.peerName});
+
+  /// The grouped-hex id (`a1b2:c3d4:…`) of whoever redeemed the code — the
+  /// same rendering that device shows on its own screen, which is the
+  /// comparison this status exists for.
+  final String deviceId;
+
+  /// What this device will list that device under if the answer is yes —
+  /// the name the operator typed before the code existed, shown again so
+  /// the two halves of the decision are on one screen.
+  final String peerName;
+}
+
+/// The operator said the device that redeemed the code was not theirs, so
+/// nothing was recorded (task 23344d). Its own status rather than a
+/// [PairShowFailed] message, because it is the feature working: the page
+/// says so in those words and offers a fresh code.
+final class PairShowDeclined extends PairShowStatus {
+  const PairShowDeclined();
+}
+
 /// One device redeemed the token and is recorded here; `AppState.devices`
 /// already shows it. The page confirms it and leaves.
 final class PairShowPaired extends PairShowStatus {

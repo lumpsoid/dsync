@@ -119,15 +119,36 @@ void main() {
     expect(waiting.offer.payloadLine, startsWith('dsync-pair:v2:'));
   });
 
+  /// Waits for the question the controller puts up once a code has been
+  /// redeemed, and answers it the way the operator would once they have
+  /// compared the two ids (task 23344d). Returns what was asked, so a test
+  /// about the question itself can assert on it.
+  Future<PairShowConfirming> answerConfirmation({
+    required bool confirmed,
+  }) async {
+    final asked =
+        await statusWhere((status) => status is PairShowConfirming)
+            as PairShowConfirming;
+    controller.answerConfirmation(confirmed: confirmed);
+    return asked;
+  }
+
   test('a peer that redeems the code is paired and listed', () async {
     final offered = await openWindow();
 
-    await enrolWithPeer(
+    // Not awaited before the answer: `enrolWithPeer` does not return until
+    // this side has decided, which is the whole shape of task 23344d.
+    final enrolment = enrolWithPeer(
       payload: offered.payload,
       ownIdentity: peerIdentity,
       localName: 'phone',
       pairedDeviceStore: peerStore,
     );
+    final asked = await answerConfirmation(confirmed: true);
+    await enrolment;
+
+    expect(asked.deviceId, peerIdentity.deviceId);
+    expect(asked.peerName, 'peer laptop');
 
     final paired = await statusWhere(
       (status) => status is PairShowPaired,
@@ -159,16 +180,89 @@ void main() {
     // Still open: a stranger's failed guess must not end a window the real
     // peer has not reached yet, and the real one still works.
     expect(controller.state.status, isA<PairShowWaiting>());
-    await enrolWithPeer(
+    final enrolment = enrolWithPeer(
       payload: offered.payload,
       ownIdentity: peerIdentity,
       localName: 'phone',
       pairedDeviceStore: peerStore,
     );
+    await answerConfirmation(confirmed: true);
+    await enrolment;
     expect(
       await statusWhere((status) => status is PairShowPaired),
       isA<PairShowPaired>(),
     );
+  });
+
+  test('a device the operator does not recognise is never recorded', () async {
+    // The leaked-payload race, as SPEC §4.4 describes it: whoever redeemed
+    // the code is not necessarily the device the operator meant, and this
+    // is where that is caught — before the store write, not after it.
+    final offered = await openWindow();
+
+    final enrolment = enrolWithPeer(
+      payload: offered.payload,
+      ownIdentity: peerIdentity,
+      localName: 'phone',
+      pairedDeviceStore: peerStore,
+    );
+    await answerConfirmation(confirmed: false);
+    await expectLater(enrolment, throwsA(isA<EnrolmentRefusedException>()));
+
+    expect(
+      await statusWhere((status) => status is PairShowDeclined),
+      isA<PairShowDeclined>(),
+    );
+    expect(app.state.devices, isEmpty);
+    expect(await (await app.pairedDevices).load(), isEmpty);
+  });
+
+  test('a code redeemed just before it runs out is not reported as expired',
+      () async {
+    // The expiry arm stops applying the moment a code is redeemed: "nothing
+    // used this code" has stopped being true, and the outcome is whatever
+    // the operator answers.
+    controller = PairShowController(
+      app,
+      bind: _bindOnLoopback,
+      advertisableAddress: _loopback,
+      window: const Duration(milliseconds: 300),
+    );
+    final offered = await openWindow();
+
+    final enrolment = enrolWithPeer(
+      payload: offered.payload,
+      ownIdentity: peerIdentity,
+      localName: 'phone',
+      pairedDeviceStore: peerStore,
+    );
+    await answerConfirmation(confirmed: true);
+    await enrolment;
+
+    expect(
+      await statusWhere((status) => status is PairShowPaired),
+      isA<PairShowPaired>(),
+    );
+  });
+
+  test('leaving the page mid-question refuses rather than hanging the peer',
+      () async {
+    final offered = await openWindow();
+
+    final enrolment = enrolWithPeer(
+      payload: offered.payload,
+      ownIdentity: peerIdentity,
+      localName: 'phone',
+      pairedDeviceStore: peerStore,
+    );
+    await statusWhere((status) => status is PairShowConfirming);
+
+    await controller.stop();
+
+    // The far end gets a reply now rather than waiting out the window, and
+    // nothing was recorded on the strength of a question nobody answered.
+    await expectLater(enrolment, throwsA(isA<EnrolmentRefusedException>()));
+    expect(await (await app.pairedDevices).load(), isEmpty);
   });
 
   test('a window nothing redeems expires', () async {
@@ -229,6 +323,7 @@ void main() {
         required token,
         required tokenExpiresAt,
         required pairedDeviceStore,
+        required confirm,
         required onError,
       }) async => throw const SocketException('Address already in use'),
     );
@@ -255,6 +350,7 @@ Future<EnrolmentListener> _bindOnLoopback({
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
+  required ConfirmEnrolment confirm,
   required EnrolmentErrorHandler onError,
 }) => EnrolmentListener.bind(
   InternetAddress.loopbackIPv4,
@@ -264,6 +360,7 @@ Future<EnrolmentListener> _bindOnLoopback({
   token: token,
   tokenExpiresAt: tokenExpiresAt,
   pairedDeviceStore: pairedDeviceStore,
+  confirm: confirm,
   onError: onError,
 );
 

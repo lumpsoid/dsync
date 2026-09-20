@@ -68,6 +68,12 @@
 ///   does, at an accepted [SecureSocket]: the TLS handshake itself happens
 ///   inside [SecureServerSocket] before anything here sees a connection, and
 ///   `dart:io` offers no hook to bound a peer that stalls inside it.
+/// - **Confirmed by a human before anything is stored (task 23344d).** A
+///   redeemed token is not by itself an answer to "is this my device" —
+///   SPEC §4.4 says plainly that a leaked payload lets a stranger redeem
+///   one. So the id derived from the certificate the peer presented goes in
+///   front of whoever is standing at the showing side, and a decline means
+///   nothing reaches [PairedDeviceStore] at all. See [_enrol].
 /// - **Unreachable once pairing has happened.** The token can succeed
 ///   exactly once, so even a listener left bound past its one legitimate use
 ///   accepts connections that can never complete one. The caller should
@@ -99,6 +105,39 @@ typedef EnrolmentErrorHandler = void Function(
   Object error,
   StackTrace stackTrace,
 );
+
+/// Asked, on the side that showed the payload, whether the device now
+/// holding a redeemed token is the device the operator meant (task 23344d,
+/// SPEC §4.4).
+///
+/// [deviceId] is the grouped-hex id ([deviceIdFromCertificateDer]) derived
+/// from the certificate the peer just presented — the same rendering the
+/// other device shows on its own screen, which is the whole reason the
+/// format has colons in it. Returning `false` refuses the enrolment; the
+/// store is never written, and the token stays burned (see [_redeemToken]),
+/// so a decline means the operator shows a fresh payload rather than
+/// getting another go at this one.
+///
+/// A callback rather than an interface, the way [EnrolmentErrorHandler]
+/// already is: the two real implementations are a terminal prompt and a
+/// Flutter page, neither of which is a thing this library could name.
+typedef ConfirmEnrolment = Future<bool> Function(String deviceId);
+
+/// The refusal reason a [ConfirmEnrolment] that returned `false` produces —
+/// the operator on the showing side said this is not their device.
+///
+/// Exported so both ends can recognise it without re-spelling the string:
+/// the enrolling device prints it as the reason it was turned away, and the
+/// showing side's own heads tell it from a refusal nobody chose.
+const enrolmentDeclinedReason =
+    'Enrolment declined on the device showing the payload.';
+
+/// The refusal reason a [ConfirmEnrolment] that was still unanswered when
+/// the token's own window ran out produces (see [EnrolmentListener._enrol]
+/// for why that is the bound).
+const enrolmentUnconfirmedReason =
+    'The device showing the payload was not confirmed before the pairing '
+    'window closed.';
 
 /// A fresh, single-use enrolment token (SPEC §4.4).
 ///
@@ -168,6 +207,7 @@ class EnrolmentListener {
   final String _peerName;
   final Uint8List _token;
   final DateTime _tokenExpiresAt;
+  final ConfirmEnrolment _confirm;
   final EnrolmentErrorHandler _onError;
   final Duration _requestDeadline;
   final int _maxUnauthenticatedConnections;
@@ -188,6 +228,7 @@ class EnrolmentListener {
     this._peerName,
     this._token,
     this._tokenExpiresAt,
+    this._confirm,
     this._onError,
     this._requestDeadline,
     this._maxUnauthenticatedConnections,
@@ -220,6 +261,13 @@ class EnrolmentListener {
   /// itself, since it has no opinion on which address a peer should be told
   /// to try, only on which token to accept.
   ///
+  /// [confirm] is asked, once a token has been redeemed and the peer's
+  /// certificate has parsed, whether the device behind it is the one the
+  /// operator meant — see [_enrol] for why that sits before the store write
+  /// and what bounds the wait. It is required rather than defaulted to
+  /// "yes": an unconfirmed pairing is the thing task 23344d exists to stop,
+  /// so a caller that wants one has to write it out.
+  ///
   /// [requestDeadline] and [maxUnauthenticatedConnections] bound what a peer
   /// that has presented no token at all can cost this process (task 224ffa):
   /// how long one may hold a socket, and how many may hold one at once.
@@ -232,6 +280,7 @@ class EnrolmentListener {
     required Uint8List token,
     required DateTime tokenExpiresAt,
     required PairedDeviceStore pairedDeviceStore,
+    required ConfirmEnrolment confirm,
     required EnrolmentErrorHandler onError,
     Duration requestDeadline = defaultRequestDeadline,
     int maxUnauthenticatedConnections = defaultMaxUnauthenticatedConnections,
@@ -251,6 +300,7 @@ class EnrolmentListener {
       peerName,
       token,
       tokenExpiresAt,
+      confirm,
       onError,
       requestDeadline,
       maxUnauthenticatedConnections,
@@ -300,6 +350,12 @@ class EnrolmentListener {
   /// deliberately silent. Both are released before the reply is written: by
   /// then the token has been judged, so the write is no longer a cost an
   /// unauthenticated peer can impose at will.
+  ///
+  /// The cap's slot is therefore held across [_enrol]'s human confirmation
+  /// too (task 23344d), which is not the bound it looks like: the token is
+  /// burned at redemption, so at most one connection can ever be waiting at
+  /// a prompt, and every other connection is refused on the token in
+  /// microseconds without ever reaching one.
   Future<void> _handleConnection(SecureSocket socket) async {
     if (_unauthenticatedConnections >= _maxUnauthenticatedConnections) {
       _onError(
@@ -338,8 +394,41 @@ class EnrolmentListener {
     }
   }
 
-  /// Validates and, on success, records [request] — the whole of what an
-  /// enrolling peer can make this listener do.
+  /// Validates, asks a human about, and on success records [request] — the
+  /// whole of what an enrolling peer can make this listener do.
+  ///
+  /// **The confirmation sits between the checks and the store write (task
+  /// 23344d).** SPEC §4.4 accepts that whoever sees the payload can redeem
+  /// it, and bounds that with a single-use token in a short window — but a
+  /// won race used to end with the winner already in the store, trusted,
+  /// and the operator left to infer something was wrong from a mismatch
+  /// between two screens. So the id derived from the certificate the peer
+  /// just presented is put in front of whoever is standing at the showing
+  /// side, against the id that device displays itself, before anything is
+  /// recorded. A won race becomes a declined prompt: denial of pairing
+  /// rather than a trusted stranger, who would otherwise pass the handshake
+  /// and reach `hello` and the frame parsers with every request refused —
+  /// surface rather than access, but surface a stranger does not otherwise
+  /// reach.
+  ///
+  /// **No wire change.** This is already async and its return value is the
+  /// reply, so the socket simply stays open across the wait: one request,
+  /// one reply, as before.
+  ///
+  /// **What bounds the wait.** The token's own expiry, and nothing shorter.
+  /// [_requestDeadline] deliberately does not cover this — it wraps
+  /// [readEnrolmentMessage] alone in [_handleConnection], which is the part
+  /// an unauthenticated peer controls; putting a human under a ten-second
+  /// timer would fail every real pairing. The connection does keep its slot
+  /// against [_maxUnauthenticatedConnections] for the whole wait, since the
+  /// decrement sits in [_handleConnection]'s `finally`. That is bounded in
+  /// practice rather than by that counter: the token is burned at
+  /// redemption, so at most one connection can ever be sitting at a prompt,
+  /// and every other connection is refused on the token in microseconds.
+  ///
+  /// A [ConfirmEnrolment] that throws is not turned into a refusal: it is a
+  /// defect on this side, not a judgement about the peer, so it propagates
+  /// to [_handleConnection], which reports it and destroys the socket.
   Future<EnrolmentReply> _enrol(
     EnrolmentRequest request,
     SecureSocket socket,
@@ -348,17 +437,41 @@ class EnrolmentListener {
       return const EnrolmentRefused(enrolmentTokenRejectedReason);
     }
 
+    final String deviceId;
     try {
-      // Validated for its own sake, not only for the side effect below:
+      // Validated for its own sake, not only for the side effects below:
       // `PairedDeviceStore.add` computes `PairedDevice.deviceId` internally
       // for its own collision check, and a malformed certificate would
       // otherwise surface there as an uncaught parse failure rather than a
       // refusal — the same defense `AgentListener._resolvePeer` already
       // applies to a peer's certificate, for the same underlying reason.
-      deviceIdFromCertificateDer(certificateDerFromPem(request.certificatePem));
+      deviceId = deviceIdFromCertificateDer(
+        certificateDerFromPem(request.certificatePem),
+      );
     } catch (_) {
       return const EnrolmentRefused('Malformed certificate.');
     }
+
+    // `isBefore`, so a token that expired while the message was being read
+    // yields a zero wait rather than a negative one `Timer` would fire on
+    // immediately anyway — the same outcome, said deliberately.
+    final now = DateTime.now();
+    final remaining = now.isBefore(_tokenExpiresAt)
+        ? _tokenExpiresAt.difference(now)
+        : Duration.zero;
+    // `null` for "the window closed with nobody answering" rather than
+    // folding it into `false`: "the operator said no" and "nobody was
+    // there" are different things to tell the peer, and which one happened
+    // is known here by which path produced the value — not by re-reading
+    // the clock afterwards, which would mislabel a decline that landed on
+    // the last millisecond of the window.
+    final confirmed = await _confirm(deviceId)
+        .then<bool?>((confirmed) => confirmed)
+        .timeout(remaining, onTimeout: () => null);
+    if (confirmed == null) {
+      return const EnrolmentRefused(enrolmentUnconfirmedReason);
+    }
+    if (!confirmed) return const EnrolmentRefused(enrolmentDeclinedReason);
 
     final device = PairedDevice(
       certificatePem: request.certificatePem,
