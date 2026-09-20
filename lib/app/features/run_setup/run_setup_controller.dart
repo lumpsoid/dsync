@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 
 import '../../app_controller.dart';
 import '../../folder_access.dart';
+import '../../peer_address_text.dart';
 import '../../run_request.dart';
 import '../../sync_profile.dart';
 import '../run/replica_connector.dart';
@@ -408,10 +409,13 @@ class RunSetupController {
 
     final localRootPath = state.selectedLocalFolder;
     final remote = remoteRoot.trim();
+    // A blank address field is the per-run override left empty, which is
+    // the normal case: `null` here means "dial the address the device was
+    // last reached at", not "the user typed something wrong".
     PeerAddress? addressOverride;
     String? addressError;
     try {
-      addressOverride = _parseAddress(address);
+      addressOverride = parsePeerAddress(address);
     } on FormatException catch (e) {
       addressError = e.message;
     }
@@ -476,21 +480,6 @@ String remoteRootNotGrantedMessage({
     '$deviceName has not granted this path to this device. On it, run '
     '`dsync pair grant <this device> $remoteRoot` for the exact path as it '
     'expands there, then start again.';
-
-/// `host` or `host:port` as a [PeerAddress], `null` for empty text. The
-/// host and port rules are `PeerAddress`'s; only "the port is not a number"
-/// is decided here, because the constructor takes an `int`.
-PeerAddress? _parseAddress(String text) {
-  final trimmed = text.trim();
-  if (trimmed.isEmpty) return null;
-  final colon = trimmed.lastIndexOf(':');
-  if (colon < 0) return PeerAddress(host: trimmed);
-  final port = int.tryParse(trimmed.substring(colon + 1));
-  if (port == null) {
-    throw FormatException('Port must be a number: ${trimmed.substring(colon)}');
-  }
-  return PeerAddress(host: trimmed.substring(0, colon), port: port);
-}
 
 /// The remote root field's validation line, or `null`.
 String? _remoteRootError(String remote) {

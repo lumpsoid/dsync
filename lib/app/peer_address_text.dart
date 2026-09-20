@@ -22,12 +22,6 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 /// carries, and the same one this head has shipped with since Run setup's
 /// field. Correcting it is a change to make in one place once, which is the
 /// point of this function being that place.
-///
-/// **Known follow-up:** `RunSetupController._parseAddress` is a byte-for-byte
-/// copy of this rule and is still the one Run setup's address field uses.
-/// It was left alone here only because that file was being changed
-/// concurrently; migrating it to this function — and deleting it — is the
-/// remaining half of this extraction.
 PeerAddress? parsePeerAddress(String text) {
   final trimmed = text.trim();
   if (trimmed.isEmpty) return null;
