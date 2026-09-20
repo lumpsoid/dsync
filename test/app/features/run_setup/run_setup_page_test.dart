@@ -141,9 +141,8 @@ void main() {
     await tester.pump();
   }
 
-  /// Opens one of the form's disclosures. Creating a folder under the
-  /// app's documents, and the optional per-run choices, are folded away
-  /// under the required pair, so a test that drives them asks first.
+  /// Opens the form's disclosure. The optional per-run choices are folded
+  /// away under the required pair, so a test that drives them asks first.
   Future<void> openDisclosure(WidgetTester tester, String key) async {
     await tester.tap(find.byKey(Key(key)));
     await tester.pumpAndSettle();
@@ -216,14 +215,14 @@ void main() {
   testWidgets('loaded: the device name, every field, the switch off, and '
       'an enabled button', (tester) async {
     await pumpLoaded(tester);
-    await openDisclosure(tester, 'run-setup-folder-options');
     await openDisclosure(tester, 'run-setup-options');
 
-    expect(find.text('Sync with desktop'), findsOneWidget);
+    // The device is named by the section its folder belongs to, not by a
+    // line of its own.
+    expect(find.text('On this device'), findsOneWidget);
+    expect(find.text('On desktop'), findsOneWidget);
     for (final key in const [
       'run-setup-local-folder',
-      'run-setup-new-folder',
-      'run-setup-create-folder',
       'run-setup-pick-folder',
       'run-setup-remote-root',
       'run-setup-address',
@@ -243,11 +242,12 @@ void main() {
     expect(find.textContaining('has not granted this device'), findsNothing);
   });
 
-  testWidgets('the title names the device a blank form syncs with, and '
-      'saving offers a profile', (tester) async {
+  testWidgets('a blank form is Run setup, and saving offers a profile', (
+    tester,
+  ) async {
     await pumpLoaded(tester);
 
-    expect(find.text('Sync with desktop'), findsOneWidget);
+    expect(find.text('Run setup'), findsOneWidget);
     expect(find.text('Save profile'), findsOneWidget);
   });
 
@@ -273,10 +273,17 @@ void main() {
 
     await pumpLoaded(tester, source: const RunSetupFromProfile('p1'));
 
-    // The one place an edit is told apart from a first-time setup: the
-    // title, and what the secondary exit is called.
-    expect(find.text('Edit \u201cweekly\u201d'), findsOneWidget);
-    expect(find.text('Sync with desktop'), findsNothing);
+    // Navigated into from the home list, this page *is* the profile — so
+    // it is titled as one, and the name is the field that says which.
+    expect(find.text('Profile'), findsOneWidget);
+    expect(find.text('Run setup'), findsNothing);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('run-setup-profile-name')))
+          .controller
+          ?.text,
+      'weekly',
+    );
     expect(find.text('Save changes'), findsOneWidget);
     expect(find.text('Save profile'), findsNothing);
   });
@@ -345,7 +352,6 @@ void main() {
 
   testWidgets('field errors render under their own field', (tester) async {
     await pumpLoaded(tester);
-    await openDisclosure(tester, 'run-setup-folder-options');
     await openDisclosure(tester, 'run-setup-options');
     expect(find.text('folder missing'), findsNothing);
 
@@ -354,12 +360,10 @@ void main() {
       remoteRoot: 'remote missing',
       address: null,
     );
-    controller.state.recordNewFolderError('bad name');
     await tester.pump();
 
     expect(find.text('folder missing'), findsOneWidget);
     expect(find.text('remote missing'), findsOneWidget);
-    expect(find.text('bad name'), findsOneWidget);
     expect(
       tester
           .widget<TextField>(find.byKey(const Key('run-setup-address')))
@@ -373,7 +377,6 @@ void main() {
     tester,
   ) async {
     await pumpLoaded(tester);
-    await openDisclosure(tester, 'run-setup-folder-options');
     await openDisclosure(tester, 'run-setup-options');
 
     controller.state.recordOutcome(const RunSetupStarting());
@@ -382,7 +385,6 @@ void main() {
     expect(startEnabled(tester), isFalse);
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     for (final key in const [
-      'run-setup-new-folder',
       'run-setup-remote-root',
       'run-setup-address',
       'run-setup-profile-name',
@@ -493,32 +495,20 @@ void main() {
     expect(startEnabled(tester), isTrue);
   });
 
-  testWidgets('create, fill in, Start: leaves through onStart once with the '
+  testWidgets('pick, fill in, Start: leaves through onStart once with the '
       'request', (tester) async {
+    final picked = '${tempDir.path}/elsewhere/notes';
+    Directory(picked).createSync(recursive: true);
+    picker.onPick = () => picked;
     await pumpLoaded(tester);
-    await openDisclosure(tester, 'run-setup-folder-options');
     await openDisclosure(tester, 'run-setup-options');
 
-    await tester.enterText(
-      find.byKey(const Key('run-setup-new-folder')),
-      'notes',
+    await pickFolder(
+      tester,
+      until: () => controller.state.selectedLocalFolder == picked,
+      what: 'the picked folder to be selected',
     );
-    await tester.runAsync(() async {
-      await tester.tap(find.byKey(const Key('run-setup-create-folder')));
-      await settleUntil(
-        () => controller.state.selectedLocalFolder != null,
-        what: 'the created folder to be selected',
-      );
-    });
-    await tester.pump();
-    expect(find.text('notes'), findsOneWidget);
-    expect(
-      tester
-          .widget<TextField>(find.byKey(const Key('run-setup-new-folder')))
-          .controller
-          ?.text,
-      isEmpty,
-    );
+    expect(find.text(picked), findsOneWidget);
 
     await tester.enterText(
       find.byKey(const Key('run-setup-remote-root')),
@@ -541,7 +531,7 @@ void main() {
     await tester.pump();
 
     final request = started.single;
-    expect(request.localRootPath, '${tempDir.path}/documents/notes');
+    expect(request.localRootPath, picked);
     expect(request.deviceName, 'desktop');
     expect(request.peerDeviceId, desktop.deviceId);
     expect(request.remoteRootPath, '~/notes');
