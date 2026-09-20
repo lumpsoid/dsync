@@ -22,24 +22,31 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 /// What the client sends once connected (SPEC §4.4): the token as proof it
-/// saw the pairing payload, its own identity certificate (PEM — the shape
-/// every other model in this project already holds one in), and the name it
-/// proposes for this host's paired-device entry.
+/// saw the pairing payload, and its own identity certificate (PEM — the
+/// shape every other model in this project already holds one in).
+///
+/// **No name.** An earlier shape carried the name the enrolling device
+/// proposed for this host's paired-device entry, and [EnrolmentListener]
+/// stored it verbatim. That handed the choice of a *local* handle to the
+/// far end: `PairedDeviceStore.add` rejects a name collision outright
+/// (SPEC §4.4 — rejected, not silently disambiguated) and both
+/// `dsync pair grant <name> <path>` and `peer://<name>` address a device by
+/// that handle, so whoever won the enrolment race could take the name the
+/// operator meant for their own device and be granted a replica root under
+/// it later. The side that *shows* the payload names its peer instead — it
+/// already knows what the operator means to call it — which is what
+/// `EnrolmentListener.bind`'s `peerName` is. Nothing an enrolling peer
+/// sends influences the name it is stored under, so there is no suggestion
+/// to carry here either.
 class EnrolmentRequest {
   final Uint8List token;
   final String certificatePem;
-  final String proposedName;
 
-  const EnrolmentRequest({
-    required this.token,
-    required this.certificatePem,
-    required this.proposedName,
-  });
+  const EnrolmentRequest({required this.token, required this.certificatePem});
 
   Uint8List encode() => _encodeMessage({
     'token': base64.encode(token),
     'certificatePem': certificatePem,
-    'proposedName': proposedName,
   });
 
   static EnrolmentRequest decode(Uint8List bytes) {
@@ -47,7 +54,6 @@ class EnrolmentRequest {
     return EnrolmentRequest(
       token: base64.decode(json['token'] as String),
       certificatePem: json['certificatePem'] as String,
-      proposedName: json['proposedName'] as String,
     );
   }
 }
@@ -66,8 +72,8 @@ sealed class EnrolmentReply {
   }
 }
 
-/// The token, certificate and name were accepted, and a [PairedDevice] was
-/// recorded on the listener's side.
+/// The token and certificate were accepted, and a [PairedDevice] was
+/// recorded on the listener's side, under the name that side chose.
 class EnrolmentAccepted extends EnrolmentReply {
   const EnrolmentAccepted();
 
@@ -76,8 +82,8 @@ class EnrolmentAccepted extends EnrolmentReply {
 }
 
 /// The exchange completed but enrolment did not: a wrong, reused, or expired
-/// token, a malformed certificate, or a name that collides with an existing
-/// pairing. [reason] is what `EnrolmentListener` actually decided to say —
+/// token, a malformed certificate, or a name — this side's own choice, never
+/// the peer's — that collides with an existing pairing. [reason] is what `EnrolmentListener` actually decided to say —
 /// see its class doc comment for why a single generic message covers every
 /// way the token gate itself can fail.
 class EnrolmentRefused extends EnrolmentReply {
@@ -116,8 +122,8 @@ Map<String, dynamic> _decodeMessage(Uint8List bytes) =>
 
 /// The largest payload [readEnrolmentMessage] will buffer, in bytes.
 ///
-/// A legitimate enrolment message is a token, a PEM certificate and a name —
-/// low tens of kilobytes at the outside — so 1 MiB is orders of magnitude of
+/// A legitimate enrolment message is a token and a PEM certificate — low
+/// tens of kilobytes at the outside — so 1 MiB is orders of magnitude of
 /// headroom for anything this protocol will ever legitimately carry. It is a
 /// constant rather than a parameter on purpose: the read it guards happens
 /// *before* the peer has been authenticated by anything (`EnrolmentListener`
@@ -130,7 +136,7 @@ const int maxEnrolmentMessageBytes = 1024 * 1024;
 /// across chunk boundaries — every socket this protocol accepts carries
 /// exactly one, so unlike `FrameCodec.decode` this returns a single value
 /// rather than a stream, and a plain growable buffer is enough: the largest
-/// message either side ever sends is a certificate and a name, not a
+/// message either side ever sends is a certificate, not a
 /// replica's worth of scan results, so there is nothing here for
 /// `FrameCodec`'s in-place-growth optimization to earn back.
 ///

@@ -79,7 +79,6 @@ void main() {
       enrol: ({
         required payload,
         required ownIdentity,
-        required proposedName,
         required localName,
         required pairedDeviceStore,
       }) => throw StateError('no enrolment in this test'),

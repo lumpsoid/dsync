@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -46,6 +47,7 @@ void main() {
 
   Future<EnrolmentListener> bind({
     required Uint8List token,
+    String peerName = 'phone',
     DateTime? tokenExpiresAt,
     Duration requestDeadline = EnrolmentListener.defaultRequestDeadline,
     int maxUnauthenticatedConnections =
@@ -54,6 +56,7 @@ void main() {
     InternetAddress.loopbackIPv4,
     0,
     ownIdentity: serverIdentity,
+    peerName: peerName,
     token: token,
     tokenExpiresAt:
         tokenExpiresAt ?? DateTime.now().add(defaultEnrolmentTokenTtl),
@@ -91,7 +94,6 @@ void main() {
     await enrolWithPeer(
       payload: payloadFor(listener, token),
       ownIdentity: phoneIdentity,
-      proposedName: 'phone',
       localName: 'desktop',
       pairedDeviceStore: clientStore,
     );
@@ -113,6 +115,50 @@ void main() {
   });
 
   test(
+    'an enrolling peer cannot influence the name it is stored under',
+    () async {
+      // The path this closes: `PairedDeviceStore.add` rejects a name collision
+      // outright, and `dsync pair grant <name> <path>` addresses a device by
+      // name, so a peer that could name itself could take the name the
+      // operator meant for their own device and be granted a root under it
+      // later. The name is the showing side's, taken at `bind`.
+      final token = generateEnrolmentToken();
+      final listener = await bind(token: token, peerName: 'my laptop');
+      addTearDown(listener.close);
+      final intruder = generateDeviceIdentity(commonName: 'dsync-intruder');
+
+      // Hand-rolled rather than `enrolWithPeer`, which has no name to send at
+      // all: this is a peer speaking whatever wire shape it likes, including
+      // the field the request used to carry.
+      final socket = await SecureSocket.connect(
+        InternetAddress.loopbackIPv4,
+        portOf(listener),
+        onBadCertificate: (_) => true,
+      );
+      final body = utf8.encode(
+        jsonEncode({
+          'token': base64.encode(token),
+          'certificatePem': intruder.certificatePem,
+          'proposedName': 'peer-chosen',
+        }),
+      );
+      final framed = Uint8List(4 + body.length);
+      ByteData.sublistView(framed, 0, 4).setUint32(0, body.length, Endian.big);
+      framed.setRange(4, framed.length, body);
+      socket.add(framed);
+      await socket.flush();
+      final reply = EnrolmentReply.decode(await readEnrolmentMessage(socket));
+      await socket.close();
+      socket.destroy();
+
+      expect(reply, isA<EnrolmentAccepted>());
+      final stored = await serverStore.byDeviceId(intruder.deviceId);
+      expect(stored!.name, 'my laptop');
+      expect(await serverStore.byName('peer-chosen'), isNull);
+    },
+  );
+
+  test(
     "the client caches the peer's serving address, not the enrolment one",
     () async {
       // The enrolment listener is one-shot on an ephemeral port, so caching
@@ -127,7 +173,6 @@ void main() {
       await enrolWithPeer(
         payload: payloadFor(listener, token, servicePort: 29000),
         ownIdentity: phoneIdentity,
-        proposedName: 'phone',
         localName: 'desktop',
         pairedDeviceStore: clientStore,
       );
@@ -150,7 +195,6 @@ void main() {
       enrolWithPeer(
         payload: payloadFor(listener, wrongToken),
         ownIdentity: phoneIdentity,
-        proposedName: 'phone',
         localName: 'desktop',
         pairedDeviceStore: clientStore,
       ),
@@ -165,7 +209,6 @@ void main() {
     await enrolWithPeer(
       payload: payloadFor(listener, token),
       ownIdentity: phoneIdentity,
-      proposedName: 'phone',
       localName: 'desktop',
       pairedDeviceStore: clientStore,
     );
@@ -191,7 +234,6 @@ void main() {
     await enrolWithPeer(
       payload: payloadFor(listener, token),
       ownIdentity: winner,
-      proposedName: 'phone',
       localName: 'desktop',
       pairedDeviceStore: clientStore,
     );
@@ -200,7 +242,6 @@ void main() {
       enrolWithPeer(
         payload: payloadFor(listener, token),
         ownIdentity: loser,
-        proposedName: 'attacker',
         localName: 'desktop',
         pairedDeviceStore: loserStore,
       ),
@@ -230,7 +271,6 @@ void main() {
       enrolWithPeer(
         payload: payloadFor(listener, token),
         ownIdentity: phoneIdentity,
-        proposedName: 'phone',
         localName: 'desktop',
         pairedDeviceStore: clientStore,
       ),
@@ -263,7 +303,6 @@ void main() {
           token: token,
         ),
         ownIdentity: phoneIdentity,
-        proposedName: 'phone',
         localName: 'desktop',
         pairedDeviceStore: clientStore,
       ),
@@ -280,7 +319,6 @@ void main() {
     await enrolWithPeer(
       payload: payloadFor(listener, token),
       ownIdentity: phoneIdentity,
-      proposedName: 'phone',
       localName: 'desktop',
       pairedDeviceStore: clientStore,
     );
@@ -359,7 +397,6 @@ void main() {
       await enrolWithPeer(
         payload: payloadFor(listener, token),
         ownIdentity: phoneIdentity,
-        proposedName: 'phone',
         localName: 'desktop',
         pairedDeviceStore: clientStore,
       );

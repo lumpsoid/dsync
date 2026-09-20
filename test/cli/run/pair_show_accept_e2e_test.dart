@@ -65,7 +65,8 @@ void main() {
       // this test's `accept` call below — started concurrently, the same
       // way a real operator runs the two commands on two different devices
       // at (roughly) the same time.
-      final showExitCode = _runnerFor(showCommand).run(['show']);
+      final showExitCode = _runnerFor(showCommand)
+          .run(['show', '--name', 'phone']);
 
       final payloadLine = await _awaitLine(
         showOut,
@@ -136,6 +137,9 @@ void main() {
       ).byDeviceId(clientIdentity.deviceId);
       expect(onServer, isNotNull);
       expect(onServer!.agreedReplicaRoots, isEmpty);
+      // The name `show --name` gave, not one the enrolling side sent: the
+      // side showing the payload is the one that names its peer.
+      expect(onServer.name, 'phone');
     },
   );
 
@@ -158,7 +162,8 @@ void main() {
       hasTerminal: () => false,
     );
 
-    final showExitCode = _runnerFor(showCommand).run(['show']);
+    final showExitCode = _runnerFor(showCommand)
+        .run(['show', '--name', 'phone']);
 
     final payloadLine = await _awaitLine(
       showOut,
@@ -216,9 +221,8 @@ void main() {
       hasTerminal: () => false,
     );
 
-    final showExitCode = _runnerFor(
-      showCommand,
-    ).run(['show', '--serve-port', '29000']);
+    final showExitCode = _runnerFor(showCommand)
+        .run(['show', '--name', 'phone', '--serve-port', '29000']);
 
     final payloadLine = await _awaitLine(
       showOut,
@@ -255,6 +259,32 @@ void main() {
     expect(onClient.lastKnownAddress.port, isNot(enrolmentPort));
   });
 
+  test('show without a name for its peer is a usage error, before anything '
+      'is bound', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final showCommand = PairShowCommand(
+      environment: {'XDG_STATE_HOME': '${tempDir.path}/server'},
+      platform: const LinuxStateDir(),
+      out: BufferSink().sink,
+      err: BufferSink().sink,
+      advertisableAddress: () async => '127.0.0.1',
+      hasTerminal: () => false,
+    );
+
+    // There is no default: the name a pairing is recorded under is the
+    // operator's choice, and it is this side's to make (SPEC §4.4).
+    await expectLater(
+      _runnerFor(showCommand).run(['show']),
+      throwsA(isA<UsageException>()),
+    );
+    await expectLater(
+      _runnerFor(showCommand).run(['show', '--name', '   ']),
+      throwsA(isA<UsageException>()),
+    );
+  });
+
   test('a --serve-port that is not a port is a usage error, before anything '
       'is bound', () async {
     final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
@@ -271,7 +301,8 @@ void main() {
     );
 
     await expectLater(
-      _runnerFor(showCommand).run(['show', '--serve-port', 'http']),
+      _runnerFor(showCommand)
+          .run(['show', '--name', 'phone', '--serve-port', 'http']),
       throwsA(isA<UsageException>()),
     );
   });

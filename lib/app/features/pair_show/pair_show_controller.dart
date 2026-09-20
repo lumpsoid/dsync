@@ -25,6 +25,7 @@ import 'pairing_offer.dart';
 /// same real listener on the loopback interface instead.
 typedef BindEnrolmentListener = Future<EnrolmentListener> Function({
   required DeviceIdentity ownIdentity,
+  required String peerName,
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
@@ -41,6 +42,7 @@ typedef BindEnrolmentListener = Future<EnrolmentListener> Function({
 /// off the bound socket and carried inside the payload.
 Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
   required DeviceIdentity ownIdentity,
+  required String peerName,
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
@@ -49,6 +51,7 @@ Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
   InternetAddress.anyIPv4,
   0,
   ownIdentity: ownIdentity,
+  peerName: peerName,
   token: token,
   tokenExpiresAt: tokenExpiresAt,
   pairedDeviceStore: pairedDeviceStore,
@@ -73,12 +76,17 @@ Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
 /// head binds a listener (SPEC §16: the head serves no replica), and this
 /// one accepts exactly one enrolment by construction of the token gate.
 ///
-/// **No names are asked for.** The device that redeems the payload is the
-/// one that names both ends (`PairController.submitPayload` on the other
-/// head, `dsync pair accept` on the other CLI): it proposes what this device
-/// should be listed as there, and picks what to list this device's peer as
-/// locally. This side only says yes, which is why this page has no fields
-/// and the Pair page has two.
+/// **One name is asked for, and it is this side's own.** [show] takes the
+/// name this device will list whoever redeems the payload under — the
+/// handle the device list, a grant and a `peer://` location all address it
+/// by. It is chosen here rather than proposed by the enrolling device for
+/// the reason `EnrolmentRequest`'s doc comment gives: a name the far end
+/// picked is a name whoever won the enrolment race picked, and the name
+/// collision that follows is one the operator resolves by renaming their
+/// *own* device. What the other end calls *this* device stays the other
+/// end's own choice (`PairController.submitPayload` there, or
+/// `dsync pair accept --name`), which is why this side asks for one name
+/// and the Pair page asks for two.
 ///
 /// **What the wait ends on**, raced rather than polled: the listener
 /// reporting the one enrolment it can accept, a refusal that happened after
@@ -135,17 +143,19 @@ class PairShowController {
 
   /// Opens a pairing window and waits out its token.
   ///
-  /// Called by the page when it appears, and again by its Show-a-new-code
-  /// button: a token is single-use and time-bounded, so "try again" is
-  /// always a fresh window rather than a retry of the old one. A second call
-  /// while one is open closes the first, so two endpoints can never be bound
-  /// at once.
+  /// Called by the page once the operator has said what to call the device
+  /// they are about to pair, and again after a window that ended — a token
+  /// is single-use and time-bounded, so "try again" is always a fresh
+  /// window rather than a retry of the old one, and the name can be a
+  /// different one that time (which is the fix for a refusal that named a
+  /// collision). A second call while one is open closes the first, so two
+  /// endpoints can never be bound at once.
   ///
   /// Every way this ends lands on [PairShowViewState.status]: paired,
   /// expired, or failed with the line that names the remedy. The one
   /// exception is the page leaving ([stop]), which records nothing because
   /// there is nobody left to read it.
-  Future<void> show() async {
+  Future<void> show({required String peerName}) async {
     await stop();
     final stopped = _stopped = Completer<void>();
     _record(stopped, const PairShowStarting());
@@ -166,6 +176,7 @@ class PairShowController {
     try {
       listener = await bind(
         ownIdentity: identity,
+        peerName: peerName,
         token: token,
         tokenExpiresAt: expiresAt,
         pairedDeviceStore: pairedDeviceStore,

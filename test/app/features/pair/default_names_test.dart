@@ -7,10 +7,9 @@ import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// The two defaults the Pair page's name fields arrive filled with. Both
-/// rules are pure, so both are exercised with plain values: the device-name
-/// rule over a host name and an OS string, the desktop-name rule over a
-/// decoded payload.
+/// The default the Pair page's name field arrives filled with. The rule is
+/// pure, so it is exercised with plain values: a decoded payload in, the
+/// name to offer for the device that sent it out.
 void main() {
   PairingPayload payloadFor(String commonName) => PairingPayload(
     certificateDer: certificateDerFromPem(
@@ -20,40 +19,6 @@ void main() {
     servicePort: 28771,
     token: Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]),
   );
-
-  group('thisDeviceNameFor', () {
-    test('a host with a name of its own is that name', () {
-      expect(
-        thisDeviceNameFor(hostname: 'studio', operatingSystem: 'linux'),
-        'studio',
-      );
-    });
-
-    test('an mDNS name loses the network\'s half of it', () {
-      expect(
-        thisDeviceNameFor(
-          hostname: 'Janes-iPhone.local',
-          operatingSystem: 'ios',
-        ),
-        'Janes-iPhone',
-      );
-    });
-
-    test('localhost names nothing, so the OS answers instead', () {
-      expect(
-        thisDeviceNameFor(hostname: 'localhost', operatingSystem: 'android'),
-        'Android device',
-      );
-      expect(
-        thisDeviceNameFor(hostname: '', operatingSystem: 'ios'),
-        'iOS device',
-      );
-      expect(
-        thisDeviceNameFor(hostname: '   ', operatingSystem: 'linux'),
-        'linux',
-      );
-    });
-  });
 
   group('desktopNameFor', () {
     test('is the name the desktop gave its own certificate', () {

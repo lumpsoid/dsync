@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'default_names.dart';
 import 'pair_code.dart';
 import 'pair_controller.dart';
 import 'pair_scope.dart';
@@ -27,14 +26,18 @@ import 'scan_code_page.dart';
 /// it, and the card above the names says the two things about it a person
 /// can actually check — which device, and where.
 ///
-/// **Neither name is something the user has to invent.** Both fields arrive
-/// filled in from what is already known — this device's own certificate name
-/// (its host name only when that cannot be read), and the desktop's, read
-/// out of the payload it printed (`default_names.dart`) — so the page can be
-/// completed by scanning one code and pressing one button. Both stay
-/// ordinary editable fields: what is offered is overwritten by whatever the
-/// user types, and the field that is emptied says so at the keyboard rather
-/// than after a tap that did nothing (`PairController.localNameEdited`).
+/// **The one name here is not something the user has to invent.** The field
+/// arrives filled in with the desktop's own name, read out of the payload it
+/// printed (`default_names.dart`), so the page can be completed by scanning
+/// one code and pressing one button. It stays an ordinary editable field:
+/// what is offered is overwritten by whatever the user types, and a field
+/// emptied says so at the keyboard rather than after a tap that did nothing
+/// (`PairController.localNameEdited`).
+///
+/// **There is no field for what the desktop calls this device.** That name
+/// is the desktop's own choice, made where it showed the payload
+/// (`dsync pair show --name`) — see `EnrolmentRequest`'s doc comment for why
+/// an enrolling device no longer proposes one.
 ///
 /// **The camera is mounted by the tap, and on a route of its own.** Starting
 /// `MobileScanner` is what asks the OS for the camera, so a page that built
@@ -85,7 +88,6 @@ class PairPage extends StatefulWidget {
 
 class _PairPageState extends State<PairPage> {
   final _localName = TextEditingController();
-  final _proposedName = TextEditingController();
 
   /// The desktop name this page last put in the field itself, so it can tell
   /// its own offer from a name the user typed — and never overwrite the
@@ -97,28 +99,18 @@ class _PairPageState extends State<PairPage> {
   @override
   void initState() {
     super.initState();
-    // Filled before the listeners are attached: an untouched field is not an
-    // edited one, and it is editing a name away that earns the line under it.
-    //
-    // This device's own certificate name first, so the rename on This device
-    // is what the next pairing offers — which is exactly what that page says
-    // it does. The host-name rule stands in only where there is no such name
-    // to read: before bootstrap, and a certificate with no readable subject.
-    final controller = pairScope.controller;
     // The controller is the cached one and outlives this page, so the page
     // says where it starts rather than inheriting the last visit's verdict.
-    controller.beginPairing();
-    final ownName = controller.ownName;
-    _proposedName.text = ownName.isEmpty ? defaultThisDeviceName() : ownName;
+    //
+    // The listener is attached after that: an untouched field is not an
+    // edited one, and it is editing a name away that earns the line under
+    // it.
+    pairScope.controller.beginPairing();
     _localName.addListener(_localNameEdited);
-    _proposedName.addListener(_proposedNameEdited);
   }
 
   void _localNameEdited() =>
       pairScope.controller.localNameEdited(_localName.text);
-
-  void _proposedNameEdited() =>
-      pairScope.controller.proposedNameEdited(_proposedName.text);
 
   /// A text that should be a payload, however it was got: the controller
   /// decides what it is, and the desktop names itself inside it, so the
@@ -165,16 +157,12 @@ class _PairPageState extends State<PairPage> {
   @override
   void dispose() {
     _localName.dispose();
-    _proposedName.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     final controller = pairScope.controller;
-    await controller.submitPayload(
-      localName: _localName.text,
-      proposedName: _proposedName.text,
-    );
+    await controller.submitPayload(localName: _localName.text);
     _leaveIfPaired(controller);
   }
 
@@ -215,7 +203,6 @@ class _PairPageState extends State<PairPage> {
           onShowOwnCode: widget.onShowOwnCode,
           onClearCode: controller.clearCode,
           localName: _localName,
-          proposedName: _proposedName,
           onSubmit: _submit,
         ),
       ),
@@ -231,7 +218,6 @@ class _PairForm extends StatelessWidget {
     required this.onShowOwnCode,
     required this.onClearCode,
     required this.localName,
-    required this.proposedName,
     required this.onSubmit,
   });
 
@@ -242,7 +228,6 @@ class _PairForm extends StatelessWidget {
   final VoidCallback onShowOwnCode;
   final VoidCallback onClearCode;
   final TextEditingController localName;
-  final TextEditingController proposedName;
   final VoidCallback onSubmit;
 
   @override
@@ -292,7 +277,7 @@ class _PairForm extends StatelessWidget {
             label: const Text("Show this device's code"),
           ),
         ],
-        // The names and the button belong to a code: there is nothing to
+        // The name and the button belong to a code: there is nothing to
         // name, and nothing to send, until one has been read.
         if (state.code is PairCodeRead) ...[
           const SizedBox(height: 24),
@@ -302,19 +287,10 @@ class _PairForm extends StatelessWidget {
             enabled: !submitting,
             decoration: InputDecoration(
               labelText: 'Name for the desktop',
-              helperText: 'What this device will show it as.',
+              helperText:
+                  'What this device will show it as. What the desktop '
+                  'calls this device is its own choice, made there.',
               errorText: state.localNameError,
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            key: const Key('pair-proposed-name'),
-            controller: proposedName,
-            enabled: !submitting,
-            decoration: InputDecoration(
-              labelText: 'Name for this device',
-              helperText: 'What the desktop will show this device as.',
-              errorText: state.proposedNameError,
             ),
           ),
           const SizedBox(height: 24),

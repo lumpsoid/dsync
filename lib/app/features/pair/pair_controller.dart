@@ -5,7 +5,6 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 
-import '../../app_bootstrap.dart';
 import '../../app_controller.dart';
 import 'pair_code.dart';
 import 'pair_view_state.dart';
@@ -23,7 +22,6 @@ import 'pair_view_state.dart';
 typedef EnrolWithPeer = Future<void> Function({
   required PairingPayload payload,
   required DeviceIdentity ownIdentity,
-  required String proposedName,
   required String localName,
   required PairedDeviceStore pairedDeviceStore,
 });
@@ -96,14 +94,19 @@ class PairController {
   }
 
   /// Redeems the payload the page is holding ([PairViewState.code], put
-  /// there by [codeEntered]), recording the desktop as [localName] here and
-  /// asking it to record this device as [proposedName] (SPEC §4.4: each
-  /// side names the other for itself, so the two need not agree).
+  /// there by [codeEntered]), recording the desktop as [localName] here.
   ///
-  /// Names are validated first, without touching the payload: an empty
+  /// Nothing is said about what the desktop calls *this* device: that is
+  /// the desktop's own choice, made where it showed the payload
+  /// (`dsync pair show --name`, or the other head's own code page), for the
+  /// reason `EnrolmentRequest`'s doc comment gives. SPEC §4.4's "each side
+  /// names the other for itself" is unchanged; what is gone is this side
+  /// proposing a name to the other.
+  ///
+  /// [localName] is validated first, without touching the payload: an empty
   /// name is a field error, not an outcome — the outcome goes back to idle
   /// so an earlier verdict does not sit under the new attempt — and no
-  /// exchange starts until both are present. Then, in order:
+  /// exchange starts until it is present. Then, in order:
   ///
   /// - No readable code. The page does not offer the button in that state,
   ///   so this is the belt to its braces rather than a line anyone should
@@ -116,8 +119,9 @@ class PairController {
   ///   documents — `enrolWithPeer`'s doc comment explains why — so it can be
   ///   reported as exactly what it is.
   /// - `EnrolmentRefusedException`: the far end took the connection and said
-  ///   no — token burned or expired, or [proposedName] rejected. Its
-  ///   `reason` is the far end's own words and is shown verbatim.
+  ///   no — token burned or expired, or the name it had already chosen for
+  ///   this device colliding with one it already holds. Its `reason` is the
+  ///   far end's own words and is shown verbatim.
   /// - `PairedDeviceCollisionException`: [localName] or the far end's id
   ///   already exists in this device's store. Per `enrolWithPeer`, this is
   ///   thrown *after* the far end has recorded us, so the pairing is
@@ -132,36 +136,28 @@ class PairController {
   /// went corrupt between the add and the re-read is reported as "paired,
   /// but" — the pairing itself held — with `core`'s own line naming the
   /// file.
-  Future<void> submitPayload({
-    required String localName,
-    required String proposedName,
-  }) async {
+  Future<void> submitPayload({required String localName}) async {
     final local = localName.trim();
-    final proposed = proposedName.trim();
-    state.recordNameErrors(
-      localName: local.isEmpty ? _localNameRequired : null,
-      proposedName: proposed.isEmpty ? _proposedNameRequired : null,
-    );
-    if (local.isEmpty || proposed.isEmpty) {
+    state.recordLocalNameError(local.isEmpty ? _localNameRequired : null);
+    if (local.isEmpty) {
       state.recordOutcome(const PairIdle());
       return;
     }
 
     if (state.code case PairCodeRead(:final payload)) {
       state.recordOutcome(const PairSubmitting());
-      await _enrol(payload, localName: local, proposedName: proposed);
+      await _enrol(payload, localName: local);
       return;
     }
     state.recordOutcome(const PairFailed(_codeRequired));
   }
 
-  /// The exchange itself, over a payload that has already decoded and names
-  /// that have already validated. Split out so [submitPayload] reads as the
-  /// two questions it asks before committing to it.
+  /// The exchange itself, over a payload that has already decoded and a
+  /// name that has already validated. Split out so [submitPayload] reads as
+  /// the two questions it asks before committing to it.
   Future<void> _enrol(
     PairingPayload payload, {
     required String localName,
-    required String proposedName,
   }) async {
     final identity = await app.loadOrCreateIdentity();
     final store = await app.pairedDevices;
@@ -170,7 +166,6 @@ class PairController {
       await enrol(
         payload: payload,
         ownIdentity: identity,
-        proposedName: proposedName,
         localName: localName,
         pairedDeviceStore: store,
       );
@@ -230,38 +225,14 @@ class PairController {
   /// from the payload the moment one is readable, so the only way it is ever
   /// empty is that the user emptied it — and being told that at the keyboard
   /// beats being told it after a tap that did nothing. Only this field's
-  /// line moves; the other field's verdict is whatever its own last edit or
-  /// the last submit made it.
+  /// line moves.
   void localNameEdited(String value) => state.recordLocalNameError(
     value.trim().isEmpty ? _localNameRequired : null,
   );
-
-  /// This device's name as it is being typed; see [localNameEdited].
-  void proposedNameEdited(String value) => state.recordProposedNameError(
-    value.trim().isEmpty ? _proposedNameRequired : null,
-  );
-
-  /// What this device calls itself: the common name in its own certificate,
-  /// which the This device page's rename writes and describes as "the name
-  /// offered to devices you pair with from now on" — so this is the name the
-  /// page offers as the proposed one, and that promise is kept.
-  ///
-  /// Empty when there is no name to read: before bootstrap has produced an
-  /// identity, and for a certificate whose subject carries no readable name
-  /// (see `DeviceIdentityRow.name`). The page, not this getter, decides what
-  /// to offer instead — the fallback reads the platform, and this class is
-  /// testable with plain values.
-  String get ownName => switch (app.state.bootstrap) {
-    AppBootstrapReady(:final identity) => identity.name,
-    _ => '',
-  };
 
   void dispose() => state.dispose();
 }
 
 const _localNameRequired = 'Give the desktop a name to show it as here.';
-const _proposedNameRequired =
-    'Give this device a name for the desktop to '
-    'show it as.';
 const _codeRequired =
     'Scan or paste a pairing code from `dsync pair show` first.';

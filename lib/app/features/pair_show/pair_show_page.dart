@@ -22,11 +22,16 @@ import 'qr_symbol.dart';
 /// §4.4's "open only for the duration of one pairing operation" is exactly
 /// this page's lifetime. Leaving closes it.
 ///
-/// **The window opens by arriving.** There is no start button: getting here
-/// is the intent, the code is useless for five minutes at a time, and a
-/// button to make a code appear would only add a tap between the user and
-/// the thing they came for. Every ending that can be retried offers a fresh
-/// window instead, because a spent or expired token can never be reopened.
+/// **One field, then the code.** The page asks what to call the device
+/// about to be paired and shows the code once it has an answer. That name
+/// is this device's own handle for its peer — what the device list, a
+/// grant and a `peer://` location address it by — and it has to be decided
+/// *before* the endpoint is bound, because whoever redeems the code is
+/// recorded under it the instant they do; letting the enrolling device
+/// propose it instead is what `EnrolmentRequest`'s doc comment describes
+/// closing. Every ending that can be retried comes back to the same field,
+/// because a spent or expired token can never be reopened and because a
+/// refusal naming a name collision is fixed by typing a different one.
 ///
 /// **Both ways out of the payload, side by side.** The symbol is for the
 /// other device's camera (its own Pair page), the line under it for its
@@ -52,6 +57,16 @@ class PairShowPage extends StatefulWidget {
 class _PairShowPageState extends State<PairShowPage> {
   final PairShowController _controller = pairShowScope.create();
 
+  /// What this device will call whoever redeems the code. Kept across a
+  /// retry, so a window that expired is re-shown with one tap and one that
+  /// was refused for a name collision is re-shown after an edit.
+  final TextEditingController _name = TextEditingController();
+
+  /// Whether a window has been opened for the name now in [_name]. False
+  /// until the first Show-code, and again after an ending that offers a
+  /// retry.
+  bool _showing = false;
+
   /// Whether [PairShowPage.onPaired] has already fired. The status is
   /// written from an async wait, so a rebuild for any other reason must not
   /// pop the page a second time.
@@ -61,12 +76,12 @@ class _PairShowPageState extends State<PairShowPage> {
   void initState() {
     super.initState();
     _controller.state.addListener(_statusChanged);
-    unawaited(_controller.show());
   }
 
   @override
   void dispose() {
     _controller.state.removeListener(_statusChanged);
+    _name.dispose();
     // Closes the endpoint: see the class doc comment.
     _controller.dispose();
     super.dispose();
@@ -82,6 +97,19 @@ class _PairShowPageState extends State<PairShowPage> {
     }
   }
 
+  void _show() {
+    setState(() => _showing = true);
+    unawaited(_controller.show(peerName: _name.text.trim()));
+  }
+
+  /// Back to the field, rather than straight into a fresh window: the name
+  /// is the one thing worth changing between attempts (a refusal that named
+  /// a collision is fixed nowhere else), and it is already filled in.
+  Future<void> _showAnother() async {
+    await _controller.stop();
+    if (mounted) setState(() => _showing = false);
+  }
+
   Future<void> _copy(String line) async {
     await Clipboard.setData(ClipboardData(text: line));
     if (!mounted) return;
@@ -93,38 +121,94 @@ class _PairShowPageState extends State<PairShowPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("This device's code")),
-      body: ListenableBuilder(
-        listenable: _controller.state,
-        builder: (context, _) => switch (_controller.state.status) {
-          PairShowStarting() => const Center(
-            child: CircularProgressIndicator(
-              semanticsLabel: 'Opening a pairing window',
+      body: !_showing
+          ? _NameField(name: _name, onShow: _show)
+          : ListenableBuilder(
+              listenable: _controller.state,
+              builder: (context, _) => switch (_controller.state.status) {
+                PairShowStarting() => const Center(
+                  child: CircularProgressIndicator(
+                    semanticsLabel: 'Opening a pairing window',
+                  ),
+                ),
+                PairShowWaiting(:final offer) => _Offer(
+                  offer: offer,
+                  onCopy: () => _copy(offer.payloadLine),
+                ),
+                // Rendered as the window it is: the page is leaving, and says so
+                // through the snackbar `_statusChanged` raises.
+                PairShowPaired() => const SizedBox.shrink(),
+                PairShowExpired() => _Ended(
+                  key: const Key('pair-show-expired'),
+                  message:
+                      'Nothing used this code before it ran out. Codes are good '
+                      'for ${defaultEnrolmentTokenTtl.inMinutes} minutes, so the '
+                      'other device needs to be ready before you show one.',
+                  isError: false,
+                  onRetry: () => unawaited(_showAnother()),
+                ),
+                PairShowFailed(:final message) => _Ended(
+                  key: const Key('pair-show-failed'),
+                  message: message,
+                  isError: true,
+                  onRetry: () => unawaited(_showAnother()),
+                ),
+              },
             ),
-          ),
-          PairShowWaiting(:final offer) => _Offer(
-            offer: offer,
-            onCopy: () => _copy(offer.payloadLine),
-          ),
-          // Rendered as the window it is: the page is leaving, and says so
-          // through the snackbar `_statusChanged` raises.
-          PairShowPaired() => const SizedBox.shrink(),
-          PairShowExpired() => _Ended(
-            key: const Key('pair-show-expired'),
-            message:
-                'Nothing used this code before it ran out. Codes are good '
-                'for ${defaultEnrolmentTokenTtl.inMinutes} minutes, so the '
-                'other device needs to be ready before you show one.',
-            isError: false,
-            onRetry: () => unawaited(_controller.show()),
-          ),
-          PairShowFailed(:final message) => _Ended(
-            key: const Key('pair-show-failed'),
-            message: message,
-            isError: true,
-            onRetry: () => unawaited(_controller.show()),
-          ),
-        },
-      ),
+    );
+  }
+}
+
+/// The one question this side has to answer before a code exists: what to
+/// call the device that redeems it.
+///
+/// No default is offered. The name is a handle the operator will type again
+/// — in a grant, in a `peer://` location — and a guessed one ("device",
+/// this device's own model) would be both wrong and hard to notice; the
+/// Pair page's two name fields are filled in by hand for the same reason.
+class _NameField extends StatelessWidget {
+  const _NameField({required this.name, required this.onShow});
+
+  final TextEditingController name;
+  final VoidCallback onShow;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: name,
+      builder: (context, _) {
+        final ready = name.text.trim().isNotEmpty;
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Text(
+              'What should this device call the one you are about to pair? '
+              'The name is local to this device, and it is how you will '
+              'pick that device out of the list later.',
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              key: const Key('pair-show-name'),
+              controller: name,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) {
+                if (ready) onShow();
+              },
+              decoration: const InputDecoration(
+                labelText: 'Name for the other device',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 24),
+            FilledButton(
+              key: const Key('pair-show-start'),
+              onPressed: ready ? onShow : null,
+              child: const Text('Show code'),
+            ),
+          ],
+        );
+      },
     );
   }
 }

@@ -37,8 +37,8 @@ dsync sync <locA> <locB>          # ad-hoc, no profile
 dsync status <profile>            # scan + reconcile + print plan, apply nothing
 dsync agent --stdio               # started by ssh on the remote host
 dsync agent --listen <socket>     # bind a unix socket and serve it
-dsync pair show                   # show this device's payload, wait for a peer
-dsync pair accept <payload>       # pair with the device that payload came from
+dsync pair show --name <name>     # show this device's payload, wait for a peer, record it as <name>
+dsync pair accept --name <name> <payload>  # pair with the device that payload came from, as <name>
 dsync pair list                   # paired devices; --json for a script
 dsync pair grant <name> <path>    # let a paired device reach a replica root
 dsync pair revoke <name>          # stop trusting it
@@ -66,13 +66,16 @@ only; the one that leaves the machine is `dsync agent --serve` with a
 
 ## Pairing
 
-Two devices that have never met cannot talk. `dsync pair show` prints a payload
-— this device's certificate, an address, and a single-use token good for five
-minutes — and waits; `dsync pair accept <payload>` on the other device redeems
-it. That payload is the trust anchor, so there is no "an unknown device wants
-to connect, accept?" prompt anywhere: a device that was not paired out of band
-is refused during the TLS handshake, before it reaches the version handshake,
-`hello`, or any frame parser (SPEC §4.4).
+Two devices that have never met cannot talk. `dsync pair show --name <name>`
+prints a payload — this device's certificate, an address, and a single-use
+token good for five minutes — and waits; `dsync pair accept --name <name>
+<payload>` on the other device redeems it. Each side names its peer, for
+itself, and neither name travels: the device being enrolled has no say in what
+it is stored as (SPEC §4.4), and that name is the handle `dsync pair grant`
+and `peer://` address it by. That payload is the trust anchor, so there is no
+"an unknown device wants to connect, accept?" prompt anywhere: a device that
+was not paired out of band is refused during the TLS handshake, before it
+reaches the version handshake, `hello`, or any frame parser (SPEC §4.4).
 
 Pairing a device and authorizing it are two steps. A freshly paired device is
 trusted and can reach **nothing** until `dsync pair grant <name> <path>` says
@@ -86,7 +89,8 @@ on stderr; the text is what a desktop-to-server pair exchanges (neither end
 has a camera), and the Flutter head takes either form (below). The head shows
 the same payload itself, as a symbol and a copyable line, from **Pair a
 device → Show this device's code** — for the pairing where the camera is on
-the other device.
+the other device. It asks what to call the device about to be paired before it
+shows anything, for the same reason `--name` is required on the CLI.
 
 Profiles live in `$XDG_CONFIG_HOME/dsync/profiles/<name>.toml` (SPEC §12),
 archives, locks, this device's identity, the paired-device set and the
@@ -136,16 +140,19 @@ on one head file, `flutter test test/app/<file>.dart`.
 The app is a client of `dsync agent --serve` on a desktop; it cannot serve a
 replica itself. From nothing to a first sync:
 
-1. On the desktop, `dsync pair show`. It prints a `dsync-pair:v2:…` line and
-   waits five minutes for the peer. Add `--serve-port <port>` if this
-   desktop's `dsync agent --serve` runs on anything but 28771: the payload
-   tells the app where to reach it from then on, so this is the number the
-   app stores and dials.
+1. On the desktop, `dsync pair show --name <app-name>`, where `<app-name>` is
+   what the desktop will call the app from then on — the name you will use in
+   `dsync pair grant` below. It prints a `dsync-pair:v2:…` line and waits five
+   minutes for the peer. Add `--serve-port <port>` if this desktop's
+   `dsync agent --serve` runs on anything but 28771: the payload tells the app
+   where to reach it from then on, so this is the number the app stores and
+   dials.
 2. In the app, open **Pair a device** and tap **Scan QR code** — pointing the
    phone at the code on the desktop's terminal — or **Paste line** for the
    `dsync-pair:v2:…` line. Either way the app then shows which desktop the
-   code names and the address it will be reached at; check it, adjust the two
-   names, and pair.
+   code names and the address it will be reached at; check it, adjust the name
+   the app will list the desktop under, and pair. There is no field for what
+   the desktop calls the app: that is the `--name` given in step 1.
 3. On the desktop, `dsync pair grant <app-name> <root>` for the folder the app
    may reach. Pairing and granting are two steps (SPEC §4.4): without this the
    run is refused, and the app cannot grant itself anything.

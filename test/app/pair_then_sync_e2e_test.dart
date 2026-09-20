@@ -140,6 +140,7 @@ void main() {
       InternetAddress.loopbackIPv4,
       0,
       ownIdentity: desktopIdentity,
+      peerName: 'phone',
       token: token,
       tokenExpiresAt: DateTime.now().add(defaultEnrolmentTokenTtl),
       pairedDeviceStore: desktopStore,
@@ -162,7 +163,7 @@ void main() {
     pair = PairController(app, enrol: enrolWithPeer);
     pair.codeEntered(pairingPayload.encode());
     await pair
-        .submitPayload(localName: 'desktop', proposedName: 'phone')
+        .submitPayload(localName: 'desktop')
         .timeout(_startupDeadline);
     final outcome = pair.state.outcome;
     expect(

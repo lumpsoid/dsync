@@ -84,6 +84,21 @@ class PairShowCommand extends Command<int> {
   /// and only this side knows whether its agent serves on the default.
   static const optionServePort = 'serve-port';
 
+  /// This host's own label for whichever device redeems the payload — the
+  /// handle `dsync pair grant <name> <path>` and `peer://<name>` address it
+  /// by from then on.
+  ///
+  /// Required, and asked for *here* rather than proposed by the enrolling
+  /// device: a name the far end chose is a name whoever won the enrolment
+  /// race chose (SPEC §4.4 accepts that a leaked payload lets them try), and
+  /// `PairedDeviceStore.add` rejects a name collision outright, so a
+  /// squatter could take the name meant for the operator's own device and be
+  /// granted a replica root under it later. The operator running this
+  /// command already knows what they mean to call their peer. It has no
+  /// default for the same reason `dsync pair accept --name` has none:
+  /// naming is a deliberate choice, not something to guess at.
+  static const optionName = 'name';
+
   final Map<String, String> environment;
   final StateDirPlatform platform;
   final IOSink out;
@@ -121,21 +136,38 @@ class PairShowCommand extends Command<int> {
     this.hasTerminal = stderrHasTerminal,
   }) : out = out ?? stdout,
        err = err ?? stderr {
-    argParser.addOption(
-      optionServePort,
-      valueHelp: 'port',
-      defaultsTo: '${PeerAddress.defaultPort}',
-      help:
-          "The port this device's `dsync agent --serve` listens on. Goes "
-          'into the payload as the address the paired device dials from then '
-          'on, so give it here if --serve runs on a non-default port.',
-    );
+    argParser
+      ..addOption(
+        optionName,
+        help:
+            'This host\'s own label for the device that redeems this '
+            'payload (SPEC §4.4) — local, like a `~/.ssh/config` Host '
+            'alias, and what `dsync pair grant` and `peer://` address it '
+            'by. Required.',
+      )
+      ..addOption(
+        optionServePort,
+        valueHelp: 'port',
+        defaultsTo: '${PeerAddress.defaultPort}',
+        help:
+            "The port this device's `dsync agent --serve` listens on. Goes "
+            'into the payload as the address the paired device dials from '
+            'then on, so give it here if --serve runs on a non-default '
+            'port.',
+      );
   }
 
   @override
   Future<int> run() async {
     if (argResults!.rest.isNotEmpty) {
       usageException('dsync pair show takes no arguments.');
+    }
+    final peerName = argResults!.option(optionName);
+    if (peerName == null || peerName.trim().isEmpty) {
+      usageException(
+        'dsync pair show needs --name: this host\'s own label for the '
+        'device that redeems the payload.',
+      );
     }
     final servePort = _parseServePort(argResults!.option(optionServePort));
 
@@ -165,6 +197,7 @@ class PairShowCommand extends Command<int> {
       InternetAddress.anyIPv4,
       port,
       ownIdentity: identity,
+      peerName: peerName,
       token: token,
       tokenExpiresAt: tokenExpiresAt,
       pairedDeviceStore: pairedDeviceStore,

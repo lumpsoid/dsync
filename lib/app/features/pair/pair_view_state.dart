@@ -47,18 +47,17 @@ final class PairSucceeded extends PairOutcome {
 /// `dsync-pair:v2:` payload (SPEC §4.4).
 ///
 /// Holds only what the page displays — see the view-state role in
-/// `app_scope.dart`: the [code] that was scanned or pasted, the two name
-/// fields' validation lines and the [outcome] of the last submit. The name
-/// text itself is the widgets' (`TextEditingController`s), not copied here;
+/// `app_scope.dart`: the [code] that was scanned or pasted, the name
+/// field's validation line and the [outcome] of the last submit. The name
+/// text itself is the widget's (a `TextEditingController`), not copied here;
 /// this is what the controller decided about it.
 class PairViewState extends ChangeNotifier {
   String? _localNameError;
-  String? _proposedNameError;
   PairCode _code = const PairCodeMissing();
   PairOutcome _outcome = const PairIdle();
 
   /// The payload the page is holding, as the page shows it. Unlike the
-  /// names, this *is* kept here: the page renders a card describing it and
+  /// name, this *is* kept here: the page renders a card describing it and
   /// the submit redeems it, and a raw line living in a `TextEditingController`
   /// would leave the two to re-derive the same decode.
   PairCode get code => _code;
@@ -66,35 +65,13 @@ class PairViewState extends ChangeNotifier {
   /// The line under the local-name field, or `null` when it validated.
   String? get localNameError => _localNameError;
 
-  /// The line under the proposed-name field, or `null` when it validated.
-  String? get proposedNameError => _proposedNameError;
-
   /// Where the last submit stands.
   PairOutcome get outcome => _outcome;
 
-  /// Records both fields' validation lines at once — one notification for
-  /// one validation pass. `PairController` only.
-  void recordNameErrors({
-    required String? localName,
-    required String? proposedName,
-  }) {
-    _localNameError = localName;
-    _proposedNameError = proposedName;
-    notifyListeners();
-  }
-
-  /// Records the local-name field's line alone — the as-you-type path,
-  /// where one field changed and the other's verdict has not been
-  /// re-derived. `PairController` only.
+  /// Records the name field's validation line — on submit, and again as the
+  /// field is typed in. `PairController` only.
   void recordLocalNameError(String? error) {
     _localNameError = error;
-    notifyListeners();
-  }
-
-  /// Records the proposed-name field's line alone; see
-  /// [recordLocalNameError]. `PairController` only.
-  void recordProposedNameError(String? error) {
-    _proposedNameError = error;
     notifyListeners();
   }
 
@@ -111,11 +88,10 @@ class PairViewState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Back to how this state starts: no code, no verdict, neither field's
-  /// line. `PairController` only — see `PairController.beginPairing`.
+  /// Back to how this state starts: no code, no verdict, no field line.
+  /// `PairController` only — see `PairController.beginPairing`.
   void clear() {
     _localNameError = null;
-    _proposedNameError = null;
     _code = const PairCodeMissing();
     _outcome = const PairIdle();
     notifyListeners();

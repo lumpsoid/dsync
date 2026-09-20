@@ -12,8 +12,7 @@
 /// being taken on faith from whoever answers, so there is no first-use trust
 /// to extend. No client certificate is presented at the TLS layer — the
 /// listener requests none — so this host's own identity travels only inside
-/// the encrypted [EnrolmentRequest], as data, alongside the token and
-/// [proposedName].
+/// the encrypted [EnrolmentRequest], as data, alongside the token.
 library;
 
 import 'dart:async';
@@ -32,12 +31,16 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 /// accepts — records that desktop as a [PairedDevice] named [localName] in
 /// [pairedDeviceStore].
 ///
-/// [proposedName] is what the far end is asked to call *this* device in its
-/// own store (SPEC §4.4: device names are local to whichever side chose
-/// them, so the two ends need not agree). [localName] is what this call
-/// records the far end as on this side — a caller-supplied label, the same
-/// as any other name [PairedDeviceStore.add] takes, subject to that store's
-/// own collision rule.
+/// [localName] is what this call records the far end as on this side — a
+/// caller-supplied label, the same as any other name [PairedDeviceStore.add]
+/// takes, subject to that store's own collision rule.
+///
+/// This call says nothing about what the far end calls *this* device: that
+/// name is the far end's own choice, made where its payload was shown
+/// (`EnrolmentListener.bind`'s `peerName`), for the reason
+/// [EnrolmentRequest]'s doc comment gives. SPEC §4.4's "device names are
+/// local to whichever side chose them" is unchanged — each side names its
+/// peer, and neither proposes anything to the other.
 ///
 /// Throws [HandshakeException] if the far end's certificate does not match
 /// [payload]'s pin. This is *not* the TLS 1.3 trap
@@ -51,9 +54,9 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 /// nothing here for the asymmetry to apply to.
 ///
 /// Throws [EnrolmentRefusedException] if the connection completes but the
-/// far end refuses the token, the certificate, or [proposedName] — an
-/// application-level decision, so it always surfaces here rather than from
-/// [SecureSocket.connect]. Throws [PairedDeviceCollisionException] if
+/// far end refuses the token, the certificate, or the name it had already
+/// chosen for this device — an application-level decision, so it always
+/// surfaces here rather than from [SecureSocket.connect]. Throws [PairedDeviceCollisionException] if
 /// [localName] (or the far end's device id) collides with an existing entry
 /// in [pairedDeviceStore] — after the far end has already recorded its own
 /// side, since only [pairedDeviceStore] knows about a local naming
@@ -62,7 +65,6 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 Future<void> enrolWithPeer({
   required PairingPayload payload,
   required DeviceIdentity ownIdentity,
-  required String proposedName,
   required String localName,
   required PairedDeviceStore pairedDeviceStore,
 }) async {
@@ -81,7 +83,6 @@ Future<void> enrolWithPeer({
       EnrolmentRequest(
         token: payload.token,
         certificatePem: ownIdentity.certificatePem,
-        proposedName: proposedName,
       ).encode(),
     );
     await socket.flush();

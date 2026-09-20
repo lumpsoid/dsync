@@ -80,7 +80,7 @@ void main() {
   }
 
   Future<PairingOfferPayload> openWindow() async {
-    unawaited(controller.show());
+    unawaited(controller.show(peerName: 'peer laptop'));
     final waiting = await statusWhere(
       (status) => status is PairShowWaiting,
     ) as PairShowWaiting;
@@ -110,7 +110,7 @@ void main() {
   );
 
   test('renders the payload as a symbol as well as a line', () async {
-    unawaited(controller.show());
+    unawaited(controller.show(peerName: 'peer laptop'));
     final waiting = await statusWhere(
       (status) => status is PairShowWaiting,
     ) as PairShowWaiting;
@@ -125,7 +125,6 @@ void main() {
     await enrolWithPeer(
       payload: offered.payload,
       ownIdentity: peerIdentity,
-      proposedName: 'peer laptop',
       localName: 'phone',
       pairedDeviceStore: peerStore,
     );
@@ -151,7 +150,6 @@ void main() {
           token: Uint8List(offered.payload.token.length),
         ),
         ownIdentity: peerIdentity,
-        proposedName: 'stranger',
         localName: 'phone',
         pairedDeviceStore: peerStore,
       ),
@@ -164,7 +162,6 @@ void main() {
     await enrolWithPeer(
       payload: offered.payload,
       ownIdentity: peerIdentity,
-      proposedName: 'peer laptop',
       localName: 'phone',
       pairedDeviceStore: peerStore,
     );
@@ -182,7 +179,7 @@ void main() {
       window: const Duration(milliseconds: 50),
     );
 
-    await controller.show();
+    await controller.show(peerName: 'peer laptop');
 
     expect(controller.state.status, isA<PairShowExpired>());
   });
@@ -194,7 +191,7 @@ void main() {
       advertisableAddress: _loopback,
       window: const Duration(milliseconds: 50),
     );
-    unawaited(controller.show());
+    unawaited(controller.show(peerName: 'peer laptop'));
     final offered = await statusWhere(
       (status) => status is PairShowWaiting,
     ) as PairShowWaiting;
@@ -228,6 +225,7 @@ void main() {
       app,
       bind: ({
         required ownIdentity,
+        required peerName,
         required token,
         required tokenExpiresAt,
         required pairedDeviceStore,
@@ -235,7 +233,7 @@ void main() {
       }) async => throw const SocketException('Address already in use'),
     );
 
-    await controller.show();
+    await controller.show(peerName: 'peer laptop');
 
     final failed = controller.state.status as PairShowFailed;
     expect(failed.message, contains('Address already in use'));
@@ -253,6 +251,7 @@ Future<String?> _loopback() async => InternetAddress.loopbackIPv4.address;
 /// thing this seam is faked for.
 Future<EnrolmentListener> _bindOnLoopback({
   required DeviceIdentity ownIdentity,
+  required String peerName,
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
@@ -261,6 +260,7 @@ Future<EnrolmentListener> _bindOnLoopback({
   InternetAddress.loopbackIPv4,
   0,
   ownIdentity: ownIdentity,
+  peerName: peerName,
   token: token,
   tokenExpiresAt: tokenExpiresAt,
   pairedDeviceStore: pairedDeviceStore,

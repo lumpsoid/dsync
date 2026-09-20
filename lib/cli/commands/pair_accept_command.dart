@@ -32,9 +32,9 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// token", "name collision" and "malformed certificate" into one generic
 /// "pairing failed" would only cost the operator time re-deriving which of
 /// those five different fixes (get a fresh payload, retry within the window,
-/// ask `dsync pair show` to run again, pick a different `--name`, check the
-/// payload was copied correctly) actually applies. `EnrolmentRefused.reason`
-/// (`enrolment_message.dart`) already carries that distinction end to end —
+/// ask `dsync pair show` to run again, ask it to run again under a different
+/// `--name` there, check the payload was copied correctly) actually
+/// applies. `EnrolmentRefused.reason` (`enrolment_message.dart`) already carries that distinction end to end —
 /// this command's job is only to not throw it away.
 class PairAcceptCommand extends Command<int> {
   @override
@@ -46,7 +46,6 @@ class PairAcceptCommand extends Command<int> {
       'record the enrolling device.';
 
   static const _optionName = 'name';
-  static const _optionAs = 'as';
 
   final Map<String, String> environment;
   final StateDirPlatform platform;
@@ -60,21 +59,15 @@ class PairAcceptCommand extends Command<int> {
     IOSink? err,
   }) : out = out ?? stdout,
        err = err ?? stderr {
-    argParser
-      ..addOption(
-        _optionName,
-        help:
-            'This host\'s own label for the device being paired (SPEC '
-            '§4.4) — local, like a `~/.ssh/config` Host alias. Required: '
-            'naming is a deliberate operator choice, not a default this '
-            'command should guess at.',
-      )
-      ..addOption(
-        _optionAs,
-        help:
-            'What to call this device on the far end\'s own paired-device '
-            'list. Defaults to this host\'s hostname.',
-      );
+    argParser.addOption(
+      _optionName,
+      help:
+          'This host\'s own label for the device being paired (SPEC '
+          '§4.4) — local, like a `~/.ssh/config` Host alias. Required: '
+          'naming is a deliberate operator choice, not a default this '
+          'command should guess at. What the *other* device calls this one '
+          'is its own choice, made by `dsync pair show --name` there.',
+    );
   }
 
   @override
@@ -94,7 +87,6 @@ class PairAcceptCommand extends Command<int> {
         'device being paired.',
       );
     }
-    final proposedName = results.option(_optionAs) ?? Platform.localHostname;
 
     final PairingPayload payload;
     try {
@@ -120,7 +112,6 @@ class PairAcceptCommand extends Command<int> {
       await enrolWithPeer(
         payload: payload,
         ownIdentity: identity,
-        proposedName: proposedName,
         localName: localName,
         pairedDeviceStore: pairedDeviceStore,
       );

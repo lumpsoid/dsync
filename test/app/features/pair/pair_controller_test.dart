@@ -42,7 +42,6 @@ void main() {
     enrol = ({
       required payload,
       required ownIdentity,
-      required proposedName,
       required localName,
       required pairedDeviceStore,
     }) async => fail('enrol fake not set');
@@ -52,13 +51,11 @@ void main() {
           ({
             required payload,
             required ownIdentity,
-            required proposedName,
             required localName,
             required pairedDeviceStore,
           }) => enrol(
             payload: payload,
             ownIdentity: ownIdentity,
-            proposedName: proposedName,
             localName: localName,
             pairedDeviceStore: pairedDeviceStore,
           ),
@@ -87,7 +84,6 @@ void main() {
     enrol = ({
       required payload,
       required ownIdentity,
-      required proposedName,
       required localName,
       required pairedDeviceStore,
     }) async => throw error;
@@ -95,16 +91,9 @@ void main() {
 
   /// The page's two steps, as every test that pairs takes them: a code is
   /// read in first, and only then is anything submitted.
-  Future<void> submit({
-    String? payloadText,
-    String localName = 'desktop',
-    String proposedName = 'phone',
-  }) {
+  Future<void> submit({String? payloadText, String localName = 'desktop'}) {
     controller.codeEntered(payloadText ?? payload().encode());
-    return controller.submitPayload(
-      localName: localName,
-      proposedName: proposedName,
-    );
+    return controller.submitPayload(localName: localName);
   }
 
   String failedMessage() {
@@ -121,7 +110,6 @@ void main() {
         enrol = ({
           required payload,
           required ownIdentity,
-          required proposedName,
           required localName,
           required pairedDeviceStore,
         }) async => called = true;
@@ -129,21 +117,12 @@ void main() {
         await submit(localName: '   ');
 
         expect(controller.state.localNameError, isNotNull);
-        expect(controller.state.proposedNameError, isNull);
         expect(controller.state.outcome, isA<PairIdle>());
         expect(called, isFalse);
       },
     );
 
-    test('an empty proposed name is a field error on that field', () async {
-      await submit(proposedName: '');
-
-      expect(controller.state.proposedNameError, isNotNull);
-      expect(controller.state.localNameError, isNull);
-      expect(controller.state.outcome, isA<PairIdle>());
-    });
-
-    test('valid names clear an earlier field error', () async {
+    test('a valid name clears an earlier field error', () async {
       await submit(localName: '');
       expect(controller.state.localNameError, isNotNull);
 
@@ -151,32 +130,17 @@ void main() {
       await submit();
 
       expect(controller.state.localNameError, isNull);
-      expect(controller.state.proposedNameError, isNull);
     });
 
     test('an edit is validated where it stands, without a submit', () {
       controller.localNameEdited('  ');
 
       expect(controller.state.localNameError, isNotNull);
-      // One field's edit moves one field's line: the other has not been
-      // looked at.
-      expect(controller.state.proposedNameError, isNull);
       expect(controller.state.outcome, isA<PairIdle>());
 
       controller.localNameEdited(' studio ');
 
       expect(controller.state.localNameError, isNull);
-    });
-
-    test('the proposed name is validated the same way', () {
-      controller.proposedNameEdited('');
-
-      expect(controller.state.proposedNameError, isNotNull);
-      expect(controller.state.localNameError, isNull);
-
-      controller.proposedNameEdited('phone');
-
-      expect(controller.state.proposedNameError, isNull);
     });
   });
 
@@ -229,20 +193,16 @@ void main() {
       expect(message, isNot(contains('Not a dsync pairing payload')));
     });
 
-    test('no code means no exchange, whatever the names say', () async {
+    test('no code means no exchange, whatever the name says', () async {
       var called = false;
       enrol = ({
         required payload,
         required ownIdentity,
-        required proposedName,
         required localName,
         required pairedDeviceStore,
       }) async => called = true;
 
-      await controller.submitPayload(
-        localName: 'desktop',
-        proposedName: 'phone',
-      );
+      await controller.submitPayload(localName: 'desktop');
 
       expect(failedMessage(), contains('Scan or paste'));
       expect(called, isFalse);
@@ -260,21 +220,16 @@ void main() {
       expect(controller.state.outcome, isA<PairIdle>());
     });
 
-    test('a fresh visit clears the code, the verdict and both field lines',
-        () {
+    test('a fresh visit clears the code, the verdict and the field line', () {
       controller.codeEntered(payload().encode());
       controller.state.recordOutcome(const PairFailed('stale'));
-      controller.state.recordNameErrors(
-        localName: 'local missing',
-        proposedName: 'proposed missing',
-      );
+      controller.state.recordLocalNameError('local missing');
 
       controller.beginPairing();
 
       expect(controller.state.code, isA<PairCodeMissing>());
       expect(controller.state.outcome, isA<PairIdle>());
       expect(controller.state.localNameError, isNull);
-      expect(controller.state.proposedNameError, isNull);
     });
 
     test('a new code clears the last attempt\'s verdict', () {
@@ -350,19 +305,16 @@ void main() {
       PairingPayload? seenPayload;
       DeviceIdentity? seenIdentity;
       String? seenLocal;
-      String? seenProposed;
       enrol =
           ({
             required payload,
             required ownIdentity,
-            required proposedName,
             required localName,
             required pairedDeviceStore,
           }) async {
             seenPayload = payload;
             seenIdentity = ownIdentity;
             seenLocal = localName;
-            seenProposed = proposedName;
             // What the real exchange does last: record the far end here.
             await pairedDeviceStore.add(
               PairedDevice(
@@ -376,10 +328,9 @@ void main() {
           };
       expect(app.state.devices, isEmpty);
 
-      await submit(localName: ' my desktop ', proposedName: ' my phone ');
+      await submit(localName: ' my desktop ');
 
       expect(seenLocal, 'my desktop');
-      expect(seenProposed, 'my phone');
       expect(seenPayload?.address.host, '192.168.1.5');
       expect(
         seenIdentity?.certificatePem,
@@ -396,7 +347,6 @@ void main() {
           ({
             required payload,
             required ownIdentity,
-            required proposedName,
             required localName,
             required pairedDeviceStore,
           }) async {
@@ -434,7 +384,6 @@ void main() {
       enrol = ({
         required payload,
         required ownIdentity,
-        required proposedName,
         required localName,
         required pairedDeviceStore,
       }) async => called = true;
@@ -453,7 +402,6 @@ void main() {
           ({
             required payload,
             required ownIdentity,
-            required proposedName,
             required localName,
             required pairedDeviceStore,
           }) async {
@@ -465,10 +413,7 @@ void main() {
       controller.codeEntered(payload().encode());
       controller.codeEntered(payload().encode());
       controller.codeEntered(payload().encode());
-      await controller.submitPayload(
-        localName: 'desktop',
-        proposedName: 'phone',
-      );
+      await controller.submitPayload(localName: 'desktop');
 
       expect(calls, 1);
       expect(controller.state.outcome, isA<PairSucceeded>());

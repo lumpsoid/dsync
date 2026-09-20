@@ -21,10 +21,10 @@ import 'package:flutter_test/flutter_test.dart';
 /// scope contract in `app_scope.dart` intends: the controllers are pinned
 /// with `setController` and the page is pumped directly.
 ///
-/// The pinned controller's endpoint never finishes binding, so the window it
-/// opens on `initState` stays in [PairShowStarting] and each test writes the
-/// status it is about — this file is about what the page shows for a status,
-/// not about how one is reached, which is the controller test's.
+/// The pinned controller's endpoint never finishes binding, so the window a
+/// test opens stays in [PairShowStarting] and each test writes the status it
+/// is about — this file is about what the page shows for a status, not about
+/// how one is reached, which is the controller test's.
 void main() {
   late Directory tempDir;
   late AppController app;
@@ -40,6 +40,7 @@ void main() {
     pairShowScope.setController(controller);
     paired = 0;
     copied = null;
+    boundPeerName = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
           if (call.method == 'Clipboard.setData') {
@@ -75,14 +76,60 @@ void main() {
     await tester.pump();
   }
 
+  /// The page's first step: name the device about to be paired, then ask for
+  /// the code. Every test about a status goes through it, because no window
+  /// exists until it has.
+  Future<void> openWindow(
+    WidgetTester tester, {
+    String name = 'my laptop',
+  }) async {
+    await tester.enterText(find.byKey(const Key('pair-show-name')), name);
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('pair-show-start')));
+    await tester.pump();
+  }
+
+  testWidgets('asks what to call the device before there is a code', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+
+    expect(find.byKey(const Key('pair-show-name')), findsOneWidget);
+    // Nothing is bound until a name has been given: the name is what the
+    // device that redeems the code is recorded under, so it cannot be
+    // decided after the fact — and an empty one is not a name.
+    expect(boundPeerName, isNull);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('pair-show-start')))
+          .enabled,
+      isFalse,
+    );
+  });
+
+  testWidgets('the name it was given is the name it opens the window under', (
+    tester,
+  ) async {
+    final recording = _RecordingController(app);
+    // Disposed by the page, which owns whatever controller it is handed.
+    pairShowScope.setController(recording);
+    await pumpPage(tester);
+
+    await openWindow(tester, name: '  my laptop  ');
+
+    expect(recording.shownFor, 'my laptop');
+  });
+
   testWidgets('waits while the endpoint is being bound', (tester) async {
     await pumpPage(tester);
+    await openWindow(tester);
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 
   testWidgets('shows the code as a symbol and as a line', (tester) async {
     await pumpPage(tester);
+    await openWindow(tester);
 
     controller.state.recordStatus(PairShowWaiting(offer()));
     await tester.pump();
@@ -99,6 +146,7 @@ void main() {
 
   testWidgets('copies the line to the clipboard', (tester) async {
     await pumpPage(tester);
+    await openWindow(tester);
     controller.state.recordStatus(PairShowWaiting(offer()));
     await tester.pump();
 
@@ -113,6 +161,7 @@ void main() {
     tester,
   ) async {
     await pumpPage(tester);
+    await openWindow(tester);
 
     controller.state.recordStatus(
       PairShowWaiting(offer(line: 'dsync-pair:v2:${'a' * 5000}')),
@@ -125,20 +174,30 @@ void main() {
 
   testWidgets('an expired window offers a fresh one', (tester) async {
     await pumpPage(tester);
+    await openWindow(tester);
     controller.state.recordStatus(const PairShowExpired());
     await tester.pump();
 
     expect(find.byKey(const Key('pair-show-expired')), findsOneWidget);
     await tester.tap(find.byKey(const Key('pair-show-retry')));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
-    // Back to a window being opened: a spent token is never retried, only
-    // replaced.
-    expect(controller.state.status, isA<PairShowStarting>());
+    // Back to the name, still filled in: a spent token is never retried,
+    // only replaced, and the name is the one thing worth changing before
+    // the next one.
+    expect(find.byKey(const Key('pair-show-name')), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('pair-show-name')))
+          .controller
+          ?.text,
+      'my laptop',
+    );
   });
 
   testWidgets('a failure is shown with its own line', (tester) async {
     await pumpPage(tester);
+    await openWindow(tester);
 
     controller.state.recordStatus(
       const PairShowFailed('This device could not open a pairing endpoint.'),
@@ -154,6 +213,7 @@ void main() {
 
   testWidgets('a pairing confirms itself and leaves', (tester) async {
     await pumpPage(tester);
+    await openWindow(tester);
 
     controller.state.recordStatus(const PairShowPaired('peer laptop'));
     await tester.pump();
@@ -163,13 +223,35 @@ void main() {
   });
 }
 
+/// A controller that records what the page asked it to open a window for,
+/// instead of opening one: the page's one job here is to carry the name the
+/// user typed into [PairShowController.show], and a real window would need
+/// this device's identity off disk, which a widget test's clock does not
+/// wait for.
+class _RecordingController extends PairShowController {
+  _RecordingController(super.app) : super(bind: _neverBinds);
+
+  String? shownFor;
+
+  @override
+  Future<void> show({required String peerName}) async => shownFor = peerName;
+}
+
 /// A bind that never answers, so the window the page opens on `initState`
 /// stays in [PairShowStarting] and a test's own status is the only one the
 /// page ever renders.
 Future<EnrolmentListener> _neverBinds({
   required DeviceIdentity ownIdentity,
+  required String peerName,
   required Uint8List token,
   required DateTime tokenExpiresAt,
   required PairedDeviceStore pairedDeviceStore,
   required EnrolmentErrorHandler onError,
-}) => Completer<EnrolmentListener>().future;
+}) {
+  boundPeerName = peerName;
+  return Completer<EnrolmentListener>().future;
+}
+
+/// The name [_neverBinds] was last asked to bind under — what the page said
+/// this device will call whoever redeems the code.
+String? boundPeerName;

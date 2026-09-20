@@ -13,7 +13,6 @@ import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
-import 'package:dsync/app/features/pair/default_names.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -57,7 +56,6 @@ void main() {
       enrol: ({
         required payload,
         required ownIdentity,
-        required proposedName,
         required localName,
         required pairedDeviceStore,
       }) async => enrolCalls++,
@@ -163,7 +161,6 @@ void main() {
     // Nothing to name and nothing to send until a code is there — and no
     // camera mounted merely by opening the page.
     expect(find.byKey(const Key('pair-local-name')), findsNothing);
-    expect(find.byKey(const Key('pair-proposed-name')), findsNothing);
     expect(find.byKey(const Key('pair-submit')), findsNothing);
     expect(find.text('scan'), findsNothing);
   });
@@ -202,30 +199,12 @@ void main() {
     expect(enrolCalls, 0);
   });
 
-  testWidgets('this device is offered under the name in its own certificate, '
-      'which is what renaming it writes', (tester) async {
-    app.state.recordReadyIdentity(
-      generateDeviceIdentity(commonName: 'renamed phone'),
-      now: DateTime.now(),
-    );
-
-    await pumpPage(tester);
-    await withCode(tester);
-
-    expect(fieldText(tester, 'pair-proposed-name'), 'renamed phone');
-  });
-
-  testWidgets('the two names arrive filled in: this device from the host when '
-      'it has no certificate name yet, the desktop from the code it read', (
+  testWidgets('the name arrives filled in from the code it read', (
     tester,
   ) async {
-    // No `recordReadyIdentity`: the gate is still loading, so there is no
-    // certificate name to offer and the host-name rule stands in.
     await pumpPage(tester);
     await withCode(tester);
 
-    expect(fieldText(tester, 'pair-proposed-name'), defaultThisDeviceName());
-    expect(fieldText(tester, 'pair-proposed-name'), isNotEmpty);
     // The common name of the certificate the payload carries.
     expect(fieldText(tester, 'pair-local-name'), 'desktop');
   });
@@ -254,21 +233,18 @@ void main() {
   ) async {
     await pumpPage(tester);
     await withCode(tester);
-    expect(controller.state.proposedNameError, isNull);
+    expect(controller.state.localNameError, isNull);
 
-    await tester.enterText(find.byKey(const Key('pair-proposed-name')), '  ');
+    await tester.enterText(find.byKey(const Key('pair-local-name')), '  ');
     await tester.pump();
 
-    expect(controller.state.proposedNameError, isNotNull);
-    expect(find.text(controller.state.proposedNameError!), findsOneWidget);
+    expect(controller.state.localNameError, isNotNull);
+    expect(find.text(controller.state.localNameError!), findsOneWidget);
     // Typing a name back takes the line away again, also with no submit.
-    await tester.enterText(
-      find.byKey(const Key('pair-proposed-name')),
-      'phone',
-    );
+    await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
     await tester.pump();
 
-    expect(controller.state.proposedNameError, isNull);
+    expect(controller.state.localNameError, isNull);
     expect(enrolCalls, 0);
   });
 
@@ -378,9 +354,12 @@ void main() {
     );
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(find.text('Connecting to the desktop…'), findsOneWidget);
-    for (final key in const ['pair-local-name', 'pair-proposed-name']) {
-      expect(tester.widget<TextField>(find.byKey(Key(key))).enabled, isFalse);
-    }
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('pair-local-name')))
+          .enabled,
+      isFalse,
+    );
   });
 
   testWidgets('submitting: the spinner stands in for the button\'s label', (
@@ -427,10 +406,7 @@ void main() {
     controller.state.recordOutcome(
       const PairFailed('Could not reach 10.0.0.9:4242'),
     );
-    controller.state.recordNameErrors(
-      localName: 'local missing',
-      proposedName: null,
-    );
+    controller.state.recordLocalNameError('local missing');
     await tester.pump();
 
     // Left and come back: the controller is the cached scope instance and
@@ -444,24 +420,21 @@ void main() {
     expect(find.byKey(const Key('pair-scan')), findsOneWidget);
   });
 
-  testWidgets('field errors render under their own field', (tester) async {
+  testWidgets('a field error renders under the field', (tester) async {
     await pumpPage(tester);
     await withCode(tester);
     expect(find.text('local missing'), findsNothing);
 
-    controller.state.recordNameErrors(
-      localName: 'local missing',
-      proposedName: null,
-    );
+    controller.state.recordLocalNameError('local missing');
     await tester.pump();
 
     expect(find.text('local missing'), findsOneWidget);
     expect(
       tester
-          .widget<TextField>(find.byKey(const Key('pair-proposed-name')))
+          .widget<TextField>(find.byKey(const Key('pair-local-name')))
           .decoration
           ?.errorText,
-      isNull,
+      'local missing',
     );
   });
 
@@ -501,10 +474,6 @@ void main() {
     await withCode(tester);
 
     await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
-    await tester.enterText(
-      find.byKey(const Key('pair-proposed-name')),
-      'phone',
-    );
     await tapAndLeave(tester, find.byKey(const Key('pair-submit')));
 
     expect(enrolCalls, 1);
@@ -541,10 +510,6 @@ void main() {
     await withCode(tester);
 
     await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
-    await tester.enterText(
-      find.byKey(const Key('pair-proposed-name')),
-      'phone',
-    );
     await tapAndLeave(tester, find.byKey(const Key('pair-submit')));
 
     expect(enrolCalls, 1);

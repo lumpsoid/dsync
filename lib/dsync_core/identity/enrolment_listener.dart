@@ -165,6 +165,7 @@ class EnrolmentListener {
 
   final SecureServerSocket _server;
   final PairedDeviceStore _pairedDeviceStore;
+  final String _peerName;
   final Uint8List _token;
   final DateTime _tokenExpiresAt;
   final EnrolmentErrorHandler _onError;
@@ -184,6 +185,7 @@ class EnrolmentListener {
   EnrolmentListener._(
     this._server,
     this._pairedDeviceStore,
+    this._peerName,
     this._token,
     this._tokenExpiresAt,
     this._onError,
@@ -196,6 +198,17 @@ class EnrolmentListener {
   /// Binds a plain, server-authenticated TLS listener at [address]:[port],
   /// presenting [ownIdentity] and requesting no client certificate (see the
   /// class doc comment for why).
+  ///
+  /// [peerName] is what this host will call whatever device redeems the
+  /// token — its own local handle for that peer (SPEC §4.4), the one
+  /// `dsync pair grant <name> <path>` and `peer://<name>` address it by.
+  /// It is taken here, from the side that shows the payload and therefore
+  /// already knows what the operator means to call its peer, rather than
+  /// proposed by the enrolling device: a name the far end chose is a name
+  /// whoever won the enrolment race chose, and the operator's own device
+  /// could then never pair under it. An empty [peerName] is a
+  /// [FormatException] here, before a socket is bound, rather than a
+  /// refusal the peer sees — it is this side's mistake, not the peer's.
   ///
   /// [token] and [tokenExpiresAt] are the gate a connecting peer has to
   /// satisfy to be recorded in [pairedDeviceStore]: generate [token] with
@@ -215,6 +228,7 @@ class EnrolmentListener {
     InternetAddress address,
     int port, {
     required DeviceIdentity ownIdentity,
+    required String peerName,
     required Uint8List token,
     required DateTime tokenExpiresAt,
     required PairedDeviceStore pairedDeviceStore,
@@ -222,6 +236,9 @@ class EnrolmentListener {
     Duration requestDeadline = defaultRequestDeadline,
     int maxUnauthenticatedConnections = defaultMaxUnauthenticatedConnections,
   }) async {
+    if (peerName.trim().isEmpty) {
+      throw const FormatException('Empty device name');
+    }
     final context = SecurityContext(withTrustedRoots: false)
       ..useCertificateChainBytes(utf8.encode(ownIdentity.certificatePem))
       ..usePrivateKeyBytes(utf8.encode(ownIdentity.privateKeyPem));
@@ -231,6 +248,7 @@ class EnrolmentListener {
     return EnrolmentListener._(
       server,
       pairedDeviceStore,
+      peerName,
       token,
       tokenExpiresAt,
       onError,
@@ -342,38 +360,38 @@ class EnrolmentListener {
       return const EnrolmentRefused('Malformed certificate.');
     }
 
-    final PairedDevice device;
-    try {
-      device = PairedDevice(
-        certificatePem: request.certificatePem,
-        name: request.proposedName,
-        // Empty by construction (SPEC §4.4): pairing a device's identity and
-        // authorizing it for a replica are always two steps, and this is
-        // only the first. A freshly enrolled device is trusted and reaches
-        // nothing until roots are granted separately — see
-        // `PairedDevice.agreedReplicaRoots`'s own doc comment.
-        agreedReplicaRoots: const {},
-        pairedAt: DateTime.now(),
-        // The host actually observed on this socket, not anything the peer
-        // claimed about itself — the same reason `AgentListener` resolves a
-        // peer from `socket.peerCertificate` rather than a self-reported
-        // identity.
-        //
-        // The *port* is deliberately the default rather than
-        // `socket.remotePort`, which is this connection's ephemeral source
-        // port — a number the peer's kernel picked for one outbound
-        // connection and will not be listening on afterwards. Recording it
-        // would put an address in the store that is guaranteed not to work,
-        // which is worse than a guess: SPEC §4.4's cache exists to be dialed
-        // later, and this side has never dialed this peer at all. It learned
-        // a host, so it records the host and the port a listener would use
-        // by default; the first connection this side actually makes will
-        // overwrite both through `recordConnection`.
-        lastKnownAddress: PeerAddress(host: socket.remoteAddress.address),
-      );
-    } on FormatException {
-      return const EnrolmentRefused('Empty device name.');
-    }
+    final device = PairedDevice(
+      certificatePem: request.certificatePem,
+      // This side's own choice, taken at `bind` and never influenced by
+      // anything the peer sent — see [EnrolmentRequest]'s doc comment for
+      // what a peer-chosen name let a winner of the enrolment race do.
+      // Non-empty by construction: `bind` refuses an empty one, so the
+      // `PairedDevice` constructor's own rule cannot fire here.
+      name: _peerName,
+      // Empty by construction (SPEC §4.4): pairing a device's identity and
+      // authorizing it for a replica are always two steps, and this is
+      // only the first. A freshly enrolled device is trusted and reaches
+      // nothing until roots are granted separately — see
+      // `PairedDevice.agreedReplicaRoots`'s own doc comment.
+      agreedReplicaRoots: const {},
+      pairedAt: DateTime.now(),
+      // The host actually observed on this socket, not anything the peer
+      // claimed about itself — the same reason `AgentListener` resolves a
+      // peer from `socket.peerCertificate` rather than a self-reported
+      // identity.
+      //
+      // The *port* is deliberately the default rather than
+      // `socket.remotePort`, which is this connection's ephemeral source
+      // port — a number the peer's kernel picked for one outbound
+      // connection and will not be listening on afterwards. Recording it
+      // would put an address in the store that is guaranteed not to work,
+      // which is worse than a guess: SPEC §4.4's cache exists to be dialed
+      // later, and this side has never dialed this peer at all. It learned
+      // a host, so it records the host and the port a listener would use
+      // by default; the first connection this side actually makes will
+      // overwrite both through `recordConnection`.
+      lastKnownAddress: PeerAddress(host: socket.remoteAddress.address),
+    );
 
     try {
       await _pairedDeviceStore.add(device);

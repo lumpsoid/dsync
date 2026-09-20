@@ -1,67 +1,18 @@
-/// What the Pair page's two name fields arrive filled with (SPEC §4.4: each
-/// side names the other for itself, so neither name has to be agreed — which
-/// is exactly why neither has to be *invented* either).
+/// What the Pair page's name field arrives filled with (SPEC §4.4: each side
+/// names the other for itself, so the name does not have to be agreed —
+/// which is exactly why it does not have to be *invented* either).
 ///
-/// Both defaults are read off something that already exists: this device's
-/// own host name for the name the desktop will show — a fallback for the
-/// certificate name the page prefers — and the far end's own
-/// certificate for the name this device will show it as. Nothing here is
-/// authoritative — every value is a starting point in an editable field —
-/// so a fact that cannot be read is an empty offer, never a thrown error or
-/// a guess dressed up as one.
+/// The default is read off something that already exists: the far end's own
+/// certificate, for the name this device will show it as. Nothing here is
+/// authoritative — the value is a starting point in an editable field — so a
+/// fact that cannot be read is an empty offer, never a thrown error or a
+/// guess dressed up as one.
 library;
 
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/identity/certificate_fields.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
-
-/// The name to offer for *this* device — what the desktop will list it as —
-/// when its own certificate carries no readable name to offer instead. The
-/// certificate's name is the page's first choice (`PairController.ownName`),
-/// because that is the one the This device page renames.
-///
-/// `Platform.localHostname` first, which is what `dsync pair accept`
-/// defaults its `--as` to (`lib/cli/commands/pair_accept_command.dart`), so
-/// a phone and a laptop pairing with the same desktop name themselves the
-/// same way. The one edge is Android, where the host name is `localhost` for
-/// every device and therefore names nothing; there the OS is the most this
-/// build can say without a new dependency, and the user renames it if they
-/// have two.
-///
-/// Reads the platform at this one edge and hands a plain value down, the way
-/// `hostPlatform()` does for the CLI: [defaultThisDeviceName] is the rule,
-/// testable with plain strings.
-String defaultThisDeviceName() {
-  String hostname;
-  try {
-    hostname = Platform.localHostname;
-  } on Object {
-    // A host with no name to give. There is still an OS to fall back to.
-    hostname = '';
-  }
-  return thisDeviceNameFor(
-    hostname: hostname,
-    operatingSystem: Platform.operatingSystem,
-  );
-}
-
-/// [defaultThisDeviceName]'s rule over plain values.
-String thisDeviceNameFor({
-  required String hostname,
-  required String operatingSystem,
-}) {
-  final host = _withoutLocalSuffix(hostname.trim());
-  // `localhost` is the answer every Android device gives, and a name that
-  // every device shares is not a name.
-  if (host.isNotEmpty && host.toLowerCase() != 'localhost') return host;
-  return switch (operatingSystem) {
-    'android' => 'Android device',
-    'ios' => 'iOS device',
-    _ => operatingSystem,
-  };
-}
 
 /// The name to offer for the *desktop* — what this device will list it as —
 /// read out of [payload] itself.
