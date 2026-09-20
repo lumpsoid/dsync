@@ -260,6 +260,23 @@ void main() {
       expect(controller.state.outcome, isA<PairIdle>());
     });
 
+    test('a fresh visit clears the code, the verdict and both field lines',
+        () {
+      controller.codeEntered(payload().encode());
+      controller.state.recordOutcome(const PairFailed('stale'));
+      controller.state.recordNameErrors(
+        localName: 'local missing',
+        proposedName: 'proposed missing',
+      );
+
+      controller.beginPairing();
+
+      expect(controller.state.code, isA<PairCodeMissing>());
+      expect(controller.state.outcome, isA<PairIdle>());
+      expect(controller.state.localNameError, isNull);
+      expect(controller.state.proposedNameError, isNull);
+    });
+
     test('a new code clears the last attempt\'s verdict', () {
       controller.state.recordOutcome(const PairFailed('stale'));
 

@@ -110,4 +110,14 @@ class PairViewState extends ChangeNotifier {
     _outcome = outcome;
     notifyListeners();
   }
+
+  /// Back to how this state starts: no code, no verdict, neither field's
+  /// line. `PairController` only — see `PairController.beginPairing`.
+  void clear() {
+    _localNameError = null;
+    _proposedNameError = null;
+    _code = const PairCodeMissing();
+    _outcome = const PairIdle();
+    notifyListeners();
+  }
 }

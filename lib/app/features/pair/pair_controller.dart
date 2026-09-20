@@ -75,6 +75,19 @@ class PairController {
     state.recordOutcome(const PairIdle());
   }
 
+  /// A fresh visit to the page: nothing from the last one is still on
+  /// screen.
+  ///
+  /// This controller is the cached scope instance and outlives its page —
+  /// `submitPayload` is asynchronous, and a controller disposed by a page
+  /// the user left mid-exchange would have its view state written to after
+  /// disposal (the reason `RunSetupPage` gives for reading the cache too).
+  /// Outliving the page is what leaves a refused pairing's line, or a code
+  /// that was read and never redeemed, sitting there when the page is opened
+  /// again; clearing on arrival is what the page otherwise got for free from
+  /// a new instance.
+  void beginPairing() => state.clear();
+
   /// Puts the page back to having no code — the user rejecting what they
   /// were shown, and asking for the camera or the clipboard again.
   void clearCode() {

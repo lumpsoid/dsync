@@ -420,6 +420,30 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
+  testWidgets('opening the page again starts over: no code, no verdict from '
+      'the last visit', (tester) async {
+    await pumpPage(tester);
+    await withCode(tester);
+    controller.state.recordOutcome(
+      const PairFailed('Could not reach 10.0.0.9:4242'),
+    );
+    controller.state.recordNameErrors(
+      localName: 'local missing',
+      proposedName: null,
+    );
+    await tester.pump();
+
+    // Left and come back: the controller is the cached scope instance and
+    // outlived the page, so the page is what has to say where it starts.
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+    await pumpPage(tester);
+
+    expect(find.text('Could not reach 10.0.0.9:4242'), findsNothing);
+    expect(find.text('local missing'), findsNothing);
+    expect(find.byKey(const Key('pair-code-card')), findsNothing);
+    expect(find.byKey(const Key('pair-scan')), findsOneWidget);
+  });
+
   testWidgets('field errors render under their own field', (tester) async {
     await pumpPage(tester);
     await withCode(tester);

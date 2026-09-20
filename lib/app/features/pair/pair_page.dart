@@ -104,7 +104,11 @@ class _PairPageState extends State<PairPage> {
     // is what the next pairing offers — which is exactly what that page says
     // it does. The host-name rule stands in only where there is no such name
     // to read: before bootstrap, and a certificate with no readable subject.
-    final ownName = pairScope.controller.ownName;
+    final controller = pairScope.controller;
+    // The controller is the cached one and outlives this page, so the page
+    // says where it starts rather than inheriting the last visit's verdict.
+    controller.beginPairing();
+    final ownName = controller.ownName;
     _proposedName.text = ownName.isEmpty ? defaultThisDeviceName() : ownName;
     _localName.addListener(_localNameEdited);
     _proposedName.addListener(_proposedNameEdited);
