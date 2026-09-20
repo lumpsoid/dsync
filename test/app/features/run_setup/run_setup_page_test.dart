@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
@@ -8,6 +9,7 @@ import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/sync_profile.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
@@ -67,23 +69,38 @@ void main() {
   tearDown(() => controller.dispose());
   tearDown(() => tempDir.delete(recursive: true));
 
-  /// Waits, in real time, for the controller to stop writing: the view state
-  /// has to go quiet, not merely reach the case a test is about. `load`
-  /// keeps going after it records the peer — it lists the folders — and a
-  /// write that lands after the test has finished hits a disposed view
-  /// state, which fails whichever test is running by then. Bounded, so a
-  /// regression fails rather than hangs.
-  Future<void> settle() async {
-    var quiet = 0;
-    void restart() => quiet = 0;
-    controller.state.addListener(restart);
-    final deadline = Stopwatch()..start();
-    while (quiet < 5 && deadline.elapsed < const Duration(seconds: 20)) {
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      quiet++;
+  /// Waits, in real time, for the controller to reach the state [done]
+  /// names — by listening, not by sampling. Every `record*` on the view
+  /// state is synchronous, so by the time a notification makes [done] true
+  /// the write has landed and nothing of that operation is still in flight.
+  ///
+  /// Each call site says what it is waiting for, which is what keeps this
+  /// from being a sleep: a condition that never holds fails the test with
+  /// [what] in the message instead of hanging it.
+  Future<void> settleUntil(bool Function() done, {required String what}) async {
+    if (done()) return;
+    final settled = Completer<void>();
+    void check() {
+      if (done() && !settled.isCompleted) settled.complete();
     }
-    controller.state.removeListener(restart);
+
+    controller.state.addListener(check);
+    try {
+      await settled.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => fail('timed out waiting for $what'),
+      );
+    } finally {
+      controller.state.removeListener(check);
+    }
   }
+
+  /// The visit has finished loading, either way it went: `load` records the
+  /// peer last, so leaving [RunSetupPeerLoading] is the whole of it.
+  Future<void> loaded() => settleUntil(
+    () => controller.state.peer is! RunSetupPeerLoading,
+    what: 'the page to load',
+  );
 
   /// Pumps the page over [source] and waits, in real time, for `load` to
   /// finish. Bounded so a regression fails rather than hangs. The viewport
@@ -104,24 +121,29 @@ void main() {
           ),
         ),
       );
-      await settle();
+      await loaded();
     });
     await tester.pump();
   }
 
   /// Taps the pick button and lets the chooser, the probe and the grant —
-  /// all real async work — finish.
-  Future<void> pickFolder(WidgetTester tester) async {
+  /// all real async work — finish, up to the state [until] names: a folder
+  /// added to the list, or the refusal that kept it out.
+  Future<void> pickFolder(
+    WidgetTester tester, {
+    required bool Function() until,
+    required String what,
+  }) async {
     await tester.runAsync(() async {
       await tester.tap(find.byKey(const Key('run-setup-pick-folder')));
-      await settle();
+      await settleUntil(until, what: what);
     });
     await tester.pump();
   }
 
-  /// Opens one of the form's disclosures. The ways of adding a local
-  /// folder and the address override are folded away under the required
-  /// fields, so a test that drives them has to ask for them first.
+  /// Opens one of the form's disclosures. Creating a folder under the
+  /// app's documents, and the optional per-run choices, are folded away
+  /// under the required pair, so a test that drives them asks first.
   Future<void> openDisclosure(WidgetTester tester, String key) async {
     await tester.tap(find.byKey(Key(key)));
     await tester.pumpAndSettle();
@@ -132,20 +154,30 @@ void main() {
       .enabled;
 
   testWidgets('loading: a progress indicator and no form', (tester) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: RunSetupPage(
-          source: RunSetupFromDevice(desktop.deviceId),
-          onStart: started.add,
-          onSaved: () => saved++,
+    // Inside `runAsync`, like `pumpLoaded`: `load` is real `dart:io`, and
+    // in the fake-async zone its completions would only arrive on a pump.
+    //
+    // The frame `pumpWidget` renders is `load`'s first state, recorded
+    // synchronously before its first `await` — and nothing rebuilds the
+    // tree until the next pump, which these expectations do not perform.
+    // So the spinner is what is on screen, without racing the load.
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RunSetupPage(
+            source: RunSetupFromDevice(desktop.deviceId),
+            onStart: started.add,
+            onSaved: () => saved++,
+          ),
         ),
-      ),
-    );
+      );
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    expect(find.byKey(const Key('run-setup-start')), findsNothing);
-    // Let `load` finish before the tree is torn down.
-    await tester.runAsync(settle);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(find.byKey(const Key('run-setup-start')), findsNothing);
+      // Let `load` finish before the tree is torn down: a write landing on
+      // a disposed view state fails whichever test is running by then.
+      await loaded();
+    });
   });
 
   testWidgets('loading: the spinner says what it is waiting on', (
@@ -153,22 +185,24 @@ void main() {
   ) async {
     final semantics = tester.ensureSemantics();
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: RunSetupPage(
-          source: RunSetupFromDevice(desktop.deviceId),
-          onStart: started.add,
-          onSaved: () => saved++,
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RunSetupPage(
+            source: RunSetupFromDevice(desktop.deviceId),
+            onStart: started.add,
+            onSaved: () => saved++,
+          ),
         ),
-      ),
-    );
+      );
 
-    expect(
-      tester.getSemantics(find.byType(CircularProgressIndicator)),
-      isSemantics(label: 'Loading the device'),
-    );
-    semantics.dispose();
-    await tester.runAsync(settle);
+      expect(
+        tester.getSemantics(find.byType(CircularProgressIndicator)),
+        isSemantics(label: 'Loading the device'),
+      );
+      semantics.dispose();
+      await loaded();
+    });
   });
 
   testWidgets('missing: the message instead of the form', (tester) async {
@@ -183,7 +217,7 @@ void main() {
       'an enabled button', (tester) async {
     await pumpLoaded(tester);
     await openDisclosure(tester, 'run-setup-folder-options');
-    await openDisclosure(tester, 'run-setup-address-options');
+    await openDisclosure(tester, 'run-setup-options');
 
     expect(find.text('Sync with desktop'), findsOneWidget);
     for (final key in const [
@@ -209,6 +243,44 @@ void main() {
     expect(find.textContaining('has not granted this device'), findsNothing);
   });
 
+  testWidgets('the title names the device a blank form syncs with, and '
+      'saving offers a profile', (tester) async {
+    await pumpLoaded(tester);
+
+    expect(find.text('Sync with desktop'), findsOneWidget);
+    expect(find.text('Save profile'), findsOneWidget);
+  });
+
+  testWidgets('an edit says which profile it is about to write back over', (
+    tester,
+  ) async {
+    final localRoot = Directory('${tempDir.path}/documents/notes')
+      ..createSync(recursive: true);
+    // Through the store, under `runAsync`: writing it is real file I/O,
+    // which the test binding's fake async never completes on its own.
+    await tester.runAsync(() async {
+      await (await app.profiles).save(
+        SyncProfile(
+          id: 'p1',
+          name: 'weekly',
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+          jobs: 4,
+        ),
+      );
+    });
+
+    await pumpLoaded(tester, source: const RunSetupFromProfile('p1'));
+
+    // The one place an edit is told apart from a first-time setup: the
+    // title, and what the secondary exit is called.
+    expect(find.text('Edit \u201cweekly\u201d'), findsOneWidget);
+    expect(find.text('Sync with desktop'), findsNothing);
+    expect(find.text('Save changes'), findsOneWidget);
+    expect(find.text('Save profile'), findsNothing);
+  });
+
   testWidgets('folders are listed and the selection follows the view state', (
     tester,
   ) async {
@@ -232,9 +304,12 @@ void main() {
     Directory(picked).createSync(recursive: true);
     picker.onPick = () => picked;
     await pumpLoaded(tester);
-    await openDisclosure(tester, 'run-setup-folder-options');
 
-    await pickFolder(tester);
+    await pickFolder(
+      tester,
+      until: () => controller.state.localFolders.any((f) => f.path == picked),
+      what: 'the picked folder to join the list',
+    );
 
     expect(picker.pickCount, 1);
     expect(find.text(picked), findsOneWidget);
@@ -245,9 +320,12 @@ void main() {
       'it, and the form is untouched', (tester) async {
     picker.onPick = () => '${tempDir.path}/elsewhere/no-such-tree';
     await pumpLoaded(tester);
-    await openDisclosure(tester, 'run-setup-folder-options');
 
-    await pickFolder(tester);
+    await pickFolder(
+      tester,
+      until: () => controller.state.folderAccessError != null,
+      what: 'the folder to be refused',
+    );
 
     expect(find.byType(SnackBar), findsOneWidget);
     expect(find.textContaining('no-such-tree'), findsOneWidget);
@@ -268,7 +346,7 @@ void main() {
   testWidgets('field errors render under their own field', (tester) async {
     await pumpLoaded(tester);
     await openDisclosure(tester, 'run-setup-folder-options');
-    await openDisclosure(tester, 'run-setup-address-options');
+    await openDisclosure(tester, 'run-setup-options');
     expect(find.text('folder missing'), findsNothing);
 
     controller.state.recordFieldErrors(
@@ -296,7 +374,7 @@ void main() {
   ) async {
     await pumpLoaded(tester);
     await openDisclosure(tester, 'run-setup-folder-options');
-    await openDisclosure(tester, 'run-setup-address-options');
+    await openDisclosure(tester, 'run-setup-options');
 
     controller.state.recordOutcome(const RunSetupStarting());
     await tester.pump();
@@ -348,7 +426,9 @@ void main() {
     expect(startEnabled(tester), isTrue);
   });
 
-  testWidgets('failed: the message sits directly above Start', (tester) async {
+  testWidgets('failed: the message sits directly above the action bar', (
+    tester,
+  ) async {
     await pumpLoaded(tester);
 
     controller.state.recordOutcome(const RunSetupFailed('Could not open /x'));
@@ -358,14 +438,17 @@ void main() {
     final start = tester.getRect(find.byKey(const Key('run-setup-start')));
     final save = tester.getRect(find.byKey(const Key('run-setup-save')));
 
+    // In the action bar, above both exits: the refusal is about the form,
+    // not about either way out of it.
     expect(message.bottom, lessThanOrEqualTo(start.top));
-    expect(message.top, greaterThanOrEqualTo(save.bottom));
+    expect(message.bottom, lessThanOrEqualTo(save.top));
   });
 
   testWidgets('the switch reports to the controller as the user\'s choice', (
     tester,
   ) async {
     await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-options');
 
     await tester.tap(find.byKey(const Key('run-setup-dry-run')));
     await tester.pump();
@@ -414,7 +497,7 @@ void main() {
       'request', (tester) async {
     await pumpLoaded(tester);
     await openDisclosure(tester, 'run-setup-folder-options');
-    await openDisclosure(tester, 'run-setup-address-options');
+    await openDisclosure(tester, 'run-setup-options');
 
     await tester.enterText(
       find.byKey(const Key('run-setup-new-folder')),
@@ -422,11 +505,10 @@ void main() {
     );
     await tester.runAsync(() async {
       await tester.tap(find.byKey(const Key('run-setup-create-folder')));
-      final deadline = Stopwatch()..start();
-      while (controller.state.selectedLocalFolder == null &&
-          deadline.elapsed < const Duration(seconds: 20)) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
+      await settleUntil(
+        () => controller.state.selectedLocalFolder != null,
+        what: 'the created folder to be selected',
+      );
     });
     await tester.pump();
     expect(find.text('notes'), findsOneWidget);
@@ -448,11 +530,13 @@ void main() {
     );
     await tester.runAsync(() async {
       await tester.tap(find.byKey(const Key('run-setup-start')));
-      final deadline = Stopwatch()..start();
-      while (started.isEmpty &&
-          deadline.elapsed < const Duration(seconds: 20)) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
+      // The request lands on `started` in the page's `onStart`, which runs
+      // off the same outcome the controller records — so the view state
+      // going to `RunSetupStarted` is the notification to wait on.
+      await settleUntil(
+        () => controller.state.outcome is RunSetupStarted,
+        what: 'the run to be built',
+      );
     });
     await tester.pump();
 
@@ -485,7 +569,6 @@ void main() {
       await pumpLoaded(tester);
       await tester.runAsync(() async {
         await controller.createLocalFolder('notes');
-        await settle();
       });
       await tester.pump();
 

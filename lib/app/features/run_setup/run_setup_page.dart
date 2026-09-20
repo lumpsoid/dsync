@@ -8,8 +8,16 @@ import 'run_setup_view_state.dart';
 
 /// The Run setup page: pick the two locations a run syncs (SPEC §2, §4.4,
 /// §11.2). Widgets only, per the page role in `app_scope.dart`: a folder
-/// picker, four text fields, a switch, one button, and switches over the
+/// picker, four text fields, a switch, two buttons, and switches over the
 /// rendered [RunSetupPeer] and [RunSetupOutcome].
+///
+/// The layout is the decision order. The two locations a run needs are one
+/// card at the top, at equal weight — neither is optional and neither is a
+/// disclosure. What is optional (the dry-run switch, SPEC §4.4's address
+/// hatch) is folded under a single "Options". The two ways out are pinned
+/// in an action bar so neither scrolls away, with Start filled and Save a
+/// text button beside it; the profile name they both read is a field up in
+/// the form, so it belongs to neither button.
 ///
 /// Opened from a [RunSetupSource] — a device (blank form) or a saved
 /// profile (pre-filled, editable) — and `RunSetupController.load` reads
@@ -143,7 +151,15 @@ class _RunSetupPageState extends State<RunSetupPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Run setup'),
+        // The title says which run this is: the device a blank form syncs
+        // with, or the profile an edit is about to write back over. The
+        // form below carries neither — the device would be a line no one
+        // can act on, and the profile's own name is a field down in it.
+        title: ListenableBuilder(
+          listenable: _controller.state,
+          builder: (context, _) =>
+              Text(_title(_controller.state), overflow: TextOverflow.ellipsis),
+        ),
         actions: [
           // The reachable entry to Diagnostics: the Run page carries the
           // same button, but that page only exists once a run has been
@@ -192,6 +208,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
           RunSetupPeerLoaded(:final name) => _RunSetupForm(
             controller: _controller,
             deviceName: name,
+            editing: _controller.state.prefill != null,
             newFolder: _newFolder,
             remoteRoot: _remoteRoot,
             address: _address,
@@ -207,10 +224,22 @@ class _RunSetupPageState extends State<RunSetupPage> {
   }
 }
 
+/// What the app bar says: the profile being edited, once `load` has read
+/// it; otherwise the device this run syncs with, once it is known.
+String _title(RunSetupViewState state) {
+  final prefill = state.prefill;
+  if (prefill != null) return 'Edit “${prefill.profileName}”';
+  return switch (state.peer) {
+    RunSetupPeerLoaded(:final name) => 'Sync with $name',
+    RunSetupPeerLoading() || RunSetupPeerMissing() => 'Run setup',
+  };
+}
+
 class _RunSetupForm extends StatelessWidget {
   const _RunSetupForm({
     required this.controller,
     required this.deviceName,
+    required this.editing,
     required this.newFolder,
     required this.remoteRoot,
     required this.address,
@@ -223,6 +252,11 @@ class _RunSetupForm extends StatelessWidget {
 
   final RunSetupController controller;
   final String deviceName;
+
+  /// Whether the form was opened over a saved profile. Changes what saving
+  /// is called and says — an edit writes back over the one profile — and
+  /// nothing else: the fields and the rules are the same either way.
+  final bool editing;
   final TextEditingController newFolder;
   final TextEditingController remoteRoot;
   final TextEditingController address;
@@ -236,189 +270,273 @@ class _RunSetupForm extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = controller.state;
     final starting = state.outcome is RunSetupStarting;
-    return ListView(
-      padding: const EdgeInsets.all(16),
+    return Column(
       children: [
-        Text(
-          'Sync with $deviceName',
-          style: Theme.of(context).textTheme.titleLarge,
-        ),
-        const SizedBox(height: 16),
-        _SectionLabel('On this device'),
-        const SizedBox(height: 8),
-        // One card, so the folder reads as a single decision: the dropdown
-        // is the choice, and the two ways of adding a folder to it are a
-        // disclosure under it rather than controls competing with it.
-        Card.outlined(
-          margin: EdgeInsets.zero,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // A plain `DropdownButton` under an `InputDecorator` rather
-                // than a `DropdownButtonFormField`: the form field keeps its
-                // own copy of the selection and would not follow the
-                // controller selecting a folder it just created.
-                InputDecorator(
-                  decoration: InputDecoration(
-                    labelText: 'Folder',
-                    helperText:
-                        "A folder in this app's documents, or one you pick.",
-                    errorText: state.localFolderError,
-                  ),
-                  child: DropdownButton<String>(
-                    key: const Key('run-setup-local-folder'),
-                    value: state.selectedLocalFolder,
-                    isExpanded: true,
-                    underline: const SizedBox.shrink(),
-                    hint: const Text('Pick a folder'),
-                    items: [
-                      for (final folder in state.localFolders)
-                        DropdownMenuItem(
-                          value: folder.path,
-                          child: Text(
-                            folder.label,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                    ],
-                    onChanged: starting ? null : controller.selectLocalFolder,
-                  ),
-                ),
-                _Disclosure(
-                  key: const Key('run-setup-folder-options'),
-                  title: 'Add another folder',
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              // The required pair, as one card with two halves: the run is
+              // two locations, and they are the only things the form cannot
+              // do without. Everything optional is below it, behind one
+              // disclosure, so the card is the whole of what must be
+              // decided.
+              Card.outlined(
+                margin: EdgeInsets.zero,
+                child: Column(
                   children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: OutlinedButton.icon(
-                        key: const Key('run-setup-pick-folder'),
-                        onPressed: starting ? null : onPickFolder,
-                        icon: const Icon(Icons.folder_open),
-                        label: const Text('Pick a folder on this device'),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            key: const Key('run-setup-new-folder'),
-                            controller: newFolder,
-                            enabled: !starting,
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _SectionLabel('On this device'),
+                          const SizedBox(height: 8),
+                          // A plain `DropdownButton` under an
+                          // `InputDecorator` rather than a
+                          // `DropdownButtonFormField`: the form field keeps
+                          // its own copy of the selection and would not
+                          // follow the controller selecting a folder it
+                          // just created.
+                          InputDecorator(
                             decoration: InputDecoration(
-                              labelText: 'New folder',
-                              errorText: state.newFolderError,
+                              labelText: 'Folder',
+                              errorText: state.localFolderError,
+                            ),
+                            child: DropdownButton<String>(
+                              key: const Key('run-setup-local-folder'),
+                              value: state.selectedLocalFolder,
+                              isExpanded: true,
+                              underline: const SizedBox.shrink(),
+                              hint: const Text('Pick a folder'),
+                              items: [
+                                for (final folder in state.localFolders)
+                                  DropdownMenuItem(
+                                    value: folder.path,
+                                    child: Text(
+                                      folder.label,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                              ],
+                              onChanged: starting
+                                  ? null
+                                  : controller.selectLocalFolder,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton(
-                          key: const Key('run-setup-create-folder'),
-                          onPressed: starting ? null : onCreateFolder,
-                          child: const Text('Create'),
-                        ),
-                      ],
+                          // In the open, not folded away: a folder outside
+                          // this app's documents directory — on Android,
+                          // any folder a file manager can also see — can
+                          // only get into the list this way, so it is not
+                          // an escape hatch but the usual second choice.
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              key: const Key('run-setup-pick-folder'),
+                              onPressed: starting ? null : onPickFolder,
+                              icon: const Icon(Icons.folder_open),
+                              label: const Text('Pick a folder…'),
+                            ),
+                          ),
+                          _Disclosure(
+                            key: const Key('run-setup-folder-options'),
+                            title: 'Create a folder',
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      key: const Key('run-setup-new-folder'),
+                                      controller: newFolder,
+                                      enabled: !starting,
+                                      decoration: InputDecoration(
+                                        labelText: 'New folder',
+                                        helperText:
+                                            "In this app's own documents.",
+                                        errorText: state.newFolderError,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  TextButton(
+                                    key: const Key('run-setup-create-folder'),
+                                    onPressed: starting ? null : onCreateFolder,
+                                    child: const Text('Create'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _SectionLabel('On $deviceName'),
+                          const SizedBox(height: 8),
+                          TextField(
+                            key: const Key('run-setup-remote-root'),
+                            controller: remoteRoot,
+                            enabled: !starting,
+                            onChanged: controller.remoteRootChanged,
+                            decoration: InputDecoration(
+                              labelText: 'Folder',
+                              hintText: '~/notes',
+                              helperText:
+                                  'Exactly as granted there with `dsync pair '
+                                  'grant`.',
+                              helperMaxLines: 4,
+                              errorText: state.remoteRootError,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 24),
-        _SectionLabel('On $deviceName'),
-        const SizedBox(height: 8),
-        TextField(
-          key: const Key('run-setup-remote-root'),
-          controller: remoteRoot,
-          enabled: !starting,
-          onChanged: controller.remoteRootChanged,
-          decoration: InputDecoration(
-            labelText: 'Folder on $deviceName',
-            hintText: '~/notes',
-            helperText: 'Exactly as granted there with `dsync pair grant`.',
-            helperMaxLines: 4,
-            errorText: state.remoteRootError,
-          ),
-        ),
-        _Disclosure(
-          key: const Key('run-setup-address-options'),
-          title: 'Reach $deviceName at another address',
-          children: [
-            TextField(
-              key: const Key('run-setup-address'),
-              controller: address,
-              enabled: !starting,
-              decoration: InputDecoration(
-                labelText: 'Address (optional)',
-                hintText: 'host or host:port',
-                helperText:
-                    'Leave empty to use the address $deviceName was last '
-                    'reached at.',
-                helperMaxLines: 3,
-                errorText: state.addressError,
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        SwitchListTile(
-          key: const Key('run-setup-dry-run'),
-          title: const Text('Dry run'),
-          subtitle: const Text('Show the plan, apply nothing.'),
-          value: state.dryRun,
-          onChanged: starting ? null : controller.setDryRun,
-        ),
-        const SizedBox(height: 24),
-        TextField(
-          key: const Key('run-setup-profile-name'),
-          controller: profileName,
-          enabled: !starting,
-          decoration: const InputDecoration(
-            labelText: 'Save as profile (optional)',
-            helperText:
-                'Name this run and it lands on the home list, ready to '
-                're-run with no typing.',
-            helperMaxLines: 2,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: OutlinedButton(
-            key: const Key('run-setup-save'),
-            onPressed: starting ? null : onSave,
-            child: const Text('Save without starting'),
-          ),
-        ),
-        const SizedBox(height: 24),
-        _OutcomeLine(state.outcome),
-        FilledButton(
-          key: const Key('run-setup-start'),
-          onPressed: starting ? null : onStart,
-          child: starting
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  // The spinner replaces the button's label while the run
-                  // is starting, so it has to say what the button now is.
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    semanticsLabel: 'Starting the run',
+              const SizedBox(height: 24),
+              // The name sits with the fields it names, not with the
+              // buttons: it is part of what gets saved, and both ways out
+              // of the page read it.
+              TextField(
+                key: const Key('run-setup-profile-name'),
+                controller: profileName,
+                enabled: !starting,
+                decoration: InputDecoration(
+                  labelText: editing
+                      ? 'Profile name'
+                      : 'Save as profile (optional)',
+                  helperText: editing
+                      ? 'Saving updates this profile on the home list.'
+                      : 'Name this run and it lands on the home list, ready '
+                            'to re-run with no typing.',
+                  helperMaxLines: 2,
+                ),
+              ),
+              const SizedBox(height: 16),
+              _Disclosure(
+                key: const Key('run-setup-options'),
+                title: 'Options',
+                children: [
+                  SwitchListTile(
+                    key: const Key('run-setup-dry-run'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Dry run'),
+                    subtitle: const Text('Show the plan, apply nothing.'),
+                    value: state.dryRun,
+                    onChanged: starting ? null : controller.setDryRun,
                   ),
-                )
-              : const Text('Start'),
+                  const SizedBox(height: 8),
+                  TextField(
+                    key: const Key('run-setup-address'),
+                    controller: address,
+                    enabled: !starting,
+                    decoration: InputDecoration(
+                      labelText: 'Address (optional)',
+                      hintText: 'host or host:port',
+                      helperText:
+                          'Leave empty to use the address $deviceName was '
+                          'last reached at.',
+                      helperMaxLines: 3,
+                      errorText: state.addressError,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        _ActionBar(
+          outcome: state.outcome,
+          starting: starting,
+          saveLabel: editing ? 'Save changes' : 'Save profile',
+          onSave: onSave,
+          onStart: onStart,
         ),
       ],
     );
   }
 }
 
-/// A required section's heading: the two sections the form cannot do
-/// without carry more weight than the optional rows inside them.
+/// The two ways out, pinned under the form so neither scrolls away, with
+/// the whole-form refusal above them.
+///
+/// Start is the page's one filled button and Save is a text button beside
+/// it: both exits are always reachable, but only one of them is what the
+/// page is for. The name they both read is up in the form, under its own
+/// label, rather than sitting next to one of them and looking like that
+/// button's field.
+class _ActionBar extends StatelessWidget {
+  const _ActionBar({
+    required this.outcome,
+    required this.starting,
+    required this.saveLabel,
+    required this.onSave,
+    required this.onStart,
+  });
+
+  final RunSetupOutcome outcome;
+  final bool starting;
+  final String saveLabel;
+  final VoidCallback onSave;
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 3,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _OutcomeLine(outcome),
+              Row(
+                children: [
+                  TextButton(
+                    key: const Key('run-setup-save'),
+                    onPressed: starting ? null : onSave,
+                    child: Text(saveLabel),
+                  ),
+                  const Spacer(),
+                  FilledButton(
+                    key: const Key('run-setup-start'),
+                    onPressed: starting ? null : onStart,
+                    child: starting
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            // The spinner replaces the button's label while
+                            // the run is starting, so it has to say what the
+                            // button now is.
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              semanticsLabel: 'Starting the run',
+                            ),
+                          )
+                        : const Text('Start'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A required section's heading: the two halves of the pair card carry more
+/// weight than the optional rows below them.
 class _SectionLabel extends StatelessWidget {
   const _SectionLabel(this.text);
 
@@ -463,7 +581,7 @@ class _Disclosure extends StatelessWidget {
   }
 }
 
-/// The line above the button for the outcome that has one. Started and
+/// The line above the buttons for the outcome that has one. Started and
 /// saved show nothing: the page is leaving.
 class _OutcomeLine extends StatelessWidget {
   const _OutcomeLine(this.outcome);
@@ -474,7 +592,7 @@ class _OutcomeLine extends StatelessWidget {
   Widget build(BuildContext context) {
     return switch (outcome) {
       RunSetupFailed(:final message) => Padding(
-        padding: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.only(bottom: 12),
         child: Text(
           message,
           style: TextStyle(color: Theme.of(context).colorScheme.error),

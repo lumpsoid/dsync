@@ -51,10 +51,16 @@ final class RunSetupPeerLoading extends RunSetupPeer {
   const RunSetupPeerLoading();
 }
 
-/// The device is paired. Nothing here says whether the root about to be
-/// typed is granted: only the desktop knows, and SPEC §4.4 has it answer
-/// uninformatively — `remoteRootNotGrantedMessage`, off that refusal, is
-/// where the head learns it.
+/// The device is paired *and* the visit has finished loading: recorded by
+/// `RunSetupController.load` only once the local folders are listed, since
+/// this is what the page renders the whole form on. "Loaded" means the form
+/// is ready, so there is no state where it is rendered over data still
+/// being read.
+///
+/// Nothing here says whether the root about to be typed is granted: only
+/// the desktop knows, and SPEC §4.4 has it answer uninformatively —
+/// `remoteRootNotGrantedMessage`, off that refusal, is where the head
+/// learns it.
 final class RunSetupPeerLoaded extends RunSetupPeer {
   const RunSetupPeerLoaded({required this.name});
 

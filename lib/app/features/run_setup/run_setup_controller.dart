@@ -187,8 +187,14 @@ class RunSetupController {
       return;
     }
     _peerDeviceId = device.deviceId;
-    state.recordPeer(RunSetupPeerLoaded(name: device.name));
+    // Last, after the folders are listed: [RunSetupPeerLoaded] is what the
+    // page renders the whole form on, so recording it earlier would claim
+    // the form was ready while its only choice was still being read — a
+    // frame of empty dropdown, and a "loaded" state that did not mean
+    // loaded. Nothing is in flight once this lands, which is also what lets
+    // a caller treat the state as the end of the visit's loading.
     await _listLocalFolders(selected: profileLocalRoot);
+    state.recordPeer(RunSetupPeerLoaded(name: device.name));
   }
 
   /// Picks [path] from `RunSetupViewState.localFolders`, or nothing.
