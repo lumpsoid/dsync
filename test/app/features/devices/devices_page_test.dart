@@ -25,6 +25,7 @@ void main() {
   final devicesOpened = <String>[];
   var pairOpened = 0;
   var thisDeviceOpened = 0;
+  var sharedFoldersOpened = 0;
 
   setUp(() {
     app = AppController(
@@ -41,6 +42,7 @@ void main() {
     devicesOpened.clear();
     pairOpened = 0;
     thisDeviceOpened = 0;
+    sharedFoldersOpened = 0;
   });
 
   // Scopes are process-global: reset both so a pin cannot leak into the
@@ -83,6 +85,7 @@ void main() {
         onOpenRunSetup: opened.add,
         onOpenPair: () => pairOpened++,
         onOpenThisDevice: () => thisDeviceOpened++,
+        onOpenSharedFolders: () => sharedFoldersOpened++,
       ),
     ),
   );
@@ -256,6 +259,17 @@ void main() {
     await tester.tap(find.byKey(const Key('devices-open-this-device')));
 
     expect(thisDeviceOpened, 1);
+  });
+
+  testWidgets('the app bar opens Shared folders', (tester) async {
+    ready();
+    await pumpPage(tester);
+
+    // The list says which devices are paired; that page says what each of
+    // them may actually reach here.
+    await tester.tap(find.byKey(const Key('devices-open-shared-folders')));
+
+    expect(sharedFoldersOpened, 1);
   });
 
   testWidgets('the row does not offer revoke', (tester) async {

@@ -1,5 +1,4 @@
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 
 import '../../app_controller.dart';
@@ -8,6 +7,7 @@ import '../../peer_address_text.dart';
 import '../run_setup/folder_picker.dart';
 import 'device_detail_view_state.dart';
 import 'peer_probe.dart';
+import 'root_path_expansion.dart';
 
 /// Input methods of the Device page: one paired device, and everything this
 /// host decides about it (SPEC §4.4, §13) — what it is called here, which
@@ -226,11 +226,11 @@ class DeviceDetailController {
   /// Authorizes this device to reach [rawPath] on this host — pairing's
   /// second step (SPEC §4.4), the same write `dsync pair grant` makes.
   ///
-  /// [rawPath] is expanded exactly as that command expands it
-  /// (`Location.parse` then `expandedPath`) so the stored string is the one
-  /// a `hello` handler compares a requested root against byte for byte; a
-  /// path that will not parse is a field error, not a refusal from the
-  /// store.
+  /// [rawPath] is expanded exactly as that command expands it, through
+  /// [expandRootPath] — the one rule, shared with the host-level Shared
+  /// folders page — so the stored string is the one a `hello` handler
+  /// compares a requested root against byte for byte; a path that will not
+  /// parse is a field error, not a refusal from the store.
   Future<void> grantRoot(String rawPath) async {
     final id = _deviceId;
     if (id == null) return;
@@ -241,7 +241,7 @@ class DeviceDetailController {
     }
     final String expanded;
     try {
-      expanded = Location.parse(trimmed).expandedPath(environment);
+      expanded = expandRootPath(trimmed, environment);
     } on FormatException catch (e) {
       state.recordOutcome(DeviceDetailFailed('Not a valid path: ${e.message}'));
       return;

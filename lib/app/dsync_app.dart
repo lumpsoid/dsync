@@ -11,6 +11,7 @@ import 'features/pair/pair_page.dart';
 import 'features/profiles/profiles_page.dart';
 import 'features/run/run_page.dart';
 import 'features/run_setup/run_setup_page.dart';
+import 'features/shared_folders/shared_folders_page.dart';
 import 'features/this_device/this_device_page.dart';
 import 'features/run_setup/run_setup_view_state.dart';
 import 'run_request.dart';
@@ -120,6 +121,7 @@ class _BootstrapGate extends StatelessWidget {
               _openRunSetup(context, RunSetupFromDevice(deviceId)),
           onOpenPair: () => _openPair(context),
           onOpenThisDevice: () => _openThisDevice(context),
+          onOpenSharedFolders: () => _openSharedFolders(context),
         ),
       ),
     );
@@ -144,6 +146,16 @@ class _BootstrapGate extends StatelessWidget {
   Future<void> _openThisDevice(BuildContext context) {
     return Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => const ThisDevicePage()));
+  }
+
+  /// What this host shares and with whom — the device list inverted, one
+  /// row per folder. A leaf: it takes no callbacks because nothing leads
+  /// anywhere from it, and it holds no id because the page is about this
+  /// host rather than any one peer.
+  Future<void> _openSharedFolders(BuildContext context) {
+    return Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const SharedFoldersPage()),
+    );
   }
 
   /// The Sync history page. A leaf: it takes no callbacks because nothing

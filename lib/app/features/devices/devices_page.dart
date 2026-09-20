@@ -14,14 +14,14 @@ import 'devices_scope.dart';
 /// notifier — the application state for the list and the gate, the view
 /// state for this page's own error line.
 ///
-/// [onOpenDevice], [onOpenRunSetup], [onOpenPair] and [onOpenThisDevice]
-/// are the seams to the features a tap leads to: the device's own page for
-/// managing it, Run setup for syncing with it, Pair from either the app-bar
-/// action or the empty state's button, and this installation's own identity
-/// from the app bar. Each takes the destination as an id (or nothing)
-/// rather than a row — the destination loads what it needs — and all are
-/// the entrypoint's to wire to routes, so this page needs no `Navigator` of
-/// its own.
+/// [onOpenDevice], [onOpenRunSetup], [onOpenPair], [onOpenThisDevice] and
+/// [onOpenSharedFolders] are the seams to the features a tap leads to: the
+/// device's own page for managing it, Run setup for syncing with it, Pair
+/// from either the app-bar action or the empty state's button, and this
+/// installation's own identity and everything it shares from the app bar.
+/// Each takes the destination as an id (or nothing) rather than a row — the
+/// destination loads what it needs — and all are the entrypoint's to wire
+/// to routes, so this page needs no `Navigator` of its own.
 class DevicesPage extends StatelessWidget {
   const DevicesPage({
     super.key,
@@ -29,6 +29,7 @@ class DevicesPage extends StatelessWidget {
     required this.onOpenRunSetup,
     required this.onOpenPair,
     required this.onOpenThisDevice,
+    required this.onOpenSharedFolders,
   });
 
   /// Opens the tapped device's own page — its certificate, the folders it
@@ -46,6 +47,13 @@ class DevicesPage extends StatelessWidget {
   /// shown and its certificate renewed.
   final VoidCallback onOpenThisDevice;
 
+  /// Opens the Shared folders page: this list inverted, one row per folder
+  /// this host serves and the devices allowed to ask for it. Reached from
+  /// here because it answers the question the list next to it raises — the
+  /// rows say which devices are paired, that page says what each of them
+  /// may actually reach.
+  final VoidCallback onOpenSharedFolders;
+
   @override
   Widget build(BuildContext context) {
     final controller = devicesScope.controller;
@@ -53,6 +61,12 @@ class DevicesPage extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Devices'),
         actions: [
+          IconButton(
+            key: const Key('devices-open-shared-folders'),
+            icon: const Icon(Icons.folder_shared_outlined),
+            tooltip: 'Shared folders',
+            onPressed: onOpenSharedFolders,
+          ),
           IconButton(
             key: const Key('devices-open-this-device'),
             icon: const Icon(Icons.badge_outlined),
