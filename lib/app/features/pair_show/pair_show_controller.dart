@@ -19,7 +19,7 @@ import 'pairing_offer.dart';
 /// with the address and port it does not decide left to the function itself.
 ///
 /// A callback rather than an interface, for the reason [EnrolWithPeer] in
-/// `pair_controller.dart` gives: the real one binds a `SecureServerSocket`
+/// `pair_controller.dart` gives: the real one binds a `RawServerSocket`
 /// on every interface, and a one-method interface over a single static
 /// method would be a rename of it. A test hands in a closure that binds the
 /// same real listener on the loopback interface instead.

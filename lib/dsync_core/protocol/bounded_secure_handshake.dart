@@ -8,11 +8,13 @@ import 'dart:io';
 /// *detaches* the raw socket from the [Socket] it is handed (`dart:io`'s
 /// `_Socket._detachRaw`, which nulls that object's own `_raw`), so from the
 /// moment the upgrade starts the caller has no handle left to end the
-/// connection with, and nothing in `dart:io` puts a clock on a handshake. A
-/// listener that keeps the [RawSocket] itself — which is what
-/// [RawSecureSocket.secureServer] lets it do — keeps that handle for the
-/// whole handshake, at every stall point rather than only before the first
-/// byte.
+/// connection with, and no `dart:io` API puts a clock on a server-side
+/// handshake of its own accord. The clock has to be imposed from outside —
+/// which is what this function is — and imposing one needs a handle to
+/// impose it through. A listener that keeps the [RawSocket] itself — which
+/// is what [RawSecureSocket.secureServer] lets it do — keeps that handle
+/// for the whole handshake, at every stall point rather than only before
+/// the first byte.
 ///
 /// **Why [SocketDirection.receive] and not [RawSocket.close].** Settled off
 /// the wire and off the API, in
@@ -97,12 +99,12 @@ class HandshakeDeadlineExceededException implements Exception {
 /// The mirror of [secureServerWithin], and for the same reason:
 /// [SecureSocket.connect] dials and upgrades in one step, detaching the raw
 /// socket from the [Socket] it made, so a caller that gives up on the
-/// handshake has no handle left to end the connection with and nothing in
-/// `dart:io` puts a clock on it. A `.timeout()` around the dial abandons the
-/// future, it does not cancel the work behind it: the descriptor is then held
-/// until the *peer* hangs up, which a peer that stalls on purpose never does.
-/// Measured at twenty leaked descriptors over twenty dials in
-/// `test/dsync_core/protocol/connect_secure_leak_test.dart`.
+/// handshake has no handle left to end the connection with, and no `dart:io`
+/// API puts a clock on that handshake for it. A `.timeout()` around the dial
+/// abandons the future, it does not cancel the work behind it: the
+/// descriptor is then held until the *peer* hangs up, which a peer that
+/// stalls on purpose never does. Measured at twenty leaked descriptors over
+/// twenty dials in `test/dsync_core/protocol/connect_secure_leak_test.dart`.
 ///
 /// So the caller dials the [RawSocket] itself, keeps it, and hands it here —
 /// which leaves something to dispose of at every stall point of the

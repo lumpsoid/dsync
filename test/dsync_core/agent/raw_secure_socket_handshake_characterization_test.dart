@@ -37,14 +37,15 @@ import 'package:test/test.dart';
 ///   (`secure_socket.dart:783`).
 ///
 /// So `shutdown(receive)` is the complete disposal, and it is complete at
-/// every point a peer can stall at — including the one
-/// `AgentListener._secureServerWithin`'s pre-upgrade read cannot bound at
-/// all: a peer that sends a full, valid ClientHello and then stops.
+/// every point a peer can stall at — including the one the workaround this
+/// replaced, a read of the peer's first bytes before the upgrade, could not
+/// bound at all: a peer that sends a full, valid ClientHello and then stops.
 ///
 /// Why it matters: a server that cannot dispose of a stalled handshake pays
-/// for every such peer until the process ends. These invariants are what a
-/// move from `SecureSocket.secureServer` to `RawSecureSocket.secureServer`
-/// rests on, so this file is expected to start failing if a future SDK
+/// for every such peer until the process ends. These invariants are what
+/// dsync's move from `SecureSocket.secureServer` to
+/// `RawSecureSocket.secureServer` rests on (task 08a512), so this file is
+/// expected to start failing if a future SDK
 /// detaches the raw socket here too, or stops delivering `readClosed` into
 /// the handshake. Either change would invalidate that move, and finding out
 /// from a red test is the point.
@@ -165,8 +166,8 @@ void main() {
   }
 
   /// A peer that sends a genuine, complete ClientHello and then stops — the
-  /// case `AgentListener._secureServerWithin`'s first-bytes read cannot
-  /// bound, because by the time those bytes arrive the socket is gone.
+  /// case the first-bytes read this replaced could not bound, because by the
+  /// time those bytes arrive the socket is gone.
   ///
   /// The flight is captured off a real `SecureSocket.connect` against a plain
   /// `ServerSocket` rather than hand-rolled, so it is well-formed by

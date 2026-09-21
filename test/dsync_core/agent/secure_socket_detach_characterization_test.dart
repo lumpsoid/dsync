@@ -9,9 +9,12 @@ import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:test/test.dart';
 
 /// Characterizes `dart:io`, not dsync: the point at which a server can no
-/// longer close a TLS connection it accepted, which is why
-/// `AgentListener._secureServerWithin` reads the peer's first bytes *before*
-/// upgrading instead of putting a plain `.timeout()` on the upgrade.
+/// longer close a TLS connection it accepted, which is why no dsync listener
+/// hands a `Socket` to `SecureSocket.secureServer` at all. They keep the
+/// `RawSocket` and upgrade it through `secureServerWithin`
+/// (`lib/dsync_core/protocol/bounded_secure_handshake.dart`), which is what
+/// leaves a handle to end a stalled handshake with — a plain `.timeout()` on
+/// this call has nothing left to act on.
 ///
 /// **What was verified in the SDK on disk.**
 /// `dart-sdk/lib/io/secure_socket.dart:205` — `SecureSocket.secureServer`
@@ -32,9 +35,9 @@ import 'package:test/test.dart';
 ///
 /// This test is expected to start failing if a future SDK puts a clock on the
 /// server-side handshake or leaves the socket closable across it. That would
-/// be good news: it means the second case can be bounded directly, and the
-/// pre-upgrade read and the ceiling on abandoned connections in
-/// `agent_listener.dart` can both go.
+/// be good news: it would retire `bounded_secure_handshake.dart`'s reason for
+/// holding a `RawSocket` across the upgrade rather than a `Socket`. The
+/// deadline itself would stay dsync's to choose either way.
 void main() {
   late DeviceIdentity identity;
   late SecurityContext context;

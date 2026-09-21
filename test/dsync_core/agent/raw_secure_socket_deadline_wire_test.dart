@@ -240,7 +240,8 @@ void main() {
         Ending.fin,
         reason:
             'and then, at the deadline, ended the connection cleanly — which '
-            'is the whole point: this is the stall that is un-closable today',
+            'is the whole point: this is the stall that is un-closable once '
+            'the raw socket has been handed to a Socket-based upgrade',
       );
     },
   );

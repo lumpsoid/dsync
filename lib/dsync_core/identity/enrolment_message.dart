@@ -127,9 +127,9 @@ Map<String, dynamic> _decodeMessage(Uint8List bytes) =>
 /// headroom for anything this protocol will ever legitimately carry. It is a
 /// constant rather than a parameter on purpose: the read it guards happens
 /// *before* the peer has been authenticated by anything (`EnrolmentListener`
-/// leaves `requireClientCertificate` at false, and the token is only checked
-/// once a whole message has been read), so there is no caller who has earned
-/// the right to raise it and no deployment that needs it raised.
+/// passes `requireClientCertificate: false` deliberately, and the token is
+/// only checked once a whole message has been read), so there is no caller
+/// who has earned the right to raise it and no deployment that needs it raised.
 const int maxEnrolmentMessageBytes = 1024 * 1024;
 
 /// Reads exactly one [_encodeMessage]-shaped message off [input], buffering
