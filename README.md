@@ -37,6 +37,7 @@ dsync sync <locA> <locB>          # ad-hoc, no profile
 dsync status <profile>            # scan + reconcile + print plan, apply nothing
 dsync agent --stdio               # started by ssh on the remote host
 dsync agent --listen <socket>     # bind a unix socket and serve it
+dsync agent --serve               # serve paired devices over the network; --bind/--port to place it
 dsync pair show --name <name>     # show this device's payload, wait for a peer, record it as <name>
 dsync pair accept --name <name> <payload>  # pair with the device that payload came from, as <name>
 dsync pair list                   # paired devices; --json for a script
@@ -114,6 +115,72 @@ before anything moves. `--dry-run` and `status` show the plan and apply
 nothing; `--batch` applies without prompting but never resolves a conflict;
 `--json` writes JSON Lines to stdout. See SPEC §11.2 for the full flag list
 and §11.5 for the exit codes.
+
+## Exposing an agent beyond the LAN
+
+`dsync agent --serve` binds every IPv4 interface by default — `--bind` defaults
+to `0.0.0.0` — because the point of that transport is a peer on another host.
+On a machine with a public address, that means the port (28771 unless `--port`
+says otherwise) is open to the internet, and the thing standing in front of it
+is the pinned mutual TLS handshake: a device that is not in `dsync pair list`
+is refused during that handshake, before it reaches the version handshake,
+`hello`, or any frame parser (SPEC §4.4).
+
+**An HTTP reverse proxy cannot front it.** nginx `proxy_pass`, haproxy in
+`mode http`, Caddy, Traefik — anything that terminates TLS breaks this
+transport outright, and it will look like a certificate bug rather than a
+configuration one. The authenticated fact is "the peer on *this socket*
+presented key X", and terminating TLS destroys it: the proxy has no private
+key to present onward on the client's behalf, and a header asserting the
+device id is only the proxy's word for it (SPEC §4.4).
+
+What does work is L4 passthrough, which terminates nothing:
+
+```nginx
+stream {
+  server {
+    listen 28771;
+    proxy_pass 10.0.0.5:28771;
+  }
+}
+```
+
+haproxy's `mode tcp` is the same arrangement. That is also where per-source
+rate limiting belongs. dsync bounds an unauthenticated connection with a
+deadline and a counter rather than a rate limiter, deliberately: a rate limiter
+needs a key, and per-IP is wrong behind NAT and wrong for an IPv6 /64 (SPEC
+§4.4). The passthrough layer knows the address and the policy there is yours.
+
+**Do not forward the pairing port.** `dsync pair show` binds a *separate*
+listener, on an ephemeral port and — by default — on every IPv4 interface too,
+and it exists only for the duration of that one pairing: it is off the rest of
+the time. Forwarding the serve port alone leaves it unreachable from outside,
+which is the arrangement you want. Pair over a LAN or a tunnel, or paste the
+payload text between two terminals, and leave the enrolment endpoint off the
+internet.
+
+**The recommendation: put the serve port on an overlay network.** WireGuard,
+Tailscale or Nebula cost this project no code and are your dependency rather
+than dsync's (SPEC §16), and `--bind` is what attaches dsync to one:
+
+```sh
+dsync agent --serve --bind 10.8.0.3             # the tunnel's own address
+dsync pair show --name laptop --bind 10.8.0.3
+```
+
+A non-wildcard `--bind` is also what `pair show` advertises in the payload, so
+the peer dials the tunnel address with no `--advertise` needed (SPEC §11.1).
+Bound there, the listener answers on that interface only, and the mutual TLS
+is defence in depth rather than the only layer. A `--bind` that cannot be bound
+is fatal and names the address it was given — there is no fallback to another
+one, so a tunnel that is down shows up as an agent that did not start, not as
+an agent quietly serving the internet.
+
+SPEC §16 orders the reachability answers this project endorses — a direct route
+first (IPv6, a LAN, a forwarded port), then your own overlay network. That
+ordering is about what it takes to reach a host at all, not about how exposed
+the result is: direct exposure is defensible, and the handshake is the gate it
+claims to be, but on a public-facing host the overlay is the better default.
 
 ## Layout
 
