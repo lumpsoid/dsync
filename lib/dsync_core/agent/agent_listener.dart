@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/agent_server.dart';
@@ -13,9 +12,14 @@ import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
+import 'package:dsync/dsync_core/protocol/bounded_secure_handshake.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
+import 'package:dsync/dsync_core/protocol/raw_secure_byte_socket.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
+
+export 'package:dsync/dsync_core/protocol/bounded_secure_handshake.dart'
+    show HandshakeDeadlineExceededException;
 
 /// What [AgentListener] does with a session that ended by throwing — a
 /// version mismatch, a `hello` that named a replica this host cannot serve
@@ -92,7 +96,7 @@ typedef SessionErrorHandler = void Function(
 /// (see [bindSecure]'s doc comment on the two layers).
 class AgentListener {
   /// How long an accepted [bindSecure] connection has to finish its TLS
-  /// handshake before its socket is destroyed (task 224ffa).
+  /// handshake before its socket is closed (task 224ffa, task 08a512).
   ///
   /// The same shape, and the same injectability, as
   /// [IdleDeadlineChannel.defaultDeadline]: a named constant for the default
@@ -116,28 +120,6 @@ class AgentListener {
   /// legitimate number in flight at once is one.
   static const defaultMaxUnauthenticatedConnections = 16;
 
-  /// How many sockets this listener may be holding that it can no longer
-  /// close before it stops accepting altogether (task 224ffa).
-  ///
-  /// A peer whose handshake stalls *after* `dart:io` has taken its socket
-  /// over cannot be destroyed from here at all (see [_secureServerWithin]),
-  /// so it is released from [defaultMaxUnauthenticatedConnections] — leaving
-  /// it there would let a handful of the cheapest connections an attacker can
-  /// make wedge this listener until the process restarts — and counted here
-  /// instead.
-  ///
-  /// **What that buys and what it costs, plainly.** File descriptors stay
-  /// bounded: an abandoned socket is one of at most this many. Service
-  /// survives a handful of stalled peers, because they no longer occupy the
-  /// in-flight cap. What it does not buy is immunity: an attacker who can
-  /// keep opening connections and stalling them mid-handshake can still,
-  /// eventually, stop this listener accepting — at 256 un-closable sockets
-  /// rather than at 16. That is roughly an order of magnitude above the
-  /// in-flight cap, and still far below any sane descriptor limit. The only
-  /// real fix is an SDK that puts a clock on a server-side handshake, or an
-  /// L4 proxy in front that owns the address.
-  static const defaultMaxAbandonedConnections = 256;
-
   final SessionErrorHandler _onSessionError;
 
   /// How many accepted connections are past accept and not yet resolved to a
@@ -146,13 +128,6 @@ class AgentListener {
   /// `maxUnauthenticatedConnections` before anything expensive happens (see
   /// [_upgradeAndServe]).
   int _unauthenticatedConnections = 0;
-
-  /// How many sockets this listener is holding that it cannot close, because
-  /// their handshake stalled past the point `dart:io` took them over —
-  /// compared against `maxAbandonedConnections` at accept, and decremented
-  /// only if such a handshake does eventually resolve (see
-  /// [_secureServerWithin]).
-  int _abandonedConnections = 0;
 
   /// Where a served session's per-step `writeFile` totals are read from when
   /// its run ends (SPEC §17) — passed straight to [AgentServer.serve], which
@@ -176,7 +151,7 @@ class AgentListener {
   }
 
   AgentListener._secure(
-    ServerSocket server,
+    RawServerSocket server,
     DeviceIdentity ownIdentity,
     Agent Function(ReplicaSpec spec) buildAgent,
     this._onSessionError,
@@ -185,7 +160,6 @@ class AgentListener {
     Map<String, String> environment,
     Duration handshakeDeadline,
     int maxUnauthenticatedConnections,
-    int maxAbandonedConnections,
   ) : _closeServer = server.close,
       _boundAddress = '${server.address.address}:${server.port}' {
     // One cache per listener, not one per connection: it is what makes an
@@ -202,7 +176,6 @@ class AgentListener {
         environment,
         handshakeDeadline,
         maxUnauthenticatedConnections,
-        maxAbandonedConnections,
       ),
       onError: _onSessionError,
     );
@@ -245,7 +218,7 @@ class AgentListener {
   /// nothing to say about a peer on another host.
   ///
   /// **The gate, in two layers, neither optional.** Each accepted connection
-  /// is upgraded with [SecureSocket.secureServer] and a [SecurityContext]
+  /// is upgraded with [RawSecureSocket.secureServer] and a [SecurityContext]
   /// holding [ownIdentity]'s certificate and key as this listener's own
   /// credential, `requireClientCertificate: true` so an anonymous peer never
   /// completes a handshake at all, and — this is the part that is easy to get
@@ -267,8 +240,9 @@ class AgentListener {
   /// currently paired device's certificate apart from another's.
   ///
   /// **The trust anchors are as fresh as the paired-device set, because they
-  /// are rebuilt from it per connection.** This binds a plain [ServerSocket]
-  /// and does the TLS accept itself, in [_upgradeAndServe], reading
+  /// are rebuilt from it per connection.** This binds a plain
+  /// [RawServerSocket] and does the TLS accept itself, in
+  /// [_upgradeAndServe], reading
   /// [pairedDeviceStore] anew for every accepted socket and building that
   /// connection's [SecurityContext] from what the store holds at that
   /// moment. `setTrustedCertificatesBytes` has no "take one back, later"
@@ -307,17 +281,16 @@ class AgentListener {
   /// proceeds.
   ///
   /// **The pre-authentication phase is bounded in both time and number (task
-  /// 224ffa).** A peer that completes TCP and then stalls mid-handshake costs
-  /// a socket and its BoringSSL state for as long as it cares to hold them,
-  /// and nothing above counts how many such peers there are. So
-  /// [_secureServerWithin] destroys a connection that has not got its
-  /// handshake under way within [handshakeDeadline], and [_upgradeAndServe]
-  /// refuses one outright, before the store read, once
-  /// [maxUnauthenticatedConnections] are already in that phase — or once
-  /// [maxAbandonedConnections] sockets are already held by handshakes
-  /// `dart:io` will not let this close (see [_secureServerWithin] for why
-  /// those are counted apart). None is a policy knob: the defaults sit
-  /// orders of magnitude above what a real peer needs (see the constants
+  /// 224ffa, task 08a512).** A peer that completes TCP and then stalls
+  /// mid-handshake costs a socket and its BoringSSL state for as long as it
+  /// cares to hold them, and nothing above counts how many such peers there
+  /// are. So [secureServerWithin] closes a connection whose handshake has
+  /// not finished within [handshakeDeadline] — at *every* stall point, which
+  /// is what binding a [RawServerSocket] and keeping the [RawSocket] across
+  /// the upgrade buys — and [_upgradeAndServe] refuses one outright, before
+  /// the store read, once [maxUnauthenticatedConnections] are already in
+  /// that phase. Neither is a policy knob: the defaults sit orders of
+  /// magnitude above what a real peer needs (see the constants
   /// themselves). A rate limiter was considered and rejected — it needs a
   /// key, and per-IP is wrong behind NAT and wrong for an IPv6 /64, and its
   /// own table is a memory-growth vector; a counter and a timer have no key,
@@ -356,9 +329,8 @@ class AgentListener {
     WritePathStats? Function(Agent agent)? writePath,
     Duration handshakeDeadline = defaultHandshakeDeadline,
     int maxUnauthenticatedConnections = defaultMaxUnauthenticatedConnections,
-    int maxAbandonedConnections = defaultMaxAbandonedConnections,
   }) async {
-    final server = await ServerSocket.bind(address, port);
+    final server = await RawServerSocket.bind(address, port);
     return AgentListener._secure(
       server,
       ownIdentity,
@@ -369,7 +341,6 @@ class AgentListener {
       environment,
       handshakeDeadline,
       maxUnauthenticatedConnections,
-      maxAbandonedConnections,
     );
   }
 
@@ -421,7 +392,7 @@ class AgentListener {
   /// What [bindSecure] does with every socket its plain server accepts — the
   /// TLS accept itself (SPEC §4.4): builds this connection's
   /// [SecurityContext] via [_SecurityContextCache.contextFor], upgrades
-  /// [socket] with [SecureSocket.secureServer], requiring a client
+  /// [socket] with [secureServerWithin], requiring a client
   /// certificate, and hands the result to [_serveSecureSession]. See
   /// [bindSecure]'s doc comment for why the context is a function of the
   /// store as read here, per connection, and not fixed once at bind.
@@ -429,18 +400,17 @@ class AgentListener {
   /// Either step can fail, and both failures go to [_onSessionError] rather
   /// than past this method — but what happens to the raw socket differs, and
   /// the difference is deliberate. A store that cannot be read leaves
-  /// [socket] untouched by anything but this method, so this destroys it. A
+  /// [socket] untouched by anything but this method, so this closes it. A
   /// failed upgrade has already closed it: `dart:io`'s own `_RawSecureSocket`
   /// closes its underlying socket on every handshake error, gracefully, after
   /// the TLS alert — the same treatment `SecureServerSocket` gives a failed
   /// accept, which never touches the connection in its own error handler
   /// either. Destroying it again here would race that close and turn the
   /// alert into a reset, which a peer sees as "connection reset" instead of
-  /// the handshake failure it was actually refused with. A peer that has not
-  /// even started its handshake when the deadline expires is a third case,
-  /// unlike both: nothing failed, no alert was sent and nothing was closed,
-  /// so that one does need the destroy — and is the only one that can still
-  /// have it (see [_secureServerWithin]).
+  /// the handshake failure it was actually refused with. A peer that simply
+  /// stalled is the third case, unlike both: nothing failed, no alert is
+  /// owed, and [secureServerWithin] has already disposed of it with a clean
+  /// FIN (see that function's doc comment on why the two disposals differ).
   ///
   /// An empty store goes through the handshake too, on purpose, rather than
   /// being dropped before it: with no anchors installed BoringSSL refuses
@@ -456,7 +426,7 @@ class AgentListener {
   /// same as [_serve]'s, and for the same reason: the upgrade of one
   /// connection must not hold up the accept of the next.
   Future<void> _upgradeAndServe(
-    Socket socket,
+    RawSocket socket,
     DeviceIdentity ownIdentity,
     _SecurityContextCache contextCache,
     Agent Function(ReplicaSpec spec) buildAgent,
@@ -464,30 +434,21 @@ class AgentListener {
     Map<String, String> environment,
     Duration handshakeDeadline,
     int maxUnauthenticatedConnections,
-    int maxAbandonedConnections,
   ) async {
-    // Both checked before the store load, not after: the load is the
-    // expensive half of an accept, so a cap applied after it would leave
-    // exactly the work it exists to bound unbounded.
-    if (_abandonedConnections >= maxAbandonedConnections) {
-      _onSessionError(
-        const TooManyAbandonedConnectionsException(),
-        StackTrace.current,
-      );
-      socket.destroy();
-      return;
-    }
+    // Checked before the store load, not after: the load is the expensive
+    // half of an accept, so a cap applied after it would leave exactly the
+    // work it exists to bound unbounded.
     if (_unauthenticatedConnections >= maxUnauthenticatedConnections) {
       _onSessionError(
         const TooManyUnauthenticatedConnectionsException(),
         StackTrace.current,
       );
-      socket.destroy();
+      socket.close().ignore();
       return;
     }
 
     _unauthenticatedConnections++;
-    final ({SecureSocket socket, PairedDevice device})? peer;
+    final ({RawSecureSocket socket, PairedDevice device})? peer;
     try {
       peer = await _authenticate(
         socket,
@@ -520,11 +481,10 @@ class AgentListener {
   ///
   /// Every refusal below leaves the connection already disposed of the way
   /// that refusal calls for — which is not the same disposal in each case:
-  /// [_secureServerWithin] owns that distinction and its doc comment is where
-  /// it is set out, including the one case that both can and must destroy the
-  /// socket outright.
-  Future<({SecureSocket socket, PairedDevice device})?> _authenticate(
-    Socket socket,
+  /// [secureServerWithin] owns the deadline's, and its doc comment is where
+  /// the distinction between a stall and a refusal is set out.
+  Future<({RawSecureSocket socket, PairedDevice device})?> _authenticate(
+    RawSocket socket,
     DeviceIdentity ownIdentity,
     _SecurityContextCache contextCache,
     PairedDeviceStore pairedDeviceStore,
@@ -535,16 +495,16 @@ class AgentListener {
       devices = await pairedDeviceStore.load();
     } catch (error, stackTrace) {
       _onSessionError(error, stackTrace);
-      socket.destroy();
+      socket.close().ignore();
       return null;
     }
 
-    final SecureSocket secured;
+    final RawSecureSocket secured;
     try {
-      secured = await _secureServerWithin(
+      secured = await secureServerWithin(
         socket,
         contextCache.contextFor(devices),
-        handshakeDeadline,
+        deadline: handshakeDeadline,
       );
     } on HandshakeDeadlineExceededException catch (error, stackTrace) {
       _onSessionError(error, stackTrace);
@@ -577,7 +537,7 @@ class AgentListener {
       // happened" a stranger's certificate gets one layer down, at the TLS
       // handshake itself, just arrived at one step later.
       _onSessionError(const UnrecognizedPeerException(), StackTrace.current);
-      secured.destroy();
+      secured.close().ignore();
       return null;
     }
     return (socket: secured, device: device);
@@ -589,7 +549,7 @@ class AgentListener {
   /// [bindSecure]'s doc comment on why that check lives here and not in
   /// [AgentServer]).
   Future<void> _serveSecureSession(
-    SecureSocket socket,
+    RawSecureSocket socket,
     PairedDevice device,
     Agent Function(ReplicaSpec spec) buildAgent,
     Map<String, String> environment,
@@ -602,114 +562,12 @@ class AgentListener {
     // bare deliberately: a same-machine client that dies has its socket
     // closed by the kernel, so that reader already gets EOF.
     await _serve(
-      IdleDeadlineChannel(SocketChannel(socket), peer: device.name),
+      IdleDeadlineChannel(
+        SocketChannel.over(RawSecureByteSocket(socket)),
+        peer: device.name,
+      ),
       _authorizedBuildAgent(device, buildAgent, environment),
     );
-  }
-
-  /// [SecureSocket.secureServer] with [context], under [deadline], disposing
-  /// of [socket] itself on every failure it raises — so a caller that catches
-  /// one has nothing left to close.
-  ///
-  /// **Why this is not a plain `.timeout()` on the upgrade.**
-  /// [SecureSocket.secureServer] *detaches* the raw socket from the [Socket]
-  /// it is handed (`dart:io`'s `_Socket._detachRaw`, which nulls that
-  /// object's own `_raw`), and from that moment this side's `socket.destroy()`
-  /// is a documented no-op: there is no public handle left to close the
-  /// connection with, and nothing in `dart:io` puts a clock on a handshake.
-  /// A deadline on the upgrade alone would report a stall and leave the
-  /// socket exactly where it was — the very thing the deadline exists to
-  /// stop. So the peer's first bytes are awaited *here*, while the socket is
-  /// still this listener's to destroy, and handed to the upgrade as
-  /// `bufferedData`. That is a byte count, not a parse: nothing here looks at
-  /// what those bytes are, so this is not the pre-handshake demux
-  /// `enrolment_listener.dart`'s class doc comment argues against.
-  ///
-  /// **What it bounds, exactly.** A peer that completes TCP and then says
-  /// nothing — the hold-open probe an exposed port collects, and the case
-  /// this exists for — is destroyed at [deadline], for real. A peer that
-  /// sends a first flight and then stalls is already past the detach, so it
-  /// can only be reported and abandoned; what bounds *that* one is the cap on
-  /// connections that have not authenticated, which is why the cap is not
-  /// merely belt and braces. Such a connection releases its slot against the
-  /// in-flight cap — sixteen stalled peers must not wedge the listener, and
-  /// they are the cheapest connections an attacker can make — and is counted
-  /// against [defaultMaxAbandonedConnections] instead, which is what keeps
-  /// the descriptors bounded and what that constant's doc comment states the
-  /// cost of.
-  Future<SecureSocket> _secureServerWithin(
-    Socket socket,
-    SecurityContext context,
-    Duration deadline,
-  ) async {
-    final firstBytes = Completer<Uint8List>();
-    late final StreamSubscription<Uint8List> peerBytes;
-    peerBytes = socket.listen(
-      (chunk) {
-        if (firstBytes.isCompleted) return;
-        // Paused before the upgrade takes the socket over, so that no later
-        // chunk is taken off it here and left out of `bufferedData` — which
-        // would corrupt the handshake those bytes belong to.
-        peerBytes.pause();
-        firstBytes.complete(chunk);
-      },
-      onError: (Object error, StackTrace stackTrace) {
-        if (!firstBytes.isCompleted) {
-          firstBytes.completeError(error, stackTrace);
-        }
-      },
-      onDone: () {
-        if (!firstBytes.isCompleted) {
-          firstBytes.completeError(
-            const SocketException(
-              'The peer closed the connection before its TLS handshake began.',
-            ),
-          );
-        }
-      },
-      cancelOnError: true,
-    );
-
-    final Uint8List buffered;
-    try {
-      buffered = await firstBytes.future.timeout(
-        deadline,
-        onTimeout: () => throw const HandshakeDeadlineExceededException(),
-      );
-    } catch (_) {
-      // Still attached, so this is the one point on a refused connection's
-      // path where destroying it both works and is needed.
-      socket.destroy();
-      rethrow;
-    }
-
-    final upgrade = SecureSocket.secureServer(
-      socket,
-      context,
-      bufferedData: buffered,
-      requireClientCertificate: true,
-    );
-    try {
-      return await upgrade.timeout(
-        deadline,
-        onTimeout: () => throw const HandshakeDeadlineExceededException(),
-      );
-    } on HandshakeDeadlineExceededException {
-      // Nothing here can close a detached socket. The caller releases this
-      // connection's slot against the in-flight cap when the refusal reaches
-      // it — a handful of the cheapest connections an attacker can make must
-      // not wedge the listener — and it moves to the far larger ceiling on
-      // sockets this process is stuck with, given back only by the upgrade
-      // abandoned here, which is also the only thing that can still destroy
-      // the socket if it ever resolves at all.
-      _abandonedConnections++;
-      unawaited(
-        upgrade
-            .then((socket) => socket.destroy(), onError: (Object _) {})
-            .whenComplete(() => _abandonedConnections--),
-      );
-      rethrow;
-    }
   }
 
   /// Resolves [socket]'s TLS peer certificate to the [PairedDevice] it
@@ -734,7 +592,7 @@ class AgentListener {
   /// malformed certificate is a refusal, not a reason to let an exception
   /// reach [_serveSecureSession]'s caller and crash the listener (SPEC §4.4).
   Future<PairedDevice?> _resolvePeer(
-    SecureSocket socket,
+    RawSecureSocket socket,
     PairedDeviceStore pairedDeviceStore,
   ) async {
     final certificate = socket.peerCertificate;
@@ -962,26 +820,6 @@ class UnrecognizedPeerException implements Exception {
       'paired device.';
 }
 
-/// Reported to [SessionErrorHandler] by [AgentListener.bindSecure] when an
-/// accepted connection did not finish its TLS handshake within the listener's
-/// handshake deadline (task 224ffa) — a peer that completed TCP and then
-/// stalled, whether by malice or by dying mid-handshake.
-///
-/// A peer that had not started its handshake has its socket destroyed rather
-/// than left to `dart:io`'s own graceful close, because nothing has resolved
-/// for `dart:io` to close; one that stalled after starting it can only be
-/// abandoned, since `dart:io` has taken the socket over by then. See
-/// [AgentListener._secureServerWithin] for both, and for why the cap is what
-/// bounds the second.
-class HandshakeDeadlineExceededException implements Exception {
-  const HandshakeDeadlineExceededException();
-
-  @override
-  String toString() =>
-      'Destroyed a connection that did not complete its TLS handshake within '
-      'the handshake deadline.';
-}
-
 /// Reported to [SessionErrorHandler] by [AgentListener.bindSecure] when a
 /// connection is accepted while its cap on connections that have not yet
 /// authenticated is already reached (task 224ffa).
@@ -995,24 +833,6 @@ class TooManyUnauthenticatedConnectionsException implements Exception {
   String toString() =>
       'Destroyed a connection: too many connections are already waiting to '
       'authenticate.';
-}
-
-/// Reported to [SessionErrorHandler] by [AgentListener.bindSecure] when a
-/// connection is accepted while it is already holding
-/// `maxAbandonedConnections` sockets whose stalled handshakes `dart:io` will
-/// not let it close (task 224ffa).
-///
-/// This is the listener saying it has stopped accepting rather than growing
-/// its descriptor count without bound. See
-/// [AgentListener.defaultMaxAbandonedConnections] for what that bounds and
-/// what it costs.
-class TooManyAbandonedConnectionsException implements Exception {
-  const TooManyAbandonedConnectionsException();
-
-  @override
-  String toString() =>
-      'Destroyed a connection: too many stalled handshakes are already held '
-      'open by sockets this process cannot close.';
 }
 
 /// Reported by [AgentListener.bindSecure] for a handshake that failed while

@@ -86,7 +86,6 @@ void main() {
     Duration handshakeDeadline = AgentListener.defaultHandshakeDeadline,
     int maxUnauthenticatedConnections =
         AgentListener.defaultMaxUnauthenticatedConnections,
-    int maxAbandonedConnections = AgentListener.defaultMaxAbandonedConnections,
   }) => AgentListener.bindSecure(
     InternetAddress.loopbackIPv4,
     0,
@@ -96,7 +95,6 @@ void main() {
     onSessionError: (error, _) => sessionErrors.add(error),
     handshakeDeadline: handshakeDeadline,
     maxUnauthenticatedConnections: maxUnauthenticatedConnections,
-    maxAbandonedConnections: maxAbandonedConnections,
   );
 
   int portOf(AgentListener listener) {
@@ -851,7 +849,6 @@ void main() {
       final listener = await bind(
         handshakeDeadline: const Duration(milliseconds: 100),
         maxUnauthenticatedConnections: 1,
-        maxAbandonedConnections: 8,
       );
       addTearDown(listener.close);
 
@@ -865,28 +862,58 @@ void main() {
       await agent.disconnect();
     });
 
-    test('at the ceiling on sockets it cannot close, the listener stops '
-        'accepting', () async {
+
+    test('a peer that sends a complete first flight and then stalls is closed '
+        'at the deadline', () async {
       final phone = generateDeviceIdentity(commonName: 'dsync-phone');
       await store.add(
         pairedDeviceFor(phone, name: 'phone', roots: {allowedRoot}),
       );
       final listener = await bind(
         handshakeDeadline: const Duration(milliseconds: 100),
-        maxAbandonedConnections: 1,
       );
       addTearDown(listener.close);
 
-      final stalled = await connectAndStallMidHandshake(listener);
-      addTearDown(stalled.destroy);
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      // A well-formed ClientHello, so the listener answers it and is genuinely
+      // past the point a `SecureSocket`-based upgrade would have detached the
+      // socket beyond reach. That is the stall this listener could not close
+      // before it kept the `RawSocket` across the upgrade (task 08a512).
+      final clientHello = await _captureClientHello();
+      final socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        portOf(listener),
+      );
+      addTearDown(socket.destroy);
+      final received = BytesBuilder();
+      final dropped = Completer<void>();
+      void drop([Object? _]) {
+        if (!dropped.isCompleted) dropped.complete();
+      }
+
+      socket.listen(
+        received.add,
+        onError: drop,
+        onDone: drop,
+        cancelOnError: true,
+      );
+      socket.add(clientHello);
+      await socket.flush();
+
+      await dropped.future.timeout(const Duration(seconds: 5));
+      expect(
+        received.isNotEmpty,
+        isTrue,
+        reason: "the listener answered this peer's first flight, so the "
+            'handshake was under way when the deadline closed it',
+      );
       expect(sessionErrors.single, isA<HandshakeDeadlineExceededException>());
 
-      final (overCeiling, droppedOverCeiling) = await connectAndStall(listener);
-      addTearDown(overCeiling.destroy);
-      await droppedOverCeiling.timeout(const Duration(seconds: 5));
-      expect(sessionErrors.last, isA<TooManyAbandonedConnectionsException>());
+      // And the listener is still serving, with the stalled peer's slot back.
+      final agent = await connectAs(phone, listener, rootPath: allowedRoot);
+      await expectLater(agent.hello(), completes);
+      await agent.disconnect();
     });
+
   });
 }
 
@@ -1078,3 +1105,32 @@ const _idEcPublicKey = '1.2.840.10045.2.1';
 const _prime256v1 = '1.2.840.10045.3.1.7';
 const _ecdsaWithSha256 = '1.2.840.10045.4.3.2';
 const _commonNameOid = '2.5.4.3';
+
+/// A genuine, complete TLS first flight, captured off a real
+/// [SecureSocket.connect] against a socket that reads it and hangs up — so it
+/// is well-formed by construction rather than hand-rolled, the same capture
+/// `raw_secure_socket_deadline_wire_test.dart` uses.
+Future<List<int>> _captureClientHello() async {
+  final captured = Completer<List<int>>();
+  final capture = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  capture.listen((socket) {
+    socket.first.then((bytes) {
+      if (!captured.isCompleted) captured.complete(bytes);
+      socket.destroy();
+    }, onError: (Object _) {});
+  }, onError: (Object _) {});
+  final identity = generateDeviceIdentity(commonName: 'dsync-first-flight');
+  unawaited(
+    SecureSocket.connect(
+      InternetAddress.loopbackIPv4,
+      capture.port,
+      context: _clientOnlyContext(identity),
+      onBadCertificate: (_) => true,
+    ).then<void>((socket) => socket.destroy(), onError: (Object _) {}),
+  );
+  final clientHello = await captured.future.timeout(
+    const Duration(seconds: 10),
+  );
+  await capture.close();
+  return clientHello;
+}
