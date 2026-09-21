@@ -139,6 +139,7 @@ class RunSetupViewState extends ChangeNotifier {
   String? _remoteRootError;
   String? _addressError;
   bool _dryRun = false;
+  List<String> _ignorePatterns = const [];
   RunSetupOutcome _outcome = const RunSetupIdle();
   RunSetupPrefill? _prefill;
 
@@ -169,6 +170,14 @@ class RunSetupViewState extends ChangeNotifier {
   /// The dry-run switch's position: off — a dry run is opt-in — until
   /// the user moves it, and off again on the next visit.
   bool get dryRun => _dryRun;
+
+  /// SPEC §9 `ignore` globs this run would apply, as the Filters page left
+  /// them. Here rather than on the page, for the same reason [localRoot]
+  /// is: the form has no editable copy of its own — the value comes back
+  /// from another screen, and both ways out of this page read it.
+  ///
+  /// Empty is the ordinary case: sync everything in the folder.
+  List<String> get ignorePatterns => _ignorePatterns;
 
   RunSetupOutcome get outcome => _outcome;
 
@@ -207,6 +216,13 @@ class RunSetupViewState extends ChangeNotifier {
   /// `RunSetupController` only.
   void recordFolderAccessError(String? message) {
     _folderAccessError = message;
+    notifyListeners();
+  }
+
+  /// Records the rules the Filters page came back with.
+  /// `RunSetupController` only.
+  void recordIgnorePatterns(List<String> patterns) {
+    _ignorePatterns = List.unmodifiable(patterns);
     notifyListeners();
   }
 

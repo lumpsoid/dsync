@@ -478,6 +478,69 @@ void main() {
       expect(app.state.profiles.single.name, 'weekly');
     });
 
+    test('the rules the Filters page came back with reach the run and the '
+        'saved profile', () async {
+      await loadDesktop();
+      await pickNotes();
+      controller.setIgnorePatterns(const ['**/.thumbnails', 'cache']);
+
+      await controller.start(
+        remoteRoot: '~/notes',
+        address: '',
+        profileName: 'weekly',
+      );
+
+      // Both ways out carry them: the run applies them (SPEC §9) and the
+      // profile saves them, so the next run of this profile filters the
+      // same way without being told again.
+      expect(requests().single.ignorePatterns, ['**/.thumbnails', 'cache']);
+      final saved = await profileStore().byId(
+        ReplicaConnector.profileIdFor(
+          localRootPath: notes(),
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+        ),
+      );
+      expect(saved!.ignorePatterns, ['**/.thumbnails', 'cache']);
+    });
+
+    test('a profile opened again comes back with its rules', () async {
+      final localRoot = Directory(notes())..createSync(recursive: true);
+      final id = ReplicaConnector.profileIdFor(
+        localRootPath: localRoot.path,
+        peerDeviceId: desktop.deviceId,
+        remoteRootPath: '~/notes',
+      );
+      await profileStore().save(
+        SyncProfile(
+          id: id,
+          name: 'weekly',
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+          jobs: 4,
+          ignorePatterns: const ['**/*.tmp'],
+        ),
+      );
+      await store().add(desktop);
+
+      await controller.load(RunSetupFromProfile(id));
+
+      expect(controller.state.ignorePatterns, ['**/*.tmp']);
+    });
+
+    test(
+      'a blank form starts with no rules, whatever the last visit left',
+      () async {
+        await loadDesktop();
+        controller.setIgnorePatterns(const ['**/*.tmp']);
+
+        await controller.load(RunSetupFromDevice(desktop.deviceId));
+
+        expect(controller.state.ignorePatterns, isEmpty);
+      },
+    );
+
     test('an unnamed start saves nothing — a one-off run', () async {
       await loadDesktop();
       await pickNotes();

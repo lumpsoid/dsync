@@ -24,6 +24,7 @@ class RunRequest {
     required this.addressOverride,
     required this.jobs,
     required this.dryRun,
+    this.ignorePatterns = const [],
   });
 
   /// Side `a`: an absolute path on this device, the folder the user
@@ -48,4 +49,16 @@ class RunRequest {
 
   /// SPEC §11.2 `--dry-run`: show the plan, apply nothing.
   final bool dryRun;
+
+  /// SPEC §9 `ignore` globs — what this run leaves out, as chosen on the
+  /// Filters page and saved on the profile.
+  ///
+  /// Plain strings, like everything else here: the Run feature compiles
+  /// them into the one `RuleSet` it hands `RunController`, which is what
+  /// sends them to the far replica (SPEC §9 — the rules come from the
+  /// initiating side, and the peer compiles the patterns itself). Carrying
+  /// a compiled set through the setup page would put a decision object in
+  /// a value type, and would leave two places that could compile the same
+  /// patterns differently.
+  final List<String> ignorePatterns;
 }

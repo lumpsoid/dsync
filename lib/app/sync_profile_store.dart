@@ -37,11 +37,19 @@ import 'sync_profile.dart';
 /// because the difference between "I deleted my profiles" and "this file
 /// cannot be trusted" is one the user has to see to act on.
 class SyncProfileStore {
-  /// Bumped when the on-disk document shape changes. A document claiming a
-  /// different version is corruption, not a format this store degrades
-  /// gracefully from — there is exactly one shape this store has ever
-  /// written.
-  static const schemaVersion = 1;
+  /// Bumped when the on-disk document shape changes; what [_save] writes.
+  /// A document claiming a version this store does not know is corruption,
+  /// not a format it degrades gracefully from.
+  static const schemaVersion = 2;
+
+  /// Every version [load] can read, newest first. Version 1 is version 2
+  /// without `ignorePatterns`, and is read as a profile that filters
+  /// nothing — which is exactly what it was, since the head had no filters
+  /// when it was written. It is migrated on the next save rather than
+  /// rewritten on read: a read that rewrote the file would make opening
+  /// the home list a write, and there is nothing here that a v1 document
+  /// cannot answer.
+  static const _readableSchemaVersions = {2, 1};
 
   final File _file;
 
@@ -125,7 +133,7 @@ class SyncProfileStore {
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('top-level document is not a JSON object');
     }
-    if (decoded['schemaVersion'] != schemaVersion) {
+    if (!_readableSchemaVersions.contains(decoded['schemaVersion'])) {
       throw FormatException(
         'unsupported schema version: ${decoded['schemaVersion']}',
       );
@@ -148,6 +156,12 @@ class SyncProfileStore {
       peerDeviceId: entry['peerDeviceId'] as String,
       remoteRootPath: entry['remoteRootPath'] as String,
       jobs: entry['jobs'] as int,
+      // Absent in a v1 document, and absent in a v2 one written before
+      // this profile was ever filtered.
+      ignorePatterns: [
+        for (final pattern in entry['ignorePatterns'] as List? ?? const [])
+          pattern as String,
+      ],
     );
   }
 
@@ -158,6 +172,7 @@ class SyncProfileStore {
     'peerDeviceId': profile.peerDeviceId,
     'remoteRootPath': profile.remoteRootPath,
     'jobs': profile.jobs,
+    'ignorePatterns': profile.ignorePatterns,
   };
 
   /// Rewrites the whole document with exactly [profiles] and no others,

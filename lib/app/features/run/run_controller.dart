@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
 import 'package:dsync/dsync_core/run/run_instruments.dart';
@@ -304,6 +305,11 @@ class SyncRunController {
       agentB: instruments.agent(agents.agentB, side: 'b', remote: true),
       presenter: (plan) => present(plan, request: request),
       metrics: instruments.recorder,
+      // Compiled here, once, from the patterns the profile saved: SPEC §9
+      // has the rules come from the initiating side, and `RunController`
+      // is what hands them to both replicas — the peer receives the
+      // patterns and compiles its own set.
+      rules: RuleSet(ignore: request.ignorePatterns),
     );
     await render(run.run(), request: request);
   }

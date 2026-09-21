@@ -139,6 +139,7 @@ class RunSetupController {
   Future<void> load(RunSetupSource source) async {
     state.recordLocalRoot(null);
     state.recordDryRun(false);
+    state.recordIgnorePatterns(const []);
     state.recordFieldErrors(localFolder: null, remoteRoot: null, address: null);
     state.recordFolderAccessError(null);
     state.recordOutcome(const RunSetupIdle());
@@ -165,6 +166,7 @@ class RunSetupController {
         deviceId = profile.peerDeviceId;
         _profileId = profile.id;
         state.recordLocalRoot(profile.localRootPath);
+        state.recordIgnorePatterns(profile.ignorePatterns);
         state.recordPrefill(
           RunSetupPrefill(
             profileName: profile.name,
@@ -244,6 +246,19 @@ class RunSetupController {
     state.recordDryRun(dryRun);
   }
 
+  /// The Filters page came back with [patterns] — SPEC §9 `ignore` globs.
+  ///
+  /// Recorded, not validated: every pattern that reaches here was compiled
+  /// where it was written (`FiltersController.addPattern`), so a malformed
+  /// one never becomes a rule in the first place. They travel with both
+  /// ways out of this page — the run applies them, and the profile saves
+  /// them — so a folder excluded here stays excluded on the next run
+  /// without being chosen again.
+  void setIgnorePatterns(List<String> patterns) {
+    state.recordIgnorePatterns(patterns);
+    state.recordOutcome(const RunSetupIdle());
+  }
+
   /// Validates every field and, when all hold, records a [RunSetupStarted]
   /// carrying the one [RunRequest] this page produces — and, when
   /// [profileName] names it, saves the run as a [SyncProfile] for the home
@@ -291,6 +306,7 @@ class RunSetupController {
       addressOverride: form.addressOverride,
       jobs: _jobs,
       dryRun: state.dryRun,
+      ignorePatterns: state.ignorePatterns,
     );
     final name = profileName.trim();
     if (name.isNotEmpty) await _saveProfile(form, name);
@@ -348,6 +364,7 @@ class RunSetupController {
         peerDeviceId: form.peerDeviceId,
         remoteRootPath: form.remoteRootPath,
         jobs: _jobs,
+        ignorePatterns: state.ignorePatterns,
       ),
     );
     _profileId = id;

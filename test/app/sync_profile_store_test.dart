@@ -40,6 +40,7 @@ void main() {
     expect(actual.peerDeviceId, expected.peerDeviceId);
     expect(actual.remoteRootPath, expected.remoteRootPath);
     expect(actual.jobs, expected.jobs);
+    expect(actual.ignorePatterns, expected.ignorePatterns);
   }
 
   group('load', () {
@@ -76,7 +77,9 @@ void main() {
       for (final raw in [
         '{"schemaVersion": 1, "profiles":',
         'not json',
-        '{"schemaVersion": 2, "profiles": []}',
+        // A version this store has never written: a document from a
+        // later release, not a shape to guess at.
+        '{"schemaVersion": 3, "profiles": []}',
         '{"schemaVersion": 1, "devices": []}',
         '[]',
       ]) {
@@ -90,6 +93,64 @@ void main() {
         );
         storeFile().deleteSync();
       }
+    });
+  });
+
+  group('schema versions', () {
+    test(
+      'rules survive the round trip, in the order they were written',
+      () async {
+        final filtered = SyncProfile(
+          id: 'a',
+          name: 'camera',
+          localRootPath: '/on-device/DCIM',
+          peerDeviceId: 'peer-a',
+          remoteRootPath: '~/photos',
+          jobs: 4,
+          ignorePatterns: const ['**/.thumbnails', 'Screenshots'],
+        );
+
+        await store().save(filtered);
+
+        expectSameProfile(await store().byId('a'), filtered);
+      },
+    );
+
+    test(
+      'a version 1 document reads as profiles that filter nothing',
+      () async {
+        // What every profile saved before the Filters page existed looks
+        // like: no `ignorePatterns` key at all. It must load, because the
+        // alternative is a user's home list disappearing on upgrade.
+        storeFile().parent.createSync(recursive: true);
+        storeFile().writeAsStringSync(
+          '{"schemaVersion": 1, "profiles": [{"id": "a", "name": "notes", '
+          '"localRootPath": "/on-device/notes", "peerDeviceId": "peer-a", '
+          '"remoteRootPath": "~/notes", "jobs": 4}]}',
+        );
+
+        final loaded = await store().load();
+
+        expect(loaded.single.name, 'notes');
+        expect(loaded.single.ignorePatterns, isEmpty);
+      },
+    );
+
+    test('a version 1 document is migrated by the next save', () async {
+      storeFile().parent.createSync(recursive: true);
+      storeFile().writeAsStringSync(
+        '{"schemaVersion": 1, "profiles": [{"id": "a", "name": "notes", '
+        '"localRootPath": "/on-device/notes", "peerDeviceId": "peer-a", '
+        '"remoteRootPath": "~/notes", "jobs": 4}]}',
+      );
+
+      await store().save(profile('b', name: 'beta'));
+
+      expect(
+        storeFile().readAsStringSync(),
+        contains('"schemaVersion":${SyncProfileStore.schemaVersion}'),
+      );
+      expect((await store().load()).map((p) => p.id), ['a', 'b']);
     });
   });
 

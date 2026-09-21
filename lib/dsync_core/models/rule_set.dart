@@ -51,13 +51,37 @@ class RuleSet {
   /// matches `.git` but not `.git/config`. Everything that decides whether a
   /// path is in the sync has to agree with the walk, or a pruned subtree reads
   /// as a tree of deletions and gets propagated as one.
-  bool ignores(String rootRelativePath) {
+  bool ignores(String rootRelativePath) =>
+      ignorePatternFor(rootRelativePath) != null;
+
+  /// The `ignore` pattern, as written, that excludes [rootRelativePath] —
+  /// or `null` when nothing excludes it.
+  ///
+  /// The same walk [ignores] answers with, returning *which* rule decided
+  /// instead of only that one did: a user looking at a file that is not
+  /// syncing has to be told the rule to change, and "it matched something"
+  /// is not an answer they can act on.
+  ///
+  /// Which rule is named when several apply: the one that excludes the
+  /// shallowest ancestor, and among the rules matching that ancestor, the
+  /// one written first. Shallowest first because that is the rule whose
+  /// removal actually brings the path back — dropping a deeper rule that
+  /// matches the path itself changes nothing while an ancestor directory
+  /// is still pruned.
+  ///
+  /// The ancestor case is reported as the ancestor's own pattern, for the
+  /// reason [ignores] describes: `**/.git` prunes the directory, so every
+  /// path under it is out because of that rule, not because of any rule of
+  /// its own.
+  String? ignorePatternFor(String rootRelativePath) {
     final segments = rootRelativePath.split('/');
     for (var i = 1; i <= segments.length; i++) {
       final prefix = segments.take(i).join('/');
-      if (_ignore.any((glob) => glob.matches(prefix))) return true;
+      for (final glob in _ignore) {
+        if (glob.matches(prefix)) return glob.source;
+      }
     }
-    return false;
+    return null;
   }
 
   /// Whether [rootRelativePath] matches a `follow` rule (SPEC §5.1, §9).

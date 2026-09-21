@@ -28,6 +28,7 @@ class SyncProfile {
     required this.peerDeviceId,
     required this.remoteRootPath,
     required this.jobs,
+    this.ignorePatterns = const [],
   });
 
   /// The derived profile id — [ReplicaConnector.profileIdFor] over the
@@ -53,6 +54,21 @@ class SyncProfile {
   /// this profile carried it.
   final int jobs;
 
+  /// SPEC §9 `ignore` globs, in the order the user wrote them: what this
+  /// profile keeps out of the sync, chosen on the Filters page.
+  ///
+  /// Plain strings rather than a `RuleSet`, for the reason [RunRequest]
+  /// carries the same list: a compiled rule set is a decision object, and
+  /// this is a saved value that has to survive a JSON round trip. The run
+  /// compiles them — which is also where a pattern that somehow became
+  /// malformed on disk is refused, once, instead of at every replica.
+  ///
+  /// Empty is the ordinary case and means "sync everything in the folder".
+  /// `follow` rules are deliberately not here: the head offers no symlink
+  /// following, so a profile that carried one would be saving a rule
+  /// nothing on this device reads.
+  final List<String> ignorePatterns;
+
   /// The same saved run against [path] instead — what the home list saves
   /// when the user re-picks the local folder of a profile whose grant was
   /// withdrawn.
@@ -68,5 +84,6 @@ class SyncProfile {
     peerDeviceId: peerDeviceId,
     remoteRootPath: remoteRootPath,
     jobs: jobs,
+    ignorePatterns: ignorePatterns,
   );
 }

@@ -136,6 +136,39 @@ void main() {
     });
   });
 
+  group('RuleSet.ignorePatternFor names the rule that decided', () {
+    test('a path nothing matches has no pattern', () {
+      expect(RuleSet(ignore: ['*.tmp']).ignorePatternFor('a.txt'), isNull);
+    });
+
+    test('the pattern is returned as written, not as a regex', () {
+      expect(
+        RuleSet(ignore: ['**/*.tmp']).ignorePatternFor('a/b.tmp'),
+        '**/*.tmp',
+      );
+    });
+
+    test('a path under an excluded folder names the folder rule', () {
+      // The rule the user has to remove: dropping one that matches the
+      // file changes nothing while its folder is still pruned.
+      final rules = RuleSet(ignore: ['**/.git', '*.config']);
+
+      expect(rules.ignorePatternFor('src/.git/config'), '**/.git');
+    });
+
+    test('it agrees with ignores on every path', () {
+      final rules = RuleSet(ignore: ['**/.git', '*.tmp']);
+
+      for (final path in ['a.tmp', '.git/config', 'src/main.dart', 'a/b.tmp']) {
+        expect(
+          rules.ignorePatternFor(path) != null,
+          rules.ignores(path),
+          reason: path,
+        );
+      }
+    });
+  });
+
   group('RuleSet ignore vs follow', () {
     test('ignore and follow patterns are independent', () {
       final rules = RuleSet(ignore: ['*.tmp'], follow: ['shared']);

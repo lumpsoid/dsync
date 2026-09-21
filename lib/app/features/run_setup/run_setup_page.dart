@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../run_request.dart';
 import '../diagnostics/diagnostics_page.dart';
+import '../filters/filters_page.dart';
+import '../filters/filters_view_state.dart';
 import 'run_setup_controller.dart';
 import 'run_setup_scope.dart';
 import 'run_setup_view_state.dart';
@@ -136,6 +138,28 @@ class _RunSetupPageState extends State<RunSetupPage> {
     if (_controller.state.outcome is RunSetupSaved) widget.onSaved();
   }
 
+  /// The Filters page, over the folder the form currently holds and the
+  /// rules it currently holds — values, not an id, because a form that has
+  /// not been saved has no id to hand over (see `FiltersArgs`). Pushed
+  /// from here rather than from `dsync_app.dart` for the same reason
+  /// Diagnostics is: it is a detail of this form, opened over this form's
+  /// in-flight values, and the entrypoint knows about neither.
+  ///
+  /// The result comes back through `onDone`, which fires however the page
+  /// leaves — including the system back gesture — so there is no way out
+  /// of it that drops what was chosen.
+  Future<void> _openFilters(String rootPath) => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => FiltersPage(
+        args: FiltersArgs(
+          rootPath: rootPath,
+          ignorePatterns: _controller.state.ignorePatterns,
+        ),
+        onDone: _controller.setIgnorePatterns,
+      ),
+    ),
+  );
+
   Future<void> _openDiagnostics(String rootPath) => Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (_) => DiagnosticsPage(rootPath: rootPath, blockedReason: null),
@@ -207,6 +231,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
             address: _address,
             profileName: _profileName,
             onPickFolder: _pickFolder,
+            onOpenFilters: _openFilters,
             onStart: _start,
             onSave: _save,
           ),
@@ -221,6 +246,17 @@ class _RunSetupPageState extends State<RunSetupPage> {
 /// not "Edit …": the page is the profile, and every field on it says which
 /// device and which folders. A blank form has no profile yet, so it stays
 /// "Run setup".
+/// The Filters row's second line: what the rules do, in the language of
+/// the outcome rather than of the rules — a count of patterns would be
+/// counting the mechanism.
+String _filtersSummary(RunSetupViewState state) {
+  if (state.localRoot == null) return 'Pick a folder first.';
+  final rules = state.ignorePatterns.length;
+  if (rules == 0) return 'Everything in this folder syncs.';
+  return '$rules ${rules == 1 ? 'rule keeps' : 'rules keep'} files out of '
+      'the sync.';
+}
+
 String _title(RunSetupViewState state) =>
     state.prefill != null ? 'Profile' : 'Run setup';
 
@@ -233,6 +269,7 @@ class _RunSetupForm extends StatelessWidget {
     required this.address,
     required this.profileName,
     required this.onPickFolder,
+    required this.onOpenFilters,
     required this.onStart,
     required this.onSave,
   });
@@ -248,6 +285,12 @@ class _RunSetupForm extends StatelessWidget {
   final TextEditingController address;
   final TextEditingController profileName;
   final VoidCallback onPickFolder;
+
+  /// Opens the Filters page over the folder that has been chosen. Takes
+  /// the path rather than reading it back off the view state, so the row
+  /// cannot offer itself before there is a folder to filter.
+  final void Function(String rootPath) onOpenFilters;
+
   final VoidCallback onStart;
   final VoidCallback onSave;
 
@@ -255,6 +298,9 @@ class _RunSetupForm extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = controller.state;
     final starting = state.outcome is RunSetupStarting;
+    // Read once so the Filters row's tap handler closes over a promoted
+    // local instead of asserting the field is non-null a second time.
+    final localRoot = state.localRoot;
     return Column(
       children: [
         Expanded(
@@ -302,6 +348,25 @@ class _RunSetupForm extends StatelessWidget {
                     ),
                   ),
                 ],
+              ),
+              // Filtering sits with the folder it filters, not under
+              // "Options": what a run leaves out is part of *what* is
+              // being synced, and a user who has just pointed at a folder
+              // full of caches should meet it here rather than find it
+              // folded away. It stays a row leading to its own page —
+              // choosing rules means looking at real files, which is a
+              // screen, not a field.
+              ListTile(
+                key: const Key('run-setup-filters'),
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.filter_alt_outlined),
+                title: const Text('Filters'),
+                subtitle: Text(_filtersSummary(state)),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !starting && localRoot != null,
+                onTap: localRoot == null
+                    ? null
+                    : () => onOpenFilters(localRoot),
               ),
               const SizedBox(height: 24),
               _SectionLabel('On $deviceName'),
