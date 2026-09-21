@@ -383,9 +383,18 @@ void main() {
       addTearDown(holder.destroy);
       await Future<void>.delayed(const Duration(milliseconds: 100));
 
-      final (overCap, droppedOverCap) = await connectAndStall(listener);
-      addTearDown(overCap.destroy);
-      await droppedOverCap.timeout(const Duration(seconds: 5));
+      // The slot now covers the handshake too (task 19f63d), so the over-cap
+      // peer is closed as the plain socket it still is — before a single TLS
+      // byte is exchanged. Its dial therefore fails inside the handshake
+      // rather than returning a socket the listener then drops.
+      await expectLater(
+        SecureSocket.connect(
+          InternetAddress.loopbackIPv4,
+          portOf(listener),
+          onBadCertificate: (_) => true,
+        ),
+        throwsA(isA<HandshakeException>()),
+      );
       expect(
         listenerErrors.single,
         isA<TooManyEnrolmentConnectionsException>(),
@@ -460,65 +469,69 @@ void main() {
       expect(await serverStore.byDeviceId(intruder.deviceId), isNull);
     });
 
-    test('a decline still burns the token, so a retry needs a fresh one',
-        () async {
-      // `_redeemToken` is deliberately decoupled from what happens after it
-      // (its own doc comment): the operator saying no is not a reason to
-      // hand the one live token back to whoever is holding it.
-      final token = generateEnrolmentToken();
-      final listener = await bind(token: token, confirm: (_) async => false);
-      addTearDown(listener.close);
+    test(
+      'a decline still burns the token, so a retry needs a fresh one',
+      () async {
+        // `_redeemToken` is deliberately decoupled from what happens after it
+        // (its own doc comment): the operator saying no is not a reason to
+        // hand the one live token back to whoever is holding it.
+        final token = generateEnrolmentToken();
+        final listener = await bind(token: token, confirm: (_) async => false);
+        addTearDown(listener.close);
 
-      for (final name in ['first', 'second']) {
+        for (final name in ['first', 'second']) {
+          await expectLater(
+            enrolWithPeer(
+              payload: payloadFor(listener, token),
+              ownIdentity: generateDeviceIdentity(commonName: name),
+              localName: name,
+              pairedDeviceStore: PairedDeviceStore(
+                File('${tempDir.path}/$name.json'),
+              ),
+            ),
+            throwsA(isA<EnrolmentRefusedException>()),
+          );
+        }
+
+        expect(
+          listenerErrors.whereType<EnrolmentRefusedException>().map(
+            (e) => e.reason,
+          ),
+          [enrolmentDeclinedReason, enrolmentTokenRejectedReason],
+        );
+      },
+    );
+
+    test(
+      'a confirmation nobody answers is refused when the window closes',
+      () async {
+        // The token's own expiry is the bound — `requestDeadline` deliberately
+        // covers only the read, so a human wait cannot trip it.
+        final token = generateEnrolmentToken();
+        final listener = await bind(
+          token: token,
+          tokenExpiresAt: DateTime.now().add(const Duration(milliseconds: 300)),
+          confirm: (_) => Completer<bool>().future,
+        );
+        addTearDown(listener.close);
+
         await expectLater(
           enrolWithPeer(
             payload: payloadFor(listener, token),
-            ownIdentity: generateDeviceIdentity(commonName: name),
-            localName: name,
-            pairedDeviceStore: PairedDeviceStore(
-              File('${tempDir.path}/$name.json'),
+            ownIdentity: generateDeviceIdentity(commonName: 'dsync-phone'),
+            localName: 'desktop',
+            pairedDeviceStore: clientStore,
+          ),
+          throwsA(
+            isA<EnrolmentRefusedException>().having(
+              (e) => e.reason,
+              'reason',
+              enrolmentUnconfirmedReason,
             ),
           ),
-          throwsA(isA<EnrolmentRefusedException>()),
         );
-      }
-
-      expect(
-        listenerErrors.whereType<EnrolmentRefusedException>().map(
-          (e) => e.reason,
-        ),
-        [enrolmentDeclinedReason, enrolmentTokenRejectedReason],
-      );
-    });
-
-    test('a confirmation nobody answers is refused when the window closes',
-        () async {
-      // The token's own expiry is the bound — `requestDeadline` deliberately
-      // covers only the read, so a human wait cannot trip it.
-      final token = generateEnrolmentToken();
-      final listener = await bind(
-        token: token,
-        tokenExpiresAt: DateTime.now().add(const Duration(milliseconds: 300)),
-        confirm: (_) => Completer<bool>().future,
-      );
-      addTearDown(listener.close);
-
-      await expectLater(
-        enrolWithPeer(
-          payload: payloadFor(listener, token),
-          ownIdentity: generateDeviceIdentity(commonName: 'dsync-phone'),
-          localName: 'desktop',
-          pairedDeviceStore: clientStore,
-        ),
-        throwsA(
-          isA<EnrolmentRefusedException>().having(
-            (e) => e.reason,
-            'reason',
-            enrolmentUnconfirmedReason,
-          ),
-        ),
-      );
-    });
+      },
+    );
 
     test('a malformed certificate is refused without asking anyone', () async {
       final token = generateEnrolmentToken();
@@ -540,7 +553,8 @@ void main() {
       final body = utf8.encode(
         jsonEncode({
           'token': base64.encode(token),
-          'certificatePem': '-----BEGIN CERTIFICATE-----\nnope\n'
+          'certificatePem':
+              '-----BEGIN CERTIFICATE-----\nnope\n'
               '-----END CERTIFICATE-----',
         }),
       );
@@ -559,7 +573,6 @@ void main() {
       expect(asked, isFalse);
     });
   });
-
 }
 
 /// The confirmation an operator gives when the id on this screen matches the
