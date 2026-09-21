@@ -27,15 +27,14 @@ import 'app_paths.dart';
 /// called synchronously by both call sites before this existed, so nothing
 /// was made harder to resolve by moving it here.
 ///
-/// **POSIX defaults for path style and `chmod`-availability, carried over
-/// verbatim.** `ReplicaConnector` has always built its side `a` with
-/// `LocalAgent`'s and `Scanner`'s POSIX defaults, on the reasoning that the
-/// head shipped to Android and iOS only. That reasoning no longer holds —
-/// `AppPaths.forHost` has five branches — and threading a real
-/// `HostPlatform` through here is the fix, but it is a change with its own
-/// blast radius through `Scanner` and `LocalAgent.isWindowsReplica` and it
-/// is not this function's to make. What this function does guarantee is
-/// that when the fix happens it happens once.
+/// **Path style and `chmod`-availability come off [AppPaths.fileSystem],
+/// not off the POSIX defaults.** `ReplicaConnector` built its side `a` with
+/// `LocalAgent`'s and `Scanner`'s POSIX defaults for as long as the head
+/// shipped to Android and iOS only; once `AppPaths.forHost` grew five
+/// branches those defaults were wrong on exactly one of them — the Windows
+/// head, which would have split and joined replica paths with `/` (SPEC §3)
+/// and shelled out to a `chmod` that is not there (SPEC §7.4). Both this
+/// head's agents are built here, so the host's answer is read here, once.
 ///
 /// [rootPath] must already be expanded: a run's local root comes off the
 /// Run setup page expanded, and a served root is expanded by the caller
@@ -50,9 +49,12 @@ LocalAgent buildLocalReplicaAgent({
   required int jobs,
 }) {
   final platform = paths.stateDirPlatform;
+  final fileSystem = paths.fileSystem;
   return LocalAgent(
     rootPath: rootPath,
     readPool: ReadPool(),
+    pathStyle: fileSystem.pathStyle,
+    isWindowsReplica: fileSystem.isWindowsReplica,
     archiveStore: JsonlArchiveStore.forProfile(
       profileId: profileId,
       side: side,
@@ -66,6 +68,7 @@ LocalAgent buildLocalReplicaAgent({
     ),
     scanner: Scanner(
       jobs: jobs,
+      pathStyle: fileSystem.pathStyle,
       // SPEC §16: this replica's own filesystem, probed once here — iOS's
       // default APFS volume folds case, Android's app storage does not, and
       // `detectsCaseFolding`'s own doc comment says why an OS check alone

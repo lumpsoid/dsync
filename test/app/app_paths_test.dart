@@ -1,6 +1,8 @@
 import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/host_file_system.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 /// `AppPaths` is a value built from an injected base dir: nothing here calls
@@ -118,6 +120,31 @@ void main() {
       );
 
       expect(archive.path, '/home/me/.local/state/dsync/p-a.jsonl');
+    });
+
+    test('only the Windows head reads its replica as a Windows filesystem '
+        '(SPEC §3, §7.4)', () {
+      // The fact `buildLocalReplicaAgent` threads into `Scanner.pathStyle`
+      // and `LocalAgent.isWindowsReplica`. Before this was resolved per
+      // host, every branch took `LocalAgent`'s POSIX defaults, which are
+      // wrong on exactly one of the five.
+      HostFileSystem fileSystemOn(String os) => AppPaths.forHost(
+        os,
+        environment: const {
+          'HOME': '/home/me',
+          r'LOCALAPPDATA': r'C:/Users/me/AppData/Local',
+          r'APPDATA': r'C:/Users/me/AppData/Roaming',
+        },
+        supportDir: '/base',
+      ).fileSystem;
+
+      expect(fileSystemOn('android'), HostFileSystem.posix);
+      expect(fileSystemOn('ios'), HostFileSystem.posix);
+      expect(fileSystemOn('linux'), HostFileSystem.posix);
+      expect(fileSystemOn('macos'), HostFileSystem.posix);
+      expect(fileSystemOn('windows'), HostFileSystem.windows);
+      expect(fileSystemOn('windows').pathStyle, p.Style.windows);
+      expect(fileSystemOn('windows').isWindowsReplica, isTrue);
     });
 
     test('a platform with no app head fails loudly', () {

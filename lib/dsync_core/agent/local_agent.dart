@@ -32,9 +32,15 @@ class LocalAgent implements Agent {
   /// conversion, the mirror of [Scanner]'s read-side one) — see
   /// [resolveWithinRoot]. Same shape as `Scanner.pathStyle`: a plain value
   /// threaded in rather than a `Platform.pathSeparator` read here, defaulted
-  /// to [p.Style.posix], with the two real callers on a Windows host
-  /// threading [p.Style.windows] in via `HostPlatform.pathStyle`.
+  /// to [p.Style.posix], with callers on a Windows host threading
+  /// [p.Style.windows] in via `HostPlatform.pathStyle` (CLI) or
+  /// `AppPaths.fileSystem` (Flutter head).
   final p.Style _pathStyle;
+
+  /// [_pathStyle], readable by whoever built this agent — so a composition
+  /// root can be tested for having threaded the host's real answer in
+  /// rather than leaving the POSIX default.
+  p.Style get pathStyle => _pathStyle;
 
   /// This replica's resolved archive log path, reported back in [hello]'s
   /// [ReplicaInfo] (SPEC §11.4's run header, task ee190c). Optional because
@@ -60,6 +66,13 @@ class LocalAgent implements Agent {
   /// That is a per-path outcome, and §7.4's rule — archive the mode that
   /// landed, not the one asked for — already covers it.
   bool _chmodUnavailable;
+
+  /// Whether [_applyMode] will skip the `chmod` spawn: `isWindowsReplica` as
+  /// construction said it, until the first failed spawn latches it true.
+  /// Readable so a composition root can be tested for having threaded the
+  /// host's answer in, and so a caller can tell a run's modes were not
+  /// applied without inferring it from the archive.
+  bool get chmodUnavailable => _chmodUnavailable;
 
   /// How [_applyMode] sets permission bits. Defaults to [posixChmod], the
   /// `chmod(2)` syscall through `dart:ffi`.

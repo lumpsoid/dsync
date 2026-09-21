@@ -80,13 +80,15 @@ typedef ConnectedAgents = ({Agent agentA, Agent agentB});
 /// the `EffectiveOptions`, ssh argv or `ReplicaDiagnostics` that make up the
 /// bulk of the CLI's resolver. The trigger stands as written there.
 ///
-/// **What the head assumes about its own side.** The CLI's local side is
+/// **What the head knows about its own side.** The CLI's local side is
 /// parameterised over a `HostPlatform` — state dir rule, path style,
-/// `chmod`-availability — because the CLI ships to Windows. This head ships
-/// to Android and iOS only: it is always the `HostSuppliedStateDir` case
-/// (see `AppPaths`), always a POSIX path style, and always has `chmod`, so
-/// `LocalAgent` and `Scanner` are built with their POSIX defaults rather than
-/// threading a platform value that could only ever take one case.
+/// `chmod`-availability. This head ships to all five v1 targets (SPEC §3),
+/// Windows among them, and carries the same three facts on `AppPaths`
+/// instead: the state dir rule is always the `HostSuppliedStateDir` case
+/// because this head resolves the directory itself, and the path style and
+/// `chmod`-availability come off `AppPaths.fileSystem`. Side `a` reads none
+/// of them here — [buildLocalReplicaAgent] does, for this side and for the
+/// Serve feature's served side both.
 ///
 /// **The archive is keyed by a derived profile id.** The head has no
 /// profiles (SPEC §12 makes them a CLI concept), but `JsonlArchiveStore` and

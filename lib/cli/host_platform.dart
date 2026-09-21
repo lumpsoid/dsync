@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/config_dir.dart';
+import 'package:dsync/dsync_core/host_file_system.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:path/path.dart' as p;
 
@@ -21,12 +22,17 @@ import 'package:path/path.dart' as p;
 /// the case a Flutter head produces from `path_provider` on iOS or Android —
 /// genuinely carries data an OS name cannot encode, and its OS-derived facts
 /// (path style, `chmod` availability) are not determinable from the value
-/// itself: a hypothetical Flutter head on Windows desktop and one on iOS
-/// would both be "host-supplied" but need opposite path styles. [HostPlatform]
-/// is the CLI-head answer, whose cases can each answer all three facts from
+/// itself: a Flutter head on Windows desktop and one on iOS both produce a
+/// host-supplied directory but need opposite path styles. [HostPlatform] is
+/// the CLI-head answer, whose cases can each answer all three facts from
 /// their case alone; [StateDirPlatform] stays a separate axis so a Flutter
 /// head can hand [resolveStateDir] its resolved base directory without
 /// inheriting CLI-only OS semantics.
+///
+/// The two replica-filesystem facts themselves are [HostFileSystem], in
+/// `core`: this class picks the case, and so does `AppPaths.forHost`
+/// (`lib/app/app_paths.dart`) for the Flutter head, which cannot import this
+/// file and whose Android and iOS branches have no case here at all.
 ///
 /// [hostPlatform] is the one place in the CLI head that reads
 /// `Platform.operatingSystem`, at the same edge [Platform.environment] is
@@ -49,13 +55,19 @@ sealed class HostPlatform {
   /// `LOCALAPPDATA`); only macOS collapses the two.
   ConfigDirPlatform get configDirPlatform;
 
+  /// How a replica on this host is read and whether its modes can be
+  /// applied (SPEC §3, §7.4) — `core`'s own value for the pair, shared with
+  /// the Flutter head, which resolves it into `AppPaths.fileSystem`
+  /// (`lib/app/app_paths.dart`) from its own one read of the OS.
+  HostFileSystem get fileSystem;
+
   /// How this host's own filesystem paths are spelled (SPEC §3's read-side
   /// path conversion) — the `package:path` [p.Style] a local replica's
   /// `Scanner` (`lib/dsync_core/scan/scanner.dart`) uses to read a child's
   /// own name out of [FileSystemEntity.path] before rejoining it into the
   /// `/`-normalized, root-relative form the wire (§4.2) and the archive
   /// (§8.1) both assume.
-  p.Style get pathStyle;
+  p.Style get pathStyle => fileSystem.pathStyle;
 
   /// Whether this host is the one platform (Windows, SPEC §3/§7.4) that has
   /// no `chmod` to shell out to and no POSIX permission-bit model to
@@ -63,7 +75,7 @@ sealed class HostPlatform {
   /// ahead of time to skip the spawn rather than discover it empirically at
   /// the cost of one guaranteed-to-fail `Process.run` per differing-mode
   /// file until its own `_chmodUnavailable` latches.
-  bool get isWindowsReplica;
+  bool get isWindowsReplica => fileSystem.isWindowsReplica;
 }
 
 /// Linux, and — SPEC §8.3's "unchanged" — the Android CLI head under Termux.
@@ -77,16 +89,13 @@ class LinuxHost extends HostPlatform {
   const LinuxHost();
 
   @override
+  HostFileSystem get fileSystem => HostFileSystem.posix;
+
+  @override
   StateDirPlatform get stateDirPlatform => const LinuxStateDir();
 
   @override
   ConfigDirPlatform get configDirPlatform => const LinuxConfigDir();
-
-  @override
-  p.Style get pathStyle => p.Style.posix;
-
-  @override
-  bool get isWindowsReplica => false;
 }
 
 /// macOS: `~/Library/Application Support/dsync` for both state (SPEC §8.3)
@@ -95,16 +104,13 @@ class MacOsHost extends HostPlatform {
   const MacOsHost();
 
   @override
+  HostFileSystem get fileSystem => HostFileSystem.posix;
+
+  @override
   StateDirPlatform get stateDirPlatform => const MacOsStateDir();
 
   @override
   ConfigDirPlatform get configDirPlatform => const MacOsConfigDir();
-
-  @override
-  p.Style get pathStyle => p.Style.posix;
-
-  @override
-  bool get isWindowsReplica => false;
 }
 
 /// Windows: `%LOCALAPPDATA%\dsync` for state (SPEC §8.3), `%APPDATA%\dsync`
@@ -114,16 +120,13 @@ class WindowsHost extends HostPlatform {
   const WindowsHost();
 
   @override
+  HostFileSystem get fileSystem => HostFileSystem.windows;
+
+  @override
   StateDirPlatform get stateDirPlatform => const WindowsStateDir();
 
   @override
   ConfigDirPlatform get configDirPlatform => const WindowsConfigDir();
-
-  @override
-  p.Style get pathStyle => p.Style.windows;
-
-  @override
-  bool get isWindowsReplica => true;
 }
 
 /// Reads `Platform.operatingSystem` once and returns the matching

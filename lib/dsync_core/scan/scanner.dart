@@ -41,10 +41,16 @@ class Scanner {
   /// threaded in is what lets a test hand this a Windows-style path tree
   /// without a Windows host. Defaults to [p.Style.posix], correct for every
   /// platform this project can currently verify (Linux, macOS, Android); the
-  /// two real callers on a Windows host thread [p.Style.windows] in instead,
-  /// resolved once via `lib/cli/host_platform.dart`'s
-  /// `HostPlatform.pathStyle`.
+  /// callers on a Windows host thread [p.Style.windows] in instead, resolved
+  /// once at each head's edge — `lib/cli/host_platform.dart`'s
+  /// `HostPlatform.pathStyle` for the CLI, `lib/app/app_paths.dart`'s
+  /// `AppPaths.fileSystem` for the Flutter head.
   final p.Context _pathContext;
+
+  /// The style [_pathContext] was built with — what this scanner reads a
+  /// child's own name with, readable by whoever built it so a composition
+  /// root can be tested for having threaded the host's real answer in.
+  p.Style get pathStyle => _pathContext.style;
 
   /// How two paths are compared for SPEC §16's collision check: both map
   /// through this to a key, and two different paths landing on the same key

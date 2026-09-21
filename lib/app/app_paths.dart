@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/dsync_core/config_dir.dart';
+import 'package:dsync/dsync_core/host_file_system.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -56,11 +57,15 @@ class AppPaths {
   /// class doc comment). `core` joins `dsync` onto it, the same as every
   /// other branch; an empty [baseDir] is refused by `core` at construction
   /// (`ArgumentError`) rather than resolving to a bare `/dsync`.
+  ///
+  /// [HostFileSystem.posix] is not a default here but the answer: both
+  /// platforms taking this branch are POSIX and both have `chmod`.
   AppPaths(String baseDir)
     : this._(
         HostSuppliedConfigDir(baseDir),
         const {},
         HostSuppliedStateDir(baseDir),
+        HostFileSystem.posix,
       );
 
   /// The desktop branch: the same directories the CLI head resolves, from
@@ -76,7 +81,8 @@ class AppPaths {
     required StateDirPlatform stateDirPlatform,
     required ConfigDirPlatform configDirPlatform,
     required Map<String, String> environment,
-  }) : this._(configDirPlatform, environment, stateDirPlatform);
+    required HostFileSystem fileSystem,
+  }) : this._(configDirPlatform, environment, stateDirPlatform, fileSystem);
 
   /// Positional, and private: the two fields it keeps for [configDir]'s
   /// lazy resolution are private, and Dart has no private *named*
@@ -85,6 +91,7 @@ class AppPaths {
     this._configDirPlatform,
     this._environment,
     StateDirPlatform stateDirPlatform,
+    this.fileSystem,
   ) : stateDir = resolveStateDir(_environment, stateDirPlatform);
 
   final ConfigDirPlatform _configDirPlatform;
@@ -126,16 +133,19 @@ class AppPaths {
   }) => switch (operatingSystem) {
     'android' || 'ios' => AppPaths(supportDir),
     'linux' => AppPaths.forDesktop(
+      fileSystem: HostFileSystem.posix,
       stateDirPlatform: const LinuxStateDir(),
       configDirPlatform: const LinuxConfigDir(),
       environment: environment,
     ),
     'macos' => AppPaths.forDesktop(
+      fileSystem: HostFileSystem.posix,
       stateDirPlatform: const MacOsStateDir(),
       configDirPlatform: const MacOsConfigDir(),
       environment: environment,
     ),
     'windows' => AppPaths.forDesktop(
+      fileSystem: HostFileSystem.windows,
       stateDirPlatform: const WindowsStateDir(),
       configDirPlatform: const WindowsConfigDir(),
       environment: environment,
@@ -166,6 +176,21 @@ class AppPaths {
     _environment,
     _configDirPlatform,
   );
+
+  /// How a replica on *this* device is read and whether its modes can be
+  /// applied (SPEC §3, §7.4) — resolved from the same `Platform.operatingSystem`
+  /// read as the directory rules, in [forHost], and read by
+  /// `buildLocalReplicaAgent` (`local_replica_agent.dart`) for the `Scanner`
+  /// and the `LocalAgent` it builds.
+  ///
+  /// It sits on [AppPaths] rather than on `lib/cli/host_platform.dart`'s
+  /// `HostPlatform` — which carries the same fact for the CLI head — because
+  /// this head deliberately imports nothing from `lib/cli`, and because
+  /// `HostPlatform`'s three cases cannot express the Android and iOS heads at
+  /// all: those supply their directories as a value rather than deriving them
+  /// from the environment. This class is already the head's one answer to
+  /// "which host is this", so it carries all of it.
+  final HostFileSystem fileSystem;
 
   /// The [StateDirPlatform] case to hand `core`'s `forProfile` factories
   /// (`JsonlArchiveStore`, `ReplicaLock`), which resolve the state directory
