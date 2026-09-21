@@ -117,6 +117,7 @@ class _RunPageState extends State<RunPage> {
     SyncRunFinished() ||
     SyncRunStopped() ||
     SyncRunPaused() ||
+    SyncRunReplicaBusy() ||
     SyncRunFailed() => false,
   };
 
@@ -135,6 +136,7 @@ class _RunPageState extends State<RunPage> {
       SyncRunFinished() ||
       SyncRunStopped() ||
       SyncRunPaused() ||
+      SyncRunReplicaBusy() ||
       SyncRunFailed() => false,
     };
     return Navigator.of(context).push(
@@ -200,6 +202,7 @@ class _RunPageState extends State<RunPage> {
               SyncRunFinished() ||
               SyncRunStopped() ||
               SyncRunPaused() ||
+              SyncRunReplicaBusy() ||
               SyncRunFailed() => IconButton(
                 key: const Key('run-timings'),
                 icon: const Icon(Icons.speed_outlined),
@@ -228,7 +231,9 @@ class _RunPageState extends State<RunPage> {
             // and read rather than unlocked). A finished or stopped run is
             // an outcome, not an interruption, and is not re-run from here.
             builder: (context, _) => switch (state.phase) {
-              SyncRunPaused() || SyncRunFailed() => TextButton(
+              SyncRunPaused() ||
+              SyncRunReplicaBusy() ||
+              SyncRunFailed() => TextButton(
                 key: const Key('run-resume'),
                 onPressed: () => _controller.resume(widget.request),
                 child: const Text('Resume'),
@@ -255,6 +260,7 @@ class _RunPageState extends State<RunPage> {
               SyncRunFinished() ||
               SyncRunStopped() ||
               SyncRunPaused() ||
+              SyncRunReplicaBusy() ||
               SyncRunFailed() => TextButton(
                 key: const Key('run-done'),
                 onPressed: widget.onDone,
@@ -293,6 +299,7 @@ class _RunPageState extends State<RunPage> {
           SyncRunFinished() ||
           SyncRunStopped() ||
           SyncRunPaused() ||
+          SyncRunReplicaBusy() ||
           SyncRunFailed() => const SizedBox.shrink(),
         },
       ),
@@ -510,6 +517,10 @@ class _PhaseLine extends StatelessWidget {
         SyncRunPaused(:final completedActions) => Text(
           pausedMessage(completedActions),
           key: const Key('run-paused'),
+        ),
+        SyncRunReplicaBusy(:final message) => _NoticeLine.error(
+          message,
+          key: const Key('run-replica-busy'),
         ),
         SyncRunFailed(:final message) => _NoticeLine.error(
           message,

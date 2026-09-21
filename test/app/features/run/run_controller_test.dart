@@ -414,6 +414,64 @@ void main() {
     );
   });
 
+  group('a replica already in use (SPEC §4.3)', () {
+    /// This device's own lock for the pair [request] names, held by someone
+    /// else — another `dsync` process, or the Archives page in this one.
+    /// Same file either way: the in-process guard and the OS lock give the
+    /// run the same refusal.
+    Future<ReplicaLock> holdLocalReplica() async {
+      final lock = ReplicaLock.forProfile(
+        profileId: ReplicaConnector.profileIdFor(
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: remoteRoot.path,
+        ),
+        side: 'a',
+        platform: (await app.paths).stateDirPlatform,
+      );
+      await lock.acquire();
+      return lock;
+    }
+
+    test('is its own phase, not a failed run', () async {
+      final held = await holdLocalReplica();
+      addTearDown(held.release);
+
+      await make(served(desktopAgent)).start(request(dryRun: true));
+
+      expect(controller.state.phase, isA<SyncRunReplicaBusy>());
+    });
+
+    test('names the folder, the lock file, and what to do about it', () async {
+      final held = await holdLocalReplica();
+      addTearDown(held.release);
+
+      await make(served(desktopAgent)).start(request(dryRun: true));
+
+      final busy = controller.state.phase as SyncRunReplicaBusy;
+      expect(busy.replicaRootPath, localRoot.path);
+      expect(busy.lockPath, held.path);
+      expect(busy.message, contains(localRoot.path));
+      expect(busy.message, contains(held.path));
+      expect(busy.message, contains('another dsync process on this device'));
+      expect(busy.message, contains('Wait for that run to finish'));
+      // Not `ReplicaLockHeldException.toString()`, which is the line an
+      // ordinary failure would have shown.
+      expect(busy.message, isNot(contains('Replica lock held:')));
+    });
+
+    test('is retried by Resume once the other holder is done', () async {
+      final held = await holdLocalReplica();
+      await make(served(desktopAgent)).start(request(dryRun: true));
+      expect(controller.state.phase, isA<SyncRunReplicaBusy>());
+
+      await held.release();
+      await controller.resume(request(dryRun: true));
+
+      expect(controller.state.phase, isA<SyncRunFinished>());
+    });
+  });
+
   group('backgrounding', () {
     test('pausing suspends the run, and resuming finishes the work', () async {
       await File('${localRoot.path}/new.txt').writeAsString('from a');

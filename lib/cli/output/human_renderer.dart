@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dsync/cli/options/verbosity.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
@@ -526,7 +527,33 @@ class HumanRenderer {
   /// one line in this renderer that is genuinely an error rather than
   /// information about a successful run.
   void _renderError(RunErrorEvent event) {
+    if (event.error case final ReplicaLockHeldException held) {
+      err.writeln(
+        'error: ${_replicaHolding(held.path)} is in use by another dsync '
+        'process on this machine (lock: ${held.path}).',
+      );
+      err.writeln(
+        'Wait for that run to finish, or stop it, then run this again.',
+      );
+      return;
+    }
     err.writeln('error: ${event.error}');
+  }
+
+  /// Which replica [lockPath] is the lock for, in the terms the run header
+  /// already uses: the side and the location the user typed when this run
+  /// knows it, the profile otherwise (an `--json` run, or a lock file this
+  /// run resolved under another name).
+  String _replicaHolding(String lockPath) {
+    for (final (side, diagnostics) in [
+      ('A', diagnosticsA),
+      ('B', diagnosticsB),
+    ]) {
+      if (diagnostics != null && diagnostics.lockPath == lockPath) {
+        return 'replica $side (${diagnostics.location})';
+      }
+    }
+    return 'profile $profileId';
   }
 
   /// SPEC §6's action vocabulary, in the table's own notation (`copy A→B`,

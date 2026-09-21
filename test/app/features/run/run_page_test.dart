@@ -773,6 +773,37 @@ void main() {
     expect(find.byKey(const Key('run-stop')), findsNothing);
   });
 
+  testWidgets('a replica in use: its own line, plus Resume and Done', (
+    tester,
+  ) async {
+    controller.state
+      ..recordStart(dryRun: false)
+      ..recordPhase(
+        const SyncRunReplicaBusy(
+          replicaRootPath: '/storage/emulated/0/Documents/notes',
+          lockPath: '/data/state/notes-a.lock',
+        ),
+      );
+    await pump(tester);
+
+    // Its own key, not `run-failed`: the page tells this apart from a run
+    // that broke, and says what to do about it.
+    expect(find.byKey(const Key('run-replica-busy')), findsOneWidget);
+    expect(find.byKey(const Key('run-failed')), findsNothing);
+    expect(
+      find.textContaining('another dsync process on this device'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('/storage/emulated/0/Documents/notes'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('/data/state/notes-a.lock'), findsOneWidget);
+    expect(find.byKey(const Key('run-resume')), findsOneWidget);
+    expect(find.byKey(const Key('run-done')), findsOneWidget);
+    expect(find.byKey(const Key('run-stop')), findsNothing);
+  });
+
   group('the conflict sheet', () {
     const localBoth = ScanEntry(
       path: 'both.txt',

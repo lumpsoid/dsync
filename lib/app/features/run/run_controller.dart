@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
@@ -233,14 +234,24 @@ class SyncRunController {
   /// than a repetition is the class doc comment's "what resuming
   /// continues".
   ///
-  /// Only from a phase whose loop is over — [SyncRunPaused] or
-  /// [SyncRunFailed]. A finished or stopped run is an outcome the user
-  /// asked for and is not re-run behind their back, and a live one has a
-  /// subscription that must be suspended first; anything else is ignored,
-  /// for the same reason [start]'s guard is.
+  /// Only from a phase whose loop is over — [SyncRunPaused],
+  /// [SyncRunFailed], or [SyncRunReplicaBusy], whose own remedy is "try
+  /// again once the other run is done". A finished or stopped run is an
+  /// outcome the user asked for and is not re-run behind their back, and a
+  /// live one has a subscription that must be suspended first; anything
+  /// else is ignored, for the same reason [start]'s guard is.
   Future<void> resume(RunRequest request) async {
     if (_disposed) return;
-    if (state.phase is! SyncRunPaused && state.phase is! SyncRunFailed) return;
+    final resumable = switch (state.phase) {
+      SyncRunPaused() || SyncRunFailed() || SyncRunReplicaBusy() => true,
+      SyncRunIdle() ||
+      SyncRunConnecting() ||
+      SyncRunRunning() ||
+      SyncRunAwaitingDecisions() ||
+      SyncRunFinished() ||
+      SyncRunStopped() => false,
+    };
+    if (!resumable) return;
     _stopRequested = false;
     _pauseRequested = false;
     _completedActions = 0;
@@ -410,6 +421,7 @@ class SyncRunController {
     SyncRunFinished() ||
     SyncRunStopped() ||
     SyncRunPaused() ||
+    SyncRunReplicaBusy() ||
     SyncRunFailed() => false,
   };
 
@@ -632,7 +644,19 @@ class SyncRunController {
           ),
         );
       case RunErrorEvent(:final error):
-        _recordPhase(SyncRunFailed(_errorMessage(error, request)));
+        // SPEC §4.3: a held replica lock is its own outcome, not a failure
+        // — `RunController` yields the exception itself, unwrapped, so this
+        // is decided on the type and never on the text of a message.
+        if (error case final ReplicaLockHeldException held) {
+          _recordPhase(
+            SyncRunReplicaBusy(
+              replicaRootPath: request.localRootPath,
+              lockPath: held.path,
+            ),
+          );
+        } else {
+          _recordPhase(SyncRunFailed(_errorMessage(error, request)));
+        }
     }
   }
 

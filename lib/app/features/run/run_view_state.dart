@@ -153,6 +153,39 @@ final class SyncRunFailed extends SyncRunPhase {
   final String message;
 }
 
+/// The run never started because this device's replica is already locked
+/// (SPEC §4.3): another `dsync` process on this machine holds it, or another
+/// holder inside this one does — the Archives page deleting a log while a
+/// run is on, say.
+///
+/// Its own phase rather than a [SyncRunFailed] carrying a sentence, because
+/// the page renders it differently from a run that failed: nothing went
+/// wrong here, something else is simply using the replica, and the remedy is
+/// to wait rather than to investigate. Which process holds it is deliberately
+/// not claimed — the lock file carries no owner, and one read out of it would
+/// be stale by the time this line is on screen.
+final class SyncRunReplicaBusy extends SyncRunPhase {
+  const SyncRunReplicaBusy({
+    required this.replicaRootPath,
+    required this.lockPath,
+  });
+
+  /// The folder this device syncs — the replica the user recognises.
+  final String replicaRootPath;
+
+  /// The lock file that is held, named so the user can see for themselves
+  /// that it is the one their other run took.
+  final String lockPath;
+
+  /// The whole line to show. Lives here rather than in the page for the
+  /// reason [SyncRunFailed.message] is a field: the phase is what knows
+  /// what happened.
+  String get message =>
+      '"$replicaRootPath" is in use by another dsync process on this '
+      'device. Wait for that run to finish, or stop it, then try again. '
+      '(Lock file: $lockPath)';
+}
+
 /// SPEC §11.4's run header, rendered: the two locations and what the tool
 /// already knows about the pair. [history] is "last synced ..." or "first
 /// sync of this pair ..."; [firstSyncWarning] is SPEC §6's "a path one side

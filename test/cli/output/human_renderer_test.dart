@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dsync/cli/options/verbosity.dart';
 import 'package:dsync/cli/output/human_renderer.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -602,6 +603,56 @@ void main() {
         returnsNormally,
       );
       expect(r.out.buffer.toString(), isNot(contains('A  ')));
+    });
+  });
+
+  group('HumanRenderer.render(RunErrorEvent) over a held replica lock '
+      '(SPEC §4.3)', () {
+    final diagnosticsA = ReplicaDiagnostics(
+      archivePath: '/state/notes-a.jsonl',
+      lockPath: '/state/notes-a.lock',
+      location: Location.parse('/home/me/notes'),
+      locality: Locality.inProcess,
+    );
+
+    test('names the replica, the lock file, and what to do about it', () {
+      final r = _Rendered(diagnosticsA: diagnosticsA, profileId: 'notes');
+      r.renderer.render(
+        const RunErrorEvent(ReplicaLockHeldException('/state/notes-a.lock')),
+      );
+
+      final err = r.err.buffer.toString();
+      expect(err, contains('another dsync process on this machine'));
+      expect(err, contains('/home/me/notes'));
+      expect(err, contains('/state/notes-a.lock'));
+      expect(err, contains('Wait for that run to finish, or stop it'));
+      // Not the bare `toString` an ordinary failure gets: the point of the
+      // case is that it reads as "in use", not as "the run broke".
+      expect(err, isNot(contains('Replica lock held:')));
+    });
+
+    test('falls back to the profile when no side owns that lock path', () {
+      final r = _Rendered(diagnosticsA: diagnosticsA, profileId: 'notes');
+      r.renderer.render(
+        const RunErrorEvent(ReplicaLockHeldException('/state/other-b.lock')),
+      );
+
+      final err = r.err.buffer.toString();
+      expect(err, contains('profile notes'));
+      expect(err, contains('/state/other-b.lock'));
+    });
+
+    test('is still printed at Verbosity.quiet', () {
+      final r = _Rendered(verbosity: Verbosity.quiet, profileId: 'notes');
+      r.renderer.render(
+        const RunErrorEvent(ReplicaLockHeldException('/state/notes-a.lock')),
+      );
+
+      expect(r.out.buffer.toString(), isEmpty);
+      expect(
+        r.err.buffer.toString(),
+        contains('another dsync process on this machine'),
+      );
     });
   });
 
