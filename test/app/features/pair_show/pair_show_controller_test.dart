@@ -45,7 +45,7 @@ void main() {
     controller = PairShowController(
       app,
       bind: _bindOnLoopback,
-      bindAddress: InternetAddress.loopbackIPv4,
+      bindAddress: _loopbackBind,
       advertisableAddress: _loopback,
     );
   });
@@ -119,7 +119,7 @@ void main() {
     controller = PairShowController(
       app,
       bind: _bindOnLoopback,
-      bindAddress: InternetAddress.loopbackIPv4,
+      bindAddress: _loopbackBind,
       advertisableAddress: () async => '203.0.113.7',
     );
 
@@ -246,7 +246,7 @@ void main() {
       controller = PairShowController(
         app,
         bind: _bindOnLoopback,
-        bindAddress: InternetAddress.loopbackIPv4,
+        bindAddress: _loopbackBind,
         advertisableAddress: _loopback,
         window: const Duration(milliseconds: 300),
       );
@@ -294,7 +294,7 @@ void main() {
     controller = PairShowController(
       app,
       bind: _bindOnLoopback,
-      bindAddress: InternetAddress.loopbackIPv4,
+      bindAddress: _loopbackBind,
       advertisableAddress: _loopback,
       window: const Duration(milliseconds: 50),
     );
@@ -308,7 +308,7 @@ void main() {
     controller = PairShowController(
       app,
       bind: _bindOnLoopback,
-      bindAddress: InternetAddress.loopbackIPv4,
+      bindAddress: _loopbackBind,
       advertisableAddress: _loopback,
       window: const Duration(milliseconds: 50),
     );
@@ -344,7 +344,7 @@ void main() {
   test('an endpoint that cannot be bound is reported, not thrown', () async {
     controller = PairShowController(
       app,
-      bindAddress: InternetAddress.loopbackIPv4,
+      bindAddress: _loopbackBind,
       bind: ({
         required address,
         required ownIdentity,
@@ -403,3 +403,8 @@ class PairingOfferPayload {
   final PairingPayload payload;
   final String address;
 }
+
+/// The bind address every controller in this file is built with: the
+/// loopback interface, so a test binds a real endpoint without offering it
+/// to the network. A callback because the production one is a store read.
+Future<InternetAddress> _loopbackBind() async => InternetAddress.loopbackIPv4;

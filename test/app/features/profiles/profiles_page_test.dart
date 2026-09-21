@@ -27,6 +27,7 @@ void main() {
   final opened = <String>[];
   var devicesOpened = 0;
   var archivesOpened = 0;
+  var settingsOpened = 0;
 
   setUp(() {
     app = AppController(
@@ -39,6 +40,7 @@ void main() {
     opened.clear();
     devicesOpened = 0;
     archivesOpened = 0;
+    settingsOpened = 0;
   });
 
   // Scopes are process-global: reset both so a pin cannot leak into the
@@ -65,6 +67,7 @@ void main() {
         onOpenProfile: opened.add,
         onOpenDevices: () => devicesOpened++,
         onOpenArchives: () => archivesOpened++,
+        onOpenSettings: () => settingsOpened++,
       ),
     ),
   );
@@ -150,6 +153,20 @@ void main() {
     // Maintenance, not a run: neither other destination moves.
     expect(devicesOpened, 0);
     expect(opened, isEmpty);
+  });
+
+  testWidgets('the app bar reaches Settings', (tester) async {
+    ready();
+    app.state.recordProfiles(const []);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('profiles-open-settings')));
+    await tester.pumpAndSettle();
+
+    expect(settingsOpened, 1);
+    // The installation's own preferences, not a run: nothing else moves.
+    expect(archivesOpened, 0);
+    expect(devicesOpened, 0);
   });
 
   testWidgets('every profile is a row naming the run it re-runs', (

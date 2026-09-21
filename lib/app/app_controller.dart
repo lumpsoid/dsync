@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/models/paired_device.dart';
 
 import 'app_bootstrap.dart';
 import 'app_paths.dart';
+import 'app_settings_store.dart';
 import 'app_state.dart';
 import 'folder_access.dart';
 import 'paired_device_row.dart';
@@ -73,6 +74,17 @@ class AppController {
   /// result, the way Pair saves through the paired-device store.
   Future<SyncProfileStore> get profiles async =>
       SyncProfileStore(File('${(await paths).stateDir}/sync-profiles.json'));
+
+  /// The settings store over the resolved state dir — this head's own
+  /// preferences, beside the other two stores. Shared with the Settings
+  /// page, which writes through it, and with `PairShowScope`, which reads
+  /// the bind address out of it when a pairing window opens.
+  ///
+  /// Deliberately not read during [bootstrap]: a damaged settings file
+  /// loses convenience, not trust (see `AppSettingsStore`), so it surfaces
+  /// on the Settings page rather than keeping the app off its home list.
+  Future<AppSettingsStore> get settings async =>
+      AppSettingsStore(File('${(await paths).stateDir}/settings.json'));
 
   /// Runs the sequence a page depends on — identity first, then the
   /// paired-device store — and moves [AppState.bootstrap] from loading to

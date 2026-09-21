@@ -11,25 +11,34 @@ import 'pair_show_controller.dart';
 ///
 /// The default factory names the real [bindEnrolmentListenerOnThisDevice] —
 /// the one place a socket-binding endpoint is wired into this feature — and
-/// the address it binds, which is this head's equivalent of `dsync pair show
-/// --bind` (task 2b26ac).
+/// how the address it binds is obtained, which is this head's equivalent of
+/// `dsync pair show --bind` (task 2b26ac).
 ///
-/// `anyIPv4`: the same default the CLI's flag carries, so both heads listen
-/// in the same place until somebody says otherwise. `::` would also accept
-/// IPv4-mapped connections, but it fails outright on a host with IPv6
-/// disabled and a silent fallback would make that undiagnosable, so IPv6 is
-/// opt-in. The head has no settings surface to opt in through yet; when it
-/// grows one, this line is what it writes to.
+/// **The address is read, not stated.** It used to be
+/// `InternetAddress.anyIPv4` written here, because the head had no settings
+/// surface to opt out of it through; it now has one, so the value comes
+/// from the Settings page's Network section by way of `AppSettingsStore` —
+/// still `0.0.0.0` by default, the same default the CLI's flag carries.
+/// Read per window rather than once, because the store's contract is fresh
+/// reads: a user who changes the address and then shows a code gets the
+/// address they just set, not the one this process started with.
 final class PairShowScope extends Scope<PairShowController> {
   PairShowScope()
     : super(
         () => PairShowController(
           appScope.controller,
           bind: bindEnrolmentListenerOnThisDevice,
-          bindAddress: InternetAddress.anyIPv4,
+          bindAddress: storedBindAddress,
         ),
       );
 }
+
+/// The stored bind address, freshly read. Throws
+/// `AppSettingsStoreCorruptException` when the settings file is damaged —
+/// `PairShowController.show` renders that as the window's refusal rather
+/// than binding the defaults on a file it cannot trust.
+Future<InternetAddress> storedBindAddress() async =>
+    (await (await appScope.controller.settings).load()).bindAddress;
 
 /// The single Show-this-device's-code scope.
 final pairShowScope = PairShowScope();

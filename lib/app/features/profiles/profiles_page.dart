@@ -42,6 +42,7 @@ class ProfilesPage extends StatefulWidget {
     required this.onOpenProfile,
     required this.onOpenDevices,
     required this.onOpenArchives,
+    required this.onOpenSettings,
   });
 
   /// Opens Run setup pre-filled from the tapped profile, by id — the id is
@@ -55,6 +56,11 @@ class ProfilesPage extends StatefulWidget {
   /// they cost and can be deleted. From the app bar only: it is maintenance,
   /// not part of setting up or making a run.
   final VoidCallback onOpenArchives;
+
+  /// Opens the Settings page. From the app bar of the home page, because
+  /// settings belong to the installation rather than to any one device,
+  /// profile or run — this is the only screen every route starts from.
+  final VoidCallback onOpenSettings;
 
   @override
   State<ProfilesPage> createState() => _ProfilesPageState();
@@ -80,6 +86,12 @@ class _ProfilesPageState extends State<ProfilesPage> {
             icon: const Icon(Icons.sd_storage_outlined),
             tooltip: 'Sync history',
             onPressed: widget.onOpenArchives,
+          ),
+          IconButton(
+            key: const Key('profiles-open-settings'),
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Settings',
+            onPressed: widget.onOpenSettings,
           ),
           TextButton(
             key: const Key('profiles-open-devices'),

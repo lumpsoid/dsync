@@ -38,7 +38,7 @@ void main() {
     controller = PairShowController(
       app,
       bind: _neverBinds,
-      bindAddress: InternetAddress.loopbackIPv4,
+      bindAddress: _loopbackBind,
     );
     appScope.setController(app);
     pairShowScope.setController(controller);
@@ -310,7 +310,7 @@ void main() {
 /// wait for.
 class _RecordingController extends PairShowController {
   _RecordingController(super.app)
-    : super(bind: _neverBinds, bindAddress: InternetAddress.loopbackIPv4);
+    : super(bind: _neverBinds, bindAddress: _loopbackBind);
 
   String? shownFor;
 
@@ -346,3 +346,8 @@ Future<EnrolmentListener> _neverBinds({
 /// The name [_neverBinds] was last asked to bind under — what the page said
 /// this device will call whoever redeems the code.
 String? boundPeerName;
+
+/// The bind address every controller in this file is built with: the
+/// loopback interface. A callback because the production one is a store
+/// read.
+Future<InternetAddress> _loopbackBind() async => InternetAddress.loopbackIPv4;

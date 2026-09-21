@@ -13,6 +13,7 @@ import 'features/pair_show/pair_show_page.dart';
 import 'features/profiles/profiles_page.dart';
 import 'features/run/run_page.dart';
 import 'features/run_setup/run_setup_page.dart';
+import 'features/settings/settings_page.dart';
 import 'features/shared_folders/shared_folders_page.dart';
 import 'features/this_device/this_device_page.dart';
 import 'features/run_setup/run_setup_view_state.dart';
@@ -108,6 +109,7 @@ class _BootstrapGate extends StatelessWidget {
               _openRunSetup(context, RunSetupFromProfile(profileId)),
           onOpenDevices: () => _openDevices(context),
           onOpenArchives: () => _openArchives(context),
+          onOpenSettings: () => _openSettings(context),
         ),
       },
     );
@@ -158,6 +160,14 @@ class _BootstrapGate extends StatelessWidget {
     return Navigator.of(
       context,
     ).push(MaterialPageRoute<void>(builder: (_) => const SharedFoldersPage()));
+  }
+
+  /// What this installation keeps for itself — one Network section so far,
+  /// holding the address the pairing listener binds. A leaf: it takes no
+  /// callbacks because nothing leads anywhere from it.
+  Future<void> _openSettings(BuildContext context) {
+    return Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const SettingsPage()));
   }
 
   /// The Sync history page. A leaf: it takes no callbacks because nothing

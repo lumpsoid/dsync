@@ -11,6 +11,7 @@ import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 
 import '../../app_controller.dart';
+import '../../app_settings_store.dart';
 import 'pair_show_view_state.dart';
 import 'pairing_offer.dart';
 
@@ -132,22 +133,24 @@ class PairShowController {
   /// How the endpoint is bound; the scope names the real one.
   final BindEnrolmentListener bind;
 
-  /// Which address the endpoint listens on — the head's equivalent of
-  /// `dsync pair show --bind` (task 2b26ac), stated once at the composition
-  /// root (`PairShowScope`) rather than defaulted here.
+  /// How the address the endpoint listens on is obtained — the head's
+  /// equivalent of `dsync pair show --bind` (task 2b26ac), named once at
+  /// the composition root (`PairShowScope`) rather than defaulted here.
   ///
-  /// `InternetAddress.anyIPv4` there, the same default the CLI's flag has
-  /// and for the same reason: `::` would also accept IPv4-mapped
-  /// connections, but it fails outright where IPv6 is disabled, and a
-  /// silent fallback is the one thing worse than failing. A non-wildcard
-  /// address here is also what the payload advertises — see
-  /// [chosenAdvertisableHost] — so "listen only on the tunnel" and
-  /// "advertise the tunnel" stay one decision.
+  /// A callback rather than a value because it is now a user's setting,
+  /// read from disk, and a window must bind what the Settings page last
+  /// stored rather than what this process started with. Awaited at the top
+  /// of [show], so the whole of a window sees one address.
   ///
-  /// No default, so the day this becomes a user-visible setting it is a
-  /// change to one call site rather than a search for the ones that kept
-  /// the old behaviour by omission.
-  final InternetAddress bindAddress;
+  /// `0.0.0.0` by default, the same default the CLI's flag has and for the
+  /// same reason: `::` would also accept IPv4-mapped connections, but it
+  /// fails outright where IPv6 is disabled, and a silent fallback is the
+  /// one thing worse than failing. A non-wildcard address is also what the
+  /// payload advertises — see [chosenAdvertisableHost] — so "listen only on
+  /// the tunnel" and "advertise the tunnel" stay one decision.
+  ///
+  /// No default here, so no call site can acquire an address by omission.
+  final Future<InternetAddress> Function() bindAddress;
 
   /// This device's own best-effort advertisable address (SPEC §4.4's address
   /// hint) — see [preferredAdvertisableAddress]'s own doc comment.
@@ -205,6 +208,17 @@ class PairShowController {
     final stopped = _stopped = Completer<void>();
     _record(stopped, const PairShowStarting());
 
+    final InternetAddress bindTo;
+    try {
+      bindTo = await bindAddress();
+    } on AppSettingsStoreCorruptException catch (e) {
+      // The settings file exists and cannot be read. Binding the defaults
+      // instead would be reading damaged bytes as a decision the user never
+      // made, so the window refuses and says what to do about the file.
+      _record(stopped, PairShowFailed(e.toString()));
+      return;
+    }
+
     final identity = await app.loadOrCreateIdentity();
     final pairedDeviceStore = await app.pairedDevices;
     final token = generateEnrolmentToken();
@@ -230,7 +244,7 @@ class PairShowController {
     final EnrolmentListener listener;
     try {
       listener = await bind(
-        address: bindAddress,
+        address: bindTo,
         ownIdentity: identity,
         peerName: peerName,
         token: token,
@@ -280,10 +294,10 @@ class PairShowController {
     });
 
     try {
-      // What [bindAddress] already settles, when it settles it; this
+      // What the bind address already settles, when it settles it; this
       // device's own guess across its interfaces only when it does not.
       final host =
-          chosenAdvertisableHost(bindAddress: bindAddress) ??
+          chosenAdvertisableHost(bindAddress: bindTo) ??
           await advertisableAddress() ??
           InternetAddress.loopbackIPv4.address;
       final address = PeerAddress(host: host, port: listener.port);
@@ -398,7 +412,10 @@ class PairShowController {
   /// as "paired, but" — the pairing itself held — with `core`'s own line
   /// naming the file, the same way `PairController` reports it from the
   /// other end.
-  Future<void> _recordPaired(PairedDevice device, Completer<void> stopped) async {
+  Future<void> _recordPaired(
+    PairedDevice device,
+    Completer<void> stopped,
+  ) async {
     try {
       await app.refreshDevices();
     } on PairedDeviceStoreCorruptException catch (e) {
