@@ -7,10 +7,12 @@ import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
+import 'package:dsync/dsync_core/protocol/bounded_secure_handshake.dart';
 import 'package:dsync/dsync_core/protocol/byte_socket.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/io_byte_socket.dart';
 import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
+import 'package:dsync/dsync_core/protocol/raw_secure_byte_socket.dart';
 
 /// A [Channel] over a real socket, talking to a `dsync agent --listen` on the
 /// other end (SPEC §4.2) — the transport that needs no system binary.
@@ -26,23 +28,34 @@ import 'package:dsync/dsync_core/protocol/flushed_sink.dart';
 /// gate is the filesystem's and needs nothing further, while a socket that
 /// leaves the machine authenticates and encrypts itself with mutual TLS,
 /// pinned to the one peer the caller dialed. Nothing about [Channel] or this
-/// class changes either way — [SecureSocket] already implements [Socket], so
-/// the whole client-side delta of the transport that leaves the machine is
-/// this one extra constructor.
+/// class changes either way: the dialed secure end is a [RawSecureSocket],
+/// because bounding its handshake means keeping the [RawSocket] across the
+/// upgrade (see [secureClientWithin]), and [SocketChannel.over] takes one
+/// through [RawSecureByteSocket] exactly as the accepted end does.
 ///
 /// Unlike [SshChannel] there is no second stream to report diagnostics on: a
 /// socket that refuses a connection says so in the [SocketException] itself,
 /// and a peer that is not speaking the protocol is caught by the version
 /// handshake like any other.
 class SocketChannel implements Channel {
+  /// How long [connectSecure] gives a dialed peer to finish its half of the
+  /// TLS handshake before destroying the connection — the same ten seconds
+  /// `AgentListener.defaultHandshakeDeadline` gives an accepted one, since it
+  /// is the same handshake seen from the other end.
+  ///
+  /// This is not the callers' own `.timeout()` (`ReplicaConnector`,
+  /// `connected_replicas.dart`) and does not replace it: theirs bounds how
+  /// long *they* wait, this bounds how long the *connection* lives. Both are
+  /// needed — see [secureClientWithin] for what a `.timeout()` alone leaks.
+  static const defaultHandshakeDeadline = Duration(seconds: 10);
+
   final ByteSocket _socket;
 
   /// One write on the wire at a time, however many operations are sending,
   /// carrying every frame queued behind it (SPEC §4.2) — see [FlushedSink].
   late final FlushedSink _writer = FlushedSink.over(_socket);
 
-  /// Over a `dart:io` [Socket]: a unix socket, a dialed TCP one, or the
-  /// [SecureSocket] [connectSecure] returns, which is one.
+  /// Over a `dart:io` [Socket]: a unix socket, or a dialed plain TCP one.
   SocketChannel(Socket socket) : this.over(IoByteSocket(socket));
 
   /// Over any byte stream that can carry the protocol — the accepted
@@ -98,7 +111,18 @@ class SocketChannel implements Channel {
   /// expiry check reads, injectable so a test can present a certificate
   /// that has expired without waiting for it to.
   ///
-  /// Throws [PeerCertificateExpiredException] when the peer presented the
+  /// [handshakeDeadline] bounds the TLS handshake itself, which is why this
+  /// dials the [RawSocket] and upgrades it with [secureClientWithin] rather
+  /// than letting [SecureSocket.connect] do both: keeping the raw handle is
+  /// what leaves something to dispose of when the far end completes TCP and
+  /// then says nothing. Without it the descriptor is held until that peer
+  /// hangs up — its decision, never taken by one stalling on purpose — and
+  /// the app head is a long-lived process, so "until the peer hangs up"
+  /// means until the application restarts.
+  ///
+  /// Throws [HandshakeDeadlineExceededException] when the handshake outlived
+  /// [handshakeDeadline], the connection having been destroyed already;
+  /// [PeerCertificateExpiredException] when the peer presented the
   /// right key on a certificate past its `notAfter` — the one refusal whose
   /// fix is on the far end (`dsync pair renew` there), so it is told apart
   /// from a plain [HandshakeException], thrown when the certificate does not
@@ -117,16 +141,19 @@ class SocketChannel implements Channel {
     required String expectedPeerDeviceId,
     required DeviceIdentity ownIdentity,
     DateTime? now,
+    Duration handshakeDeadline = defaultHandshakeDeadline,
   }) async {
     final context = SecurityContext(withTrustedRoots: false)
       ..useCertificateChainBytes(utf8.encode(ownIdentity.certificatePem))
       ..usePrivateKeyBytes(utf8.encode(ownIdentity.privateKeyPem));
     var expired = false;
+    final raw = await RawSocket.connect(host, port);
     try {
-      final socket = await SecureSocket.connect(
-        host,
-        port,
+      final secured = await secureClientWithin(
+        raw,
+        host: host,
         context: context,
+        deadline: handshakeDeadline,
         onBadCertificate: (certificate) {
           if (!_carriesDeviceId(certificate, expectedPeerDeviceId)) {
             return false;
@@ -138,7 +165,7 @@ class SocketChannel implements Channel {
           return !expired;
         },
       );
-      return SocketChannel(socket);
+      return SocketChannel.over(RawSecureByteSocket(secured));
     } on HandshakeException {
       if (expired) throw PeerCertificateExpiredException(expectedPeerDeviceId);
       rethrow;
