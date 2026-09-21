@@ -75,6 +75,11 @@ class RunMetricsRecorder {
   /// plan and waits for a person to confirm it, and it stays alive after the
   /// last phase while a report is read. Both are outside the run — timing
   /// them measures how fast someone reads (task 9d2158 §18).
+  ///
+  /// **"Open" means a phase [_onTheClock], not any phase at all.** Waiting
+  /// for the person is inside `present`, not between phases, so a clock that
+  /// ran while anything was open put the think time straight back into the
+  /// total the fix above took it out of.
   Duration _running = Duration.zero;
   Duration? _openSince;
 
@@ -113,9 +118,20 @@ class RunMetricsRecorder {
     // The first phase to open starts the run's clock; one opening while
     // another is already open changes nothing, which is what keeps this
     // correct if phases ever nest.
-    _openSince ??= now;
+    if (_onTheClock(phase)) _openSince ??= now;
     _phaseStarts[phase] = now;
   }
+
+  /// Whether [phase] being open means the *run* is running.
+  ///
+  /// Every phase but one. [RunPhase.present] is a person deciding (SPEC
+  /// §11.3), and it is not a gap between phases the clock could skip by
+  /// staying closed: both heads park *inside* the presenter — the Flutter
+  /// head on a completer the conflict sheet settles, the CLI on a prompt —
+  /// so the phase is open for the whole of the think time. Measuring it is
+  /// the point of [RunPhase.present] having a row of its own; adding it to
+  /// the total is what made the total measure how fast someone reads.
+  static bool _onTheClock(RunPhase phase) => phase != RunPhase.present;
 
   /// Marks [phase] as finished, adding its span to the total. Ending a phase
   /// that never began is ignored rather than recorded as zero — see
@@ -132,7 +148,10 @@ class RunMetricsRecorder {
     }
     _phaseStarts.remove(phase);
     _phases[phase] = (_phases[phase] ?? Duration.zero) + (now - start);
-    if (_phaseStarts.isEmpty) {
+    // The last phase that counts closing stops the clock. Asked of the keys
+    // rather than of a counter, so a `present` left open by a head that
+    // never closed it cannot hold the clock open either.
+    if (_openSince != null && !_phaseStarts.keys.any(_onTheClock)) {
       _running += now - _openSince!;
       _openSince = null;
     }

@@ -617,7 +617,17 @@ class RunMetrics {
   /// longer than the phases it contains and useless for comparing one run
   /// with another (task 9d2158 §18).
   ///
-  /// Phases do not overlap, so in practice **this is their sum**, and the
+  /// **`present` is excluded, and it is the whole of the person's share.**
+  /// Both heads park inside the presenter — the Flutter head on a completer
+  /// the conflict sheet settles, the CLI on a prompt — so the think time is
+  /// *inside* that phase rather than in a gap between phases, and a clock
+  /// that ran whenever any phase was open counted every second of it. The
+  /// figure is still in the report, as `present`'s own row (SPEC §11.3,
+  /// §17), where it says what it is rather than inflating a total that is
+  /// compared between runs.
+  ///
+  /// Phases do not overlap, so in practice **this is their sum less
+  /// `present`**, and the
   /// containment check that used to compare the two can no longer fail. That
   /// is the deliberate trade: the check was only ever catching the operator,
   /// and work that happens outside every phase is now invisible here rather

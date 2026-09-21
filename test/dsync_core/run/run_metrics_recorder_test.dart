@@ -567,16 +567,50 @@ void main() {
       // and waits to be told to go on, and it outlives the last phase while
       // the report is read. Both used to be in the total.
       advance(const Duration(seconds: 3)); // setup, before the first phase
-      metrics.beginPhase(RunPhase.present);
+      metrics.beginPhase(RunPhase.scan);
       advance(const Duration(seconds: 1));
-      metrics.endPhase(RunPhase.present);
-      advance(const Duration(seconds: 30)); // someone reading the plan
+      metrics.endPhase(RunPhase.scan);
+      advance(const Duration(seconds: 30)); // the generator parked on a yield
       metrics.beginPhase(RunPhase.apply);
       advance(const Duration(seconds: 2));
       metrics.endPhase(RunPhase.apply);
       advance(const Duration(seconds: 9)); // someone reading the report
 
       expect(metrics.snapshot().elapsed, const Duration(seconds: 3));
+    });
+
+    test('the clock does not run while the person decides', () {
+      // The regression this exists for: the think time is *inside*
+      // `present`, not in a gap between phases — both heads park in the
+      // presenter itself — so a clock that ran whenever any phase was open
+      // put all of it back in the total (SPEC §11.3, §17).
+      metrics.beginPhase(RunPhase.reconcile);
+      advance(const Duration(seconds: 1));
+      metrics.endPhase(RunPhase.reconcile);
+      metrics.beginPhase(RunPhase.present);
+      advance(const Duration(seconds: 40)); // someone reading the plan
+      metrics.endPhase(RunPhase.present);
+      metrics.beginPhase(RunPhase.apply);
+      advance(const Duration(seconds: 2));
+      metrics.endPhase(RunPhase.apply);
+
+      final snapshot = metrics.snapshot();
+      expect(snapshot.elapsed, const Duration(seconds: 3));
+      // Still measured, and still reported — as its own row, where it says
+      // what it is.
+      expect(snapshot.phases[RunPhase.present], const Duration(seconds: 40));
+    });
+
+    test('a snapshot taken while the person decides is not ticking', () {
+      // The Timings sheet is live, and a run parked on the conflict sheet is
+      // exactly the one someone opens it on.
+      metrics.beginPhase(RunPhase.scan);
+      advance(const Duration(seconds: 2));
+      metrics.endPhase(RunPhase.scan);
+      metrics.beginPhase(RunPhase.present);
+      advance(const Duration(seconds: 15));
+
+      expect(metrics.snapshot().elapsed, const Duration(seconds: 2));
     });
 
     test('a mid-run snapshot reads as a clock, not as the last boundary', () {
