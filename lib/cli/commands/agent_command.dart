@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
@@ -21,7 +20,7 @@ import 'package:dsync/dsync_core/scan/case_folding.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 
 import '../host_platform.dart';
-import '../stop_signals.dart';
+import '../stop_sequence.dart';
 
 /// `dsync agent` (SPEC §11.1, §4.2, §4.4, §11.3): the far end of a remote
 /// run, in one of its three transports.
@@ -81,7 +80,10 @@ import '../stop_signals.dart';
 /// which device is on the wire and which roots it may name lives. What is
 /// left here is the one thing a listener needs that a `--stdio` session does
 /// not: something to end it. There is no input to close, so the ordinary way
-/// out is a signal — see [_watchStopSignals].
+/// out is a signal — see [StopSequence], which owns both what a signal
+/// means here (SPEC §11.5's 130 / 143) and the [stopDeadline] that keeps a
+/// `close()` that never returns from turning a stop into a hang (task
+/// e6be5d).
 class AgentCommand extends Command<int> {
   @override
   final name = 'agent';
@@ -270,7 +272,7 @@ class AgentCommand extends Command<int> {
     // `AgentListener._clearStaleSocket` then has to clear for the next
     // agent. Watching first makes the window not exist rather than making it
     // small.
-    final signals = _watchStopSignals();
+    final stop = StopSequence()..watch();
     try {
       final listener = await AgentListener.bindUnix(
         socketPath,
@@ -288,13 +290,19 @@ class AgentCommand extends Command<int> {
       );
 
       try {
-        return await signals.code;
+        return await stop.code;
       } finally {
+        // task e6be5d: these two awaits are the whole of this transport's
+        // exit path, and neither is bounded by anything of its own — a
+        // half-open peer socket is enough to make `close()` outlive the
+        // stop that asked for it. [stopDeadline], armed the moment the
+        // signal arrived, is what makes that cost a late exit instead of a
+        // process a supervisor has to SIGKILL.
         await listener.close();
         await stderr.flush();
       }
     } finally {
-      await signals.cancel();
+      await stop.release();
     }
   }
 
@@ -337,7 +345,7 @@ class AgentCommand extends Command<int> {
     // port has no file to litter, but the exit code for a signal that lands
     // between bind and trap would still be the untrapped default rather
     // than SPEC §11.5's.
-    final signals = _watchStopSignals();
+    final stop = StopSequence()..watch();
     try {
       final identity = await DeviceIdentityStore.forStateDir(
         environment: environment,
@@ -376,48 +384,20 @@ class AgentCommand extends Command<int> {
       );
 
       try {
-        return await signals.code;
+        return await stop.code;
       } finally {
+        // task e6be5d: these two awaits are the whole of this transport's
+        // exit path, and neither is bounded by anything of its own — a
+        // half-open peer socket is enough to make `close()` outlive the
+        // stop that asked for it. [stopDeadline], armed the moment the
+        // signal arrived, is what makes that cost a late exit instead of a
+        // process a supervisor has to SIGKILL.
         await listener.close();
         await stderr.flush();
       }
     } finally {
-      await signals.cancel();
+      await stop.release();
     }
-  }
-
-  /// Starts trapping the two signals that end a listener and hands back both
-  /// halves separately: `code` completes with the exit code for whichever
-  /// arrives (SPEC §11.5 — 130 for SIGINT, 143 for SIGTERM), and `cancel`
-  /// releases the watches.
-  ///
-  /// Split in two because *when* the watching starts matters and when the
-  /// waiting starts does not. The caller has to be trapping signals before it
-  /// binds anything, so that there is no instant where the socket exists and
-  /// the signal that would clean it up still kills this process outright; but
-  /// it can only usefully await the result afterwards. A single
-  /// watch-and-await call cannot do both, which is what left the window this
-  /// shape closes.
-  ///
-  /// A signal is a listener's *ordinary* way out, not an interruption of work
-  /// in progress — there is no EOF to end it the way `--stdio` has, and no
-  /// run to have got partway through. It still reports 128 + signal rather
-  /// than 0, because that is what SPEC §11.5 says those two signals mean and
-  /// what every shell already reports for a program that does not trap them
-  /// at all. What trapping them buys is not the exit code: it is
-  /// [AgentListener.close] running, and so the socket file not being left
-  /// behind.
-  ///
-  /// `cancel` releases the watches, including the one that did not fire,
-  /// and the caller owes it on every path — see `watchStopSignals`
-  /// (`lib/cli/stop_signals.dart`, task 7ba6b5) for why, and for the one
-  /// host-specific fact (Windows cannot trap SIGTERM) it keeps out of here.
-  ({Future<int> code, Future<void> Function() cancel}) _watchStopSignals() {
-    final stopped = Completer<int>();
-    final subscription = watchStopSignals().listen((signal) {
-      if (!stopped.isCompleted) stopped.complete(signal.exitCode);
-    });
-    return (code: stopped.future, cancel: subscription.cancel);
   }
 
   /// Builds the [LocalAgent] that serves the replica [spec] identifies (SPEC

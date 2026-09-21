@@ -22,8 +22,7 @@ import '../presenter/batch_presenter.dart';
 import '../presenter/dry_run_presenter.dart';
 import '../presenter/interactive_presenter.dart';
 import '../profile/profile_loader.dart';
-import '../stop_signals.dart';
-import 'interrupt_guard.dart';
+import '../stop_sequence.dart';
 
 /// The run step `SyncCommand` and `StatusCommand`
 /// (`lib/cli/commands/sync_command.dart`, `status_command.dart`) each take as
@@ -165,7 +164,9 @@ class SyncRunner {
   /// signal, and leaving it to the kernel meant dying mid-copy with the
   /// per-path commit and the summary both lost. Whichever signal arrives
   /// first picks the code; a second signal of either kind skips all of this
-  /// and calls `exit` directly.
+  /// and calls `exit` directly. task e6be5d: so does [stopDeadline], once
+  /// the first signal has armed it — whatever this run is still awaiting on
+  /// the way out, it has that long, and then it leaves with the same code.
   Future<int> run(CliOptions options) async {
     final target = options.target;
 
@@ -275,33 +276,23 @@ class SyncRunner {
     }
 
     // task fc661b: a SIGINT stops the run between actions rather than
-    // mid-copy; task 7ba6b5: so does a SIGTERM. The one real signal
-    // subscription lives here, scoped to this run, via the same
-    // `watchStopSignals` `AgentCommand` uses (which is also what keeps the
-    // Windows no-SIGTERM guard in one place) — `dsync agent --stdio` never
-    // calls `SyncRunner`, so it never installs one; it already exits
-    // cleanly on the EOF killing its `ssh` gives it.
-    final interrupt = InterruptGuard();
-    final signalSubscription = watchStopSignals().listen((signal) {
-      // A second signal "exits immediately" (task fc661b): whatever grace
-      // the first one bought — reaching the next safe point below — is over,
-      // so this skips straight past `RunController.run()`'s own unlock/
-      // disconnect `finally` blocks. That is fine: SPEC's own correction
-      // that this task opens with is exactly why — the OS drops the file
-      // lock when this process dies by any means, and `ssh` dying gives the
-      // remote side's lock the same fate.
-      switch (interrupt.receiveSignal(signal)) {
-        case StopGracefully():
-          break;
-        case ExitImmediately(:final exitCode):
-          exit(exitCode);
-      }
-    });
-
-    RunSummaryEvent? summary;
-    RunErrorEvent? error;
-    var appliedAny = false;
+    // mid-copy; task 7ba6b5: so does a SIGTERM. task e6be5d: and a stop
+    // that does not finish stopping — a scan mid-flight, an archive flush,
+    // a remote agent that stopped answering — ends this process anyway,
+    // within `stopDeadline`. All three rules live in [StopSequence], scoped
+    // to this run; `dsync agent --stdio` never calls `SyncRunner`, so it
+    // never installs one, and already exits cleanly on the EOF killing its
+    // `ssh` gives it.
+    //
+    // Released only after the last line this run writes, not after the
+    // event loop ends: the interrupt note and `--timings` below are on the
+    // exit path too, and the deadline covers what it can right up to the
+    // return.
+    final stop = StopSequence()..watch();
     try {
+      RunSummaryEvent? summary;
+      RunErrorEvent? error;
+      var appliedAny = false;
       await for (final event in controller.run()) {
         render(event);
         switch (event) {
@@ -325,50 +316,50 @@ class SyncRunner {
         // blocks exactly as a normal end of stream would, and (mid-apply)
         // leaves `Applier.apply` itself suspended at the action boundary it
         // had just reported, never starting the next one.
-        if (interrupt.requested) break;
+        if (stop.requested) break;
       }
+
+      // task fc661b: report what was applied before stopping, rather than
+      // just changing the exit code silently. `summary` only exists when the
+      // whole plan finished applying (rendered above like any other event),
+      // so there is nothing more to add there beyond noting *why* the exit
+      // code is about to say "interrupted" instead of whatever this run
+      // actually finished doing. task e9f31c added the middle case: stopped
+      // partway through apply, after at least one `RunResultEvent` but
+      // before the summary — `appliedAny` is what tells that apart from
+      // "never got to apply at all".
+      final interruptedBy = stop.interruptedBy;
+      if (interruptedBy != null) {
+        final by = 'interrupted (${interruptedBy.label})';
+        stderr.writeln(switch ((summary != null, appliedAny)) {
+          (true, _) =>
+            '$by; this run had already finished applying '
+                '— see summary above.',
+          (false, true) =>
+            '$by partway through applying — see the '
+                'results above for what already landed; the rest of the '
+                'plan was not attempted.',
+          (false, false) => '$by before applying any changes.',
+        });
+      }
+
+      // After the summary and after the interrupt note, so it never comes
+      // between a reader and the outcome — and on stderr, so `--json`'s
+      // stdout stays a clean JSON Lines stream (SPEC §11.4). Printed for a
+      // failed or interrupted run too: those are the runs whose timings
+      // someone is most likely to be asking about.
+      if (options.timings) {
+        stderr.write(formatRunMetrics(instruments.snapshot()));
+      }
+
+      return RunOutcome(
+        summary: summary,
+        error: error,
+        interruptedBy: interruptedBy,
+      ).exitCode;
     } finally {
-      await signalSubscription.cancel();
+      await stop.release();
     }
-
-    // task fc661b: report what was applied before stopping, rather than
-    // just changing the exit code silently. `summary` only exists when the
-    // whole plan finished applying (rendered above like any other event), so
-    // there is nothing more to add there beyond noting *why* the exit code
-    // is about to say "interrupted" instead of whatever this run actually
-    // finished doing. task e9f31c added the middle case: stopped partway
-    // through apply, after at least one `RunResultEvent` but before the
-    // summary — `appliedAny` is what tells that apart from "never got to
-    // apply at all".
-    final interruptedBy = interrupt.interruptedBy;
-    if (interruptedBy != null) {
-      final by = 'interrupted (${interruptedBy.label})';
-      stderr.writeln(switch ((summary != null, appliedAny)) {
-        (true, _) =>
-          '$by; this run had already finished applying '
-              '— see summary above.',
-        (false, true) =>
-          '$by partway through applying — see the '
-              'results above for what already landed; the rest of the '
-              'plan was not attempted.',
-        (false, false) => '$by before applying any changes.',
-      });
-    }
-
-    // After the summary and after the interrupt note, so it never comes
-    // between a reader and the outcome — and on stderr, so `--json`'s
-    // stdout stays a clean JSON Lines stream (SPEC §11.4). Printed for a
-    // failed or interrupted run too: those are the runs whose timings
-    // someone is most likely to be asking about.
-    if (options.timings) {
-      stderr.write(formatRunMetrics(instruments.snapshot()));
-    }
-
-    return RunOutcome(
-      summary: summary,
-      error: error,
-      interruptedBy: interruptedBy,
-    ).exitCode;
   }
 
   /// Wraps one side's [Agent] so its operations are timed (SPEC §17).

@@ -381,6 +381,20 @@ the data is safe either way, but one side's archive can end a commit behind
 with nothing reported. On Windows, where there is no SIGTERM to trap, only
 SIGINT is watched.
 
+**Every stop is bounded (task e6be5d).** One owner (`StopSequence`,
+`lib/cli/stop_sequence.dart`) holds the whole exit path for every
+long-running command: the first signal asks, a second one of either kind
+exits at once, and a deadline of **10 seconds**, armed by the first signal,
+exits with that signal's code whether or not the shutdown finished. Every
+await on the way out — a scan in flight, §4.3's archive flush, a half-open
+peer socket, a remote agent that stopped answering — is otherwise a chance
+for a stop signal to produce a process that never exits, and a supervisor's
+SIGKILL is the one exit path that releases nothing. The deadline is the
+last-resort bound, not the normal path: an ordinary stop completes §4.3's
+flush-before-release well inside it. Ten seconds because `SshChannel.close`
+already spends up to five waiting out a wedged remote agent *after* that
+flush; a supervisor's kill timeout belongs above 10s, not below it.
+
 `dsync agent --listen` reports 130/143 too, although a signal is its
 *ordinary* way out rather than an interruption: there is no input to close
 and no run to have got partway through, and 128 + signal is what a shell

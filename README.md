@@ -116,6 +116,15 @@ nothing; `--batch` applies without prompting but never resolves a conflict;
 `--json` writes JSON Lines to stdout. See SPEC §11.2 for the full flag list
 and §11.5 for the exit codes.
 
+SIGINT and SIGTERM stop any dsync process — a run, `dsync agent
+--listen`/`--serve`, `dsync pair show` — and it exits 130 or 143 (SPEC §11.5).
+**It exits within 10 seconds of the signal, whether or not its shutdown
+finished**: the flush-then-release of §4.3 gets that long and no longer, so a
+wedged socket or a peer that stopped answering costs a late exit rather than a
+process that never leaves. Give a supervisor's kill timeout more than 10
+seconds — systemd's `TimeoutStopSec=30s`, say — so dsync's own bounded exit
+runs instead of a SIGKILL, which releases nothing.
+
 ## Exposing an agent beyond the LAN
 
 `dsync agent --serve` binds every IPv4 interface by default — `--bind` defaults

@@ -15,7 +15,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:qr/qr.dart' show InputTooLongException;
 
 import '../output/qr_terminal_renderer.dart';
-import '../stop_signals.dart';
+import '../stop_sequence.dart';
 
 /// `dsync pair show` (SPEC §4.4, §11.1, task bc68c7): generate a token, bind
 /// the enrolment listener, print this device's payload, and wait for one
@@ -26,8 +26,9 @@ import '../stop_signals.dart';
 /// endpoint (`EnrolmentListener`) exists only between the `bind` call below
 /// and [run] returning — never before this command is invoked, never after
 /// it ends, on every path including a signal (the `try`/`finally` around
-/// [_watchStopSignals] below, the same shape `AgentCommand._serveSocket`
-/// uses for the same reason on the replica listener).
+/// [StopSequence] below, the same shape `AgentCommand._serveSocket` uses
+/// for the same reason on the replica listener — and, since task e6be5d,
+/// the same [stopDeadline] bounding how long that `finally` may take).
 ///
 /// **Text on stdout, always; a QR on stderr, when the terminal can show
 /// one (task e17997).** SPEC §11.4 keeps stdout reserved for the parseable
@@ -335,7 +336,7 @@ class PairShowCommand extends Command<int> {
     // `AgentCommand._serveSocket` watches before binding: a signal that
     // lands before the trap is installed kills this process outright, which
     // would leave the listener bound with no `finally` left to run.
-    final signals = _watchStopSignals();
+    final stop = StopSequence()..watch();
     try {
       // The listener's own number, asked for rather than scraped back out
       // of its `host:port` text — which an IPv6 literal makes ambiguous to
@@ -420,7 +421,7 @@ class PairShowCommand extends Command<int> {
         outcome = await Future.any<Object?>([
           listener.enrolled,
           refused.future,
-          signals.code,
+          stop.code,
           expired.future.then((_) => null),
         ]);
       } finally {
@@ -450,8 +451,12 @@ class PairShowCommand extends Command<int> {
     } finally {
       // Every path, including a signal: this is the property SPEC §4.4
       // needs true in practice (see the class doc comment).
+      // task e6be5d: each of these three can outlive the signal that
+      // asked for them — an enrolment socket mid-handshake most of all —
+      // so [stopDeadline], armed when that signal arrived, is what bounds
+      // this block rather than each await bounding itself.
       await listener.close();
-      await signals.cancel();
+      await stop.release();
       await input.cancel();
     }
   }
@@ -532,22 +537,6 @@ class PairShowCommand extends Command<int> {
     }
   }
 
-  /// Starts trapping SIGINT/SIGTERM, in the same shape
-  /// `AgentCommand._watchStopSignals` does, over the same `watchStopSignals`
-  /// (`lib/cli/stop_signals.dart`) — shared since task 7ba6b5 gave it a third
-  /// caller (`SyncRunner`) and one host-specific guard worth keeping in one
-  /// place.
-  ///
-  /// `code` completes with the exit code for whichever signal arrives first
-  /// (SPEC §11.5 — 130 for SIGINT, 143 for SIGTERM); `cancel` releases the
-  /// watches, and the caller owes it on every path.
-  ({Future<int> code, Future<void> Function() cancel}) _watchStopSignals() {
-    final stopped = Completer<int>();
-    final subscription = watchStopSignals().listen((signal) {
-      if (!stopped.isCompleted) stopped.complete(signal.exitCode);
-    });
-    return (code: stopped.future, cancel: subscription.cancel);
-  }
 }
 
 /// The real [PairShowCommand.stdinIsTerminal].
