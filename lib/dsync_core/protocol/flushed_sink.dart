@@ -47,7 +47,10 @@ import 'package:dsync/dsync_core/run/elapsed.dart';
 ///   number of concurrent senders — `RequestWindow` caps that at 32 — times
 ///   one frame. A single write is capped at [maxBatchBytes] on top of that,
 ///   so the buffer this holds stays inside what the memory-constrained end
-///   is promised however large a frame gets.
+///   is promised however large a frame gets. **Both halves of that are now
+///   read rather than argued** — [SinkWriteStats.peakHeldBytes] is the most
+///   this ever held at once and [SinkWriteStats.maxWriteBytes] the largest
+///   write it ever issued, which is what SPEC §4.2's bound is stated in.
 ///
 /// Frames keep the order they were handed over in, which the protocol does
 /// not itself require — a reply is matched by its id, not its position — but
@@ -72,6 +75,14 @@ class FlushedSink {
   int _writes = 0;
   int _sends = 0;
   int _maxBatch = 0;
+
+  /// Bytes handed over and not yet let go of — queued frames, the frames of
+  /// the write in flight, and that write's joined copy — with the most this
+  /// has ever been. The high-water mark is the whole point: a sample taken
+  /// from outside could not see a buffer that lives for one flush.
+  int _heldBytes = 0;
+  int _peakHeldBytes = 0;
+  int _maxWriteBytes = 0;
   Duration _queueing = Duration.zero;
   Duration _flushing = Duration.zero;
   Duration _maxFlush = Duration.zero;
@@ -109,6 +120,8 @@ class FlushedSink {
     flushing: _flushing,
     maxFlush: _maxFlush,
     maxBatch: _maxBatch,
+    peakHeldBytes: _peakHeldBytes,
+    maxWriteBytes: _maxWriteBytes,
     batches: List.unmodifiable(_batches),
     bands: List.unmodifiable(_bands),
   );
@@ -120,6 +133,7 @@ class FlushedSink {
   /// alongside another sender's.
   Future<void> send(Uint8List bytes) {
     final pending = _Pending(bytes, _elapsed());
+    _hold(bytes.length);
     _queued.add(pending);
     if (!_draining) unawaited(_drain());
     return pending.flushed.future;
@@ -173,8 +187,15 @@ class FlushedSink {
       _queueing += startedAt - pending.queuedAt;
       carried += pending.bytes.length;
     }
+    if (carried > _maxWriteBytes) _maxWriteBytes = carried;
+    // A joined batch is resident twice for the length of its write — the
+    // frames and the copy of them — and the copy is counted while it exists
+    // rather than reasoned away, since it lands on the memory-constrained
+    // end alongside everything else (SPEC §4.2).
+    final joining = batch.length > 1;
+    if (joining) _hold(carried);
     try {
-      _sink.add(batch.length == 1 ? batch.single.bytes : _join(batch));
+      _sink.add(joining ? _join(batch) : batch.single.bytes);
       await _sink.flush();
     } catch (error, stack) {
       // Charged before the callers are told, and on the failing path too: a
@@ -182,16 +203,30 @@ class FlushedSink {
       // report that dropped those would understate exactly the run that went
       // wrong.
       _chargeFlush(startedAt, carried);
+      _release(joining ? carried * 2 : carried);
       for (final pending in batch) {
         pending.flushed.completeError(error, stack);
       }
       return;
     }
     _chargeFlush(startedAt, carried);
+    _release(joining ? carried * 2 : carried);
     for (final pending in batch) {
       pending.flushed.complete();
     }
   }
+
+  /// Takes on [bytes] this sink is now holding, and moves the high-water mark
+  /// if this is the most it has ever held (SPEC §17).
+  void _hold(int bytes) {
+    _heldBytes += bytes;
+    if (_heldBytes > _peakHeldBytes) _peakHeldBytes = _heldBytes;
+  }
+
+  /// Lets go of [bytes] — the frames a write carried, and its joined copy if
+  /// it had one. Paired with [_hold] on both the settled and the failed path,
+  /// because a write that threw still stops holding what it was given.
+  void _release(int bytes) => _heldBytes -= bytes;
 
   /// Charges one write's flush to the session total and to its size band, so
   /// the bands sum to [SinkWriteStats.flushing] by construction rather than by

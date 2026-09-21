@@ -1,11 +1,15 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/process_memory.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
+import 'package:dsync/dsync_core/run/resident_memory.dart';
 
 export 'package:dsync/dsync_core/run/elapsed.dart' show Elapsed;
+export 'package:dsync/dsync_core/run/resident_memory.dart'
+    show ResidentBytes, ResidentMemory;
 
 /// Collects one run's timings (SPEC §17). Written to by `RunController` for
 /// phases and by `MeteredAgent`/`MeteredChannel` for per-operation cost; read
@@ -78,11 +82,28 @@ class RunMetricsRecorder {
 
   ReadAheadStats? _readAhead;
 
+  /// Where a resident-set reading comes from, and what this process held when
+  /// the recorder was built — the run's baseline, since the peak the kernel
+  /// keeps is for the whole process lifetime (see [ProcessMemory]).
+  final ResidentMemory _memory;
+  final int _baselineRss;
+
   /// [elapsed] defaults to a [Stopwatch] started here. It is the reading
   /// every span is taken against; what it is *not* is [RunMetrics.elapsed],
   /// which accrues only while a phase is open — see [_running].
-  RunMetricsRecorder({Elapsed? elapsed})
-    : _elapsed = elapsed ?? stopwatchElapsed();
+  ///
+  /// [memory] defaults to the real `dart:io` reading and exists for the same
+  /// reason [elapsed] does: a test asserts what the report says about a peak
+  /// with plain values, without having to allocate one.
+  factory RunMetricsRecorder({Elapsed? elapsed, ResidentMemory? memory}) =>
+      RunMetricsRecorder._(
+        elapsed ?? stopwatchElapsed(),
+        memory ?? processResidentMemory(),
+      );
+
+  RunMetricsRecorder._(this._elapsed, ResidentMemory memory)
+    : _memory = memory,
+      _baselineRss = memory().current;
 
   /// Marks [phase] as starting now. A phase begun twice without an
   /// [endPhase] keeps the later start, which is the honest reading of a run
@@ -304,6 +325,15 @@ class RunMetricsRecorder {
   /// [_running] including the stretch that is open right now, if one is, so
   /// a mid-run snapshot reads as a clock rather than as the last phase
   /// boundary.
+  /// This process's peak against the baseline taken at construction, or null
+  /// on a platform that reports no high-water mark at all — absent rather
+  /// than zero, for the reason a skipped phase is absent (SPEC §17).
+  ProcessMemory? _memoryAsOfNow() {
+    final reading = _memory();
+    if (reading.peak <= 0) return null;
+    return ProcessMemory(baselineRss: _baselineRss, peakRss: reading.peak);
+  }
+
   Duration _runningAsOfNow() =>
       _openSince == null ? _running : _running + (_elapsed() - _openSince!);
 
@@ -314,6 +344,7 @@ class RunMetricsRecorder {
     elapsed: _runningAsOfNow(),
     phases: Map.unmodifiable(_phases),
     readAhead: _readAhead,
+    memory: _memoryAsOfNow(),
     replicas: {
       for (final entry in _replicas.entries)
         entry.key: ReplicaMetrics(

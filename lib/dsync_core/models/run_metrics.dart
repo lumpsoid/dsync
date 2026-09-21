@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/process_memory.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
@@ -643,11 +644,22 @@ class RunMetrics {
   /// between the two agents and belongs to neither.
   final ReadAheadStats? readAhead;
 
+  /// What the whole process held while the run was on it (SPEC §17), or null
+  /// on a platform that reports no high-water mark.
+  ///
+  /// The counters above measure each buffer against the bound stated for it;
+  /// this measures the thing those bounds exist to protect. On the phone in
+  /// the push direction both buffers are resident at once (SPEC §7.2,
+  /// §4.2), so the two readings are only interpretable side by side — which
+  /// is why the report prints them together.
+  final ProcessMemory? memory;
+
   const RunMetrics({
     required this.elapsed,
     required this.phases,
     required this.replicas,
     this.readAhead,
+    this.memory,
   });
 
   /// Both sides' operations summed — the run's total request count.

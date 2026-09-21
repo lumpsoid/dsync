@@ -187,6 +187,8 @@ SinkWriteStats _writes(int count) => SinkWriteStats(
   flushing: Duration.zero,
   maxFlush: Duration.zero,
   maxBatch: 1,
+  peakHeldBytes: 0,
+  maxWriteBytes: 0,
   batches: List.filled(batchBucketLabels.length, 0),
   bands: List.filled(writeBandLabels.length, const SinkWriteBand()),
 );

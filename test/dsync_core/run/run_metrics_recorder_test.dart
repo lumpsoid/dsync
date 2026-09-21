@@ -590,6 +590,37 @@ void main() {
       );
     });
   });
+
+  group('memory', () {
+    test('the peak is reported against what the run started at', () {
+      // The kernel's high water is for the whole process lifetime, so the
+      // baseline taken at construction is what makes the run's own share
+      // readable on a head that was already open (SPEC §17).
+      var reading = (current: 100, peak: 100);
+      final recorder = RunMetricsRecorder(
+        elapsed: () => now,
+        memory: () => reading,
+      );
+      reading = (current: 140, peak: 180);
+
+      final memory = recorder.snapshot().memory!;
+      expect(memory.baselineRss, 100);
+      expect(memory.peakRss, 180);
+      expect(memory.growth, 80);
+    });
+
+    test('a platform that reports no high water is absent, not zero', () {
+      final recorder = RunMetricsRecorder(
+        elapsed: () => now,
+        memory: () => (current: 0, peak: 0),
+      );
+
+      // Same rule as a phase that never ran: "0 B" must mean measured, and
+      // an unmeasurable platform must not read as a process that held
+      // nothing.
+      expect(recorder.snapshot().memory, isNull);
+    });
+  });
 }
 
 /// A [SinkWriteStats] with only the write count these tests care about set.
@@ -600,6 +631,8 @@ SinkWriteStats _sinkWrites(int count) => SinkWriteStats(
   flushing: Duration.zero,
   maxFlush: Duration.zero,
   maxBatch: 1,
+  peakHeldBytes: 0,
+  maxWriteBytes: 0,
   batches: List.filled(batchBucketLabels.length, 0),
   bands: List.filled(writeBandLabels.length, const SinkWriteBand()),
 );

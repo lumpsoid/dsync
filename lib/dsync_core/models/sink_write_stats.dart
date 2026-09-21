@@ -22,6 +22,14 @@ import 'package:dsync/dsync_core/models/sink_write_band.dart';
 /// same writes by *bytes* rather than by sends, because the question [meanFlush]
 /// cannot answer is whether a write's cost is fixed or proportional to what it
 /// carries — see [SinkWriteBand].
+///
+/// **And the two bytes figures SPEC §4.2's bound is stated in.**
+/// [peakHeldBytes] and [maxWriteBytes] are what turn "the queue is bounded
+/// twice over" into a reading: the first is the most this sink ever held at
+/// once, the second the largest single write it ever issued against
+/// `FlushedSink.maxBatchBytes`. On the push direction they land on the
+/// memory-constrained end at the same time as the read-ahead's budget, which
+/// is why they are reported and not reasoned about.
 class SinkWriteStats {
   /// `add`-and-`flush` pairs performed.
   final int writes;
@@ -62,6 +70,28 @@ class SinkWriteStats {
   /// Sends carried by the largest single write.
   final int maxBatch;
 
+  /// The most bytes this sink held at one instant: every frame handed to
+  /// `send` and not yet settled, plus the joined copy of a batch for as long
+  /// as the write it feeds is in flight.
+  ///
+  /// **The copy is counted, not assumed away.** A batch of more than one
+  /// frame is concatenated into a fresh buffer, so for the duration of that
+  /// write those bytes are resident twice, and on the phone the second copy
+  /// is as real as the first. A sender awaits its own `send` before issuing
+  /// another, so what this can reach is bounded by the concurrent senders —
+  /// `RequestWindow` caps them at 32 — times one frame, plus one write's
+  /// worth of copy. That is the arithmetic; this is the reading.
+  final int peakHeldBytes;
+
+  /// Bytes carried by the largest single write, against
+  /// `FlushedSink.maxBatchBytes`.
+  ///
+  /// Above the cap is not a fault: the cap joins fewer frames and never
+  /// splits one, so a single frame larger than it goes out whole, and this
+  /// figure is how large that ever got. [bands] gives the distribution; this
+  /// gives the one write a bound is read against.
+  final int maxWriteBytes;
+
   /// How many writes carried each batch size, bucketed by [batchBucketLabels].
   ///
   /// Same length as [batchBucketLabels] and in the same order, so the two are
@@ -84,6 +114,8 @@ class SinkWriteStats {
     required this.flushing,
     required this.maxFlush,
     required this.maxBatch,
+    required this.peakHeldBytes,
+    required this.maxWriteBytes,
     required this.batches,
     required this.bands,
   });
@@ -96,6 +128,8 @@ class SinkWriteStats {
     flushing: Duration.zero,
     maxFlush: Duration.zero,
     maxBatch: 0,
+    peakHeldBytes: 0,
+    maxWriteBytes: 0,
     batches: List.filled(batchBucketLabels.length, 0),
     bands: List.filled(writeBandLabels.length, const SinkWriteBand()),
   );

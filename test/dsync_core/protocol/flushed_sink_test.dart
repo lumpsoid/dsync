@@ -324,6 +324,60 @@ void main() {
     expect(writer.stats.queued, Duration.zero);
   });
 
+  test('the peak counts the queue and the write in flight together', () async {
+    final sink = _FakeSink()..holdFlushes();
+    final writer = FlushedSink(sink);
+
+    // One frame of 4 in flight, two of 4 queued behind it: 12 bytes held,
+    // and no joined copy yet since the queued pair has not been written.
+    final pending = [
+      writer.send(_bytes([1, 1, 1, 1])),
+      writer.send(_bytes([2, 2, 2, 2])),
+      writer.send(_bytes([3, 3, 3, 3])),
+    ];
+    await pumpEventQueue();
+    expect(writer.stats.peakHeldBytes, 12);
+
+    sink.releaseAllFlushes();
+    await Future.wait(pending);
+
+    // The batch of two is then joined into a copy that lives for its write,
+    // so once the first frame is gone those 8 bytes are resident twice — and
+    // 16 is more than the three frames ever were together.
+    expect(writer.stats.peakHeldBytes, 16);
+    expect(writer.stats.maxWriteBytes, 8);
+  });
+
+  test('a failed write lets go of what it held', () async {
+    final sink = _FakeSink()..holdFlushes();
+    final writer = FlushedSink(sink);
+
+    final failing = writer.send(_bytes([1, 2, 3, 4]));
+    await pumpEventQueue();
+    sink.failHeldFlush(StateError('gone'));
+    await expectLater(failing, throwsStateError);
+
+    // Nothing is still held — a peak that never came down would make the
+    // figure a running total of the session instead of a high-water mark.
+    final settled = writer.send(_bytes([5]));
+    await pumpEventQueue();
+    expect(writer.stats.peakHeldBytes, 4);
+    sink.releaseAllFlushes();
+    await settled;
+  });
+
+  test('a frame over the cap is the largest write, whole', () async {
+    final sink = _FakeSink();
+    final writer = FlushedSink(sink);
+
+    final huge = Uint8List(FlushedSink.maxBatchBytes + 16);
+    await writer.send(huge);
+
+    // The cap joins fewer frames, it never splits one — so a write above it
+    // is a reading, not a violation.
+    expect(writer.stats.maxWriteBytes, FlushedSink.maxBatchBytes + 16);
+  });
+
   test('a sink that has written nothing reports no ratio', () {
     final writer = FlushedSink(_FakeSink());
 

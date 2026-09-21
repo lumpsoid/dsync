@@ -52,6 +52,23 @@ String formatRunMetrics(RunMetrics metrics) {
     );
   }
 
+  // What the device itself held, printed under the buffer counters rather
+  // than beside the run's totals: the counters say whether each stated bound
+  // held and this says whether the process that held them survived, and the
+  // reading is only interpretable with both (SPEC §17).
+  //
+  // The peak is the kernel's high water for the whole process lifetime, so
+  // the growth over the baseline is an upper bound on the run's own share,
+  // not an attribution — see `ProcessMemory`.
+  if (metrics.memory case final memory?) {
+    out.writeln();
+    out.writeln(
+      'memory: ${formatMetricBytes(memory.peakRss)} peak resident, '
+      '${formatMetricBytes(memory.baselineRss)} at the top of the run '
+      '(+${formatMetricBytes(memory.growth)})',
+    );
+  }
+
   for (final replica in metrics.replicas.values) {
     out.writeln();
     out.writeln(
@@ -98,6 +115,15 @@ String formatRunMetrics(RunMetrics metrics) {
         ];
         out.writeln(
           '  batches: ${buckets.join(' · ')} · max ${stats.maxBatch}',
+        );
+        // What this connection's send path actually held, which is the form
+        // SPEC §4.2's bound is stated in — one frame per concurrent sender
+        // and a 1 MiB write cap. The peak includes a joined batch's copy for
+        // as long as its write lives, so on the push direction it is the
+        // transport's whole share of the phone's memory (SPEC §17).
+        out.writeln(
+          '  buffers: ${formatMetricBytes(stats.peakHeldBytes)} peak held, '
+          '${formatMetricBytes(stats.maxWriteBytes)} largest write',
         );
         // The two halves of what the send path costs, counted on opposite
         // sides of the `add` because they are different quantities. `flush`
