@@ -2,13 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:dsync/dsync_core/agent/read_pool.dart';
 import 'package:dsync/dsync_core/agent/agent.dart';
-import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
-import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
 import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
-import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -18,10 +14,9 @@ import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/run/run_instruments.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
-import 'package:dsync/dsync_core/scan/case_folding.dart';
-import 'package:dsync/dsync_core/scan/scanner.dart';
 
 import '../../app_controller.dart';
+import '../../local_replica_agent.dart';
 
 /// What a dial hands back: the open transport and, when the far end
 /// presented one, its certificate as PEM — the bytes [ReplicaConnector]
@@ -195,39 +190,23 @@ class ReplicaConnector {
     return (agentA: agentA, agentB: agentB);
   }
 
+  /// Side `a`, built by [buildLocalReplicaAgent] — the one place this head
+  /// builds an agent over a replica on this device, shared with the Serve
+  /// feature so a dialled-in session and a dialled-out one key their
+  /// archives and locks the same way. The probe it makes happens here, at
+  /// connect time, exactly as it did when this method built the agent
+  /// itself.
   Future<Agent> _localSide({
     required String rootPath,
     required String profileId,
     required int jobs,
   }) async {
-    final platform = (await app.paths).stateDirPlatform;
-    return LocalAgent(
+    return buildLocalReplicaAgent(
+      paths: await app.paths,
       rootPath: rootPath,
-      readPool: ReadPool(),
-      archiveStore: JsonlArchiveStore.forProfile(
-        profileId: profileId,
-        side: 'a',
-        rootPath: rootPath,
-        platform: platform,
-      ),
-      replicaLock: ReplicaLock.forProfile(
-        profileId: profileId,
-        side: 'a',
-        platform: platform,
-      ),
-      scanner: Scanner(
-        jobs: jobs,
-        // SPEC §16: this replica's own filesystem, probed once at connect
-        // time — iOS's default APFS volume folds case, Android's app
-        // storage does not, and `detectsCaseFolding`'s own doc comment says
-        // why an OS check alone would get a reformatted volume wrong.
-        foldKey: caseFoldKeyFor(detectsCaseFolding(rootPath)),
-      ),
-      archivePath: resolveArchiveLogPath(
-        profileId: profileId,
-        side: 'a',
-        platform: platform,
-      ).path,
+      profileId: profileId,
+      side: 'a',
+      jobs: jobs,
     );
   }
 

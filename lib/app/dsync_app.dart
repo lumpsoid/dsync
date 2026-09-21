@@ -13,6 +13,7 @@ import 'features/pair_show/pair_show_page.dart';
 import 'features/profiles/profiles_page.dart';
 import 'features/run/run_page.dart';
 import 'features/run_setup/run_setup_page.dart';
+import 'features/serve/serve_page.dart';
 import 'features/settings/settings_page.dart';
 import 'features/shared_folders/shared_folders_page.dart';
 import 'features/this_device/this_device_page.dart';
@@ -110,6 +111,7 @@ class _BootstrapGate extends StatelessWidget {
           onOpenDevices: () => _openDevices(context),
           onOpenArchives: () => _openArchives(context),
           onOpenSettings: () => _openSettings(context),
+          onOpenServe: () => _openServe(context),
         ),
       },
     );
@@ -168,6 +170,20 @@ class _BootstrapGate extends StatelessWidget {
   Future<void> _openSettings(BuildContext context) {
     return Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => const SettingsPage()));
+  }
+
+  /// Answering paired devices (SPEC §4.4) — the page that makes this
+  /// device the one a run can be started *against*. A leaf: it takes no
+  /// callbacks because nothing leads anywhere from it, and it holds no id
+  /// because it is about this host rather than any one peer.
+  ///
+  /// Pushed from the home page rather than from Devices: the user's hands
+  /// are on the device that will serve, and they are about to walk over to
+  /// the one that will dial, so it is an activity they start rather than a
+  /// subsection of device management.
+  Future<void> _openServe(BuildContext context) {
+    return Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const ServePage()));
   }
 
   /// The Sync history page. A leaf: it takes no callbacks because nothing

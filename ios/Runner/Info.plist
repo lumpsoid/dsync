@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Dsync uses the camera to scan the pairing QR code that `dsync pair show` prints on the desktop, so this device pairs by photographing it instead of typing the pairing line by hand.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Dsync connects directly to your own paired devices over the local network to sync folders between them, and answers those devices when they connect to this one. It contacts nothing else.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -19,15 +19,18 @@ device rather than syncing from a phone: it reads and writes the *same* state
 directory the CLI does (SPEC §3, §8.3), so this device's identity and
 certificate, each pairing's certificate and name, and which replica roots each
 paired device may reach are all editable from the app and enforced by
-`dsync agent`. It serves no replica of its own (SPEC §16); the one socket it
-binds is the enrolment endpoint behind **Show this device's code**, open only
-while that page is (SPEC §4.4).
+`dsync agent`. It can also serve a replica of its own: **Answer paired
+devices** binds the same listener `dsync agent --serve` binds, so another
+device can start a run *against* this one — for as long as that page is open,
+never in the background (SPEC §4.4, §16). The other socket it binds is the
+enrolment endpoint behind **Show this device's code**, open only while that
+page is.
 
 | Area | State |
 |---|---|
 | `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
 | `lib/cli/` — args, profile, prompts, output | implemented |
-| `lib/app/` — Flutter head: profiles home, devices, device, this device, pair, pair show, run setup, run | implemented |
+| `lib/app/` — Flutter head: profiles home, devices, device, this device, pair, pair show, serve, run setup, run | implemented |
 
 ## Using it
 

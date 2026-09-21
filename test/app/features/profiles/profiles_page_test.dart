@@ -28,6 +28,7 @@ void main() {
   var devicesOpened = 0;
   var archivesOpened = 0;
   var settingsOpened = 0;
+  var serveOpened = 0;
 
   setUp(() {
     app = AppController(
@@ -41,6 +42,7 @@ void main() {
     devicesOpened = 0;
     archivesOpened = 0;
     settingsOpened = 0;
+    serveOpened = 0;
   });
 
   // Scopes are process-global: reset both so a pin cannot leak into the
@@ -68,6 +70,7 @@ void main() {
         onOpenDevices: () => devicesOpened++,
         onOpenArchives: () => archivesOpened++,
         onOpenSettings: () => settingsOpened++,
+        onOpenServe: () => serveOpened++,
       ),
     ),
   );
@@ -165,6 +168,22 @@ void main() {
 
     expect(settingsOpened, 1);
     // The installation's own preferences, not a run: nothing else moves.
+    expect(archivesOpened, 0);
+    expect(devicesOpened, 0);
+    expect(serveOpened, 0);
+  });
+
+  testWidgets('the app bar reaches Serve', (tester) async {
+    ready();
+    app.state.recordProfiles(const []);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('profiles-open-serve')));
+    await tester.pumpAndSettle();
+
+    expect(serveOpened, 1);
+    // Answering paired devices is its own activity: nothing else moves.
+    expect(settingsOpened, 0);
     expect(archivesOpened, 0);
     expect(devicesOpened, 0);
   });

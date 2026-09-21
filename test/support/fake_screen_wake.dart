@@ -1,4 +1,4 @@
-import 'package:dsync/app/features/run/screen_wake.dart';
+import 'package:dsync/app/screen_wake.dart';
 
 /// A [ScreenWake] a test drives: it records what it was asked for, so a
 /// test can assert that the screen is held for exactly as long as a run is

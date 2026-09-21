@@ -84,9 +84,11 @@ Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
 /// property SPEC §4.4 asks for — "off by default and open only for the
 /// duration of one pairing operation" — and it is [stop], called by the page
 /// on the way out, plus the `finally` in [show], that make it true here;
-/// `PairShowCommand` does the same with its signal trap. Nothing else in the
-/// head binds a listener (SPEC §16: the head serves no replica), and this
-/// one accepts exactly one enrolment by construction of the token gate.
+/// `PairShowCommand` does the same with its signal trap. The head's only
+/// other listener — the replica one `ServeController` binds (SPEC §4.4) —
+/// has the same property for the same reason and is bound from its own
+/// page; this one accepts exactly one enrolment by construction of the
+/// token gate.
 ///
 /// **One name is asked for, and it is this side's own.** [show] takes the
 /// name this device will list whoever redeems the payload under — the
@@ -162,8 +164,12 @@ class PairShowController {
   /// where this device's `dsync agent --serve` answers, not the enrolment
   /// endpoint bound below, which is gone the moment this window closes.
   /// `dsync pair show --serve-port` is the CLI's way of saying the same
-  /// thing; the head has no field for it because it has no way to run an
-  /// agent on anything but the default yet.
+  /// thing. The head keeps no field for it on the Settings page for the
+  /// reason `ServeController.port` gives — both sides of a pairing already
+  /// record [PeerAddress.defaultPort] for each other, and a different
+  /// number would have to reach the peer somehow — so in production this is
+  /// always the default, and it is a parameter so a test can pin the
+  /// ephemeral port its own listener landed on.
   final int servicePort;
 
   /// How long a code stays redeemable (SPEC §4.4's short window).

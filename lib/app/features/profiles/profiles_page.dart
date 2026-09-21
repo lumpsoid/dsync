@@ -43,6 +43,7 @@ class ProfilesPage extends StatefulWidget {
     required this.onOpenDevices,
     required this.onOpenArchives,
     required this.onOpenSettings,
+    required this.onOpenServe,
   });
 
   /// Opens Run setup pre-filled from the tapped profile, by id — the id is
@@ -61,6 +62,12 @@ class ProfilesPage extends StatefulWidget {
   /// settings belong to the installation rather than to any one device,
   /// profile or run — this is the only screen every route starts from.
   final VoidCallback onOpenSettings;
+
+  /// Opens the Serve page, where this device starts answering paired
+  /// devices (SPEC §4.4). From the app bar of the home page because it is
+  /// an activity the user starts — their hands are on the device that will
+  /// serve — rather than a subsection of managing any one peer.
+  final VoidCallback onOpenServe;
 
   @override
   State<ProfilesPage> createState() => _ProfilesPageState();
@@ -81,6 +88,12 @@ class _ProfilesPageState extends State<ProfilesPage> {
       appBar: AppBar(
         title: const Text('dsync'),
         actions: [
+          IconButton(
+            key: const Key('profiles-open-serve'),
+            icon: const Icon(Icons.wifi_tethering),
+            tooltip: 'Answer paired devices',
+            onPressed: widget.onOpenServe,
+          ),
           IconButton(
             key: const Key('profiles-open-archives'),
             icon: const Icon(Icons.sd_storage_outlined),

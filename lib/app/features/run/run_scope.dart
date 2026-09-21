@@ -1,7 +1,7 @@
 import '../../app_scope.dart';
 import 'replica_connector.dart';
 import 'run_controller.dart';
-import 'screen_wake.dart';
+import '../../screen_wake.dart';
 
 /// The cell for [SyncRunController]; see the scope contract in
 /// `app_scope.dart`. The Run page takes `runScope.create()`, not

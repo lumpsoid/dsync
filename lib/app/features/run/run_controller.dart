@@ -18,7 +18,7 @@ import '../run_setup/run_setup_controller.dart';
 import 'plan_decisions.dart';
 import 'replica_connector.dart';
 import 'run_view_state.dart';
-import 'screen_wake.dart';
+import '../../screen_wake.dart';
 
 /// Input methods of the Run page: driving a `dsync_core` [RunController]
 /// and rendering its `RunEvent`s (SPEC §9, §11.4).
