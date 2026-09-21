@@ -48,11 +48,13 @@ final class PairSucceeded extends PairOutcome {
 ///
 /// Holds only what the page displays — see the view-state role in
 /// `app_scope.dart`: the [code] that was scanned or pasted, the name
-/// field's validation line and the [outcome] of the last submit. The name
-/// text itself is the widget's (a `TextEditingController`), not copied here;
-/// this is what the controller decided about it.
+/// field's validation line, this device's own [ownDeviceId] and the
+/// [outcome] of the last submit. The name text itself is the widget's (a
+/// `TextEditingController`), not copied here; this is what the controller
+/// decided about it.
 class PairViewState extends ChangeNotifier {
   String? _localNameError;
+  String? _ownDeviceId;
   PairCode _code = const PairCodeMissing();
   PairOutcome _outcome = const PairIdle();
 
@@ -64,6 +66,16 @@ class PairViewState extends ChangeNotifier {
 
   /// The line under the local-name field, or `null` when it validated.
   String? get localNameError => _localNameError;
+
+  /// This device's own id (SPEC §4.4), or `null` while the exchange that
+  /// reads the identity has not started — the page has nothing to show
+  /// before then, and nothing to compare it against either.
+  ///
+  /// Here because the far end asks whoever is standing there to confirm this
+  /// id before it records the pairing, so the operator needs it in front of
+  /// them while that prompt is up (`pair_accept_command.dart` prints the same
+  /// line, for the same reason).
+  String? get ownDeviceId => _ownDeviceId;
 
   /// Where the last submit stands.
   PairOutcome get outcome => _outcome;
@@ -82,16 +94,24 @@ class PairViewState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Records this device's own id, read off the identity the exchange is
+  /// about to present. `PairController` only.
+  void recordOwnDeviceId(String deviceId) {
+    _ownDeviceId = deviceId;
+    notifyListeners();
+  }
+
   /// Moves the outcome. `PairController` only.
   void recordOutcome(PairOutcome outcome) {
     _outcome = outcome;
     notifyListeners();
   }
 
-  /// Back to how this state starts: no code, no verdict, no field line.
-  /// `PairController` only — see `PairController.beginPairing`.
+  /// Back to how this state starts: no code, no verdict, no field line, no
+  /// id to compare. `PairController` only — see `PairController.beginPairing`.
   void clear() {
     _localNameError = null;
+    _ownDeviceId = null;
     _code = const PairCodeMissing();
     _outcome = const PairIdle();
     notifyListeners();

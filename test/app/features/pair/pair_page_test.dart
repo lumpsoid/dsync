@@ -362,6 +362,43 @@ void main() {
     );
   });
 
+  testWidgets("submitting: this device's own id is on screen to compare", (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await withCode(tester);
+
+    // Nothing to compare before anything is sent: the desktop has not been
+    // asked its question yet.
+    expect(find.byKey(const Key('pair-own-device-id')), findsNothing);
+
+    controller.state.recordOwnDeviceId('a1b2:c3d4:e5f6:0718');
+    controller.state.recordOutcome(const PairSubmitting());
+    await tester.pump();
+
+    final id = tester.widget<SelectableText>(
+      find.byKey(const Key('pair-own-device-id')),
+    );
+    expect(id.data, 'a1b2:c3d4:e5f6:0718');
+    // Monospaced, as the desktop renders the id it is asking about: the
+    // groups have to line up by eye.
+    expect(id.style?.fontFamily, 'monospace');
+    expect(find.textContaining('confirm the id'), findsOneWidget);
+  });
+
+  testWidgets('failed: the id stays up, which is when it is read out', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await withCode(tester);
+
+    controller.state.recordOwnDeviceId('a1b2:c3d4:e5f6:0718');
+    controller.state.recordOutcome(const PairFailed('The desktop refused'));
+    await tester.pump();
+
+    expect(find.byKey(const Key('pair-own-device-id')), findsOneWidget);
+  });
+
   testWidgets('submitting: the spinner stands in for the button\'s label', (
     tester,
   ) async {

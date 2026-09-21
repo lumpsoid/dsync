@@ -39,6 +39,15 @@ import 'scan_code_page.dart';
 /// (`dsync pair show --name`) — see `EnrolmentRequest`'s doc comment for why
 /// an enrolling device no longer proposes one.
 ///
+/// **The submit puts this device's own id on screen.** The moment the token
+/// is redeemed, the desktop shows the id it was presented and asks whoever
+/// is standing there whether that is the device they meant
+/// (`pair_show_page.dart`). That question has two halves and they are on two
+/// screens: without the id here, the person holding the phone has nothing to
+/// compare it against short of leaving the pairing flow for `This device`.
+/// `dsync pair accept` prints its own id at the same point, for the same
+/// reason.
+///
 /// **The camera is mounted by the tap, and on a route of its own.** Starting
 /// `MobileScanner` is what asks the OS for the camera, so a page that built
 /// it unconditionally would put a permission prompt in front of someone who
@@ -293,6 +302,13 @@ class _PairForm extends StatelessWidget {
               errorText: state.localNameError,
             ),
           ),
+          // The other half of the confirmation the desktop is putting in
+          // front of whoever is standing there. It appears with the submit,
+          // because that is when the desktop asks.
+          if (state.ownDeviceId case final ownDeviceId?) ...[
+            const SizedBox(height: 24),
+            _OwnIdCard(ownDeviceId),
+          ],
           const SizedBox(height: 24),
           _OutcomeLine(state.outcome),
           FilledButton(
@@ -458,6 +474,60 @@ class _CodeCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// This device's own id, for the question being asked on the other screen
+/// (task 23344d, SPEC §4.4): the desktop shows the id it was presented and
+/// asks whoever is there whether it is the right device. Without this the
+/// person holding the phone has nothing to read out, and the comparison the
+/// whole confirmation rests on cannot be made without leaving the pairing
+/// flow for `This device`.
+///
+/// Rendered the way the desktop renders the id it is asking about
+/// (`pair_show_page.dart`): grouped hex, monospaced, selectable, and wrapped
+/// rather than truncated — a comparison that cannot see every group is not a
+/// comparison.
+class _OwnIdCard extends StatelessWidget {
+  const _OwnIdCard(this.deviceId);
+
+  final String deviceId;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'The desktop is asking whoever is there to confirm the id it was '
+          'presented, before it records the pairing. This device is:',
+        ),
+        const SizedBox(height: 12),
+        Card(
+          key: const Key('pair-own-device-id-card'),
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: SelectableText(
+              deviceId,
+              key: const Key('pair-own-device-id'),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'Read it out group by group. If every group matches what the '
+          'desktop shows, it is this device that redeemed the code.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
     );
   }
 }

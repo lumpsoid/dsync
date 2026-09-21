@@ -362,14 +362,74 @@ void main() {
     });
 
     test('moves through submitting before the verdict', () async {
+      // The outcome as it stood at each notification, with repeats dropped:
+      // the state notifies for everything it holds, and the id recorded on
+      // the way into the exchange lands while the outcome is still
+      // submitting.
       final seen = <PairOutcome>[];
-      controller.state.addListener(() => seen.add(controller.state.outcome));
+      controller.state.addListener(() {
+        final outcome = controller.state.outcome;
+        if (seen.isEmpty || seen.last != outcome) seen.add(outcome);
+      });
       enrolThrows(const SocketException('refused'));
 
       await submit();
 
       expect(seen.whereType<PairSubmitting>(), hasLength(1));
       expect(seen.last, isA<PairFailed>());
+    });
+  });
+
+  /// The other half of the far end's confirmation: it asks whoever is
+  /// standing there to match the id it was presented against the one this
+  /// device shows, so this device has to show one (task 23344d, SPEC §4.4).
+  group("this device's own id", () {
+    test('is not on screen before anything is sent', () {
+      controller.codeEntered(payload().encode());
+
+      expect(controller.state.ownDeviceId, isNull);
+    });
+
+    test('is recorded before the exchange, not after it', () async {
+      String? idWhileEnrolling;
+      enrol =
+          ({
+            required payload,
+            required ownIdentity,
+            required localName,
+            required pairedDeviceStore,
+          }) async {
+            // The far end asks its question the moment the token is
+            // redeemed, so the id has to be on screen by now — not once the
+            // exchange has come back.
+            idWhileEnrolling = controller.state.ownDeviceId;
+            throw const SocketException('refused');
+          };
+
+      await submit();
+
+      expect(idWhileEnrolling, (await app.loadOrCreateIdentity()).deviceId);
+    });
+
+    test('stays up after a refusal, which is when it is read out', () async {
+      enrolThrows(const EnrolmentRefusedException('token already used'));
+
+      await submit();
+
+      expect(
+        controller.state.ownDeviceId,
+        (await app.loadOrCreateIdentity()).deviceId,
+      );
+    });
+
+    test('is gone again on a fresh visit to the page', () async {
+      enrolThrows(const SocketException('refused'));
+      await submit();
+      expect(controller.state.ownDeviceId, isNotNull);
+
+      controller.beginPairing();
+
+      expect(controller.state.ownDeviceId, isNull);
     });
   });
 

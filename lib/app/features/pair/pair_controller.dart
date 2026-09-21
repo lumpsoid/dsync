@@ -160,6 +160,12 @@ class PairController {
     required String localName,
   }) async {
     final identity = await app.loadOrCreateIdentity();
+    // Recorded before the connection, not after it (task 23344d): the far
+    // end holds this device's certificate the moment the token is redeemed
+    // and asks whoever is standing there to confirm the id derived from it,
+    // so the operator needs it on this screen *while* that prompt is up.
+    // `dsync pair accept` prints the same line at the same point.
+    state.recordOwnDeviceId(identity.deviceId);
     final store = await app.pairedDevices;
     final address = payload.address.text;
     try {
