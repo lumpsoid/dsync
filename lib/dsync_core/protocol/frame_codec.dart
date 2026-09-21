@@ -92,7 +92,11 @@ class FrameCodec {
 /// Push-shaped rather than a stream, so the reader driving it stays in
 /// charge of its own subscription — see [FrameCodec.decode].
 class FrameDecoder {
-  final _PendingBytes _pending = _PendingBytes();
+  final _PendingHeader _pending = _PendingHeader();
+
+  /// The frame whose header has been read and whose payload is still filling,
+  /// or `null` while the next header is still arriving.
+  _PartialFrame? _partial;
 
   /// Buffers [chunk] and returns every frame now complete, in order.
   ///
@@ -107,51 +111,61 @@ class FrameDecoder {
   /// Throws [FrameDecodeException] when the bytes are not this protocol at
   /// all.
   List<Frame> add(Uint8List chunk, {Duration? arrivedAt}) {
-    _pending.add(chunk);
     final frames = <Frame>[];
-    var frame = _tryDecodeOne(_pending, arrivedAt);
-    while (frame != null) {
-      frames.add(frame);
-      frame = _tryDecodeOne(_pending, arrivedAt);
+    var offset = 0;
+    while (offset < chunk.length) {
+      final partial = _partial;
+      if (partial != null) {
+        offset += partial.fillFrom(chunk, offset);
+        if (partial.isComplete) {
+          frames.add(partial.toFrame(arrivedAt));
+          _partial = null;
+        }
+        continue;
+      }
+
+      offset += _pending.fillFrom(chunk, offset);
+      if (!_pending.isComplete) break;
+
+      final partialFrame = _beginFrame(chunk, offset);
+      _pending.clear();
+      if (partialFrame.isComplete) {
+        frames.add(partialFrame.toFrame(arrivedAt));
+      } else {
+        _partial = partialFrame;
+      }
     }
     return frames;
   }
 
-  /// Decodes the one frame at the front of [pending] and advances [pending]
-  /// past it, if a complete frame is buffered yet.
+  /// Reads the header now buffered and opens the payload it announces, sized
+  /// exactly and filled in place from here on.
   ///
-  /// Throws [FrameDecodeException] when [pending] is not this protocol at all.
-  Frame? _tryDecodeOne(_PendingBytes pending, Duration? arrivedAt) {
-    if (pending.length < _FrameHeader.length) return null;
-
+  /// [chunk] and [offset] are only what is left of the arriving chunk, for
+  /// the failure below to quote.
+  ///
+  /// Throws [FrameDecodeException] when the bytes are not this protocol at
+  /// all.
+  _PartialFrame _beginFrame(Uint8List chunk, int offset) {
     // Checked before the length field below, not after it. A stream that is
     // not this protocol reads its four length bytes out of whatever text
     // arrived instead — `elco`, the tail of a shell banner's "Welcome", is a
     // 1.7 GB payload — and waiting for bytes that will never come means the
     // failure never surfaces at all. The header bytes already in hand are
-    // enough to know nobody is speaking this protocol.
-    final type = _typeForByte(pending[0]);
+    // enough to know nobody is speaking this protocol, and nothing has been
+    // allocated on the strength of the length yet.
+    final type = _typeForByte(_pending[0]);
     if (type == null) {
       throw FrameDecodeException(
-        'Unknown frame type byte: ${pending[0]}',
-        pending.undecoded,
+        'Unknown frame type byte: ${_pending[0]}',
+        _pending.followedBy(chunk, offset),
       );
     }
 
-    final requestId = pending.uint32At(1);
-    final end = _FrameHeader.length + pending.uint32At(_FrameHeader.lengthAt);
-    if (pending.length < end) return null;
-
-    // Copied out rather than viewed: [_PendingBytes] overwrites these bytes
-    // as later chunks arrive, while a `fileBytes` payload outlives the decode
-    // loop — `Applier` streams it into the destination's `writeFile`.
-    final payload = pending.copyRange(_FrameHeader.length, end);
-    pending.skip(end);
-    return Frame(
+    return _PartialFrame(
       type: type,
-      requestId: requestId,
-      payload: payload,
-      arrivedAt: arrivedAt,
+      requestId: _pending.uint32At(1),
+      length: _pending.uint32At(_FrameHeader.lengthAt),
     );
   }
 
@@ -175,90 +189,108 @@ class _FrameHeader {
   static const lengthAt = 5;
 }
 
-/// The bytes [FrameDecoder] has received but not yet turned into frames.
+/// A frame whose header has been read and whose payload is still arriving.
 ///
-/// One buffer, reused: a chunk is appended with a single `setRange`, and
-/// decoding a frame advances a start offset rather than re-copying what
-/// follows it. The obvious way to write this instead — rebuilding the buffer
-/// per chunk with `Uint8List.fromList([...pending, ...chunk])` — copies every
-/// buffered byte once per arriving chunk, which is O(n²) for a frame spanning
-/// n bytes of ~64 KiB chunks. That is not academic: `scan` returns a whole
-/// replica's listing as one control frame, ~189 bytes per entry, so a
-/// 100k-file replica sends 18 MiB in a single frame. Decoding 16 MiB that way
-/// measured 34 s and ~800 MiB of transient memory, against 60 ms and ~50 MiB
-/// here.
-class _PendingBytes {
-  /// Where the buffer starts before doubling takes over.
-  static const _initialCapacity = 1024;
+/// The payload buffer is allocated once, at the exact length the header
+/// announced, and arriving chunk bytes are written straight into it — so a
+/// frame of n bytes costs n while it decodes, plus whatever chunk is in flight,
+/// and never a second copy: 16 MiB in 64 KiB chunks measures 15.7 MiB of
+/// transient memory and 9 ms, against 48 MiB and 30 ms when the frame was
+/// accumulated into a doubling buffer and the payload then copied out of it
+/// (`benchmark/frame_decode_peak.dart`). [toFrame] hands that same buffer out as
+/// [Frame.payload]: nothing else ever refers to it, so a `fileBytes` payload
+/// outliving the decode loop — `Applier` streams it into the destination's
+/// `writeFile` — cannot be overwritten by the chunks that follow.
+class _PartialFrame {
+  final FrameType type;
+  final int requestId;
+  final Uint8List _payload;
+  int _filled = 0;
 
-  Uint8List _bytes = Uint8List(0);
-  int _start = 0;
-  int _end = 0;
+  _PartialFrame({
+    required this.type,
+    required this.requestId,
+    required int length,
+  }) : _payload = Uint8List(length);
 
-  /// How many undecoded bytes are buffered.
-  int get length => _end - _start;
+  /// Whether every announced byte has arrived.
+  bool get isComplete => _filled == _payload.length;
 
-  /// The undecoded byte at [index], counted from the first one.
-  int operator [](int index) => _bytes[_start + index];
-
-  /// A view of every undecoded byte, valid only until the next [add] — for
-  /// [FrameDecodeException], which copies what it keeps.
-  Uint8List get undecoded => Uint8List.sublistView(_bytes, _start, _end);
-
-  /// The big-endian uint32 at [offset] in the undecoded bytes, read in place.
-  int uint32At(int offset) => ByteData.sublistView(
-    _bytes,
-    _start + offset,
-    _start + offset + 4,
-  ).getUint32(0, Endian.big);
-
-  /// A copy of the undecoded bytes in `[start, end)`, owned by the caller and
-  /// so safe to outlive the buffer's next [add].
-  Uint8List copyRange(int start, int end) =>
-      _bytes.sublist(_start + start, _start + end);
-
-  /// Buffers [chunk] after the bytes already waiting.
+  /// Copies as much of [chunk] from [offset] as this payload still has room
+  /// for, and answers how many bytes that was.
   ///
-  /// [Uint8List], not `List<int>`, so the `setRange` below is the typed-data
+  /// [Uint8List], not `List<int>`, so the `setRange` is the typed-data
   /// `memmove` rather than the element-at-a-time fallback a boxed list falls
   /// to — see `Channel`, which is where the type comes from.
-  void add(Uint8List chunk) {
-    _reserve(chunk.length);
-    _bytes.setRange(_end, _end + chunk.length, chunk);
-    _end += chunk.length;
+  int fillFrom(Uint8List chunk, int offset) {
+    final available = chunk.length - offset;
+    final room = _payload.length - _filled;
+    final taken = available < room ? available : room;
+    _payload.setRange(_filled, _filled + taken, chunk, offset);
+    _filled += taken;
+    return taken;
   }
 
-  /// Drops the first [count] undecoded bytes.
-  void skip(int count) {
-    _start += count;
-    if (_start == _end) {
-      _start = 0;
-      _end = 0;
-    }
+  Frame toFrame(Duration? arrivedAt) => Frame(
+    type: type,
+    requestId: requestId,
+    payload: _payload,
+    arrivedAt: arrivedAt,
+  );
+}
+
+/// The header bytes of the next frame, while fewer than [_FrameHeader.length]
+/// of them have arrived.
+///
+/// Fixed at nine bytes and never grown: the decoder buffers only up to a
+/// header, then allocates the payload at its announced size and fills it in
+/// place ([_PartialFrame]). The obvious way to write a decoder instead —
+/// rebuilding one accumulating buffer per chunk with
+/// `Uint8List.fromList([...pending, ...chunk])` — copies every buffered byte
+/// once per arriving chunk, which is O(n²) for a frame spanning n bytes of
+/// ~64 KiB chunks; that hazard cannot return here, because nothing
+/// accumulates past nine bytes. It is not academic either: `scan` returns a
+/// whole replica's listing as one frame, 7.2 MiB for 100k entries in the
+/// binary encoding of `scan_result_codec.dart` (SPEC §15.3), and decoding
+/// 16 MiB by rebuilding measured 34 s and ~800 MiB of transient memory.
+class _PendingHeader {
+  final Uint8List _bytes = Uint8List(_FrameHeader.length);
+  int _length = 0;
+
+  /// Whether a whole header is in hand.
+  bool get isComplete => _length == _FrameHeader.length;
+
+  /// The buffered header byte at [index].
+  int operator [](int index) => _bytes[index];
+
+  /// The big-endian uint32 at [offset] in the header, read in place.
+  int uint32At(int offset) =>
+      ByteData.sublistView(_bytes, offset, offset + 4).getUint32(0, Endian.big);
+
+  /// Copies as much of [chunk] from [offset] as the header still lacks, and
+  /// answers how many bytes that was.
+  int fillFrom(Uint8List chunk, int offset) {
+    final available = chunk.length - offset;
+    final room = _bytes.length - _length;
+    final taken = available < room ? available : room;
+    _bytes.setRange(_length, _length + taken, chunk, offset);
+    _length += taken;
+    return taken;
   }
 
-  /// Makes room for [extra] bytes past the buffered ones, sliding what is
-  /// undecoded back to the front and doubling the buffer only when the room a
-  /// decoded frame left behind is not enough.
-  void _reserve(int extra) {
-    if (_bytes.length - _end >= extra) return;
+  /// Forgets the buffered header, for the next frame to start on.
+  void clear() => _length = 0;
 
-    final undecodedLength = length;
-    if (_bytes.length - undecodedLength >= extra) {
-      _bytes.setRange(0, undecodedLength, _bytes, _start);
-    } else {
-      var capacity = _bytes.length < _initialCapacity
-          ? _initialCapacity
-          : _bytes.length;
-      while (capacity - undecodedLength < extra) {
-        capacity *= 2;
-      }
-      final grown = Uint8List(capacity);
-      grown.setRange(0, undecodedLength, _bytes, _start);
-      _bytes = grown;
-    }
-    _start = 0;
-    _end = undecodedLength;
+  /// The buffered header bytes followed by what is left of [chunk] from
+  /// [offset] — every byte the decoder holds that it could not make sense of.
+  ///
+  /// For [FrameDecodeException] only: it ends the connection, so the copy is
+  /// bounded by one chunk and never repeated.
+  Uint8List followedBy(Uint8List chunk, int offset) {
+    final joined = Uint8List(_length + chunk.length - offset);
+    joined.setRange(0, _length, _bytes);
+    joined.setRange(_length, joined.length, chunk, offset);
+    return joined;
   }
 }
 
