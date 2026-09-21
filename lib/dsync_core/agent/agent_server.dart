@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 
 /// The remote end of the framed protocol (SPEC §4.2): performs the version
@@ -186,11 +187,20 @@ class AgentServer {
         () => 1,
       );
 
+      // The scan this session is holding, once one has happened (SPEC §6.1).
+      // Connection-scoped, like the agent itself: phases 2 and 3 ask about
+      // the unchanged entries phase 1 deliberately did not send, so they are
+      // only answerable by the session that scanned. A second `scan` replaces
+      // it — a run scans once, and a client that scans twice means the first
+      // one is over.
+      final scan = _HeldScan();
+
       onRequest = (frame, body) {
         final handled = _dispatch(
           channel,
           router,
           agent,
+          scan,
           frame,
           body,
           // Read at reply time rather than captured now: what makes a peer's
@@ -235,6 +245,7 @@ class AgentServer {
     Channel channel,
     FrameRouter router,
     Agent agent,
+    _HeldScan scan,
     Frame frame,
     Stream<Frame> body,
     int Function() inFlight,
@@ -277,22 +288,38 @@ class AgentServer {
               writePath?.call(agent),
             );
           case 'scan':
-            final result = await agent.scan(
+            final session = await agent.scan(
               ruleSetFromJson(request.params['rules'] as Map<String, dynamic>),
             );
-            // The one reply that is not a control frame (SPEC §15.3). A failure
+            scan.session = session;
+            // The replies that are not control frames (SPEC §15.3). A failure
             // still is: the `catch` below answers with an `AgentFailure`, which
             // is what lets `RemoteAgent.scan` tell the two apart by frame type
             // without the encoding having to carry an ok/error flag of its own.
-            await channel.send(
-              FrameCodec().encode(
-                Frame(
-                  type: FrameType.scanResult,
-                  requestId: id,
-                  payload: encodeScanResult(result),
-                ),
-              ),
+            await _sendScanPayload(
+              channel,
+              id,
+              encodeChangedScan(session.changed),
             );
+          case scanDigestsOp:
+            final digests = await scan.held.digests(
+              bucketCount: request.params['bucketCount'] as int,
+              peerChangedPaths: [
+                for (final path in request.params['peerChangedPaths'] as List)
+                  path as String,
+              ],
+            );
+            await _sendScanPayload(
+              channel,
+              id,
+              encodeBucketDigests(digests),
+            );
+          case scanBucketsOp:
+            final entries = await scan.held.entriesIn([
+              for (final bucket in request.params['buckets'] as List)
+                bucket as int,
+            ]);
+            await _sendScanPayload(channel, id, encodeScanEntries(entries));
           case 'readFile':
             await sendByteStream(
               channel,
@@ -379,6 +406,26 @@ class AgentServer {
   /// side's *cumulative* flush wait up to now ([FarSideReport.sendWait]),
   /// which is the figure that says whether an apparent link latency is
   /// really this end's send queue.
+  /// One phase of a scan, as the binary frame SPEC §15.3 gives it.
+  ///
+  /// All three phases go out under `FrameType.scanResult`; the request id is
+  /// what says which one, exactly as it does for every other operation. A
+  /// frame type per phase would need `FrameCodec` to learn two more numbers
+  /// to distinguish payloads the id already distinguishes.
+  Future<void> _sendScanPayload(
+    Channel channel,
+    int requestId,
+    List<int> payload,
+  ) => channel.send(
+    FrameCodec().encode(
+      Frame(
+        type: FrameType.scanResult,
+        requestId: requestId,
+        payload: payload,
+      ),
+    ),
+  );
+
   Future<void> _reply(
     Channel channel,
     AgentResult result,
@@ -434,5 +481,27 @@ class _InboundWait {
       yield frame;
       since = _clock.elapsed;
     }
+  }
+}
+
+/// The one [ScanSession] a connection is holding, and the failure for a peer
+/// that asks about a scan that never happened.
+///
+/// A holder rather than a nullable local, because the session is set by one
+/// dispatch and read by later ones: `_dispatch` is called once per request
+/// and cannot own a value the next call has to see. Named so the error
+/// message can be, too — an out-of-order phase is a protocol bug and reads
+/// as one, not as a null dereference in a stack trace.
+class _HeldScan {
+  ScanSession? session;
+
+  ScanSession get held {
+    final session = this.session;
+    if (session == null) {
+      throw StateError(
+        'A later scan phase arrived before the scan itself (SPEC §6.1)',
+      );
+    }
+    return session;
   }
 }

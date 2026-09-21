@@ -20,7 +20,9 @@ import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 const _testSpec = ReplicaSpec(
   rootPath: '/replica',
@@ -401,7 +403,7 @@ void main() {
         ),
       ];
 
-      final entries = (await remote.scan(RuleSet())).entries;
+      final entries = await allScanEntries(await remote.scan(RuleSet()));
 
       expect(entries.single.path, 'a.txt');
       expect(entries.single.status, ScanStatus.created);
@@ -801,8 +803,8 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<ScanResult> scan(RuleSet rules) async =>
-      ScanResult(entries: scanResult);
+  Future<ScanSession> scan(RuleSet rules) async =>
+      LocalScanSession(ScanResult(entries: scanResult));
 
   @override
   Stream<List<int>> readFile(String path) {

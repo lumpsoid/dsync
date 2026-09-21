@@ -29,17 +29,41 @@
 /// 33 bytes of hash and the path; a layout you can read off the struct is worth
 /// more than that.
 ///
+/// Since task 97171c a scan is three exchanges rather than one (SPEC §6.1),
+/// and all three replies are this frame type — the request id is what says
+/// which phase a payload belongs to, exactly as it already does for every
+/// other operation. `FrameType.scanResult` therefore means "a binary scan
+/// payload", not "a whole listing"; a *failed* phase is still an
+/// `AgentFailure` control frame, which is what lets the frame type go on
+/// telling success from failure without the encoding carrying a flag.
+///
 /// ```text
-/// [u32 entryCount]
-///   per entry:
-///     [u32 pathLength][path UTF-8]
-///     [u8 reason][u8 presentFields]
-///     [i64 size]?  [i64 mtime]?  [u16 mode]?  [u8 hashLength][hash bytes]?
-/// [u32 skippedCount]
-///   per skipped path:
-///     [u32 pathLength][path UTF-8]
-///     [u8 reason]
-///     [u32 detailLength][detail UTF-8]
+/// entry block:
+///   [u32 entryCount]
+///     per entry:
+///       [u32 pathLength][path UTF-8]
+///       [u8 reason][u8 presentFields]
+///       [i64 size]?  [i64 mtime]?  [u16 mode]?  [u8 hashLength][hash bytes]?
+///
+/// skipped block:
+///   [u32 skippedCount]
+///     per skipped path:
+///       [u32 pathLength][path UTF-8]
+///       [u8 reason]
+///       [u32 detailLength][detail UTF-8]
+///
+/// phase 1, a ChangedScan:
+///   [entry block: the changed entries][skipped block]
+///   [u32 metadataMatched][u32 hashMatched][u32 modified][u32 created]
+///   [u32 deleted]
+///
+/// phase 2, a BucketDigests:
+///   [u32 digestCount]
+///     per bucket: [u8 digestLength][digest bytes]
+///   [entry block: this side's entries for the peer's changed paths]
+///
+/// phase 3, the entries of the buckets that disagreed:
+///   [entry block]
 /// ```
 ///
 /// Lengths are `u32` even for a path, where `u16` would fit every path a real
@@ -57,6 +81,8 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/bucket_digests.dart';
+import 'package:dsync/dsync_core/models/changed_scan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/models/skipped_path.dart';
@@ -77,15 +103,115 @@ abstract final class _Present {
   static const hash = 1 << 3;
 }
 
-/// Serializes [result] to the bytes a `FrameType.scanResult` frame carries.
+/// Serializes [scan] to the bytes a `FrameType.scanResult` frame carries for
+/// SPEC §6.1's phase 1.
 ///
 /// Throws [FormatException] if an entry's [ScanEntry.hash] is not hex text —
 /// see [scanEntryHashBytes].
-Uint8List encodeScanResult(ScanResult result) {
+Uint8List encodeChangedScan(ChangedScan scan) {
   final writer = _ByteWriter();
+  _writeEntries(writer, scan.entries);
+  _writeSkipped(writer, scan.skippedPaths);
+  final tally = scan.tally;
+  writer
+    ..uint32(tally.metadataMatched)
+    ..uint32(tally.hashMatched)
+    ..uint32(tally.modified)
+    ..uint32(tally.created)
+    ..uint32(tally.deleted);
+  return writer.take();
+}
 
-  writer.uint32(result.entries.length);
-  for (final entry in result.entries) {
+/// Rebuilds the [ChangedScan] [encodeChangedScan] wrote.
+ChangedScan decodeChangedScan(List<int> payload) {
+  final reader = _readerOver(payload);
+  // Read into locals in wire order rather than straight into the constructor
+  // call: the reader advances a cursor, so the order the fields are *written*
+  // in the source would silently become part of the format.
+  final entries = _readEntries(reader);
+  final skippedPaths = _readSkipped(reader);
+  final tally = ScanReasonTally(
+    metadataMatched: reader.uint32(),
+    hashMatched: reader.uint32(),
+    modified: reader.uint32(),
+    created: reader.uint32(),
+    deleted: reader.uint32(),
+  );
+  return ChangedScan(
+    entries: entries,
+    skippedPaths: skippedPaths,
+    tally: tally,
+  );
+}
+
+/// Serializes [digests] to the bytes a `FrameType.scanResult` frame carries
+/// for SPEC §6.1's phase 2.
+///
+/// A digest is length-prefixed with one byte for the same reason a hash is:
+/// the length is fixed by whichever hash produced it, and spelling it makes
+/// the format independent of that choice rather than encoding today's 32
+/// bytes as a constant the next reader has to discover.
+Uint8List encodeBucketDigests(BucketDigests digests) {
+  final writer = _ByteWriter();
+  writer.uint32(digests.digests.length);
+  for (final digest in digests.digests) {
+    if (digest.length > 255) {
+      throw FormatException(
+        'A bucket digest is ${digest.length} bytes, past the 255 this '
+        'encoding can carry',
+      );
+    }
+    writer
+      ..uint8(digest.length)
+      ..rawBytes(digest);
+  }
+  _writeEntries(writer, digests.peerChangedEntries);
+  return writer.take();
+}
+
+/// Rebuilds the [BucketDigests] [encodeBucketDigests] wrote.
+BucketDigests decodeBucketDigests(List<int> payload) {
+  final reader = _readerOver(payload);
+  final count = reader.uint32();
+  final digests = <Uint8List>[];
+  for (var i = 0; i < count; i++) {
+    digests.add(reader.rawBytes(reader.uint8()));
+  }
+  return BucketDigests(
+    digests: digests,
+    peerChangedEntries: _readEntries(reader),
+  );
+}
+
+/// Serializes [entries] to the bytes a `FrameType.scanResult` frame carries
+/// for SPEC §6.1's phase 3.
+///
+/// Throws [FormatException] if an entry's [ScanEntry.hash] is not hex text —
+/// see [scanEntryHashBytes].
+Uint8List encodeScanEntries(List<ScanEntry> entries) {
+  final writer = _ByteWriter();
+  _writeEntries(writer, entries);
+  return writer.take();
+}
+
+/// Rebuilds the entries [encodeScanEntries] wrote.
+List<ScanEntry> decodeScanEntries(List<int> payload) =>
+    _readEntries(_readerOver(payload));
+
+/// A reader over [payload].
+///
+/// Takes `List<int>` because that is what `Frame.payload` is — a frame also
+/// carries whatever `Agent.readFile` yields, so the frame model cannot be
+/// narrower than that. Every payload `FrameCodec` decodes is in fact the
+/// [Uint8List] it copied the bytes into, so this views rather than copies in
+/// every case that comes off a wire.
+_ByteReader _readerOver(List<int> payload) => _ByteReader(
+  payload is Uint8List ? payload : Uint8List.fromList(payload),
+);
+
+void _writeEntries(_ByteWriter writer, List<ScanEntry> entries) {
+  writer.uint32(entries.length);
+  for (final entry in entries) {
     writer
       ..lengthPrefixedString(entry.path)
       ..uint8(entry.reason.index);
@@ -110,38 +236,13 @@ Uint8List encodeScanResult(ScanResult result) {
         ..rawBytes(bytes);
     }
   }
-
-  writer.uint32(result.skippedPaths.length);
-  for (final skipped in result.skippedPaths) {
-    writer
-      ..lengthPrefixedString(skipped.path)
-      ..uint8(skipped.reason.index)
-      ..lengthPrefixedString(skipped.detail);
-  }
-
-  return writer.take();
 }
 
-/// Rebuilds the [ScanResult] [encodeScanResult] wrote.
-///
-/// Takes `List<int>` because that is what `Frame.payload` is — a frame also
-/// carries whatever `Agent.readFile` yields, so the frame model cannot be
-/// narrower than that. Every payload `FrameCodec` decodes is in fact the
-/// [Uint8List] it copied the bytes into, so this views rather than copies in
-/// every case that comes off a wire.
-///
-/// Throws [FormatException] if [payload] is truncated or names an enum value
-/// this build does not have — both of which mean the peer is not speaking this
-/// version of the protocol, which the version handshake is supposed to have
-/// caught first (SPEC §4.2).
-ScanResult decodeScanResult(List<int> payload) {
-  final reader = _ByteReader(
-    payload is Uint8List ? payload : Uint8List.fromList(payload),
-  );
-
-  // Read into locals in wire order rather than straight into the constructor
-  // call: the reader advances a cursor, so the order the fields are *written*
-  // in the source would silently become part of the format.
+/// Throws [FormatException] if [reader] is truncated or names an enum value
+/// this build does not have — both of which mean the peer is not speaking
+/// this version of the protocol, which the version handshake is supposed to
+/// have caught first (SPEC §4.2).
+List<ScanEntry> _readEntries(_ByteReader reader) {
   final entryCount = reader.uint32();
   final entries = <ScanEntry>[];
   for (var i = 0; i < entryCount; i++) {
@@ -151,9 +252,7 @@ ScanResult decodeScanResult(List<int> payload) {
     final size = present & _Present.size == 0 ? null : reader.int64();
     final mtime = present & _Present.mtime == 0 ? null : reader.int64();
     final mode = present & _Present.mode == 0 ? null : reader.uint16();
-    final hash = present & _Present.hash == 0
-        ? null
-        : reader.hex(reader.uint8());
+    final hash = present & _Present.hash == 0 ? null : reader.hex(reader.uint8());
     entries.add(
       ScanEntry(
         path: path,
@@ -165,7 +264,20 @@ ScanResult decodeScanResult(List<int> payload) {
       ),
     );
   }
+  return entries;
+}
 
+void _writeSkipped(_ByteWriter writer, List<SkippedPath> skippedPaths) {
+  writer.uint32(skippedPaths.length);
+  for (final skipped in skippedPaths) {
+    writer
+      ..lengthPrefixedString(skipped.path)
+      ..uint8(skipped.reason.index)
+      ..lengthPrefixedString(skipped.detail);
+  }
+}
+
+List<SkippedPath> _readSkipped(_ByteReader reader) {
   final skippedCount = reader.uint32();
   final skippedPaths = <SkippedPath>[];
   for (var i = 0; i < skippedCount; i++) {
@@ -178,8 +290,7 @@ ScanResult decodeScanResult(List<int> payload) {
     final detail = reader.lengthPrefixedString();
     skippedPaths.add(SkippedPath(path: path, reason: reason, detail: detail));
   }
-
-  return ScanResult(entries: entries, skippedPaths: skippedPaths);
+  return skippedPaths;
 }
 
 /// The bytes [hash] spells, for an entry at [path].
@@ -361,6 +472,13 @@ class _ByteReader {
   int uint32() => _view.getUint32(_take(4), Endian.big);
 
   int int64() => _view.getInt64(_take(8), Endian.big);
+
+  /// The next [count] bytes, as a view rather than a copy — the caller
+  /// holds them for the rest of the run and the payload is dead by then.
+  Uint8List rawBytes(int count) {
+    final start = _take(count);
+    return Uint8List.sublistView(_bytes, start, start + count);
+  }
 
   String lengthPrefixedString() {
     final length = uint32();

@@ -8,6 +8,16 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// The protocol version this build speaks (SPEC §4.2). Bumped whenever the
 /// wire format changes in a way older and newer builds can't both handle.
 ///
+/// **4 since task 97171c**, which split `scan` into SPEC §6.1's three
+/// exchanges — the changed entries, then a digest per bucket over the
+/// unchanged ones, then only the buckets the two sides disagreed on. It adds
+/// two agent operations, so a version-3 peer answers `scanDigests` with
+/// "Unknown agent operation": loud, but *mid-run*, after both replicas are
+/// locked and one has just walked its whole tree, and — worse than 9d2158's
+/// case — this build would read a version-3 peer's single full `scan` reply
+/// as a phase-1 payload and find garbage where the tally should be. The bump
+/// turns both into one refusal at the handshake.
+///
 /// **3 since task 9d2158**, which replaced the per-path `archiveCommitUpsert`
 /// and `archiveCommitDelete` operations with one `archiveCommit` carrying a
 /// batch of records (SPEC §7.3). This is the change the paragraph below
@@ -60,7 +70,7 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// a constant that can be compared. **Replacing an operation** — 9d2158 —
 /// fails loudly at the far end's `default` case, but only once the run is
 /// already half done, which is why it took a bump as well.
-const protocolVersion = 3;
+const protocolVersion = 4;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this
 /// build's [protocolVersion] as a control frame, then reads the peer's.

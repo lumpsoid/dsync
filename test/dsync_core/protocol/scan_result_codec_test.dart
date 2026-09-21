@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:dsync/dsync_core/models/bucket_digests.dart';
+import 'package:dsync/dsync_core/models/changed_scan.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/models/skipped_path.dart';
@@ -394,7 +396,150 @@ void main() {
       expect(decoded.entries.single.path, 'a.txt');
     });
   });
+
+  group('phase 1, a ChangedScan', () {
+    test('carries the whole scan\'s tally, not the sent entries\' own', () {
+      // The point of the field: a scan of 400 files where one changed sends
+      // one entry and a tally of 400, and SPEC §11.4's line is about the 399.
+      const tally = ScanReasonTally(
+        metadataMatched: 397,
+        hashMatched: 2,
+        modified: 1,
+        created: 0,
+        deleted: 0,
+      );
+
+      final decoded = decodeChangedScan(
+        encodeChangedScan(
+          ChangedScan(
+            entries: const [
+              ScanEntry(path: 'a.txt', reason: ScanReason.modified, hash: 'ab'),
+            ],
+            skippedPaths: const [],
+            tally: tally,
+          ),
+        ),
+      );
+
+      expect(decoded.entries.single.path, 'a.txt');
+      expect(decoded.tally.metadataMatched, 397);
+      expect(decoded.tally.hashMatched, 2);
+      expect(decoded.tally.modified, 1);
+      expect(decoded.tally.total, 400);
+    });
+
+    test('carries skipped paths, which are never in a bucket', () {
+      final decoded = decodeChangedScan(
+        encodeChangedScan(
+          ChangedScan(
+            entries: const [],
+            skippedPaths: const [
+              SkippedPath(
+                path: 'locked',
+                reason: SkippedReason.unreadable,
+                detail: 'permission denied',
+              ),
+            ],
+            tally: const ScanReasonTally(
+              metadataMatched: 0,
+              hashMatched: 0,
+              modified: 0,
+              created: 0,
+              deleted: 0,
+            ),
+          ),
+        ),
+      );
+
+      expect(decoded.skippedPaths.single.path, 'locked');
+      expect(decoded.skippedPaths.single.detail, 'permission denied');
+      expect(decoded.unreadableCount, 1);
+    });
+  });
+
+  group('phase 2, a BucketDigests', () {
+    test('round-trips the digests in order, beside the entries owed', () {
+      final digests = BucketDigests(
+        digests: [
+          Uint8List.fromList(List.filled(32, 1)),
+          Uint8List.fromList(List.filled(32, 2)),
+        ],
+        peerChangedEntries: const [
+          ScanEntry(
+            path: 'b.txt',
+            reason: ScanReason.metadataMatched,
+            size: 3,
+            mtime: 4,
+            mode: 420,
+            hash: 'beef',
+          ),
+        ],
+      );
+
+      final decoded = decodeBucketDigests(encodeBucketDigests(digests));
+
+      expect(decoded.digests, hasLength(2));
+      expect(decoded.digests[0], everyElement(1));
+      expect(decoded.digests[1], everyElement(2));
+      expect(decoded.disagreeingWith(digests), isEmpty);
+      expect(decoded.peerChangedEntries.single.hash, 'beef');
+    });
+
+    test('refuses a digest past the single length byte it is prefixed with',
+        () {
+      expect(
+        () => encodeBucketDigests(
+          BucketDigests(
+            digests: [Uint8List(256)],
+            peerChangedEntries: const [],
+          ),
+        ),
+        throwsFormatException,
+      );
+    });
+  });
+
+  group('phase 3, the entries of the buckets that disagreed', () {
+    test('round-trips a bare run of entries', () {
+      final decoded = decodeScanEntries(
+        encodeScanEntries(const [
+          ScanEntry(
+            path: 'c.txt',
+            reason: ScanReason.hashMatched,
+            size: 9,
+            mtime: 10,
+            mode: 420,
+            hash: 'cafe',
+          ),
+        ]),
+      );
+
+      expect(decoded.single.path, 'c.txt');
+      expect(decoded.single.reason, ScanReason.hashMatched);
+      expect(decoded.single.hash, 'cafe');
+    });
+  });
 }
 
 ScanResult _roundTrip(ScanResult result) =>
     decodeScanResult(encodeScanResult(result));
+
+/// Phase 1's codec over a whole [ScanResult] — the shape these cases were
+/// written against, before SPEC §6.1 split a scan into three payloads.
+///
+/// The entry block and the skipped block are the same bytes in the same order
+/// whichever phase carries them, so every case above goes on testing exactly
+/// what it tested. What phase 1 adds beyond them — the tally — has its own
+/// cases, as do the other two payloads.
+Uint8List encodeScanResult(ScanResult result) => encodeChangedScan(
+  ChangedScan(
+    entries: result.entries,
+    skippedPaths: result.skippedPaths,
+    tally: result.reasonTally,
+  ),
+);
+
+ScanResult decodeScanResult(List<int> payload) {
+  final scan = decodeChangedScan(payload);
+  return ScanResult(entries: scan.entries, skippedPaths: scan.skippedPaths);
+}

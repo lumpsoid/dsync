@@ -10,7 +10,7 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:path/path.dart' as p;
@@ -178,7 +178,7 @@ class LocalAgent implements Agent {
   }
 
   @override
-  Future<ScanResult> scan(RuleSet rules) async {
+  Future<ScanSession> scan(RuleSet rules) async {
     final archive = await archiveStore.load();
     final result = await scanner.scan(
       rootPath: rootPath,
@@ -186,7 +186,11 @@ class LocalAgent implements Agent {
       rules: rules,
     );
     await _refreshFastPathKeys(result.entries, archive);
-    return result;
+    // The whole result, unchanged entries and all. Nothing leaves this
+    // process for an in-process replica, so the session is a view over what
+    // is already here; what SPEC §6.1's phases save is a wire, and this one
+    // has none.
+    return LocalScanSession(result);
   }
 
   /// Writes back the size and mtime of files a rehash proved unchanged (SPEC

@@ -117,7 +117,7 @@ void main() {
       // A successful scan comes back as its own frame type, not a control
       // frame (SPEC §15.3, task 9551c4).
       expect(scanReply.type, FrameType.scanResult);
-      final entries = decodeScanResult(scanReply.payload).entries;
+      final entries = decodeChangedScan(scanReply.payload).entries;
       expect(entries.single.path, 'a.txt');
       expect(entries.single.reason, ScanReason.created);
 

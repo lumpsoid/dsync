@@ -18,6 +18,8 @@ import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
+import 'package:dsync/dsync_core/models/changed_scan.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
 
 /// A minimal pipelining client: allocates request ids, opens a route per
@@ -99,13 +101,13 @@ void main() {
   /// `scan` alone, because its success is a `FrameType.scanResult` frame
   /// rather than a control frame (SPEC §15.3) — [call] would try to read it
   /// as JSON.
-  Future<ScanResult> callScan(RuleSet rules) async {
+  Future<ChangedScan> callScan(RuleSet rules) async {
     final exchange = await client.request(
       AgentRequest('scan', {'rules': ruleSetToJson(rules)}),
     );
     final frame = await exchange.replies.first;
     expect(frame.type, FrameType.scanResult);
-    return decodeScanResult(frame.payload);
+    return decodeChangedScan(frame.payload);
   }
 
   group('lock / unlock', () {
@@ -506,11 +508,11 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<ScanResult> scan(RuleSet rules) async {
+  Future<ScanSession> scan(RuleSet rules) async {
     lastScanRules = rules;
     final failure = scanFailure;
     if (failure != null) throw failure;
-    return ScanResult(entries: scanResult);
+    return LocalScanSession(ScanResult(entries: scanResult));
   }
 
   @override

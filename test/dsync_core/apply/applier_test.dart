@@ -15,7 +15,9 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 /// Puts [entry] in [agent]'s archive before the run under test starts —
 /// setup, not an assertion about how `Applier` commits.
@@ -724,8 +726,8 @@ void main() {
       // --- "Crash" run: a real deleteOnB, interrupted between the two
       // archive commits (SPEC §7.3). -----------------------------------
 
-      final scanA1 = (await agentA.scan(RuleSet())).entries;
-      final scanB1 = (await agentB.scan(RuleSet())).entries;
+      final scanA1 = await allScanEntries(await agentA.scan(RuleSet()));
+      final scanB1 = await allScanEntries(await agentB.scan(RuleSet()));
       expect(
         scanA1.singleWhere((e) => e.path == 'f').status,
         ScanStatus.deleted,
@@ -768,8 +770,8 @@ void main() {
       // A is silent (no entry at all) and B still reports `deleted`
       // forever — the Reconciler's old one-sided branch did nothing. ---
 
-      final scanA2 = (await agentA.scan(RuleSet())).entries;
-      final scanB2 = (await agentB.scan(RuleSet())).entries;
+      final scanA2 = await allScanEntries(await agentA.scan(RuleSet()));
+      final scanB2 = await allScanEntries(await agentB.scan(RuleSet()));
       expect(scanA2.where((e) => e.path == 'f'), isEmpty);
       expect(
         scanB2.singleWhere((e) => e.path == 'f').status,
@@ -797,8 +799,8 @@ void main() {
 
       // --- Third run: nothing left to converge. ---------------------
 
-      final scanA3 = (await agentA.scan(RuleSet())).entries;
-      final scanB3 = (await agentB.scan(RuleSet())).entries;
+      final scanA3 = await allScanEntries(await agentA.scan(RuleSet()));
+      final scanB3 = await allScanEntries(await agentB.scan(RuleSet()));
       final plan3 = Reconciler().reconcile(scanA3, scanB3);
       expect(plan3.actions, isEmpty);
       expect(plan3.conflicts, isEmpty);
@@ -808,8 +810,8 @@ void main() {
 
       File('${replicaBDir.path}/f').writeAsStringSync('recreated');
 
-      final scanA4 = (await agentA.scan(RuleSet())).entries;
-      final scanB4 = (await agentB.scan(RuleSet())).entries;
+      final scanA4 = await allScanEntries(await agentA.scan(RuleSet()));
+      final scanB4 = await allScanEntries(await agentB.scan(RuleSet()));
       final plan4 = Reconciler().reconcile(scanA4, scanB4);
       expect(plan4.conflicts, isEmpty);
       expect(plan4.actions, hasLength(1));
@@ -1180,7 +1182,8 @@ class _FailingWriteAgent implements Agent {
   Future<void> unlock() async {}
 
   @override
-  Future<ScanResult> scan(RuleSet rules) async => const ScanResult(entries: []);
+  Future<ScanSession> scan(RuleSet rules) async =>
+      LocalScanSession(const ScanResult(entries: []));
 
   @override
   Stream<List<int>> readFile(String path) => Stream.value(files[path] ?? []);
@@ -1253,7 +1256,7 @@ class _CrashingDeleteAgent implements Agent {
   Future<void> unlock() => _wrapped.unlock();
 
   @override
-  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+  Future<ScanSession> scan(RuleSet rules) => _wrapped.scan(rules);
 
   @override
   Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
@@ -1309,7 +1312,7 @@ class _RecordingCallsAgent implements Agent {
   Future<void> unlock() => _wrapped.unlock();
 
   @override
-  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+  Future<ScanSession> scan(RuleSet rules) => _wrapped.scan(rules);
 
   @override
   Stream<List<int>> readFile(String path) {

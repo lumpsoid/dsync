@@ -13,6 +13,7 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 void main() {
   late Directory tempDir;
@@ -109,7 +110,7 @@ void main() {
     test('reports a new file as created against an empty archive', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
 
-      final entries = (await agent().scan(RuleSet())).entries;
+      final entries = await allScanEntries(await agent().scan(RuleSet()));
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);
@@ -602,7 +603,7 @@ void main() {
       await File(tempPathFor('${replicaDir.path}/a.txt', 7))
           .writeAsString('half a file');
 
-      final entries = (await agent().scan(RuleSet())).entries;
+      final entries = await allScanEntries(await agent().scan(RuleSet()));
 
       // Otherwise the next run reports dsync's own half-written scratch data
       // as a new file and propagates it to the other replica.

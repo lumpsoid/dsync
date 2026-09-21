@@ -25,6 +25,7 @@ import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:pointycastle/asn1.dart';
 import 'package:pointycastle/export.dart';
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 /// [AgentListener.bindSecure] and [SocketChannel.connectSecure] over real
 /// loopback TLS sockets — the paired network transport SPEC §4.4 adds
@@ -342,12 +343,12 @@ void main() {
     final agent = await connectAs(phone, listener, rootPath: allowedRoot);
     final info = await agent.hello();
     await agent.lock();
-    final result = await agent.scan(RuleSet());
+    final result = await allScanEntries(await agent.scan(RuleSet()));
     await agent.unlock();
     await agent.disconnect();
 
     expect(info.lastCommitTime, isNull);
-    expect(result.entries, isEmpty);
+    expect(result, isEmpty);
     expect(sessionErrors, isEmpty);
   });
 
@@ -559,8 +560,8 @@ void main() {
 
       // The session's own upgraded socket is untouched by either change:
       // nothing was rebound, so there was nothing to drain.
-      final result = await live.scan(RuleSet());
-      expect(result.entries, isEmpty);
+      final result = await allScanEntries(await live.scan(RuleSet()));
+      expect(result, isEmpty);
       await live.unlock();
       await live.disconnect();
       expect(sessionErrors, isEmpty);

@@ -18,7 +18,9 @@ import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 /// Short enough to keep the suite quick, and far enough apart that a machine
 /// under load does not turn a healthy connection into a reaped one: five
@@ -42,7 +44,7 @@ void main() {
       // The wedged peer: it answers `hello`, then owes a `scan` reply it
       // never sends and never closes the socket — the half-open connection a
       // slept laptop leaves behind. Not wrapped, so it sends no heartbeats.
-      final scanForever = Completer<ScanResult>();
+      final scanForever = Completer<ScanSession>();
       agent.scanReply = scanForever.future;
       unawaited(AgentServer().serve(serverEnd, (_) => agent));
 
@@ -60,7 +62,7 @@ void main() {
         ),
       );
 
-      scanForever.complete(const ScanResult(entries: []));
+      scanForever.complete(LocalScanSession(const ScanResult(entries: [])));
     });
 
     test('is reaped by the server, which then releases the lock', () async {
@@ -116,14 +118,14 @@ void main() {
       // heartbeat could only survive by being longer than the worst-case scan.
       agent.scanReply = Future.delayed(
         _deadline * 4,
-        () => const ScanResult(entries: []),
+        () => LocalScanSession(const ScanResult(entries: [])),
       );
       unawaited(AgentServer().serve(_wrap(serverEnd), (_) => agent));
 
       final remote = RemoteAgent(_wrap(clientEnd), _testSpec);
       await remote.hello();
 
-      expect((await remote.scan(RuleSet())).entries, isEmpty);
+      expect(await allScanEntries(await remote.scan(RuleSet())), isEmpty);
     });
 
     test('is not reaped while a user sits at a conflict prompt', () async {
@@ -215,7 +217,9 @@ Future<void> _send(Channel channel, AgentRequest request, int requestId) =>
 class _FakeAgent implements Agent {
   bool locked = false;
   int unlockCalls = 0;
-  Future<ScanResult> scanReply = Future.value(const ScanResult(entries: []));
+  Future<ScanSession> scanReply = Future.value(
+    LocalScanSession(const ScanResult(entries: [])),
+  );
 
   @override
   Future<ReplicaInfo> hello() async => const ReplicaInfo();
@@ -236,7 +240,7 @@ class _FakeAgent implements Agent {
   }
 
   @override
-  Future<ScanResult> scan(RuleSet rules) => scanReply;
+  Future<ScanSession> scan(RuleSet rules) => scanReply;
 
   @override
   Stream<List<int>> readFile(String path) => const Stream.empty();

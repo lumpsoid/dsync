@@ -11,7 +11,9 @@ import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/bucket_digests.dart';
+import 'package:dsync/dsync_core/models/changed_scan.dart';
+import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -19,6 +21,7 @@ import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 
 /// Told what one exchange cost, split where it happened (SPEC §17) — the
 /// seam `RemoteAgent`'s owner uses to feed `RunMetricsRecorder`.
@@ -146,34 +149,49 @@ class RemoteAgent implements Agent {
   @override
   Future<void> unlock() => _exclusive(AgentOp.unlock, _call);
 
-  /// The one operation whose success does not come back as a control frame
-  /// (SPEC §15.3): a `scan` reply is `FrameType.scanResult`, the binary
-  /// encoding in `scan_result_codec.dart`. A *failure* is still an
-  /// `AgentFailure` control frame, so the frame type is what tells the two
-  /// apart — which is why this cannot go through [_call].
+  /// The one operation family whose success does not come back as a control
+  /// frame (SPEC §15.3): every phase of a `scan` replies with
+  /// `FrameType.scanResult`, the binary encoding in `scan_result_codec.dart`.
+  /// A *failure* is still an `AgentFailure` control frame, so the frame type
+  /// is what tells the two apart — which is why these cannot go through
+  /// [_call].
   ///
-  /// It is also one of the two replies with nowhere to carry what the peer
-  /// spent (SPEC §17): the record this reports has a queue wait and a wire
-  /// span and no far side at all, which is absent rather than zero.
+  /// They are also the replies with nowhere to carry what the peer spent
+  /// (SPEC §17): the records they report have a queue wait and a wire span
+  /// and no far side at all, which is absent rather than zero.
+  ///
+  /// This call is phase 1 alone. Phases 2 and 3 are further exchanges, issued
+  /// through the session this returns, and the peer holds the unchanged
+  /// entries between them — which is what makes them cheap and is also why
+  /// they must all reach the same `AgentServer` session.
   @override
-  Future<ScanResult> scan(RuleSet rules) => _exclusive(
-    AgentOp.scan,
-    (record) => _exchange(
+  Future<ScanSession> scan(RuleSet rules) async => _RemoteScanSession(
+    this,
+    await _binaryExchange(
       AgentRequest(AgentOp.scan.name, {'rules': ruleSetToJson(rules)}),
-      (id, replies) async {
-        final frame = await _firstReply(replies);
-        record.sawReply(frame);
-        if (frame.type == FrameType.scanResult) {
-          return decodeScanResult(frame.payload);
-        }
-        throw switch (AgentResult.fromFrame(frame)) {
-          AgentFailure(:final error) => AgentOperationException(error),
-          AgentSuccess() => StateError(
-            'Peer answered scan with a success control frame, not a scan result',
-          ),
-        };
-      },
+      decodeChangedScan,
     ),
+  );
+
+  /// One binary-reply exchange: a barrier in the window like `scan` itself,
+  /// since each phase changes what the peer's held scan means to the session.
+  Future<T> _binaryExchange<T>(
+    AgentRequest request,
+    T Function(List<int> payload) decode,
+  ) => _exclusive(
+    AgentOp.scan,
+    (record) => _exchange(request, (id, replies) async {
+      final frame = await _firstReply(replies);
+      record.sawReply(frame);
+      if (frame.type == FrameType.scanResult) return decode(frame.payload);
+      throw switch (AgentResult.fromFrame(frame)) {
+        AgentFailure(:final error) => AgentOperationException(error),
+        AgentSuccess() => StateError(
+          'Peer answered ${request.op} with a success control frame, not a '
+          'scan result',
+        ),
+      };
+    }),
   );
 
   /// Streams the file. A consumer that stops early — which `Applier` makes
@@ -475,4 +493,37 @@ class _Exchange {
       ),
     );
   }
+}
+
+/// A [ScanSession] whose later phases are two more exchanges with the peer
+/// that is holding the scan.
+///
+/// Private to this file: it is meaningless apart from the [RemoteAgent] that
+/// produced it, and it exists only for as long as that agent's connection
+/// does.
+class _RemoteScanSession implements ScanSession {
+  final RemoteAgent _agent;
+
+  @override
+  final ChangedScan changed;
+
+  _RemoteScanSession(this._agent, this.changed);
+
+  @override
+  Future<BucketDigests> digests({
+    required int bucketCount,
+    required List<String> peerChangedPaths,
+  }) => _agent._binaryExchange(
+    AgentRequest(scanDigestsOp, {
+      'bucketCount': bucketCount,
+      'peerChangedPaths': peerChangedPaths,
+    }),
+    decodeBucketDigests,
+  );
+
+  @override
+  Future<List<ScanEntry>> entriesIn(List<int> buckets) => _agent._binaryExchange(
+    AgentRequest(scanBucketsOp, {'buckets': buckets}),
+    decodeScanEntries,
+  );
 }

@@ -78,11 +78,21 @@ class Reconciler {
 /// appends the outcome to [actions] or [conflicts].
 ///
 /// A `null` entry means that side's scan has no record of the path at all —
-/// no archive entry and no file. The SPEC §6 table assumes both sides report
-/// a status, so this case is covered by §6's "a path one side has never seen"
-/// rule instead: mirror whatever the other side has, or — when that side
-/// reports `deleted` — tombstone the side still recording it, so the two
-/// archives converge instead of drifting forever (task 6a967f).
+/// no archive entry and no file. This case is covered by §6's "a path one
+/// side has never seen" rule: mirror whatever the other side has, or — when
+/// that side reports `deleted` — tombstone the side still recording it, so
+/// the two archives converge instead of drifting forever (task 6a967f).
+///
+/// **That reading survives the scan exchange dropping entries** (SPEC §6.1,
+/// task 97171c). A path the two sides proved equal by digest is absent from
+/// *both* lists, so it never reaches here at all — a §6 cell of "nothing"
+/// and an unvisited path are the same plan. What cannot happen is a path
+/// present in one list and silently held, unchanged, by the other: the only
+/// three ways a path enters a list are phase 1, the peer-changed entries
+/// phase 2 subtracts, and a dirty bucket, and each of the three is symmetric
+/// — the peer's changed path is subtracted on *this* side and returned, and a
+/// dirty bucket is fetched from both sides. So silence here still means what
+/// it has always meant.
 void _resolveCell(
   String path,
   ScanEntry? entryA,
@@ -116,6 +126,20 @@ void _resolveCell(
 
   switch ((entryA.status, entryB.status)) {
     case (ScanStatus.unchanged, ScanStatus.unchanged):
+      // Same hash — the overwhelmingly normal case — is "nothing", exactly
+      // as it always was. Different hashes is new (SPEC §6, task 97171c):
+      // two archives that have silently diverged, each side in sync with its
+      // own. Neither side changed, so there is no direction to pick and no
+      // rule that could pick one — which is the definition of a conflict
+      // here, and the same answer `modified × modified` with unequal hashes
+      // already gives.
+      //
+      // It could not be reached before this task's digests: an `unchanged`
+      // path was reported by both sides on every run and this cell simply
+      // returned, so the disagreement was in hand and thrown away. Digesting
+      // `(path, hash)` rather than paths alone is what turns it into a dirty
+      // bucket, and this is where that bucket's contents land.
+      if (entryA.hash != entryB.hash) conflict();
       return;
     case (ScanStatus.unchanged, ScanStatus.created) ||
         (ScanStatus.unchanged, ScanStatus.modified):

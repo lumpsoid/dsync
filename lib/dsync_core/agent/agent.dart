@@ -2,7 +2,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 
 /// Direct filesystem access to one replica, whether in-process or remote
 /// (SPEC §2, §4.1).
@@ -34,17 +34,33 @@ abstract class Agent {
   /// after a failed run (SPEC §4.3).
   Future<void> unlock();
 
-  /// Scans this replica and reports each path's status relative to this
-  /// replica's own archive (SPEC §5). The caller never needs the archive
-  /// itself, only the resulting statuses — each side compares against its
-  /// own archive, so the initiator never needs the other side's archive.
+  /// Scans this replica and returns the scan as a [ScanSession] — phase 1 of
+  /// SPEC §6.1's three-phase exchange, with the other two phases reachable
+  /// through it.
+  ///
+  /// Each path's status is relative to this replica's *own* archive (SPEC
+  /// §5); the caller never needs the archive itself, only the resulting
+  /// statuses, which is why the initiator never needs the other side's
+  /// archive.
+  ///
+  /// **It no longer hands back every path's status, and that is the point**
+  /// (task 97171c). [ScanSession.changed] carries only the paths whose status
+  /// is not `unchanged`, plus the skipped ones and the tally; the unchanged
+  /// paths are proven equal on both sides by the bucket digests of
+  /// [ScanSession.digests] and fetched only where the two disagree. At 14,471
+  /// files the listing was ~1.06 MiB a side however little had changed, which
+  /// is O(tree) spent on work that is O(changes).
+  ///
+  /// **A session rather than three operations on this interface**, so the
+  /// order cannot be got wrong: there is no way to ask for a digest over a
+  /// scan that has not run, because the thing you ask is that scan's result.
   ///
   /// [rules] is passed in rather than configured per agent because it comes
   /// from the initiator's profile plus its `--ignore` flags (SPEC §9), which
   /// a remote replica has no way to read. Both sides must scan by the same
   /// rules: a path ignored on one side and not the other reconciles as a
   /// one-sided deletion.
-  Future<ScanResult> scan(RuleSet rules);
+  Future<ScanSession> scan(RuleSet rules);
 
   /// Streams the current bytes of the file at [path].
   Stream<List<int>> readFile(String path);

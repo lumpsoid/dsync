@@ -133,17 +133,17 @@ void _runJson() {
   );
 }
 
-/// [hexHash] `true` is what ships: `decodeScanResult` rebuilding each hash as
+/// [hexHash] `true` is what ships: `decodeScanEntries` rebuilding each hash as
 /// the 64-character hex `String` [ScanEntry.hash] holds. `false` is the same
 /// wire read by a decoder that keeps the 32 bytes instead — the one variable
 /// that separates the two rows, and the whole point of the comparison.
 void _runBinary({required bool hexHash}) {
   final result = buildEntries();
-  final payload = encodeScanResult(result);
+  final payload = encodeScanEntries(result.entries);
 
   final watch = Stopwatch()..start();
   final decodedCount = hexHash
-      ? decodeScanResult(payload).entries.length
+      ? decodeScanEntries(payload).length
       : _decodeKeepingHashBytes(payload);
   watch.stop();
 
@@ -158,8 +158,8 @@ void _runBinary({required bool hexHash}) {
   );
 }
 
-/// `decodeScanResult`'s loop with the hex rendering taken out, reading the
-/// same bytes `encodeScanResult` wrote. Mirrors that layout by hand, which is
+/// `decodeScanEntries`'s loop with the hex rendering taken out, reading the
+/// same bytes `encodeScanEntries` wrote. Mirrors that layout by hand, which is
 /// the price of isolating the one difference being measured.
 int _decodeKeepingHashBytes(Uint8List payload) {
   final view = ByteData.sublistView(payload);

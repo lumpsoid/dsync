@@ -15,6 +15,7 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 /// [AgentListener] over a real unix socket: the half of the transport that
 /// `dsync agent --listen` is (SPEC §4.2, §11.1).
@@ -102,12 +103,12 @@ void main() {
     final agent = await connect();
     final info = await agent.hello();
     await agent.lock();
-    final result = await agent.scan(RuleSet());
+    final result = await allScanEntries(await agent.scan(RuleSet()));
     await agent.unlock();
     await agent.disconnect();
 
     expect(info.lastCommitTime, isNull); // Nothing committed yet.
-    expect(result.entries, isEmpty);
+    expect(result, isEmpty);
     expect(sessionErrors, isEmpty);
   });
 

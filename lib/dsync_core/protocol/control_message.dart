@@ -19,8 +19,19 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 ///
 /// Two payloads live elsewhere, both because they are not JSON: the version
 /// handshake (`version_handshake.dart`) and a successful `scan` reply, which
-/// is the binary encoding in `scan_result_codec.dart` (SPEC §15.3). A *failed*
-/// `scan` is still an [AgentFailure] from this file.
+/// is the binary encoding in `scan_result_codec.dart` (SPEC §15.3) — as is
+/// every later phase of one (SPEC §6.1). A *failed* `scan`, of any phase, is
+/// still an [AgentFailure] from this file.
+/// The `op` strings SPEC §6.1's later scan phases travel under.
+///
+/// Not `AgentOp` values: `AgentOp` is SPEC §17's reporting axis and all three
+/// phases are one line there (see `MeteredAgent.scan`), while the wire needs
+/// three names because they are three different requests. Named here, beside
+/// [AgentRequest], so `RemoteAgent` and the agent server handler cannot spell
+/// them differently.
+const scanDigestsOp = 'scanDigests';
+const scanBucketsOp = 'scanBuckets';
+
 /// One `Agent` operation's request, sent as a control frame.
 ///
 /// The request id is not part of this payload: it is a header field on every

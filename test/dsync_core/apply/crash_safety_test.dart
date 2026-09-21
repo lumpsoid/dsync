@@ -13,9 +13,10 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 /// Crash-safety of the per-path archive commit (SPEC §7.3, §14): killing the
 /// apply between the two commits a copy makes must not lose or duplicate
@@ -131,8 +132,8 @@ void main() {
     // 4. Scan both sides for real and reconcile: A differs from its stale
     // archive (modified, hash of v2), B still matches its archive
     // (unchanged, hash of v1) -> exactly one copyAtoB.
-    final scanA1 = (await agentA.scan(RuleSet())).entries;
-    final scanB1 = (await agentB.scan(RuleSet())).entries;
+    final scanA1 = await allScanEntries(await agentA.scan(RuleSet()));
+    final scanB1 = await allScanEntries(await agentB.scan(RuleSet()));
     final entryA1 = scanA1.singleWhere((e) => e.path == 'f');
     final entryB1 = scanB1.singleWhere((e) => e.path == 'f');
     expect(entryA1.status, ScanStatus.modified);
@@ -172,8 +173,8 @@ void main() {
     // --- Re-run: a completely fresh, uninterrupted run. ----------------
 
     // 8. Fresh scans with the real, unwrapped agents.
-    final scanA2 = (await agentA.scan(RuleSet())).entries;
-    final scanB2 = (await agentB.scan(RuleSet())).entries;
+    final scanA2 = await allScanEntries(await agentA.scan(RuleSet()));
+    final scanB2 = await allScanEntries(await agentB.scan(RuleSet()));
     final entryA2 = scanA2.singleWhere((e) => e.path == 'f');
     final entryB2 = scanB2.singleWhere((e) => e.path == 'f');
 
@@ -274,7 +275,7 @@ class _CrashingCommitAgent implements Agent {
   Future<void> unlock() => _wrapped.unlock();
 
   @override
-  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+  Future<ScanSession> scan(RuleSet rules) => _wrapped.scan(rules);
 
   @override
   Stream<List<int>> readFile(String path) => _wrapped.readFile(path);

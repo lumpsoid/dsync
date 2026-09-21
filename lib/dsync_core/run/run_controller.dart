@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
+import 'package:dsync/dsync_core/scan/scan_exchange.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 
 /// Decides which of a [Plan]'s proposed actions actually run (SPEC §11.3).
@@ -173,29 +174,45 @@ class RunController {
   /// Scan → reconcile → present → apply → compact, once both replicas are
   /// locked.
   Stream<RunEvent> _runLocked() async* {
-    // One phase for both sides because they run concurrently: this span is
-    // the slower of the two, not their sum, which is what a head needs to
-    // compare against the per-side `scan` figures in [metrics] (SPEC §17).
+    // One phase for all three of SPEC §6.1's exchanges on both sides, because
+    // they run concurrently side against side: this span is the slower of the
+    // two, not their sum, which is what a head needs to compare against the
+    // per-side `scan` figures in [metrics] (SPEC §17). The later phases are
+    // inside it for the same reason phase 1 is — they are what learning the
+    // two replicas' state costs, and a run where every bucket agreed spends
+    // almost nothing on them.
     final scans = await metrics.phase(
       RunPhase.scan,
-      () => Future.wait([agentA.scan(rules), agentB.scan(rules)]),
+      () async {
+        final sessions = await Future.wait([
+          agentA.scan(rules),
+          agentB.scan(rules),
+        ]);
+        return exchangeScans(sessions[0], sessions[1]);
+      },
     );
-    final onA = scans[0].entries;
-    final onB = scans[1].entries;
+    final onA = scans.onA;
+    final onB = scans.onB;
 
     // Task 1fd42b: the scan fast-path tally (SPEC §5.2, §11.4). Right after
     // the scans complete and before the plan is reconciled — that is where
     // the work this reports actually happened, and it lets a head show what
     // the scan cost before the plan even appears.
+    //
+    // Off the phase-1 replies rather than off [onA]/[onB], which no longer
+    // hold a path per scanned file: the tally counts every branch SPEC §5.2
+    // took, and the two branches it exists to separate — the fast path
+    // against the rehash — are exactly the entries the exchange does not
+    // send.
     yield RunScanTallyEvent(
-      tallyA: scans[0].reasonTally,
-      tallyB: scans[1].reasonTally,
+      tallyA: scans.changedA.tally,
+      tallyB: scans.changedB.tally,
     );
 
-    for (final skipped in scans[0].skippedPaths) {
+    for (final skipped in scans.changedA.skippedPaths) {
       yield RunSkippedPathEvent(skipped: skipped, onA: true);
     }
-    for (final skipped in scans[1].skippedPaths) {
+    for (final skipped in scans.changedB.skippedPaths) {
       yield RunSkippedPathEvent(skipped: skipped, onA: false);
     }
 
@@ -207,8 +224,8 @@ class RunController {
       onA,
       onB,
       unreadable: UnreadablePaths.from([
-        ...scans[0].skippedPaths,
-        ...scans[1].skippedPaths,
+        ...scans.changedA.skippedPaths,
+        ...scans.changedB.skippedPaths,
       ]),
     );
     metrics.endPhase(RunPhase.reconcile);
@@ -320,7 +337,8 @@ class RunController {
       // is what SPEC §11.5 reads for the exit code, and "did anything go
       // unread" is one question. Which side each path was on is already on
       // its own RunSkippedPathEvent, above.
-      unreadableCount: scans[0].unreadableCount + scans[1].unreadableCount,
+      unreadableCount:
+          scans.changedA.unreadableCount + scans.changedB.unreadableCount,
     );
   }
 }

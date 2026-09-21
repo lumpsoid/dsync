@@ -12,10 +12,10 @@ import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -1025,7 +1025,7 @@ class _RecordingAgent implements Agent {
   }
 
   @override
-  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+  Future<ScanSession> scan(RuleSet rules) => _wrapped.scan(rules);
 
   @override
   Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
@@ -1076,7 +1076,7 @@ class _FailingPathsAgent implements Agent {
   Future<void> disconnect() => _wrapped.disconnect();
 
   @override
-  Future<ScanResult> scan(RuleSet rules) => _wrapped.scan(rules);
+  Future<ScanSession> scan(RuleSet rules) => _wrapped.scan(rules);
 
   @override
   Stream<List<int>> readFile(String path) => _wrapped.readFile(path);

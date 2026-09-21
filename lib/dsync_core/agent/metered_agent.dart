@@ -4,7 +4,10 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
+import 'package:dsync/dsync_core/models/bucket_digests.dart';
+import 'package:dsync/dsync_core/models/changed_scan.dart';
+import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 
@@ -71,9 +74,20 @@ class MeteredAgent implements Agent {
   @override
   Future<void> unlock() => _timed(AgentOp.unlock, _inner.unlock);
 
+  /// All three of SPEC §6.1's phases are recorded under [AgentOp.scan], so a
+  /// remote replica's `scan` count is three rather than one — or two, when
+  /// every bucket agreed and phase 3 never happened.
+  ///
+  /// One op rather than three, because they are one thing to a reader of
+  /// SPEC §17's table: "what did learning this replica's state cost". Three
+  /// rows would split a figure nobody wants split and would make the count
+  /// column, which is how a reader spots an operation that ran more often
+  /// than they expected, read as three ones.
   @override
-  Future<ScanResult> scan(RuleSet rules) =>
-      _timed(AgentOp.scan, () => _inner.scan(rules));
+  Future<ScanSession> scan(RuleSet rules) async => _MeteredScanSession(
+    await _timed(AgentOp.scan, () => _inner.scan(rules)),
+    this,
+  );
 
   /// Times the whole transfer, not the call that starts it: [Agent.readFile]
   /// returns immediately and the bytes arrive afterwards, so the operation's
@@ -189,4 +203,35 @@ class MeteredAgent implements Agent {
       operation.end();
     }
   }
+}
+
+/// A [ScanSession] whose two further phases are timed the same way the
+/// operation that opened it was.
+///
+/// Phase 1 is already measured by the `scan` call that returned this, so
+/// [changed] costs nothing and is passed straight through.
+class _MeteredScanSession implements ScanSession {
+  final ScanSession _inner;
+  final MeteredAgent _agent;
+
+  _MeteredScanSession(this._inner, this._agent);
+
+  @override
+  ChangedScan get changed => _inner.changed;
+
+  @override
+  Future<BucketDigests> digests({
+    required int bucketCount,
+    required List<String> peerChangedPaths,
+  }) => _agent._timed(
+    AgentOp.scan,
+    () => _inner.digests(
+      bucketCount: bucketCount,
+      peerChangedPaths: peerChangedPaths,
+    ),
+  );
+
+  @override
+  Future<List<ScanEntry>> entriesIn(List<int> buckets) =>
+      _agent._timed(AgentOp.scan, () => _inner.entriesIn(buckets));
 }

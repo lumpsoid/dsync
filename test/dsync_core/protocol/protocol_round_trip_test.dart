@@ -12,12 +12,12 @@ import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:test/test.dart';
+import '../../support/scan_session.dart';
 
 /// Drives a real [LocalAgent] behind [AgentServer] through [RemoteAgent],
 /// connected by an [InMemoryChannel] pair — the same wire path SSH uses,
@@ -120,7 +120,7 @@ void main() {
     test('reports a real file against an empty archive', () async {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
 
-      final entries = (await remote.scan(RuleSet())).entries;
+      final entries = await allScanEntries(await remote.scan(RuleSet()));
 
       final entry = entries.firstWhere((e) => e.path == 'a.txt');
       expect(entry.status, ScanStatus.created);
@@ -136,8 +136,9 @@ void main() {
         // payload's encoding the way a value only computed for the
         // in-process case would be.
         await File('${replicaDir.path}/a.txt').writeAsString('hello');
-        final firstScan = (await remote.scan(RuleSet())).entries
-            .firstWhere((e) => e.path == 'a.txt');
+        final firstScan = (await allScanEntries(
+          await remote.scan(RuleSet()),
+        )).firstWhere((e) => e.path == 'a.txt');
 
         await remote.archiveCommit([
           ArchiveUpsert(
@@ -151,8 +152,9 @@ void main() {
           ),
         ]);
 
-        final secondScan = (await remote.scan(RuleSet())).entries
-            .firstWhere((e) => e.path == 'a.txt');
+        final secondScan = (await allScanEntries(
+          await remote.scan(RuleSet()),
+        )).firstWhere((e) => e.path == 'a.txt');
         expect(secondScan.status, ScanStatus.unchanged);
         expect(secondScan.reason, ScanReason.metadataMatched);
       },
@@ -162,7 +164,7 @@ void main() {
       await File('${replicaDir.path}/a.txt').writeAsString('hello');
       await File('${replicaDir.path}/a.tmp').writeAsString('scratch');
 
-      final entries = (await remote.scan(RuleSet(ignore: ['*.tmp']))).entries;
+      final entries = await allScanEntries(await remote.scan(RuleSet(ignore: ['*.tmp'])));
 
       // The rules live in the initiator's profile (SPEC §9); the remote
       // replica has no way to read them, so they have to cross the wire.
@@ -175,8 +177,7 @@ void main() {
       await Link('${replicaDir.path}/link.txt')
           .create('${replicaDir.path}/target.txt');
 
-      final entries = (await remote.scan(RuleSet(follow: ['link.txt'])))
-          .entries;
+      final entries = await allScanEntries(await remote.scan(RuleSet(follow: ['link.txt'])));
 
       expect(entries.map((e) => e.path), contains('link.txt'));
     }, testOn: 'linux');
@@ -226,7 +227,7 @@ void main() {
         // source stream is dropped and, per SPEC §7.6, the run carries on.
         await remote.readFile('big.bin').take(1).drain<void>();
 
-        final entries = (await remote.scan(RuleSet())).entries;
+        final entries = await allScanEntries(await remote.scan(RuleSet()));
 
         expect(entries.map((e) => e.path), contains('big.bin'));
       },
@@ -241,7 +242,7 @@ void main() {
         // sharing the wire would decode each other's frames.
         final results = await Future.wait([
           remote.readFile('a.txt').toList(),
-          remote.scan(RuleSet()),
+          remote.scan(RuleSet()).then(allScanEntries),
           remote.readFile('a.txt').toList(),
         ]);
 
@@ -250,7 +251,7 @@ void main() {
         expect(utf8.decode(first), 'hello');
         expect(utf8.decode(third), 'hello');
         expect(
-          (results[1] as ScanResult).entries.map((e) => e.path),
+          (results[1] as List<ScanEntry>).map((e) => e.path),
           contains('a.txt'),
         );
       },

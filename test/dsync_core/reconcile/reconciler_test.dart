@@ -43,13 +43,27 @@ void main() {
       plan.conflicts.any((c) => c.path == path);
 
   group('unchanged row', () {
-    test('unchanged / unchanged does nothing', () {
+    test('unchanged / unchanged with the same hash does nothing', () {
       final plan = reconciler.reconcile(
         [entry('f', ScanStatus.unchanged)],
         [entry('f', ScanStatus.unchanged)],
       );
       expect(plan.actions, isEmpty);
       expect(plan.conflicts, isEmpty);
+    });
+
+    test('unchanged / unchanged with different hashes conflicts', () {
+      // Two archives that have silently diverged: each side is in sync with
+      // its own, so neither reports anything changed and neither has a claim
+      // on being the newer. New with task 97171c — before the bucket digests
+      // of SPEC §6.1 this disagreement was in hand on every run and thrown
+      // away, so the two replicas stayed diverged forever.
+      final plan = reconciler.reconcile(
+        [entry('f', ScanStatus.unchanged, hash: 'a')],
+        [entry('f', ScanStatus.unchanged, hash: 'b')],
+      );
+      expect(plan.actions, isEmpty);
+      expect(isConflict(plan, 'f'), isTrue);
     });
 
     test('unchanged / created copies B to A', () {
