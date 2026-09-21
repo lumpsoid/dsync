@@ -186,6 +186,24 @@ After task 1a341e's two fixes and task 9d2158's blocking hash read, a first sync
 
 The one Dart-level cost that *was* worth removing was a third lookup per entry: `FileSystemEntity.type`, asked for information `Directory.list(followLinks: false)` had already returned. It cost 3.50 s, and dropping it took a later scan from 14.4 s to 10.8 s; batching the stats took it to ~9.9 s. So, for §5.1: **the child's type comes from the listing, never from a second lookup.** What that lookup did buy was the path removed between the listing and the walk reaching it — now caught from the `stat` that had to happen anyway, whose `FileStat` reports `notFound` for *any* failure. Since that sentinel carries no `OSError`, the reason is asked for separately, on the failure path only, so the report can still tell a locked file from a vanished one as §5 requires.
 
+**What a scan costs in memory, and why no structure is the answer** (task 99d149, `benchmark/scan_memory_probe.dart`). A cold, scan-only run on that tree grows the phone's resident set by **41 MiB** (§17, task ac2f3a), and every copy of every listing accounts for ~8 MiB of it (§15.3, task 4b62a1). The probe reproduces the figure on a desktop — **43.0 MiB**, AOT, same 14,471 entries — and takes it apart by rung:
+
+| rung | default | `--new_gen_semi_max_size=4` |
+|---|---|---|
+| `Directory.list` alone | 3.0 MiB | 3.5 MiB |
+| plus a `stat` each | 3.4 MiB | 3.4 MiB |
+| plus a `ScanEntry` each | 14.1 MiB | 8.2 MiB |
+| the real scan, archive and all | **43.0 MiB** | **13.3 MiB** |
+| the same with an empty archive (hashing) | 45.8 MiB | 17.5 MiB |
+
+**About 30 of the 43 MiB is the collector's sizing, not anything the scan holds.** The walk allocates a `FileSystemEntity`, a path `String`, a `FileStat` and a future per file, which pushes the young generation to its default 16 MiB semispace — 32 MiB of new-gen capacity, all of it touched and none of it returned. `--verbose_gc` says as much from the other side: the old generation settles at ~18 MB while new space sits at its 32 MB cap. Capping the semispace at 4 MiB removes 30 MiB and leaves exactly the structures §15.3 priced.
+
+Three consequences worth stating, because they decide what is *not* worth doing:
+
+- **No listing-sized saving could have moved this**, which is what retired task 4b62a1's two levers rather than the arithmetic alone.
+- **The knob is real but not free, and not reachable where it matters.** A capped semispace costs nothing on a warm scan (1.13 s against 1.12 s) but 33% on a cold one, where hashing is what is allocating (1.60 s → 2.12 s). It reaches a `dart compile exe` binary through `DART_VM_OPTIONS`, and it does *not* reach the Flutter head, which is the memory-constrained end (§7.2) and takes its VM flags from the engine.
+- **So the lever on the phone is allocation rate, not a flag**: fewer objects per visited path is the only thing that shrinks the young generation there. The gap between the hand-written `list` + `stat` + `ScanEntry` loop (14.1 MiB) and `Scanner` (43.0 MiB) is where to look first, and none of it is urgent — the device peaked at 397 MiB with ~350 MiB of headroom (§17).
+
 ## 6. Reconciliation
 
 Done on the initiating side from the two status lists. Per path, with statuses on replicas A and B:
