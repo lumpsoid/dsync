@@ -167,9 +167,7 @@ void main() {
     // already spent this payload's token still able to answer it.
     pair = PairController(app, enrol: enrolWithPeer);
     pair.codeEntered(pairingPayload.encode());
-    await pair
-        .submitPayload(localName: 'desktop')
-        .timeout(_startupDeadline);
+    await pair.submitPayload(localName: 'desktop').timeout(_startupDeadline);
     final outcome = pair.state.outcome;
     expect(
       outcome,
@@ -180,7 +178,6 @@ void main() {
           'listener said: $enrolmentErrors',
     );
     phoneIdentity = await app.loadOrCreateIdentity();
-
   });
 
   tearDown(() async {

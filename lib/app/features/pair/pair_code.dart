@@ -44,8 +44,7 @@ final class PairCodeUnreadable extends PairCode {
 final class PairCodeRead extends PairCode {
   PairCodeRead(this.payload)
     : desktopName = desktopNameFor(payload),
-      address =
-          payload.serviceAddress.text;
+      address = payload.serviceAddress.text;
 
   /// The decoded payload, redeemed by `PairController.submitPayload`.
   final PairingPayload payload;

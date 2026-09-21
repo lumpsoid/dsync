@@ -862,7 +862,6 @@ void main() {
       await agent.disconnect();
     });
 
-
     test('a peer that sends a complete first flight and then stalls is closed '
         'at the deadline', () async {
       final phone = generateDeviceIdentity(commonName: 'dsync-phone');
@@ -903,7 +902,8 @@ void main() {
       expect(
         received.isNotEmpty,
         isTrue,
-        reason: "the listener answered this peer's first flight, so the "
+        reason:
+            "the listener answered this peer's first flight, so the "
             'handshake was under way when the deadline closed it',
       );
       expect(sessionErrors.single, isA<HandshakeDeadlineExceededException>());
@@ -913,7 +913,6 @@ void main() {
       await expectLater(agent.hello(), completes);
       await agent.disconnect();
     });
-
   });
 }
 

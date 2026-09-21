@@ -193,9 +193,8 @@ void main() {
       const block = 8;
       final sizes = {'under.bin': 3, 'exact.bin': block, 'over.bin': 21};
       for (final MapEntry(key: name, value: size) in sizes.entries) {
-        await File(
-          '${replicaDir.path}/$name',
-        ).writeAsBytes([for (var i = 0; i < size; i++) i % 251]);
+        await File('${replicaDir.path}/$name')
+            .writeAsBytes([for (var i = 0; i < size; i++) i % 251]);
       }
 
       final pooled = LocalAgent(

@@ -125,11 +125,7 @@ void main() {
       // Files 8..11 are past the 8-byte block, so their head is the block —
       // which is also what makes this a queue test rather than twelve small
       // reads that happen to fit.
-      expect(
-        heads[i].bytes,
-        expected(i < 8 ? i : 8),
-        reason: 'f$i.bin',
-      );
+      expect(heads[i].bytes, expected(i < 8 ? i : 8), reason: 'f$i.bin');
       expect(heads[i].complete, i < 8, reason: 'f$i.bin');
     }
   });

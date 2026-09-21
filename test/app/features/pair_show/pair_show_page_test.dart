@@ -223,7 +223,8 @@ void main() {
 
     controller.state.recordStatus(
       const PairShowConfirming(
-        deviceId: 'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90:'
+        deviceId:
+            'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90:'
             'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90',
         peerName: 'my laptop',
       ),

@@ -426,9 +426,8 @@ void main() {
       confirmationLines: () => Stream.value('y'),
     );
 
-    final showExitCode = _runnerFor(
-      showCommand,
-    ).run(['show', '--name', 'phone', '--bind', '127.0.0.1']);
+    final showExitCode = _runnerFor(showCommand)
+        .run(['show', '--name', 'phone', '--bind', '127.0.0.1']);
 
     final payloadLine = await _awaitLine(
       showOut,
@@ -535,9 +534,8 @@ void main() {
     );
 
     await expectLater(
-      _runnerFor(
-        showCommand,
-      ).run(['show', '--name', 'phone', '--bind', 'laptop.local']),
+      _runnerFor(showCommand)
+          .run(['show', '--name', 'phone', '--bind', 'laptop.local']),
       throwsA(isA<UsageException>()),
     );
     expect(await showOut.contents(), isEmpty);

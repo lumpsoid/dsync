@@ -354,23 +354,25 @@ void main() {
     expect(find.text('No paired device with id x'), findsOneWidget);
   });
 
-  testWidgets('a confirmed device carries a mark; an unconfirmed one does not',
-      (tester) async {
-    ready();
-    app.state.recordDevices([
-      row('phone', verifiedAt: DateTime(2026, 9, 20)),
-      row('laptop'),
-    ]);
+  testWidgets(
+    'a confirmed device carries a mark; an unconfirmed one does not',
+    (tester) async {
+      ready();
+      app.state.recordDevices([
+        row('phone', verifiedAt: DateTime(2026, 9, 20)),
+        row('laptop'),
+      ]);
 
-    await pumpPage(tester);
+      await pumpPage(tester);
 
-    expect(
-      find.byKey(const Key('device-verified-a1b2:c3d4:phone')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const Key('device-verified-a1b2:c3d4:laptop')),
-      findsNothing,
-    );
-  });
+      expect(
+        find.byKey(const Key('device-verified-a1b2:c3d4:phone')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('device-verified-a1b2:c3d4:laptop')),
+        findsNothing,
+      );
+    },
+  );
 }

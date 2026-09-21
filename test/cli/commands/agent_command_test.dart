@@ -101,13 +101,8 @@ void main() {
       // address, and --stdio binds nothing at all, so there is nothing for
       // an address to mean on either.
       await expectLater(
-        buildRunner(AgentCommand()).run([
-          'agent',
-          '--listen',
-          '/run/dsync.sock',
-          '--bind',
-          '0.0.0.0',
-        ]),
+        buildRunner(AgentCommand())
+            .run(['agent', '--listen', '/run/dsync.sock', '--bind', '0.0.0.0']),
         throwsA(
           isA<UsageException>().having(
             (error) => error.message,
@@ -126,9 +121,8 @@ void main() {
       // anything is bound.
       for (final address in ['laptop.local', '10.0.0', '']) {
         await expectLater(
-          buildRunner(
-            AgentCommand(),
-          ).run(['agent', '--serve', '--bind', address]),
+          buildRunner(AgentCommand())
+              .run(['agent', '--serve', '--bind', address]),
           throwsA(
             isA<UsageException>().having(
               (error) => error.message,

@@ -400,8 +400,10 @@ void main() {
     await tapAction(tester, const Key('device-verify'));
 
     expect(find.byKey(const Key('device-verify-id')), findsOneWidget);
-    expect(find.textContaining('read the id on its This-device page'),
-        findsOneWidget);
+    expect(
+      find.textContaining('read the id on its This-device page'),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('device-verify-match')), findsOneWidget);
     expect(find.byKey(const Key('device-verify-differ')), findsOneWidget);
     // Nothing to clear until something has been confirmed.

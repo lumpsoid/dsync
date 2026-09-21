@@ -146,8 +146,10 @@ void main() {
       final confirmed = device().withVerification(DateTime.utc(2026, 9, 20));
 
       expect(confirmed.withName('desk').verifiedAt, isNotNull);
-      expect(confirmed.withAdditionalRoot('/home/me/photos').verifiedAt,
-          isNotNull);
+      expect(
+        confirmed.withAdditionalRoot('/home/me/photos').verifiedAt,
+        isNotNull,
+      );
       expect(
         confirmed
             .withLastKnownAddress(PeerAddress(host: '10.0.0.9'))

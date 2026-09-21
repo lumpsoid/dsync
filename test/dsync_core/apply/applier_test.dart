@@ -871,11 +871,10 @@ void main() {
         await pumpEventQueue();
 
         expect(dest.writing, ['first.txt'], reason: 'one worker, one write');
-        expect(
-          source.reads,
-          ['first.txt', 'second.txt'],
-          reason: 'the second read did not wait for the first write',
-        );
+        expect(source.reads, [
+          'first.txt',
+          'second.txt',
+        ], reason: 'the second read did not wait for the first write');
 
         dest.release('first.txt');
         await pumpEventQueue();
@@ -889,28 +888,37 @@ void main() {
     // moment a read starts until the writer has taken its last chunk, so a read
     // that never delivers holds its slot and the next one can only start if
     // there is another.
-    test('the lead is what lets a second read start behind a stalled one', () async {
-      final source = _SlowSourceAgent({
-        'second.txt': [2],
-      }, stall: {'first.txt'});
-      final (plan, entries) = planFor(['first.txt', 'second.txt']);
+    test(
+      'the lead is what lets a second read start behind a stalled one',
+      () async {
+        final source = _SlowSourceAgent(
+          {
+            'second.txt': [2],
+          },
+          stall: {'first.txt'},
+        );
+        final (plan, entries) = planFor(['first.txt', 'second.txt']);
 
-      unawaited(
-        Applier(
-          concurrency: 1,
-          commitBatchSize: 1,
-          readAheadLead: 1,
-        ).apply(plan, entries, [], source, _GatedWriteAgent()),
-      );
-      await pumpEventQueue();
+        unawaited(
+          Applier(
+            concurrency: 1,
+            commitBatchSize: 1,
+            readAheadLead: 1,
+          ).apply(plan, entries, [], source, _GatedWriteAgent()),
+        );
+        await pumpEventQueue();
 
-      expect(source.reads, ['first.txt', 'second.txt']);
-    });
+        expect(source.reads, ['first.txt', 'second.txt']);
+      },
+    );
 
     test('and without it the stalled read holds the only slot', () async {
-      final source = _SlowSourceAgent({
-        'second.txt': [2],
-      }, stall: {'first.txt'});
+      final source = _SlowSourceAgent(
+        {
+          'second.txt': [2],
+        },
+        stall: {'first.txt'},
+      );
       final (plan, entries) = planFor(['first.txt', 'second.txt']);
 
       unawaited(
@@ -925,44 +933,34 @@ void main() {
       expect(source.reads, ['first.txt']);
     });
 
-    test(
-      'a write that fails part-way gives its read-ahead slot back, so the '
-      'apply finishes rather than stalling',
-      () async {
-        final source = _SlowSourceAgent({
-          for (var i = 0; i < 6; i++) 'f$i.txt': [i],
-        });
-        final dest = _GatedWriteAgent(
-          failOn: {'f0.txt', 'f1.txt', 'f2.txt'},
-          gated: false,
-        );
-        final (plan, entries) = planFor([
-          for (var i = 0; i < 6; i++) 'f$i.txt',
-        ]);
+    test('a write that fails part-way gives its read-ahead slot back, so the '
+        'apply finishes rather than stalling', () async {
+      final source = _SlowSourceAgent({
+        for (var i = 0; i < 6; i++) 'f$i.txt': [i],
+      });
+      final dest = _GatedWriteAgent(
+        failOn: {'f0.txt', 'f1.txt', 'f2.txt'},
+        gated: false,
+      );
+      final (plan, entries) = planFor([for (var i = 0; i < 6; i++) 'f$i.txt']);
 
-        // One slot in total: every failed copy has to release it or the next
-        // copy is never admitted and `apply` never returns.
-        final result = await Applier(
-          concurrency: 1,
-          commitBatchSize: 1,
-          readAheadLead: 0,
-        ).apply(plan, entries, [], source, dest);
+      // One slot in total: every failed copy has to release it or the next
+      // copy is never admitted and `apply` never returns.
+      final result = await Applier(
+        concurrency: 1,
+        commitBatchSize: 1,
+        readAheadLead: 0,
+      ).apply(plan, entries, [], source, dest);
 
-        expect(result.failed.map((f) => f.path), [
-          'f0.txt',
-          'f1.txt',
-          'f2.txt',
-        ]);
-        expect(result.applied.map((a) => a.path), [
-          'f3.txt',
-          'f4.txt',
-          'f5.txt',
-        ]);
-      },
-    );
+      expect(result.failed.map((f) => f.path), ['f0.txt', 'f1.txt', 'f2.txt']);
+      expect(result.applied.map((a) => a.path), ['f3.txt', 'f4.txt', 'f5.txt']);
+    });
 
     test('the run reports what the read-ahead did', () async {
-      final source = _SlowSourceAgent({'first.txt': [1], 'second.txt': [2]});
+      final source = _SlowSourceAgent({
+        'first.txt': [1],
+        'second.txt': [2],
+      });
       final dest = _GatedWriteAgent();
       final (plan, entries) = planFor(['first.txt', 'second.txt']);
 
@@ -1421,8 +1419,7 @@ class _GatedWriteAgent implements Agent {
   _GatedWriteAgent({this.failOn = const {}, this.gated = true});
 
   /// Lets the write of [path] finish, failing it if [failOn] says so.
-  void release(String path) =>
-      (_gates[path] ??= Completer<void>()).complete();
+  void release(String path) => (_gates[path] ??= Completer<void>()).complete();
 
   @override
   Future<FileMetadata> writeFile(

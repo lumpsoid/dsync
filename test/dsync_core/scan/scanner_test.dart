@@ -610,16 +610,15 @@ void main() {
         'tail.bin': block * 3 + 7,
       };
       for (final MapEntry(key: name, value: size) in sizes.entries) {
-        await File(
-          '${tempDir.path}/$name',
-        ).writeAsBytes([for (var i = 0; i < size; i++) i % 251]);
+        await File('${tempDir.path}/$name')
+            .writeAsBytes([for (var i = 0; i < size; i++) i % 251]);
       }
 
       final expected = {
         for (final MapEntry(key: name, value: size) in sizes.entries)
-          name: sha256
-              .convert([for (var i = 0; i < size; i++) i % 251])
-              .toString(),
+          name: sha256.convert([
+            for (var i = 0; i < size; i++) i % 251,
+          ]).toString(),
       };
 
       // jobs: 4 shards across isolates and reads with the blocking path;

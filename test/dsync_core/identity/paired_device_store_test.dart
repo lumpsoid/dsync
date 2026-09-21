@@ -597,9 +597,8 @@ void main() {
         DateTime.utc(2026, 9, 20, 9, 30),
       );
 
-      final reloaded = await PairedDeviceStore(
-        storeFile(),
-      ).byDeviceId(phone.deviceId);
+      final reloaded = await PairedDeviceStore(storeFile())
+          .byDeviceId(phone.deviceId);
       expect(reloaded!.verifiedAt, DateTime.utc(2026, 9, 20, 9, 30));
     });
 
@@ -681,30 +680,32 @@ void main() {
       expect(devices.single.verifiedAt, isNull);
     });
 
-    test('a document written before the field existed loads unverified',
-        () async {
-      // Byte-for-byte the shape this store wrote before verification was
-      // added: schema version 1, no "verification" key. It must load as a
-      // pairing nobody has confirmed, not as corruption.
-      await storeFile().writeAsString(
-        jsonEncode({
-          'schemaVersion': 1,
-          'devices': [
-            {
-              'certificatePem': certA,
-              'name': 'phone',
-              'agreedReplicaRoots': ['/home/me/notes'],
-              'pairedAt': '2026-09-15T11:21:00.000Z',
-              'lastKnownAddress': {'host': '192.168.1.5', 'port': 28771},
-            },
-          ],
-        }),
-      );
+    test(
+      'a document written before the field existed loads unverified',
+      () async {
+        // Byte-for-byte the shape this store wrote before verification was
+        // added: schema version 1, no "verification" key. It must load as a
+        // pairing nobody has confirmed, not as corruption.
+        await storeFile().writeAsString(
+          jsonEncode({
+            'schemaVersion': 1,
+            'devices': [
+              {
+                'certificatePem': certA,
+                'name': 'phone',
+                'agreedReplicaRoots': ['/home/me/notes'],
+                'pairedAt': '2026-09-15T11:21:00.000Z',
+                'lastKnownAddress': {'host': '192.168.1.5', 'port': 28771},
+              },
+            ],
+          }),
+        );
 
-      final devices = await PairedDeviceStore(storeFile()).load();
+        final devices = await PairedDeviceStore(storeFile()).load();
 
-      expect(devices.single.verifiedAt, isNull);
-    });
+        expect(devices.single.verifiedAt, isNull);
+      },
+    );
 
     test('an unverified pairing writes no verification key at all', () async {
       final store = PairedDeviceStore(storeFile());

@@ -100,9 +100,7 @@ class ArchiveRow {
       sizeLabel: formatBytes(archive.sizeBytes),
       sizeBytes: archive.sizeBytes,
       lastWritten: _formatDay(archive.lastModified),
-      note: profile == null
-          ? 'No saved run uses this history any more.'
-          : null,
+      note: profile == null ? 'No saved run uses this history any more.' : null,
     );
   }
 }

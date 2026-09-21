@@ -643,16 +643,13 @@ class _VerifyDialog extends StatelessWidget {
         if (confirmedAt != null)
           TextButton(
             key: const Key('device-verify-clear'),
-            onPressed: () =>
-                Navigator.of(context).pop(_VerifyAnswer.clear),
+            onPressed: () => Navigator.of(context).pop(_VerifyAnswer.clear),
             child: const Text('Clear'),
           ),
         TextButton(
           key: const Key('device-verify-differ'),
           onPressed: () => Navigator.of(context).pop(_VerifyAnswer.mismatch),
-          style: TextButton.styleFrom(
-            foregroundColor: theme.colorScheme.error,
-          ),
+          style: TextButton.styleFrom(foregroundColor: theme.colorScheme.error),
           child: const Text('They differ'),
         ),
         FilledButton(

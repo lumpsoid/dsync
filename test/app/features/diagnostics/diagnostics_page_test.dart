@@ -117,7 +117,7 @@ void main() {
         ReadProbeReport(
           rootPath: '/tmp/notes',
           files: 0,
-        bytes: 0,
+          bytes: 0,
           samples: [],
         ),
       ),
