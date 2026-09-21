@@ -6,6 +6,8 @@ import 'package:dsync/dsync_core/archive/archive_inventory.dart';
 import 'package:dsync/dsync_core/models/stored_archive.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
+import '../options/state_dir_option.dart';
+
 /// `dsync archive list` (SPEC §8.1, §8.3, §11.1) — every archive log this
 /// host keeps and what each one costs on disk. Read-only.
 ///
@@ -17,7 +19,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 ///
 /// Sizes are plain byte counts in both modes, as everywhere else on this
 /// CLI's output (`human_renderer.dart` prints `N byte(s)` for a plan).
-class ArchiveListCommand extends Command<int> {
+class ArchiveListCommand extends Command<int> with StateDirOption {
   @override
   final name = 'list';
 
@@ -36,6 +38,7 @@ class ArchiveListCommand extends Command<int> {
     required this.platform,
     IOSink? out,
   }) : out = out ?? stdout {
+    addStateDirOption();
     argParser.addFlag(
       _flagJson,
       negatable: false,
@@ -49,9 +52,10 @@ class ArchiveListCommand extends Command<int> {
       usageException('dsync archive list takes no arguments.');
     }
 
+    final stateDir = stateDirOr(platform);
     final archives = await ArchiveInventory.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     ).list();
     final total = archives.fold(0, (sum, a) => sum + a.sizeBytes);
 

@@ -12,6 +12,9 @@ import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/models/host_port.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
+
+import '../options/state_dir_option.dart';
+
 import 'package:qr/qr.dart' show InputTooLongException;
 
 import '../output/qr_terminal_renderer.dart';
@@ -89,7 +92,7 @@ import '../stop_sequence.dart';
 /// exported constant rather than a copy of the string, since the Flutter
 /// head's pairing window (`lib/app/features/pair_show/`) filters refusals
 /// by the same rule.
-class PairShowCommand extends Command<int> {
+class PairShowCommand extends Command<int> with StateDirOption {
   @override
   final name = 'show';
 
@@ -182,6 +185,7 @@ class PairShowCommand extends Command<int> {
     this.confirmationLines = _stdinLines,
   }) : out = out ?? stdout,
        err = err ?? stderr {
+    addStateDirOption();
     argParser
       ..addOption(
         optionName,
@@ -261,13 +265,14 @@ class PairShowCommand extends Command<int> {
       return 3;
     }
 
+    final stateDir = stateDirOr(platform);
     final identity = await DeviceIdentityStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     ).loadOrCreate(commonName: Platform.localHostname);
     final pairedDeviceStore = PairedDeviceStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     );
 
     final token = generateEnrolmentToken();
@@ -536,7 +541,6 @@ class PairShowCommand extends Command<int> {
       usageException('--$optionBind: ${e.message}');
     }
   }
-
 }
 
 /// The real [PairShowCommand.stdinIsTerminal].

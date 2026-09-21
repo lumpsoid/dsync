@@ -6,6 +6,8 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/stored_archive.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
+import '../options/state_dir_option.dart';
+
 /// `dsync archive clear <profile>` / `dsync archive clear --all` (SPEC §8.1,
 /// §11.1) — delete archive logs, so the next run over those replicas starts
 /// with no history at all.
@@ -25,7 +27,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// to be combined with one: "delete every archive on this host" is a
 /// different request from "delete this profile's", and a typo'd id must not
 /// be able to become it.
-class ArchiveClearCommand extends Command<int> {
+class ArchiveClearCommand extends Command<int> with StateDirOption {
   @override
   final name = 'clear';
 
@@ -48,6 +50,7 @@ class ArchiveClearCommand extends Command<int> {
     IOSink? err,
   }) : out = out ?? stdout,
        err = err ?? stderr {
+    addStateDirOption();
     argParser.addFlag(
       _flagAll,
       negatable: false,
@@ -71,9 +74,10 @@ class ArchiveClearCommand extends Command<int> {
       );
     }
 
+    final stateDir = stateDirOr(platform);
     final inventory = ArchiveInventory.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     );
     final archives = await inventory.list();
     final doomed = all

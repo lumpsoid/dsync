@@ -1,0 +1,31 @@
+#!/bin/sh
+# A community-maintained example, not a supported integration. See
+# ../../README.md and the "Running the agent under a service supervisor"
+# section of the project README for the process contract this is written
+# against.
+#
+# Install as /etc/sv/dsync-agent/run (chmod +x), with the log service in
+# ./log/run beside it, then: ln -s /etc/sv/dsync-agent /var/service/
+#
+# s6 takes this file unchanged as /etc/s6/dsync-agent/run.
+#
+# runit sends SIGTERM on `sv stop` and waits ./finish out; dsync exits within
+# 10 seconds of that signal whether or not its shutdown finished (SPEC
+# §11.5), so the default 7-second wait is worth raising:
+#   sv -w 30 stop dsync-agent
+# A SIGKILL instead releases nothing.
+
+set -e
+
+STATE_DIR=/var/lib/dsync
+PORT=28771
+
+install -d -o dsync -g dsync -m 0700 "$STATE_DIR"
+
+# exec, and no backgrounding: runit supervises this process itself. dsync
+# runs in the foreground and never daemonizes, which is what makes that work.
+# stderr onto stdout so ./log/run's svlogd captures both; dsync writes no log
+# files of its own.
+exec 2>&1
+exec chpst -u dsync:dsync \
+	/usr/bin/dsync agent --serve --port "$PORT" --state-dir "$STATE_DIR"

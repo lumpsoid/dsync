@@ -173,5 +173,41 @@ void main() {
         expect(() => HostSuppliedStateDir(''), throwsArgumentError);
       });
     });
+
+    group('ExplicitStateDir', () {
+      test('is used verbatim, with no dsync joined onto it', () {
+        // The whole point of --state-dir is that the path an operator wrote
+        // in a unit file is the path that appears on disk, so unlike
+        // HostSuppliedStateDir this branch joins nothing.
+        expect(
+          resolveStateDir({}, ExplicitStateDir('/var/lib/dsync/media')),
+          '/var/lib/dsync/media',
+        );
+      });
+
+      test('wins over every variable the platform rules would have read', () {
+        expect(
+          resolveStateDir({
+            'HOME': '/home/me',
+            'XDG_STATE_HOME': '/home/me/.local/state',
+            'LOCALAPPDATA': r'C:\Users\me\AppData\Local',
+          }, ExplicitStateDir('/srv/dsync-b')),
+          '/srv/dsync-b',
+        );
+      });
+
+      test('two instances resolve to two directories', () {
+        // The arrangement the flag exists for: two agents on one host, each
+        // with its own locks, archive logs and paired-device store.
+        expect(
+          resolveStateDir({}, ExplicitStateDir('/var/lib/dsync/a')),
+          isNot(resolveStateDir({}, ExplicitStateDir('/var/lib/dsync/b'))),
+        );
+      });
+
+      test('rejects an empty path', () {
+        expect(() => ExplicitStateDir(''), throwsArgumentError);
+      });
+    });
   });
 }

@@ -1,0 +1,13 @@
+#!/bin/sh
+# A community-maintained example, not a supported integration. See
+# ../../../README.md.
+#
+# dsync logs to stdout and stderr and manages no log files — no rotation, no
+# log path setting — so the supervisor's logger owns all of that. This is
+# svlogd doing it; s6-log in an s6 setup is the same arrangement.
+
+set -e
+
+install -d -o dsync -g dsync -m 0750 /var/log/dsync-agent
+
+exec chpst -u dsync:dsync svlogd -tt /var/log/dsync-agent

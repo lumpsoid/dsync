@@ -5,6 +5,8 @@ import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
+import '../options/state_dir_option.dart';
+
 /// `dsync pair renew` (SPEC §4.4, §11.1) — re-issues this host's identity
 /// certificate under its existing private key, so the device id every peer
 /// pinned stays the same and no pairing has to be redone. Prints that id
@@ -16,7 +18,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// (`connected_replicas.dart` stores what a pinned key presents); until each
 /// has, this host cannot connect to it — BoringSSL on the far end anchors on
 /// the bytes it holds — which the output says.
-class PairRenewCommand extends Command<int> {
+class PairRenewCommand extends Command<int> with StateDirOption {
   @override
   final name = 'renew';
 
@@ -37,7 +39,9 @@ class PairRenewCommand extends Command<int> {
     IOSink? out,
     IOSink? err,
   }) : out = out ?? stdout,
-       err = err ?? stderr;
+       err = err ?? stderr {
+    addStateDirOption();
+  }
 
   @override
   Future<int> run() async {
@@ -45,9 +49,10 @@ class PairRenewCommand extends Command<int> {
       usageException('dsync pair renew takes no arguments.');
     }
 
+    final stateDir = stateDirOr(platform);
     final store = DeviceIdentityStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     );
     final DeviceIdentity renewed;
     try {

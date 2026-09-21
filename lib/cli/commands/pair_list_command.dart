@@ -8,6 +8,8 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
+import '../options/state_dir_option.dart';
+
 /// `dsync pair list` (SPEC §4.4, §11.1, §11.4, task bc68c7) — every device
 /// this installation has paired with. Read-only: this is the one `pair`
 /// subcommand with no side effect on [PairedDeviceStore] at all.
@@ -17,7 +19,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// matching `JsonRenderer`'s own shape, though this list is not a
 /// `RunEvent` stream and so is not [JsonRenderer]'s job — there is no run in
 /// progress here, only a store to read.
-class PairListCommand extends Command<int> {
+class PairListCommand extends Command<int> with StateDirOption {
   @override
   final name = 'list';
 
@@ -43,6 +45,7 @@ class PairListCommand extends Command<int> {
     this.now = DateTime.now,
   }) : out = out ?? stdout,
        err = err ?? stderr {
+    addStateDirOption();
     argParser.addFlag(
       _flagJson,
       negatable: false,
@@ -56,9 +59,10 @@ class PairListCommand extends Command<int> {
       usageException('dsync pair list takes no arguments.');
     }
 
+    final stateDir = stateDirOr(platform);
     final devices = await PairedDeviceStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     ).load();
 
     if (argResults!.flag(_flagJson)) {
@@ -79,7 +83,7 @@ class PairListCommand extends Command<int> {
         );
       }
     }
-    await _warnOfExpiry(devices);
+    await _warnOfExpiry(devices, stateDir);
     return 0; // SPEC §11.5: listing never fails on its own account.
   }
 
@@ -89,11 +93,14 @@ class PairListCommand extends Command<int> {
   /// list in the other. Own identity read only if one exists — listing on a
   /// host that has never paired should not mint an identity as a side
   /// effect.
-  Future<void> _warnOfExpiry(List<PairedDevice> devices) async {
+  Future<void> _warnOfExpiry(
+    List<PairedDevice> devices,
+    StateDirPlatform stateDir,
+  ) async {
     final at = now();
     final ownStore = DeviceIdentityStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     );
     final warnings = [
       if (await ownStore.exists())

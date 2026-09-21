@@ -20,6 +20,10 @@
 ///   for it at all, iOS has one (`HOME`) that is convention, not contract.
 ///   See [HostSuppliedStateDir] for the full reasoning.
 ///
+/// [ExplicitStateDir] is the one case that is not a platform rule at all: an
+/// operator named the directory outright (`--state-dir`, SPEC §11.2), and it
+/// is used verbatim.
+///
 /// **Why a platform parameter, not a `dart:io` `Platform.isX` read from
 /// inside this function:** every branch above has to be exercisable from a
 /// unit test with a hand-built `environment` and no real filesystem or
@@ -38,6 +42,7 @@ String resolveStateDir(
     MacOsStateDir() => _macOsStateDir(environment),
     WindowsStateDir() => _windowsStateDir(environment),
     HostSuppliedStateDir(:final baseDir) => '$baseDir/dsync',
+    ExplicitStateDir(:final path) => path,
   };
 }
 
@@ -176,6 +181,45 @@ class HostSuppliedStateDir extends StateDirPlatform {
   HostSuppliedStateDir(this.baseDir) {
     if (baseDir.isEmpty) {
       throw ArgumentError.value(baseDir, 'baseDir', 'must not be empty');
+    }
+  }
+}
+
+/// An operator named the state directory outright — `--state-dir <path>`
+/// (SPEC §11.2, task af1128) — so [resolveStateDir] returns [path] and
+/// applies no platform rule at all.
+///
+/// **Verbatim, with no `dsync` joined onto it**, which is the one thing that
+/// distinguishes this case from [HostSuppliedStateDir]. That case carries a
+/// *base* directory — the app container `path_provider` handed back, which
+/// holds more than dsync's state — so `dsync` is joined to carve out a
+/// subdirectory. This one carries the answer: `--state-dir
+/// /var/lib/dsync/media` names the directory the archive logs, the locks,
+/// the device identity and the paired-device store go directly in, and
+/// joining `dsync` onto it would make the flag's value not be the path that
+/// appears on disk. That matters most exactly where this case exists for: an
+/// operator reading `ExecStart` in a unit file should be able to `ls` the
+/// path they see there.
+///
+/// A separate case rather than a nullable `override` field beside the other
+/// four, for the reason [StateDirPlatform]'s own doc comment gives: "derive
+/// it from the environment" and "here is the path" cannot both be asked for
+/// at once, so the combination should be unconstructible rather than merely
+/// documented. The platform rules stay intact underneath — nothing here
+/// changes what an invocation *without* the flag resolves to.
+///
+/// Empty is rejected at construction, the same as [HostSuppliedStateDir]'s
+/// base: `--state-dir=` would otherwise resolve every archive log and lock
+/// to a relative path in whatever directory the process happens to have been
+/// started in, which for a supervised service is `/`. The CLI turns this
+/// into a usage error before it can be thrown (`lib/cli/options/
+/// state_dir_option.dart`).
+class ExplicitStateDir extends StateDirPlatform {
+  final String path;
+
+  ExplicitStateDir(this.path) {
+    if (path.isEmpty) {
+      throw ArgumentError.value(path, 'path', 'must not be empty');
     }
   }
 }

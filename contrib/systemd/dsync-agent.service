@@ -1,0 +1,65 @@
+# A community-maintained example, not a supported integration. See
+# ../README.md and the "Running the agent under a service supervisor"
+# section of the project README for the process contract this is written
+# against.
+#
+# Install as /etc/systemd/system/dsync-agent.service, then:
+#   systemctl daemon-reload && systemctl enable --now dsync-agent
+#
+# Pair and grant before it can serve anything — as the service user, against
+# the same --state-dir this unit uses. See ../README.md.
+
+[Unit]
+Description=dsync agent (paired network transport)
+Documentation=https://github.com/lumpsoid/dsync
+# Wants a usable network, but does not require one to stay up: --bind is
+# taken literally and a bind that fails is fatal, so an address that is not
+# there yet should be a failed start the supervisor retries, not a silent
+# fallback.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The contract: foreground, never daemonizes. No forking, no PID file.
+Type=simple
+
+# Unprivileged. 28771 needs no privilege; this user needs only the replica
+# roots and the state directory.
+User=dsync
+Group=dsync
+
+# --state-dir makes the unit self-describing: state lives where this line
+# says, with no XDG variables involved. /var/lib/dsync is what StateDirectory
+# below creates and chowns.
+StateDirectory=dsync
+ExecStart=/usr/bin/dsync agent --serve --state-dir /var/lib/dsync
+
+# SIGTERM is the stop signal, and dsync exits within 10 seconds of it whether
+# or not its shutdown finished (SPEC §11.5). 30s leaves that bound room to
+# run; a SIGKILL instead would release nothing.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+Restart=on-failure
+RestartSec=5s
+
+# Logs to stdout and stderr; journald captures both. dsync manages no log
+# files and has no rotation to configure.
+StandardOutput=journal
+StandardError=journal
+
+# Hardening. Loosen as your replica roots require — ReadWritePaths must list
+# every root this agent serves.
+ReadWritePaths=/srv/media
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

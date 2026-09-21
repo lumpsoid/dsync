@@ -18,8 +18,10 @@ import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
 import 'package:dsync/dsync_core/scan/case_folding.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
+import 'package:dsync/dsync_core/state_dir.dart';
 
 import '../host_platform.dart';
+import '../options/state_dir_option.dart';
 import '../stop_sequence.dart';
 
 /// `dsync agent` (SPEC §11.1, §4.2, §4.4, §11.3): the far end of a remote
@@ -84,7 +86,7 @@ import '../stop_sequence.dart';
 /// means here (SPEC §11.5's 130 / 143) and the [stopDeadline] that keeps a
 /// `close()` that never returns from turning a stop into a hang (task
 /// e6be5d).
-class AgentCommand extends Command<int> {
+class AgentCommand extends Command<int> with StateDirOption {
   @override
   final name = 'agent';
 
@@ -110,6 +112,7 @@ class AgentCommand extends Command<int> {
   static const optionBind = 'bind';
 
   AgentCommand() {
+    addStateDirOption();
     argParser
       ..addFlag(
         flagStdio,
@@ -201,9 +204,21 @@ class AgentCommand extends Command<int> {
       );
     }
 
-    if (stdio) return _serveStdio();
-    if (socketPath != null) return _serveSocket(socketPath);
-    return _serveNetwork(_parsePort(portArgument), _parseBind(bindArgument));
+    // Resolved once, here, and threaded into all three transports and into
+    // every store each of them opens: one invocation of `dsync agent` has
+    // exactly one state directory, and a second read further down could
+    // only ever disagree with this one. The default is this process's own
+    // host rule (SPEC §8.3) — never an initiator's opinion of it, for the
+    // reason [_buildAgent] gives about `hostPlatform()`.
+    final stateDir = stateDirOr(hostPlatform().stateDirPlatform);
+
+    if (stdio) return _serveStdio(stateDir);
+    if (socketPath != null) return _serveSocket(socketPath, stateDir);
+    return _serveNetwork(
+      _parsePort(portArgument),
+      _parseBind(bindArgument),
+      stateDir,
+    );
   }
 
   /// `--bind`'s value as an address to listen on, or SPEC §11.1's default —
@@ -236,10 +251,14 @@ class AgentCommand extends Command<int> {
     return port;
   }
 
-  Future<int> _serveStdio() async {
+  Future<int> _serveStdio(StateDirPlatform stateDir) async {
     final channel = StdioChannel();
     try {
-      await AgentServer().serve(channel, _buildAgent, writePath: _writePathOf);
+      await AgentServer().serve(
+        channel,
+        (spec) => _buildAgent(spec, stateDir),
+        writePath: _writePathOf,
+      );
     } finally {
       // Best-effort cleanup on every path, including a thrown error left to
       // propagate (see this class's doc comment): the peer gets whatever
@@ -260,7 +279,7 @@ class AgentCommand extends Command<int> {
   /// It names the socket and what reaching it is worth, because that is the
   /// whole of this transport's access control and the moment the person
   /// choosing the path can still choose a better one.
-  Future<int> _serveSocket(String socketPath) async {
+  Future<int> _serveSocket(String socketPath, StateDirPlatform stateDir) async {
     // Watched *before* the socket is bound, and deliberately so.
     // `ProcessSignal.watch()` is what displaces a signal's default
     // disposition, and until it has run a SIGTERM kills this process
@@ -276,7 +295,7 @@ class AgentCommand extends Command<int> {
     try {
       final listener = await AgentListener.bindUnix(
         socketPath,
-        buildAgent: _buildAgent,
+        buildAgent: (spec) => _buildAgent(spec, stateDir),
         writePath: _writePathOf,
         // A failed session is this process's only chance to say so — the peer
         // has already been told over the wire, and there is nobody watching an
@@ -309,8 +328,12 @@ class AgentCommand extends Command<int> {
   /// Binds the paired network transport on every IPv4 interface at [port]
   /// and serves it until a signal arrives (SPEC §4.4).
   ///
-  /// This host's own identity and paired-device store are resolved from this
-  /// process's own environment and host (SPEC §8.3), the same way
+  /// This host's own identity and paired-device store are resolved out of
+  /// [stateDir] — `--state-dir` if it was given, otherwise SPEC §8.3's rule
+  /// for this host — which is also what makes two `--serve` agents on one
+  /// machine independent rather than two processes sharing one
+  /// paired-device store. The environment it resolves against is this
+  /// process's own, the same way
   /// [_buildAgent] resolves an archive — and the same way `dsync pair show`
   /// resolves the identity it advertises, so the certificate a peer pinned
   /// at pairing time is the one this listener presents. `loadOrCreate`
@@ -337,9 +360,12 @@ class AgentCommand extends Command<int> {
   /// re-read, and the TLS trust anchors rebuilt from it, per accepted
   /// connection — and the moment to say so is when the operator can still
   /// see it, before a freshly paired phone's first sync.
-  Future<int> _serveNetwork(int port, InternetAddress bindAddress) async {
+  Future<int> _serveNetwork(
+    int port,
+    InternetAddress bindAddress,
+    StateDirPlatform stateDir,
+  ) async {
     final environment = Platform.environment;
-    final platform = hostPlatform().stateDirPlatform;
 
     // Watched before binding, for the same reason `_serveSocket` does: a
     // port has no file to litter, but the exit code for a signal that lands
@@ -349,7 +375,7 @@ class AgentCommand extends Command<int> {
     try {
       final identity = await DeviceIdentityStore.forStateDir(
         environment: environment,
-        platform: platform,
+        platform: stateDir,
       ).loadOrCreate(commonName: Platform.localHostname);
       final AgentListener listener;
       try {
@@ -359,9 +385,9 @@ class AgentCommand extends Command<int> {
           ownIdentity: identity,
           pairedDeviceStore: PairedDeviceStore.forStateDir(
             environment: environment,
-            platform: platform,
+            platform: stateDir,
           ),
-          buildAgent: _buildAgent,
+          buildAgent: (spec) => _buildAgent(spec, stateDir),
           writePath: _writePathOf,
           onSessionError: (error, _) => stderr.writeln('dsync agent: $error'),
           environment: environment,
@@ -432,7 +458,10 @@ class AgentCommand extends Command<int> {
   /// than trusting the initiator's), and SPEC §7.4's `chmod`-availability
   /// for [LocalAgent]'s `isWindowsReplica`. See [HostPlatform]'s own doc
   /// comment for why they belong on the same sum type rather than three
-  /// values that must agree.
+  /// values that must agree. [stateDir] is the one of the three that an
+  /// operator can override (`--state-dir`, SPEC §11.2), and it arrives as a
+  /// parameter for exactly that reason: re-reading `hostPlatform()` for it
+  /// here would quietly ignore the flag this session was started with.
   ///
   /// `Scanner`'s `foldKey` (SPEC §16) is the one fact here that is not read
   /// off [HostPlatform]: it is a property of *this* replica's root, not of
@@ -451,7 +480,7 @@ class AgentCommand extends Command<int> {
   WritePathStats? _writePathOf(Agent agent) =>
       agent is LocalAgent ? agent.writePath : null;
 
-  Agent _buildAgent(ReplicaSpec spec) {
+  Agent _buildAgent(ReplicaSpec spec, StateDirPlatform stateDir) {
     final rootPath = Location.parse(spec.rootPath)
         .expandedPath(Platform.environment);
     final platform = hostPlatform();
@@ -464,13 +493,13 @@ class AgentCommand extends Command<int> {
         side: spec.side,
         rootPath: rootPath,
         environment: Platform.environment,
-        platform: platform.stateDirPlatform,
+        platform: stateDir,
       ),
       replicaLock: ReplicaLock.forProfile(
         profileId: spec.profileId,
         side: spec.side,
         environment: Platform.environment,
-        platform: platform.stateDirPlatform,
+        platform: stateDir,
       ),
       scanner: Scanner(
         jobs: spec.jobs,
@@ -489,7 +518,7 @@ class AgentCommand extends Command<int> {
         profileId: spec.profileId,
         side: spec.side,
         environment: Platform.environment,
-        platform: platform.stateDirPlatform,
+        platform: stateDir,
       ).path,
       isWindowsReplica: platform.isWindowsReplica,
     );

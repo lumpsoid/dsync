@@ -5,6 +5,8 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
+import '../options/state_dir_option.dart';
+
 /// `dsync pair grant <name> <path>` (SPEC §4.4, §11.1, task bc68c7) —
 /// pairing's second step. SPEC §4.4: pairing a device and authorizing it
 /// for a path are always two steps; `pair accept`/`pair show` do the first,
@@ -20,7 +22,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// Granting is local and additive only (SPEC §4.4): nothing a peer sends
 /// over the wire can add to its own entry, only an operator running this on
 /// the host that owns the replica.
-class PairGrantCommand extends Command<int> {
+class PairGrantCommand extends Command<int> with StateDirOption {
   @override
   final name = 'grant';
 
@@ -40,7 +42,9 @@ class PairGrantCommand extends Command<int> {
     IOSink? out,
     IOSink? err,
   }) : out = out ?? stdout,
-       err = err ?? stderr;
+       err = err ?? stderr {
+    addStateDirOption();
+  }
 
   @override
   Future<int> run() async {
@@ -62,9 +66,10 @@ class PairGrantCommand extends Command<int> {
       usageException('dsync pair grant: not a valid path: $e');
     }
 
+    final stateDir = stateDirOr(platform);
     final store = PairedDeviceStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     );
     final device = await store.byName(name);
     if (device == null) {

@@ -1,0 +1,43 @@
+#!/sbin/openrc-run
+# A community-maintained example, not a supported integration. See
+# ../README.md and the "Running the agent under a service supervisor"
+# section of the project README for the process contract this is written
+# against.
+#
+# Install as /etc/init.d/dsync-agent (chmod +x), settings in
+# /etc/conf.d/dsync-agent, then: rc-update add dsync-agent default
+
+name="dsync agent"
+description="dsync agent, paired network transport (SPEC §4.4)"
+
+: "${dsync_user:=dsync}"
+: "${dsync_group:=dsync}"
+: "${dsync_state_dir:=/var/lib/dsync}"
+: "${dsync_port:=28771}"
+
+command="/usr/bin/dsync"
+command_args="agent --serve --port ${dsync_port} --state-dir ${dsync_state_dir}"
+command_user="${dsync_user}:${dsync_group}"
+
+# dsync runs in the foreground and never daemonizes, so OpenRC supervises it
+# rather than chasing a PID file it would never write.
+supervisor="supervise-daemon"
+
+# Logs to stdout and stderr; dsync manages no log files of its own.
+output_log="/var/log/dsync-agent.log"
+error_log="/var/log/dsync-agent.log"
+
+# SIGTERM is the stop signal. dsync exits within 10 seconds of it whether or
+# not its shutdown finished (SPEC §11.5), so give it more than that before
+# escalating — a SIGKILL releases nothing.
+retry="SIGTERM/30/SIGKILL/5"
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	checkpath --directory --owner "${dsync_user}:${dsync_group}" --mode 0700 \
+		"${dsync_state_dir}"
+}

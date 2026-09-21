@@ -4,6 +4,8 @@ import 'package:args/command_runner.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
+import '../options/state_dir_option.dart';
+
 /// `dsync pair revoke <name>` (SPEC §4.4, §11.1, task bc68c7).
 ///
 /// SPEC §4.4: "Revocation is local, not a network operation" — this writes
@@ -15,7 +17,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// Looked up by [name] rather than device id: [name] is what a person
 /// running this command actually has (`dsync pair list`'s own output), and
 /// [PairedDeviceStore.byName] is the lookup that exists for exactly this.
-class PairRevokeCommand extends Command<int> {
+class PairRevokeCommand extends Command<int> with StateDirOption {
   @override
   final name = 'revoke';
 
@@ -36,7 +38,9 @@ class PairRevokeCommand extends Command<int> {
     IOSink? out,
     IOSink? err,
   }) : out = out ?? stdout,
-       err = err ?? stderr;
+       err = err ?? stderr {
+    addStateDirOption();
+  }
 
   @override
   Future<int> run() async {
@@ -49,9 +53,10 @@ class PairRevokeCommand extends Command<int> {
     }
     final name = rest.single;
 
+    final stateDir = stateDirOr(platform);
     final store = PairedDeviceStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     );
     final device = await store.byName(name);
     if (device == null) {

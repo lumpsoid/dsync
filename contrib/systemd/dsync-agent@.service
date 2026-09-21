@@ -1,0 +1,54 @@
+# A community-maintained example, not a supported integration. See
+# ../README.md.
+#
+# One agent per instance, each with its own state directory and its own port
+# — the arrangement --state-dir exists for. Without separate state
+# directories two agents share a paired-device store and contend for the same
+# replica locks (SPEC §8.3, §4.3).
+#
+# Install as /etc/systemd/system/dsync-agent@.service, write a port per
+# instance, then enable them by name:
+#
+#   echo 'PORT=28771' > /etc/dsync/media.env
+#   echo 'PORT=28772' > /etc/dsync/notes.env
+#   systemctl enable --now dsync-agent@media dsync-agent@notes
+#
+# Pair against one instance by naming its state directory:
+#   sudo -u dsync dsync pair show --name phone --state-dir /var/lib/dsync/media
+
+[Unit]
+Description=dsync agent for %i (paired network transport)
+Documentation=https://github.com/lumpsoid/dsync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dsync
+Group=dsync
+
+# %i is the instance name: dsync-agent@media -> /var/lib/dsync/media.
+StateDirectory=dsync/%i
+EnvironmentFile=/etc/dsync/%i.env
+ExecStart=/usr/bin/dsync agent --serve --port ${PORT} --state-dir /var/lib/dsync/%i
+
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+
+# Per-instance replica roots go here; /srv/%i is only an example shape.
+ReadWritePaths=/srv/%i
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -9,6 +9,8 @@ import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 
+import '../options/state_dir_option.dart';
+
 /// `dsync pair accept <payload>` (SPEC §4.4, §11.1, task bc68c7) — the other
 /// side of `dsync pair show`: decode the pasted or scanned payload, run
 /// `enrolWithPeer`, report which device was paired.
@@ -36,7 +38,7 @@ import 'package:dsync/dsync_core/state_dir.dart';
 /// `--name` there, check the payload was copied correctly) actually
 /// applies. `EnrolmentRefused.reason` (`enrolment_message.dart`) already carries that distinction end to end —
 /// this command's job is only to not throw it away.
-class PairAcceptCommand extends Command<int> {
+class PairAcceptCommand extends Command<int> with StateDirOption {
   @override
   final name = 'accept';
 
@@ -59,6 +61,7 @@ class PairAcceptCommand extends Command<int> {
     IOSink? err,
   }) : out = out ?? stdout,
        err = err ?? stderr {
+    addStateDirOption();
     argParser.addOption(
       _optionName,
       help:
@@ -99,13 +102,14 @@ class PairAcceptCommand extends Command<int> {
       usageException('dsync pair accept: $e');
     }
 
+    final stateDir = stateDirOr(platform);
     final identity = await DeviceIdentityStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     ).loadOrCreate(commonName: Platform.localHostname);
     final pairedDeviceStore = PairedDeviceStore.forStateDir(
       environment: environment,
-      platform: platform,
+      platform: stateDir,
     );
 
     // Printed before the connection, not after it (task 23344d): the far

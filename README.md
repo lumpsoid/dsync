@@ -43,7 +43,15 @@ dsync pair accept --name <name> <payload>  # pair with the device that payload c
 dsync pair list                   # paired devices; --json for a script
 dsync pair grant <name> <path>    # let a paired device reach a replica root
 dsync pair revoke <name>          # stop trusting it
+dsync archive list                # the archive logs this host keeps
+dsync agent --serve --state-dir <dir>      # keep this instance's state there, not the default
 ```
+
+`--state-dir` overrides where this invocation keeps its state — archive logs
+and their locks, this device's identity, the paired-device store — instead of
+SPEC §8.3's platform default. It takes the path verbatim, and `agent` and
+every `pair` and `archive` subcommand accept it. Two agents on one host need
+one each; see "Running the agent under a service supervisor" below.
 
 A location is a local path, `user@host:path`, `ssh://[user@]destination:path`,
 or `unix://<socket path>:<replica path>`; in an ad-hoc pair the local one comes
@@ -190,6 +198,86 @@ first (IPv6, a LAN, a forwarded port), then your own overlay network. That
 ordering is about what it takes to reach a host at all, not about how exposed
 the result is: direct exposure is defensible, and the handshake is the gate it
 claims to be, but on a public-facing host the overlay is the better default.
+
+## Running the agent under a service supervisor
+
+`dsync agent --serve` (or `--listen`) is meant to be run by systemd, OpenRC,
+runit, s6 or launchd. dsync owns the *process contract*; whoever packages it
+owns the glue. Example units for systemd, OpenRC and runit are in
+[`contrib/`](contrib/) — community-maintained examples, not supported
+integrations. What this project commits to is below, and it is what those
+examples, and any others, are written against.
+
+**It runs in the foreground and never daemonizes.** No fork, no PID file, no
+detaching, no `--daemon`. The process you start is the process that serves,
+and it is the process the supervisor tracks — `Type=simple`, runit's and s6's
+only model, OpenRC without `--background`. This is the load-bearing one:
+anything that backgrounded itself later would break every integration at once.
+
+**It logs to stdout and stderr and manages no log files.** No rotation, no log
+path setting, no syslog socket. journald, svlogd, s6-log and launchd all
+capture the two streams they already have; a program writing its own log file
+fights all four. Startup lines and errors go to stderr — a listener's stdout
+carries nothing, and `--json` on the run commands keeps stdout parseable
+(SPEC §11.4).
+
+**SIGTERM is the stop signal.** SIGINT exits 130 and SIGTERM 143 (SPEC §11.5),
+and shutdown releases the replica lock and unlinks a `--listen` socket on the
+way out. **It exits within 10 seconds of the signal, whether or not that
+shutdown finished** — `StopSequence` (`lib/cli/stop_sequence.dart`) owns that
+bound, and the paragraph above under "Pairing" says what it costs. Set a kill
+timeout above it, not below: `TimeoutStopSec=30s` on systemd, and the
+equivalent elsewhere. A SIGKILL is the one exit path that releases nothing.
+Do not configure a supervisor to stop it with any other signal.
+
+**It needs no root.** Run it as an unprivileged user that can read and write
+the replica roots and the state directory, and nothing else. It binds 28771 by
+default (`--port` to change it), which needs no privilege.
+
+**A service starts with a nearly empty environment — no `HOME`, no
+`XDG_STATE_HOME`, no D-Bus session — and that is fine.** The agent needs no
+desktop session, no keyring, no display. What it reads from the environment,
+and what each falls back to:
+
+| Variable | Used for | If unset |
+|---|---|---|
+| `XDG_STATE_HOME` | state directory on Linux (SPEC §8.3) | `$HOME/.local/state` |
+| `HOME` | the fallback above; macOS's state directory; expanding a `~` in a replica path | **fatal** if the state directory is not otherwise resolvable |
+| `LOCALAPPDATA` | state directory on Windows (SPEC §8.3) | **fatal** on Windows |
+| `TERM` | whether `pair show` can draw a QR — never read by `agent` | no QR, payload text only |
+
+The fatal cases are deliberate: dsync says which variable is missing rather
+than writing into a directory named `null`. **Set `--state-dir` and none of it
+applies** — the flag names the state directory outright, so the unit is
+self-describing and the agent does not care what the supervisor's environment
+looks like:
+
+```sh
+dsync agent --serve --state-dir /var/lib/dsync
+```
+
+That is also what lets **two agents share a host**: give each its own
+`--state-dir` and its own `--port`, and they have separate paired-device
+stores, separate archive logs and separate locks (SPEC §8.3, §4.3). Without
+it, both resolve the same directory and fight over it. Pair, grant and revoke
+against a particular instance by passing that instance's `--state-dir` to the
+`pair` subcommands too:
+
+```sh
+dsync pair show --name phone --state-dir /var/lib/dsync/media
+dsync pair grant phone /srv/media --state-dir /var/lib/dsync/media
+```
+
+Pairing, granting and revoking take effect on the next connection, with no
+restart (SPEC §4.4) — a supervisor never needs to reload the agent for them.
+
+Deliberately not implemented, and named so neither reads as an oversight:
+**`sd_notify` readiness**, because it is systemd-only and linking
+`libsystemd` is exactly the coupling SPEC §16 is suspicious of (`Type=simple`
+works today; if readiness is ever wanted, the protocol is one datagram to
+`$NOTIFY_SOCKET` in pure Dart, no library), and **socket activation** via a
+pre-opened descriptor, where one `--listen-fd N` would cover systemd, launchd
+and s6 at once. Both are noted in SPEC §16, waiting for somebody to ask.
 
 ## Layout
 
