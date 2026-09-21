@@ -31,6 +31,16 @@ import 'dart:io';
 /// stopped talking is owed nothing — `close_notify` is not even defined for a
 /// handshake that never completed.
 ///
+/// [requireClientCertificate] is the caller's, and has no default on purpose:
+/// the two listeners that use this want opposite answers, and which one a
+/// listener wants is the whole shape of its gate rather than a detail it
+/// could be defaulted into. `AgentListener.bindSecure` passes `true`, so an
+/// anonymous peer never completes a handshake at all; `EnrolmentListener`
+/// passes `false`, because an enrolling peer has no certificate this host
+/// could have trusted yet — which is exactly why *every* stranger completes
+/// a handshake with that listener, and why bounding it there matters at
+/// least as much.
+///
 /// Throws [HandshakeDeadlineExceededException] when [deadline] expired,
 /// having disposed of [socket] itself, and whatever the handshake itself
 /// raised otherwise — a stranger's certificate, a peer that hung up — which
@@ -38,6 +48,7 @@ import 'dart:io';
 Future<RawSecureSocket> secureServerWithin(
   RawSocket socket,
   SecurityContext context, {
+  required bool requireClientCertificate,
   required Duration deadline,
 }) async {
   var expired = false;
@@ -49,7 +60,7 @@ Future<RawSecureSocket> secureServerWithin(
     return await RawSecureSocket.secureServer(
       socket,
       context,
-      requireClientCertificate: true,
+      requireClientCertificate: requireClientCertificate,
     );
   } catch (_) {
     // The disposal above is what made this handshake fail, so the failure it

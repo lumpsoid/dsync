@@ -14,8 +14,8 @@
 /// exact connection this class exists to accept, the same constraint
 /// [AgentListener.bindSecure]'s own doc comment already documents for the
 /// paired case. So this binds the opposite gate: this host's own identity
-/// presented as usual, `requireClientCertificate` left at its default
-/// `false` — plain, server-authenticated TLS — and the peer authenticated
+/// presented as usual, `requireClientCertificate: false` passed explicitly
+/// — plain, server-authenticated TLS — and the peer authenticated
 /// afterward, over the now-encrypted channel, by the token it presents
 /// rather than by anything TLS itself checked. The QR's pinned certificate is
 /// what authenticates *this* side to the peer — `onBadCertificate`'s
@@ -35,10 +35,14 @@
 /// entire surface an enrolling peer can touch is [EnrolmentRequest.decode]
 /// and the token gate below, both pure data checks with nothing behind them
 /// but `PairedDeviceStore.add`. A reviewer asking whether an endpoint for
-/// unpaired peers reopens the hole `d0e960` closed can check it by import
-/// graph alone, not by re-auditing this class's logic: nothing under
-/// `dsync_core/agent/` or `dsync_core/protocol/` appears in this file's
-/// imports, and nothing here calls back into either.
+/// unpaired peers reopens the hole `d0e960` closed can still check it by
+/// import graph alone: nothing under `dsync_core/agent/` appears in this
+/// file's imports, and the three things it takes from
+/// `dsync_core/protocol/` — [secureServerWithin], [ByteSocket] and
+/// [RawSecureByteSocket] — are the transport beneath the exchange, not a
+/// way into one. None of them parses a frame, names a replica or knows what
+/// an `AgentServer` is; [ByteSocket] is a byte stream and a write side, and
+/// what reads it here is still [readEnrolmentMessage] alone.
 ///
 /// **The gate, concretely (SPEC §4.4).**
 /// - **Off by default.** Nothing binds this listener implicitly — it exists
@@ -60,14 +64,30 @@
 /// - **Bounded in time and in number, before any token is checked (task
 ///   224ffa).** A connection that has not presented a complete enrolment
 ///   message within [EnrolmentListener.defaultRequestDeadline] is destroyed,
-///   and one accepted while
+///   and one that finishes its handshake while
 ///   [EnrolmentListener.defaultMaxUnauthenticatedConnections] are already
-///   waiting is destroyed at accept. Neither adds a parser or a demux in
-///   front of the handshake — they are a timer and a counter, which is what
-///   keeps the isolation argument above intact. Both start where this class
-///   does, at an accepted [SecureSocket]: the TLS handshake itself happens
-///   inside [SecureServerSocket] before anything here sees a connection, and
-///   `dart:io` offers no hook to bound a peer that stalls inside it.
+///   waiting is destroyed then. Neither adds a parser or a demux — they are
+///   a timer and a counter, which is what keeps the isolation argument above
+///   intact.
+/// - **And the handshake in front of them is bounded too (task 0c058c,
+///   SPEC §4.4).** [bind] binds a plain [RawServerSocket] and does the TLS
+///   accept per connection with [secureServerWithin], so this class holds
+///   the [RawSocket] across the upgrade and can end a peer that stalls
+///   *inside* the handshake — at every stall point, not merely before its
+///   first byte. A [SecureServerSocket] could not: it completes the
+///   handshake inside `dart:io` before anything here sees a connection, so
+///   the deadline and the counter above both started too late to reach a
+///   peer that never finished one, which would hold a socket and its
+///   BoringSSL state for as long as the pairing window stayed open.
+///
+///   This listener is the *easier* of the two to stall, not the incidental
+///   one. `AgentListener.bindSecure` installs every paired device's
+///   certificate as a trust anchor and requires a client certificate, so
+///   BoringSSL refuses all but a paired device before the handshake
+///   completes. This one deliberately installs no anchors and asks for no
+///   certificate, for the reason above — so *every* stranger on the network
+///   completes a handshake with it, and every stranger can therefore choose
+///   to stop halfway through one.
 /// - **Confirmed by a human before anything is stored (task 23344d).** A
 ///   redeemed token is not by itself an answer to "is this my device" —
 ///   SPEC §4.4 says plainly that a leaked payload lets a stranger redeem
@@ -95,6 +115,12 @@ import 'package:dsync/dsync_core/identity/enrolment_message.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/protocol/bounded_secure_handshake.dart';
+import 'package:dsync/dsync_core/protocol/byte_socket.dart';
+import 'package:dsync/dsync_core/protocol/raw_secure_byte_socket.dart';
+
+export 'package:dsync/dsync_core/protocol/bounded_secure_handshake.dart'
+    show HandshakeDeadlineExceededException;
 
 /// A connection this listener could not turn into a completed enrolment, or
 /// did turn into one that was refused — the mirror of `AgentListener`'s
@@ -202,7 +228,21 @@ class EnrolmentListener {
   /// connection, once.
   static const defaultMaxUnauthenticatedConnections = 16;
 
-  final SecureServerSocket _server;
+  /// How long an accepted connection has to finish its TLS handshake before
+  /// its socket is closed (task 0c058c).
+  ///
+  /// The same shape and the same value as
+  /// `AgentListener.defaultHandshakeDeadline`, and for the same reason: a
+  /// real peer completes a loopback or LAN handshake in well under a second,
+  /// so ten seconds is generous for a slow link and still bounds a peer that
+  /// completes TCP and then says nothing. Named here rather than imported
+  /// because the two listeners' deadlines are independent choices that
+  /// happen to agree, and this file does not otherwise depend on
+  /// `agent_listener.dart` (see the class doc comment on isolation).
+  static const defaultHandshakeDeadline = Duration(seconds: 10);
+
+  final RawServerSocket _server;
+  final SecurityContext _context;
   final PairedDeviceStore _pairedDeviceStore;
   final String _peerName;
   final Uint8List _token;
@@ -210,6 +250,7 @@ class EnrolmentListener {
   final ConfirmEnrolment _confirm;
   final EnrolmentErrorHandler _onError;
   final Duration _requestDeadline;
+  final Duration _handshakeDeadline;
   final int _maxUnauthenticatedConnections;
   late final StreamSubscription<void> _connections;
 
@@ -217,13 +258,15 @@ class EnrolmentListener {
 
   bool _tokenConsumed = false;
 
-  /// How many accepted connections are past accept and have not yet finished
-  /// presenting a token — incremented at accept, decremented once the token
-  /// has been judged or the connection has died (see [_handleConnection]).
+  /// How many connections are past their TLS handshake and have not yet
+  /// finished presenting a token — incremented once the handshake completes,
+  /// decremented once the token has been judged or the connection has died
+  /// (see [_handleConnection]).
   int _unauthenticatedConnections = 0;
 
   EnrolmentListener._(
     this._server,
+    this._context,
     this._pairedDeviceStore,
     this._peerName,
     this._token,
@@ -231,6 +274,7 @@ class EnrolmentListener {
     this._confirm,
     this._onError,
     this._requestDeadline,
+    this._handshakeDeadline,
     this._maxUnauthenticatedConnections,
   ) {
     _connections = _server.listen(_handleConnection, onError: _onError);
@@ -268,10 +312,12 @@ class EnrolmentListener {
   /// "yes": an unconfirmed pairing is the thing task 23344d exists to stop,
   /// so a caller that wants one has to write it out.
   ///
-  /// [requestDeadline] and [maxUnauthenticatedConnections] bound what a peer
-  /// that has presented no token at all can cost this process (task 224ffa):
-  /// how long one may hold a socket, and how many may hold one at once.
-  /// Neither is a policy knob — see the constants they default to.
+  /// [requestDeadline], [handshakeDeadline] and
+  /// [maxUnauthenticatedConnections] bound what a peer that has presented no
+  /// token at all can cost this process (task 224ffa, task 0c058c): how long
+  /// one may take to finish its TLS handshake, how long it may then hold a
+  /// socket without presenting a message, and how many may hold one at once.
+  /// None is a policy knob — see the constants they default to.
   static Future<EnrolmentListener> bind(
     InternetAddress address,
     int port, {
@@ -283,6 +329,7 @@ class EnrolmentListener {
     required ConfirmEnrolment confirm,
     required EnrolmentErrorHandler onError,
     Duration requestDeadline = defaultRequestDeadline,
+    Duration handshakeDeadline = defaultHandshakeDeadline,
     int maxUnauthenticatedConnections = defaultMaxUnauthenticatedConnections,
   }) async {
     if (peerName.trim().isEmpty) {
@@ -291,11 +338,13 @@ class EnrolmentListener {
     final context = SecurityContext(withTrustedRoots: false)
       ..useCertificateChainBytes(utf8.encode(ownIdentity.certificatePem))
       ..usePrivateKeyBytes(utf8.encode(ownIdentity.privateKeyPem));
-    // requireClientCertificate left at its default false: see the class doc
-    // comment on why an enrolling peer cannot be asked for one at all.
-    final server = await SecureServerSocket.bind(address, port, context);
+    // A plain server socket, upgraded per connection in [_handleConnection]:
+    // holding the [RawSocket] across the upgrade is the whole of what lets a
+    // stalled handshake be ended here (see the class doc comment).
+    final server = await RawServerSocket.bind(address, port);
     return EnrolmentListener._(
       server,
+      context,
       pairedDeviceStore,
       peerName,
       token,
@@ -303,6 +352,7 @@ class EnrolmentListener {
       confirm,
       onError,
       requestDeadline,
+      handshakeDeadline,
       maxUnauthenticatedConnections,
     );
   }
@@ -339,55 +389,89 @@ class EnrolmentListener {
     await _connections.cancel();
   }
 
-  /// Reads one connection's enrolment message, judges it, and answers — with
-  /// both halves of task 224ffa's bound around the part of that which happens
-  /// before any token has been checked.
+  /// Upgrades one accepted connection, reads its enrolment message, judges
+  /// it, and answers — with all three of task 224ffa's and task 0c058c's
+  /// bounds around the part of that which happens before any token has been
+  /// checked.
   ///
-  /// The cap is checked at accept, before the read is even started, so it
-  /// bounds sockets rather than only the work done on them; the deadline
-  /// covers the read and the judgement, and a connection that misses it is
-  /// destroyed, since nothing else would ever close a socket whose peer is
-  /// deliberately silent. Both are released before the reply is written: by
-  /// then the token has been judged, so the write is no longer a cost an
-  /// unauthenticated peer can impose at will.
+  /// **The handshake is bounded first, and on its own (task 0c058c).**
+  /// [secureServerWithin] ends a peer that stalls inside the upgrade,
+  /// wherever it stalled, which is what keeping the [RawSocket] across the
+  /// upgrade buys and what a [SecureServerSocket] could not do at all.
+  ///
+  /// The cap and [_requestDeadline] bound what follows it, unchanged (task
+  /// 224ffa): the cap is checked on the upgraded connection, before the read
+  /// is started, and the deadline covers the read and the judgement, so a
+  /// connection that misses it is destroyed — nothing else would ever close
+  /// a socket whose peer is deliberately silent. Both are released before
+  /// the reply is written: by then the token has been judged, so the write
+  /// is no longer a cost an unauthenticated peer can impose at will.
   ///
   /// The cap's slot is therefore held across [_enrol]'s human confirmation
   /// too (task 23344d), which is not the bound it looks like: the token is
   /// burned at redemption, so at most one connection can ever be waiting at
   /// a prompt, and every other connection is refused on the token in
   /// microseconds without ever reaching one.
-  Future<void> _handleConnection(SecureSocket socket) async {
+  ///
+  /// The three disposals differ, deliberately. A handshake that failed
+  /// leaves nothing to dispose of: [secureServerWithin] owns the deadline's
+  /// disposal, and `dart:io` has already closed the socket for any other
+  /// handshake failure — closing it again here would race that close and
+  /// turn a TLS alert into a reset (the same reasoning
+  /// `AgentListener._authenticate` sets out). Everything after the upgrade
+  /// is this method's own to destroy.
+  Future<void> _handleConnection(RawSocket socket) async {
+    final RawSecureSocket secured;
+    try {
+      secured = await secureServerWithin(
+        socket,
+        _context,
+        // The gate this listener does not have, stated rather than defaulted
+        // into: an enrolling peer has no certificate this host could have
+        // trusted yet. See the class doc comment.
+        requireClientCertificate: false,
+        deadline: _handshakeDeadline,
+      );
+    } catch (error, stackTrace) {
+      _onError(error, stackTrace);
+      return;
+    }
+    final peer = RawSecureByteSocket(secured);
+
     if (_unauthenticatedConnections >= _maxUnauthenticatedConnections) {
       _onError(
         const TooManyEnrolmentConnectionsException(),
         StackTrace.current,
       );
-      socket.destroy();
+      peer.destroy();
       return;
     }
 
     _unauthenticatedConnections++;
     final EnrolmentReply reply;
     try {
-      final requestBytes = await readEnrolmentMessage(socket).timeout(
+      final requestBytes = await readEnrolmentMessage(peer.input).timeout(
         _requestDeadline,
         onTimeout: () => throw const EnrolmentDeadlineExceededException(),
       );
-      reply = await _enrol(EnrolmentRequest.decode(requestBytes), socket);
+      reply = await _enrol(
+        EnrolmentRequest.decode(requestBytes),
+        secured.remoteAddress,
+      );
     } catch (error, stackTrace) {
       _onError(error, stackTrace);
-      socket.destroy();
+      peer.destroy();
       return;
     } finally {
       _unauthenticatedConnections--;
     }
 
     try {
-      socket.add(reply.encode());
-      await socket.flush();
+      peer.add(reply.encode());
+      await peer.flush();
     } finally {
-      await socket.close();
-      socket.destroy();
+      await peer.closeWrite();
+      peer.destroy();
     }
     if (reply case EnrolmentRefused(:final reason)) {
       _onError(EnrolmentRefusedException(reason), StackTrace.current);
@@ -429,9 +513,13 @@ class EnrolmentListener {
   /// A [ConfirmEnrolment] that throws is not turned into a refusal: it is a
   /// defect on this side, not a judgement about the peer, so it propagates
   /// to [_handleConnection], which reports it and destroys the socket.
+  /// [remoteAddress] is the host this connection actually came from, taken
+  /// off the upgraded socket by [_upgradeAndJudge] and passed as a value:
+  /// [ByteSocket] is a byte stream and a write side, and does not carry a
+  /// remote address — which is the only thing this ever asked a socket for.
   Future<EnrolmentReply> _enrol(
     EnrolmentRequest request,
-    SecureSocket socket,
+    InternetAddress remoteAddress,
   ) async {
     if (!_redeemToken(request.token)) {
       return const EnrolmentRefused(enrolmentTokenRejectedReason);
@@ -503,7 +591,7 @@ class EnrolmentListener {
       // a host, so it records the host and the port a listener would use
       // by default; the first connection this side actually makes will
       // overwrite both through `recordConnection`.
-      lastKnownAddress: PeerAddress(host: socket.remoteAddress.address),
+      lastKnownAddress: PeerAddress(host: remoteAddress.address),
     );
 
     try {
@@ -561,13 +649,15 @@ class EnrolmentDeadlineExceededException implements Exception {
       'within the request deadline.';
 }
 
-/// Reported to [EnrolmentErrorHandler] when a connection is accepted while
-/// the listener's cap on connections that have not yet presented a token is
-/// already reached (task 224ffa).
+/// Reported to [EnrolmentErrorHandler] when a connection finishes its TLS
+/// handshake while the listener's cap on connections that have not yet
+/// presented a token is already reached (task 224ffa).
 ///
 /// The deadline above bounds how long one such connection may live; this
 /// bounds how many may live at once, which is what makes the bound
-/// independent of how fast an attacker can open connections.
+/// independent of how fast an attacker can open connections. The handshake
+/// in front of both is bounded by its own deadline (task 0c058c), not by
+/// this counter.
 class TooManyEnrolmentConnectionsException implements Exception {
   const TooManyEnrolmentConnectionsException();
 

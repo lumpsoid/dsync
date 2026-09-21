@@ -504,6 +504,7 @@ class AgentListener {
       secured = await secureServerWithin(
         socket,
         contextCache.contextFor(devices),
+        requireClientCertificate: true,
         deadline: handshakeDeadline,
       );
     } on HandshakeDeadlineExceededException catch (error, stackTrace) {
