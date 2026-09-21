@@ -529,6 +529,23 @@ Override any of these before code starts:
    **The hash travels as raw bytes but stays a hex `String` in the model.** Halving its wire size (64 characters → 32 bytes) is where most of the 10 MiB comes from. Holding those bytes in `ScanEntry`/`ArchiveEntry` instead was measured too and rejected: it would take a further ~30 ms off a remote scan while adding ~10 ms to *every* archive load, since §8.2's log stays hex so it stays inspectable. That is ~20 ms net on a 100k-file remote run and a small loss on a local one, in exchange for changing two models, the scanner, the reconciler and the archive store.
 
    Task 9551c4 recorded a 6× decode win for bytes-in-the-model. It did not reproduce: that measurement's hex-rebuilding decoder grew each hash through a `StringBuffer`, and filling a code-unit list for `String.fromCharCodes` recovers almost all of the difference without touching the model.
+
+   **What taking a listing in actually holds** (task 4b62a1, `benchmark/scan_intake_peak.dart`). Per entry at the margin — resident growth measured across 14,471 to 400,000 entries, each variant in its own process, because a single reading is live data plus VM startup plus whatever GC headroom the heap is carrying and nothing in Dart brings the last two down on demand:
+
+   | what is held | per entry | at 14,471 entries |
+   |---|---|---|
+   | the encoded frame payload | 78 B | 1.1 MiB |
+   | the decoded `List<ScanEntry>` | 305 B | 4.2 MiB |
+   | both sides' listings, decoded | 505 B | 7.0 MiB |
+   | the archive as `JsonlArchiveStore` holds it | 295 B | 4.1 MiB |
+   | one side's own scan: archive + listing | 588 B | 8.1 MiB |
+
+   The decoded graph is **4× the bytes it came from**, so an encoded copy removed is the *small* term — and a process's resident set does not fall when a reference is dropped, so holding the payload past the decode and dropping it at the decode measure the same. Two changes were priced against this and **both declined**:
+
+   - **Decoding the frame as its bytes arrive**, which needs `FrameRouter` to hand one frame type out as a byte stream rather than a `Uint8List`, buys the first row: 1.1 MiB on the phone tree, 2.7% of the 41 MiB that run's resident set grew by (§17), and only on a scan whose buckets are dirty, since §6.1 stopped sending unchanged entries at all. A change to `Frame` for that is not worth it.
+   - **The hash as 32 bytes in the model** rather than 64 hex characters saves **25 B an entry per listing resident** — 0.4 MiB each, ~0.7 MiB on the phone where two are (its archive and its own scan). The paragraph above already declined it on time; the memory is the smaller argument of the two.
+
+   **What the reading found instead** is that the archive is a fourth copy nobody was counting, as heavy as a decoded listing and resident for the whole run on both sides — and that every copy together is ~8 MiB in the steady state and ~13.6 MiB on a first sync, against the 41 MiB a scan of that tree actually costs (§17, task ac2f3a). Most of a scan's memory is not the listings, so a listing-sized saving cannot be where the phone's scan memory goes.
 4. **Exit codes**: as in §11.5, mirroring Unison's four-level scheme.
 5. **Profile format**: TOML.
 6. **mtime comparison**: exact equality of microsecond values. If a target filesystem turns out to round mtimes, the archive stores the rounded value it reads back, so the next run's fast path still matches.

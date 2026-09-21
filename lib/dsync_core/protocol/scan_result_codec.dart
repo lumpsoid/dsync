@@ -316,6 +316,11 @@ List<SkippedPath> _readSkipped(_ByteReader reader) {
 /// `Scanner`, `Reconciler` and the archive store, and for a `hash` whose
 /// in-memory and on-disk spellings no longer match.
 ///
+/// **Declined a second time on memory** (task 4b62a1, SPEC §15.3): the bytes
+/// save 25 B an entry per listing resident, 0.4 MiB each on the 14,471-file
+/// phone tree and ~0.7 MiB across the two a run holds there — smaller than
+/// the time argument that declined it first, against the same five modules.
+///
 /// Throws [FormatException], naming [path], if [hash] is not an even-length run
 /// of hex digits. Nothing in this codebase produces such a value — `Scanner`
 /// writes a SHA-256 digest and the archive stores that back — so this is
