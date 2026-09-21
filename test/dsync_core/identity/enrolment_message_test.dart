@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/identity/enrolment_message.dart';
@@ -70,5 +71,24 @@ void main() {
       ),
       throwsFormatException,
     );
+  });
+
+  test('a message at the cap costs about its own size to buffer', () async {
+    // The point of the typed buffer: a growable `List<int>` spends a tagged
+    // word per element, so this same read used to cost ~8x the bytes on the
+    // wire — reachable by anyone who can open a socket, before any token has
+    // been checked. Resident size is a coarse instrument, so the bound is
+    // generous; what it rules out is the order-of-magnitude regression.
+    final body = Uint8List(maxEnrolmentMessageBytes);
+    final chunks = <Uint8List>[
+      header(body.length),
+      for (var at = 0; at < body.length; at += 4096)
+        Uint8List.sublistView(body, at, at + 4096),
+    ];
+    final before = ProcessInfo.currentRss;
+    final read = await readEnrolmentMessage(Stream.fromIterable(chunks));
+    final grew = ProcessInfo.currentRss - before;
+    expect(read.length, maxEnrolmentMessageBytes);
+    expect(grew, lessThan(6 * 1024 * 1024));
   });
 }

@@ -19,6 +19,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 /// What the client sends once connected (SPEC §4.4): the token as proof it
@@ -135,35 +136,55 @@ const int maxEnrolmentMessageBytes = 1024 * 1024;
 /// Reads exactly one [_encodeMessage]-shaped message off [input], buffering
 /// across chunk boundaries — every socket this protocol accepts carries
 /// exactly one, so unlike `FrameCodec.decode` this returns a single value
-/// rather than a stream, and a plain growable buffer is enough: the largest
-/// message either side ever sends is a certificate, not a
-/// replica's worth of scan results, so there is nothing here for
-/// `FrameCodec`'s in-place-growth optimization to earn back.
+/// rather than a stream.
+///
+/// The four-byte length prefix is assembled once, in [_header], and read once
+/// the fourth byte is in hand; the body accumulates in a [BytesBuilder], so a
+/// buffered byte costs a byte rather than the tagged word a growable
+/// `List<int>` would spend on it. That is the difference between an
+/// unauthenticated peer pinning ~1 MiB per connection and pinning ~12.
 ///
 /// Throws [FormatException] if [input] closes before a complete message has
 /// arrived, or if the peer announces or sends more than
 /// [maxEnrolmentMessageBytes] — an unauthenticated peer must not be able to
 /// make this process buffer arbitrarily much.
 Future<Uint8List> readEnrolmentMessage(Stream<Uint8List> input) async {
-  final buffered = <int>[];
+  final header = Uint8List(4);
+  var headerBytes = 0;
+  var announced = 0;
+  final body = BytesBuilder();
   await for (final chunk in input) {
-    buffered.addAll(chunk);
-    if (buffered.length > 4 + maxEnrolmentMessageBytes) {
+    var offset = 0;
+    if (headerBytes < 4) {
+      final take = math.min(4 - headerBytes, chunk.length);
+      header.setRange(headerBytes, headerBytes + take, chunk);
+      headerBytes += take;
+      offset = take;
+      if (headerBytes < 4) continue;
+      // The announcement is refused before a single byte is buffered on
+      // account of it: nothing a peer claims is trusted enough to reserve for.
+      announced = ByteData.sublistView(header).getUint32(0, Endian.big);
+      if (announced > maxEnrolmentMessageBytes) {
+        throw const FormatException(
+          'Enrolment message exceeds $maxEnrolmentMessageBytes bytes',
+        );
+      }
+    }
+    body.add(
+      offset == 0 ? chunk : Uint8List.sublistView(chunk, offset),
+    );
+    // And the running total is refused whatever the prefix claimed: a peer
+    // that announces something small and then keeps talking stops here.
+    if (body.length > maxEnrolmentMessageBytes) {
       throw const FormatException(
         'Enrolment message exceeds $maxEnrolmentMessageBytes bytes',
       );
     }
-    if (buffered.length < 4) continue;
-    final length = ByteData.sublistView(
-      Uint8List.fromList(buffered.sublist(0, 4)),
-    ).getUint32(0, Endian.big);
-    if (length > maxEnrolmentMessageBytes) {
-      throw const FormatException(
-        'Enrolment message exceeds $maxEnrolmentMessageBytes bytes',
-      );
-    }
-    if (buffered.length >= 4 + length) {
-      return Uint8List.fromList(buffered.sublist(4, 4 + length));
+    if (body.length >= announced) {
+      final bytes = body.takeBytes();
+      return bytes.length == announced
+          ? bytes
+          : Uint8List.sublistView(bytes, 0, announced);
     }
   }
   throw const FormatException(
