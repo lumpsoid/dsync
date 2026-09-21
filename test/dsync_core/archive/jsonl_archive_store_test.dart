@@ -263,6 +263,28 @@ void main() {
       expect(archive.entries, isEmpty);
     });
 
+    test('corruption before a torn tail still aborts the load', () async {
+      // Both damages at once: a bad line mid-log and a half-written last
+      // line. The replay learns which line was the last only when the stream
+      // ends, so a reader that stopped at the first unparseable line and
+      // called it the tail would report this log as merely torn and lose the
+      // corruption silently. Only the final line is forgivable.
+      final writer = JsonlArchiveStore(logFile(), header);
+      await writer.load();
+      await writer.commitUpsert(entry);
+      await writer.flush();
+      await logFile().writeAsString(
+        'not json\n{"op":"delete","path":"a.txt"}\n',
+        mode: FileMode.append,
+      );
+      await tear();
+
+      await expectLater(
+        JsonlArchiveStore(logFile(), header).load(),
+        throwsFormatException,
+      );
+    });
+
     test('a malformed line that is not the last aborts the load', () async {
       final writer = JsonlArchiveStore(logFile(), header);
       await writer.load();

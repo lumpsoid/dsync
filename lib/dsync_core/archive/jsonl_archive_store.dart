@@ -133,38 +133,52 @@ class JsonlArchiveStore implements ArchiveStore {
     var torn = false;
     _logExists = await _logFile.exists();
     if (_logExists) {
-      final lines = (await _logFile.readAsLines())
-        ..removeWhere((line) => line.isEmpty);
-      if (lines.isNotEmpty) {
-        _verifyHeader(lines.first);
-        final records = lines.skip(1).toList();
-        for (var i = 0; i < records.length; i++) {
-          final Map<String, dynamic> record;
-          try {
-            record = jsonDecode(records[i]) as Map<String, dynamic>;
-          } on FormatException {
-            // A crash partway through an append leaves a half-written last
-            // line. That is the one failure an append-only log is supposed to
-            // survive (SPEC §8.2), so the torn tail is dropped and repaired on
-            // the next commit. The same damage anywhere earlier is real
-            // corruption and still aborts the run (SPEC §11.5 exit 3).
-            if (i != records.length - 1) rethrow;
-            torn = true;
-            break;
-          }
+      // Streamed rather than read whole: the log holds about one line per
+      // live path in steady state (SPEC §8.2), which is megabytes on a tree
+      // of any size, and nothing but [entries] outlives this call. Same
+      // reader as `ArchiveInventory._rootPathOf`, which wants only the first
+      // line where this wants them all.
+      final lines = _logFile
+          .openRead()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter());
+
+      var headerSeen = false;
+      // One record of lookahead. A half-written last line is tolerated and
+      // anything earlier is not, and under a stream "last" is only known
+      // once the stream ends — so a record is replayed when the one after it
+      // arrives, which proves it was not the last.
+      String? held;
+      // `forEach` rather than `await for`: the callback runs as each line is
+      // delivered, where `await for` suspends once per line and costs a
+      // third of the load time on a 14k-path log for nothing. Errors still come out
+      // of the await, so corruption mid-log aborts exactly as before
+      // (SPEC §11.5 exit 3).
+      await lines.forEach((line) {
+        if (line.isEmpty) return;
+        if (!headerSeen) {
+          _verifyHeader(line);
+          headerSeen = true;
+          return;
+        }
+        final previous = held;
+        if (previous != null) {
+          _replay(previous, entries);
           lineCount++;
-          final path = record['path'] as String;
-          if (record['op'] == 'delete') {
-            entries.remove(path);
-          } else {
-            entries[path] = ArchiveEntry(
-              path: path,
-              size: record['size'] as int,
-              mtime: record['mtime'] as int,
-              mode: record['mode'] as int,
-              hash: record['hash'] as String,
-            );
-          }
+        }
+        held = line;
+      });
+      final last = held;
+      if (last != null) {
+        try {
+          _replay(last, entries);
+          lineCount++;
+        } on FormatException {
+          // A crash partway through an append leaves a half-written last
+          // line. That is the one failure an append-only log is supposed to
+          // survive (SPEC §8.2), so the torn tail is dropped and repaired on
+          // the next commit.
+          torn = true;
         }
       }
     }
@@ -174,6 +188,25 @@ class JsonlArchiveStore implements ArchiveStore {
     _logLineCount = lineCount;
     _needsRepair = torn;
     return snapshot();
+  }
+
+  /// Folds one commit line into [entries]; the last line for a path wins.
+  /// Throws [FormatException] when the line is not JSON — which is how
+  /// [_load] tells a torn tail from corruption.
+  void _replay(String line, Map<String, ArchiveEntry> entries) {
+    final record = jsonDecode(line) as Map<String, dynamic>;
+    final path = record['path'] as String;
+    if (record['op'] == 'delete') {
+      entries.remove(path);
+    } else {
+      entries[path] = ArchiveEntry(
+        path: path,
+        size: record['size'] as int,
+        mtime: record['mtime'] as int,
+        mode: record['mode'] as int,
+        hash: record['hash'] as String,
+      );
+    }
   }
 
   /// Checks that the log's first line identifies the replica this store was
