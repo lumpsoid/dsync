@@ -122,6 +122,33 @@ Future<void> _runRung(String rung, String root) async {
         await child.stat();
         seen++;
       }
+    // The same walk with `dart:io`'s blocking calls instead of its
+    // asynchronous ones. Every async file operation goes out through the IO
+    // service — a request list, a response list and a future per call — and
+    // the rungs above say that is ~2.3 KB per `stat`, which is most of what
+    // a scan allocates (task 99d149).
+    case 'list-sync':
+      for (final child in Directory(root).listSync(recursive: true)) {
+        if (child is File) seen++;
+      }
+    case 'list-statsync-entry':
+      final entries = <ScanEntry>[];
+      for (final child in Directory(root).listSync(recursive: true)) {
+        if (child is! File) continue;
+        final stat = child.statSync();
+        entries.add(
+          ScanEntry(
+            path: child.path.substring(root.length + 1),
+            reason: ScanReason.metadataMatched,
+            size: stat.size,
+            mtime: stat.modified.microsecondsSinceEpoch,
+            mode: stat.mode & 0xfff,
+            hash: _fakeHashFor(entries.length),
+          ),
+        );
+      }
+      seen = entries.length;
+      held = entries;
     // Plus the `ScanEntry` the scan keeps for each — the live data, which
     // task 4b62a1 priced at 305 B.
     case 'list-stat-entry':

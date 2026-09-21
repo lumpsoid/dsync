@@ -84,7 +84,37 @@ class Scanner {
   // constants are `static final`, not `const` (package:path resolves
   // `Style.platform` at load time), so the fallback is applied here instead.
   Scanner({this.jobs = 4, p.Style? pathStyle, this.foldKey})
-    : _pathContext = p.Context(style: pathStyle ?? p.Style.posix);
+    : _pathContext = p.Context(style: pathStyle ?? p.Style.posix),
+      _backslashSeparates = (pathStyle ?? p.Style.posix) == p.Style.windows;
+
+  /// Whether a `\` ends a path segment on this host, which only Windows
+  /// says yes to — read once here rather than asked of [_pathContext] per
+  /// child (see [_basenameOf]).
+  final bool _backslashSeparates;
+
+  /// The child's own name out of an OS-spelled path, without parsing the
+  /// path.
+  ///
+  /// `package:path`'s `basename` builds a whole `ParsedPath` — a list of
+  /// segments and a list of separators — to return the last segment, and
+  /// this runs once per visited file on a tree of tens of thousands. A scan
+  /// of 14,471 files grew the process by 43 MiB, ~30 of it the young
+  /// generation keeping up with per-path garbage of exactly this kind (SPEC
+  /// §5.3, task 99d149).
+  ///
+  /// Everything this is asked about comes from [Directory.list] over a root
+  /// that was resolved absolute, so it is a full path with no trailing
+  /// separator — the cases `ParsedPath` carries that this does not (a
+  /// drive-relative `C:file.txt`, a path ending in a separator) cannot
+  /// arrive here.
+  String _basenameOf(String path) {
+    var at = path.lastIndexOf('/');
+    if (_backslashSeparates) {
+      final back = path.lastIndexOf('\\');
+      if (back > at) at = back;
+    }
+    return at == -1 ? path : path.substring(at + 1);
+  }
 
   /// Walks [rootPath] and returns one [ScanEntry] per path that is either
   /// present on disk (and not ignored) or present in [archive] but now
@@ -240,7 +270,7 @@ class Scanner {
       // and the `relativePath` built from it below must stay `/`-joined
       // regardless, since the wire and the archive assume that on every
       // platform.
-      final name = _pathContext.basename(child.path);
+      final name = _basenameOf(child.path);
       final relativePath = relativePrefix.isEmpty
           ? name
           : '$relativePrefix/$name';
@@ -268,9 +298,12 @@ class Scanner {
       switch (child) {
         case Directory():
           await _flush(pending, context);
-          await _walk(Directory(child.path), relativePath, context);
+          // The listing already handed back a `Directory` for this path;
+          // building a second one off `child.path` allocated an object per
+          // entry for nothing.
+          await _walk(child, relativePath, context);
         case File():
-          pending.add((File(child.path), relativePath));
+          pending.add((child, relativePath));
           if (pending.length >= jobs) await _flush(pending, context);
         case Link():
           await _flush(pending, context);

@@ -204,6 +204,21 @@ Three consequences worth stating, because they decide what is *not* worth doing:
 - **The knob is real but not free, and not reachable where it matters.** A capped semispace costs nothing on a warm scan (1.13 s against 1.12 s) but 33% on a cold one, where hashing is what is allocating (1.60 s → 2.12 s). It reaches a `dart compile exe` binary through `DART_VM_OPTIONS`, and it does *not* reach the Flutter head, which is the memory-constrained end (§7.2) and takes its VM flags from the engine.
 - **So the lever on the phone is allocation rate, not a flag**: fewer objects per visited path is the only thing that shrinks the young generation there. The gap between the hand-written `list` + `stat` + `ScanEntry` loop (14.1 MiB) and `Scanner` (43.0 MiB) is where to look first, and none of it is urgent — the device peaked at 397 MiB with ~350 MiB of headroom (§17).
 
+**What a visited path allocates, and what was taken off it.** Resident set is a poor instrument for this — it is a step function, since the semispace grows to its cap or does not — so the figure to work against is the garbage itself, summed from `--verbose_gc` over one scan of the 14,471-file tree:
+
+| rung | allocated | per entry |
+|---|---|---|
+| `Directory.list` alone | 10.0 MB | 725 B |
+| plus an asynchronous `stat` each | 42.0 MB | 3,043 B |
+| plus a `ScanEntry` each | 48.0 MB | 3,478 B |
+| the scan as it stood | 84.0 MB | 5,804 B |
+| **the scan now** | **52.0 MB** | **3,768 B** |
+| the same walk with blocking calls | 12.0 MB | 869 B |
+
+Three things per path were pure waste and are gone: `package:path`'s `basename`, which parses a whole path into two lists to return its last segment; `RuleSet.ignorePatternFor`, which split the path and re-joined every ancestor prefix even on a profile with no `ignore` rules; and a second `File`/`Directory` built off the path of the one `Directory.list` had just handed back. Together **38% of what a scan allocated**, for 6% less wall time and 13% less resident memory when the heap is capped — and *no* change to resident memory at the default heap, because the semispace reaches its cap either way. That last part is the honest reading: this is a GC-work and small-heap win, not a peak-RSS one.
+
+**What is left is `dart:io`, not this code.** An asynchronous `stat` costs ~2.3 KB of garbage per call — a request list, a response list and a future through the IO service — which is 61% of everything a scan now allocates, and the scan's own work above the raw walk is down to ~290 B an entry. The blocking walk in the table allocates a quarter as much and runs twice as fast *on a desktop*; it is not simply better, because §5.3's batching exists for a phone that charges ~330 µs a lookup and blocking calls cannot overlap. The shape that keeps both is the one hashing already uses — blocking calls inside isolates — and that is a change worth a device measurement of its own rather than a desktop inference.
+
 ## 6. Reconciliation
 
 Done on the initiating side from the two status lists. Per path, with statuses on replicas A and B:

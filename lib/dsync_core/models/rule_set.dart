@@ -73,15 +73,31 @@ class RuleSet {
   /// reason [ignores] describes: `**/.git` prunes the directory, so every
   /// path under it is out because of that rule, not because of any rule of
   /// its own.
+  ///
+  /// **Walked by separator rather than split and re-joined**, and skipped
+  /// outright when there is nothing to match against. This runs once per
+  /// visited path on a scan of tens of thousands (SPEC §5.3), and the shape
+  /// it replaces allocated a segment list, an iterable and a joined string
+  /// for *every ancestor* of every path — including on a profile with no
+  /// `ignore` rules at all, where the inner loop had nothing to do. What a
+  /// scan's memory turned out to be is the collector keeping up with
+  /// per-path garbage like this (task 99d149), so the allocation is the
+  /// cost, not the comparison.
   String? ignorePatternFor(String rootRelativePath) {
-    final segments = rootRelativePath.split('/');
-    for (var i = 1; i <= segments.length; i++) {
-      final prefix = segments.take(i).join('/');
+    if (_ignore.isEmpty) return null;
+    // Each ancestor in turn, shallowest first, then the path itself — the
+    // order the doc comment above commits to.
+    var end = rootRelativePath.indexOf('/');
+    while (true) {
+      final prefix = end == -1
+          ? rootRelativePath
+          : rootRelativePath.substring(0, end);
       for (final glob in _ignore) {
         if (glob.matches(prefix)) return glob.source;
       }
+      if (end == -1) return null;
+      end = rootRelativePath.indexOf('/', end + 1);
     }
-    return null;
   }
 
   /// Whether [rootRelativePath] matches a `follow` rule (SPEC §5.1, §9).
