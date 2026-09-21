@@ -161,7 +161,7 @@ class PairController {
   }) async {
     final identity = await app.loadOrCreateIdentity();
     final store = await app.pairedDevices;
-    final address = '${payload.address.host}:${payload.address.port}';
+    final address = payload.address.text;
     try {
       await enrol(
         payload: payload,

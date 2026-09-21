@@ -133,7 +133,7 @@ class PairAcceptCommand extends Command<int> {
     } on HandshakeException catch (e) {
       err.writeln(
         'dsync pair accept: could not verify '
-        '${payload.address.host}:${payload.address.port} as the device '
+        '${payload.address.text} as the device '
         'this payload names ($e). Either the payload is stale, or it names '
         'a different device than the one that answered — get a fresh '
         'payload from `dsync pair show`.',
@@ -142,7 +142,7 @@ class PairAcceptCommand extends Command<int> {
     } on SocketException catch (e) {
       err.writeln(
         'dsync pair accept: could not reach '
-        '${payload.address.host}:${payload.address.port}: $e',
+        '${payload.address.text}: $e',
       );
       return 3;
     } on PairedDeviceCollisionException catch (e) {

@@ -401,6 +401,175 @@ void main() {
       throwsA(isA<UsageException>()),
     );
   });
+
+  test('--bind narrows where the endpoint answers, and is what the payload '
+      'advertises (task 2b26ac)', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final serverEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/server'};
+    final clientEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/client'};
+
+    final showOut = BufferSink();
+    final showErr = BufferSink();
+    final showCommand = PairShowCommand(
+      environment: serverEnvironment,
+      platform: const LinuxStateDir(),
+      out: showOut.sink,
+      err: showErr.sink,
+      // Deliberately wrong, and deliberately unroutable: if the bind
+      // address were not what gets advertised, the payload would carry
+      // this and the `accept` below could not reach anything.
+      advertisableAddress: () async => '203.0.113.7',
+      hasTerminal: () => false,
+      stdinIsTerminal: () => true,
+      confirmationLines: () => Stream.value('y'),
+    );
+
+    final showExitCode = _runnerFor(
+      showCommand,
+    ).run(['show', '--name', 'phone', '--bind', '127.0.0.1']);
+
+    final payloadLine = await _awaitLine(
+      showOut,
+      (line) => line.startsWith('dsync-pair:'),
+      diagnostics: showErr,
+    );
+
+    // The listener answers at the one address it was told to, and the
+    // payload names that address rather than the interface guess.
+    expect(PairingPayload.decode(payloadLine).address.host, '127.0.0.1');
+
+    final acceptExitCode = await _runnerFor(
+      PairAcceptCommand(
+        environment: clientEnvironment,
+        platform: const LinuxStateDir(),
+        out: BufferSink().sink,
+        err: BufferSink().sink,
+      ),
+    ).run(['accept', '--name', 'desktop', payloadLine]);
+
+    expect(acceptExitCode, 0);
+    expect(
+      await showExitCode,
+      0,
+      reason: 'show said:\n${await showErr.contents()}',
+    );
+  });
+
+  test('--advertise names the address the payload carries, over a wildcard '
+      'bind and over the interface guess (task 2b26ac)', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final serverEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/server'};
+    final clientEnvironment = {'XDG_STATE_HOME': '${tempDir.path}/client'};
+
+    final showOut = BufferSink();
+    final showErr = BufferSink();
+    final showCommand = PairShowCommand(
+      environment: serverEnvironment,
+      platform: const LinuxStateDir(),
+      out: showOut.sink,
+      err: showErr.sink,
+      // The first-interface-wins guess this flag exists to replace — the
+      // VPN case, where the address this machine offers is not the one the
+      // peer can route to.
+      advertisableAddress: () async => '203.0.113.7',
+      hasTerminal: () => false,
+      stdinIsTerminal: () => true,
+      confirmationLines: () => Stream.value('y'),
+    );
+
+    // Bound everywhere, advertised at one address: the two are separate
+    // decisions, which is why there are two flags.
+    final showExitCode = _runnerFor(showCommand).run([
+      'show',
+      '--name',
+      'phone',
+      '--bind',
+      '0.0.0.0',
+      '--advertise',
+      '127.0.0.1',
+    ]);
+
+    final payloadLine = await _awaitLine(
+      showOut,
+      (line) => line.startsWith('dsync-pair:'),
+      diagnostics: showErr,
+    );
+
+    expect(PairingPayload.decode(payloadLine).address.host, '127.0.0.1');
+
+    final acceptExitCode = await _runnerFor(
+      PairAcceptCommand(
+        environment: clientEnvironment,
+        platform: const LinuxStateDir(),
+        out: BufferSink().sink,
+        err: BufferSink().sink,
+      ),
+    ).run(['accept', '--name', 'desktop', payloadLine]);
+
+    expect(acceptExitCode, 0);
+    expect(
+      await showExitCode,
+      0,
+      reason: 'show said:\n${await showErr.contents()}',
+    );
+  });
+
+  test('a --bind that is not an address literal is a usage error, before '
+      'anything is bound (task 2b26ac)', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final showOut = BufferSink();
+    final showCommand = PairShowCommand(
+      environment: {'XDG_STATE_HOME': '${tempDir.path}/server'},
+      platform: const LinuxStateDir(),
+      out: showOut.sink,
+      err: BufferSink().sink,
+      advertisableAddress: () async => '127.0.0.1',
+      hasTerminal: () => false,
+      stdinIsTerminal: () => true,
+    );
+
+    await expectLater(
+      _runnerFor(
+        showCommand,
+      ).run(['show', '--name', 'phone', '--bind', 'laptop.local']),
+      throwsA(isA<UsageException>()),
+    );
+    expect(await showOut.contents(), isEmpty);
+  });
+
+  test('a --bind this host does not hold fails loudly, with no payload and '
+      'no fallback to another address (task 2b26ac)', () async {
+    final tempDir = await Directory.systemTemp.createTemp('dsync_pair_e2e_');
+    addTearDown(() => tempDir.delete(recursive: true));
+
+    final showOut = BufferSink();
+    final showErr = BufferSink();
+    final exitCode = await _runnerFor(
+      PairShowCommand(
+        environment: {'XDG_STATE_HOME': '${tempDir.path}/server'},
+        platform: const LinuxStateDir(),
+        out: showOut.sink,
+        err: showErr.sink,
+        advertisableAddress: () async => '127.0.0.1',
+        hasTerminal: () => false,
+        stdinIsTerminal: () => true,
+      ),
+      // TEST-NET-1 (RFC 5737): reserved for documentation, so no machine
+      // running this holds it.
+    ).run(['show', '--name', 'phone', '--bind', '192.0.2.1']);
+
+    expect(exitCode, 3);
+    expect(await showOut.contents(), isEmpty);
+    final said = await showErr.contents();
+    expect(said, contains('192.0.2.1'));
+    expect(said, contains('no payload was printed'));
+  });
 }
 
 /// Polls [sink] until a line satisfying [matches] appears, the same way

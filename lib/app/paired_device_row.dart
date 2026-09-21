@@ -43,7 +43,7 @@ class PairedDeviceRow {
     return PairedDeviceRow(
       name: device.name,
       deviceId: device.deviceId,
-      address: '${address.host}:${address.port}',
+      address: address.text,
       pairedAt: device.pairedAt,
       agreedRootLabels: {
         for (final root in device.agreedReplicaRoots.toList()..sort())

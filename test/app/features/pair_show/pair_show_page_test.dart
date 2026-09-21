@@ -35,7 +35,11 @@ void main() {
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('pair_show_page_test');
     app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
-    controller = PairShowController(app, bind: _neverBinds);
+    controller = PairShowController(
+      app,
+      bind: _neverBinds,
+      bindAddress: InternetAddress.loopbackIPv4,
+    );
     appScope.setController(app);
     pairShowScope.setController(controller);
     paired = 0;
@@ -305,7 +309,8 @@ void main() {
 /// this device's identity off disk, which a widget test's clock does not
 /// wait for.
 class _RecordingController extends PairShowController {
-  _RecordingController(super.app) : super(bind: _neverBinds);
+  _RecordingController(super.app)
+    : super(bind: _neverBinds, bindAddress: InternetAddress.loopbackIPv4);
 
   String? shownFor;
 
@@ -325,6 +330,7 @@ class _RecordingController extends PairShowController {
 /// stays in [PairShowStarting] and a test's own status is the only one the
 /// page ever renders.
 Future<EnrolmentListener> _neverBinds({
+  required InternetAddress address,
   required DeviceIdentity ownIdentity,
   required String peerName,
   required Uint8List token,

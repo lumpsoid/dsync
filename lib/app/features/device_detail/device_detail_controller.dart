@@ -150,7 +150,7 @@ class DeviceDetailController {
       () => app.updateDeviceAddress(id, target),
       done:
           'This device will be reached at '
-          '${target.host}:${target.port}.',
+          '${target.text}.',
     );
   }
 
@@ -199,7 +199,7 @@ class DeviceDetailController {
       ownIdentity: await app.loadOrCreateIdentity(),
       now: app.now(),
     );
-    final where = '${target.host}:${target.port}';
+    final where = target.text;
     switch (result) {
       case PeerReachable():
         await _write(

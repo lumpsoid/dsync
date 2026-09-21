@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/models/device_verification.dart';
+import 'package:dsync/dsync_core/models/host_port.dart';
 
 /// A host and port this installation last reached a paired device at (SPEC
 /// §4.4) — seeded from the QR at pairing time and overwritten on every
@@ -9,7 +10,10 @@ import 'package:dsync/dsync_core/models/device_verification.dart';
 ///
 /// Parsed at construction: [host] cannot be empty and [port] cannot be
 /// outside the range a socket could ever bind or connect to, so nothing
-/// downstream re-checks either.
+/// downstream re-checks either — and an IPv4-mapped IPv6 literal
+/// (`::ffff:a.b.c.d`, what a dual-stack listener reports for an IPv4 peer)
+/// is reduced to the plain IPv4 form here, so no consumer has to know that
+/// spelling exists. See [normalizedHost] for why that matters.
 class PeerAddress {
   /// SPEC §4.4: unprivileged, in the registered/user range rather than the
   /// ephemeral one, and not shared with ssh, common dev servers, or
@@ -21,7 +25,8 @@ class PeerAddress {
   final String host;
   final int port;
 
-  PeerAddress({required this.host, this.port = defaultPort}) {
+  PeerAddress({required String host, this.port = defaultPort})
+    : host = normalizedHost(host.trim()) {
     if (host.trim().isEmpty) {
       throw const FormatException('Empty host');
     }
@@ -29,6 +34,15 @@ class PeerAddress {
       throw FormatException('Port out of range: $port');
     }
   }
+
+  /// This address as one piece of text, for a message, a log line or a
+  /// field the user can paste back — bracketed when [host] is an IPv6
+  /// literal, so it round-trips through [parseHostPort].
+  ///
+  /// Not `toString()`: this is a value shown to a user, and a `toString`
+  /// override is also what an accidental string interpolation of the object
+  /// would pick up, which is how a debug shape ends up on screen.
+  String get text => formatHostPort(host, port);
 }
 
 /// One device this installation has paired with (SPEC §4.4): the certificate

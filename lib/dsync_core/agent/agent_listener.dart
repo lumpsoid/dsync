@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
 import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
+import 'package:dsync/dsync_core/models/host_port.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
@@ -161,7 +162,7 @@ class AgentListener {
     Duration handshakeDeadline,
     int maxUnauthenticatedConnections,
   ) : _closeServer = server.close,
-      _boundAddress = '${server.address.address}:${server.port}' {
+      _boundAddress = formatHostPort(server.address.address, server.port) {
     // One cache per listener, not one per connection: it is what makes an
     // accept cost a store read rather than a store read plus a certificate
     // parse per paired device (see [_SecurityContextCache]).

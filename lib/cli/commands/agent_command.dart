@@ -13,6 +13,7 @@ import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
+import 'package:dsync/dsync_core/models/host_port.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/protocol/stdio_channel.dart';
@@ -33,10 +34,10 @@ import '../stop_signals.dart';
 ///   that arrives on it, until the process is signalled. This one *is* typed
 ///   by a person, or started by whatever supervises it, and it is how a head
 ///   with no system `ssh` to spawn reaches a replica on the same machine.
-/// - `--serve` binds the paired network transport (SPEC §4.4) on every
-///   interface, port [PeerAddress.defaultPort] unless `--port` says
-///   otherwise, and serves every *paired* device that connects until the
-///   process is signalled. This is the one a phone reaches (SPEC §16): the
+/// - `--serve` binds the paired network transport (SPEC §4.4) on every IPv4
+///   interface, port [PeerAddress.defaultPort], unless `--bind` and
+///   `--port` say otherwise, and serves every *paired* device that connects
+///   until the process is signalled. This is the one a phone reaches (SPEC §16): the
 ///   socket leaves the machine, so the filesystem cannot gate it and mutual
 ///   TLS pinned to `dsync pair`'s store does instead — see
 ///   [AgentListener.bindSecure] for both layers of that gate.
@@ -99,6 +100,13 @@ class AgentCommand extends Command<int> {
   static const flagServe = 'serve';
   static const optionPort = 'port';
 
+  /// Which address `--serve` binds (task 2b26ac). Its default is stated in
+  /// the help text rather than through `defaultsTo`, for the same reason
+  /// [optionPort]'s is: a `--bind` given without `--serve` is a usage error
+  /// below, and a default value would make "not given" indistinguishable
+  /// from "given".
+  static const optionBind = 'bind';
+
   AgentCommand() {
     argParser
       ..addFlag(
@@ -138,6 +146,18 @@ class AgentCommand extends Command<int> {
         help:
             'The port --serve binds. Defaults to ${PeerAddress.defaultPort}; '
             'a second agent on the same host needs a different one.',
+      )
+      ..addOption(
+        optionBind,
+        valueHelp: 'address',
+        help:
+            'The address --serve binds. Defaults to 0.0.0.0 — every IPv4 '
+            'interface. Use :: for a dual-stack socket that accepts IPv6 '
+            'and IPv4-mapped connections on every interface, or one '
+            'interface\'s own address (a VPN tunnel\'s, for instance) to '
+            'answer only there. An address literal, not a hostname; if it '
+            'cannot be bound, this fails and says so rather than falling '
+            'back to another one.',
       );
   }
 
@@ -147,6 +167,7 @@ class AgentCommand extends Command<int> {
     final socketPath = argResults!.option(optionListen);
     final serve = argResults!.flag(flagServe);
     final portArgument = argResults!.option(optionPort);
+    final bindArgument = argResults!.option(optionBind);
 
     final transports = [
       if (stdio) '--stdio',
@@ -170,10 +191,35 @@ class AgentCommand extends Command<int> {
     if (portArgument != null && !serve) {
       usageException('--port only means something with --serve.');
     }
+    if (bindArgument != null && !serve) {
+      usageException(
+        '--bind only means something with --serve: --listen binds a unix '
+        'socket, which has a path rather than an address, and --stdio binds '
+        'nothing at all.',
+      );
+    }
 
     if (stdio) return _serveStdio();
     if (socketPath != null) return _serveSocket(socketPath);
-    return _serveNetwork(_parsePort(portArgument));
+    return _serveNetwork(_parsePort(portArgument), _parseBind(bindArgument));
+  }
+
+  /// `--bind`'s value as an address to listen on, or SPEC §11.1's default —
+  /// `0.0.0.0`, every IPv4 interface — when it was not given (task 2b26ac).
+  ///
+  /// The default is IPv4-only rather than `::`, which would be a strict
+  /// superset: a dual-stack bind fails outright on a host with IPv6
+  /// disabled, and the alternative to failing there is a silent fallback
+  /// that would make "why is it not listening where I said" undiagnosable.
+  /// IPv6 is therefore opt-in and said out loud, which is also what makes
+  /// [parseBindAddress]'s refusal to guess safe.
+  InternetAddress _parseBind(String? argument) {
+    if (argument == null) return InternetAddress.anyIPv4;
+    try {
+      return parseBindAddress(argument);
+    } on FormatException catch (e) {
+      usageException('--bind: ${e.message}');
+    }
   }
 
   /// `--port`'s value as a bindable port, or the SPEC §4.4 default when it
@@ -264,9 +310,18 @@ class AgentCommand extends Command<int> {
   /// — it just refuses everyone — and creating the identity here means a
   /// `dsync pair show` run later advertises the certificate already in use.
   ///
-  /// Every interface, not loopback: the point of this transport is a peer on
-  /// another machine. What limits who gets in is not the bind address but
-  /// the TLS handshake, which an unpaired peer never completes.
+  /// [bindAddress] is `--bind`'s, defaulting to every IPv4 interface: the
+  /// point of this transport is a peer on another machine, and what limits
+  /// who gets in is not the bind address but the TLS handshake, which an
+  /// unpaired peer never completes. Narrowing it is reachability, not
+  /// access control — an operator says "answer on the tunnel only", and the
+  /// pairing payload then advertises that same address (`dsync pair show
+  /// --bind`).
+  ///
+  /// A bind that fails is reported naming the address that was asked for
+  /// and is fatal (SPEC §11.5). There is deliberately no fallback to
+  /// another address: an agent listening somewhere other than where the
+  /// operator said is worse than one that did not start.
   ///
   /// The startup line says one thing `--listen`'s does not: that pairing,
   /// granting and revoking take effect on the next connection, with no
@@ -274,7 +329,7 @@ class AgentCommand extends Command<int> {
   /// re-read, and the TLS trust anchors rebuilt from it, per accepted
   /// connection — and the moment to say so is when the operator can still
   /// see it, before a freshly paired phone's first sync.
-  Future<int> _serveNetwork(int port) async {
+  Future<int> _serveNetwork(int port, InternetAddress bindAddress) async {
     final environment = Platform.environment;
     final platform = hostPlatform().stateDirPlatform;
 
@@ -288,19 +343,31 @@ class AgentCommand extends Command<int> {
         environment: environment,
         platform: platform,
       ).loadOrCreate(commonName: Platform.localHostname);
-      final listener = await AgentListener.bindSecure(
-        InternetAddress.anyIPv4,
-        port,
-        ownIdentity: identity,
-        pairedDeviceStore: PairedDeviceStore.forStateDir(
+      final AgentListener listener;
+      try {
+        listener = await AgentListener.bindSecure(
+          bindAddress,
+          port,
+          ownIdentity: identity,
+          pairedDeviceStore: PairedDeviceStore.forStateDir(
+            environment: environment,
+            platform: platform,
+          ),
+          buildAgent: _buildAgent,
+          writePath: _writePathOf,
+          onSessionError: (error, _) => stderr.writeln('dsync agent: $error'),
           environment: environment,
-          platform: platform,
-        ),
-        buildAgent: _buildAgent,
-        writePath: _writePathOf,
-        onSessionError: (error, _) => stderr.writeln('dsync agent: $error'),
-        environment: environment,
-      );
+        );
+      } on SocketException catch (e) {
+        // Loud, and naming the address that was asked for: the two ways this
+        // fails are an address this host does not hold and a port already
+        // taken, and which one it was is the first thing the operator needs.
+        throw AgentBindException(
+          address: bindAddress,
+          port: port,
+          cause: e.osError?.message ?? e.message,
+        );
+      }
       stderr.writeln(
         'dsync agent: serving paired devices on ${listener.address} '
         '(SPEC §4.4). Only devices in `dsync pair list` can connect, each to '
@@ -447,4 +514,38 @@ class AgentCommand extends Command<int> {
       isWindowsReplica: platform.isWindowsReplica,
     );
   }
+}
+
+/// `dsync agent --serve` could not bind where it was told to (task 2b26ac).
+///
+/// Its own type, and fatal (SPEC §11.5 — `runDsyncCli`'s catch-all writes
+/// the message and exits 3), rather than the raw [SocketException]: that
+/// one's text names `ServerSocket.bind` and an errno, neither of which says
+/// what the operator can do next. This one names the address they asked
+/// for, which is the value they typed, and the two things that make a bind
+/// fail.
+class AgentBindException implements Exception {
+  AgentBindException({
+    required this.address,
+    required this.port,
+    required this.cause,
+  });
+
+  final InternetAddress address;
+  final int port;
+  final String cause;
+
+  /// The likelier of the two causes, which differs by what was asked for.
+  String get _remedy => isWildcardAddress(address)
+      ? 'Something else is already bound to that port, or this host has no '
+            'address of that family — binding :: needs IPv6 enabled.'
+      : 'This host does not hold that address right now, or something else '
+            'is already bound to it.';
+
+  @override
+  String toString() =>
+      'dsync agent: could not listen on '
+      '${formatHostPort(address.address, port)}: $cause. $_remedy Nothing '
+      'was started — --bind is taken literally, with no fallback to another '
+      'address.';
 }

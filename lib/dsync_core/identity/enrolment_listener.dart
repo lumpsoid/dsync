@@ -117,6 +117,7 @@ import 'package:dsync/dsync_core/identity/device_id.dart';
 import 'package:dsync/dsync_core/identity/enrolment_message.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
+import 'package:dsync/dsync_core/models/host_port.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/protocol/bounded_secure_handshake.dart';
 import 'package:dsync/dsync_core/protocol/byte_socket.dart';
@@ -363,11 +364,25 @@ class EnrolmentListener {
     );
   }
 
-  /// The address this listener is bound to, `host:port` — read back off the
-  /// bound socket rather than remembered from the argument, the same reason
-  /// [AgentListener.address] is (relevant for an ephemeral port 0, which
-  /// tests use).
-  String get address => '${_server.address.address}:${_server.port}';
+  /// The port this listener actually landed on — read back off the bound
+  /// socket rather than remembered from the argument, which is the whole
+  /// point when the caller asked for the ephemeral port 0 (`dsync pair
+  /// show` always does, and the payload has to carry the real number).
+  ///
+  /// Exposed as a number rather than left to be scraped back out of
+  /// [address]: a caller splitting that string on its last colon reads an
+  /// IPv6 literal wrong, and the object already has the value.
+  int get port => _server.port;
+
+  /// The host this listener is bound to, as a literal — the wildcard
+  /// (`0.0.0.0`, `::`) when the caller asked for every interface, or the
+  /// one interface address it asked for.
+  String get host => _server.address.address;
+
+  /// [host] and [port] as one piece of text, bracketed when [host] is an
+  /// IPv6 literal so it reads as an authority rather than as a literal with
+  /// a number stuck on the end.
+  String get address => formatHostPort(host, port);
 
   /// Completes with the device recorded by the one enrolment this listener
   /// can ever accept.
@@ -612,6 +627,11 @@ class EnrolmentListener {
       // claimed about itself — the same reason `AgentListener` resolves a
       // peer from `socket.peerCertificate` rather than a self-reported
       // identity.
+      //
+      // An IPv4 peer arriving on a dual-stack listener (`--bind ::`) reports
+      // as `::ffff:a.b.c.d` here; `PeerAddress` reduces that to the plain
+      // IPv4 form at construction, so what lands in the store is the address
+      // the user would recognize and type (task 2b26ac, [normalizedHost]).
       //
       // The *port* is deliberately the default rather than
       // `socket.remotePort`, which is this connection's ephemeral source

@@ -15,15 +15,22 @@ import 'pair_show_view_state.dart';
 import 'pairing_offer.dart';
 
 /// Binding the enrolment endpoint, as [PairShowController] takes it: the
-/// arguments `EnrolmentListener.bind` needs that only the controller knows,
-/// with the address and port it does not decide left to the function itself.
+/// arguments `EnrolmentListener.bind` needs, including the address to listen
+/// on, with only the port left to the function itself (ephemeral, always —
+/// see [bindEnrolmentListenerOnThisDevice]).
 ///
 /// A callback rather than an interface, for the reason [EnrolWithPeer] in
-/// `pair_controller.dart` gives: the real one binds a `RawServerSocket`
-/// on every interface, and a one-method interface over a single static
-/// method would be a rename of it. A test hands in a closure that binds the
-/// same real listener on the loopback interface instead.
+/// `pair_controller.dart` gives: the real one binds a `RawServerSocket`,
+/// and a one-method interface over a single static method would be a rename
+/// of it. A test hands in a closure that binds the same real listener on the
+/// loopback interface instead.
+///
+/// [address] is passed rather than defaulted (task 2b26ac): which address
+/// this device listens on is the head's equivalent of `dsync pair show
+/// --bind`, and a parameter with a default is a decision a call site can
+/// keep making by omission.
 typedef BindEnrolmentListener = Future<EnrolmentListener> Function({
+  required InternetAddress address,
   required DeviceIdentity ownIdentity,
   required String peerName,
   required Uint8List token,
@@ -33,7 +40,7 @@ typedef BindEnrolmentListener = Future<EnrolmentListener> Function({
   required EnrolmentErrorHandler onError,
 });
 
-/// The production [BindEnrolmentListener]: every IPv4 interface, on an
+/// The production [BindEnrolmentListener]: wherever [address] says, on an
 /// ephemeral port.
 ///
 /// Ephemeral for the reason `PairShowCommand.port` documents: this endpoint
@@ -42,6 +49,7 @@ typedef BindEnrolmentListener = Future<EnrolmentListener> Function({
 /// and nothing to collide with. The port it actually landed on is read back
 /// off the bound socket and carried inside the payload.
 Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
+  required InternetAddress address,
   required DeviceIdentity ownIdentity,
   required String peerName,
   required Uint8List token,
@@ -50,7 +58,7 @@ Future<EnrolmentListener> bindEnrolmentListenerOnThisDevice({
   required ConfirmEnrolment confirm,
   required EnrolmentErrorHandler onError,
 }) => EnrolmentListener.bind(
-  InternetAddress.anyIPv4,
+  address,
   0,
   ownIdentity: ownIdentity,
   peerName: peerName,
@@ -113,6 +121,7 @@ class PairShowController {
   PairShowController(
     this.app, {
     required this.bind,
+    required this.bindAddress,
     this.advertisableAddress = preferredAdvertisableAddress,
     this.servicePort = PeerAddress.defaultPort,
     this.window = defaultEnrolmentTokenTtl,
@@ -122,6 +131,23 @@ class PairShowController {
 
   /// How the endpoint is bound; the scope names the real one.
   final BindEnrolmentListener bind;
+
+  /// Which address the endpoint listens on — the head's equivalent of
+  /// `dsync pair show --bind` (task 2b26ac), stated once at the composition
+  /// root (`PairShowScope`) rather than defaulted here.
+  ///
+  /// `InternetAddress.anyIPv4` there, the same default the CLI's flag has
+  /// and for the same reason: `::` would also accept IPv4-mapped
+  /// connections, but it fails outright where IPv6 is disabled, and a
+  /// silent fallback is the one thing worse than failing. A non-wildcard
+  /// address here is also what the payload advertises — see
+  /// [chosenAdvertisableHost] — so "listen only on the tunnel" and
+  /// "advertise the tunnel" stay one decision.
+  ///
+  /// No default, so the day this becomes a user-visible setting it is a
+  /// change to one call site rather than a search for the ones that kept
+  /// the old behaviour by omission.
+  final InternetAddress bindAddress;
 
   /// This device's own best-effort advertisable address (SPEC §4.4's address
   /// hint) — see [preferredAdvertisableAddress]'s own doc comment.
@@ -204,6 +230,7 @@ class PairShowController {
     final EnrolmentListener listener;
     try {
       listener = await bind(
+        address: bindAddress,
         ownIdentity: identity,
         peerName: peerName,
         token: token,
@@ -253,11 +280,16 @@ class PairShowController {
     });
 
     try {
+      // What [bindAddress] already settles, when it settles it; this
+      // device's own guess across its interfaces only when it does not.
       final host =
-          await advertisableAddress() ?? InternetAddress.loopbackIPv4.address;
+          chosenAdvertisableHost(bindAddress: bindAddress) ??
+          await advertisableAddress() ??
+          InternetAddress.loopbackIPv4.address;
+      final address = PeerAddress(host: host, port: listener.port);
       final payload = PairingPayload(
         certificateDer: identity.certificateDer,
-        address: PeerAddress(host: host, port: _portOf(listener.address)),
+        address: address,
         servicePort: servicePort,
         token: token,
       );
@@ -266,7 +298,7 @@ class PairShowController {
         PairShowWaiting(
           PairingOffer.forPayload(
             payload.encode(),
-            address: '$host:${_portOf(listener.address)}',
+            address: address.text,
             expiresAt: expiresAt,
           ),
         ),
@@ -390,9 +422,6 @@ class PairShowController {
   /// The port out of an `EnrolmentListener.address`, which is `host:port`
   /// with the host already rendered — the ephemeral number the OS picked,
   /// which is what the payload has to carry.
-  int _portOf(String address) =>
-      int.parse(address.substring(address.lastIndexOf(':') + 1));
-
   void dispose() {
     unawaited(stop());
     state.dispose();

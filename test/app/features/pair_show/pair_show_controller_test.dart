@@ -41,12 +41,11 @@ void main() {
     app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
     await app.bootstrap();
     peerIdentity = generateDeviceIdentity(commonName: 'peer');
-    peerStore = PairedDeviceStore(
-      File('${peerDir.path}/paired-devices.json'),
-    );
+    peerStore = PairedDeviceStore(File('${peerDir.path}/paired-devices.json'));
     controller = PairShowController(
       app,
       bind: _bindOnLoopback,
+      bindAddress: InternetAddress.loopbackIPv4,
       advertisableAddress: _loopback,
     );
   });
@@ -109,6 +108,27 @@ void main() {
     },
   );
 
+  test('advertises the address the endpoint was bound to, not this device\'s '
+      'interface guess (task 2b26ac)', () async {
+    // The head's equivalent of `dsync pair show --bind`: a non-wildcard
+    // bind answers at exactly one address, so that address is what the
+    // payload names. The seam below returns a deliberately wrong one — if
+    // it were consulted anyway, the code on screen would send the other
+    // device somewhere nothing is listening.
+    controller.dispose();
+    controller = PairShowController(
+      app,
+      bind: _bindOnLoopback,
+      bindAddress: InternetAddress.loopbackIPv4,
+      advertisableAddress: () async => '203.0.113.7',
+    );
+
+    final offered = await openWindow();
+
+    expect(offered.payload.address.host, InternetAddress.loopbackIPv4.address);
+    expect(offered.address, '127.0.0.1:${offered.payload.address.port}');
+  });
+
   test('renders the payload as a symbol as well as a line', () async {
     unawaited(controller.show(peerName: 'peer laptop'));
     final waiting = await statusWhere(
@@ -126,9 +146,9 @@ void main() {
   Future<PairShowConfirming> answerConfirmation({
     required bool confirmed,
   }) async {
-    final asked =
-        await statusWhere((status) => status is PairShowConfirming)
-            as PairShowConfirming;
+    final asked = await statusWhere(
+      (status) => status is PairShowConfirming,
+    ) as PairShowConfirming;
     controller.answerConfirmation(confirmed: confirmed);
     return asked;
   }
@@ -217,58 +237,64 @@ void main() {
     expect(await (await app.pairedDevices).load(), isEmpty);
   });
 
-  test('a code redeemed just before it runs out is not reported as expired',
-      () async {
-    // The expiry arm stops applying the moment a code is redeemed: "nothing
-    // used this code" has stopped being true, and the outcome is whatever
-    // the operator answers.
-    controller = PairShowController(
-      app,
-      bind: _bindOnLoopback,
-      advertisableAddress: _loopback,
-      window: const Duration(milliseconds: 300),
-    );
-    final offered = await openWindow();
+  test(
+    'a code redeemed just before it runs out is not reported as expired',
+    () async {
+      // The expiry arm stops applying the moment a code is redeemed: "nothing
+      // used this code" has stopped being true, and the outcome is whatever
+      // the operator answers.
+      controller = PairShowController(
+        app,
+        bind: _bindOnLoopback,
+        bindAddress: InternetAddress.loopbackIPv4,
+        advertisableAddress: _loopback,
+        window: const Duration(milliseconds: 300),
+      );
+      final offered = await openWindow();
 
-    final enrolment = enrolWithPeer(
-      payload: offered.payload,
-      ownIdentity: peerIdentity,
-      localName: 'phone',
-      pairedDeviceStore: peerStore,
-    );
-    await answerConfirmation(confirmed: true);
-    await enrolment;
+      final enrolment = enrolWithPeer(
+        payload: offered.payload,
+        ownIdentity: peerIdentity,
+        localName: 'phone',
+        pairedDeviceStore: peerStore,
+      );
+      await answerConfirmation(confirmed: true);
+      await enrolment;
 
-    expect(
-      await statusWhere((status) => status is PairShowPaired),
-      isA<PairShowPaired>(),
-    );
-  });
+      expect(
+        await statusWhere((status) => status is PairShowPaired),
+        isA<PairShowPaired>(),
+      );
+    },
+  );
 
-  test('leaving the page mid-question refuses rather than hanging the peer',
-      () async {
-    final offered = await openWindow();
+  test(
+    'leaving the page mid-question refuses rather than hanging the peer',
+    () async {
+      final offered = await openWindow();
 
-    final enrolment = enrolWithPeer(
-      payload: offered.payload,
-      ownIdentity: peerIdentity,
-      localName: 'phone',
-      pairedDeviceStore: peerStore,
-    );
-    await statusWhere((status) => status is PairShowConfirming);
+      final enrolment = enrolWithPeer(
+        payload: offered.payload,
+        ownIdentity: peerIdentity,
+        localName: 'phone',
+        pairedDeviceStore: peerStore,
+      );
+      await statusWhere((status) => status is PairShowConfirming);
 
-    await controller.stop();
+      await controller.stop();
 
-    // The far end gets a reply now rather than waiting out the window, and
-    // nothing was recorded on the strength of a question nobody answered.
-    await expectLater(enrolment, throwsA(isA<EnrolmentRefusedException>()));
-    expect(await (await app.pairedDevices).load(), isEmpty);
-  });
+      // The far end gets a reply now rather than waiting out the window, and
+      // nothing was recorded on the strength of a question nobody answered.
+      await expectLater(enrolment, throwsA(isA<EnrolmentRefusedException>()));
+      expect(await (await app.pairedDevices).load(), isEmpty);
+    },
+  );
 
   test('a window nothing redeems expires', () async {
     controller = PairShowController(
       app,
       bind: _bindOnLoopback,
+      bindAddress: InternetAddress.loopbackIPv4,
       advertisableAddress: _loopback,
       window: const Duration(milliseconds: 50),
     );
@@ -282,6 +308,7 @@ void main() {
     controller = PairShowController(
       app,
       bind: _bindOnLoopback,
+      bindAddress: InternetAddress.loopbackIPv4,
       advertisableAddress: _loopback,
       window: const Duration(milliseconds: 50),
     );
@@ -317,7 +344,9 @@ void main() {
   test('an endpoint that cannot be bound is reported, not thrown', () async {
     controller = PairShowController(
       app,
+      bindAddress: InternetAddress.loopbackIPv4,
       bind: ({
+        required address,
         required ownIdentity,
         required peerName,
         required token,
@@ -341,10 +370,12 @@ void main() {
 /// says rather than this machine's real network.
 Future<String?> _loopback() async => InternetAddress.loopbackIPv4.address;
 
-/// A bound endpoint on the loopback interface — the production factory's
-/// `InternetAddress.anyIPv4` narrowed to what a test may bind, and the only
-/// thing this seam is faked for.
+/// A bound endpoint at whatever [address] the controller was configured
+/// with — a test pins that to loopback rather than the production
+/// `InternetAddress.anyIPv4`, which is the only thing this seam is faked
+/// for.
 Future<EnrolmentListener> _bindOnLoopback({
+  required InternetAddress address,
   required DeviceIdentity ownIdentity,
   required String peerName,
   required Uint8List token,
@@ -353,7 +384,7 @@ Future<EnrolmentListener> _bindOnLoopback({
   required ConfirmEnrolment confirm,
   required EnrolmentErrorHandler onError,
 }) => EnrolmentListener.bind(
-  InternetAddress.loopbackIPv4,
+  address,
   0,
   ownIdentity: ownIdentity,
   peerName: peerName,

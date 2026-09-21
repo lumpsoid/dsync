@@ -394,7 +394,7 @@ final class PeerUnreachableFailure extends ReplicaConnectFailure {
 
   @override
   String toString() =>
-      'Could not reach "$deviceName" at ${address.host}:${address.port}: '
+      'Could not reach "$deviceName" at ${address.text}: '
       '$cause. Enter its address by hand if it has moved.';
 }
 

@@ -45,7 +45,7 @@ final class PairCodeRead extends PairCode {
   PairCodeRead(this.payload)
     : desktopName = desktopNameFor(payload),
       address =
-          '${payload.serviceAddress.host}:${payload.serviceAddress.port}';
+          payload.serviceAddress.text;
 
   /// The decoded payload, redeemed by `PairController.submitPayload`.
   final PairingPayload payload;

@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/identity/enrolment_listener.dart';
 import 'package:dsync/dsync_core/identity/enrolment_message.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/identity/pairing_payload.dart';
+import 'package:dsync/dsync_core/models/host_port.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:dsync/dsync_core/state_dir.dart';
 import 'package:qr/qr.dart' show InputTooLongException;
@@ -117,6 +118,17 @@ class PairShowCommand extends Command<int> {
   /// naming is a deliberate choice, not something to guess at.
   static const optionName = 'name';
 
+  /// Which address the enrolment listener binds (task 2b26ac), and — unless
+  /// [optionAdvertise] overrides it — which address the payload tells the
+  /// other device to dial.
+  static const optionBind = 'bind';
+
+  /// Which address the payload advertises, when that is not the address the
+  /// listener bound (task 2b26ac): a wildcard `--bind` has no address to
+  /// advertise, and a host behind a tunnel may listen everywhere but be
+  /// reachable at exactly one of its addresses.
+  static const optionAdvertise = 'advertise';
+
   final Map<String, String> environment;
   final StateDirPlatform platform;
   final IOSink out;
@@ -187,6 +199,31 @@ class PairShowCommand extends Command<int> {
             'into the payload as the address the paired device dials from '
             'then on, so give it here if --serve runs on a non-default '
             'port.',
+      )
+      ..addOption(
+        optionBind,
+        valueHelp: 'address',
+        help:
+            'The address the pairing endpoint binds. Defaults to 0.0.0.0 — '
+            'every IPv4 interface. Use :: for a dual-stack socket that '
+            'accepts IPv6 and IPv4-mapped connections on every interface, '
+            'or one interface\'s own address (a VPN tunnel\'s, for '
+            'instance) to answer only there — in which case that same '
+            'address is what the payload advertises, unless --advertise '
+            'says otherwise. An address literal, not a hostname; if it '
+            'cannot be bound, this fails and says so rather than falling '
+            'back to another one.',
+      )
+      ..addOption(
+        optionAdvertise,
+        valueHelp: 'address',
+        help:
+            'The address the payload tells the other device to dial. '
+            'Defaults to --bind\'s when that named one interface, and '
+            'otherwise to the first non-loopback address this machine has '
+            '— a guess, and the wrong one on a host with a VPN up or a '
+            'second NIC, which is what this exists to replace. An address '
+            'literal, not a hostname.',
       );
   }
 
@@ -203,6 +240,8 @@ class PairShowCommand extends Command<int> {
       );
     }
     final servePort = _parseServePort(argResults!.option(optionServePort));
+    final bindAddress = _parseBind(argResults!.option(optionBind));
+    final advertise = argResults!.option(optionAdvertise);
 
     // Checked before anything is bound or printed (task 23344d): this
     // command's pairing cannot complete without somebody answering the
@@ -253,26 +292,44 @@ class PairShowCommand extends Command<int> {
     var redeemed = false;
 
     final input = StreamIterator<String>(confirmationLines());
-    final listener = await EnrolmentListener.bind(
-      InternetAddress.anyIPv4,
-      port,
-      ownIdentity: identity,
-      peerName: peerName,
-      token: token,
-      tokenExpiresAt: tokenExpiresAt,
-      pairedDeviceStore: pairedDeviceStore,
-      confirm: (deviceId) {
-        redeemed = true;
-        return _confirm(deviceId, peerName, input);
-      },
-      onError: (error, _) {
-        if (error is EnrolmentRefusedException &&
-            error.reason != enrolmentTokenRejectedReason &&
-            !refused.isCompleted) {
-          refused.complete(error.reason);
-        }
-      },
-    );
+    final EnrolmentListener listener;
+    try {
+      listener = await EnrolmentListener.bind(
+        bindAddress,
+        port,
+        ownIdentity: identity,
+        peerName: peerName,
+        token: token,
+        tokenExpiresAt: tokenExpiresAt,
+        pairedDeviceStore: pairedDeviceStore,
+        confirm: (deviceId) {
+          redeemed = true;
+          return _confirm(deviceId, peerName, input);
+        },
+        onError: (error, _) {
+          if (error is EnrolmentRefusedException &&
+              error.reason != enrolmentTokenRejectedReason &&
+              !refused.isCompleted) {
+            refused.complete(error.reason);
+          }
+        },
+      );
+    } on SocketException catch (e) {
+      // Loud, naming the address that was asked for, and with no
+      // fallback to another one: an endpoint listening somewhere other
+      // than where the operator said is worse than one that never
+      // opened, and a payload printed over it would advertise an address
+      // nothing answers on. SPEC §11.5 fatal.
+      err.writeln(
+        'dsync pair show: could not open the pairing endpoint on '
+        '${bindAddress.address}: ${e.osError?.message ?? e.message}. '
+        'This host does not hold that address right now, or — for :: — '
+        'has IPv6 disabled. Nothing was bound and no payload was '
+        'printed.',
+      );
+      await input.cancel();
+      return 3;
+    }
 
     // Watched *before* anything is printed, for the same reason
     // `AgentCommand._serveSocket` watches before binding: a signal that
@@ -280,11 +337,19 @@ class PairShowCommand extends Command<int> {
     // would leave the listener bound with no `finally` left to run.
     final signals = _watchStopSignals();
     try {
-      final boundPort = int.parse(
-        listener.address.substring(listener.address.lastIndexOf(':') + 1),
-      );
+      // The listener's own number, asked for rather than scraped back out
+      // of its `host:port` text — which an IPv6 literal makes ambiguous to
+      // anything splitting on a colon.
+      final boundPort = listener.port;
+      // What the operator said, if they said anything; this machine's own
+      // guess only when they did not (see `chosenAdvertisableHost`).
       final host =
-          await advertisableAddress() ?? InternetAddress.loopbackIPv4.address;
+          chosenAdvertisableHost(
+            advertise: advertise,
+            bindAddress: bindAddress,
+          ) ??
+          await advertisableAddress() ??
+          InternetAddress.loopbackIPv4.address;
       final payload = PairingPayload(
         certificateDer: identity.certificateDer,
         address: PeerAddress(host: host, port: boundPort),
@@ -446,6 +511,25 @@ class PairShowCommand extends Command<int> {
       );
     }
     return port;
+  }
+
+  /// `--bind`'s value as an address to listen on, or every IPv4 interface
+  /// when it was not given (task 2b26ac).
+  ///
+  /// The default is `0.0.0.0` rather than `::`, deliberately and for the
+  /// reason `AgentCommand._parseBind` gives at length: `::` would be a
+  /// strict superset — `ServerSocket.bind` leaves `v6Only` false, so a
+  /// dual-stack socket takes IPv4-mapped connections too — but it fails
+  /// outright where IPv6 is disabled, and the only alternative to failing
+  /// there is a silent fallback nobody could later diagnose. So IPv6 is
+  /// opt-in, and said so in the flag's help.
+  InternetAddress _parseBind(String? argument) {
+    if (argument == null) return InternetAddress.anyIPv4;
+    try {
+      return parseBindAddress(argument);
+    } on FormatException catch (e) {
+      usageException('--$optionBind: ${e.message}');
+    }
   }
 
   /// Starts trapping SIGINT/SIGTERM, in the same shape

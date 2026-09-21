@@ -74,7 +74,7 @@ class PairListCommand extends Command<int> {
             : device.agreedReplicaRoots.join(', ');
         out.writeln(
           '${device.name}  ${device.deviceId}  '
-          '${device.lastKnownAddress.host}:${device.lastKnownAddress.port}  '
+          '${device.lastKnownAddress.text}  '
           'roots: $roots',
         );
       }

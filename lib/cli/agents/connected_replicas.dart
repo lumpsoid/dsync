@@ -659,7 +659,7 @@ class PeerAddressUnreachableException implements Exception {
   @override
   String toString() =>
       'Could not reach "$deviceName" at its last known address '
-      '${address.host}:${address.port}: $cause';
+      '${address.text}: $cause';
 }
 
 /// The [ReplicaSpec] a remote side's `hello` carries (SPEC §4.2), identical

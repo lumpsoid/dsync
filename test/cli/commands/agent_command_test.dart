@@ -96,6 +96,51 @@ void main() {
       }
     });
 
+    test('--bind without --serve is a usage error (task 2b26ac)', () async {
+      // --listen binds a unix socket, which has a path rather than an
+      // address, and --stdio binds nothing at all, so there is nothing for
+      // an address to mean on either.
+      await expectLater(
+        buildRunner(AgentCommand()).run([
+          'agent',
+          '--listen',
+          '/run/dsync.sock',
+          '--bind',
+          '0.0.0.0',
+        ]),
+        throwsA(
+          isA<UsageException>().having(
+            (error) => error.message,
+            'message',
+            contains('--bind only means something with --serve'),
+          ),
+        ),
+      );
+    });
+
+    test('--bind that is not an address literal is a usage error, naming the '
+        'value (task 2b26ac)', () async {
+      // A hostname is refused rather than resolved: it may resolve to
+      // several addresses, or to a different one later, and "which one did
+      // it bind" is what --bind exists to stop asking. Caught before
+      // anything is bound.
+      for (final address in ['laptop.local', '10.0.0', '']) {
+        await expectLater(
+          buildRunner(
+            AgentCommand(),
+          ).run(['agent', '--serve', '--bind', address]),
+          throwsA(
+            isA<UsageException>().having(
+              (error) => error.message,
+              'message',
+              allOf(contains('--bind'), contains('not a hostname')),
+            ),
+          ),
+          reason: address,
+        );
+      }
+    });
+
     test('--listen needs a socket path', () async {
       // An option, not a flag: there is no default path to fall back to, so
       // the argument parser rejects a bare `--listen` before `run()` is ever
