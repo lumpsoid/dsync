@@ -374,7 +374,18 @@ Three things follow. **Allocation is flat in depth** — what a write allocates 
 
 **The bytes are not the cost and the sink is not the cost.** Writing a file's bytes over one already there is 2,785 µs, and doing it in 64 KiB chunks rather than one call is 2,751 — indistinguishable. So §7.2's `IOSink` is fine on latency, and the 6,015 B a file it allocates is a garbage argument only. The mtime, the mode and the closing `stat` together cost under 1.5 ms and are noise at this scale.
 
-**It is the atomic rename, and a rename consumes the temp path** — so *every* variant creates a file per write and there is no version of temp-and-rename that creates the temp once. Repeating the temp's *name* rather than incrementing it is worth 6.2 ms (30,931 µs to 24,729), and that is a warm-dentry effect rather than a skipped creation. The remaining **~22 ms is the rename itself** (24,729 against the 2,785 an in-place write costs), because the destination name is what Android's storage layer has bookkeeping for. So there are two levers and not three: repeat the temp name for 20%, or stop renaming for 12× and give up what §7.2 chose temp-and-rename for (task 952667).
+**It is the atomic rename, and a rename consumes the temp path** — so *every* variant creates a file per write and there is no version of temp-and-rename that creates the temp once. **~28 ms of the ~31 is the rename onto the target**, because the destination name is what Android's storage layer has bookkeeping for, and **no choice of temp name moves it.** The 6.2 ms the table credits to one temp per worker did not survive being taken apart (task 952667). That rung differed from `temp` three ways at once — the name repeated, it sat in the tree root, and it was hidden with no extension — so four rungs now vary one thing each. Same device, 852 files of a Flutter SDK checkout capped at 64 KiB, mean 7,865 B, FUSE, µs a file:
+
+| temp named | 1 in flight | 16 in flight |
+|---|---|---|
+| `f.bin.tmp` beside the target — `temp` | 31,205 | 27,859 |
+| `<target>.dsync-tmp.<pid>.<n>`, as `LocalAgent` names it | 31,590 | 29,803 |
+| `.dsync-tmp.<pid>.<n>` beside the target, `n` fresh | 31,269 | 29,615 |
+| the same, `n` the worker, so a directory repeats it | 32,197 | 28,730 |
+| one per worker in the tree root — the rung above | 28,646 | 28,160 |
+| *no temp: one `write()` in place* | *2,424* | *229* |
+
+Every name §7.2 permits is within 3% of every other, and the root-directory rung that looked like 20% is 8% on this run, in a shape §7.2 forbids anyway (a replica spanning a submount would break it). So there is one lever, not two: stop renaming, which §7.6 shows is unsafe without a record of which writes were in flight (task 58d609).
 
 **`bare` and `chunked` agreeing here is the probe's control, and it was earned.** An earlier version ran the rungs against an empty tree, so whichever ran first paid for creating all 850 files: `bare` read as 16.2 ms against `chunked`'s 2.9 when the two issue an identical syscall for any file under one chunk. The tree is now seeded untimed before any rung.
 
