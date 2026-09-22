@@ -456,16 +456,23 @@ class ReplicaMetrics {
   /// reported.
   final Duration? peerSendWait;
 
-  /// What the peer's `writeFile` spent step by step over the session (SPEC
-  /// §17), or null from a peer that does not report it — including any run
-  /// that ended before its `unlock`, which is the reply that carries it.
+  /// What this replica's `writeFile` spent step by step over the session (SPEC
+  /// §17), or null when nothing reported it.
   ///
   /// **The split that `far` minus `starved` is a single number for.** Nine
   /// filesystem round trips per file hide in there, and they have unrelated
   /// fixes: a directory create paid once per file rather than once per
   /// directory, a mode step that may be a process spawn, a rename that is
-  /// neither.
-  final WritePathStats? peerWritePath;
+  /// neither. SPEC §7.2 prices them on a desktop; this is the same split on
+  /// whatever host actually ran.
+  ///
+  /// **Either side, which it was not always.** A remote replica's arrives on
+  /// the `unlock` reply, so it is null for a run that ended before its unlock;
+  /// a local one is read off the agent itself at snapshot time. It was
+  /// remote-only, and pulling, the destination is *local* — so the side doing
+  /// the writing whose cost was in question was the one side this could not
+  /// see (task 4c55fd).
+  final WritePathStats? writePath;
 
   /// How long this replica's transport had nothing to carry, per phase, and
   /// how long it had something outstanding and was waiting for it (SPEC §17).
@@ -498,7 +505,7 @@ class ReplicaMetrics {
     this.framesSent = 0,
     this.writeStats,
     this.peerSendWait,
-    this.peerWritePath,
+    this.writePath,
     this.quiet = const {},
     this.awaiting = const {},
   });

@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/agent/local_agent.dart';
 import 'package:dsync/dsync_core/agent/metered_agent.dart';
 import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
@@ -47,8 +48,23 @@ class RunInstruments {
   /// [remote] is passed rather than inferred because nothing visible from
   /// here distinguishes a `LocalAgent` from a `RemoteAgent` — that is the
   /// point of [Agent] (SPEC §4.1) — and the caller that built it knows.
-  Agent agent(Agent inner, {required String side, required bool remote}) =>
-      MeteredAgent(inner, side: side, metrics: recorder, remote: remote);
+  ///
+  /// **A local agent's write-path breakdown is registered here**, and that is
+  /// why this line type-tests something [Agent] deliberately hides. The
+  /// breakdown lives on `LocalAgent` rather than on [Agent] — `MeteredAgent`'s
+  /// own doc comment explains why that boundary stays thin — so somebody has to
+  /// know the concrete type, and the choice is between this one line and a
+  /// defaulted parameter at every call site. A defaulted parameter is precisely
+  /// the failure this class exists to prevent: a run wired without it produces
+  /// a report that looks complete and silently has no write path in it. So it
+  /// is done where it cannot be forgotten. A remote replica's arrives on its
+  /// `unlock` reply instead and needs nothing here.
+  Agent agent(Agent inner, {required String side, required bool remote}) {
+    if (inner is LocalAgent) {
+      recorder.watchWritePath(side, () => inner.writePath);
+    }
+    return MeteredAgent(inner, side: side, metrics: recorder, remote: remote);
+  }
 
   /// [inner] counted as the transport reaching the replica named [side].
   ///

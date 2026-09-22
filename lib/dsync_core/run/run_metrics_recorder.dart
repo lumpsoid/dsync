@@ -218,7 +218,14 @@ class RunMetricsRecorder {
     if (record.far?.sendWait case final wait?) replica.peerSendWait = wait;
     // Both are cumulative peer-side totals, so the last one to arrive is the
     // complete one. The write path's arrives on `unlock` and only there.
-    if (record.far?.writePath case final steps?) replica.peerWritePath = steps;
+    //
+    // Installed as a source rather than assigned, so that a remote replica's
+    // pushed figure and a local one's pulled figure are the same field and
+    // there is no pair of them to keep in step. One closure per `unlock`,
+    // which is once per run.
+    if (record.far?.writePath case final steps?) {
+      replica.writePathSource = () => steps;
+    }
   }
 
   /// Opens a flush of [bytes] framed protocol carrying [frames] frames on
@@ -266,6 +273,22 @@ class RunMetricsRecorder {
   /// read as "it coalesced nothing".
   void watchWrites(String side, SinkWriteStats? Function() source) =>
       _replicaRecord(side).writeStats = source;
+
+  /// Where [side]'s own `writeFile` step breakdown is read from (SPEC §17,
+  /// §7.2).
+  ///
+  /// **A source, not a sample**, for the reason [watchWrites] gives: the
+  /// figures are cumulative, so the answer is always "whatever they are now",
+  /// and sampling them per write would cost an object on a path that runs once
+  /// per copied file.
+  ///
+  /// Registered by `RunInstruments` for a **local** replica. A remote one's
+  /// arrives pushed, on the `unlock` reply, and [recordExchange] installs it
+  /// into the same field — so a report has one write path per replica however
+  /// it got there, rather than a local field and a peer field that a reader
+  /// has to know to check both of.
+  void watchWritePath(String side, WritePathStats? Function() source) =>
+      _replicaRecord(side).writePathSource = source;
 
   /// Records [bytes] arriving from [side]'s transport, framing included.
   ///
@@ -375,7 +398,7 @@ class RunMetricsRecorder {
           sends: entry.value.sends,
           writeStats: entry.value.writeStats?.call(),
           peerSendWait: entry.value.peerSendWait,
-          peerWritePath: entry.value.peerWritePath,
+          writePath: entry.value.writePathSource?.call(),
           framesSent: entry.value.framesSent,
           quiet: Map.unmodifiable(entry.value.quiet),
           awaiting: Map.unmodifiable(entry.value.awaiting),
@@ -404,7 +427,11 @@ class _ReplicaRecord {
   /// The peer's own cumulative send wait as of the last reply that carried
   /// it, or null from a peer that does not report it.
   Duration? peerSendWait;
-  WritePathStats? peerWritePath;
+
+  /// Where this replica's write-path breakdown is read from, or null while
+  /// nothing has registered one. Set by `watchWritePath` for a local replica
+  /// and by `recordExchange` for a remote one.
+  WritePathStats? Function()? writePathSource;
 
   /// Flushes handed to the transport and not yet written. While this is
   /// above zero the link is carrying something and neither idle figure

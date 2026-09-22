@@ -1,6 +1,7 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/sink_write_band.dart';
+import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
@@ -363,6 +364,37 @@ void main() {
       expect(replica.framesSent, 4);
       expect(replica.writeStats?.writes, 2);
       expect(replica.framesPerWrite, 2);
+    });
+
+    test('a write path is read at report time, like the sink figures', () {
+      // Cumulative, so a source beats a sample for the reason `watchWrites`
+      // documents — and this one runs once per copied file.
+      var live = const WritePathStats(files: 1);
+      metrics.watchWritePath('a', () => live);
+      live = const WritePathStats(files: 7);
+
+      expect(metrics.snapshot().replicas['a']!.writePath?.files, 7);
+    });
+
+    test("a remote replica's write path lands in the same field", () {
+      // It arrives pushed, on the `unlock` reply, where a local replica's is
+      // pulled off the agent. One field either way: a reader should not have to
+      // know which mechanism delivered it, and two fields would be a pair to
+      // keep in step (task 4c55fd).
+      metrics.recordExchange(
+        'b',
+        const ExchangeRecord(
+          op: AgentOp.unlock,
+          queueWait: Duration.zero,
+          wire: Duration(milliseconds: 1),
+          far: FarSideReport(
+            span: Duration(milliseconds: 1),
+            writePath: WritePathStats(files: 3),
+          ),
+        ),
+      );
+
+      expect(metrics.snapshot().replicas['b']!.writePath?.files, 3);
     });
 
     test('a side that reported no write has none, not zero', () {

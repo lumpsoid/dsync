@@ -171,16 +171,20 @@ String formatRunMetrics(RunMetrics metrics) {
           'outside ${formatMetricDuration(replica.farTime)} of reported far',
         );
       }
-      // The peer's write path, per file rather than as the session totals it
-      // arrives as — nine filesystem round trips that `far` reports as one
-      // number (SPEC §17). `chmod` is a count, not a duration, because a
+      // This replica's write path, per file rather than as the session totals
+      // it — nine filesystem round trips that one `far` figure reports as one
+      // number (SPEC §17, §7.2). `chmod` is a count, not a duration, because a
       // process spawn per file and a stat per file are different orders of
       // cost and the mode step's total cannot tell them apart alone.
-      if (replica.peerWritePath case final steps? when steps.files > 0) {
+      //
+      // Not labelled `peer` any more: it is read off a remote replica's
+      // `unlock` reply or off a local agent, and pulling it is the *local*
+      // side that does the writing (task 4c55fd).
+      if (replica.writePath case final steps? when steps.files > 0) {
         String per(Duration total) =>
             formatMetricDuration(_per(total, steps.files));
         out.writeln(
-          '  peer write: ${formatMetricCount(steps.files)} files × '
+          '  write path: ${formatMetricCount(steps.files)} files × '
           '${per(steps.total)} — '
           'create ${per(steps.create)} · '
           'write ${per(steps.write)} · '
@@ -190,7 +194,7 @@ String formatRunMetrics(RunMetrics metrics) {
           'stat ${per(steps.stat)}',
         );
         out.writeln(
-          '  peer chmod: ${formatMetricCount(steps.chmodSpawns)} processes '
+          '  write chmod: ${formatMetricCount(steps.chmodSpawns)} processes '
           'spawned, ${formatMetricDuration(steps.mode)} in the mode step',
         );
       }
