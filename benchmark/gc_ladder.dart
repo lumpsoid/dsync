@@ -4,9 +4,12 @@
 //
 // **The method.** `--verbose_gc` reports a process, not a region of one, so the
 // only way to attribute a figure to a rung is for the process to have done
-// nothing else. Every rung is therefore a fresh VM running one rung, and the
-// first rung is a `noop` whose figure is the shared cost — VM boot, kernel
-// compile, JIT — that every other rung's own cost is measured above.
+// nothing else. Every rung is therefore a fresh VM running one rung, and **the
+// first rung is the floor**: its figure is the shared cost every rung pays and
+// none of them is about, and every later rung is reported above it. For a
+// read-only ladder that floor is a `noop` — VM boot, kernel compile, JIT. For one
+// that has to build a corpus first, it is a rung that builds the corpus and stops
+// there, so the corpus does not land in the figures.
 //
 // New-space "used before", summed over scavenges, is the garbage: each scavenge
 // reports how full new space was when it ran, and a program that fills and
@@ -121,7 +124,7 @@ class LadderReading {
 
   int get newGenBytes => gc.newGenBytes;
 
-  /// [floor] is the `noop` rung's figure, which every rung pays and none of
+  /// [floor] is the first rung's figure, which every rung pays and none of
   /// them is about.
   String row(int floor) {
     final own = newGenBytes - floor;
@@ -156,7 +159,7 @@ Future<void> runLadder({
 }) async {
   stdout.writeln(
     '  ${'rung'.padRight(14)}${'ms'.padLeft(7)}${'garbage'.padLeft(12)}'
-    '${'over noop'.padLeft(12)}${'B a unit'.padLeft(11)}'
+    '${'over floor'.padLeft(12)}${'B a unit'.padLeft(11)}'
     '${'scavenges'.padLeft(11)}${'retained'.padLeft(11)}  $unitLabel',
   );
 
