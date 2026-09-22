@@ -378,6 +378,17 @@ Three things follow. **Allocation is flat in depth** — what a write allocates 
 
 **`bare` and `chunked` agreeing here is the probe's control, and it was earned.** An earlier version ran the rungs against an empty tree, so whichever ran first paid for creating all 850 files: `bare` read as 16.2 ms against `chunked`'s 2.9 when the two issue an identical syscall for any file under one chunk. The tree is now seeded untimed before any rung.
 
+**Concurrency does not help §7.2's path on emulated storage, and helps an in-place write enormously.** The same probe swept against workers in flight, 425 files, FUSE:
+
+| in flight | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| §7.2's path, µs a file | 31,527 | 29,699 | 29,181 | 28,701 | 27,433 | 25,395 |
+| writing in place, µs a file | 2,207 | 675 | 529 | 376 | 245 | 191 |
+
+**§7.2's path is 1.24× faster at thirty-two workers than at one.** The rename does not parallelise — it serialises inside the storage layer — so `Applier.defaultConcurrency` of 16 is buying about 15% on the pulling side, not the 16× its name suggests. An in-place write, by contrast, goes 11.6× and is still improving at 32, reaching 65 MiB/s.
+
+**And that closes the loop with §17.** At sixteen in flight the probe's throughput implies ~440 ms of latency per file, against the 561.5 ms mean `writeFile` residency §17 measured on the phone — two different devices, one at the syscall level and one through the whole stack, agreeing on the order. The 16-in-flight residency was never a sign of work getting dearer; it is a queue in front of a rename that cannot go faster.
+
 **A `stat` is 15 µs here, and §5.3's ~330 µs a lookup deserves re-reading because of it.** Twenty-two times apart is too much for two devices alone, and §5.3's figure was taken through `dart:io`'s asynchronous `stat` — which §5 has since priced at ~1,900 B and a great deal of machinery per call. This reading is warm, so it is a floor and not a refutation; task 203cfd carries it.
 
 **This is a desktop reading and the wall times are not the phone's.** What it establishes is where the garbage is and that the blocking shape removes most of it; whether that changes the phone's 35.1 ms a file, and where the concurrency knee is with 16 writes in flight, is task 4c55fd's device half.
