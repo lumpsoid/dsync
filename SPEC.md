@@ -418,6 +418,16 @@ Deferring it is not less correct. The rule above is unchanged and still holds: a
 ### 7.6 Failures
 A failed action is recorded, the path is left in whatever state it reached (temp files are cleaned up), and the run continues with the next action. Failed paths are reported at the end and contribute to the exit code.
 
+**"Whatever state it reached" is only safe because §7.2 renames** (task 952667). The temp means a copy that fails part-way — or a process killed mid-write, which on Android is routine — leaves the target holding either its old bytes or its new ones, never a mix. Everything after the write assumes that. §7.3's crash window heals because an uncommitted path holds *complete* content that hashes the same as the other side; a failed action commits nothing (`CommitPipeline.addFailed` adds no records) and so is simply retried as the same copy next run.
+
+A torn file is **detected** but **not repaired**. The fast path (§5.2) would never accept one: `setLastModified` runs after the bytes, so a write that stopped part-way carries the kernel's own mtime rather than the archived one, the scan hashes it, and the hash matches nothing. But detection hands it to §6 as a *local change* on the destination, and §6 has no way to know the change is garbage:
+
+- **Destination was `unchanged`, source `modified`** — the ordinary pull. Today the next run finds the same cell and retries the copy. Torn, it is `modified × modified` with unequal hashes: a **conflict**, handed to the user with a partial file as one of the two choices.
+- **Both sides `created`, or `created × modified`** — the first sync of a path. Today the destination reports nothing and the path is mirrored again. Torn, it is a conflict.
+- **Source `unchanged`, destination never seen it** — a fresh replica set up against an established one, the case §6's "never seen" rule exists for. Today the destination is silent and the path is mirrored. Torn, the destination reports `created` against the source's `unchanged`, which §6 resolves as **copy destination → source: the partial file overwrites the good one, automatically, with no conflict raised.**
+
+So writing in place does not move §7.2's guarantee up a layer; there is no layer above it that holds the guarantee. Temp-and-rename is load-bearing, on every platform. Writing in place would be safe only with a record, made durable before the bytes land, that marks the path untrusted until its commit replaces the record — an extra fsync per batch ahead of the writes, which is a design of its own and not a flag.
+
 ## 8. Archive
 
 ### 8.1 Content
