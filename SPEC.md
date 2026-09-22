@@ -217,7 +217,22 @@ Three consequences worth stating, because they decide what is *not* worth doing:
 
 Three things per path were pure waste and are gone: `package:path`'s `basename`, which parses a whole path into two lists to return its last segment; `RuleSet.ignorePatternFor`, which split the path and re-joined every ancestor prefix even on a profile with no `ignore` rules; and a second `File`/`Directory` built off the path of the one `Directory.list` had just handed back. Together **38% of what a scan allocated**, for 6% less wall time and 13% less resident memory when the heap is capped — and *no* change to resident memory at the default heap, because the semispace reaches its cap either way. That last part is the honest reading: this is a GC-work and small-heap win, not a peak-RSS one.
 
-**What is left is `dart:io`, not this code.** An asynchronous `stat` costs ~2.3 KB of garbage per call — a request list, a response list and a future through the IO service — which is 61% of everything a scan now allocates, and the scan's own work above the raw walk is down to ~290 B an entry. The blocking walk in the table allocates a quarter as much and runs twice as fast *on a desktop*; it is not simply better, because §5.3's batching exists for a phone that charges ~330 µs a lookup and blocking calls cannot overlap. The shape that keeps both is the one hashing already uses — blocking calls inside isolates — and that is a change worth a device measurement of its own rather than a desktop inference.
+**What is left is `dart:io`, not this code — and it is two costs, not one.** The ~2.3 KB figure above is a gap between two rungs that added three things at once: the IO service's round trip, a future, and an `await` inside an `await for`. A ladder built so every rung adds exactly one thing (`benchmark/stat_allocation_probe.dart`) confirms the total and splits it. Over 101,979 files, per file above the `Directory.list` floor:
+
+| rung | B a file | what it isolates |
+|---|---|---|
+| the `_Future` object alone, never awaited | 48 | `Future.syncValue`, so nothing completes it |
+| an `await`'s suspension, no future | 394 | `await null` |
+| future + suspension | 457 | additive with the two above, within 15 B |
+| future + microtask completion + suspension | 915 | `await Future.value()` — the future is *incomplete* when awaited |
+| a blocking `stat`, same asynchronous walk | 527 | |
+| an asynchronous `stat` | 2,436 | |
+
+So of the **1,900 B** an asynchronous `stat` costs over a blocking one, **915 B (48%) is the asynchronous machinery and ~985 B is the IO service's port round trip.** The machinery's largest term is not the future — that is 48 B — but the second scheduling hop a future pays when it is still incomplete at the `await`: 458 B, the frame parks, a microtask completes the future, and the continuation is scheduled again. `File.stat()` is completed from a port message, so it pays that in full. Where a value is already known, `Future.syncValue` completes in place and the hop is gone; `ReadPool._take` was the one hot path here doing it the expensive way.
+
+**Two of the alternatives are settled and one is narrowed.** `FileStat.stat(path)` against `File.stat()` buys nothing — 348.0 against 348.1 MiB over the same tree, same wall time. §5.3's stat batching allocates *more* than serial asynchronous stats, 4,211 against 3,579 B a file, while running 33% faster: a latency/allocation trade rather than a win. And the blocking walk should be **hybrid, not wholesale** — asynchronous listing with a blocking `stat` ran 2,095 ms against 2,872 for an all-blocking walk, because `listSync(recursive: true)` builds the whole listing eagerly and is slower than the stream. Whether any of it wins on a phone that charges ~330 µs a lookup, where blocking calls cannot overlap, is still a device question (task 203cfd). Going below `dart:io` to drop per-path resolution is a separate one (task 55bee6).
+
+**The same per-call figure, priced against the apply path.** `LocalAgent.writeFile` is nine steps (§7.2, §7.4) but not nine asynchronous calls: `_applyMode` is a synchronous FFI `chmod`, and the parent `create` is skipped on a directory this session already made. What is left is the sink — `openWrite`, `addStream`, `flush`, `close` — plus `setLastModified`, `rename` and the final `stat`: about four, and one dispatch per block the sink writes. At 1,900 B a call that is ~7.6 KB a file, so **~110 MB of garbage for one apply of the 14,471-file tree against 52 MB for a whole scan** — which is what makes the apply the larger prize. The sink's per-block term is the one nobody has bounded, and it is the first thing a write-path ladder has to measure.
 
 ## 6. Reconciliation
 
