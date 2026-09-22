@@ -348,6 +348,15 @@ Where the 18,240 B goes, cumulatively, at zero payload — one scavenge is ~420 
 
 **Two earlier estimates of this were wrong and are superseded.** Task 26a874 put an apply at ~290 MB by counting eight or nine asynchronous calls at a stat's per-call price; §5 corrected the call count to about four and the figure to ~110 MB. Both were wrong in kind, not degree: a write's fixed per-call cost is an order above a `stat`'s — 18,240 B against 1,900 — and there is a per-byte term besides. The measured figure is what stands.
 
+**The concurrency knee is at four, on a desktop.** §7.2's shape swept against writes in flight, same corpus:
+
+| in flight | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| ms | 2,769 | 1,460 | 973 | 935 | 940 | 922 |
+| B a file | 37,886 | 37,565 | 37,196 | 37,344 | 37,344 | 39,537 |
+
+Three things follow. **Allocation is flat in depth** — what a write allocates does not depend on how many are in flight, which is what makes the serial ladder above valid. **`Applier.defaultConcurrency` of 16 is four times past the knee** on this hardware; harmless here, but the headroom it looks like it has is not there. And **concurrency erases the asynchronous path's wall-time penalty and not its garbage**: §7.2 at four in flight (973 ms) beats the blocking four steps run serially (1,204 ms) while still allocating 2.1× as much. The blocking rung is *flat* at 1,203–1,216 ms from one worker to sixteen, because a worker that never awaits runs its whole share before another gets a turn — so a blocking write path has to be blocking calls *inside isolates*, the shape `ReadPool` already ships for reads, or it wins nothing on time at all.
+
 **This is a desktop reading and the wall times are not the phone's.** What it establishes is where the garbage is and that the blocking shape removes most of it; whether that changes the phone's 35.1 ms a file, and where the concurrency knee is with 16 writes in flight, is task 4c55fd's device half.
 
 ### 7.3 Archive commit per path

@@ -141,7 +141,9 @@ Future<void> main(List<String> args) async {
 
   stdout.writeln('tree: $root');
   await runLadder(
-    rungs: only == null ? rungs : [only],
+    // The floor rung always runs: without it a one-rung run reports itself
+    // as its own floor and prints zero.
+    rungs: only == null ? rungs : [rungs.first, only],
     script: Platform.script.toFilePath(),
     rungArgs: [root],
     onRung: (reading, floor) {

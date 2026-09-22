@@ -30,12 +30,18 @@
 //   full          plus the closing `stat`. This is `writeFile`'s nine steps.
 //   sync-full     the same nine steps with blocking calls throughout.
 //
-// **Everything is serial, and the concurrency question is deliberately absent.**
-// `Applier` runs 16 writes in flight and task 4c55fd's hypothesis 3 is whether
-// that is past the knee. A depth sweep belongs where `ReadProbe`'s does — on the
-// device, because a knee in emulated storage is a property of the storage. What a
-// step *allocates* does not depend on how many are in flight, so it is measured
-// here, once, serially, where it can be read cleanly.
+// **`--depth` is the concurrency axis, and it defaults to 1.** `Applier` runs 16
+// writes in flight and task 4c55fd's hypothesis 3 is whether that is past the
+// knee. The knee itself is a property of the storage and so belongs on the device
+// — but a desktop curve is the control that says whether a knee on the phone is
+// the phone or is this code, which is the same job `benchmark/read_probe.dart`
+// does for `ReadProbe`. Workers pull from one shared cursor rather than taking
+// fixed shards, which is how `Applier` has its writes outstanding: N in flight,
+// each taking the next path when its own finishes.
+//
+// The two blocking rungs ignore depth in effect — a worker that never awaits runs
+// its whole share before another gets the turn — so read them at depth 1 and
+// treat them as the floor the async curve is measured against.
 //
 // **The destination is scratch and is treated as disposable.**
 // `$HOME/.cache/dsync/scratch/<name>`: under XDG's cache root, which already
@@ -56,6 +62,8 @@
 //   dart run benchmark/write_allocation_probe.dart --source <dir>
 //   dart run benchmark/write_allocation_probe.dart --source <dir> --rung full
 //   dart run benchmark/write_allocation_probe.dart --source <dir> --cap 0
+//   dart run benchmark/write_allocation_probe.dart --source <dir> \
+//     --rung full --depth 16
 //
 // **`--cap` clamps every file's size, and `--cap 0` is the reason it exists.**
 // The first reading off this ladder put `writeFile` at 37.9 KB of garbage a file
@@ -105,7 +113,7 @@ const appliedMtimeMicros = 1700000000000000;
 
 Future<void> main(List<String> args) async {
   if (args.isNotEmpty && args.first == 'rung') {
-    await _runRung(args[1], args[2], args[3]);
+    await _runRung(args[1], args[2], args[3], int.parse(args[4]));
     return;
   }
 
@@ -137,6 +145,14 @@ Future<void> main(List<String> args) async {
     return;
   }
 
+  final depthText = flagOf(args, '--depth');
+  final depth = depthText == null ? 1 : int.tryParse(depthText);
+  if (depth == null || depth < 1) {
+    stderr.writeln('--depth wants a positive count, got "$depthText"');
+    exitCode = 2;
+    return;
+  }
+
   final scratch = _scratchDirectory('write-probe');
   final sizes = _sizesUnder(source);
   if (cap != null) {
@@ -161,13 +177,16 @@ Future<void> main(List<String> args) async {
   stdout.writeln(
     'mean file:  ${sizes.isEmpty ? 0 : (bytes / sizes.length).round()} B',
   );
-  stdout.writeln('writing to: ${dest.path}');
+  stdout.writeln('writing to: ${dest.path}  (depth $depth)');
   try {
     _seedTree(dest, sizes);
     await runLadder(
-      rungs: only == null ? rungs : [only],
+      // The floor rung always runs, even for a single named rung: it is what
+      // the corpus build is subtracted out with, and without it a one-rung run
+      // reports itself as its own floor and prints zero.
+      rungs: only == null ? rungs : [rungs.first, only],
       script: Platform.script.toFilePath(),
-      rungArgs: [sizesFile.path, dest.path],
+      rungArgs: [sizesFile.path, dest.path, '$depth'],
     );
   } finally {
     // The parent cleans up, never a rung: a `deleteSync(recursive: true)` walks
@@ -228,7 +247,12 @@ void _seedTree(Directory dest, List<int> sizes) {
 }
 
 /// One rung, in the process spawned for it.
-Future<void> _runRung(String rung, String sizesPath, String destPath) async {
+Future<void> _runRung(
+  String rung,
+  String sizesPath,
+  String destPath,
+  int depth,
+) async {
   // Every rung pays this, including the `setup` rung that is the floor, so it
   // cancels out of every figure above.
   final sizes = Uint64List.sublistView(
@@ -239,10 +263,23 @@ Future<void> _runRung(String rung, String sizesPath, String destPath) async {
   final mtime = DateTime.fromMicrosecondsSinceEpoch(appliedMtimeMicros);
 
   final clock = Stopwatch()..start();
-  for (var i = 0; i < sizes.length; i++) {
-    final bytes = Uint8List.sublistView(source, 0, sizes[i]);
-    await _write(rung, paths[i], bytes, mtime);
+  // One shared cursor, no lock: this is one isolate and nothing is awaited
+  // between reading `next` and incrementing it.
+  var next = 0;
+  Future<void> worker() async {
+    while (true) {
+      final index = next++;
+      if (index >= sizes.length) return;
+      await _write(
+        rung,
+        paths[index],
+        Uint8List.sublistView(source, 0, sizes[index]),
+        mtime,
+      );
+    }
   }
+
+  await Future.wait([for (var i = 0; i < depth; i++) worker()]);
   clock.stop();
   stdout.writeln(
     RungResult(units: sizes.length, millis: clock.elapsedMilliseconds),
