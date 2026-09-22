@@ -11,6 +11,7 @@ import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/unreadable_paths.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:dsync/dsync_core/scan/scan_exchange.dart';
+import 'package:dsync/dsync_core/run/run_marker.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 
 /// Decides which of a [Plan]'s proposed actions actually run (SPEC §11.3).
@@ -78,6 +79,12 @@ class RunController {
   /// passes its own and reads that.
   final RunMetricsRecorder metrics;
 
+  /// Present from just before the apply writes anything until it returns
+  /// (SPEC §7.6), so a head can tell a profile whose last run died mid-apply
+  /// with one stat. `null` for a run that keeps no marker, which every test
+  /// that does not reason about it is.
+  final RunMarker? runMarker;
+
   final Reconciler _reconciler = Reconciler();
   final Applier _applier;
 
@@ -92,6 +99,7 @@ class RunController {
     required this.presenter,
     RuleSet? rules,
     RunMetricsRecorder? metrics,
+    this.runMarker,
     int applyConcurrency = Applier.defaultConcurrency,
     int applyCommitBatchSize = CommitPipeline.defaultBatchSize,
   }) : rules = rules ?? RuleSet(),
@@ -270,6 +278,11 @@ class RunController {
     // completes — so it includes the consumer's own rendering time, which is
     // honest: on a head that draws a row per path, that *is* part of what
     // applying the plan costs (SPEC §17).
+    //
+    // The marker goes down before the phase opens: it is the run's own
+    // bookkeeping, not part of what applying the plan costs. A plan with
+    // nothing to apply writes nothing, so it only clears a stale one below.
+    if (actionsToApply.isNotEmpty) await runMarker?.create();
     metrics.beginPhase(RunPhase.apply);
     final pending =
         StreamController<(String, ActionType, Object?, Completer<void>)>();
@@ -289,8 +302,9 @@ class RunController {
     // Whatever apply() finishes with — normal return or, for a bug that
     // escapes Applier's own per-action try/catch, an error — `pending` must
     // still be closed so the `await for` below always ends instead of
-    // waiting on an event that will never arrive.
-    unawaited(applyResultFuture.whenComplete(pending.close));
+    // waiting on an event that will never arrive. `ignore` because the error
+    // is `await`ed below; this copy of it would otherwise escape unhandled.
+    applyResultFuture.whenComplete(pending.close).ignore();
 
     final total = actionsToApply.length;
     var completed = 0;
@@ -306,6 +320,9 @@ class RunController {
     // that into a `RunErrorEvent` exactly like any other unexpected failure.
     final applyResult = await applyResultFuture;
     metrics.endPhase(RunPhase.apply);
+    // The apply returned, failed actions or not: the next run sorts out
+    // whatever a failed write left, and the marker only says the run died.
+    await runMarker?.delete();
 
     // SPEC §8.2: a run that committed nothing does not compact. Every action
     // type — including commitOnly — reaches archiveCommit on *both* sides

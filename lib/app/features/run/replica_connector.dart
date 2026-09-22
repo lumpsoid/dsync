@@ -13,6 +13,7 @@ import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/idle_deadline_channel.dart';
 import 'package:dsync/dsync_core/run/run_instruments.dart';
+import 'package:dsync/dsync_core/run/run_marker.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 
 import '../../app_controller.dart';
@@ -67,7 +68,7 @@ Future<DialResult> dialPeer(
 /// Both sides of a run, connected: side `a` is this device, side `b` the
 /// paired one (SPEC §8.1 keys the archive by side, so the assignment is
 /// fixed here and never reordered).
-typedef ConnectedAgents = ({Agent agentA, Agent agentB});
+typedef ConnectedAgents = ({Agent agentA, Agent agentB, RunMarker runMarker});
 
 /// Turns a run request into two live [Agent]s — the head's counterpart to
 /// `lib/cli/agents/connected_replicas.dart`, which stays where it is.
@@ -189,7 +190,14 @@ class ReplicaConnector {
       await _disconnectQuietly(agentA);
       rethrow;
     }
-    return (agentA: agentA, agentB: agentB);
+    return (
+      agentA: agentA,
+      agentB: agentB,
+      runMarker: RunMarker.forProfile(
+        profileId: profileId,
+        platform: (await app.paths).stateDirPlatform,
+      ),
+    );
   }
 
   /// Side `a`, built by [buildLocalReplicaAgent] — the one place this head

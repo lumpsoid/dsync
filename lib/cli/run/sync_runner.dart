@@ -6,6 +6,7 @@ import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
+import 'package:dsync/dsync_core/run/run_marker.dart';
 import 'package:dsync/dsync_core/run/run_instruments.dart';
 import 'package:dsync/dsync_core/run/run_metrics_report.dart';
 
@@ -243,6 +244,11 @@ class SyncRunner {
       presenter: _choosePresenter(options),
       rules: effective.rules,
       metrics: instruments.recorder,
+      runMarker: RunMarker.forProfile(
+        profileId: effective.profileId,
+        environment: environment,
+        platform: platform.stateDirPlatform,
+      ),
     );
 
     // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC

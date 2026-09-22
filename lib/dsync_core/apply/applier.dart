@@ -307,17 +307,18 @@ class Applier {
   ///
   /// **Before anything is written**, because `Agent.writeFile` writes in place
   /// and a write that stops part-way — a failed stream, a killed process —
-  /// leaves a file the next scan could only read as a local edit. The mark is
-  /// what makes it read as a retry. It is superseded by the path's own commit
-  /// (§7.3), so a copy that lands clears it and one that fails keeps it.
+  /// leaves a file the next scan could only read as a local edit. The mark
+  /// makes it read as possibly torn: committed if it holds the other side's
+  /// content, a conflict labelled interrupted if not. It is superseded by the
+  /// path's own commit (§7.3), so a copy that lands clears it and one that
+  /// fails keeps it.
   ///
   /// **The whole plan, in one exchange per side**, rather than a batch per
   /// handful of writes: one fsync a run instead of one a batch, and no write
   /// ever waits on a mark. What that widens is which paths a stopped run
   /// leaves marked — every copy it never started, not only the ones it tore.
-  /// Those resolve the way the plan would have resolved them anyway, by copying
-  /// the other side over; the difference is a user's edit to one of them before
-  /// the next run, which is overwritten rather than raised as a conflict.
+  /// That costs nothing: the scan reads a marked file that still matches its
+  /// archive entry as unmarked, so those resolve the way the plan would have.
   ///
   /// A mark that fails fails the apply: nothing has been written yet, so
   /// there is nothing a per-action failure would be protecting.

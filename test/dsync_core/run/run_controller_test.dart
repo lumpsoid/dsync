@@ -14,6 +14,7 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/skipped_path.dart';
 import 'package:dsync/dsync_core/run/run_controller.dart';
+import 'package:dsync/dsync_core/run/run_marker.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
@@ -844,6 +845,67 @@ void main(List<String> args) async {
     );
   });
 
+  group('run marker (SPEC §7.6)', () {
+    late RunMarker marker;
+    setUp(() => marker = RunMarker(File('${tempDir.path}/notes.run')));
+
+    test('is present while the apply writes and gone once it returns, failed '
+        'actions or not', () async {
+      await File('${replicaADir.path}/lands.txt').writeAsString('a');
+      await File('${replicaADir.path}/fails.txt').writeAsString('b');
+      final presentDuringApply = <bool>[];
+
+      await for (final event in RunController(
+        agentA: agentA,
+        agentB: _FailingPathsAgent(agentB, failOn: {'fails.txt'}),
+        presenter: (plan) async => plan.actions,
+        runMarker: marker,
+      ).run()) {
+        if (event is RunResultEvent) {
+          presentDuringApply.add(await marker.isPresent());
+        }
+        expect(event, isNot(isA<RunErrorEvent>()));
+      }
+
+      expect(presentDuringApply, [true, true]);
+      expect(await marker.isPresent(), isFalse);
+    }, testOn: 'linux');
+
+    test('stays when the apply ends in an error', () async {
+      await File('${replicaADir.path}/new.txt').writeAsString('a');
+
+      final events = RunController(
+        agentA: agentA,
+        agentB: _FailingPathsAgent(agentB, failOn: {}, refuseMarks: true),
+        presenter: (plan) async => plan.actions,
+        runMarker: marker,
+      ).run();
+
+      // Taken as either shape a fatal failure reaches a head in: an error
+      // from inside `_runLocked` currently arrives as a stream error rather
+      // than a `RunErrorEvent`, which is not what this test is about.
+      Object? failure;
+      await for (final event in events.handleError((Object e) => failure = e)) {
+        if (event is RunErrorEvent) failure = event.error;
+      }
+      expect('$failure', contains('the marks were refused'));
+      expect(await marker.isPresent(), isTrue);
+    }, testOn: 'linux');
+
+    test('a stale one is cleared by a run with nothing to apply', () async {
+      await marker.create();
+
+      await RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+        runMarker: marker,
+      ).run().toList();
+
+      expect(await marker.isPresent(), isFalse);
+    }, testOn: 'linux');
+  });
+
   group('per-action progress (task e9f31c)', () {
     test('RunResultEvent/RunProgressEvent are emitted per action, in plan '
         'order — not grouped applied-first, failed-second the way replaying '
@@ -1061,7 +1123,14 @@ class _FailingPathsAgent implements Agent {
   final Agent _wrapped;
   final Set<String> failOn;
 
-  _FailingPathsAgent(this._wrapped, {required this.failOn});
+  /// Refuses every intent mark (SPEC §7.6), which fails the whole apply.
+  final bool refuseMarks;
+
+  _FailingPathsAgent(
+    this._wrapped, {
+    required this.failOn,
+    this.refuseMarks = false,
+  });
 
   @override
   Future<ReplicaInfo> hello() => _wrapped.hello();
@@ -1101,8 +1170,12 @@ class _FailingPathsAgent implements Agent {
   Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
 
   @override
-  Future<void> archiveCommit(List<ArchiveCommit> commits) =>
-      _wrapped.archiveCommit(commits);
+  Future<void> archiveCommit(List<ArchiveCommit> commits) {
+    if (refuseMarks && commits.any((commit) => commit is ArchiveIntent)) {
+      return Future.error(Exception('the marks were refused'));
+    }
+    return _wrapped.archiveCommit(commits);
+  }
 
   @override
   Future<void> compact() => _wrapped.compact();

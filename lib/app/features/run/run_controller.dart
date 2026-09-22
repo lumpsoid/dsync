@@ -305,6 +305,7 @@ class SyncRunController {
       agentB: instruments.agent(agents.agentB, side: 'b', remote: true),
       presenter: (plan) => present(plan, request: request),
       metrics: instruments.recorder,
+      runMarker: agents.runMarker,
       // Compiled here, once, from the patterns the profile saved: SPEC §9
       // has the rules come from the initiating side, and `RunController`
       // is what hands them to both replicas — the peer receives the
