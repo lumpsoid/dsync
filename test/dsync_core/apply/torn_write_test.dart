@@ -13,14 +13,18 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:dsync/dsync_core/scan/scan_exchange.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
 
 /// A copy written in place and torn at every step it has, in each of the
-/// three cells SPEC §7.6 lists, must converge on the next run: the source's
-/// content on both sides, no conflict, and never a copy back over the source.
+/// three cells SPEC §7.6 lists. A write that never started, or that finished
+/// and lost only its commit, must converge on the next run by itself. One
+/// that left a partial file must come back as a conflict labelled
+/// interrupted, because a partial file and a user's edit look the same on
+/// disk. Neither may ever copy B back over the source.
 ///
 /// A "run" here is a new process: fresh agents and stores over the same
 /// directories and logs. A *killed* run is one that never flushes or compacts
@@ -103,11 +107,15 @@ void main() {
   File onA(String path) => File('${dirA.path}/$path');
   File onB(String path) => File('${dirB.path}/$path');
 
-  /// The run after a tear, and the run after that: the first must mirror A
-  /// onto B and nothing else, the second must find nothing to do.
-  Future<void> expectConverges() async {
+  /// The run after a tear, and the run after that: the first must finish
+  /// `f` on B and nothing else, the second must find nothing to do.
+  ///
+  /// [sameMtime] is false for a write killed after its bytes and before its
+  /// mtime: B already holds A's content, so the recovery only commits it, and
+  /// B keeps the wrong mtime until its content next changes (SPEC §7.6).
+  Future<void> expectConverges({bool sameMtime = true}) async {
     final (recovery, recovered) = await sync();
-    expect(recovery.conflicts, isEmpty, reason: 'a torn file is not a choice');
+    expect(recovery.conflicts, isEmpty, reason: 'nothing here is a choice');
     expect(
       recovery.actions.where((action) => action.type == ActionType.copyBtoA),
       isEmpty,
@@ -117,11 +125,13 @@ void main() {
 
     expect(await onA('f').readAsBytes(), source, reason: 'A is untouched');
     expect(await onB('f').readAsBytes(), source);
-    expect(
-      (await onB('f').stat()).modified,
-      (await onA('f').stat()).modified,
-      reason: 'the retry propagates the mtime the tear never set',
-    );
+    if (sameMtime) {
+      expect(
+        (await onB('f').stat()).modified,
+        (await onA('f').stat()).modified,
+        reason: 'the retry propagates the mtime the tear never set',
+      );
+    }
 
     final (settled, _) = await sync();
     expect(settled.actions, isEmpty);
@@ -129,6 +139,30 @@ void main() {
     final archiveB = await JsonlArchiveStore(logB, headerB).load();
     expect(archiveB.untrusted, isEmpty);
     expect(archiveB.entries['f']?.hash, _sha256(source));
+  }
+
+  /// The run after a tear that left a partial file on B: `f` is a conflict
+  /// labelled interrupted, A is untouched, and the mark stays until the user
+  /// settles it, so the run after that raises the same conflict again.
+  Future<void> expectInterrupted() async {
+    for (var run = 0; run < 2; run++) {
+      final (recovery, recovered) = await sync();
+      final conflict = recovery.conflicts.single;
+      expect(conflict.path, 'f');
+      expect(conflict.interrupted, isTrue);
+      expect(conflict.onB?.status, ScanStatus.untrusted);
+      expect(
+        recovery.actions.where((action) => action.path == 'f'),
+        isEmpty,
+        reason: 'neither side is written over the other',
+      );
+      expect(recovered!.failed, isEmpty);
+      expect(await onA('f').readAsBytes(), source, reason: 'A is untouched');
+      expect(
+        (await JsonlArchiveStore(logB, headerB).load()).untrusted,
+        contains('f'),
+      );
+    }
   }
 
   /// SPEC §7.6's three cells, each set up so the next run copies `f` from A
@@ -163,35 +197,42 @@ void main() {
     },
   };
 
-  /// Every way the write to `f` on B can stop, as a wrapper around B.
-  final tears = <String, ({Agent Function(Agent) wrap, bool killed})>{
-    for (final at in [0, 1, source.length ~/ 2, source.length - 1])
-      'stream fails after $at bytes': (
-        wrap: (agent) =>
-            _FaultyAgent(agent, writeFile: (write) => write(failAfter: at)),
-        killed: false,
-      ),
-    'every byte lands, killed before the mtime is set': (
-      wrap: (agent) => _FaultyAgent(
-        agent,
-        writeFile: (write) => write(failAfter: source.length),
-      ),
-      killed: true,
-    ),
-    'killed after the mark, before the file is opened': (
-      wrap: (agent) =>
-          _FaultyAgent(agent, writeFile: (_) => throw const _Killed()),
-      killed: true,
-    ),
-    'write completes, the commit batch is lost': (
-      wrap: (agent) => _FaultyAgent(agent, loseRecords: true),
-      killed: false,
-    ),
-    'write completes, killed before the commits are flushed': (
-      wrap: (agent) => agent,
-      killed: true,
-    ),
-  };
+  /// Every way the write to `f` on B can stop, as a wrapper around B, and
+  /// what the next run makes of it.
+  final tears =
+      <String, ({Agent Function(Agent) wrap, bool killed, _Outcome outcome})>{
+        for (final at in [0, 1, source.length ~/ 2, source.length - 1])
+          'stream fails after $at bytes': (
+            wrap: (agent) =>
+                _FaultyAgent(agent, writeFile: (write) => write(failAfter: at)),
+            killed: false,
+            outcome: _Outcome.interrupted,
+          ),
+        'every byte lands, killed before the mtime is set': (
+          wrap: (agent) => _FaultyAgent(
+            agent,
+            writeFile: (write) => write(failAfter: source.length),
+          ),
+          killed: true,
+          outcome: _Outcome.convergesWithWrongMtime,
+        ),
+        'killed after the mark, before the file is opened': (
+          wrap: (agent) =>
+              _FaultyAgent(agent, writeFile: (_) => throw const _Killed()),
+          killed: true,
+          outcome: _Outcome.converges,
+        ),
+        'write completes, the commit batch is lost': (
+          wrap: (agent) => _FaultyAgent(agent, loseRecords: true),
+          killed: false,
+          outcome: _Outcome.converges,
+        ),
+        'write completes, killed before the commits are flushed': (
+          wrap: (agent) => agent,
+          killed: true,
+          outcome: _Outcome.converges,
+        ),
+      };
 
   for (final MapEntry(key: cell, value: arrange) in cells.entries) {
     group(cell, () {
@@ -214,7 +255,14 @@ void main() {
             reason: 'the mark outlives the tear',
           );
 
-          await expectConverges();
+          switch (fault.outcome) {
+            case _Outcome.converges:
+              await expectConverges();
+            case _Outcome.convergesWithWrongMtime:
+              await expectConverges(sameMtime: false);
+            case _Outcome.interrupted:
+              await expectInterrupted();
+          }
         });
       }
 
@@ -236,7 +284,7 @@ void main() {
             hasLength(1),
           );
 
-          await expectConverges();
+          await expectInterrupted();
         },
       );
 
@@ -255,11 +303,34 @@ void main() {
         final leftover = File('${logB.path}.compact.tmp')
           ..writeAsStringSync('{"op":"header","schemaVersion":2,"prof');
 
-        await expectConverges();
+        await expectInterrupted();
         expect(leftover.existsSync(), isFalse);
       });
     });
   }
+
+  test('a user\'s edit to a marked file after a crash is a conflict, never '
+      'overwritten', () async {
+    onA('f').writeAsBytesSync(old);
+    onB('f').writeAsBytesSync(old);
+    await sync();
+    onA('f').writeAsBytesSync(source);
+    await sync(
+      wrapB: (agent) =>
+          _FaultyAgent(agent, writeFile: (_) => throw const _Killed()),
+      killed: true,
+    );
+    onB('f').writeAsStringSync('the user\'s edit, made after the crash');
+
+    final (next, _) = await sync();
+
+    expect(next.conflicts.single.interrupted, isTrue);
+    expect(next.actions.where((action) => action.path == 'f'), isEmpty);
+    expect(
+      await onB('f').readAsString(),
+      'the user\'s edit, made after the crash',
+    );
+  });
 
   test('a mark that cannot be made fails the apply before anything is '
       'written', () async {
@@ -278,6 +349,9 @@ void main() {
 }
 
 const _old = 'the old content on both sides, before the edit';
+
+/// What the run after a tear makes of it.
+enum _Outcome { converges, convergesWithWrongMtime, interrupted }
 
 String _sha256(List<int> bytes) => sha256.convert(bytes).toString();
 

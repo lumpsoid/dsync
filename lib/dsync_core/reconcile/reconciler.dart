@@ -113,6 +113,7 @@ void _resolveCell(
         other: null,
         onA: entryA != null,
         act: act,
+        conflict: conflict,
       );
       return;
     }
@@ -141,9 +142,21 @@ void _resolveCell(
     case (ScanStatus.untrusted, ScanStatus.untrusted):
       conflict();
     case (ScanStatus.untrusted, _):
-      _resolveUntrusted(untrusted: entryA, other: entryB, onA: true, act: act);
+      _resolveUntrusted(
+        untrusted: entryA,
+        other: entryB,
+        onA: true,
+        act: act,
+        conflict: conflict,
+      );
     case (_, ScanStatus.untrusted):
-      _resolveUntrusted(untrusted: entryB, other: entryA, onA: false, act: act);
+      _resolveUntrusted(
+        untrusted: entryB,
+        other: entryA,
+        onA: false,
+        act: act,
+        conflict: conflict,
+      );
 
     case (ScanStatus.unchanged, ScanStatus.unchanged):
       // Same hash — the overwhelmingly normal case — is "nothing", exactly
@@ -195,21 +208,24 @@ void _resolveCell(
   }
 }
 
-/// Resolves a path one side has marked untrusted (SPEC §7.6): read as though
-/// that side had never seen it, so the other side is mirrored onto it.
+/// Resolves a path one side has marked untrusted (SPEC §7.6).
 ///
-/// Mirroring is what makes a torn write a retry rather than a local change:
-/// the other side's copy is written again whatever the torn file holds, never
-/// the reverse, and never a conflict. Even equal content is copied rather than
-/// committed, because a write torn after its bytes and before its mtime holds
-/// the right content under the wrong metadata, and a commit would archive that.
+/// A marked file reaches here only when it no longer matches its archive
+/// entry (the scanner reads one that still does as unmarked), so it is either
+/// what the write left or a user's edit since, and nothing on disk tells the
+/// two apart. Holding the other side's content means the write finished and
+/// only its commit was lost, so a commit-only records it. Anything else is a
+/// conflict, which [Conflict.interrupted] labels as possibly incomplete. That
+/// includes the other side having nothing, deleted or silent: deleting the
+/// marked file could destroy a user's edit, so the user decides.
 ///
-/// When the other side has nothing to mirror — it reports `deleted`, or is
-/// silent because the file it was copied from is gone without ever having been
-/// committed — the marked side's file is deleted rather than kept. It is only
-/// what a write that never finished left behind; keeping it would hand it to
-/// the next run as a `created` file and copy it back. A marked path with no
-/// file needs only its mark cleared, which a commit-only's tombstone does.
+/// A write killed after its bytes and before its mtime commits with the wrong
+/// mtime until its content next changes, the same exposure §7.4 accepts for
+/// mode bits.
+///
+/// A marked path with no file and no entry was never written: it is read as
+/// a side that has never seen the path, so the other side is mirrored onto
+/// it, or with nothing to mirror a commit-only's tombstone clears the mark.
 ///
 /// [onA] says which side is the marked one.
 void _resolveUntrusted({
@@ -217,16 +233,19 @@ void _resolveUntrusted({
   required ScanEntry? other,
   required bool onA,
   required void Function(ActionType type, {int bytes}) act,
+  required void Function() conflict,
 }) {
-  if (other != null && other.isPresent) {
-    act(
-      onA ? ActionType.copyBtoA : ActionType.copyAtoB,
-      bytes: _transferBytes(other),
-    );
-  } else if (untrusted.isPresent) {
-    act(onA ? ActionType.deleteOnA : ActionType.deleteOnB);
-  } else {
+  if (!untrusted.isPresent) {
+    other != null && other.isPresent
+        ? act(
+            onA ? ActionType.copyBtoA : ActionType.copyAtoB,
+            bytes: _transferBytes(other),
+          )
+        : act(ActionType.commitOnly);
+  } else if (other != null && other.isPresent && other.hash == untrusted.hash) {
     act(ActionType.commitOnly);
+  } else {
+    conflict();
   }
 }
 

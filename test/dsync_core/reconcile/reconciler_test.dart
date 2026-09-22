@@ -468,16 +468,16 @@ void main() {
   });
 
   group('untrusted (SPEC §7.6)', () {
-    ScanEntry untrusted(String path) => ScanEntry(
+    ScanEntry untrusted(String path, {String hash = 'torn'}) => ScanEntry(
       path: path,
       reason: ScanReason.untrusted,
       size: 3,
       mtime: 1,
       mode: 420,
+      hash: hash,
     );
 
-    test('is mirrored from the other side whatever that side reports, even '
-        'equal content', () {
+    test('holding the other side\'s content is committed, not copied', () {
       for (final other in [
         ScanStatus.unchanged,
         ScanStatus.created,
@@ -485,20 +485,45 @@ void main() {
       ]) {
         final towardB = reconciler.reconcile(
           [entry('f', other)],
-          [untrusted('f')],
+          [untrusted('f', hash: 'h')],
         );
-        expect(actionFor(towardB, 'f'), ActionType.copyAtoB, reason: '$other');
+        expect(
+          actionFor(towardB, 'f'),
+          ActionType.commitOnly,
+          reason: '$other',
+        );
         expect(towardB.conflicts, isEmpty);
 
         final towardA = reconciler.reconcile(
-          [untrusted('f')],
+          [untrusted('f', hash: 'h')],
           [entry('f', other)],
         );
-        expect(actionFor(towardA, 'f'), ActionType.copyBtoA, reason: '$other');
+        expect(
+          actionFor(towardA, 'f'),
+          ActionType.commitOnly,
+          reason: '$other',
+        );
       }
     });
 
-    test('is mirrored onto when absent too', () {
+    test('holding anything else is an interrupted conflict, whatever the '
+        'other side reports', () {
+      for (final other in [
+        ScanStatus.unchanged,
+        ScanStatus.created,
+        ScanStatus.modified,
+      ]) {
+        for (final plan in [
+          reconciler.reconcile([entry('f', other)], [untrusted('f')]),
+          reconciler.reconcile([untrusted('f')], [entry('f', other)]),
+        ]) {
+          expect(plan.actions, isEmpty, reason: '$other');
+          expect(plan.conflicts.single.interrupted, isTrue, reason: '$other');
+        }
+      }
+    });
+
+    test('is mirrored onto when absent', () {
       final plan = reconciler.reconcile(
         [entry('f', ScanStatus.unchanged)],
         [const ScanEntry.untrustedAbsent('f')],
@@ -506,15 +531,24 @@ void main() {
       expect(actionFor(plan, 'f'), ActionType.copyAtoB);
     });
 
-    test('with nothing to mirror, its file is deleted rather than kept', () {
+    test('with nothing on the other side, its file is a conflict rather than '
+        'deleted', () {
       for (final onA in [
         <ScanEntry>[],
         [entry('f', ScanStatus.deleted)],
       ]) {
         final plan = reconciler.reconcile(onA, [untrusted('f')]);
-        expect(actionFor(plan, 'f'), ActionType.deleteOnB);
-        expect(plan.conflicts, isEmpty);
+        expect(plan.actions, isEmpty);
+        expect(plan.conflicts.single.interrupted, isTrue);
       }
+    });
+
+    test('an ordinary conflict is not labelled interrupted', () {
+      final plan = reconciler.reconcile(
+        [entry('f', ScanStatus.modified, hash: 'x')],
+        [entry('f', ScanStatus.modified, hash: 'y')],
+      );
+      expect(plan.conflicts.single.interrupted, isFalse);
     });
 
     test('with nothing to mirror and no file, only the mark is cleared', () {

@@ -196,6 +196,7 @@ Map<String, dynamic> _conflictToJson(Conflict conflict) => {
   if (conflict.onA != null) 'onAReason': conflict.onA!.reason.name,
   if (conflict.onB != null) 'onB': conflict.onB!.status.name,
   if (conflict.onB != null) 'onBReason': conflict.onB!.reason.name,
+  if (conflict.interrupted) 'interrupted': true,
 };
 
 /// One side of a `replicas` line (task ee190c's DECIDED): this side's

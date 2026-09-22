@@ -420,7 +420,8 @@ class HumanRenderer {
     out.writeln(
       'conflict  ${conflict.path}  '
       '(A: ${_describeSide(conflict.onA)}, '
-      'B: ${_describeSide(conflict.onB)})',
+      'B: ${_describeSide(conflict.onB)})'
+      '${conflict.interrupted ? '  interrupted, may be incomplete' : ''}',
     );
   }
 
@@ -440,7 +441,7 @@ class HumanRenderer {
     ScanReason.modified => 'rehash differed from archive',
     ScanReason.created => 'no archive entry',
     ScanReason.deleted => 'archive entry, file absent',
-    ScanReason.untrusted => 'written in place, never committed',
+    ScanReason.untrusted => 'written in place, never committed, changed since',
   };
 
   /// SPEC §11.3/§11.4: the plan table, shown before apply. Conflicts are not

@@ -419,6 +419,30 @@ void main() {
       expect(decoded['onBReason'], 'hashMatched');
     });
 
+    test('conflict: one over a write in place that never committed is '
+        'labelled interrupted (SPEC §7.6); any other omits the key', () async {
+      final r = _Rendered();
+      const event = RunConflictEvent(
+        Conflict(
+          path: 't.txt',
+          onA: ScanEntry(path: 't.txt', reason: ScanReason.modified),
+          onB: ScanEntry(path: 't.txt', reason: ScanReason.untrusted),
+        ),
+      );
+      const ordinary = RunConflictEvent(
+        Conflict(
+          path: 'c.txt',
+          onA: ScanEntry(path: 'c.txt', reason: ScanReason.modified),
+          onB: ScanEntry(path: 'c.txt', reason: ScanReason.modified),
+        ),
+      );
+
+      final decoded = await _renderAll(r, [event, ordinary]);
+
+      expect(decoded.first['interrupted'], isTrue);
+      expect(decoded.last.containsKey('interrupted'), isFalse);
+    });
+
     test('conflict: a side with no record omits its key, not a null', () async {
       final r = _Rendered();
       const event = RunConflictEvent(

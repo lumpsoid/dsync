@@ -1265,37 +1265,78 @@ void main() {
     Archive marked(Map<String, ArchiveEntry> entries, Set<String> untrusted) =>
         Archive(header: header, entries: entries, untrusted: untrusted);
 
-    test('a marked file is untrusted ahead of the fast path, and not '
-        'hashed', () async {
-      final file = File('${tempDir.path}/a.txt')..writeAsStringSync('torn');
+    ArchiveEntry entryOf(String path, File file, String content) {
       final stat = file.statSync();
+      return ArchiveEntry(
+        path: path,
+        size: stat.size,
+        mtime: stat.modified.microsecondsSinceEpoch,
+        mode: stat.mode & 0xFFF,
+        hash: hashOf(content),
+      );
+    }
+
+    test('a marked file that still matches its entry is scanned as though '
+        'unmarked', () async {
+      final file = File('${tempDir.path}/a.txt')..writeAsStringSync('same');
 
       final entries = (await Scanner().scan(
         rootPath: tempDir.path,
-        // Size and mtime match, so without the mark this is the fast path.
+        archive: marked({'a.txt': entryOf('a.txt', file, 'same')}, {'a.txt'}),
+      )).entries;
+
+      expect(entryFor(entries, 'a.txt').reason, ScanReason.metadataMatched);
+    });
+
+    test('a marked file whose content still matches its entry is scanned as '
+        'though unmarked', () async {
+      final file = File('${tempDir.path}/a.txt')..writeAsStringSync('same');
+      final entry = entryOf('a.txt', file, 'same');
+
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
         archive: marked(
           {
             'a.txt': ArchiveEntry(
               path: 'a.txt',
-              size: stat.size,
-              mtime: stat.modified.microsecondsSinceEpoch,
-              mode: stat.mode & 0xFFF,
-              hash: hashOf('torn'),
+              size: entry.size,
+              mtime: entry.mtime - 1,
+              mode: entry.mode,
+              hash: entry.hash,
             ),
           },
           {'a.txt'},
         ),
       )).entries;
 
-      final entry = entryFor(entries, 'a.txt');
-      expect(entry.status, ScanStatus.untrusted);
-      expect(entry.size, stat.size);
-      expect(entry.hash, isNull);
-      expect(entry.isPresent, isTrue);
+      expect(entryFor(entries, 'a.txt').reason, ScanReason.hashMatched);
     });
 
-    test('a marked path with no file is untrusted and absent, never '
-        'deleted — entry or no entry', () async {
+    test('a marked file that no longer matches its entry, or has none, is '
+        'untrusted and hashed', () async {
+      final file = File('${tempDir.path}/a.txt')..writeAsStringSync('old');
+      final entry = entryOf('a.txt', file, 'old');
+      file.writeAsStringSync('torn, or edited');
+      File('${tempDir.path}/new.txt').writeAsStringSync('torn');
+
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: marked({'a.txt': entry}, {'a.txt', 'new.txt'}),
+      )).entries;
+
+      for (final (path, content) in [
+        ('a.txt', 'torn, or edited'),
+        ('new.txt', 'torn'),
+      ]) {
+        final scanned = entryFor(entries, path);
+        expect(scanned.status, ScanStatus.untrusted, reason: path);
+        expect(scanned.hash, hashOf(content), reason: path);
+        expect(scanned.isPresent, isTrue, reason: path);
+      }
+    });
+
+    test('a marked path with no file is deleted when it has an entry, and '
+        'untrusted and absent when it has none', () async {
       final entries = (await Scanner().scan(
         rootPath: tempDir.path,
         archive: marked(
@@ -1313,11 +1354,10 @@ void main() {
       )).entries;
 
       expect(entries, hasLength(2));
-      for (final path in ['had.txt', 'never.txt']) {
-        final entry = entryFor(entries, path);
-        expect(entry.status, ScanStatus.untrusted);
-        expect(entry.isPresent, isFalse);
-      }
+      expect(entryFor(entries, 'had.txt').status, ScanStatus.deleted);
+      final never = entryFor(entries, 'never.txt');
+      expect(never.status, ScanStatus.untrusted);
+      expect(never.isPresent, isFalse);
     });
   });
 }

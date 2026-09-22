@@ -37,10 +37,10 @@ enum ScanReason {
   deleted,
 
   /// The archive marks the path as written in place by an action that never
-  /// committed (SPEC §7.6), so whatever is there may be a torn write. Decided
-  /// before any of the branches above, whatever the file's size, mtime or
-  /// content, and never hashed — nothing on disk can make the mark untrue.
-  /// Implies [ScanStatus.untrusted].
+  /// committed (SPEC §7.6), and the file no longer matches its entry, so it
+  /// may be a torn write or a user's edit and nothing on disk tells which. A
+  /// marked file that still matches its entry takes the branches above as
+  /// though unmarked. Implies [ScanStatus.untrusted].
   untrusted;
 
   /// The [ScanStatus] this reason implies (SPEC §5.2) — the coarse view
@@ -60,9 +60,8 @@ enum ScanReason {
 ///
 /// [size], [mtime], [mode], [hash] reflect the file as read during this scan;
 /// they are `null` when [status] is [ScanStatus.deleted], since there is
-/// nothing left on disk to report. An [ScanStatus.untrusted] entry has no
-/// [hash] — its content is not worth hashing — and no [size], [mtime] or
-/// [mode] either when the marked path has no file on disk at all. They are present even for
+/// nothing left on disk to report, and when an [ScanStatus.untrusted] path
+/// has no file on disk at all. They are present even for
 /// [ScanStatus.unchanged], so the caller can refresh the archive entry when a
 /// rehash confirmed the content is the same but size/mtime had drifted
 /// (SPEC §5.2).
@@ -88,8 +87,9 @@ class ScanEntry {
   const ScanEntry.deleted(String path)
     : this(path: path, reason: ScanReason.deleted);
 
-  /// A marked path with no file on disk (SPEC §7.6): the write it was marked
-  /// for never created one, or the file was removed since.
+  /// A marked path with no file on disk and no archive entry (SPEC §7.6): the
+  /// write it was marked for never created one, or the file was removed
+  /// since.
   const ScanEntry.untrustedAbsent(String path)
     : this(path: path, reason: ScanReason.untrusted);
 

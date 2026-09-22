@@ -170,8 +170,9 @@ class Scanner {
     final unreadable = UnreadablePaths.from(context.skipped);
 
     // Walked for what the walk did not find: an archived path that is gone,
-    // or a marked one (SPEC §7.6) with no file — marked whether or not it
-    // has an entry, since a first write in place has none to leave behind.
+    // or a marked one (SPEC §7.6) with no file and no entry. A marked path
+    // with an entry and no file is an ordinary deletion: a write in place
+    // truncates, it never removes, so only a user could have.
     bool unseen(String path) =>
         !context.seen.contains(path) &&
         !context.rules.ignores(path) &&
@@ -183,11 +184,11 @@ class Scanner {
         !unreadable.covers(path);
     final deletedPaths = [
       for (final path in archive.entries.keys)
-        if (unseen(path) && !archive.untrusted.contains(path)) path,
+        if (unseen(path)) path,
     ];
     final absentUntrusted = [
       for (final path in archive.untrusted)
-        if (unseen(path)) path,
+        if (unseen(path) && !archive.entries.containsKey(path)) path,
     ];
 
     // SPEC §16: computed after `unreadable` above, and added to
@@ -437,27 +438,13 @@ class Scanner {
     final size = stat.size;
     final mtime = stat.modified.microsecondsSinceEpoch;
     final mode = stat.mode & 0xFFF; // permission + setuid/setgid/sticky bits
-    // Ahead of the fast path and instead of a hash (SPEC §7.6): the mark says
-    // whatever is here was left by a write that never committed, and nothing
-    // its size, mtime or content could say would clear that.
-    if (context.archive.untrusted.contains(relativePath)) {
-      context.fastPath.add(
-        ScanEntry(
-          path: relativePath,
-          reason: ScanReason.untrusted,
-          size: size,
-          mtime: mtime,
-          mode: mode,
-        ),
-      );
-      return;
-    }
-
     final existing = context.archive.entries[relativePath];
 
     // Deliberately keyed on size and mtime alone (SPEC §5.2): a mode-only
     // change leaves the file `unchanged` and is not propagated, which §7.4
-    // states outright.
+    // states outright. It holds for a marked path too (SPEC §7.6): a plan
+    // only writes over a file that matched its entry, so one that still does
+    // is a write that never started.
     if (existing != null && existing.size == size && existing.mtime == mtime) {
       context.fastPath.add(
         ScanEntry(
@@ -480,6 +467,7 @@ class Scanner {
         mtime: mtime,
         mode: mode,
         existing: existing,
+        marked: context.archive.untrusted.contains(relativePath),
       ),
     );
   }
@@ -809,6 +797,10 @@ class _HashCandidate {
   final int mode;
   final ArchiveEntry? existing;
 
+  /// Whether the archive marks [path] as written in place by an action that
+  /// never committed (SPEC §7.6).
+  final bool marked;
+
   _HashCandidate({
     required this.absolutePath,
     required this.path,
@@ -816,6 +808,7 @@ class _HashCandidate {
     required this.mtime,
     required this.mode,
     required this.existing,
+    required this.marked,
   });
 
   /// This candidate's [ScanEntry], given the digest [_hashBatch] computed for
@@ -826,11 +819,16 @@ class _HashCandidate {
   /// is decided here, against the [ArchiveEntry] that never had to leave.
   ScanEntry entryFor(String digest) {
     final existing = this.existing;
-    final reason = existing == null
+    final reason = existing != null && existing.hash == digest
+        ? ScanReason.hashMatched
+        // A marked file that no longer matches its entry was changed by the
+        // write, or by a user since, and nothing on disk tells which (SPEC
+        // §7.6). The reconciler weighs it against the other side's hash.
+        : marked
+        ? ScanReason.untrusted
+        : existing == null
         ? ScanReason.created
-        : (existing.hash == digest
-              ? ScanReason.hashMatched
-              : ScanReason.modified);
+        : ScanReason.modified;
 
     return ScanEntry(
       path: path,

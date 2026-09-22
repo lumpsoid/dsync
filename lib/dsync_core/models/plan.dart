@@ -54,6 +54,12 @@ class Conflict {
   final ScanEntry? onB;
 
   const Conflict({required this.path, this.onA, this.onB});
+
+  /// Whether a side holds a file a write in place never committed (SPEC
+  /// §7.6): it may be incomplete, and a head says so.
+  bool get interrupted =>
+      onA?.status == ScanStatus.untrusted ||
+      onB?.status == ScanStatus.untrusted;
 }
 
 /// The result of reconciling two replicas' status lists: what to do, and

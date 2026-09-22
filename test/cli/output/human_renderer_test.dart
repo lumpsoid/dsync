@@ -210,6 +210,25 @@ void main() {
       expect(r.out.buffer.toString(), contains('c.txt'));
     });
 
+    test('labels a conflict over a write in place that never committed '
+        '(SPEC §7.6), and only that one', () {
+      final r = _Rendered();
+      r.renderer.render(_conflict);
+      r.renderer.render(
+        const RunConflictEvent(
+          Conflict(
+            path: 't.txt',
+            onA: ScanEntry(path: 't.txt', reason: ScanReason.modified),
+            onB: ScanEntry(path: 't.txt', reason: ScanReason.untrusted),
+          ),
+        ),
+      );
+
+      final lines = r.out.buffer.toString().trim().split('\n');
+      expect(lines.first, isNot(contains('interrupted')));
+      expect(lines.last, contains('interrupted, may be incomplete'));
+    });
+
     test('does not show the reason behind either side\'s status '
         '(verbose-only, SPEC §11.4, task 8a3ff1)', () {
       final r = _Rendered();
