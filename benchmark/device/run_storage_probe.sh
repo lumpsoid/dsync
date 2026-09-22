@@ -44,7 +44,7 @@ set -euo pipefail
 source_tree=""
 limit=2000
 cap=0
-rungs="bare,chunked,create,temp,temp-reuse,mtime,mode,full,fsync,statonly"
+rungs="bare,chunked,create,temp,temp-reuse,temp-named,temp-dir-fresh,temp-dir-reuse,mtime,mode,full,fsync,statonly"
 depths="1"
 mounts="fuse,data"
 keep=0
@@ -109,7 +109,7 @@ declare -A dest
 dest[fuse]=/storage/emulated/0/Download/dsync-probe-tree
 dest[data]=/data/local/tmp/dsync-probe-tree
 
-printf '\n  %-6s %-9s %6s %9s %11s %10s\n' mount rung depth "µs a file" "MiB/s" ms
+printf '\n  %-6s %-14s %6s %9s %11s %10s\n' mount rung depth "µs a file" "MiB/s" ms
 for mount in ${mounts//,/ }; do
   tree="${dest[$mount]}"
   adb shell "$remote/storage_probe mkdirs 1 $tree $remote/sizes.txt" >/dev/null
@@ -121,7 +121,7 @@ for mount in ${mounts//,/ }; do
       line=$(adb shell "$remote/storage_probe $rung $depth $tree $remote/sizes.txt")
       eval "${line//$'\r'/}"
       # shellcheck disable=SC2154
-      printf '  %-6s %-9s %6s %9s %11s %10s\n' \
+      printf '  %-6s %-14s %6s %9s %11s %10s\n' \
         "$mount" "$rung" "$depth" \
         "$(awk -v m="$ms" -v f="$files" 'BEGIN{printf "%.0f", m*1000/f}')" \
         "$(awk -v b="$bytes" -v m="$ms" 'BEGIN{printf "%.1f", (m>0) ? b/1048576/(m/1000) : 0}')" \

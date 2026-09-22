@@ -40,6 +40,21 @@
 //             copy pay the create this rung pays once. It keeps the rename and
 //             so keeps the atomicity; if the create is the cost, this is the fix,
 //             and if it is not, this rung says so before anyone writes it.
+//   temp-named  `temp` with the temp named the way `LocalAgent` names it today,
+//             `<target>.dsync-tmp.<pid>.<n>` with `n` never repeating. The
+//             baseline the next three are read against (task 952667 option 1).
+//   temp-dir-fresh  a temp **beside the target** named without it,
+//             `.dsync-tmp.<pid>.<n>`, `n` never repeating. Against `temp-named`:
+//             whether the *shape* of the name costs — a hidden, extension-less
+//             name is one Android's media layer may treat differently.
+//   temp-dir-reuse  the same, with `n` the worker, so a directory sees the same
+//             handful of names again and again. Against `temp-dir-fresh`: what
+//             repeating a name is worth where the app would actually repeat it.
+//             `temp-reuse` repeated it in the root, which the app cannot (§7.2
+//             keeps the temp in the target's directory), and named it
+//             differently, so its 20% was never attributable to either.
+//             A slot keyed on the target's name, as option 1 was first written,
+//             repeats nothing: every target's temp is a new name either way.
 //   mtime     plus utimensat.
 //   mode      plus fchmod.
 //   full      plus a stat of the target afterwards. §7.2's whole sequence.
@@ -83,13 +98,20 @@
 
 enum rung {
   R_BARE, R_CHUNKED, R_CREATE, R_TEMP, R_MTIME, R_MODE, R_FULL, R_FSYNC,
-  R_TEMP_REUSE, R_STATONLY
+  R_TEMP_REUSE, R_TEMP_NAMED, R_TEMP_DIR_FRESH, R_TEMP_DIR_REUSE, R_STATONLY
 };
 
 static const char *rung_names[] = {
   "bare", "chunked", "create", "temp", "mtime", "mode", "full", "fsync",
-  "temp-reuse", "statonly"
+  "temp-reuse", "temp-named", "temp-dir-fresh", "temp-dir-reuse", "statonly"
 };
+
+/* The rungs that are `temp` with a different temp name, and so stop at the
+   rename: no mtime, no mode, no closing stat. */
+static int rename_only(enum rung r) {
+  return r == R_TEMP || r == R_TEMP_REUSE || r == R_TEMP_NAMED ||
+         r == R_TEMP_DIR_FRESH || r == R_TEMP_DIR_REUSE;
+}
 
 static enum rung rung;
 static const char *dir;
@@ -162,6 +184,16 @@ static int do_one(long index, long worker_id) {
     snprintf(temp, PATH_MAX_LEN, "%s/.probe-reuse-%ld", dir, worker_id);
     open_path = temp;
   }
+  if (rung == R_TEMP_NAMED) {
+    char suffix[64];
+    snprintf(suffix, sizeof suffix, ".dsync-tmp.%d.%ld", (int)getpid(), index);
+    path_for(temp, index, suffix);
+  }
+  if (rung == R_TEMP_DIR_FRESH || rung == R_TEMP_DIR_REUSE) {
+    snprintf(temp, PATH_MAX_LEN, "%s/d%ld/.dsync-tmp.%d.%ld",
+             dir, index / FILES_PER_DIR, (int)getpid(),
+             rung == R_TEMP_DIR_REUSE ? worker_id : index);
+  }
   /* A path nothing has written before, so the cost of a *new* file is this
      rung's and not hidden in whichever rung happened to run first. */
   if (rung == R_CREATE) { path_for(temp, index, ".new"); open_path = temp; }
@@ -171,7 +203,7 @@ static int do_one(long index, long worker_id) {
 
   int bad = (rung == R_BARE) ? write_whole(fd, size) : write_chunked(fd, size);
 
-  if (!bad && rung >= R_MTIME && rung != R_TEMP_REUSE) {
+  if (!bad && rung >= R_MTIME && !rename_only(rung)) {
     /* A fixed timestamp: what is measured is the call, and a per-file value
        would mean reading one first. */
     struct timespec times[2];
@@ -179,7 +211,7 @@ static int do_one(long index, long worker_id) {
     times[1] = times[0];
     if (futimens(fd, times) != 0) bad = -1;
   }
-  if (!bad && rung >= R_MODE && rung != R_TEMP_REUSE) {
+  if (!bad && rung >= R_MODE && !rename_only(rung)) {
     if (fchmod(fd, 0644) != 0) bad = -1;
   }
   if (!bad && rung == R_FSYNC) {
@@ -196,7 +228,7 @@ static int do_one(long index, long worker_id) {
   if (rung == R_CREATE) {
     if (unlink(open_path) != 0) bad = -1;
   }
-  if (!bad && rung >= R_FULL && rung != R_TEMP_REUSE) {
+  if (!bad && rung >= R_FULL && !rename_only(rung)) {
     struct stat st;
     if (stat(target, &st) != 0) bad = -1;
   }
@@ -255,7 +287,8 @@ int main(int argc, char **argv) {
   if (argc < 5) {
     fprintf(stderr,
       "usage: storage_probe <rung|mkdirs|seed> <depth> <dir> <sizes-file>\n"
-      "rungs: bare chunked create temp mtime mode full fsync statonly\n");
+      "rungs: bare chunked create temp temp-reuse temp-named temp-dir-fresh\n"
+      "       temp-dir-reuse mtime mode full fsync statonly\n");
     return 2;
   }
   const char *want = argv[1];
