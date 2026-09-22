@@ -357,6 +357,29 @@ Where the 18,240 B goes, cumulatively, at zero payload — one scavenge is ~420 
 
 Three things follow. **Allocation is flat in depth** — what a write allocates does not depend on how many are in flight, which is what makes the serial ladder above valid. **`Applier.defaultConcurrency` of 16 is four times past the knee** on this hardware; harmless here, but the headroom it looks like it has is not there. And **concurrency erases the asynchronous path's wall-time penalty and not its garbage**: §7.2 at four in flight (973 ms) beats the blocking four steps run serially (1,204 ms) while still allocating 2.1× as much. The blocking rung is *flat* at 1,203–1,216 ms from one worker to sixteen, because a worker that never awaits runs its whole share before another gets a turn — so a blocking write path has to be blocking calls *inside isolates*, the shape `ReadPool` already ships for reads, or it wins nothing on time at all.
 
+**On the device, §7.2's write path is the storage and almost nothing else** (`benchmark/device/storage_probe.c`). A static aarch64 binary run over `adb shell` — no APK, no install, no Dart — asks the kernel the same ladder directly. **A second device**, not the one §17's figures come from: a OnePlus 6 (SD845, UFS 2.1) on Android 14 build `AP2A.240905.003`, where `/storage/emulated` is a `/dev/fuse` mount and `/data/local/tmp` is the block device. 850 files, mean 12,988 B, every size capped at one 64 KiB chunk, one worker:
+
+| rung | FUSE µs a file | block device µs a file |
+|---|---|---|
+| one `write()` over a file already there | 2,785 | 65 |
+| the same bytes in 64 KiB `write()`s | 2,751 | 94 |
+| a **new** file written then unlinked | 23,278 | 105 |
+| a fresh temp per file, then `rename` | 30,931 | 126 |
+| one temp **per worker**, then `rename` | 24,729 | — |
+| plus mtime, mode and the closing `stat` — **§7.2** | 32,394 | 132 |
+| §7.2 with an `fsync` before close | 36,402 | 6,238 |
+| `stat` and nothing else | 15 | 11 |
+
+**§7.2 costs 32.4 ms a file on emulated storage against 132 µs on the block device — 242×.** §17 measured the phone writing a file in 35.1 ms serialized. So essentially all of it is Android's emulated-storage layer, with no `dart:io` in it at all; the desktop ladder's garbage findings stand, but they are not what the phone's wall time is made of.
+
+**The bytes are not the cost and the sink is not the cost.** Writing a file's bytes over one already there is 2,785 µs, and doing it in 64 KiB chunks rather than one call is 2,751 — indistinguishable. So §7.2's `IOSink` is fine on latency, and the 6,015 B a file it allocates is a garbage argument only. The mtime, the mode and the closing `stat` together cost under 1.5 ms and are noise at this scale.
+
+**It is the atomic rename.** A rename onto the target is ~22 ms a file; creating a fresh temp for every copy adds ~6 ms on top. Reusing one temp path per worker keeps the atomicity and recovers only that 6 ms — 30,931 µs to 24,729, a 20% win and not the fix it looks like. The 22 ms belongs to the rename itself, because the destination name is what Android's storage layer has bookkeeping for. Writing in place would be 2,785 µs and would give up what §7.2 chose temp-and-rename for.
+
+**`bare` and `chunked` agreeing here is the probe's control, and it was earned.** An earlier version ran the rungs against an empty tree, so whichever ran first paid for creating all 850 files: `bare` read as 16.2 ms against `chunked`'s 2.9 when the two issue an identical syscall for any file under one chunk. The tree is now seeded untimed before any rung.
+
+**A `stat` is 15 µs here, and §5.3's ~330 µs a lookup deserves re-reading because of it.** Twenty-two times apart is too much for two devices alone, and §5.3's figure was taken through `dart:io`'s asynchronous `stat` — which §5 has since priced at ~1,900 B and a great deal of machinery per call. This reading is warm, so it is a floor and not a refutation; task 203cfd carries it.
+
 **This is a desktop reading and the wall times are not the phone's.** What it establishes is where the garbage is and that the blocking shape removes most of it; whether that changes the phone's 35.1 ms a file, and where the concurrency knee is with 16 writes in flight, is task 4c55fd's device half.
 
 ### 7.3 Archive commit per path
