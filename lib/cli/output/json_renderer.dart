@@ -164,7 +164,7 @@ Map<String, dynamic> _actionToJson(PlanAction action) => {
 };
 
 /// One side's [ScanReasonTally] (SPEC §5.2, §11.4, task 1fd42b), as it
-/// appears nested under `a`/`b` on a `scanTally` line. All five counts,
+/// appears nested under `a`/`b` on a `scanTally` line. Every count,
 /// unconditionally — no null-omission here, unlike [_conflictToJson]'s
 /// `onA`/`onB`: every [ScanReason] always has a count (zero when a side had
 /// none), there is no "this side has nothing to say" case to distinguish.
@@ -174,6 +174,7 @@ Map<String, dynamic> _scanReasonTallyToJson(ScanReasonTally tally) => {
   'modified': tally.modified,
   'created': tally.created,
   'deleted': tally.deleted,
+  'untrusted': tally.untrusted,
 };
 
 /// One [Conflict], as it appears standalone on a `conflict` line and nested

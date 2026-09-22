@@ -15,6 +15,7 @@ void main() {
     ScanStatus.created => ScanReason.created,
     ScanStatus.modified => ScanReason.modified,
     ScanStatus.deleted => ScanReason.deleted,
+    ScanStatus.untrusted => ScanReason.untrusted,
   };
 
   ScanEntry entry(
@@ -463,6 +464,86 @@ void main() {
       expect(plan.actions.map((a) => (a.path, a.type)), [
         ('ok.txt', ActionType.copyAtoB),
       ]);
+    });
+  });
+
+  group('untrusted (SPEC §7.6)', () {
+    ScanEntry untrusted(String path) => ScanEntry(
+      path: path,
+      reason: ScanReason.untrusted,
+      size: 3,
+      mtime: 1,
+      mode: 420,
+    );
+
+    test('is mirrored from the other side whatever that side reports, even '
+        'equal content', () {
+      for (final other in [
+        ScanStatus.unchanged,
+        ScanStatus.created,
+        ScanStatus.modified,
+      ]) {
+        final towardB = reconciler.reconcile(
+          [entry('f', other)],
+          [untrusted('f')],
+        );
+        expect(actionFor(towardB, 'f'), ActionType.copyAtoB, reason: '$other');
+        expect(towardB.conflicts, isEmpty);
+
+        final towardA = reconciler.reconcile(
+          [untrusted('f')],
+          [entry('f', other)],
+        );
+        expect(actionFor(towardA, 'f'), ActionType.copyBtoA, reason: '$other');
+      }
+    });
+
+    test('is mirrored onto when absent too', () {
+      final plan = reconciler.reconcile(
+        [entry('f', ScanStatus.unchanged)],
+        [const ScanEntry.untrustedAbsent('f')],
+      );
+      expect(actionFor(plan, 'f'), ActionType.copyAtoB);
+    });
+
+    test('with nothing to mirror, its file is deleted rather than kept', () {
+      for (final onA in [
+        <ScanEntry>[],
+        [entry('f', ScanStatus.deleted)],
+      ]) {
+        final plan = reconciler.reconcile(onA, [untrusted('f')]);
+        expect(actionFor(plan, 'f'), ActionType.deleteOnB);
+        expect(plan.conflicts, isEmpty);
+      }
+    });
+
+    test('with nothing to mirror and no file, only the mark is cleared', () {
+      for (final onA in [
+        <ScanEntry>[],
+        [entry('f', ScanStatus.deleted)],
+      ]) {
+        final plan = reconciler.reconcile(onA, [
+          const ScanEntry.untrustedAbsent('f'),
+        ]);
+        expect(actionFor(plan, 'f'), ActionType.commitOnly);
+      }
+    });
+
+    test('on both sides is a conflict', () {
+      final plan = reconciler.reconcile([untrusted('f')], [untrusted('f')]);
+      expect(plan.actions, isEmpty);
+      expect(isConflict(plan, 'f'), isTrue);
+    });
+
+    test('an absent one is no file for a type mismatch', () {
+      final plan = reconciler.reconcile(
+        [
+          const ScanEntry.untrustedAbsent('d'),
+          entry('d/x', ScanStatus.created),
+        ],
+        [entry('d/x', ScanStatus.created)],
+      );
+      expect(plan.conflicts, isEmpty);
     });
   });
 }

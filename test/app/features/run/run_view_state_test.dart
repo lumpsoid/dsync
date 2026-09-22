@@ -63,6 +63,7 @@ void main() {
     modified: 1,
     created: 1,
     deleted: 0,
+    untrusted: 0,
   );
 
   const createdA = ScanEntry(path: 'both.txt', reason: ScanReason.created);

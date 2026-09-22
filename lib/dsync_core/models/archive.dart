@@ -66,6 +66,22 @@ final class ArchiveTombstone extends ArchiveCommit {
   const ArchiveTombstone(this.path);
 }
 
+/// Marks [path] as about to be written in place, and so untrusted until an
+/// upsert or tombstone for it supersedes the mark (SPEC §7.6).
+///
+/// The one commit that is owed *before* an action rather than after it: a
+/// write in place that stops part-way leaves a file whose size, mtime and hash
+/// are set by where it stopped, and nothing the next scan reads can tell that
+/// apart from a user's edit. Only a record made durable ahead of the bytes can,
+/// which is why `Agent.archiveCommit` returns with a batch holding one of these
+/// only once it is on disk.
+final class ArchiveIntent extends ArchiveCommit {
+  @override
+  final String path;
+
+  const ArchiveIntent(this.path);
+}
+
 /// A replica's archive: its header plus every entry currently committed,
 /// keyed by path. Returned by [ArchiveStore.snapshot] for scan comparison
 /// (SPEC §5).
@@ -73,7 +89,17 @@ class Archive {
   final ArchiveHeader header;
   final Map<String, ArchiveEntry> entries;
 
-  const Archive({required this.header, required this.entries});
+  /// Paths carrying an [ArchiveIntent] no later commit has superseded: written
+  /// in place by an action that never committed, so whatever is on disk there
+  /// may be a torn write (SPEC §7.6). Independent of [entries] — a marked path
+  /// keeps whatever entry it had before the write, or none.
+  final Set<String> untrusted;
+
+  const Archive({
+    required this.header,
+    required this.entries,
+    this.untrusted = const {},
+  });
 }
 
 /// Durable, per-path commit log for one replica's archive (SPEC §7.3, §8).
@@ -94,6 +120,11 @@ abstract class ArchiveStore {
 
   /// Records a tombstone for [path], on the same terms as [commitUpsert].
   Future<void> commitDelete(String path);
+
+  /// Marks [path] untrusted until the next [commitUpsert] or [commitDelete]
+  /// for it, on the same terms as [commitUpsert] — so a caller that needs the
+  /// mark on disk before it acts, which is every caller, follows with [flush].
+  Future<void> commitIntent(String path);
 
   /// Makes every commit recorded so far durable (SPEC §7.3, §8.2).
   ///

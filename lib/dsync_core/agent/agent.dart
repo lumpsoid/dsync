@@ -65,8 +65,10 @@ abstract class Agent {
   /// Streams the current bytes of the file at [path].
   Stream<List<int>> readFile(String path);
 
-  /// Writes [data] to [path]: streamed to a temp file in the same directory
-  /// as the target, then renamed over it so the swap is atomic (SPEC §7.2).
+  /// Writes [data] to [path], in place over whatever is there (SPEC §7.6).
+  /// A write that fails part-way leaves [path] torn, so a caller marks it
+  /// with an [ArchiveIntent] through [archiveCommit] first — that is what
+  /// makes a torn file retried rather than read as a local change.
   /// Sets mtime and mode from [mtime] and [mode] on a best-effort basis
   /// (SPEC §7.4) and returns the metadata actually observed afterward,
   /// which the caller archives even if it differs from what was requested.
@@ -95,6 +97,10 @@ abstract class Agent {
   /// pay that trip once. Durability is still §8.2's — buffered, fsynced in
   /// batches, flushed by [unlock] — so what this batches is the *wire*, not
   /// the fsync, and the two bounds are independent.
+  ///
+  /// **An [ArchiveIntent] is the exception to that**: a batch holding one
+  /// returns only once it is durable, because it is owed *before* the write
+  /// it covers rather than after (SPEC §7.6).
   ///
   /// **All or nothing to the caller.** A batch that throws leaves every path
   /// in it uncommitted as far as the caller is concerned, and `Applier` fails

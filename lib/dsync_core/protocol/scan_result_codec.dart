@@ -55,7 +55,7 @@
 /// phase 1, a ChangedScan:
 ///   [entry block: the changed entries][skipped block]
 ///   [u32 metadataMatched][u32 hashMatched][u32 modified][u32 created]
-///   [u32 deleted]
+///   [u32 deleted][u32 untrusted]
 ///
 /// phase 2, a BucketDigests:
 ///   [u32 digestCount]
@@ -118,7 +118,8 @@ Uint8List encodeChangedScan(ChangedScan scan) {
     ..uint32(tally.hashMatched)
     ..uint32(tally.modified)
     ..uint32(tally.created)
-    ..uint32(tally.deleted);
+    ..uint32(tally.deleted)
+    ..uint32(tally.untrusted);
   return writer.take();
 }
 
@@ -136,6 +137,7 @@ ChangedScan decodeChangedScan(List<int> payload) {
     modified: reader.uint32(),
     created: reader.uint32(),
     deleted: reader.uint32(),
+    untrusted: reader.uint32(),
   );
   return ChangedScan(
     entries: entries,

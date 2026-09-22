@@ -18,6 +18,13 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// as a phase-1 payload and find garbage where the tally should be. The bump
 /// turns both into one refusal at the handshake.
 ///
+/// **5 since task 58d609**, which writes a copy in place behind an
+/// `ArchiveIntent` (SPEC §7.6) and reports marked paths as
+/// `ScanReason.untrusted`. Both are new spellings a version-4 peer refuses —
+/// the commit at its `archiveCommitFromJson`, the reason at its scan decoder.
+/// Both refusals are loud, but one arrives mid-scan; the bump turns them into
+/// one refusal at the handshake, before either replica is touched.
+///
 /// **3 since task 9d2158**, which replaced the per-path `archiveCommitUpsert`
 /// and `archiveCommitDelete` operations with one `archiveCommit` carrying a
 /// batch of records (SPEC §7.3). This is the change the paragraph below
@@ -70,7 +77,7 @@ import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 /// a constant that can be compared. **Replacing an operation** — 9d2158 —
 /// fails loudly at the far end's `default` case, but only once the run is
 /// already half done, which is why it took a bump as well.
-const protocolVersion = 4;
+const protocolVersion = 5;
 
 /// Performs the first exchange on a connection (SPEC §4.2): sends this
 /// build's [protocolVersion] as a control frame, then reads the peer's.

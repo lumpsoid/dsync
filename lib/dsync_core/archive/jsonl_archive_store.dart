@@ -58,6 +58,10 @@ class JsonlArchiveStore implements ArchiveStore {
   /// the size of the tree.
   final Map<String, ArchiveEntry> _entries = {};
 
+  /// Paths whose last line is an intent (SPEC §7.6). Mutated in place like
+  /// [_entries], and for the same reason.
+  final Set<String> _intents = {};
+
   /// Completes when the commit currently in progress is finished with the
   /// log — see [_serialized].
   Future<void> _committing = Future<void>.value();
@@ -71,7 +75,7 @@ class JsonlArchiveStore implements ArchiveStore {
   final Stopwatch _pendingAge = Stopwatch();
 
   /// Commit lines currently on disk in [_logFile], not counting the header.
-  /// Compared against `_entries.length` to tell whether the log already holds
+  /// Compared against [_liveLineCount] to tell whether the log already holds
   /// exactly one upsert per live path — i.e. compaction would be a no-op.
   int _logLineCount = 0;
 
@@ -129,6 +133,7 @@ class JsonlArchiveStore implements ArchiveStore {
 
   Future<Archive> _load() async {
     final entries = <String, ArchiveEntry>{};
+    final intents = <String>{};
     var lineCount = 0;
     var torn = false;
     _logExists = await _logFile.exists();
@@ -163,7 +168,7 @@ class JsonlArchiveStore implements ArchiveStore {
         }
         final previous = held;
         if (previous != null) {
-          _replay(previous, entries);
+          _replay(previous, entries, intents);
           lineCount++;
         }
         held = line;
@@ -171,7 +176,7 @@ class JsonlArchiveStore implements ArchiveStore {
       final last = held;
       if (last != null) {
         try {
-          _replay(last, entries);
+          _replay(last, entries, intents);
           lineCount++;
         } on FormatException {
           // A crash partway through an append leaves a half-written last
@@ -185,17 +190,31 @@ class JsonlArchiveStore implements ArchiveStore {
     _entries
       ..clear()
       ..addAll(entries);
+    _intents
+      ..clear()
+      ..addAll(intents);
     _logLineCount = lineCount;
     _needsRepair = torn;
     return snapshot();
   }
 
-  /// Folds one commit line into [entries]; the last line for a path wins.
+  /// Folds one commit line into [entries] and [intents]; the last line for a
+  /// path wins, except that an intent leaves the path's entry where it was —
+  /// it says the file may no longer match it, not that the entry is gone.
   /// Throws [FormatException] when the line is not JSON — which is how
   /// [_load] tells a torn tail from corruption.
-  void _replay(String line, Map<String, ArchiveEntry> entries) {
+  void _replay(
+    String line,
+    Map<String, ArchiveEntry> entries,
+    Set<String> intents,
+  ) {
     final record = jsonDecode(line) as Map<String, dynamic>;
     final path = record['path'] as String;
+    if (record['op'] == 'intent') {
+      intents.add(path);
+      return;
+    }
+    intents.remove(path);
     if (record['op'] == 'delete') {
       entries.remove(path);
     } else {
@@ -259,6 +278,7 @@ class JsonlArchiveStore implements ArchiveStore {
   Future<void> commitUpsert(ArchiveEntry entry) => _serialized(() async {
     _record(_upsertRecord(entry));
     _entries[entry.path] = entry;
+    _intents.remove(entry.path);
     await _writeIfDue();
   });
 
@@ -266,6 +286,14 @@ class JsonlArchiveStore implements ArchiveStore {
   Future<void> commitDelete(String path) => _serialized(() async {
     _record({'op': 'delete', 'path': path});
     _entries.remove(path);
+    _intents.remove(path);
+    await _writeIfDue();
+  });
+
+  @override
+  Future<void> commitIntent(String path) => _serialized(() async {
+    _record(_intentRecord(path));
+    _intents.add(path);
     await _writeIfDue();
   });
 
@@ -294,19 +322,24 @@ class JsonlArchiveStore implements ArchiveStore {
   });
 
   Future<void> _compact() async {
-    if (!_needsRepair && _logLineCount == _entries.length) return;
+    if (!_needsRepair && _logLineCount == _liveLineCount) return;
 
     final tempFile = File('${_logFile.path}.compact.tmp');
     final lines = [
       _headerRecord(),
       for (final entry in _entries.values) _upsertRecord(entry),
+      // Carried forward, after the entries they qualify: dropping one here
+      // would turn a torn write back into what looks like a user's edit
+      // (SPEC §7.6), and replaying it before its entry would let the entry's
+      // upsert clear it.
+      for (final path in _intents) _intentRecord(path),
     ].map(jsonEncode).join('\n');
     // flush: true is fsync — the replacement has to be on disk before the
     // rename swaps it in, or a crash in that window loses the whole archive
     // rather than one commit.
     await tempFile.writeAsString('$lines\n', flush: true);
     await tempFile.rename(_logFile.path);
-    _logLineCount = _entries.length;
+    _logLineCount = _liveLineCount;
     _needsRepair = false;
     _logExists = true;
   }
@@ -317,14 +350,26 @@ class JsonlArchiveStore implements ArchiveStore {
   /// result across commits — [LocalAgent] does, to compare the scan against
   /// the archive it loaded — must not see it shift underneath.
   @override
-  Archive snapshot() =>
-      Archive(header: _header, entries: Map.unmodifiable(_entries));
+  Archive snapshot() => Archive(
+    header: _header,
+    entries: Map.unmodifiable(_entries),
+    untrusted: Set.unmodifiable(_intents),
+  );
+
+  /// How many commit lines a freshly compacted log holds: one upsert per
+  /// live path and one intent per marked one.
+  int get _liveLineCount => _entries.length + _intents.length;
 
   Map<String, Object?> _headerRecord() => {
     'op': 'header',
     'schemaVersion': _header.schemaVersion,
     'profileId': _header.profileId,
     'rootPath': _header.rootPath,
+  };
+
+  Map<String, Object?> _intentRecord(String path) => {
+    'op': 'intent',
+    'path': path,
   };
 
   Map<String, Object?> _upsertRecord(ArchiveEntry entry) => {

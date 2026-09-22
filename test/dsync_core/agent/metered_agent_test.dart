@@ -90,18 +90,19 @@ void main() {
   }
 
   test(
-    'a copy costs four operations, two of them on the destination',
+    'a copy costs five operations, three of them on the destination',
     () async {
       File('${rootA.path}/note.txt').writeAsStringSync('hello');
 
       final snapshot = await runSync();
 
-      // SPEC §7.2 and §7.3, counted: the source streams the file and commits
-      // its own archive entry; the destination writes it and commits one too.
+      // SPEC §7.2, §7.3 and §7.6, counted: the source streams the file and
+      // commits its own archive entry; the destination is marked, writes it
+      // and commits one too.
       expect(count(snapshot, 'a', AgentOp.readFile), 1);
       expect(count(snapshot, 'a', AgentOp.archiveCommit), 1);
       expect(count(snapshot, 'b', AgentOp.writeFile), 1);
-      expect(count(snapshot, 'b', AgentOp.archiveCommit), 1);
+      expect(count(snapshot, 'b', AgentOp.archiveCommit), 2);
     },
   );
 
@@ -118,7 +119,8 @@ void main() {
 
     expect(count(snapshot, 'b', AgentOp.writeFile), 10);
     expect(count(snapshot, 'a', AgentOp.readFile), 10);
-    expect(count(snapshot, 'b', AgentOp.archiveCommit), 1);
+    // One exchange of marks for the whole plan (SPEC §7.6), one of records.
+    expect(count(snapshot, 'b', AgentOp.archiveCommit), 2);
     expect(count(snapshot, 'a', AgentOp.archiveCommit), 1);
   });
 
@@ -144,13 +146,14 @@ void main() {
     // construction, so it is the only one they write to. `delete` and
     // `removeEmptyDirs` happen in the second run alone; the commits are two
     // per side, one run each, since a tombstone and an upsert are the same
-    // operation now that both travel in a batch.
+    // operation now that both travel in a batch — plus the first run's
+    // marks on B, the side it copied to (SPEC §7.6).
     final snapshot = await runSync();
 
     expect(count(snapshot, 'b', AgentOp.delete), 1);
     expect(count(snapshot, 'b', AgentOp.removeEmptyDirs), 1);
     expect(count(snapshot, 'a', AgentOp.archiveCommit), 2);
-    expect(count(snapshot, 'b', AgentOp.archiveCommit), 2);
+    expect(count(snapshot, 'b', AgentOp.archiveCommit), 3);
   });
 
   test('a run records every phase it reached, and only those', () async {

@@ -1260,4 +1260,64 @@ void main() {
       });
     });
   });
+
+  group('untrusted (SPEC §7.6)', () {
+    Archive marked(Map<String, ArchiveEntry> entries, Set<String> untrusted) =>
+        Archive(header: header, entries: entries, untrusted: untrusted);
+
+    test('a marked file is untrusted ahead of the fast path, and not '
+        'hashed', () async {
+      final file = File('${tempDir.path}/a.txt')..writeAsStringSync('torn');
+      final stat = file.statSync();
+
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        // Size and mtime match, so without the mark this is the fast path.
+        archive: marked(
+          {
+            'a.txt': ArchiveEntry(
+              path: 'a.txt',
+              size: stat.size,
+              mtime: stat.modified.microsecondsSinceEpoch,
+              mode: stat.mode & 0xFFF,
+              hash: hashOf('torn'),
+            ),
+          },
+          {'a.txt'},
+        ),
+      )).entries;
+
+      final entry = entryFor(entries, 'a.txt');
+      expect(entry.status, ScanStatus.untrusted);
+      expect(entry.size, stat.size);
+      expect(entry.hash, isNull);
+      expect(entry.isPresent, isTrue);
+    });
+
+    test('a marked path with no file is untrusted and absent, never '
+        'deleted — entry or no entry', () async {
+      final entries = (await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: marked(
+          {
+            'had.txt': ArchiveEntry(
+              path: 'had.txt',
+              size: 1,
+              mtime: 1,
+              mode: 420,
+              hash: hashOf('x'),
+            ),
+          },
+          {'had.txt', 'never.txt'},
+        ),
+      )).entries;
+
+      expect(entries, hasLength(2));
+      for (final path in ['had.txt', 'never.txt']) {
+        final entry = entryFor(entries, path);
+        expect(entry.status, ScanStatus.untrusted);
+        expect(entry.isPresent, isFalse);
+      }
+    });
+  });
 }

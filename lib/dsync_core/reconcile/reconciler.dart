@@ -107,6 +107,15 @@ void _resolveCell(
 
   if (entryA == null || entryB == null) {
     final present = entryA ?? entryB!;
+    if (present.status == ScanStatus.untrusted) {
+      _resolveUntrusted(
+        untrusted: present,
+        other: null,
+        onA: entryA != null,
+        act: act,
+      );
+      return;
+    }
     if (present.status == ScanStatus.deleted) {
       // The other side is silent: no archive entry and no file. A replica
       // that still had the file on disk would report `created` even with a
@@ -125,6 +134,17 @@ void _resolveCell(
   }
 
   switch ((entryA.status, entryB.status)) {
+    // Neither side has content anyone can stand behind. Not reachable by
+    // construction — a path is marked only on the side a copy writes to, and
+    // a marked side is never a copy's source — so reaching it means the
+    // archives were changed under the tool, and the user is who decides.
+    case (ScanStatus.untrusted, ScanStatus.untrusted):
+      conflict();
+    case (ScanStatus.untrusted, _):
+      _resolveUntrusted(untrusted: entryA, other: entryB, onA: true, act: act);
+    case (_, ScanStatus.untrusted):
+      _resolveUntrusted(untrusted: entryB, other: entryA, onA: false, act: act);
+
     case (ScanStatus.unchanged, ScanStatus.unchanged):
       // Same hash — the overwhelmingly normal case — is "nothing", exactly
       // as it always was. Different hashes is new (SPEC §6, task 97171c):
@@ -175,6 +195,41 @@ void _resolveCell(
   }
 }
 
+/// Resolves a path one side has marked untrusted (SPEC §7.6): read as though
+/// that side had never seen it, so the other side is mirrored onto it.
+///
+/// Mirroring is what makes a torn write a retry rather than a local change:
+/// the other side's copy is written again whatever the torn file holds, never
+/// the reverse, and never a conflict. Even equal content is copied rather than
+/// committed, because a write torn after its bytes and before its mtime holds
+/// the right content under the wrong metadata, and a commit would archive that.
+///
+/// When the other side has nothing to mirror — it reports `deleted`, or is
+/// silent because the file it was copied from is gone without ever having been
+/// committed — the marked side's file is deleted rather than kept. It is only
+/// what a write that never finished left behind; keeping it would hand it to
+/// the next run as a `created` file and copy it back. A marked path with no
+/// file needs only its mark cleared, which a commit-only's tombstone does.
+///
+/// [onA] says which side is the marked one.
+void _resolveUntrusted({
+  required ScanEntry untrusted,
+  required ScanEntry? other,
+  required bool onA,
+  required void Function(ActionType type, {int bytes}) act,
+}) {
+  if (other != null && other.isPresent) {
+    act(
+      onA ? ActionType.copyBtoA : ActionType.copyAtoB,
+      bytes: _transferBytes(other),
+    );
+  } else if (untrusted.isPresent) {
+    act(onA ? ActionType.deleteOnA : ActionType.deleteOnB);
+  } else {
+    act(ActionType.commitOnly);
+  }
+}
+
 /// The bytes a copy from [source] moves (SPEC §10).
 ///
 /// The table never copies from a side that no longer has the file, so a
@@ -185,9 +240,7 @@ int _transferBytes(ScanEntry source) => source.size ?? 0;
 /// Whether [entry] is a file currently present at a path that [otherSideDirs]
 /// says is a directory on the other side.
 bool _isFileVsDir(ScanEntry? entry, Set<String> otherSideDirs) {
-  return entry != null &&
-      entry.status != ScanStatus.deleted &&
-      otherSideDirs.contains(entry.path);
+  return entry != null && entry.isPresent && otherSideDirs.contains(entry.path);
 }
 
 /// Whether any ancestor segment of [path] is itself a currently-present file
@@ -204,7 +257,7 @@ bool _hasAncestorIn(String path, Set<String> files) {
 /// Paths of entries that currently exist on disk (i.e. not tombstones).
 Set<String> _presentPaths(Iterable<ScanEntry> entries) => {
   for (final e in entries)
-    if (e.status != ScanStatus.deleted) e.path,
+    if (e.isPresent) e.path,
 };
 
 /// Every ancestor directory implied by [paths], e.g. `a/b/c.txt` implies `a`

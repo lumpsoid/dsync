@@ -169,18 +169,25 @@ class Scanner {
     // failures `_hashAll` just appended.
     final unreadable = UnreadablePaths.from(context.skipped);
 
+    // Walked for what the walk did not find: an archived path that is gone,
+    // or a marked one (SPEC §7.6) with no file — marked whether or not it
+    // has an entry, since a first write in place has none to leave behind.
+    bool unseen(String path) =>
+        !context.seen.contains(path) &&
+        !context.rules.ignores(path) &&
+        // An archive entry under a directory the walk could not list is not
+        // evidence the file is gone — the scan never got to look. Reporting
+        // it `deleted` would propagate a deletion the user never made to the
+        // other replica (SPEC §6's table), which is the one way an unreadable
+        // path could destroy data rather than merely fail to sync.
+        !unreadable.covers(path);
     final deletedPaths = [
       for (final path in archive.entries.keys)
-        if (!context.seen.contains(path) &&
-            !context.rules.ignores(path) &&
-            // An archive entry under a directory the walk could not list is
-            // not evidence the file is gone — the scan never got to look.
-            // Reporting it `deleted` would propagate a deletion the user
-            // never made to the other replica (SPEC §6's table), which is
-            // the one way an unreadable path could destroy data rather than
-            // merely fail to sync.
-            !unreadable.covers(path))
-          path,
+        if (unseen(path) && !archive.untrusted.contains(path)) path,
+    ];
+    final absentUntrusted = [
+      for (final path in archive.untrusted)
+        if (unseen(path)) path,
     ];
 
     // SPEC §16: computed after `unreadable` above, and added to
@@ -191,7 +198,7 @@ class Scanner {
         ? const <String, List<String>>{}
         : _foldCollisions(
             live: context.seen,
-            archived: deletedPaths,
+            archived: [...deletedPaths, ...absentUntrusted],
             foldKey: foldKey,
           );
     final excludedByCollision = {
@@ -211,6 +218,9 @@ class Scanner {
         ...hashed.where((e) => !excludedByCollision.contains(e.path)),
         for (final path in deletedPaths)
           if (!excludedByCollision.contains(path)) ScanEntry.deleted(path),
+        for (final path in absentUntrusted)
+          if (!excludedByCollision.contains(path))
+            ScanEntry.untrustedAbsent(path),
       ],
       skippedPaths: context.skipped,
     );
@@ -427,6 +437,22 @@ class Scanner {
     final size = stat.size;
     final mtime = stat.modified.microsecondsSinceEpoch;
     final mode = stat.mode & 0xFFF; // permission + setuid/setgid/sticky bits
+    // Ahead of the fast path and instead of a hash (SPEC §7.6): the mark says
+    // whatever is here was left by a write that never committed, and nothing
+    // its size, mtime or content could say would clear that.
+    if (context.archive.untrusted.contains(relativePath)) {
+      context.fastPath.add(
+        ScanEntry(
+          path: relativePath,
+          reason: ScanReason.untrusted,
+          size: size,
+          mtime: mtime,
+          mode: mode,
+        ),
+      );
+      return;
+    }
+
     final existing = context.archive.entries[relativePath];
 
     // Deliberately keyed on size and mtime alone (SPEC §5.2): a mode-only

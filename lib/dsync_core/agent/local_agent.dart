@@ -12,7 +12,6 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
-import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:path/path.dart' as p;
 
 /// [Agent] implementation over the real filesystem (SPEC §4.1).
@@ -86,10 +85,6 @@ class LocalAgent implements Agent {
   /// FFI is a border a test cannot cross, where a `PATH` lookup was only a
   /// name.
   final Chmod chmod;
-
-  /// Distinguishes this agent's scratch files from each other. See
-  /// [tempPathFor].
-  int _nextTempSequence = 0;
 
   /// Absolute native paths of the destination directories this session has
   /// already created. See [_ensureParent].
@@ -289,14 +284,17 @@ class LocalAgent implements Agent {
     // change's effect the first time it was measured.
     if (!_createdParents.contains(parent.path)) await _createParent(parent);
     final createTaken = since();
-    final temp = File(tempPathFor(target.path, _nextTempSequence++));
 
     final Duration writeTaken;
     final Duration mtimeTaken;
     final Duration modeTaken;
-    final Duration renameTaken;
     try {
-      final sink = temp.openWrite();
+      // In place, over whatever is there (SPEC §7.6): no temp and no rename,
+      // which on emulated storage is ~22 ms of a ~32 ms write (§7.2). A write
+      // that stops part-way leaves the target torn, which is safe only
+      // because the caller marked the path untrusted, durably, before
+      // calling this — see `Applier._markUntrusted`.
+      final sink = target.openWrite();
       await sink.addStream(data);
       await sink.flush();
       await sink.close();
@@ -306,17 +304,16 @@ class LocalAgent implements Agent {
       writeTaken = since();
 
       try {
-        await temp.setLastModified(DateTime.fromMicrosecondsSinceEpoch(mtime));
+        await target.setLastModified(
+          DateTime.fromMicrosecondsSinceEpoch(mtime),
+        );
       } on FileSystemException {
         // Best-effort (SPEC §7.4): the stat below archives whatever mtime
         // actually landed, so a setter failure here isn't fatal.
       }
       mtimeTaken = since();
-      _applyMode(temp, mode);
+      _applyMode(target, mode);
       modeTaken = since();
-
-      await temp.rename(target.path);
-      renameTaken = since();
     } catch (_) {
       // Forget the parent. A write failing is the only signal this agent
       // gets that a remembered directory may no longer be there, so the
@@ -329,8 +326,10 @@ class LocalAgent implements Agent {
       // names the parent — a wrongly forgotten entry costs one redundant
       // `create` on a path that was already failing, and there is no cheap
       // way to tell the two apart from here.
+      //
+      // The target is left as the write left it, torn or not: it is marked
+      // untrusted, and the next run mirrors it from the other side.
       _createdParents.remove(parent.path);
-      if (await temp.exists()) await temp.delete();
       rethrow;
     }
 
@@ -345,7 +344,9 @@ class LocalAgent implements Agent {
       // §10.1), so it has to say zero on a real run rather than stop saying
       // anything. It goes when that run has been read.
       chmodSpawns: 0,
-      rename: renameTaken,
+      // Kept, and zero, so a report from this write path lines up column for
+      // column against one from the rename it replaced.
+      rename: Duration.zero,
       stat: since(),
     );
     return FileMetadata(
@@ -469,16 +470,26 @@ class LocalAgent implements Agent {
   /// buffered and fsynced together (SPEC §8.2), so a store-level batch would
   /// be a rename of this loop. What `Agent.archiveCommit` batches is the
   /// round trip a `RemoteAgent` pays, which is invisible from here.
+  ///
+  /// A batch holding an [ArchiveIntent] is flushed before this returns: the
+  /// caller is about to write those paths in place, and the mark is only
+  /// worth anything if it reaches the disk before the bytes do (SPEC §7.6).
+  /// One flush for the batch, not one per mark.
   @override
   Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    var marked = false;
     for (final commit in commits) {
       switch (commit) {
         case ArchiveUpsert(:final entry):
           await archiveStore.commitUpsert(entry);
         case ArchiveTombstone(:final path):
           await archiveStore.commitDelete(path);
+        case ArchiveIntent(:final path):
+          await archiveStore.commitIntent(path);
+          marked = true;
       }
     }
+    if (marked) await archiveStore.flush();
   }
 
   @override

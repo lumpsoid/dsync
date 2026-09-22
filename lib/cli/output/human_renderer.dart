@@ -440,6 +440,7 @@ class HumanRenderer {
     ScanReason.modified => 'rehash differed from archive',
     ScanReason.created => 'no archive entry',
     ScanReason.deleted => 'archive entry, file absent',
+    ScanReason.untrusted => 'written in place, never committed',
   };
 
   /// SPEC §11.3/§11.4: the plan table, shown before apply. Conflicts are not

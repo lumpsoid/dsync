@@ -407,6 +407,7 @@ void main() {
         modified: 1,
         created: 0,
         deleted: 0,
+        untrusted: 0,
       );
 
       final decoded = decodeChangedScan(
@@ -446,6 +447,7 @@ void main() {
               modified: 0,
               created: 0,
               deleted: 0,
+              untrusted: 0,
             ),
           ),
         ),

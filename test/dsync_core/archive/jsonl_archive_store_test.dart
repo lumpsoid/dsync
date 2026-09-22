@@ -584,4 +584,70 @@ void main() {
       expect(header.schemaVersion, JsonlArchiveStore.schemaVersion);
     });
   });
+
+  group('intents (SPEC §7.6)', () {
+    test('an intent marks a path without touching its entry, and survives a '
+        'reload', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      await store.commitIntent('a.txt');
+      await store.commitIntent('new.txt');
+      await store.flush();
+
+      final archive = await JsonlArchiveStore(logFile(), header).load();
+      expectEntry(archive.entries['a.txt'], entry);
+      expect(archive.entries.containsKey('new.txt'), isFalse);
+      expect(archive.untrusted, {'a.txt', 'new.txt'});
+    });
+
+    test('an upsert or a tombstone after it clears it; one before it does '
+        'not', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitIntent('a.txt');
+      await store.commitIntent('b.txt');
+      await store.commitIntent('c.txt');
+      await store.commitUpsert(entry);
+      await store.commitDelete('b.txt');
+      await store.flush();
+
+      expect(store.snapshot().untrusted, {'c.txt'});
+      final archive = await JsonlArchiveStore(logFile(), header).load();
+      expect(archive.untrusted, {'c.txt'});
+    });
+
+    test('compaction carries an open intent forward, after the entry it '
+        'qualifies', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      await store.commitUpsert(entry);
+      await store.commitIntent('a.txt');
+
+      await store.compact();
+
+      // Header, the one live entry, the one open intent.
+      expect(await logFile().readAsLines(), hasLength(3));
+      final archive = await JsonlArchiveStore(logFile(), header).load();
+      expectEntry(archive.entries['a.txt'], entry);
+      expect(archive.untrusted, {'a.txt'});
+    });
+
+    test('a log that is already one line per entry and intent is not '
+        'rewritten', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      await store.commitIntent('a.txt');
+      await store.flush();
+      final before = (await logFile().stat()).modified;
+
+      final reloaded = JsonlArchiveStore(logFile(), header);
+      await reloaded.load();
+      await reloaded.compact();
+
+      expect((await logFile().stat()).modified, before);
+    });
+  });
 }

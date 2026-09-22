@@ -52,6 +52,7 @@ class ScanResult {
     var modified = 0;
     var created = 0;
     var deleted = 0;
+    var untrusted = 0;
     for (final entry in entries) {
       switch (entry.reason) {
         case ScanReason.metadataMatched:
@@ -64,6 +65,8 @@ class ScanResult {
           created++;
         case ScanReason.deleted:
           deleted++;
+        case ScanReason.untrusted:
+          untrusted++;
       }
     }
     return ScanReasonTally(
@@ -72,6 +75,7 @@ class ScanResult {
       modified: modified,
       created: created,
       deleted: deleted,
+      untrusted: untrusted,
     );
   }
 }
@@ -103,17 +107,22 @@ class ScanReasonTally {
   final int created;
   final int deleted;
 
+  /// Paths marked by a write in place that never committed (SPEC §7.6).
+  final int untrusted;
+
   const ScanReasonTally({
     required this.metadataMatched,
     required this.hashMatched,
     required this.modified,
     required this.created,
     required this.deleted,
+    required this.untrusted,
   });
 
   /// Every reason's count summed. [ScanReason] is a sum type over the one
   /// branch that produced a given [ScanEntry] (see its own doc comment), so
   /// every scanned path is counted in exactly one field here — this is
   /// simply "how many paths this side's scan reported".
-  int get total => metadataMatched + hashMatched + modified + created + deleted;
+  int get total =>
+      metadataMatched + hashMatched + modified + created + deleted + untrusted;
 }

@@ -767,6 +767,7 @@ String _status(ScanEntry? entry) => switch (entry?.status) {
   ScanStatus.created => 'created',
   ScanStatus.modified => 'modified',
   ScanStatus.deleted => 'deleted',
+  ScanStatus.untrusted => 'untrusted',
 };
 
 /// What an action does, from this device's point of view: side `a` is

@@ -179,6 +179,8 @@ class Applier {
     final a = {for (final e in onA) e.path: e};
     final b = {for (final e in onB) e.path: e};
 
+    await _markUntrusted(plan.actions, agentA, agentB);
+
     final applied = <AppliedPath>[];
     final failed = <FailedPath>[];
 
@@ -298,6 +300,44 @@ class Applier {
     await _pruneEmptiedDirs(emptied);
 
     return ApplyResult(applied: applied, failed: failed);
+  }
+
+  /// Marks every path this plan copies to as untrusted on the side it is
+  /// copied to, and returns once both marks are durable (SPEC §7.6).
+  ///
+  /// **Before anything is written**, because `Agent.writeFile` writes in place
+  /// and a write that stops part-way — a failed stream, a killed process —
+  /// leaves a file the next scan could only read as a local edit. The mark is
+  /// what makes it read as a retry. It is superseded by the path's own commit
+  /// (§7.3), so a copy that lands clears it and one that fails keeps it.
+  ///
+  /// **The whole plan, in one exchange per side**, rather than a batch per
+  /// handful of writes: one fsync a run instead of one a batch, and no write
+  /// ever waits on a mark. What that widens is which paths a stopped run
+  /// leaves marked — every copy it never started, not only the ones it tore.
+  /// Those resolve the way the plan would have resolved them anyway, by copying
+  /// the other side over; the difference is a user's edit to one of them before
+  /// the next run, which is overwritten rather than raised as a conflict.
+  ///
+  /// A mark that fails fails the apply: nothing has been written yet, so
+  /// there is nothing a per-action failure would be protecting.
+  Future<void> _markUntrusted(
+    List<PlanAction> actions,
+    Agent agentA,
+    Agent agentB,
+  ) async {
+    final onA = [
+      for (final action in actions)
+        if (action.type == ActionType.copyBtoA) ArchiveIntent(action.path),
+    ];
+    final onB = [
+      for (final action in actions)
+        if (action.type == ActionType.copyAtoB) ArchiveIntent(action.path),
+    ];
+    await Future.wait([
+      if (onA.isNotEmpty) agentA.archiveCommit(onA),
+      if (onB.isNotEmpty) agentB.archiveCommit(onB),
+    ]);
   }
 
   /// Applies one action, returning what it left the two archives owing, or
@@ -493,8 +533,10 @@ class Applier {
     ScanEntry? entryA,
     ScanEntry? entryB,
   ) {
-    final aDeleted = entryA == null || entryA.status == ScanStatus.deleted;
-    final bDeleted = entryB == null || entryB.status == ScanStatus.deleted;
+    // `isPresent` rather than `deleted` alone: a marked path with no file
+    // (SPEC §7.6) resolves here too, and is owed a tombstone to clear its mark.
+    final aDeleted = entryA == null || !entryA.isPresent;
+    final bDeleted = entryB == null || !entryB.isPresent;
     if (aDeleted && bDeleted) {
       return _OwedCommits(
         onA: ArchiveTombstone(path),

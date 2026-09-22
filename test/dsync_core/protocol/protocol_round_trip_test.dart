@@ -307,5 +307,13 @@ void main() {
       final afterDelete = await JsonlArchiveStore(archiveLog, header).load();
       expect(afterDelete.entries.containsKey('a.txt'), isFalse);
     });
+
+    test('a mark is durable when the call returns, without an unlock (SPEC '
+        '§7.6)', () async {
+      await remote.archiveCommit([const ArchiveIntent('a.txt')]);
+
+      final archive = await JsonlArchiveStore(archiveLog, header).load();
+      expect(archive.untrusted, {'a.txt'});
+    });
   });
 }

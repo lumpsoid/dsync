@@ -1,0 +1,385 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:crypto/crypto.dart';
+import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/agent/local_agent.dart';
+import 'package:dsync/dsync_core/apply/applier.dart';
+import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
+import 'package:dsync/dsync_core/models/apply_result.dart';
+import 'package:dsync/dsync_core/models/archive.dart';
+import 'package:dsync/dsync_core/models/file_metadata.dart';
+import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/reconcile/reconciler.dart';
+import 'package:dsync/dsync_core/scan/scan_exchange.dart';
+import 'package:dsync/dsync_core/scan/scan_session.dart';
+import 'package:test/test.dart';
+
+/// A copy written in place and torn at every step it has, in each of the
+/// three cells SPEC §7.6 lists, must converge on the next run: the source's
+/// content on both sides, no conflict, and never a copy back over the source.
+///
+/// A "run" here is a new process: fresh agents and stores over the same
+/// directories and logs. A *killed* run is one that never flushes or compacts
+/// — whatever its stores had buffered is gone, exactly as a dead process's
+/// would be — so the only archive state the next run sees is what reached the
+/// disk. The marks are flushed before any write, so they always have.
+void main() {
+  late Directory tempDir;
+  late Directory dirA;
+  late Directory dirB;
+  late File logA;
+  late File logB;
+
+  const headerA = ArchiveHeader(
+    schemaVersion: JsonlArchiveStore.schemaVersion,
+    profileId: 'notes',
+    rootPath: '/a',
+  );
+  const headerB = ArchiveHeader(
+    schemaVersion: JsonlArchiveStore.schemaVersion,
+    profileId: 'notes',
+    rootPath: '/b',
+  );
+
+  /// Long enough that every tear point below is a different file, and
+  /// unlike [_old] at every length, so a torn file is never accidentally
+  /// either.
+  final source = utf8.encode('the source content, version two — ' * 4);
+  final old = utf8.encode(_old);
+
+  setUp(() async {
+    tempDir = await Directory.systemTemp.createTemp('torn_write_test');
+    dirA = Directory('${tempDir.path}/a')..createSync();
+    dirB = Directory('${tempDir.path}/b')..createSync();
+    logA = File('${tempDir.path}/a.jsonl');
+    logB = File('${tempDir.path}/b.jsonl');
+  });
+
+  tearDown(() => tempDir.delete(recursive: true));
+
+  LocalAgent agentOver(Directory dir, File log, ArchiveHeader header) =>
+      LocalAgent(
+        rootPath: dir.path,
+        archiveStore: JsonlArchiveStore(log, header),
+        replicaLock: ReplicaLock(File('${log.path}.lock')),
+      );
+
+  /// One run, A to B, as `RunController` orders it: scan both, reconcile,
+  /// apply, compact if anything was applied, then flush on unlock. [wrapB]
+  /// is where a fault goes in; [killed] stops the run the moment the apply
+  /// returns or throws, without a flush or a compaction.
+  Future<(Plan, ApplyResult?)> sync({
+    Agent Function(Agent)? wrapB,
+    bool killed = false,
+  }) async {
+    final a = agentOver(dirA, logA, headerA);
+    final b = agentOver(dirB, logB, headerB);
+    final agentB = wrapB == null ? b : wrapB(b);
+    final scans = await exchangeScans(
+      await a.scan(RuleSet()),
+      await agentB.scan(RuleSet()),
+    );
+    final plan = Reconciler().reconcile(scans.onA, scans.onB);
+    ApplyResult? result;
+    try {
+      result = await Applier().apply(plan, scans.onA, scans.onB, a, agentB);
+    } catch (_) {
+      if (!killed) rethrow;
+    }
+    if (killed) return (plan, result);
+    if (result!.applied.isNotEmpty) {
+      await a.compact();
+      await b.compact();
+    }
+    await a.unlock();
+    await b.unlock();
+    return (plan, result);
+  }
+
+  File onA(String path) => File('${dirA.path}/$path');
+  File onB(String path) => File('${dirB.path}/$path');
+
+  /// The run after a tear, and the run after that: the first must mirror A
+  /// onto B and nothing else, the second must find nothing to do.
+  Future<void> expectConverges() async {
+    final (recovery, recovered) = await sync();
+    expect(recovery.conflicts, isEmpty, reason: 'a torn file is not a choice');
+    expect(
+      recovery.actions.where((action) => action.type == ActionType.copyBtoA),
+      isEmpty,
+      reason: 'nothing on B is ever copied back over A',
+    );
+    expect(recovered!.failed, isEmpty);
+
+    expect(await onA('f').readAsBytes(), source, reason: 'A is untouched');
+    expect(await onB('f').readAsBytes(), source);
+    expect(
+      (await onB('f').stat()).modified,
+      (await onA('f').stat()).modified,
+      reason: 'the retry propagates the mtime the tear never set',
+    );
+
+    final (settled, _) = await sync();
+    expect(settled.actions, isEmpty);
+    expect(settled.conflicts, isEmpty);
+    final archiveB = await JsonlArchiveStore(logB, headerB).load();
+    expect(archiveB.untrusted, isEmpty);
+    expect(archiveB.entries['f']?.hash, _sha256(source));
+  }
+
+  /// SPEC §7.6's three cells, each set up so the next run copies `f` from A
+  /// to B — plus `g`, a second copy in the same plan that lands cleanly, so a
+  /// kill has a buffered commit of its own to lose.
+  final cells = <String, Future<void> Function()>{
+    'ordinary pull — B unchanged, A modified': () async {
+      onA('f').writeAsBytesSync(old);
+      onB('f').writeAsBytesSync(old);
+      final (seed, _) = await sync();
+      expect(seed.actions.single.type, ActionType.commitOnly);
+      onA('f').writeAsBytesSync(source);
+    },
+    'first sync of a path — A created, B never saw it': () async {
+      onA('f').writeAsBytesSync(source);
+    },
+    'fresh replica — A unchanged against its archive, B empty': () async {
+      onA('f').writeAsBytesSync(source);
+      final stat = onA('f').statSync();
+      final store = JsonlArchiveStore(logA, headerA);
+      await store.load();
+      await store.commitUpsert(
+        ArchiveEntry(
+          path: 'f',
+          size: stat.size,
+          mtime: stat.modified.microsecondsSinceEpoch,
+          mode: stat.mode & 0xFFF,
+          hash: _sha256(source),
+        ),
+      );
+      await store.flush();
+    },
+  };
+
+  /// Every way the write to `f` on B can stop, as a wrapper around B.
+  final tears = <String, ({Agent Function(Agent) wrap, bool killed})>{
+    for (final at in [0, 1, source.length ~/ 2, source.length - 1])
+      'stream fails after $at bytes': (
+        wrap: (agent) =>
+            _FaultyAgent(agent, writeFile: (write) => write(failAfter: at)),
+        killed: false,
+      ),
+    'every byte lands, killed before the mtime is set': (
+      wrap: (agent) => _FaultyAgent(
+        agent,
+        writeFile: (write) => write(failAfter: source.length),
+      ),
+      killed: true,
+    ),
+    'killed after the mark, before the file is opened': (
+      wrap: (agent) =>
+          _FaultyAgent(agent, writeFile: (_) => throw const _Killed()),
+      killed: true,
+    ),
+    'write completes, the commit batch is lost': (
+      wrap: (agent) => _FaultyAgent(agent, loseRecords: true),
+      killed: false,
+    ),
+    'write completes, killed before the commits are flushed': (
+      wrap: (agent) => agent,
+      killed: true,
+    ),
+  };
+
+  for (final MapEntry(key: cell, value: arrange) in cells.entries) {
+    group(cell, () {
+      for (final MapEntry(key: tear, value: fault) in tears.entries) {
+        test(tear, () async {
+          await arrange();
+          onA('g').writeAsStringSync('lands cleanly');
+
+          final (torn, _) = await sync(wrapB: fault.wrap, killed: fault.killed);
+          expect(
+            torn.actions.map((action) => (action.path, action.type)),
+            containsAll([
+              ('f', ActionType.copyAtoB),
+              ('g', ActionType.copyAtoB),
+            ]),
+          );
+          expect(
+            (await JsonlArchiveStore(logB, headerB).load()).untrusted,
+            contains('f'),
+            reason: 'the mark outlives the tear',
+          );
+
+          await expectConverges();
+        });
+      }
+
+      test(
+        'the log is compacted mid-way: the mark is carried, not dropped',
+        () async {
+          await arrange();
+          onA('g').writeAsStringSync('lands cleanly');
+
+          // `g` lands, so the run compacts with `f`'s mark still open.
+          final (_, result) = await sync(
+            wrapB: (agent) =>
+                _FaultyAgent(agent, writeFile: (write) => write(failAfter: 3)),
+          );
+          expect(result!.applied.map((path) => path.path), ['g']);
+          final lines = logB.readAsLinesSync();
+          expect(
+            lines.where((line) => line.contains('"intent"')),
+            hasLength(1),
+          );
+
+          await expectConverges();
+        },
+      );
+
+      test('killed mid-compaction: the old log stands and the next '
+          'compaction overwrites the leftover', () async {
+        await arrange();
+        onA('g').writeAsStringSync('lands cleanly');
+
+        await sync(
+          wrapB: (agent) =>
+              _FaultyAgent(agent, writeFile: (write) => write(failAfter: 3)),
+          killed: true,
+        );
+        // What a compaction killed before its rename leaves: a partial
+        // replacement beside a log it never got to swap out.
+        final leftover = File('${logB.path}.compact.tmp')
+          ..writeAsStringSync('{"op":"header","schemaVersion":2,"prof');
+
+        await expectConverges();
+        expect(leftover.existsSync(), isFalse);
+      });
+    });
+  }
+
+  test('a mark that cannot be made fails the apply before anything is '
+      'written', () async {
+    onA('f').writeAsBytesSync(old);
+    onB('f').writeAsBytesSync(old);
+    await sync();
+    onA('f').writeAsBytesSync(source);
+
+    await expectLater(
+      sync(wrapB: (agent) => _FaultyAgent(agent, refuseMarks: true)),
+      throwsA(isA<_Refused>()),
+    );
+
+    expect(await onB('f').readAsBytes(), old);
+  });
+}
+
+const _old = 'the old content on both sides, before the edit';
+
+String _sha256(List<int> bytes) => sha256.convert(bytes).toString();
+
+/// Stands for the process dying: nothing after it runs.
+class _Killed implements Exception {
+  const _Killed();
+}
+
+class _Refused implements Exception {
+  const _Refused();
+}
+
+/// The real write, with its byte stream cut after [failAfter] bytes. What
+/// reaches the file is whatever the real `writeFile` did with those bytes
+/// before the stream's error reached it.
+typedef _Write = Future<FileMetadata> Function({required int failAfter});
+
+/// Delegates to a real [Agent], with a fault in one of two places: the write
+/// of `f` ([writeFile], handed the real write to call or not), or the
+/// records owed after it ([loseRecords], which drops every upsert and
+/// tombstone — the batch §7.3 says may be lost — and keeps the marks).
+class _FaultyAgent implements Agent {
+  final Agent _wrapped;
+  final Future<FileMetadata> Function(_Write write)? _writeFault;
+  final bool loseRecords;
+  final bool refuseMarks;
+
+  _FaultyAgent(
+    this._wrapped, {
+    Future<FileMetadata> Function(_Write write)? writeFile,
+    this.loseRecords = false,
+    this.refuseMarks = false,
+  }) : _writeFault = writeFile;
+
+  @override
+  Future<FileMetadata> writeFile(
+    String path,
+    Stream<List<int>> data, {
+    required int mtime,
+    required int mode,
+  }) {
+    final fault = _writeFault;
+    if (fault == null || path != 'f') {
+      return _wrapped.writeFile(path, data, mtime: mtime, mode: mode);
+    }
+    return fault(
+      ({required failAfter}) => _wrapped.writeFile(
+        path,
+        _cut(data, failAfter),
+        mtime: mtime,
+        mode: mode,
+      ),
+    );
+  }
+
+  /// [data]'s first [limit] bytes, then an error.
+  static Stream<List<int>> _cut(Stream<List<int>> data, int limit) async* {
+    var sent = 0;
+    await for (final chunk in data) {
+      final room = limit - sent;
+      if (room <= 0) break;
+      final part = chunk.length <= room ? chunk : chunk.sublist(0, room);
+      yield part;
+      sent += part.length;
+    }
+    throw const _Killed();
+  }
+
+  @override
+  Future<void> archiveCommit(List<ArchiveCommit> commits) async {
+    final marks = commits.whereType<ArchiveIntent>().toList();
+    if (marks.isNotEmpty && refuseMarks) throw const _Refused();
+    if (loseRecords && marks.length != commits.length) {
+      throw Exception('the batch is lost');
+    }
+    await _wrapped.archiveCommit(commits);
+  }
+
+  @override
+  Future<ReplicaInfo> hello() => _wrapped.hello();
+
+  @override
+  Future<void> lock() => _wrapped.lock();
+
+  @override
+  Future<void> unlock() => _wrapped.unlock();
+
+  @override
+  Future<ScanSession> scan(RuleSet rules) => _wrapped.scan(rules);
+
+  @override
+  Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
+
+  @override
+  Future<void> delete(String path) => _wrapped.delete(path);
+
+  @override
+  Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
+
+  @override
+  Future<void> compact() => _wrapped.compact();
+
+  @override
+  Future<void> disconnect() => _wrapped.disconnect();
+}

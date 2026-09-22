@@ -237,6 +237,7 @@ void main() {
           modified: 1,
           created: 2,
           deleted: 0,
+          untrusted: 0,
         ),
         tallyB: ScanReasonTally(
           metadataMatched: 10,
@@ -244,6 +245,7 @@ void main() {
           modified: 0,
           created: 0,
           deleted: 0,
+          untrusted: 0,
         ),
       );
 
@@ -257,6 +259,7 @@ void main() {
           'modified': 1,
           'created': 2,
           'deleted': 0,
+          'untrusted': 0,
         },
         'b': {
           'metadataMatched': 10,
@@ -264,6 +267,7 @@ void main() {
           'modified': 0,
           'created': 0,
           'deleted': 0,
+          'untrusted': 0,
         },
       });
     });
@@ -280,6 +284,7 @@ void main() {
             modified: 0,
             created: 0,
             deleted: 0,
+            untrusted: 0,
           ),
           tallyB: ScanReasonTally(
             metadataMatched: 0,
@@ -287,6 +292,7 @@ void main() {
             modified: 0,
             created: 0,
             deleted: 0,
+            untrusted: 0,
           ),
         );
 
@@ -532,6 +538,7 @@ void main() {
             modified: 1,
             created: 0,
             deleted: 0,
+            untrusted: 0,
           ),
           tallyB: ScanReasonTally(
             metadataMatched: 0,
@@ -539,6 +546,7 @@ void main() {
             modified: 0,
             created: 0,
             deleted: 1,
+            untrusted: 0,
           ),
         ),
         const RunSkippedPathEvent(

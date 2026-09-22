@@ -350,12 +350,13 @@ ArchiveEntry archiveEntryFromJson(Map<String, dynamic> json) => ArchiveEntry(
 );
 
 /// One commit, tagged by which kind it is rather than inferred from which
-/// fields are present: the two cases are a sum type in `ArchiveCommit` and
+/// fields are present: the cases are a sum type in `ArchiveCommit` and
 /// there is no reason for the wire to be the one place they are not.
 Map<String, dynamic> archiveCommitToJson(ArchiveCommit commit) =>
     switch (commit) {
       ArchiveUpsert(:final entry) => {'upsert': archiveEntryToJson(entry)},
       ArchiveTombstone(:final path) => {'delete': path},
+      ArchiveIntent(:final path) => {'intent': path},
     };
 
 ArchiveCommit archiveCommitFromJson(Map<String, dynamic> json) =>
@@ -364,6 +365,7 @@ ArchiveCommit archiveCommitFromJson(Map<String, dynamic> json) =>
         archiveEntryFromJson(entry),
       ),
       {'delete': final String path} => ArchiveTombstone(path),
+      {'intent': final String path} => ArchiveIntent(path),
       _ => throw FormatException('Not an archive commit: $json'),
     };
 

@@ -13,6 +13,7 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
+
 import '../../support/scan_session.dart';
 
 void main() {
@@ -386,7 +387,7 @@ void main() {
       expect(await File('${replicaDir.path}/sub/b.txt').readAsString(), 'x');
     });
 
-    test('overwrites an existing target atomically', () async {
+    test('overwrites an existing target', () async {
       final target = File('${replicaDir.path}/a.txt');
       await target.writeAsString('old');
 
@@ -400,7 +401,10 @@ void main() {
       expect(await target.readAsString(), 'new');
     });
 
-    test('a failure mid-stream cleans up the temp file and rethrows', () async {
+    test('a failure mid-stream leaves the target as the write left it, and '
+        'rethrows (SPEC §7.6)', () async {
+      final target = File('${replicaDir.path}/a.txt');
+      await target.writeAsString('the old content, longer than the new');
       Stream<List<int>> failing() async* {
         yield utf8.encode('partial');
         throw Exception('boom');
@@ -410,41 +414,37 @@ void main() {
         agent().writeFile(
           'a.txt',
           failing(),
-          mtime: DateTime.now().microsecondsSinceEpoch,
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
           mode: 420, // 0o644
         ),
         throwsException,
       );
 
-      expect(await File('${replicaDir.path}/a.txt').exists(), isFalse);
-      expect(await _leftoverTempFiles(replicaDir), isEmpty);
+      // Torn: neither the old bytes nor the new, and no mtime propagated.
+      // The caller's mark is what makes this safe, not this method.
+      expect(await target.readAsString(), 'partial');
+      expect(
+        (await target.stat()).modified,
+        isNot(DateTime.utc(2024, 1, 1).toLocal()),
+      );
     });
 
-    test('two writes to the same target use different scratch files', () async {
-      final paths = <String>{};
+    test('writes in place: no scratch file is ever created', () async {
+      final seen = <String>{};
       Stream<List<int>> recording() async* {
-        paths.addAll(await _leftoverTempFiles(replicaDir));
+        seen.addAll(await _leftoverTempFiles(replicaDir));
         yield utf8.encode('hello');
       }
 
-      final a = agent();
-      await a.writeFile(
-        'a.txt',
-        recording(),
-        mtime: DateTime.now().microsecondsSinceEpoch,
-        mode: 420,
-      );
-      await a.writeFile(
+      await agent().writeFile(
         'a.txt',
         recording(),
         mtime: DateTime.now().microsecondsSinceEpoch,
         mode: 420,
       );
 
-      // Two writes racing on one scratch path would rename over each other.
-      // The replica lock rules that out today, but atomicity should not
-      // depend on a lock held elsewhere.
-      expect(paths, hasLength(2));
+      expect(seen, isEmpty);
+      expect(await _leftoverTempFiles(replicaDir), isEmpty);
     });
   });
 
@@ -515,10 +515,7 @@ void main() {
 
       // Without this, the Windows test above would prove nothing: it would
       // pass just as well if the recording technique itself never worked.
-      // The scratch path, not the destination: the mode is applied before
-      // the rename, so a write that fails leaves nothing half-permissioned
-      // at the real path.
-      expect(calls, [(tempPathFor('${replicaDir.path}/a.txt', 0), 420)]);
+      expect(calls, [('${replicaDir.path}/a.txt', 420)]);
     });
 
     test('a chmod that runs and the filesystem refuses is not fatal and does '
