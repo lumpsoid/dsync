@@ -243,7 +243,7 @@ So of the **1,900 B** an asynchronous `stat` costs over a blocking one, **915 B 
 
 `dart:io`'s blocking `stat` costs **1.8× the syscall it wraps** — a `FileStat` and a `DateTime` per file — while allocating *less* than the FFI version, which pays a `utf8.encode` per path that `dart:io` does in C++. And the listing is the larger half: dropping `Directory.listSync` for `getdents64` takes the walk from 1,844 ms to 624 and from 1,731 B a file to 533, because a name read out of the dirent buffer is already the NUL-terminated string `fstatat` wants and never becomes a Dart `String` at all. Every rung makes exactly one `stat` per file, so none of this is a syscall the walk stopped making. Linux only, which is both ends of §3 and the device every figure here is for; task ed0fe7 carries whether it is worth a second walker behind a fallback, and it sits behind the apply.
 
-**The same per-call figure, priced against the apply path.** `LocalAgent.writeFile` is nine steps (§7.2, §7.4) but not nine asynchronous calls: `_applyMode` is a synchronous FFI `chmod`, and the parent `create` is skipped on a directory this session already made. What is left is the sink — `openWrite`, `addStream`, `flush`, `close` — plus `setLastModified`, `rename` and the final `stat`: about four, and one dispatch per block the sink writes. At 1,900 B a call that is ~7.6 KB a file, so **~110 MB of garbage for one apply of the 14,471-file tree against 52 MB for a whole scan** — which is what makes the apply the larger prize. The sink's per-block term is the one nobody has bounded, and it is the first thing a write-path ladder has to measure.
+**The same per-call figure, priced against the apply path.** `LocalAgent.writeFile` is nine steps (§7.2, §7.4) but not nine asynchronous calls: `_applyMode` is a synchronous FFI `chmod`, and the parent `create` is skipped on a directory this session already made. What is left is the sink — `openWrite`, `addStream`, `flush`, `close` — plus `setLastModified`, `rename` and the final `stat`: about four, and one dispatch per block the sink writes. Counting those at a `stat`'s per-call price gave ~7.6 KB a file, and **that estimate is superseded and was wrong in kind** — §7.2 has since measured a write's fixed per-call cost at 18,240 B, an order above a `stat`'s, with a per-byte term besides. An apply of the 14,471-file tree allocates ~460 MB, not ~110. The apply is the larger prize by more than this section could see.
 
 ## 6. Reconciliation
 
@@ -319,6 +319,36 @@ Outcomes are therefore reported in **completion order, not plan order**, and a c
 **Bounded in bytes, not in files, and there is no size threshold.** The bound is on bytes *buffered per stream* — one chunk, 64 KiB — with a total budget of **1 MiB** across every read in flight, so a file larger than the whole budget holds one chunk and streams the rest under backpressure exactly as it did before. There is no large-file bypass and so no threshold to choose. A second bound caps how many source reads may be open at once, at **24**: the byte budget alone would admit ~80 concurrent reads of a tree of small files, and a remote source's `readFile` holds one of the connection's 32 window slots (§4.2) for its whole stream, while a read on the device is a message to a bounded native-port pool. A slot is held from the read starting until the writer has taken the last chunk, which is earlier than the write finishing.
 
 **What is in flight on the memory-constrained end.** In the pull direction the phone is the destination and holds 16 streaming writes of one chunk each, ~1 MiB, as it did before. In the push direction it is the *source*, and then two of these buffers are on it at once: the read-ahead's 1 MiB and the transport's 1 MiB write cap (§4.2), since the side reading the files is also the side sending them. §17 reports the read-ahead's peak for exactly that reason, and the transport's two beside it. **Both bounds have now been read on the device** (task ac2f3a): a 14,471-file, 179.5 MiB tree, cold start, both directions. Pushing — the direction that has both buffers on the phone — the read-ahead peaked at **1.0 MiB**, exactly its budget, while the transport held at most **1.5 MiB** and its largest single write was **576.1 KiB**, under the 1 MiB cap. Pulling, the same three were **347.5 KiB**, **13.2 KiB** and **13.2 KiB**: the destination's share is a twentieth of the source's, which is what makes push the direction these bounds are written for. Both held. **What neither bound turned out to set is the process's own peak.** The phone's resident set peaked at 397.1 MiB pushing and 366.8 MiB pulling — 16.6 MiB and 41.6 MiB above where each run started — and a run that scanned the same tree and applied *nothing* grew 41.1 MiB. The plateau is the scan holding both listings, around 1.4 KiB an entry; the apply's two bounded buffers are ~2.5 MiB together and do not move it. So the bounds are correct and are not what a memory fix on the phone would address (§6.1, task 4b62a1).
+
+**What one write allocates, and which half of it is addressable** (`benchmark/write_allocation_probe.dart`, task 4c55fd). The four steps above are measured here as a ladder, serially, on a desktop over 4,254 files averaging 17,848 B. Twice: once with the real payloads and once with every file capped to zero bytes, because those two readings separate a per-byte cost from a per-call one and the two have completely different fixes.
+
+| rung | ms | B a file | ms at 0 B | B a file at 0 B |
+|---|---|---|---|---|
+| `writeAsBytesSync` straight to the target | 599 | 16,121 | 174 | **468** |
+| `writeAsBytes` | 1,313 | 22,258 | 610 | 6,088 |
+| `openWrite` + `addStream` + `flush` + `close` | 2,045 | 29,949 | 923 | 12,103 |
+| plus temp and `rename` | 2,531 | 33,769 | 1,433 | 14,099 |
+| plus `setLastModified` | 2,245 | 33,695 | 1,392 | 15,973 |
+| plus `posixChmod` | 2,550 | 35,889 | 1,649 | 16,195 |
+| plus the closing `stat` — **§7.2 as written** | 2,726 | **37,886** | 1,901 | **18,240** |
+| the same four steps, blocking throughout | 1,213 | 18,019 | 683 | **2,465** |
+
+**The per-byte term is one copy and nothing can be done about it.** Subtracting the capped column from the full one and dividing by the mean file gives 0.88 to 1.10 for *every* rung, asynchronous and blocking alike. The bytes get copied once on their way to the kernel; that is the floor.
+
+**The fixed term is the whole difference, and it is 39×.** A plain blocking write allocates 468 B a file regardless of size. §7.2's four steps allocate **18,240 B** — 17.8 KB of garbage per file that has nothing to do with the file. The same four steps done with blocking calls allocate 2,465 B, so **~15.8 KB a file of it is removable**, and at 14,471 files that is ~230 MB of an apply's ~460 MB. Wall time says the same thing: with no payload at all, §7.2's shape is 1,901 ms against a plain write's 174 and the blocking four steps' 683.
+
+Where the 18,240 B goes, cumulatively, at zero payload — one scavenge is ~420 B a file here, so the small steps are read as bounds rather than values:
+
+- **+5,620 B** for `writeAsBytes` over `writeAsBytesSync`. The asynchronous mechanism on a write with nothing to write.
+- **+6,015 B** for the streaming sink over a whole-file asynchronous write. The largest single step, and the one §7.2 chose.
+- **+1,996 B** for the temp file and the rename.
+- **+1,874 B** for `setLastModified`.
+- **≤420 B** for `posixChmod` — at or below resolution, which is the FFI change working: this step was a fork and an exec per file (§9.5).
+- **+2,045 B** for the closing `stat`.
+
+**Two earlier estimates of this were wrong and are superseded.** Task 26a874 put an apply at ~290 MB by counting eight or nine asynchronous calls at a stat's per-call price; §5 corrected the call count to about four and the figure to ~110 MB. Both were wrong in kind, not degree: a write's fixed per-call cost is an order above a `stat`'s — 18,240 B against 1,900 — and there is a per-byte term besides. The measured figure is what stands.
+
+**This is a desktop reading and the wall times are not the phone's.** What it establishes is where the garbage is and that the blocking shape removes most of it; whether that changes the phone's 35.1 ms a file, and where the concurrency knee is with 16 writes in flight, is task 4c55fd's device half.
 
 ### 7.3 Archive commit per path
 After an action succeeds on both sides, **both** agents are owed the record for that path. The record is handed over immediately; it *travels* in batches, and it is made *durable* in batches (§8.2), so a crash loses at most the last unflushed batch. That is the same shape of damage as the crash this section is already about, and the rules below close it the same way — it is simply a few hundred paths rather than one. A crash between the two commits leaves one side's archive stale.
