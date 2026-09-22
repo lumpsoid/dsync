@@ -127,8 +127,20 @@ class ReadPool {
     }
   }
 
+  /// The idle case completes **in place** rather than through a microtask.
+  ///
+  /// `Future.value` schedules a microtask to complete the future it builds, so
+  /// the `await` in [read] parks, the microtask completes the future, and the
+  /// continuation is scheduled as a second hop. `Future.syncValue` hands back a
+  /// future that is already complete, and that second hop is gone — measured at
+  /// 457 against 915 B of garbage a call, i.e. half (commit e5bae7a). At one
+  /// call per file that is ~6.6 MB over the 14,471-file tree.
+  ///
+  /// Safe here for the reason `Completer.sync` is not safe in general: no
+  /// listener can be attached to a future that this line is still building, so
+  /// there is nothing that could be resumed synchronously inside the caller.
   Future<_Worker> _take() {
-    if (_idle.isNotEmpty) return Future.value(_idle.removeLast());
+    if (_idle.isNotEmpty) return Future<_Worker>.syncValue(_idle.removeLast());
     final waiting = Completer<_Worker>();
     _waiting.add(waiting);
     return waiting.future;
