@@ -385,7 +385,7 @@ Three things follow. **Allocation is flat in depth** — what a write allocates 
 | one per worker in the tree root — the rung above | 28,646 | 28,160 |
 | *no temp: one `write()` in place* | *2,424* | *229* |
 
-Every name §7.2 permits is within 3% of every other, and the root-directory rung that looked like 20% is 8% on this run, in a shape §7.2 forbids anyway (a replica spanning a submount would break it). So there is one lever, not two: stop renaming, which §7.6 shows is unsafe without a record of which writes were in flight (task 58d609).
+Every name §7.2 permits is within 3% of every other, and the root-directory rung that looked like 20% is 8% on this run, in a shape §7.2 forbids anyway (a replica spanning a submount would break it). **The desktop does not rescue it either.** The same rungs on an ext4 NVMe, 18,752 files, three runs each: every name is 29–31 µs a file at one in flight against 19 µs in place, and the root rung is the *slowest* at 31–32. At sixteen the target-free names beside the target read ~2 µs under today's (19–21 against 21–23), which is ~30 ms over a 14,471-file apply. The whole temp-and-rename is ~11 µs a file there, so no naming could be worth anything to measure. So there is one lever, not two: stop renaming, which §7.6 shows is unsafe without a record of which writes were in flight (task 58d609).
 
 **`bare` and `chunked` agreeing here is the probe's control, and it was earned.** An earlier version ran the rungs against an empty tree, so whichever ran first paid for creating all 850 files: `bare` read as 16.2 ms against `chunked`'s 2.9 when the two issue an identical syscall for any file under one chunk. The tree is now seeded untimed before any rung.
 
