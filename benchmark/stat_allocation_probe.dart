@@ -47,32 +47,9 @@
 // the microtask queue, where a real `dart:io` future parks until a port message
 // wakes it. They price the objects an `await` costs, not the parking.
 //
-// **Three instruments were tried before this one and do not work.** Recorded
-// here so they are not tried again:
-//
-//   `getAllocationProfile`'s `accumulatedSize` is **rebased at every GC**, so
-//   it cannot measure a region that collects — and any walk of a real tree
-//   collects several times. Measured: one identical body read back as 97, 123,
-//   239 and 363 bytes an item over four runs, and went *negative* when the
-//   collection landed between the two reads instead of before them. `reset:
-//   true` does not zero it either; an empty region reported 10.71 MiB.
-//
-//   `setTraceClassAllocation` plus `getAllocationTraces` is exact on a class
-//   allocated from a cold site — 1,000 then 1,000 then 50,000 read back
-//   perfectly — and useless on a hot one, because the JIT inlines allocation
-//   and the runtime call that records the sample is gone. Over the same walk it
-//   reported `_File`, `_Directory` and `FileStat` at **exactly zero** across
-//   4,254 files, and `_Future` at 12,855 or at 70 depending only on whether the
-//   warm-up pass ran before or after tracing was switched on. It also
-//   **segfaults the VM** without `--profiler`, in
-//   `SampleBlockBuffer::ReserveSampleImpl` on Dart 3.13.3.
-//
-//   `ProcessInfo.currentRss` is a step function here, as SPEC §5 already says:
-//   the semispace grows to its cap or it does not.
-//
-// So: `--verbose_gc`, summed per rung, in a fresh VM per rung. Coarse, and the
-// ladder is what makes it say something — a difference between two rungs that
-// differ by one line of code.
+// **The instrument is `gc_ladder.dart`** — `--verbose_gc` summed per rung, a
+// fresh VM per rung, a `noop` rung for the floor. Three richer instruments were
+// tried first and do not work; that file records which and why.
 //
 //   dart run benchmark/stat_allocation_probe.dart --root <dir>
 //   dart run benchmark/stat_allocation_probe.dart --root <dir> --rung stat
@@ -99,6 +76,8 @@
 // closer of the two proxies despite being the more artificial-looking.
 import 'dart:io';
 import 'dart:typed_data';
+
+import 'gc_ladder.dart';
 
 /// Stats outstanding in the `stat-batched` rung — `Scanner`'s own default, so
 /// that rung is the scanner's shape and not a differently-tuned lookalike.
@@ -142,7 +121,7 @@ Future<void> main(List<String> args) async {
     return;
   }
 
-  final root = _flag(args, '--root');
+  final root = flagOf(args, '--root');
   if (root == null || !Directory(root).existsSync()) {
     stderr.writeln(
       'usage: dart run benchmark/stat_allocation_probe.dart '
@@ -153,7 +132,7 @@ Future<void> main(List<String> args) async {
     return;
   }
 
-  final only = _flag(args, '--rung');
+  final only = flagOf(args, '--rung');
   if (only != null && !rungs.contains(only)) {
     stderr.writeln('unknown rung: $only\nrungs: ${rungs.join(', ')}');
     exitCode = 2;
@@ -161,50 +140,20 @@ Future<void> main(List<String> args) async {
   }
 
   stdout.writeln('tree: $root');
-  stdout.writeln(
-    '  ${'rung'.padRight(14)}${'ms'.padLeft(7)}${'garbage'.padLeft(12)}'
-    '${'over noop'.padLeft(12)}${'B a file'.padLeft(11)}'
-    '${'scavenges'.padLeft(11)}${'retained'.padLeft(11)}  files',
-  );
-
-  int? floor;
-  for (final rung in only == null ? rungs : [only]) {
-    final reading = await _spawnRung(rung, root);
-    floor ??= reading.newGenBytes;
-    stdout.writeln(reading.row(floor));
-    if (rung == 'control') {
+  await runLadder(
+    rungs: only == null ? rungs : [only],
+    script: Platform.script.toFilePath(),
+    rungArgs: [root],
+    onRung: (reading, floor) {
+      if (reading.rung != 'control') return;
       final expected = controlAllocations * controlBytes;
       stdout.writeln(
-        '  ${' ' * 14}expected ${_mib(expected)} '
+        '  ${' ' * 14}expected ${formatMiB(expected)} '
         '($controlAllocations x $controlBytes B, all of it garbage) — '
-        'read ${_mib(reading.newGenBytes - floor)}',
+        'read ${formatMiB(reading.newGenBytes - floor)}',
       );
-    }
-  }
-}
-
-/// One rung in a VM of its own.
-///
-/// **A fresh VM per rung is the whole method.** `--verbose_gc` reports the
-/// process, not a region of it, so the only way to attribute a figure to a rung
-/// is for the process to have done nothing else. It also means the `noop` rung
-/// is a real measurement of the shared cost rather than an estimate of it.
-Future<_Reading> _spawnRung(String rung, String root) async {
-  final result = await Process.run(Platform.executable, [
-    '--verbose_gc',
-    'run',
-    Platform.script.toFilePath(),
-    'rung',
-    rung,
-    root,
-  ], workingDirectory: Directory.current.path);
-  if (result.exitCode != 0) {
-    stderr.write(result.stdout);
-    stderr.write(result.stderr);
-    throw StateError('rung $rung exited ${result.exitCode}');
-  }
-  final counted = _CountedRun.parse(result.stdout as String);
-  return _Reading(rung, counted, _GcLog.parse(result.stderr as String));
+    },
+  );
 }
 
 /// One rung, in the process spawned for it. Prints what it visited; the
@@ -214,7 +163,9 @@ Future<void> _runRung(String rung, String root) async {
   final clock = Stopwatch()..start();
   await _walk(rung, root, counts);
   clock.stop();
-  stdout.writeln('${counts.files} ${clock.elapsedMilliseconds}');
+  stdout.writeln(
+    RungResult(units: counts.files, millis: clock.elapsedMilliseconds),
+  );
 }
 
 Future<void> _walk(String rung, String root, _Counts counts) async {
@@ -361,96 +312,3 @@ class _Counts {
   }
 }
 
-/// What a rung process reported about itself on stdout.
-class _CountedRun {
-  const _CountedRun(this.files, this.millis);
-
-  factory _CountedRun.parse(String stdout) {
-    final parts = stdout.trim().split(RegExp(r'\s+'));
-    return _CountedRun(int.parse(parts[0]), int.parse(parts[1]));
-  }
-
-  final int files;
-  final int millis;
-}
-
-/// `--verbose_gc`'s table, reduced to the two figures a rung is read on.
-///
-/// **New-space "used before", summed over scavenges, is the garbage.** Each
-/// scavenge reports how full new space was when it ran; a program that fills
-/// and empties it repeatedly has allocated the sum of those fills. It is
-/// quantised by the semispace, which is why the ladder — not any single figure
-/// — is what this script reports.
-///
-/// Only the `main` isolate counts. The kernel service and the VM service
-/// isolates run their own collections, and they are the same in every rung.
-class _GcLog {
-  const _GcLog({
-    required this.newGenBytes,
-    required this.scavenges,
-    required this.retainedOldGenBytes,
-  });
-
-  factory _GcLog.parse(String stderr) {
-    var newGen = 0.0;
-    var scavenges = 0;
-    var retained = 0.0;
-    for (final line in stderr.split('\n')) {
-      if (!line.startsWith('[ main ')) continue;
-      final columns = line.split(',').map((c) => c.trim()).toList();
-      if (columns.length < 13) continue;
-      final usedBefore = double.tryParse(columns[5]);
-      final oldAfter = double.tryParse(columns[12]);
-      if (usedBefore == null || oldAfter == null) continue;
-      if (columns[1].startsWith('Scavenge(') &&
-          columns[1].contains('new space')) {
-        newGen += usedBefore;
-        scavenges++;
-      }
-      // The last line of any kind: what the old generation was left holding.
-      retained = oldAfter;
-    }
-    return _GcLog(
-      newGenBytes: (newGen * 1024 * 1024).round(),
-      scavenges: scavenges,
-      retainedOldGenBytes: (retained * 1024 * 1024).round(),
-    );
-  }
-
-  final int newGenBytes;
-  final int scavenges;
-  final int retainedOldGenBytes;
-}
-
-/// One rung's line of the table.
-class _Reading {
-  const _Reading(this.rung, this.run, this.gc);
-
-  final String rung;
-  final _CountedRun run;
-  final _GcLog gc;
-
-  int get newGenBytes => gc.newGenBytes;
-
-  /// [floor] is the `noop` rung's figure — VM boot, kernel compile and JIT,
-  /// which every rung pays and none of them is about.
-  String row(int floor) {
-    final own = newGenBytes - floor;
-    final perFile = run.files == 0 ? 0 : own / run.files;
-    return '  ${rung.padRight(14)}${run.millis.toString().padLeft(7)}'
-        '${_mib(newGenBytes).padLeft(12)}${_mib(own).padLeft(12)}'
-        '${perFile.round().toString().padLeft(11)}'
-        '${gc.scavenges.toString().padLeft(11)}'
-        '${_mib(gc.retainedOldGenBytes).padLeft(11)}  ${run.files}';
-  }
-}
-
-String _mib(int bytes) => '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MiB';
-
-String? _flag(List<String> args, String name) {
-  for (var i = 0; i < args.length; i++) {
-    if (args[i] == name && i + 1 < args.length) return args[i + 1];
-    if (args[i].startsWith('$name=')) return args[i].substring(name.length + 1);
-  }
-  return null;
-}
