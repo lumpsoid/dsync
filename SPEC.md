@@ -430,6 +430,38 @@ Every name §7.2 permits is within 3% of every other, and the root-directory run
 
 **This is a desktop reading and the wall times are not the phone's.** What it establishes is where the garbage is and that the blocking shape removes most of it; whether that changes the phone's 35.1 ms a file, and where the concurrency knee is with 16 writes in flight, is task 4c55fd's device half.
 
+**Where the in-place write's floor is, and how much room is left (task 4759eb).** Re-measured after §7.2 went in place, same OnePlus 6, to decide whether `Applier.defaultConcurrency` should rise. Through the real apply (`integration_test/apply_write_path_test.dart`, 1,500 files, 30 a directory, three repeats, the order rotated), median µs a file:
+
+| workers | 1 | 4 | 8 | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|
+| FUSE, fresh pull | 21,025 | 14,497 | 14,832 | 15,435 | 15,922 | 15,398 |
+| FUSE, overwrite | 6,918 | 3,011 | 3,020 | 3,003 | 3,027 | 3,111 |
+| app-private block storage, fresh | 2,837 | 2,511 | 2,388 | 2,560 | 2,520 | 2,808 |
+| app-private block storage, overwrite | 2,891 | 2,512 | 1,913 | 2,103 | 2,215 | 2,526 |
+| desktop ext4, fresh (5,000 files) | 6,261 | 1,761 | 976 | 695 | 556 | 431 |
+| desktop ext4, overwrite (5,000 files) | 6,128 | 1,649 | 942 | 596 | 513 | 364 |
+
+**On the phone the apply is flat from four workers**, so raising the default buys the pulling side nothing; the desktop gains to 64 and loses nothing. (The table at the top of this section reads 7,350 fresh at 16; it was taken before a change of handset, so the two are not compared. Every figure here is from one device.)
+
+**The plateau is `dart:io`'s asynchronous calls, not the storage.** On block storage, where a write is nearly free, the apply still costs ~2.5 ms a file at any worker count, and the process uses under one core of eight throughout. The destination's step timings (`WritePathStats`) account for ~2.6 ms of the ~2.85 at one worker, and at sixteen each asynchronous step takes ~16× as long while the wall does not move. `integration_test/dart_io_op_probe_test.dart` takes the apply out: an asynchronous `stat`, `setLastModified` or `exists` tops out at **~210 µs a call however many run at once**, against 7–20 µs for the synchronous form. Moving `setLastModified` and the closing `stat` to synchronous calls on the main isolate was tried and dropped: ~15–20% faster on block storage, ~10% *slower* on FUSE from four workers up, where a synchronous `setLastModified` costs 550–800 µs and holds up every other worker while it runs. Blocking calls pay only inside isolates, which §7.2's desktop ladder above already said. `integration_test/sync_isolate_probe_test.dart` confirms that on the phone: the destination's whole write done synchronously in worker isolates goes from ~4,100 µs a file at one isolate to ~420 at eight on FUSE overwrites, and handing it one file per message costs about the same as handing it a batch.
+
+**The storage's own floor**, per call and in total (`benchmark/device/write_ops_probe.c`: the syscalls `LocalAgent.writeFile` makes through `dart:io`, in order, over `adb shell`, 1,500 files unless stated, µs a file):
+
+| threads | 1 | 4 | 16 | 32 |
+|---|---|---|---|---|
+| fresh, a directory filled at a time (a path-sorted plan) | ~17,500 | ~14,000 | ~7,650 | ~6,050 |
+| fresh, consecutive files in different directories | ~18,300 | ~5,600 | ~5,450 | ~5,500 |
+| overwrite | ~3,870 | ~640 | ~280 | ~205 |
+| fresh, **8,000 files in one directory** | 91,381 | ~84,600 | ~84,850 | ~84,700 |
+| overwrite, 8,000 files in one directory | 3,929 | ~655 | ~260 | ~197 |
+
+- **A fresh file is its `open(O_CREAT)`** — 15.7 ms of 17.5 at one thread; everything else is under 2 ms together. Creates in the same directory serialise (the kernel holds the parent directory's lock across FUSE's round trip to MediaProvider); across directories they reach a device-wide floor of ~5.5 ms at four threads.
+- **A create costs more the larger its directory**, and nothing parallelises it: ~15 ms at 30 entries, ~34 ms averaged over filling 1,500, ~85 ms averaged over filling 8,000 — about 15 ms plus ~17 µs per entry already there, so filling one directory is quadratic. A first pull of an 8,000-file folder is ~11 minutes on this phone whatever dsync does. Why is not measured; a case-insensitivity check against the whole directory on a kernel (4.9) without ext4 casefold would fit.
+- **Creating elsewhere and renaming in does not escape it.** Written across directories and then renamed into one 8,000-file directory: 8.1 ms to create plus 48.5 ms to rename at four threads, 56.7 in all against 84.7 — the rename pays the same serial, size-dependent cost, and it would bring back the rename and a staging area this section removed.
+- **An overwrite has no serial part**, and does not care how large its directory is.
+
+**So the room left is narrow and in the less common case.** Against that floor the apply's fresh pull is 15.4 ms where ~5.5 ms is reachable (2.8×), but only for trees of many small directories; a large directory is at the floor already. An overwrite is 3.0 ms where ~0.2 ms is reachable (15×), but a run overwrites the files that changed, usually a small share of a tree. Reaching either takes a write path of synchronous calls in worker isolates, beside `ReadPool`, fed by an ordering that keeps concurrent creates in different directories. That is a design change, and not worth making until a `peer://` measurement (task 84fc92) shows the phone's write, and not the link, bounding a real pull.
+
 ### 7.3 Archive commit per path
 After an action succeeds on both sides, **both** agents are owed the record for that path. The record is handed over immediately; it *travels* in batches, and it is made *durable* in batches (§8.2), so a crash loses at most the last unflushed batch. That is the same shape of damage as the crash this section is already about, and the rules below close it the same way — it is simply a few hundred paths rather than one. A crash between the two commits leaves one side's archive stale.
 

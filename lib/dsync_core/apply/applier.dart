@@ -135,6 +135,13 @@ class Applier {
   /// latency, and queueing is what makes SPEC §17's per-operation means stop
   /// meaning "what one exchange cost".
   ///
+  /// Re-measured on the storage side once writes went in place (task
+  /// 4759eb, SPEC §7.2): a phone pulling into its emulated storage is flat
+  /// from four workers to sixty-four, held there by `dart:io`'s asynchronous
+  /// calls rather than by the storage, and a desktop gains to sixty-four and
+  /// loses nothing. So the storage says nothing for raising this; the link
+  /// is what it is still waiting on.
+  ///
   /// The cost is what is in flight on the memory-constrained end: sixteen
   /// streaming `writeFile`s hold one chunk each, not one file each (SPEC
   /// §7.2), so about a megabyte of buffers and sixteen open handles a side.
