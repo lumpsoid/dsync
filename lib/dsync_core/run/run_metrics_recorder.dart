@@ -3,6 +3,7 @@ import 'package:dsync/dsync_core/models/process_memory.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
 import 'package:dsync/dsync_core/run/resident_memory.dart';
@@ -226,6 +227,11 @@ class RunMetricsRecorder {
     if (record.far?.writePath case final steps?) {
       replica.writePathSource = () => steps;
     }
+    // Served-side only, so a plain field: a local replica has no server and
+    // nothing to source it from. Arrives on `unlock` like the write path.
+    if (record.far?.writeStages case final stages?) {
+      replica.writeStages = stages;
+    }
   }
 
   /// Opens a flush of [bytes] framed protocol carrying [frames] frames on
@@ -399,6 +405,7 @@ class RunMetricsRecorder {
           writeStats: entry.value.writeStats?.call(),
           peerSendWait: entry.value.peerSendWait,
           writePath: entry.value.writePathSource?.call(),
+          writeStages: entry.value.writeStages,
           framesSent: entry.value.framesSent,
           quiet: Map.unmodifiable(entry.value.quiet),
           awaiting: Map.unmodifiable(entry.value.awaiting),
@@ -432,6 +439,10 @@ class _ReplicaRecord {
   /// nothing has registered one. Set by `watchWritePath` for a local replica
   /// and by `recordExchange` for a remote one.
   WritePathStats? Function()? writePathSource;
+
+  /// The served peer's per-stage `writeFile` occupancy, as of the `unlock`
+  /// reply that carried it, or null before one did.
+  WriteStageStats? writeStages;
 
   /// Flushes handed to the transport and not yet written. While this is
   /// above zero the link is carrying something and neither idle figure

@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 
 /// What the peer says one exchange cost *it* (SPEC §17), as it rides back on
 /// the reply's own success control frame — a field, not an exchange.
@@ -72,11 +73,18 @@ class FarSideReport {
   /// partial total that reads like a complete one.
   final WritePathStats? writePath;
 
+  /// How many of this peer's served `writeFile`s sat in each stage over the
+  /// session (SPEC §17, task 9a89f7), or null from a peer that does not
+  /// report it or wrote nothing. Carried once, on the `unlock` reply, like
+  /// [writePath].
+  final WriteStageStats? writeStages;
+
   const FarSideReport({
     required this.span,
     this.inFlight,
     this.sendWait,
     this.inboundWait,
     this.writePath,
+    this.writeStages,
   });
 }

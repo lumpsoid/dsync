@@ -88,6 +88,26 @@ class FrameRouter {
   /// resumes only on the pass that empties the queue.
   bool _paused = false;
 
+  /// When the input was left paused behind a route not taking frames, on
+  /// [_clock], or null while it is not — or while nothing is measuring.
+  Duration? _blockedSince;
+
+  /// Summed time the input has stayed paused past a delivery pass because a
+  /// route was not taking frames (SPEC §17, task 9a89f7), or zero from a
+  /// router with no clock.
+  ///
+  /// **The one queue no stamp on a frame can see.** While this runs nothing
+  /// is read off the transport, so what the peer sent waits undecoded in the
+  /// socket and TLS buffers, and its [Frame.arrivedAt] is the moment it was
+  /// finally read rather than the moment it arrived. A connection whose
+  /// writes are serialised by this head-of-line block reads here as most of
+  /// the run.
+  Duration get inputBlocked => switch ((_blockedSince, _clock)) {
+    (final since?, final clock?) => _blocked + (clock() - since),
+    _ => _blocked,
+  };
+  Duration _blocked = Duration.zero;
+
   FrameRouter(Stream<Uint8List> input, {Elapsed? elapsed})
     : _input = input,
       _clock = elapsed;
@@ -237,7 +257,13 @@ class FrameRouter {
       _finish(null);
       return;
     }
-    if (_undelivered.isEmpty) _resumeInput();
+    if (_undelivered.isEmpty) {
+      _resumeInput();
+    } else {
+      // Read only when a pass ends blocked, so the ordinary pass that
+      // pauses and resumes in one go costs no clock read at all.
+      _blockedSince ??= _clock?.call();
+    }
   }
 
   void _pauseInput() {
@@ -249,6 +275,10 @@ class FrameRouter {
   void _resumeInput() {
     if (!_paused) return;
     _paused = false;
+    if ((_blockedSince, _clock) case (final since?, final clock?)) {
+      _blocked += clock() - since;
+    }
+    _blockedSince = null;
     _subscription?.resume();
   }
 

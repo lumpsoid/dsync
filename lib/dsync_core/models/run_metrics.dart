@@ -3,6 +3,7 @@ import 'package:dsync/dsync_core/models/process_memory.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 
 /// One step of `RunController`'s flow (SPEC §13), in the order it drives them.
 ///
@@ -475,6 +476,11 @@ class ReplicaMetrics {
   /// see (task 4c55fd).
   final WritePathStats? writePath;
 
+  /// How many of this replica's served `writeFile`s sat in each stage at once
+  /// (SPEC §17, task 9a89f7), or null when nothing reported it — a local
+  /// replica, which is not served, or a run that ended before its `unlock`.
+  final WriteStageStats? writeStages;
+
   /// How long this replica's transport had nothing to carry, per phase, and
   /// how long it had something outstanding and was waiting for it (SPEC §17).
   ///
@@ -507,6 +513,7 @@ class ReplicaMetrics {
     this.writeStats,
     this.peerSendWait,
     this.writePath,
+    this.writeStages,
     this.quiet = const {},
     this.awaiting = const {},
   });

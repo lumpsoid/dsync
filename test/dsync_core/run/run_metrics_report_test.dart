@@ -1,0 +1,73 @@
+import 'package:dsync/dsync_core/models/run_metrics.dart';
+import 'package:dsync/dsync_core/models/write_stage.dart';
+import 'package:dsync/dsync_core/models/write_stage_stats.dart';
+import 'package:dsync/dsync_core/run/run_metrics_report.dart';
+import 'package:test/test.dart';
+
+RunMetrics _withStages(WriteStageStats? stages) => RunMetrics(
+  elapsed: const Duration(seconds: 2),
+  phases: const {},
+  replicas: {
+    'b': ReplicaMetrics(
+      side: 'b',
+      remote: true,
+      ops: const {},
+      wireBytesSent: 0,
+      wireBytesReceived: 0,
+      writeStages: stages,
+    ),
+  },
+);
+
+void main() {
+  test("prints the served peer's write stages as in flight and per file", () {
+    // 4 writes over 1 s: 2 s of receiving summed is 2.0 at once, and 0.5 s a
+    // write.
+    final report = formatRunMetrics(
+      _withStages(
+        WriteStageStats(
+          files: 4,
+          window: const Duration(seconds: 1),
+          residence: {
+            WriteStage.queued: const Duration(milliseconds: 400),
+            WriteStage.awaiting: const Duration(milliseconds: 100),
+            WriteStage.receiving: const Duration(seconds: 2),
+            WriteStage.storing: const Duration(milliseconds: 200),
+            WriteStage.replying: const Duration(milliseconds: 40),
+          },
+          peaks: {
+            WriteStage.awaiting: 1,
+            WriteStage.receiving: 3,
+            WriteStage.storing: 1,
+            WriteStage.replying: 1,
+          },
+          peakServing: 4,
+          held: const Duration(milliseconds: 80),
+          inputBlocked: const Duration(milliseconds: 250),
+        ),
+      ),
+    );
+
+    expect(
+      report,
+      contains(
+        '  write stages: 4 files over 1000.0 ms, 2.3 served at once (peak 4) — '
+        'queued 0.4 · awaiting 0.1/1 · receiving 2.0/3 · storing 0.2/1 · '
+        'replying 0.0/1 (mean/peak in flight)\n',
+      ),
+    );
+    expect(
+      report,
+      contains(
+        '  write stage time: queued 100.0 ms · awaiting 25.0 ms · '
+        'receiving 500.0 ms · storing 50.0 ms · replying 10.0 ms per file; '
+        'frames held 20.0 ms per file; reading blocked 250.0 ms in the '
+        'session\n',
+      ),
+    );
+  });
+
+  test('prints nothing for a peer that reported no stages', () {
+    expect(formatRunMetrics(_withStages(null)), isNot(contains('write stage')));
+  });
+}

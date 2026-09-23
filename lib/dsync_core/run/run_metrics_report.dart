@@ -1,6 +1,7 @@
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage.dart';
 
 /// Renders [RunMetrics] as the plain-text report both heads show (SPEC §17).
 ///
@@ -196,6 +197,34 @@ String formatRunMetrics(RunMetrics metrics) {
         out.writeln(
           '  write chmod: ${formatMetricCount(steps.chmodSpawns)} processes '
           'spawned, ${formatMetricDuration(steps.mode)} in the mode step',
+        );
+      }
+      // Where the served peer's writes sat, and how many at once (task
+      // 9a89f7): the answer `far` cannot give to "does it run 16 writes, or
+      // one at a time, and where do the rest wait?". Mean/peak in flight per
+      // stage, then what one write spent in each. `queued` has no peak — see
+      // `WriteStageStats.peaks`.
+      if (replica.writeStages case final stages? when stages.files > 0) {
+        String count(double value) => value.toStringAsFixed(1);
+        out.writeln(
+          '  write stages: ${formatMetricCount(stages.files)} files over '
+          '${formatMetricDuration(stages.window)}, '
+          '${count(stages.meanServing)} served at once '
+          '(peak ${stages.peakServing}) — '
+          '${[for (final stage in WriteStage.values) '${stage.name} ${count(stages.meanInFlight(stage))}'
+                '${switch (stages.peaks[stage]) {
+                  final peak? => '/$peak',
+                  null => '',
+                }}'].join(' · ')} '
+          '(mean/peak in flight)',
+        );
+        out.writeln(
+          '  write stage time: '
+          '${[for (final stage in WriteStage.values) '${stage.name} ${formatMetricDuration(stages.perWrite(stage))}'].join(' · ')} '
+          'per file; frames held '
+          '${formatMetricDuration(stages.heldPerWrite)} per file; '
+          'reading blocked ${formatMetricDuration(stages.inputBlocked)} '
+          'in the session',
         );
       }
       // Two figures rather than one, per phase, and the split is the answer

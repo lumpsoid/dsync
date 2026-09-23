@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
+import 'package:dsync/dsync_core/agent/write_stage_tally.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage.dart';
+import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
@@ -12,6 +15,7 @@ import 'package:dsync/dsync_core/protocol/frame_router.dart';
 import 'package:dsync/dsync_core/protocol/scan_result_codec.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
+import 'package:dsync/dsync_core/run/elapsed.dart';
 
 /// The remote end of the framed protocol (SPEC §4.2): performs the version
 /// handshake, then the required `hello` prologue, then routes control-frame
@@ -60,7 +64,12 @@ class AgentServer {
     Agent Function(ReplicaSpec spec) buildAgent, {
     WritePathStats? Function(Agent agent)? writePath,
   }) async {
-    final router = FrameRouter(channel.input);
+    // One clock for the session, stamped on every frame as it is decoded, so
+    // a write's stages (SPEC §17) can say how long its frames sat in the
+    // router's queue as well as how long its handler held them.
+    final clock = stopwatchElapsed();
+    final router = FrameRouter(channel.input, elapsed: clock);
+    final stages = WriteStageTally();
 
     final firstRequest = Completer<Frame>();
 
@@ -209,6 +218,8 @@ class AgentServer {
           // this dispatch is itself in the set, so the count includes it.
           () => inFlight.length,
           writePath,
+          stages,
+          clock,
         );
         inFlight.add(handled);
         unawaited(handled.whenComplete(() => inFlight.remove(handled)));
@@ -250,6 +261,8 @@ class AgentServer {
     Stream<Frame> body,
     int Function() inFlight,
     WritePathStats? Function(Agent agent)? writePath,
+    WriteStageTally stages,
+    Elapsed clock,
   ) async {
     final id = frame.requestId;
     // Started before the request is even decoded, because what this measures
@@ -289,6 +302,12 @@ class AgentServer {
               inFlight,
               null,
               writePath?.call(agent),
+              // Absent rather than empty for a session that wrote nothing —
+              // a push, where this end only reads.
+              switch (stages.stats(inputBlocked: router.inputBlocked)) {
+                final stats when stats.files > 0 => stats,
+                _ => null,
+              },
             );
           case 'scan':
             final session = await agent.scan(
@@ -331,29 +350,38 @@ class AgentServer {
             );
           case 'writeFile':
             bodyComplete = false;
-            // The only operation with an inbound stream, and the only one
-            // whose span means two opposite things until it is split (SPEC
-            // §17): the bytes arrive at the link's pace, so a handler
-            // starved by the radio and one busy with its disk are the same
-            // number. Measured where the frames are consumed rather than
-            // subtracted from anything afterwards.
-            final intake = _InboundWait(farSide);
-            final bytes = readByteStream(intake.watch(body));
-            final metadata = await agent.writeFile(
-              request.params['path'] as String,
-              bytes,
-              mtime: request.params['mtime'] as int,
-              mode: request.params['mode'] as int,
-            );
-            bodyComplete = true;
-            await _reply(
-              channel,
-              AgentSuccess({'metadata': fileMetadataToJson(metadata)}),
-              id,
-              farSide,
-              inFlight,
-              intake.total,
-            );
+            // Ended in the `finally` rather than after the reply, so a write
+            // that fails still leaves its stage and the live counts stay
+            // true for the writes after it.
+            final track = stages.begin(arrived: frame.arrivedAt, at: clock());
+            try {
+              // The only operation with an inbound stream, and the only one
+              // whose span means two opposite things until it is split (SPEC
+              // §17): the bytes arrive at the link's pace, so a handler
+              // starved by the radio and one busy with its disk are the same
+              // number. Measured where the frames are consumed rather than
+              // subtracted from anything afterwards.
+              final intake = _InboundWait(farSide, track, clock);
+              final bytes = readByteStream(intake.watch(body));
+              final metadata = await agent.writeFile(
+                request.params['path'] as String,
+                bytes,
+                mtime: request.params['mtime'] as int,
+                mode: request.params['mode'] as int,
+              );
+              bodyComplete = true;
+              track.enter(WriteStage.replying, clock());
+              await _reply(
+                channel,
+                AgentSuccess({'metadata': fileMetadataToJson(metadata)}),
+                id,
+                farSide,
+                inFlight,
+                intake.total,
+              );
+            } finally {
+              track.end(clock());
+            }
           case 'delete':
             await agent.delete(request.params['path'] as String);
             await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
@@ -437,6 +465,7 @@ class AgentServer {
     int Function()? inFlight,
     Duration? inboundWait,
     WritePathStats? writePath,
+    WriteStageStats? writeStages,
   ]) {
     final stamped = farSide != null && result is AgentSuccess
         ? result.withFarSide(
@@ -446,6 +475,7 @@ class AgentServer {
               sendWait: channel.writeStats?.sendPath,
               inboundWait: inboundWait,
               writePath: writePath,
+              writeStages: writeStages,
             ),
           )
         : result;
@@ -468,11 +498,17 @@ class AgentServer {
 class _InboundWait {
   final Stopwatch _clock;
 
+  /// Where this write's stages are moved as its frames are taken, on the
+  /// session's [_session] clock — the one its frames' arrivals are stamped
+  /// with.
+  final WriteStageTrack _track;
+  final Elapsed _session;
+
   /// Summed gaps so far. Read when the reply is built, which is after the
   /// last of them.
   Duration total = Duration.zero;
 
-  _InboundWait(this._clock);
+  _InboundWait(this._clock, this._track, this._session);
 
   Stream<Frame> watch(Stream<Frame> source) async* {
     // Stamped when the handler subscribes, not when the request landed:
@@ -481,6 +517,13 @@ class _InboundWait {
     var since = _clock.elapsed;
     await for (final frame in source) {
       total += _clock.elapsed - since;
+      final taken = _session();
+      _track
+        ..took(arrived: frame.arrivedAt, at: taken)
+        ..enter(WriteStage.receiving, taken);
+      // The terminator is the last frame of the transfer: from here every
+      // byte is in hand and what is left is storage's own.
+      if (frame.payload.isEmpty) _track.enter(WriteStage.storing, taken);
       yield frame;
       since = _clock.elapsed;
     }

@@ -315,5 +315,42 @@ void main() {
       await pumpEventQueue();
       expect(delivered, hasLength(5));
     });
+
+    test(
+      'the time the input stays blocked is counted, and only that',
+      () async {
+        // Task 9a89f7: while a route is not taking frames nothing is read off
+        // the connection, so the bytes behind it wait where no arrival stamp
+        // can see them. This is the figure that can.
+        var now = Duration.zero;
+        final timed = FrameRouter(wire.stream, elapsed: () => now);
+        final reading = timed.run(onUnrouted: (_, _) {});
+        unawaited(reading.catchError((_) {}));
+        final stalled = timed.open(1);
+
+        // A frame for a route nothing listens to yet blocks the input.
+        await send(FrameType.fileBytes, 1, [1]);
+        now = const Duration(milliseconds: 30);
+        expect(timed.inputBlocked, const Duration(milliseconds: 30));
+
+        final taken = <Frame>[];
+        stalled.listen(taken.add);
+        await pumpEventQueue();
+        now = const Duration(milliseconds: 50);
+
+        expect(taken, hasLength(1));
+        // Unblocked at 30 ms; the 20 ms since were not blocked.
+        expect(timed.inputBlocked, const Duration(milliseconds: 30));
+      },
+    );
+
+    test('a router with no clock counts nothing', () async {
+      unawaited(start());
+      router.open(1);
+
+      await send(FrameType.fileBytes, 1, [1]);
+
+      expect(router.inputBlocked, Duration.zero);
+    });
   });
 }

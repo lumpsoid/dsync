@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage.dart';
+import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -89,6 +91,7 @@ const farInFlightKey = 'farInFlight';
 const farSendWaitKey = 'farSendWaitMicros';
 const farInboundWaitKey = 'farInboundWaitMicros';
 const farWritePathKey = 'farWritePath';
+const farWriteStagesKey = 'farWriteStages';
 
 /// What the peer said this exchange cost it, or null if it said nothing.
 ///
@@ -109,6 +112,7 @@ FarSideReport? farSideFromJson(Map<String, dynamic> data) {
         ? Duration(microseconds: inboundWait)
         : null,
     writePath: writePathFromJson(data[farWritePathKey]),
+    writeStages: writeStagesFromJson(data[farWriteStagesKey]),
   );
 }
 
@@ -146,6 +150,51 @@ WritePathStats? writePathFromJson(Object? data) {
   );
 }
 
+/// The peer's per-stage `writeFile` occupancy as it travels (SPEC §17, task
+/// 9a89f7): one object under one key, stages by name, so a stage a later
+/// build adds is skipped by this one rather than misread.
+Map<String, dynamic> writeStagesToJson(WriteStageStats stages) => {
+  'files': stages.files,
+  'windowMicros': stages.window.inMicroseconds,
+  'residenceMicros': {
+    for (final MapEntry(key: stage, value: total) in stages.residence.entries)
+      stage.name: total.inMicroseconds,
+  },
+  'peaks': {
+    for (final MapEntry(key: stage, value: peak) in stages.peaks.entries)
+      stage.name: peak,
+  },
+  'peakServing': stages.peakServing,
+  'heldMicros': stages.held.inMicroseconds,
+  'inputBlockedMicros': stages.inputBlocked.inMicroseconds,
+};
+
+/// [data] read back, or null when the peer sent none — an older build, a
+/// session that wrote nothing, or any reply but `unlock`.
+WriteStageStats? writeStagesFromJson(Object? data) {
+  if (data is! Map<String, dynamic>) return null;
+  int count(Object? value) => value is int ? value : 0;
+  Map<WriteStage, int> byStage(Object? values) => {
+    if (values is Map<String, dynamic>)
+      for (final stage in WriteStage.values)
+        if (values[stage.name] case final int value) stage: value,
+  };
+  return WriteStageStats(
+    files: count(data['files']),
+    window: Duration(microseconds: count(data['windowMicros'])),
+    residence: {
+      for (final MapEntry(key: stage, value: micros) in byStage(
+        data['residenceMicros'],
+      ).entries)
+        stage: Duration(microseconds: micros),
+    },
+    peaks: byStage(data['peaks']),
+    peakServing: count(data['peakServing']),
+    held: Duration(microseconds: count(data['heldMicros'])),
+    inputBlocked: Duration(microseconds: count(data['inputBlockedMicros'])),
+  );
+}
+
 /// The operation succeeded; [data] carries whatever result it returns, empty
 /// for operations with nothing to report beyond having happened.
 class AgentSuccess extends AgentResult {
@@ -168,6 +217,8 @@ class AgentSuccess extends AgentResult {
       farInboundWaitKey: wait.inMicroseconds,
     if (report.writePath case final steps?)
       farWritePathKey: writePathToJson(steps),
+    if (report.writeStages case final stages?)
+      farWriteStagesKey: writeStagesToJson(stages),
   });
 
   @override

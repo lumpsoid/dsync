@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage.dart';
+import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
@@ -70,6 +72,63 @@ void main() {
       final decoded = AgentResult.fromFrame(stamped.toFrame(1)) as AgentSuccess;
 
       expect(farSideFromJson(decoded.data)!.inboundWait, isNull);
+    });
+
+    test('carries the write stages whole, and none when not sent', () {
+      final stages = WriteStageStats(
+        files: 3,
+        window: const Duration(milliseconds: 90),
+        residence: {
+          WriteStage.queued: const Duration(milliseconds: 4),
+          WriteStage.receiving: const Duration(milliseconds: 60),
+        },
+        peaks: {WriteStage.receiving: 2, WriteStage.storing: 1},
+        peakServing: 2,
+        held: const Duration(milliseconds: 11),
+        inputBlocked: const Duration(milliseconds: 250),
+      );
+      final stamped = const AgentSuccess().withFarSide(
+        FarSideReport(
+          span: const Duration(milliseconds: 1),
+          writeStages: stages,
+        ),
+      );
+
+      final decoded = AgentResult.fromFrame(stamped.toFrame(1)) as AgentSuccess;
+      final back = farSideFromJson(decoded.data)!.writeStages!;
+
+      expect(back.files, 3);
+      expect(back.window, const Duration(milliseconds: 90));
+      expect(back.residence, stages.residence);
+      expect(back.peaks, {WriteStage.receiving: 2, WriteStage.storing: 1});
+      expect(back.peakServing, 2);
+      expect(back.held, const Duration(milliseconds: 11));
+      expect(back.inputBlocked, const Duration(milliseconds: 250));
+
+      final plain = AgentResult.fromFrame(
+        const AgentSuccess()
+            .withFarSide(const FarSideReport(span: Duration(milliseconds: 1)))
+            .toFrame(1),
+      ) as AgentSuccess;
+      expect(farSideFromJson(plain.data)!.writeStages, isNull);
+    });
+
+    test('skips a stage this build does not know', () {
+      // A later build may split a stage; this one reads what it can.
+      final stages = writeStagesFromJson({
+        'files': 1,
+        'windowMicros': 10,
+        'residenceMicros': {'receiving': 5, 'decrypting': 3},
+        'peaks': {'receiving': 1, 'decrypting': 1},
+        'peakServing': 1,
+        'heldMicros': 0,
+      })!;
+
+      expect(
+        stages.residence[WriteStage.receiving],
+        const Duration(microseconds: 5),
+      );
+      expect(stages.peaks, {WriteStage.receiving: 1});
     });
   });
 

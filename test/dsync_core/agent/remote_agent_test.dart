@@ -9,6 +9,7 @@ import 'package:dsync/dsync_core/agent/request_window.dart';
 import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
+import 'package:dsync/dsync_core/models/write_stage.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
@@ -217,6 +218,58 @@ void main() {
       // The steps it was not given stay zero rather than becoming absent:
       // this is one object, sent whole or not at all.
       expect(path.rename, Duration.zero);
+    });
+  });
+
+  group("the peer's write stages", () {
+    test('come back on the unlock reply, one per write served', () async {
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      unawaited(AgentServer().serve(serverChannel, (_) => _FakeAgent()));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+
+      await agent.hello();
+      await agent.lock();
+      await Future.wait([
+        for (final path in ['a.txt', 'b.txt'])
+          agent.writeFile(
+            path,
+            Stream.value([1, 2, 3]),
+            mtime: 1,
+            mode: 0x81a4,
+          ),
+      ]);
+      expect(reported.last.far!.writeStages, isNull);
+
+      await agent.unlock();
+
+      final stages = reported.last.far!.writeStages!;
+      expect(stages.files, 2);
+      expect(stages.peakServing, inInclusiveRange(1, 2));
+      expect(stages.window, greaterThan(Duration.zero));
+      // Every write passed through receiving, so it has a peak there.
+      expect(stages.peaks[WriteStage.receiving], greaterThanOrEqualTo(1));
+    });
+
+    test('are absent from a session that wrote nothing', () async {
+      final reported = <ExchangeRecord>[];
+      final (clientChannel, serverChannel) = InMemoryChannel.pair();
+      unawaited(AgentServer().serve(serverChannel, (_) => _FakeAgent()));
+      final agent = RemoteAgent(
+        clientChannel,
+        _testSpec,
+        onExchange: reported.add,
+      );
+
+      await agent.hello();
+      await agent.lock();
+      await agent.unlock();
+
+      expect(reported.last.far!.writeStages, isNull);
     });
   });
 
