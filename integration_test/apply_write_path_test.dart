@@ -114,6 +114,17 @@ void main() {
         'failed=${result.failed.length} landed=$landed '
         'applyMs=${applied.elapsedMilliseconds} usPerFile=$perFileUs',
       );
+      // Summed across overlapping writes (see WritePathStats), so per file
+      // they read against each other and, at one worker, against usPerFile.
+      final steps = agentB.writePath;
+      int each(Duration d) => d.inMicroseconds ~/ max(1, steps.files);
+      _log(
+        'STEPS pass=$pass concurrency=$concurrency repeat=$repeat '
+        'files=${steps.files} create=${each(steps.create)} '
+        'write=${each(steps.write)} mtime=${each(steps.mtime)} '
+        'mode=${each(steps.mode)} rename=${each(steps.rename)} '
+        'stat=${each(steps.stat)}',
+      );
       results['$pass-c$concurrency-r$repeat'] = {
         'applyMs': applied.elapsedMilliseconds,
         'usPerFile': perFileUs,
