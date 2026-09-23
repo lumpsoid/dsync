@@ -51,29 +51,30 @@ class LocalAgent implements Agent {
   /// (most tests) have no reason to supply it.
   final String? archivePath;
 
-  /// Set once `chmod` is known not to work on this host. See [_applyMode].
+  /// Whether [_applyMode] calls `chmod` on this replica, decided at most once
+  /// per agent. See [_applyMode].
   ///
-  /// Starts however [isWindowsReplica] says: `true` skips straight to the
-  /// no-op path from the very first call, since a Windows replica's lack of
-  /// `chmod` (SPEC §3, §7.4) is known ahead of time rather than something to
-  /// discover by paying one guaranteed-to-fail call per differing-mode file.
-  /// It can still *become* `true` on a non-Windows host too, the same way it
-  /// always could: [chmod] throwing [ChmodUnavailable] for some other reason
-  /// latches it there instead. Either way, [_applyMode] treats it
-  /// identically.
+  /// Starts [_ModeStep.skipped] when [isWindowsReplica] says so, since a
+  /// Windows replica's lack of `chmod` (SPEC §3, §7.4) is known ahead of
+  /// time rather than something to discover. Otherwise it starts
+  /// [_ModeStep.unprobed], and the first mode step settles it: skipped when
+  /// [chmod] raises [ChmodUnavailable], or when [_modesStick] finds that
+  /// this replica's filesystem ignores the bits it is given (SPEC §7.4) —
+  /// and applied otherwise.
   ///
-  /// Note what does *not* latch it: a `chmod` that ran and the filesystem
-  /// refused (SPEC §3 flags Android's external storage as exactly that).
-  /// That is a per-path outcome, and §7.4's rule — archive the mode that
-  /// landed, not the one asked for — already covers it.
-  bool _chmodUnavailable;
+  /// Note what does *not* settle it: a `chmod` that ran and the filesystem
+  /// refused, on a replica where modes otherwise stick. That is a per-path
+  /// outcome, and §7.4's rule — archive the mode that landed, not the one
+  /// asked for — already covers it.
+  _ModeStep _modeStep;
 
-  /// Whether [_applyMode] will skip the `chmod` spawn: `isWindowsReplica` as
-  /// construction said it, until the first failed spawn latches it true.
-  /// Readable so a composition root can be tested for having threaded the
-  /// host's answer in, and so a caller can tell a run's modes were not
-  /// applied without inferring it from the archive.
-  bool get chmodUnavailable => _chmodUnavailable;
+  /// Whether [_applyMode] will skip `chmod`: true for a replica
+  /// construction knows is on Windows, and for one the first write found
+  /// has no working `chmod` or ignores modes. Readable so a composition root
+  /// can be tested for having threaded the host's answer in, and so a caller
+  /// can tell a run's modes were not applied without inferring it from the
+  /// archive.
+  bool get chmodUnavailable => _modeStep == _ModeStep.skipped;
 
   /// How [_applyMode] sets permission bits. Defaults to [posixChmod], the
   /// `chmod(2)` syscall through `dart:ffi`.
@@ -154,7 +155,7 @@ class LocalAgent implements Agent {
     p.Style? pathStyle,
     this.readPool,
   }) : scanner = scanner ?? Scanner(),
-       _chmodUnavailable = isWindowsReplica,
+       _modeStep = isWindowsReplica ? _ModeStep.skipped : _ModeStep.unprobed,
        _pathStyle = pathStyle ?? p.Style.posix;
 
   @override
@@ -470,24 +471,71 @@ class LocalAgent implements Agent {
   /// process's umask, so it essentially never carries the source's mode),
   /// and a syscall is not worth the stat that guards it either way.
   ///
-  /// [_chmodUnavailable] still short-circuits the whole thing, and still
-  /// means what it always did: a replica the constructor knows is on Windows
-  /// starts latched, and any other host that turns out to have no `chmod`
-  /// latches on the first [ChmodUnavailable] rather than once per file.
+  /// [_modeStep] short-circuits the whole thing, and is settled on the first
+  /// call rather than per file: a replica the constructor knows is on
+  /// Windows starts skipped, a host with no `chmod` skips after the first
+  /// [ChmodUnavailable], and a replica whose filesystem ignores modes skips
+  /// after [_modesStick] says so (SPEC §7.4).
+  ///
+  /// That last case is the phone's shared storage. There a `chmod` changes
+  /// nothing — the storage layer fixes every file at 660 — yet it costs
+  /// 2.4 ms a file against 60 µs elsewhere, and being synchronous it blocks
+  /// the agent's only isolate for all of it: 7.3 s of a 3,000-file pull.
+  /// Skipping it records nothing different, because the caller's closing
+  /// `stat` archives the mode that landed either way.
   ///
   /// Synchronous, deliberately: there is nothing to await, and the caller's
   /// step clock reads cleanly across it as a result.
   void _applyMode(File file, int mode) {
-    if (_chmodUnavailable) return;
-
     try {
+      if (_modeStep == _ModeStep.unprobed) {
+        _modeStep = _modesStick() ? _ModeStep.applied : _ModeStep.skipped;
+      }
+      if (_modeStep == _ModeStep.skipped) return;
+
       // The return value is dropped on purpose. `-1` means this filesystem
-      // refused these bits (SPEC §3, Android's shared storage), which §7.4
-      // makes non-fatal, and the `stat` the caller takes afterwards is what
-      // archives the mode that actually landed.
+      // refused these bits for this path, which §7.4 makes non-fatal, and
+      // the `stat` the caller takes afterwards is what archives the mode
+      // that actually landed.
       chmod(file.path, mode);
     } on ChmodUnavailable {
-      _chmodUnavailable = true;
+      _modeStep = _ModeStep.skipped;
+    }
+  }
+
+  /// Whether a `chmod` on this replica changes anything, asked once of a
+  /// scratch file in its root: flip the owner-execute bit through [chmod]
+  /// and `stat` whether it moved.
+  ///
+  /// The root rather than the file being written, because the answer is a
+  /// property of the filesystem, not the path — the same reasoning
+  /// `detectsCaseFolding` gives for probing once per replica. The scratch
+  /// file is named by [tempPathFor], so one a crash leaves behind is skipped
+  /// by the next scan rather than synced.
+  ///
+  /// Best-effort in the conservative direction: a root the probe cannot
+  /// create a file in answers `true`, keeping the per-file `chmod` this
+  /// replaced. [ChmodUnavailable] propagates, for [_applyMode] to settle on.
+  bool _modesStick() {
+    final scratch = File(
+      tempPathFor(_absolute('.dsync-mode-probe'), _nextTempSequence++),
+    );
+    try {
+      scratch.createSync();
+    } on FileSystemException {
+      return true;
+    }
+    try {
+      final asked = (scratch.statSync().mode & 0x1FF) ^ 0x40;
+      chmod(scratch.path, asked);
+      return scratch.statSync().mode & 0x1FF == asked;
+    } finally {
+      try {
+        scratch.deleteSync();
+      } on FileSystemException {
+        // Best-effort cleanup: the answer is already computed, and a
+        // leftover scratch file is skipped by every scan.
+      }
     }
   }
 
@@ -558,6 +606,10 @@ class LocalAgent implements Agent {
   String _absolute(String relativePath) =>
       resolveWithinRoot(rootPath, relativePath, pathStyle: _pathStyle);
 }
+
+/// Where [LocalAgent._applyMode] stands on this replica: not yet asked,
+/// calling `chmod` on every file, or never calling it.
+enum _ModeStep { unprobed, applied, skipped }
 
 /// The parent of a root-relative path, or `null` when [path] is already
 /// top-level — i.e. there is no ancestor directory short of the root itself,

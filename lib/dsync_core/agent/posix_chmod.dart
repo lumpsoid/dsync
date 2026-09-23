@@ -17,8 +17,7 @@ import 'package:ffi/ffi.dart';
 ///
 /// Throws [ChmodUnavailable] when there is no `chmod` on this host *at all*,
 /// which is a different claim entirely — it is about the host, not the path,
-/// so it is the one `LocalAgent._chmodUnavailable` latches on and stops
-/// asking.
+/// so it is the one `LocalAgent._modeStep` settles on and stops asking.
 typedef Chmod = int Function(String nativePath, int mode);
 
 /// Thrown by a [Chmod] that cannot run on this host at all, as distinct from

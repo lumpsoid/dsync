@@ -561,16 +561,25 @@ void main() {
     /// `chmod` binary — the seam moved from a `PATH` lookup to a function,
     /// so the fake is a closure rather than a file, and the tests below no
     /// longer need a POSIX shell to run.
+    ///
+    /// Each call is passed on to [posixChmod], so modes stick and the
+    /// agent's once-per-replica probe (SPEC §7.4) lets the per-file call
+    /// through. [chmodCallsOnFiles] drops the probe's own call.
     (List<(String, int)>, Chmod) recordingChmod() {
       final calls = <(String, int)>[];
       return (
         calls,
         (path, mode) {
           calls.add((path, mode));
-          return 0;
+          return posixChmod(path, mode);
         },
       );
     }
+
+    List<(String, int)> chmodCallsOnFiles(List<(String, int)> calls) => [
+      for (final call in calls)
+        if (!isTempFileName(p.basename(call.$1))) call,
+    ];
 
     test('a Windows replica never calls chmod, even when the mode '
         'differs', () async {
@@ -619,20 +628,22 @@ void main() {
 
       // Without this, the Windows test above would prove nothing: it would
       // pass just as well if the recording technique itself never worked.
-      expect(calls, [('${replicaDir.path}/a.txt', 420)]);
-    });
+      expect(chmodCallsOnFiles(calls), [('${replicaDir.path}/a.txt', 420)]);
+    }, testOn: 'linux');
 
-    test('a chmod that runs and the filesystem refuses is not fatal and does '
-        'not latch — SPEC §7.4, and the Android external-storage case '
-        '(SPEC §3)', () async {
+    test('a chmod that runs and the filesystem refuses for one path is not '
+        'fatal and does not latch, on a replica where modes stick — SPEC '
+        '§7.4', () async {
       var calls = 0;
       final refusingAgent = LocalAgent(
         rootPath: replicaDir.path,
         archiveStore: archiveStore,
         replicaLock: replicaLock,
-        // What `chmod(2)` returns on a filesystem with no POSIX modes: it
+        // The probe's scratch file takes the real call, so modes stick on
+        // this replica; each file written is then refused on its own: it
         // ran, it failed, and it will be asked again for the next path.
         chmod: (path, mode) {
+          if (isTempFileName(p.basename(path))) return posixChmod(path, mode);
           calls++;
           return -1;
         },
@@ -649,7 +660,67 @@ void main() {
       }
 
       expect(calls, 2);
-    });
+    }, testOn: 'linux');
+
+    test('a replica whose filesystem ignores modes is probed once and never '
+        'asked again, and still archives the mode that landed — SPEC §7.4, '
+        "the phone's shared storage", () async {
+      final calls = <String>[];
+      final ignoringAgent = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        // What `chmod(2)` does on /storage/emulated: reports success and
+        // leaves the mode where the storage layer put it.
+        chmod: (path, mode) {
+          calls.add(path);
+          return 0;
+        },
+      );
+
+      for (final path in ['a.txt', 'b.txt', 'c.txt']) {
+        final written = await ignoringAgent.writeFile(
+          path,
+          Stream.value(utf8.encode('hello')),
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+          mode: 448, // 0o700
+        );
+        final landed = await File('${replicaDir.path}/$path').stat();
+        expect(written.mode, landed.mode & 0xFFF);
+      }
+
+      // The probe's one call on its scratch file, and none per file.
+      expect(calls, hasLength(1));
+      expect(isTempFileName(p.basename(calls.single)), isTrue);
+      expect(ignoringAgent.chmodUnavailable, isTrue);
+      expect(await _leftoverTempFiles(replicaDir), isEmpty);
+    }, testOn: 'linux');
+
+    test('a replica where modes stick applies the mode to every file after '
+        'one probe', () async {
+      final (calls, chmod) = recordingChmod();
+      final posixAgent = LocalAgent(
+        rootPath: replicaDir.path,
+        archiveStore: archiveStore,
+        replicaLock: replicaLock,
+        chmod: chmod,
+      );
+
+      for (final path in ['a.txt', 'b.txt', 'c.txt']) {
+        final written = await posixAgent.writeFile(
+          path,
+          Stream.value(utf8.encode('hello')),
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+          mode: 384, // 0o600
+        );
+        expect(written.mode, 384);
+      }
+
+      expect(calls, hasLength(4));
+      expect(chmodCallsOnFiles(calls), hasLength(3));
+      expect(posixAgent.chmodUnavailable, isFalse);
+      expect(await _leftoverTempFiles(replicaDir), isEmpty);
+    }, testOn: 'linux');
 
     test('a host that genuinely lacks chmod for some other reason still '
         'succeeds, recording whatever mode actually landed rather than the '
