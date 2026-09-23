@@ -146,8 +146,14 @@ class RunController {
           return;
         }
 
+        // `await for`, not `yield*`: in an `async*` body `yield*` forwards
+        // the inner stream's errors downstream as error events instead of
+        // throwing them here, so this catch would never see them (task
+        // c8ed30).
         try {
-          yield* _runLocked();
+          await for (final event in _runLocked()) {
+            yield event;
+          }
         } catch (error) {
           yield RunErrorEvent(error);
         } finally {
@@ -202,16 +208,13 @@ class RunController {
     // inside it for the same reason phase 1 is — they are what learning the
     // two replicas' state costs, and a run where every bucket agreed spends
     // almost nothing on them.
-    final scans = await metrics.phase(
-      RunPhase.scan,
-      () async {
-        final sessions = await Future.wait([
-          agentA.scan(rules),
-          agentB.scan(rules),
-        ]);
-        return exchangeScans(sessions[0], sessions[1]);
-      },
-    );
+    final scans = await metrics.phase(RunPhase.scan, () async {
+      final sessions = await Future.wait([
+        agentA.scan(rules),
+        agentB.scan(rules),
+      ]);
+      return exchangeScans(sessions[0], sessions[1]);
+    });
     final onA = scans.onA;
     final onB = scans.onB;
 
@@ -331,7 +334,7 @@ class RunController {
     }
 
     // Rethrows here if apply() itself failed outside its per-action
-    // handling; `run()`'s own try/catch (around `yield* _runLocked()`) turns
+    // handling; `run()`'s own try/catch (around its loop over `_runLocked()`) turns
     // that into a `RunErrorEvent` exactly like any other unexpected failure.
     final applyResult = await applyResultFuture;
     metrics.endPhase(RunPhase.apply);

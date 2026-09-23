@@ -879,6 +879,42 @@ void main(List<String> args) async {
       },
       testOn: 'linux',
     );
+
+    test('a scan failure is the stream\'s last event, a RunErrorEvent, not a '
+        'stream error — after both unlocks, before both disconnects', () async {
+      final a = _RecordingAgent(agentA, scanError: Exception('scan broke'));
+      final b = _RecordingAgent(agentB);
+
+      final events = await RunController(
+        agentA: a,
+        agentB: b,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      expect(events.first, isA<RunReplicasEvent>());
+      expect(events.last, isA<RunErrorEvent>());
+      expect(events.whereType<RunErrorEvent>(), hasLength(1));
+      expect(a.calls, containsAllInOrder(['scan', 'unlock', 'disconnect']));
+      expect(b.calls, containsAllInOrder(['unlock', 'disconnect']));
+      await expectLocksFree();
+    }, testOn: 'linux');
+
+    test('a compaction failure after the apply ends the run with a '
+        'RunErrorEvent and no summary', () async {
+      await File('${replicaADir.path}/note.txt').writeAsString('a');
+      final a = _RecordingAgent(agentA, compactError: Exception('disk full'));
+
+      final events = await RunController(
+        agentA: a,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      expect(events.whereType<RunResultEvent>(), hasLength(1));
+      expect(events.last, isA<RunErrorEvent>());
+      expect(events.whereType<RunSummaryEvent>(), isEmpty);
+      await expectLocksFree();
+    }, testOn: 'linux');
   });
 
   group('run marker (SPEC §7.6)', () {
@@ -1122,7 +1158,15 @@ class _RecordingAgent implements Agent {
   final Object? helloError;
   final List<String> calls = [];
 
-  _RecordingAgent(this._wrapped, {this.helloError});
+  final Object? scanError;
+  final Object? compactError;
+
+  _RecordingAgent(
+    this._wrapped, {
+    this.helloError,
+    this.scanError,
+    this.compactError,
+  });
 
   @override
   Future<ReplicaInfo> hello() async {
@@ -1150,7 +1194,11 @@ class _RecordingAgent implements Agent {
   }
 
   @override
-  Future<ScanSession> scan(RuleSet rules) => _wrapped.scan(rules);
+  Future<ScanSession> scan(RuleSet rules) async {
+    calls.add('scan');
+    if (scanError != null) throw scanError!;
+    return _wrapped.scan(rules);
+  }
 
   @override
   Stream<List<int>> readFile(String path) => _wrapped.readFile(path);
@@ -1174,7 +1222,11 @@ class _RecordingAgent implements Agent {
       _wrapped.archiveCommit(commits);
 
   @override
-  Future<void> compact() => _wrapped.compact();
+  Future<void> compact() async {
+    calls.add('compact');
+    if (compactError != null) throw compactError!;
+    return _wrapped.compact();
+  }
 }
 
 /// Wraps a real [Agent], delegating every method to it, except [writeFile]
