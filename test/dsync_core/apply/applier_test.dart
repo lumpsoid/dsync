@@ -992,6 +992,64 @@ void main() {
     });
   });
 
+  group('actions start spread across folders (task 5d8c28)', () {
+    test('reads, marks and writes all follow the spread order, each write '
+        'after its mark (SPEC §7.2, §7.6)', () async {
+      final mtime = DateTime.utc(2022, 1, 1).microsecondsSinceEpoch;
+      const paths = ['a/1.txt', 'a/2.txt', 'b/1.txt', 'b/2.txt'];
+      for (final path in paths) {
+        final file = File('${replicaADir.path}/$path');
+        await file.parent.create();
+        await file.writeAsString('x');
+      }
+
+      final callsA = <String>[];
+      final callsB = <String>[];
+      final plan = Plan(
+        actions: [
+          for (final path in paths)
+            PlanAction(path: path, type: ActionType.copyAtoB),
+        ],
+        conflicts: [],
+      );
+
+      final result = await Applier(concurrency: 1, markWindow: 2).apply(
+        plan,
+        [
+          for (final path in paths)
+            ScanEntry(
+              path: path,
+              reason: ScanReason.created,
+              size: 1,
+              mtime: mtime,
+              mode: 420,
+              hash: 'h',
+            ),
+        ],
+        [],
+        _RecordingCallsAgent(agentA, callsA),
+        _RecordingCallsAgent(agentB, callsB),
+      );
+
+      expect(result.failed, isEmpty);
+      const spread = ['a/1.txt', 'b/1.txt', 'a/2.txt', 'b/2.txt'];
+      List<String> of(List<String> calls, String op) => [
+        for (final call in calls)
+          if (call.startsWith('$op ')) call.substring(op.length + 1),
+      ];
+      expect(of(callsA, 'readFile'), spread);
+      expect(of(callsB, 'archiveCommitIntent'), spread);
+      expect(of(callsB, 'writeFile'), spread);
+      for (final path in spread) {
+        expect(
+          callsB.indexOf('archiveCommitIntent $path'),
+          lessThan(callsB.indexOf('writeFile $path')),
+          reason: '$path is marked before it is written',
+        );
+      }
+    });
+  });
+
   group('onAction callback (task e9f31c)', () {
     test('fires once per action, in plan order for one worker, including for a failed action (SPEC §7.6)', () async {
       await File('${replicaADir.path}/one.txt').writeAsString('one');

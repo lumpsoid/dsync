@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/apply/commit_pipeline.dart';
+import 'package:dsync/dsync_core/apply/folder_spread.dart';
 import 'package:dsync/dsync_core/apply/read_ahead.dart';
 import 'package:dsync/dsync_core/models/apply_result.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
@@ -73,10 +74,12 @@ void _noopReadAheadReport(ReadAheadStats stats) {}
 /// the size/mtime/mode/hash needed to write a file or build an
 /// [ArchiveEntry], so those are looked up here by path.
 ///
-/// Actions are *started* in the order given and up to [concurrency] of them
-/// run at once (SPEC §7.1, task 0f7dfc). Order was never what made this
-/// correct — the per-path archive record each action ends with (SPEC §7.3)
-/// is, and it is per path, so two actions on two paths have nothing to
+/// Actions are *started* in the order [spreadAcrossFolders] gives them —
+/// consecutive ones in different folders, because creates in one folder
+/// serialise on a phone's shared storage (SPEC §7.2, task 5d8c28) — and up to
+/// [concurrency] of them run at once (SPEC §7.1, task 0f7dfc). Order was never
+/// what made this correct — the per-path archive record each action ends with
+/// (SPEC §7.3) is, and it is per path, so two actions on two paths have nothing to
 /// order between them. A plan holds one action per path, so no two workers
 /// can be on the same path at all.
 ///
@@ -251,12 +254,14 @@ class Applier {
       batchSize: commitBatchSize,
     );
 
-    // Walks the plan in order — so SPEC §7.1's "started in plan order" still
-    // holds — starting each copy's source read before handing the action to a
-    // worker. It blocks in two places, and between them is the whole of what
-    // bounds the read-ahead: on a read-ahead slot, and on room in the queue.
+    // Walks the plan spread across folders (SPEC §7.2) — the one order the
+    // marks, the read-ahead and the workers all see, so a window is marked
+    // before any of its copies is read or written — starting each copy's
+    // source read before handing the action to a worker. It blocks in two
+    // places, and between them is the whole of what bounds the read-ahead: on
+    // a read-ahead slot, and on room in the queue.
     Future<void> pump() async {
-      final actions = plan.actions;
+      final actions = spreadAcrossFolders(plan.actions);
       var markedUpTo = 0;
       Object? markFailure;
       for (var i = 0; i < actions.length; i++) {
