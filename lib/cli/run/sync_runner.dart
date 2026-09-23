@@ -154,10 +154,10 @@ class SyncRunner {
   /// only ever does the plain assignments SPEC §11.5's exit code is computed
   /// from, once, after the stream ends.
   ///
-  /// task fc661b: a SIGINT received anywhere during the loop stops the run
-  /// at the next action boundary — task e9f31c made every `RunEvent` one of
-  /// those, by giving `Applier.apply` a per-action callback, so the check
-  /// below is just [InterruptGuard.requested] — and always forces the exit
+  /// task fc661b: a SIGINT received anywhere during the run stops it through
+  /// [RunController.stop] (task f750ae) — nothing further starts, the
+  /// actions in flight finish, and the run ends with its summary — and
+  /// always forces the exit
   /// code to the signal's own (SPEC §11.5) regardless of what [RunOutcome]
   /// would otherwise say, since the signal describes what the *user* did,
   /// not what the run did. task 7ba6b5: SIGTERM is trapped the same way,
@@ -295,10 +295,19 @@ class SyncRunner {
     // exit path too, and the deadline covers what it can right up to the
     // return.
     final stop = StopSequence()..watch();
+    // task f750ae: the first signal stops the run the way the app's Stop
+    // does, through `RunController.stop`, rather than by cancelling the
+    // stream: the writes in flight finish and commit, the marks of copies
+    // that never started are withdrawn (SPEC §7.6), the summary arrives and
+    // the run marker is cleared. Cancelling would park `Applier.apply` where
+    // it stood and do none of that. A second signal, or the deadline, still
+    // ends the process from inside [StopSequence].
+    stop.code.then((_) => controller.stop()).ignore();
     try {
       RunSummaryEvent? summary;
       RunErrorEvent? error;
-      var appliedAny = false;
+      var planned = 0;
+      var finished = 0;
       await for (final event in controller.run()) {
         render(event);
         switch (event) {
@@ -306,47 +315,33 @@ class SyncRunner {
             summary = e;
           case RunErrorEvent e:
             error = e;
+          case RunActionEvent():
+            planned++;
           case RunResultEvent():
-            appliedAny = true;
+            finished++;
           default:
             break;
         }
-
-        // task e9f31c: every `RunEvent` is now a safe point to stop at —
-        // `Applier.apply` reports each action as it finishes rather than
-        // running the whole plan as one uninterruptible unit, so there is no
-        // longer a "before the first action" restriction to check for. This
-        // `break` cancels `controller.run()`'s subscription, which — because
-        // `RunController.run()`'s generator is suspended exactly at a
-        // `yield` when that happens — runs its unlock/disconnect `finally`
-        // blocks exactly as a normal end of stream would, and (mid-apply)
-        // leaves `Applier.apply` itself suspended at the action boundary it
-        // had just reported, never starting the next one.
-        if (stop.requested) break;
       }
 
       // task fc661b: report what was applied before stopping, rather than
-      // just changing the exit code silently. `summary` only exists when the
-      // whole plan finished applying (rendered above like any other event),
-      // so there is nothing more to add there beyond noting *why* the exit
-      // code is about to say "interrupted" instead of whatever this run
-      // actually finished doing. task e9f31c added the middle case: stopped
-      // partway through apply, after at least one `RunResultEvent` but
-      // before the summary — `appliedAny` is what tells that apart from
-      // "never got to apply at all".
+      // just changing the exit code silently. The summary (rendered above
+      // like any other event) already says what landed; this line only says
+      // *why* the exit code is about to say "interrupted", and whether the
+      // stop cut the plan short. A run stopped before its apply offers
+      // nothing to apply, so it reports no results at all.
       final interruptedBy = stop.interruptedBy;
       if (interruptedBy != null) {
         final by = 'interrupted (${interruptedBy.label})';
-        stderr.writeln(switch ((summary != null, appliedAny)) {
-          (true, _) =>
-            '$by; this run had already finished applying '
-                '— see summary above.',
-          (false, true) =>
-            '$by partway through applying — see the '
-                'results above for what already landed; the rest of the '
-                'plan was not attempted.',
-          (false, false) => '$by before applying any changes.',
-        });
+        stderr.writeln(
+          finished == 0
+              ? '$by before applying any changes.'
+              : finished < planned
+              ? '$by partway through applying — the changes already in '
+                    'progress finished (see above); the rest of the plan was '
+                    'not attempted.'
+              : '$by; this run had already finished applying — see above.',
+        );
       }
 
       // After the summary and after the interrupt note, so it never comes

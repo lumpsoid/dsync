@@ -259,10 +259,11 @@ class RunController {
     }
     yield RunPlanEvent(plan);
 
-    final presented = await metrics.phase(
-      RunPhase.present,
-      () => presenter(plan),
-    );
+    // A run already stopped does not ask: an interactive presenter would
+    // otherwise prompt for review of a plan nobody is going to apply.
+    final presented = _stop.isCompleted
+        ? const <PlanAction>[]
+        : await metrics.phase(RunPhase.present, () => presenter(plan));
     final actionsToApply = _stop.isCompleted ? const <PlanAction>[] : presented;
     for (final action in actionsToApply) {
       yield RunActionEvent(action);

@@ -10,6 +10,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:test/test.dart';
 
 import '../../support/dsync_binary.dart';
@@ -133,6 +135,61 @@ void main() {
       // Never true for a dry run anyway, but this also confirms
       // `Applier.apply` genuinely never touched the destination.
       expect(await Directory(rootB.path).list().toList(), isEmpty);
+    });
+
+    test('a SIGINT mid-apply lets the copies in flight finish, withdraws the '
+        'marks of the rest and clears the run marker (task f750ae)', () async {
+      // Enough copies that the default apply concurrency (16) is still well
+      // short of the plan when the first result prints.
+      for (var i = _fileCount; i < 200; i++) {
+        await File(
+          '${rootA.path}/f$i.bin',
+        ).writeAsBytes(List.filled(300 * 1024, 0));
+      }
+      final process = await Process.start(
+        binaryPath,
+        ['sync', rootA.path, rootB.path, '--batch', '--jobs', '1'],
+        environment: {'XDG_STATE_HOME': '${tempDir.path}/state'},
+      );
+      final stderrText = utf8.decoder.bind(process.stderr).join();
+      // One signal only: a second one exits at once, which is not what this
+      // test is about.
+      var signalled = false;
+      utf8.decoder.bind(process.stdout).transform(const LineSplitter()).listen(
+        (line) {
+          if (!signalled && line.trimLeft().startsWith('applied')) {
+            signalled = true;
+            process.kill(ProcessSignal.sigint);
+          }
+        },
+      );
+
+      final exitCode = await process.exitCode.timeout(
+        const Duration(seconds: 10),
+      );
+
+      expect(exitCode, 130);
+      expect(
+        await stderrText,
+        contains('interrupted (SIGINT) partway through applying'),
+      );
+      final stateDir = Directory('${tempDir.path}/state/dsync');
+      final names = [
+        for (final entity in await stateDir.list().toList())
+          entity.uri.pathSegments.last,
+      ];
+      expect(names.where((name) => name.endsWith('.run')), isEmpty);
+      final logB = names.singleWhere((name) => name.endsWith('-b.jsonl'));
+      final archiveB = await JsonlArchiveStore(
+        File('${stateDir.path}/$logB'),
+        ArchiveHeader(
+          schemaVersion: JsonlArchiveStore.schemaVersion,
+          profileId: logB.substring(0, logB.length - '-b.jsonl'.length),
+          rootPath: rootB.path,
+        ),
+      ).load();
+      expect(archiveB.untrusted, isEmpty);
+      expect(archiveB.entries.length, lessThan(200));
     });
 
     test('a second SIGINT exits immediately rather than waiting', () async {

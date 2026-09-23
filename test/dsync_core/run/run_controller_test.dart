@@ -970,6 +970,32 @@ void main(List<String> args) async {
       await expectLocksFree();
     }, testOn: 'linux');
 
+    test('a run stopped before the plan is presented never asks the '
+        'presenter, and ends with a summary', () async {
+      await File('${replicaADir.path}/a.txt').writeAsString('a');
+      var asked = false;
+      final controller = RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async {
+          asked = true;
+          return plan.actions;
+        },
+        runMarker: marker,
+      );
+
+      final events = <RunEvent>[];
+      await for (final event in controller.run()) {
+        events.add(event);
+        if (event is RunReplicasEvent) controller.stop();
+      }
+
+      expect(asked, isFalse);
+      expect(events.whereType<RunActionEvent>(), isEmpty);
+      expect(events.last, isA<RunSummaryEvent>());
+      expect(await marker.isPresent(), isFalse);
+    }, testOn: 'linux');
+
     test('stays when the run is cancelled mid-apply', () async {
       for (final name in ['a.txt', 'b.txt', 'c.txt']) {
         await File('${replicaADir.path}/$name').writeAsString(name);

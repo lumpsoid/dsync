@@ -115,8 +115,7 @@ class StopSequence {
   /// arrives, and never otherwise — what a listener returns from its `run`.
   Future<int> get code => _stopped.future;
 
-  /// Whether a stop has been asked for — what `SyncRunner.run` checks after
-  /// each `RunEvent` to decide whether to stop at this action boundary.
+  /// Whether a stop has been asked for.
   bool get requested => _guard.requested;
 
   /// The first signal received, or `null` — what `RunOutcome.interruptedBy`

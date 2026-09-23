@@ -600,9 +600,10 @@ any of 0-3 rather than being ranked against them — folding an interrupt into
 3 would have retry logic retrying a run the user asked to stop.
 
 A `sync`/`status` run traps both signals the same way: the first one stops
-the run at the next action boundary — the action in flight finishes, both
-sides commit its archive entry (§7.3), and the summary is printed — and a
-second one, of either kind, exits at once. Whichever arrived first picks the
+the run gracefully — nothing further starts, the actions in flight finish
+and both sides commit their archive entries (§7.3), the marks of copies that
+never started are withdrawn and the run marker is cleared (§7.6), and the
+summary is printed — and a second one, of either kind, exits at once. Whichever arrived first picks the
 code. SIGTERM is trapped, rather than left to the kernel's default (which
 also reports 143), because for a scheduled run — a systemd stop, a
 `timeout`, a supervisor's kill — it is the *normal* stop signal, and an
