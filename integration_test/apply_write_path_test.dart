@@ -14,6 +14,13 @@
 //     --driver=test_driver/integration_test.dart \
 //     --target=integration_test/apply_write_path_test.dart
 //
+// Task 4759eb's sweep adds `--dart-define=CONCURRENCY=1,4,8,16,32,64` and
+// `--dart-define=REPEATS=n`: every repeat runs each worker count once, a
+// fresh pull then an overwrite, in an order rotated by one per repeat so a
+// drift over the run does not land on one count. On the desktop,
+// `--dart-define=DEST_ROOT=...` points the destination at the disk under
+// test, since the default is the phone's shared storage.
+//
 // The apply is timed whole, so on the branch the marks' exchange and fsync
 // are inside the figure, as the task asks.
 import 'dart:io';
@@ -39,7 +46,12 @@ const _build = String.fromEnvironment('BUILD', defaultValue: 'unnamed');
 const _files = int.fromEnvironment('FILES', defaultValue: 1500);
 const _meanBytes = 13007; // §5.3's 179.5 MiB / 14,471
 const _filesPerDir = 30;
-const _destRoot = '/storage/emulated/0/dsync-bench';
+const _destRoot = String.fromEnvironment(
+  'DEST_ROOT',
+  defaultValue: '/storage/emulated/0/dsync-bench',
+);
+const _concurrencies = String.fromEnvironment('CONCURRENCY');
+const _repeats = int.fromEnvironment('REPEATS', defaultValue: 1);
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -68,7 +80,7 @@ void main() {
     final logB = File('${work.path}/b.jsonl');
 
     /// One timed apply of whatever A holds onto B, as it stands.
-    Future<void> pull(String pass, int concurrency) async {
+    Future<void> pull(String pass, int concurrency, int repeat) async {
       final agentB = LocalAgent(
         rootPath: dest.path,
         archiveStore: JsonlArchiveStore(logB, _header(dest.path)),
@@ -97,11 +109,12 @@ void main() {
       final perFileUs = applied.elapsedMicroseconds ~/ copies;
       _log(
         'RESULT build=$_build pass=$pass concurrency=$concurrency '
+        'repeat=$repeat '
         'copies=$copies applied=${result.applied.length} '
         'failed=${result.failed.length} landed=$landed '
         'applyMs=${applied.elapsedMilliseconds} usPerFile=$perFileUs',
       );
-      results['$pass-c$concurrency'] = {
+      results['$pass-c$concurrency-r$repeat'] = {
         'applyMs': applied.elapsedMilliseconds,
         'usPerFile': perFileUs,
         'copies': copies,
@@ -123,13 +136,27 @@ void main() {
     // A fresh pull creates every file whatever the write path does; an
     // overwrite is where the two differ by the rename alone. The last fresh
     // pull is what the overwrites write over.
-    for (final concurrency in [1, 16]) {
-      await clear();
-      await pull('fresh', concurrency);
-    }
-    for (final (round, concurrency) in [(1, 16), (2, 1)]) {
-      _modify(source, round);
-      await pull('overwrite', concurrency);
+    if (_concurrencies.isEmpty) {
+      for (final concurrency in [1, 16]) {
+        await clear();
+        await pull('fresh', concurrency, 0);
+      }
+      for (final (round, concurrency) in [(1, 16), (2, 1)]) {
+        _modify(source, round);
+        await pull('overwrite', concurrency, 0);
+      }
+    } else {
+      final counts = _concurrencies.split(',').map(int.parse).toList();
+      var round = 0;
+      for (var repeat = 0; repeat < _repeats; repeat++) {
+        for (var i = 0; i < counts.length; i++) {
+          final concurrency = counts[(i + repeat) % counts.length];
+          await clear();
+          await pull('fresh', concurrency, repeat);
+          _modify(source, ++round % 255 + 1);
+          await pull('overwrite', concurrency, repeat);
+        }
+      }
     }
 
     await Directory(_destRoot).delete(recursive: true);
