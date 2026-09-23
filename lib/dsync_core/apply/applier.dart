@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:math';
 
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/apply/commit_pipeline.dart';
@@ -160,12 +161,23 @@ class Applier {
   /// taking bytes, and the bound a *stalled* read runs into.
   final int readAheadLead;
 
+  /// How many of the plan's actions each mark exchange covers (SPEC §7.6) —
+  /// see [_markUntrusted]. The commit batch's size, so a run makes about as
+  /// many mark exchanges as commit exchanges.
+  static const defaultMarkWindow = CommitPipeline.defaultBatchSize;
+
+  /// How many actions one mark exchange covers. Injectable so a test can
+  /// reason about which window a path falls in.
+  final int markWindow;
+
   Applier({
     this.concurrency = defaultConcurrency,
     this.commitBatchSize = CommitPipeline.defaultBatchSize,
     this.readAheadLead = ReadAhead.defaultLead,
+    this.markWindow = defaultMarkWindow,
   }) : assert(concurrency >= 1, 'An applier with no workers applies nothing'),
-       assert(readAheadLead >= 0, 'A negative lead is fewer reads than writes');
+       assert(readAheadLead >= 0, 'A negative lead is fewer reads than writes'),
+       assert(markWindow >= 1, 'A window that marks nothing writes nothing');
 
   Future<ApplyResult> apply(
     Plan plan,
@@ -178,8 +190,6 @@ class Applier {
   }) async {
     final a = {for (final e in onA) e.path: e};
     final b = {for (final e in onB) e.path: e};
-
-    await _markUntrusted(plan.actions, agentA, agentB);
 
     final applied = <AppliedPath>[];
     final failed = <FailedPath>[];
@@ -228,7 +238,30 @@ class Applier {
     // worker. It blocks in two places, and between them is the whole of what
     // bounds the read-ahead: on a read-ahead slot, and on room in the queue.
     Future<void> pump() async {
-      for (final action in plan.actions) {
+      final actions = plan.actions;
+      var markedUpTo = 0;
+      Object? markFailure;
+      for (var i = 0; i < actions.length; i++) {
+        final action = actions[i];
+        // The next window is marked only when the pump reaches it, so a run
+        // that stops leaves marks on the copies it had started and at most a
+        // window of ones it had not — see [_markUntrusted].
+        if (i == markedUpTo) {
+          markedUpTo = min(i + markWindow, actions.length);
+          markFailure = await _markUntrusted(
+            actions.sublist(i, markedUpTo),
+            agentA,
+            agentB,
+          );
+        }
+        if (markFailure != null &&
+            (action.type == ActionType.copyAtoB ||
+                action.type == ActionType.copyBtoA)) {
+          // Nothing of it is written, and nothing read: the worker reports it
+          // failed with the mark's own error.
+          if (!await queue.put(_Ready(action, null, markFailure))) return;
+          continue;
+        }
         final source = switch (action.type) {
           ActionType.copyAtoB => (agent: agentA, entry: a[action.path]),
           ActionType.copyBtoA => (agent: agentB, entry: b[action.path]),
@@ -258,6 +291,11 @@ class Applier {
         final ready = await queue.take();
         if (ready == null) return;
         final action = ready.action;
+        final markFailure = ready.markFailure;
+        if (markFailure != null) {
+          await commits.addFailed(action, markFailure);
+          continue;
+        }
         final outcome = await _applyOne(
           action,
           a,
@@ -302,27 +340,27 @@ class Applier {
     return ApplyResult(applied: applied, failed: failed);
   }
 
-  /// Marks every path this plan copies to as untrusted on the side it is
-  /// copied to, and returns once both marks are durable (SPEC §7.6).
+  /// Marks every path [actions] copies to as untrusted on the side it is
+  /// copied to, and returns once both marks are durable (SPEC §7.6) — or the
+  /// error that stopped them, which the caller fails those copies with.
   ///
-  /// **Before anything is written**, because `Agent.writeFile` writes in place
-  /// and a write that stops part-way — a failed stream, a killed process —
-  /// leaves a file the next scan could only read as a local edit. The mark
-  /// makes it read as possibly torn: committed if it holds the other side's
-  /// content, a conflict labelled interrupted if not. It is superseded by the
-  /// path's own commit (§7.3), so a copy that lands clears it and one that
-  /// fails keeps it.
+  /// **Before any of them is written**, because `Agent.writeFile` writes in
+  /// place and a write that stops part-way — a failed stream, a killed
+  /// process — leaves a file the next scan could only read as a local edit.
+  /// The mark makes it read as possibly torn: committed if it holds the other
+  /// side's content, a conflict labelled interrupted if not. It is superseded
+  /// by the path's own commit (§7.3), so a copy that lands clears it and one
+  /// that fails keeps it.
   ///
-  /// **The whole plan, in one exchange per side**, rather than a batch per
-  /// handful of writes: one fsync a run instead of one a batch, and no write
-  /// ever waits on a mark. What that widens is which paths a stopped run
-  /// leaves marked — every copy it never started, not only the ones it tore.
-  /// That costs nothing: the scan reads a marked file that still matches its
-  /// archive entry as unmarked, so those resolve the way the plan would have.
-  ///
-  /// A mark that fails fails the apply: nothing has been written yet, so
-  /// there is nothing a per-action failure would be protecting.
-  Future<void> _markUntrusted(
+  /// **A window at a time, as the pump reaches it**, not the whole plan up
+  /// front. A mark on a copy that never started is harmless to the next scan,
+  /// which reads a file still matching its entry as unmarked, but it clears
+  /// only when a later commit touches the path; until then a user's edit
+  /// there is raised as an interrupted conflict. Marking by window bounds
+  /// what a stopped run leaves that way to one [markWindow] plus the queue.
+  /// The pump runs ahead of the workers, so a window's exchange and fsync
+  /// overlap the writes already queued rather than stalling them.
+  Future<Object?> _markUntrusted(
     List<PlanAction> actions,
     Agent agentA,
     Agent agentB,
@@ -335,10 +373,15 @@ class Applier {
       for (final action in actions)
         if (action.type == ActionType.copyAtoB) ArchiveIntent(action.path),
     ];
-    await Future.wait([
-      if (onA.isNotEmpty) agentA.archiveCommit(onA),
-      if (onB.isNotEmpty) agentB.archiveCommit(onB),
-    ]);
+    try {
+      await Future.wait([
+        if (onA.isNotEmpty) agentA.archiveCommit(onA),
+        if (onB.isNotEmpty) agentB.archiveCommit(onB),
+      ]);
+      return null;
+    } catch (error) {
+      return error;
+    }
   }
 
   /// Applies one action, returning what it left the two archives owing, or
@@ -599,7 +642,10 @@ class _Ready {
   final PlanAction action;
   final Prefetch? prefetch;
 
-  const _Ready(this.action, this.prefetch);
+  /// Why this copy must not be written: its window's mark failed (SPEC §7.6).
+  final Object? markFailure;
+
+  const _Ready(this.action, this.prefetch, [this.markFailure]);
 }
 
 /// A bounded FIFO between the pump and the workers.

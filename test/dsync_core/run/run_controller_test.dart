@@ -871,24 +871,24 @@ void main(List<String> args) async {
       expect(await marker.isPresent(), isFalse);
     }, testOn: 'linux');
 
-    test('stays when the apply ends in an error', () async {
-      await File('${replicaADir.path}/new.txt').writeAsString('a');
+    test('stays when the run is stopped mid-apply', () async {
+      for (final name in ['a.txt', 'b.txt', 'c.txt']) {
+        await File('${replicaADir.path}/$name').writeAsString(name);
+      }
 
-      final events = RunController(
+      // Stopping to listen is how a head stops or pauses a run: the apply
+      // parks and never returns.
+      await for (final event in RunController(
         agentA: agentA,
-        agentB: _FailingPathsAgent(agentB, failOn: {}, refuseMarks: true),
+        agentB: agentB,
         presenter: (plan) async => plan.actions,
         runMarker: marker,
-      ).run();
-
-      // Taken as either shape a fatal failure reaches a head in: an error
-      // from inside `_runLocked` currently arrives as a stream error rather
-      // than a `RunErrorEvent`, which is not what this test is about.
-      Object? failure;
-      await for (final event in events.handleError((Object e) => failure = e)) {
-        if (event is RunErrorEvent) failure = event.error;
+        applyConcurrency: 1,
+        applyCommitBatchSize: 1,
+      ).run()) {
+        if (event is RunResultEvent) break;
       }
-      expect('$failure', contains('the marks were refused'));
+
       expect(await marker.isPresent(), isTrue);
     }, testOn: 'linux');
 
@@ -1123,14 +1123,7 @@ class _FailingPathsAgent implements Agent {
   final Agent _wrapped;
   final Set<String> failOn;
 
-  /// Refuses every intent mark (SPEC §7.6), which fails the whole apply.
-  final bool refuseMarks;
-
-  _FailingPathsAgent(
-    this._wrapped, {
-    required this.failOn,
-    this.refuseMarks = false,
-  });
+  _FailingPathsAgent(this._wrapped, {required this.failOn});
 
   @override
   Future<ReplicaInfo> hello() => _wrapped.hello();
@@ -1170,12 +1163,8 @@ class _FailingPathsAgent implements Agent {
   Future<void> removeEmptyDirs(String path) => _wrapped.removeEmptyDirs(path);
 
   @override
-  Future<void> archiveCommit(List<ArchiveCommit> commits) {
-    if (refuseMarks && commits.any((commit) => commit is ArchiveIntent)) {
-      return Future.error(Exception('the marks were refused'));
-    }
-    return _wrapped.archiveCommit(commits);
-  }
+  Future<void> archiveCommit(List<ArchiveCommit> commits) =>
+      _wrapped.archiveCommit(commits);
 
   @override
   Future<void> compact() => _wrapped.compact();

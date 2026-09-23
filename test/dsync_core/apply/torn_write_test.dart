@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -332,19 +333,61 @@ void main() {
     );
   });
 
-  test('a mark that cannot be made fails the apply before anything is '
+  test('a mark that cannot be made fails its copies before anything is '
       'written', () async {
     onA('f').writeAsBytesSync(old);
     onB('f').writeAsBytesSync(old);
     await sync();
     onA('f').writeAsBytesSync(source);
 
-    await expectLater(
-      sync(wrapB: (agent) => _FaultyAgent(agent, refuseMarks: true)),
-      throwsA(isA<_Refused>()),
+    final (_, result) = await sync(
+      wrapB: (agent) => _FaultyAgent(agent, refuseMarks: true),
     );
 
+    expect(result!.failed.single.path, 'f');
+    expect(result.failed.single.error, isA<_Refused>());
     expect(await onB('f').readAsBytes(), old);
+  });
+
+  test('a stopped run leaves marks only on the windows it reached', () async {
+    for (var i = 0; i < 6; i++) {
+      onA('f$i').writeAsStringSync('file $i');
+    }
+    final a = agentOver(dirA, logA, headerA);
+    final b = agentOver(dirB, logB, headerB);
+    final scans = await exchangeScans(
+      await a.scan(RuleSet()),
+      await b.scan(RuleSet()),
+    );
+    final plan = Reconciler().reconcile(scans.onA, scans.onB);
+    expect(plan.actions, hasLength(6));
+
+    // The first report never resolves, which is how a head stops a run: the
+    // apply parks where it is and never returns.
+    final reported = Completer<void>();
+    unawaited(
+      Applier(concurrency: 1, commitBatchSize: 1, markWindow: 2).apply(
+        plan,
+        scans.onA,
+        scans.onB,
+        a,
+        b,
+        onAction: (path, type, error) {
+          if (!reported.isCompleted) reported.complete();
+          return Completer<void>().future;
+        },
+      ),
+    );
+    await reported.future;
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    final marked = (await JsonlArchiveStore(logB, headerB).load()).untrusted;
+    expect(marked, isNotEmpty);
+    expect(
+      marked,
+      isNot(contains('f5')),
+      reason: 'its window was never reached',
+    );
   });
 }
 
