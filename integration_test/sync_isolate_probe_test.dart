@@ -25,11 +25,48 @@
 //   grouped  consecutive files fill one directory at a time;
 //   spread   consecutive files go to different directories, so files being
 //            written at once sit in different directories —
-// comparing sync writes in C worker isolates with the async control C at once
-// on the main isolate, for C in 1, 4, 8, 16. The per-file work adds the parent
-// directory, created once per directory as LocalAgent does (each isolate keeps
-// its own set, as each agent would). Read it against write_ops_probe.c's
-// native `spread` table.
+// for C in 1, 4, 8, 16 files in flight. The one thing that varies is where
+// LocalAgent.writeFile's file calls run:
+//   async  — the control, and the real code: `LocalAgent.writeFile` itself,
+//            on an agent rooted at the target, fed each file as a stream of
+//            64 KiB chunks (what the Applier's prefetch hands it);
+//   sync   — the same steps in the same order in sync form, one file per
+//            message to C worker isolates, the bytes sent as
+//            TransferableTypedData and the metadata sent back.
+// Both dispatch the same way: C lanes on the main isolate pull the next file
+// index from one shared counter, in plan (path) order — the Applier's single
+// queue drained by its workers, and write_ops_probe.c's `next_file`. A sync
+// lane owns one worker, so each worker holds one file at a time. The
+// created-parent memo is one set on the main isolate, checked before a file
+// is dispatched and filled when its write returns — the agent's own memo,
+// kept where the agent lives, and C's `dir_made`: files in one directory
+// dispatched before its first write returns each create it, in all three.
+// A fresh LocalAgent per run settles its once-per-session mode step on an
+// untimed first write; the sync workers chmod only if that agent does (on
+// FUSE it skips, so neither does).
+//
+// Per file, both Dart modes issue exactly these syscalls (checked with
+// strace on Linux; the async and sync forms of dart:io are identical):
+//   stat parent (ENOENT), stat its parent, … up to one that exists, then
+//     mkdir each missing one — only when the memo misses;
+//   stat target (FFI, writeTargetProbe; ENOENT on a fresh write stops it);
+//   stat target (dart:io's File::Open check; ENOENT);
+//   openat O_RDWR|O_CREAT|O_TRUNC 0666; write per 64 KiB chunk; close;
+//   stat + utimensat (setLastModified); [chmod, not on FUSE]; stat.
+// Against write_ops_probe.c's per-file ops, what still differs:
+//   - C calls chmod on every file; the real path skips it on FUSE. C's
+//     `wall` therefore carries one chmod a file that no Dart cell does —
+//     subtract C's `chmod` per_file only at threads=1, where wall ≈ total;
+//   - C has neither of the two ENOENT stats before the open;
+//   - C opens O_WRONLY, dart:io O_RDWR;
+//   - C's mkdirs calls mkdir on every path component from `/` (EEXIST
+//     ignored), Dart stats down to the first existing ancestor and mkdirs
+//     only the missing ones;
+//   - C has no byte handoff: no stream (async) or isolate message (sync);
+//   - sizes share the distribution and seed, not the generator (drand48 vs
+//     dart:math), so the files differ one by one.
+// So a Dart `grouped`/`spread` cell at concurrency C compares with C's
+// `wall_us_per_file` for the same layout at threads=C, less that chmod.
 //
 //   adb shell appops set --uid com.example.dsync MANAGE_EXTERNAL_STORAGE allow
 //   flutter drive --profile -d <id> \
@@ -41,6 +78,12 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
 
+import 'package:dsync/dsync_core/agent/local_agent.dart';
+import 'package:dsync/dsync_core/agent/posix_chmod.dart';
+import 'package:dsync/dsync_core/agent/write_target_probe.dart';
+import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
+import 'package:dsync/dsync_core/lock/replica_lock.dart';
+import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -58,7 +101,10 @@ const _fuseRoot = String.fromEnvironment(
 const _perDir = 30; // write_ops_probe.c's PER_DIR
 const _concurrencies = [1, 4, 8, 16];
 const _layouts = ['grouped', 'spread'];
-final _mtime = DateTime.fromMicrosecondsSinceEpoch(1700000000000000);
+const _mtimeUs = 1700000000000000;
+final _mtime = DateTime.fromMicrosecondsSinceEpoch(_mtimeUs);
+const _mode = 0x1A4; // 0644, write_ops_probe.c's
+const _chunk = 64 * 1024; // what File.openRead yields, so the prefetch too
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -161,15 +207,19 @@ void main() {
         final root = Directory('$_fuseRoot/t');
         if (root.existsSync()) root.deleteSync(recursive: true);
         root.createSync(recursive: true);
+        final agent = await _settledAgent(root.path);
         final clock = Stopwatch()..start();
         switch (mode) {
           case 'async':
-            await _asyncTree(root.path, layout, sizes, c);
+            await _asyncTree(agent, layout, sizes, c);
           case 'sync':
-            await Future.wait([
-              for (var w = 0; w < c; w++)
-                workers[w].tree(root.path, layout, sizes, w, c),
-            ]);
+            await _syncTree(
+              workers.sublist(0, c),
+              root.path,
+              layout,
+              sizes,
+              applyMode: !agent.chmodUnavailable,
+            );
         }
         clock.stop();
         final landed = root.listSync(recursive: true).whereType<File>().length;
@@ -204,58 +254,148 @@ void main() {
   );
 }
 
-/// File [i]'s directory in write_ops_probe.c's tree: `grouped` fills one
-/// directory at a time, `spread` sends consecutive files to different ones.
-String _treeDir(String root, String layout, int i) {
+/// File [i]'s root-relative path in write_ops_probe.c's tree: `grouped` fills
+/// one directory at a time, `spread` sends consecutive files to different
+/// ones.
+String _treePath(String layout, int i) {
   final dirs = (_files + _perDir - 1) ~/ _perDir;
   final k = (layout == 'spread' ? i % dirs : i ~/ _perDir) * _perDir;
-  return '$root/d${k ~/ (_perDir * _perDir)}/d${(k ~/ _perDir) % _perDir}';
+  return 'd${k ~/ (_perDir * _perDir)}/d${(k ~/ _perDir) % _perDir}/f$i.bin';
 }
 
-/// The control for the tree: the same work as [_writeTreeSync] through async
-/// calls, [lanes] at once on this isolate, each directory created once.
+/// A fresh session's agent on [root], its once-per-session mode step settled
+/// by an untimed first write that is then removed. Its archive and lock are
+/// never touched: `writeFile` reaches neither.
+Future<LocalAgent> _settledAgent(String root) async {
+  final state = '${Directory.systemTemp.path}/dsync-spread-state';
+  final agent = LocalAgent(
+    rootPath: root,
+    archiveStore: JsonlArchiveStore(
+      File('$state/archive.jsonl'),
+      ArchiveHeader(
+        schemaVersion: JsonlArchiveStore.schemaVersion,
+        profileId: 'probe',
+        rootPath: root,
+      ),
+    ),
+    replicaLock: ReplicaLock(File('$state/lock')),
+  );
+  await agent.writeFile(
+    '.settle',
+    Stream.value(const [0]),
+    mtime: _mtimeUs,
+    mode: _mode,
+  );
+  File('$root/.settle').deleteSync();
+  return agent;
+}
+
+/// [bytes] as the Applier's prefetch hands them to `writeFile`: the source
+/// read's 64 KiB chunks.
+Stream<List<int>> _chunked(Uint8List bytes) => Stream.fromIterable([
+  for (var at = 0; at < bytes.length; at += _chunk)
+    Uint8List.sublistView(bytes, at, min(at + _chunk, bytes.length)),
+]);
+
+/// The control, and the real code: [lanes] lanes pulling the next file from
+/// one shared counter in plan order, each handing it to
+/// `LocalAgent.writeFile` and checking the size it reports, as the Applier's
+/// workers do.
 Future<void> _asyncTree(
-  String root,
+  LocalAgent agent,
   String layout,
   List<int> sizes,
   int lanes,
 ) async {
-  final created = <String, Future<void>>{};
   var next = 0;
   Future<void> lane() async {
     while (next < sizes.length) {
       final i = next++;
-      final dir = _treeDir(root, layout, i);
-      await created.putIfAbsent(
-        dir,
-        () => Directory(dir).create(recursive: true),
+      final written = await agent.writeFile(
+        _treePath(layout, i),
+        _chunked(_bytes(sizes[i], 1)),
+        mtime: _mtimeUs,
+        mode: _mode,
       );
-      final file = File('$dir/f$i.bin');
-      await file.writeAsBytes(_bytes(sizes[i], 1));
-      await file.setLastModified(_mtime);
-      await file.stat();
+      if (written.size != sizes[i]) throw StateError('f$i: ${written.size}');
     }
   }
 
   await Future.wait([for (var l = 0; l < lanes; l++) lane()]);
 }
 
-/// Lane [lane] of [lanes] of the tree, synchronously: the parent the first
-/// time this isolate meets it, then [_writeSync].
-void _writeTreeSync(
+/// The same work in [workers]: one lane per worker, pulling the next file
+/// from the shared counter and sending it over, so each worker holds one file
+/// at a time. The created-parent memo stays here, where the agent's would —
+/// checked before a file is sent, filled when its write comes back.
+Future<void> _syncTree(
+  List<_Worker> workers,
   String root,
   String layout,
-  List<int> sizes,
-  int lane,
-  int lanes,
-) {
-  final created = <String>{};
-  for (var i = lane; i < sizes.length; i += lanes) {
-    final dir = _treeDir(root, layout, i);
-    if (created.add(dir)) Directory(dir).createSync(recursive: true);
-    _writeSync('$dir/f$i.bin', _bytes(sizes[i], 1));
+  List<int> sizes, {
+  required bool applyMode,
+}) async {
+  final createdParents = <String>{};
+  var next = 0;
+  Future<void> lane(_Worker worker) async {
+    while (next < sizes.length) {
+      final i = next++;
+      final path = resolveWithinRoot(root, _treePath(layout, i));
+      final parent = File(path).parent.path;
+      final written = await worker.writeFile(
+        path,
+        TransferableTypedData.fromList([_bytes(sizes[i], 1)]),
+        createParent: !createdParents.contains(parent),
+        applyMode: applyMode,
+      );
+      createdParents.add(parent);
+      if (written.size != sizes[i]) throw StateError('f$i: ${written.size}');
+    }
   }
+
+  await Future.wait([for (final worker in workers) lane(worker)]);
 }
+
+/// `LocalAgent.writeFile`'s steps in sync form, in its order, for a target
+/// the probe finds writable in place (every one of a fresh write): the parent
+/// if the memo missed, the write-target probe, open, the bytes a chunk per
+/// write, close, mtime, the mode step if the agent takes it, the closing
+/// stat. Returns what writeFile's FileMetadata carries.
+_Written _writeFileSync(
+  String path,
+  Uint8List bytes, {
+  required bool createParent,
+  required bool applyMode,
+}) {
+  final target = File(path);
+  if (createParent) target.parent.createSync(recursive: true);
+  if (!probeWriteTarget(target.path).writesInPlace) {
+    throw StateError('$path: not writable in place');
+  }
+  final file = target.openSync(mode: FileMode.write);
+  try {
+    for (var at = 0; at < bytes.length; at += _chunk) {
+      file.writeFromSync(bytes, at, min(at + _chunk, bytes.length));
+    }
+  } finally {
+    file.closeSync();
+  }
+  try {
+    target.setLastModifiedSync(_mtime);
+  } on FileSystemException {
+    // Best-effort, as in writeFile.
+  }
+  if (applyMode) posixChmod(target.path, _mode);
+  final stat = target.statSync();
+  return (
+    size: stat.size,
+    mtime: stat.modified.microsecondsSinceEpoch,
+    mode: stat.mode & 0xFFF,
+  );
+}
+
+/// FileMetadata's fields, as a worker sends them back.
+typedef _Written = ({int size, int mtime, int mode});
 
 /// Seeded sizes averaging [_meanBytes], drawn exponentially like the apply
 /// harness's tree.
@@ -322,11 +462,18 @@ class _Worker {
   final SendPort _send;
   final ReceivePort _replies;
   final Isolate _isolate;
-  final _pending = <int, Completer<void>>{};
+  final _pending = <int, Completer<Object?>>{};
   var _nextId = 0;
 
   _Worker._(this._send, this._replies, this._isolate) {
-    _replies.listen((message) => _pending.remove(message as int)!.complete());
+    _replies.listen((message) {
+      switch (message) {
+        case int id:
+          _pending.remove(id)!.complete(null);
+        case (int id, _Written written):
+          _pending.remove(id)!.complete(written);
+      }
+    });
   }
 
   static Future<_Worker> spawn() async {
@@ -338,9 +485,9 @@ class _Worker {
     return _Worker._(send, replies, isolate);
   }
 
-  Future<void> _call(Object message) {
+  Future<Object?> _call(Object message) {
     final id = _nextId++;
-    final done = _pending[id] = Completer<void>();
+    final done = _pending[id] = Completer<Object?>();
     _send.send((id, message));
     return done.future;
   }
@@ -353,13 +500,14 @@ class _Worker {
     int seed,
   ) => _call(('batch', dir, sizes, lane, lanes, seed));
 
-  Future<void> tree(
-    String root,
-    String layout,
-    List<int> sizes,
-    int lane,
-    int lanes,
-  ) => _call(('tree', root, layout, sizes, lane, lanes));
+  Future<_Written> writeFile(
+    String path,
+    TransferableTypedData bytes, {
+    required bool createParent,
+    required bool applyMode,
+  }) async =>
+      await _call(('writeFile', path, bytes, createParent, applyMode))
+          as _Written;
 
   Future<void> one(String path, TransferableTypedData bytes) =>
       _call(('one', path, bytes));
@@ -393,14 +541,22 @@ void _workerMain(SendPort handshake) {
           _writeSync('$dir/f$i', _bytes(sizes[i], seed));
         }
       case (
-        'tree',
-        String root,
-        String layout,
-        List<int> sizes,
-        int lane,
-        int lanes,
+        'writeFile',
+        String path,
+        TransferableTypedData bytes,
+        bool createParent,
+        bool applyMode,
       ):
-        _writeTreeSync(root, layout, sizes, lane, lanes);
+        replies.send((
+          id,
+          _writeFileSync(
+            path,
+            bytes.materialize().asUint8List(),
+            createParent: createParent,
+            applyMode: applyMode,
+          ),
+        ));
+        return;
       case ('one', String path, TransferableTypedData bytes):
         _writeSync(path, bytes.materialize().asUint8List());
     }
