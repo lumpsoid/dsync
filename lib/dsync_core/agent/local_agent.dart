@@ -494,11 +494,10 @@ class LocalAgent implements Agent {
   /// after [_modesStick] says so (SPEC §7.4).
   ///
   /// That last case is the phone's shared storage. There a `chmod` changes
-  /// nothing — the storage layer fixes every file at 660 — yet it costs
-  /// 2.4 ms a file against 60 µs elsewhere, and being synchronous it blocks
-  /// the agent's only isolate for all of it: 7.3 s of a 3,000-file pull.
-  /// Skipping it records nothing different, because the caller's closing
-  /// `stat` archives the mode that landed either way.
+  /// nothing — the storage layer fixes every file at 660 — yet each call is
+  /// a synchronous FUSE round trip on the agent's only isolate: ~0.5 ms a
+  /// file, 1.3–1.6 s of a 3,000-file pull, about 3%. Skipping it records
+  /// nothing different: the caller's closing `stat` archives what landed.
   ///
   /// Synchronous, deliberately: there is nothing to await, and the caller's
   /// step clock reads cleanly across it as a result.
