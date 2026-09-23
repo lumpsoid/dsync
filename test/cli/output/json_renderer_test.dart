@@ -54,6 +54,7 @@ class _Rendered {
     String profileId = 'test-profile',
     ReplicaDiagnostics? diagnosticsA,
     ReplicaDiagnostics? diagnosticsB,
+    bool lastRunUnfinished = false,
   }) {
     renderer = JsonRenderer(
       out: out.sink,
@@ -61,6 +62,7 @@ class _Rendered {
       profileId: profileId,
       diagnosticsA: diagnosticsA,
       diagnosticsB: diagnosticsB,
+      lastRunUnfinished: lastRunUnfinished,
     );
   }
 }
@@ -174,6 +176,23 @@ void main() {
         final decoded = (await _renderAll(r, [event])).single;
 
         expect(decoded['firstSync'], isFalse);
+      });
+
+      test('lastRunUnfinished carries the run marker\'s verdict (task '
+          '99f404)', () async {
+        const event = RunReplicasEvent(
+          infoA: ReplicaInfo(),
+          infoB: ReplicaInfo(),
+        );
+
+        final unfinished = (await _renderAll(
+          _Rendered(lastRunUnfinished: true),
+          [event],
+        )).single;
+        final finished = (await _renderAll(_Rendered(), [event])).single;
+
+        expect(unfinished['lastRunUnfinished'], isTrue);
+        expect(finished['lastRunUnfinished'], isFalse);
       });
     });
 

@@ -33,10 +33,20 @@ final class RunSetupFromProfile extends RunSetupSource {
 /// (`RunSetupViewState`'s doc comment), so what crosses here is the initial
 /// text and nothing else.
 class RunSetupPrefill {
-  const RunSetupPrefill({required this.profileName, required this.remoteRoot});
+  const RunSetupPrefill({
+    required this.profileName,
+    required this.remoteRoot,
+    required this.lastRunUnfinished,
+  });
 
   final String profileName;
   final String remoteRoot;
+
+  /// Whether the profile's run marker (SPEC §7.6) was still there when the
+  /// page opened: its last run died or aborted mid-apply, and the run this
+  /// page starts is what sorts out what it left (task 99f404). Here rather
+  /// than on the view state proper because only a saved profile has one.
+  final bool lastRunUnfinished;
 }
 
 /// The peer the page was opened for, as the page shows it. Sealed, for the

@@ -140,6 +140,7 @@ void main() {
       localRootLabel: PathLabel.of('/on-device/notes'),
       remoteRootLabel: PathLabel.of('~/notes'),
       breakage: null,
+      lastRunUnfinished: false,
     );
 
     test('counts the saved runs that name each device', () {

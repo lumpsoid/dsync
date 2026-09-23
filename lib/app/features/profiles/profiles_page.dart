@@ -166,6 +166,7 @@ class _ProfilesBody extends StatelessWidget {
                 onTap: row.breakage == null
                     ? () => onOpenProfile(row.id)
                     : null,
+                onRunAgain: () => onOpenProfile(row.id),
                 onPickFolder: () => controller.repickLocalFolder(row.id),
                 onPairAgain: onOpenDevices,
                 onDelete: () => _confirmDelete(context, row),
@@ -230,6 +231,7 @@ class _ProfileTile extends StatelessWidget {
   const _ProfileTile({
     required this.row,
     required this.onTap,
+    required this.onRunAgain,
     required this.onPickFolder,
     required this.onPairAgain,
     required this.onDelete,
@@ -240,6 +242,10 @@ class _ProfileTile extends StatelessWidget {
   /// `null` on a broken profile: running it is what is broken, so the row
   /// is not a tap target until its remedy has been taken.
   final VoidCallback? onTap;
+
+  /// The offer made to a profile whose last run did not finish (task
+  /// 99f404): the same hop a tap makes, named for what it is for.
+  final VoidCallback onRunAgain;
 
   /// Re-picks this profile's local folder — the remedy for
   /// [ProfileLocalRootUnusable].
@@ -297,6 +303,22 @@ class _ProfileTile extends StatelessWidget {
                     'On ${row.peerName ?? 'unpaired device ${row.peerDeviceId}'}',
                 path: row.remoteRootLabel,
               ),
+              if (row.lastRunUnfinished) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'The last run did not finish. Run it again to sort out the '
+                  'files it left.',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    key: Key('profile-run-again-${row.id}'),
+                    onPressed: onRunAgain,
+                    child: const Text('Run again'),
+                  ),
+                ),
+              ],
               if (breakage != null) ...[
                 const SizedBox(height: 8),
                 Text(

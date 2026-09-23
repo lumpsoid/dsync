@@ -307,6 +307,19 @@ class _RunSetupForm extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              if (state.prefill case RunSetupPrefill(
+                lastRunUnfinished: true,
+              )) ...[
+                Text(
+                  key: const Key('run-setup-last-run-unfinished'),
+                  'The last run of this profile did not finish. Starting it '
+                  'again sorts out what it left: files it never reached sync '
+                  'as usual, and a file it stopped mid-write comes back as a '
+                  'conflict marked interrupted.',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+                const SizedBox(height: 24),
+              ],
               // Flat sections, no card: the page is the container. The Run
               // page's own sections read the same way (`_Section` there),
               // and a form whose fields are boxed inside a box inside a

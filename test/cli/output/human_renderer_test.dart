@@ -76,6 +76,7 @@ class _Rendered {
     String profileId = 'test-profile',
     bool isAdHoc = false,
     DateTime Function()? now,
+    bool lastRunUnfinished = false,
   }) {
     renderer = HumanRenderer(
       out: out,
@@ -88,6 +89,7 @@ class _Rendered {
       profileId: profileId,
       isAdHoc: isAdHoc,
       now: now ?? DateTime.now,
+      lastRunUnfinished: lastRunUnfinished,
     );
   }
 }
@@ -574,6 +576,30 @@ void main() {
       expect(output, contains('first sync of this pair'));
       expect(output, contains('A has no archive yet'));
       expect(output, contains('First sync:'));
+    });
+
+    test('a profile whose last run did not finish says so under the header '
+        '(task 99f404)', () {
+      final r = _Rendered(profileId: 'notes', lastRunUnfinished: true);
+      r.renderer.render(
+        RunReplicasEvent(
+          infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+        ),
+      );
+
+      final output = r.out.buffer.toString();
+      expect(output, contains('The last run of this profile did not finish'));
+      expect(output, contains('marked interrupted'));
+    });
+
+    test('a profile whose last run finished carries no such note', () {
+      final r = _Rendered(profileId: 'notes');
+      r.renderer.render(
+        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+      );
+
+      expect(r.out.buffer.toString(), isNot(contains('did not finish')));
     });
 
     test('an ad-hoc run shows its derived id next to the summary line, not '

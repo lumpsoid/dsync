@@ -33,16 +33,20 @@ class ProfileRow {
     required this.localRootLabel,
     required this.remoteRootLabel,
     required this.breakage,
+    required this.lastRunUnfinished,
   });
 
   /// [profile] against the facts fetched for it. [device] is the paired
   /// device [profile.peerDeviceId] resolves to *now*, `null` when it has
   /// been revoked; [localRootRefusal] is [folderAccessRefusal]'s verdict on
-  /// the local root, `null` when the folder is still provably usable.
+  /// the local root, `null` when the folder is still provably usable;
+  /// [runMarkerPresent] is whether the profile's run marker (SPEC §7.6) is
+  /// still there.
   factory ProfileRow.render(
     SyncProfile profile, {
     required PairedDevice? device,
     required String? localRootRefusal,
+    required bool runMarkerPresent,
   }) {
     final ProfileBreakage? broken;
     if (device == null) {
@@ -62,6 +66,7 @@ class ProfileRow {
       localRootLabel: PathLabel.of(profile.localRootPath),
       remoteRootLabel: PathLabel.of(profile.remoteRootPath),
       breakage: broken,
+      lastRunUnfinished: broken == null && runMarkerPresent,
     );
   }
 
@@ -101,4 +106,10 @@ class ProfileRow {
   /// Why this profile cannot be run any more and what fixes it, or `null`
   /// while it can be run.
   final ProfileBreakage? breakage;
+
+  /// Whether to warn that this profile's last run did not finish and offer
+  /// to run it again (task 99f404). Never alongside a [breakage]: a profile
+  /// that cannot be run has its remedy to show first, and running it again
+  /// is not one of them until that is fixed.
+  final bool lastRunUnfinished;
 }

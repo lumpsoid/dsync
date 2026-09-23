@@ -50,12 +50,18 @@ class JsonRenderer {
   final ReplicaDiagnostics? diagnosticsA;
   final ReplicaDiagnostics? diagnosticsB;
 
+  /// Whether this profile's run marker (SPEC §7.6) was still there when
+  /// this run started (task 99f404) — `lastRunUnfinished` on the `replicas`
+  /// line, a fact like `firstSync` beside it.
+  final bool lastRunUnfinished;
+
   JsonRenderer({
     required this.out,
     required this.err,
     required this.profileId,
     this.diagnosticsA,
     this.diagnosticsB,
+    this.lastRunUnfinished = false,
   });
 
   /// Encodes [event] as one JSON line and writes it, terminated by a single
@@ -75,6 +81,7 @@ class JsonRenderer {
         // is `HumanRenderer`'s job, not a string here.
         'firstSync':
             infoA.lastCommitTime == null || infoB.lastCommitTime == null,
+        'lastRunUnfinished': lastRunUnfinished,
       },
       RunPlanEvent(:final plan) => {
         'type': 'plan',

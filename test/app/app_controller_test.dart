@@ -313,6 +313,32 @@ void main() {
       },
     );
 
+    test('a profile whose run marker is still there renders its last run '
+        'unfinished (task 99f404)', () async {
+      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
+      await profileStoreBehindTheControllersBack().save(savedProfile());
+      await controller.bootstrap();
+
+      await controller.refreshProfiles();
+      expect(controller.state.profiles.single.lastRunUnfinished, isFalse);
+
+      await (await controller.runMarker('p1')).create();
+      await controller.refreshProfiles();
+      expect(controller.state.profiles.single.lastRunUnfinished, isTrue);
+    });
+
+    test('a broken profile does not also offer to run again', () async {
+      await profileStoreBehindTheControllersBack().save(savedProfile());
+      await controller.bootstrap();
+      await (await controller.runMarker('p1')).create();
+
+      await controller.refreshProfiles();
+
+      final row = controller.state.profiles.single;
+      expect(row.breakage, isA<ProfileDeviceUnpaired>());
+      expect(row.lastRunUnfinished, isFalse);
+    });
+
     test('a revoked device renders the profile broken, not gone', () async {
       final store = profileStoreBehindTheControllersBack();
       await store.save(savedProfile());

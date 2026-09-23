@@ -171,6 +171,9 @@ class RunSetupController {
           RunSetupPrefill(
             profileName: profile.name,
             remoteRoot: profile.remoteRootPath,
+            lastRunUnfinished: await (await app.runMarker(
+              profile.id,
+            )).isPresent(),
           ),
         );
     }

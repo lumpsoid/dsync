@@ -150,6 +150,12 @@ class HumanRenderer {
   /// real clock.
   final DateTime Function() now;
 
+  /// Whether this profile's run marker (SPEC §7.6) was still there when
+  /// this run started: the last run died or aborted mid-apply (task
+  /// 99f404). Read by the caller before the run, since this run replaces
+  /// the marker with its own.
+  final bool lastRunUnfinished;
+
   HumanRenderer({
     required this.out,
     required this.err,
@@ -161,6 +167,7 @@ class HumanRenderer {
     this.diagnosticsB,
     this.isAdHoc = false,
     this.now = DateTime.now,
+    this.lastRunUnfinished = false,
   });
 
   /// Run-level context — not tied to any one [RunEvent] — shown once, at
@@ -278,6 +285,7 @@ class HumanRenderer {
     } else {
       out.writeln('  $label${_lastSyncedSummary(lastA, lastB)}');
     }
+    if (lastRunUnfinished) _renderUnfinishedNote();
   }
 
   /// One side of the run header: where this replica is, and how it is being
@@ -332,6 +340,19 @@ class HumanRenderer {
       'copied,\n'
       '  never deleted — there is no way yet to tell a new file from a '
       'deleted one.',
+    );
+  }
+
+  /// Task 99f404: this run is what sorts out the one that did not finish,
+  /// so the note says what it will do with what was left rather than
+  /// asking for anything.
+  void _renderUnfinishedNote() {
+    out.writeln(
+      '! The last run of this profile did not finish. This run picks up '
+      'after it:\n'
+      '  files it never reached sync as usual, and a file it stopped '
+      'mid-write\n'
+      '  comes back as a conflict marked interrupted.',
     );
   }
 

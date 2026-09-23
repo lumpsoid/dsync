@@ -85,6 +85,7 @@ void main() {
     localRootLabel: PathLabel.of('/on-device/notes'),
     remoteRootLabel: PathLabel.of('~/notes'),
     breakage: null,
+    lastRunUnfinished: false,
   );
 
   ProfileRow broken() => ProfileRow(
@@ -97,6 +98,7 @@ void main() {
     localRootLabel: PathLabel.of('/on-device/notes'),
     remoteRootLabel: PathLabel.of('~/notes'),
     breakage: const ProfileDeviceUnpaired(),
+    lastRunUnfinished: false,
   );
 
   ProfileRow folderLost() => ProfileRow(
@@ -109,6 +111,7 @@ void main() {
     localRootLabel: PathLabel.of('/on-device/gone'),
     remoteRootLabel: PathLabel.of('~/notes'),
     breakage: const ProfileLocalRootUnusable(),
+    lastRunUnfinished: false,
   );
 
   testWidgets('an empty list is the first-run state, pointing at Devices', (
@@ -230,6 +233,42 @@ void main() {
     await tester.tap(find.text('weekly'));
 
     expect(opened, ['p1']);
+  });
+
+  testWidgets('a profile whose last run did not finish warns and offers to '
+      'run it again, through Run setup (task 99f404)', (tester) async {
+    ready();
+    app.state.recordProfiles([
+      ProfileRow(
+        id: 'p1',
+        name: 'weekly',
+        peerDeviceId: 'a1b2:c3d4',
+        peerName: 'desktop',
+        localRootPath: '/on-device/notes',
+        remoteRootPath: '~/notes',
+        localRootLabel: PathLabel.of('/on-device/notes'),
+        remoteRootLabel: PathLabel.of('~/notes'),
+        breakage: null,
+        lastRunUnfinished: true,
+      ),
+    ]);
+    await pumpPage(tester);
+
+    expect(find.textContaining('The last run did not finish'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('profile-run-again-p1')));
+
+    expect(opened, ['p1']);
+  });
+
+  testWidgets('a profile whose last run finished shows no such warning', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordProfiles([ok()]);
+    await pumpPage(tester);
+
+    expect(find.textContaining('did not finish'), findsNothing);
+    expect(find.byKey(const Key('profile-run-again-p1')), findsNothing);
   });
 
   testWidgets('a broken profile renders — visible, unrunnable, with its '

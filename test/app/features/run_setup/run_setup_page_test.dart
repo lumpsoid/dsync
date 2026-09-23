@@ -284,6 +284,32 @@ void main() {
     expect(find.text('Save profile'), findsNothing);
   });
 
+  testWidgets('a profile whose last run did not finish is warned about '
+      'before it runs again (task 99f404)', (tester) async {
+    final localRoot = Directory('${tempDir.path}/documents/notes')
+      ..createSync(recursive: true);
+    await tester.runAsync(() async {
+      await (await app.profiles).save(
+        SyncProfile(
+          id: 'p1',
+          name: 'weekly',
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+          jobs: 4,
+        ),
+      );
+      await (await app.runMarker('p1')).create();
+    });
+
+    await pumpLoaded(tester, source: const RunSetupFromProfile('p1'));
+
+    expect(
+      find.byKey(const Key('run-setup-last-run-unfinished')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('the folder is shown as a value, and the button beside it '
       'says whether there is one to change', (tester) async {
     await pumpLoaded(tester);

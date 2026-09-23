@@ -193,10 +193,7 @@ class ReplicaConnector {
     return (
       agentA: agentA,
       agentB: agentB,
-      runMarker: RunMarker.forProfile(
-        profileId: profileId,
-        platform: (await app.paths).stateDirPlatform,
-      ),
+      runMarker: await app.runMarker(profileId),
     );
   }
 

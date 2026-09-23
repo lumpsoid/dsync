@@ -28,6 +28,7 @@ void main() {
     localRootLabel: PathLabel.of('/on-device/notes'),
     remoteRootLabel: PathLabel.of('~/notes'),
     breakage: null,
+    lastRunUnfinished: false,
   );
 
   test('names the run and the device it syncs with', () {

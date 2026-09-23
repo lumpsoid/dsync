@@ -4,6 +4,7 @@ import 'package:dsync/dsync_core/identity/device_identity_store.dart';
 import 'package:dsync/dsync_core/identity/paired_device_store.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/run/run_marker.dart';
 
 import 'app_bootstrap.dart';
 import 'app_paths.dart';
@@ -74,6 +75,14 @@ class AppController {
   /// result, the way Pair saves through the paired-device store.
   Future<SyncProfileStore> get profiles async =>
       SyncProfileStore(File('${(await paths).stateDir}/sync-profiles.json'));
+
+  /// The run marker (SPEC §7.6) for the profile keyed [profileId]: the one
+  /// a run of it keeps, and the one the home list and Run setup read to say
+  /// its last run did not finish (task 99f404).
+  Future<RunMarker> runMarker(String profileId) async => RunMarker.forProfile(
+    profileId: profileId,
+    platform: (await paths).stateDirPlatform,
+  );
 
   /// The settings store over the resolved state dir — this head's own
   /// preferences, beside the other two stores. Shared with the Settings
@@ -296,9 +305,10 @@ class AppController {
   ///
   /// Each row is rendered from facts fetched for it: the device the
   /// profile's id resolves to *now* (a fresh store read, per
-  /// `PairedDeviceStore`'s freshness rule) and the filesystem probe on its
-  /// local root. A profile whose device is gone or whose folder cannot be
-  /// probed renders [ProfileRow.breakage] — visible, remediable, not gone.
+  /// `PairedDeviceStore`'s freshness rule), the filesystem probe on its
+  /// local root, and whether its run marker is still there. A profile whose
+  /// device is gone or whose folder cannot be probed renders
+  /// [ProfileRow.breakage] — visible, remediable, not gone.
   ///
   /// Throws `SyncProfileStoreCorruptException` as the store does, for the
   /// caller to surface — the profiles home as its error line, [bootstrap]
@@ -313,6 +323,7 @@ class AppController {
           profile,
           device: await deviceStore.byDeviceId(profile.peerDeviceId),
           localRootRefusal: await folderAccessRefusal(profile.localRootPath),
+          runMarkerPresent: await (await runMarker(profile.id)).isPresent(),
         ),
       );
     }

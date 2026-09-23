@@ -600,6 +600,34 @@ void main() {
       expect(controller.state.dryRun, isFalse);
     });
 
+    test('opened from a profile whose last run did not finish: the prefill '
+        'says so (task 99f404)', () async {
+      final localRoot = Directory(notes())..createSync(recursive: true);
+      final id = ReplicaConnector.profileIdFor(
+        localRootPath: localRoot.path,
+        peerDeviceId: desktop.deviceId,
+        remoteRootPath: '~/notes',
+      );
+      await profileStore().save(
+        SyncProfile(
+          id: id,
+          name: 'weekly',
+          localRootPath: localRoot.path,
+          peerDeviceId: desktop.deviceId,
+          remoteRootPath: '~/notes',
+          jobs: 4,
+        ),
+      );
+      await store().add(desktop);
+
+      await controller.load(RunSetupFromProfile(id));
+      expect(controller.state.prefill!.lastRunUnfinished, isFalse);
+
+      await (await app.runMarker(id)).create();
+      await controller.load(RunSetupFromProfile(id));
+      expect(controller.state.prefill!.lastRunUnfinished, isTrue);
+    });
+
     test('a start from a profile saves over its id, not beside it', () async {
       final localRoot = Directory(notes())..createSync(recursive: true);
       final id = ReplicaConnector.profileIdFor(

@@ -55,6 +55,7 @@ void main() {
         localRootLabel: PathLabel.of('/on-device/notes'),
         remoteRootLabel: PathLabel.of('~/notes'),
         breakage: null,
+        lastRunUnfinished: false,
       );
 
   List<ArchiveRow> rows() => (controller.state.listing as ArchivesReady).rows;

@@ -228,6 +228,14 @@ class SyncRunner {
       instruments: instruments,
     );
 
+    // Task 99f404: read before the run, which replaces it with its own.
+    final runMarker = RunMarker.forProfile(
+      profileId: effective.profileId,
+      environment: environment,
+      platform: platform.stateDirPlatform,
+    );
+    final lastRunUnfinished = await runMarker.isPresent();
+
     final controller = RunController(
       agentA: _metered(
         connected.agentA,
@@ -244,11 +252,7 @@ class SyncRunner {
       presenter: _choosePresenter(options),
       rules: effective.rules,
       metrics: instruments.recorder,
-      runMarker: RunMarker.forProfile(
-        profileId: effective.profileId,
-        environment: environment,
-        platform: platform.stateDirPlatform,
-      ),
+      runMarker: runMarker,
     );
 
     // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC
@@ -264,6 +268,7 @@ class SyncRunner {
         profileId: effective.profileId,
         diagnosticsA: connected.diagnosticsA,
         diagnosticsB: connected.diagnosticsB,
+        lastRunUnfinished: lastRunUnfinished,
       ).render;
     } else {
       final renderer = HumanRenderer(
@@ -276,6 +281,7 @@ class SyncRunner {
         diagnosticsB: connected.diagnosticsB,
         profileId: effective.profileId,
         isAdHoc: isAdHoc,
+        lastRunUnfinished: lastRunUnfinished,
       );
       renderer.renderPreamble(); // no-op below Verbosity.verbose.
       render = renderer.render;
