@@ -37,6 +37,7 @@
 // per-operation queue against wire time, sends, frames, mean frame size —
 // is measured on this side and reads the same either way.
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -189,14 +190,12 @@ Future<void> _syncOverUnixSocket(
                   'Mbit/s each way' : ''}',
       );
     }
-    await _runSync(
-      source.path,
-      'unix://$reachedAt:${dest.path}',
-      state,
-      agentErrors,
-    );
+    await _runSync(source.path, 'unix://$reachedAt:${dest.path}', state);
   } finally {
     await proxy?.close();
+    if (agentErrors.isNotEmpty) {
+      stdout.writeln('agent said: ${agentErrors.join()}');
+    }
     agent.kill();
     await agent.exitCode;
   }
@@ -205,12 +204,19 @@ Future<void> _syncOverUnixSocket(
 /// Forwards [listenPath] to [targetPath] over a link with [oneWay] of
 /// latency and, when [bytesPerSecond] is non-zero, that much bandwidth.
 ///
-/// Each chunk is forwarded on its own timer rather than through a queue this
-/// awaits, so latency alone adds delay without also adding a bottleneck of
-/// its own: any number of chunks are in flight at once, exactly as on a real
-/// link. The rate cap is the serialisation a real link *does* have — a chunk
-/// cannot start transmitting until the one before it has finished, so its
-/// arrival is `(when the wire is free) + (its own transmit time) + latency`.
+/// Each chunk is stamped with its arrival time and queued, and nothing awaits
+/// the far side, so latency alone adds delay without also adding a bottleneck
+/// of its own: any number of chunks are in flight at once, exactly as on a
+/// real link. The rate cap is the serialisation a real link *does* have — a
+/// chunk cannot start transmitting until the one before it has finished, so
+/// its arrival is `(when the wire is free) + (its own transmit time) +
+/// latency`.
+///
+/// One timer drains the queue in order. A timer per chunk does not keep
+/// order: the VM truncates a timer's delay to whole milliseconds, so two
+/// chunks due within the same millisecond can fire the wrong way round, and
+/// a reordered stream is a corrupt one. Task 5620b4's failed actions were
+/// exactly that.
 Future<ServerSocket> _startDelayProxy(
   String listenPath,
   String targetPath,
@@ -226,39 +232,68 @@ Future<ServerSocket> _startDelayProxy(
       InternetAddress(targetPath, type: InternetAddressType.unix),
       0,
     );
-    void pipe(Socket from, Socket to) {
+    void pipe(String name, Socket from, Socket to) {
       // When this direction's wire next falls idle, as an offset from the
       // stopwatch below.
       final since = Stopwatch()..start();
       var freeAt = Duration.zero;
 
+      // Chunks by arrival time, oldest first; a `null` chunk is the close,
+      // which so travels behind the last chunk rather than overtaking it.
+      final inFlight = Queue<(Duration, List<int>?)>();
+      Timer? drainer;
+
+      void drain() {
+        drainer = null;
+        // A timer can wake up to a millisecond early, for the same
+        // truncation; anything due within that is due now.
+        final now = since.elapsed + const Duration(milliseconds: 1);
+        while (inFlight.isNotEmpty && inFlight.first.$1 <= now) {
+          final (_, chunk) = inFlight.removeFirst();
+          if (chunk == null) {
+            to.close().catchError((_) {});
+            return;
+          }
+          try {
+            to.add(chunk);
+          } catch (_) {
+            // The far end went away while this chunk was in flight.
+          }
+        }
+        if (inFlight.isNotEmpty) {
+          drainer = Timer(inFlight.first.$1 - since.elapsed, drain);
+        }
+      }
+
+      void send(Duration arrivesAt, List<int>? chunk) {
+        inFlight.add((arrivesAt, chunk));
+        drainer ??= Timer(arrivesAt - since.elapsed, drain);
+      }
+
+      // A write to a peer that has gone surfaces here, not at `add`.
+      to.done.catchError((Object e) => stdout.writeln('proxy $name: $e'));
+
       from.listen(
         (chunk) {
-          var wait = oneWay;
+          final now = since.elapsed;
+          var arrivesAt = now + oneWay;
           if (bytesPerSecond > 0) {
-            final now = since.elapsed;
             final startsAt = freeAt > now ? freeAt : now;
             final transmit = Duration(
               microseconds: chunk.length * 1000000 ~/ bytesPerSecond,
             );
             freeAt = startsAt + transmit;
-            wait = freeAt - now + oneWay;
+            arrivesAt = freeAt + oneWay;
           }
-          Timer(wait, () {
-            try {
-              to.add(chunk);
-            } catch (_) {
-              // The far end went away while this chunk was in flight.
-            }
-          });
+          send(arrivesAt, chunk);
         },
-        onDone: () => Timer(oneWay, () => to.close().catchError((_) {})),
-        onError: (_) {},
+        onDone: () => send(since.elapsed + oneWay, null),
+        onError: (Object e) => stdout.writeln('proxy $name read: $e'),
       );
     }
 
-    pipe(client, upstream);
-    pipe(upstream, client);
+    pipe('client->agent', client, upstream);
+    pipe('agent->client', upstream, client);
   });
   return server;
 }
@@ -266,14 +301,9 @@ Future<ServerSocket> _startDelayProxy(
 /// Both replicas in this process, no protocol at all — the floor every
 /// transport number is read against.
 Future<void> _syncLocally(Directory source, Directory dest, Directory state) =>
-    _runSync(source.path, dest.path, state, const []);
+    _runSync(source.path, dest.path, state);
 
-Future<void> _runSync(
-  String a,
-  String b,
-  Directory state,
-  List<String> agentErrors,
-) async {
+Future<void> _runSync(String a, String b, Directory state) async {
   final stopwatch = Stopwatch()..start();
   final run = await Process.run(
     _cliPath,
@@ -287,11 +317,37 @@ Future<void> _runSync(
   if (run.exitCode != 0) {
     final lines = (run.stdout as String).split('\n');
     stdout.writeln(
-      lines.where((l) => !l.startsWith('  copy')).take(30).join('\n'),
+      lines
+          .where((l) => !l.startsWith('  copy') && !l.startsWith('> copy'))
+          .where((l) => !l.startsWith('  applied'))
+          .where((l) => !l.startsWith('  failed'))
+          .take(30)
+          .join('\n'),
     );
+    _printFailures(lines);
   }
-  if (agentErrors.isNotEmpty) {
-    stdout.writeln('agent said: ${agentErrors.join()}');
+}
+
+/// The summary's failed-path lines (SPEC §7.6), grouped by error so a few
+/// hundred failures read as the handful of causes behind them, each with one
+/// example path.
+void _printFailures(List<String> lines) {
+  final failed = lines.where((l) => l.startsWith('  failed')).toList();
+  if (failed.isEmpty) return;
+  final byError = <String, List<String>>{};
+  for (final line in failed) {
+    // `  failed   <type>  <path>: <error>` — paths here never contain ': '.
+    final split = line.indexOf(': ');
+    final error = split < 0 ? line : line.substring(split + 2);
+    final path = split < 0 ? '' : line.substring(0, split).trim();
+    (byError[error] ??= []).add(path);
+  }
+  stdout.writeln('${failed.length} failed paths, ${byError.length} errors:');
+  final ordered = byError.entries.toList()
+    ..sort((a, b) => b.value.length.compareTo(a.value.length));
+  for (final MapEntry(key: error, value: paths) in ordered) {
+    stdout.writeln('  ${paths.length}x $error');
+    stdout.writeln('      e.g. ${paths.first}');
   }
 }
 
