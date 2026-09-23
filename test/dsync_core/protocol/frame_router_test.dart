@@ -287,16 +287,64 @@ void main() {
     });
   });
 
-  group('backpressure', () {
-    test('nothing more is read while a route\'s consumer is behind', () async {
+  group('a route not taking frames', () {
+    /// A payload that on its own puts one frame over the budget.
+    final overBudget = List<int>.filled(FrameRouter.budgetBytes, 7);
+
+    test('does not hold up another route, a new request or a heartbeat '
+        '(task cff96b)', () async {
+      unawaited(start());
+      // Nothing listens to route 1 yet — a served `writeFile` still opening
+      // its file (task 9a89f7).
+      router.open(1);
+      final other = router.open(2).toList();
+
+      await send(FrameType.fileBytes, 1, [1]);
+      await send(FrameType.heartbeat, Frame.noRequest);
+      await send(FrameType.fileBytes, 2, [2]);
+      await send(FrameType.fileBytes, 2);
+      await send(FrameType.control, 3, [3]);
+      router.close(2);
+
+      expect((await other).map((f) => f.payload), [
+        [2],
+        <int>[],
+      ]);
+      expect(
+        unrouted.map((f) => f.requestId),
+        [3],
+        reason:
+            'a new request is dispatched past the held body, and a tick '
+            'is not one',
+      );
+    });
+
+    test('keeps its frames, in order, until it listens', () async {
+      unawaited(start());
+      final held = router.open(1);
+
+      await send(FrameType.fileBytes, 1, [1]);
+      await send(FrameType.control, 2, [9]);
+      await send(FrameType.fileBytes, 1, [2]);
+      await send(FrameType.fileBytes, 1);
+
+      final taken = held.toList();
+      router.close(1);
+      expect((await taken).map((f) => f.payload), [
+        [1],
+        [2],
+        <int>[],
+      ]);
+    });
+
+    test('keeps what a paused consumer has not taken yet, in order', () async {
       unawaited(start());
       final delivered = <Frame>[];
       final consumed = Completer<void>();
       final route = router.open(1);
+      final reply = router.open(2).first;
 
-      // A consumer that takes the first frame and then stops pulling. The
-      // whole connection waits for it rather than buffering a file's worth
-      // of frames on the memory-constrained end (SPEC §7.2).
+      // Takes the first frame and then stops pulling.
       unawaited(() async {
         await for (final frame in route) {
           delivered.add(frame);
@@ -308,47 +356,94 @@ void main() {
       for (var i = 0; i < 5; i++) {
         await send(FrameType.fileBytes, 1, [i]);
       }
+      await send(FrameType.control, 2, [0xff]);
 
       expect(delivered, hasLength(1));
+      expect((await reply).payload, [0xff]);
 
       consumed.complete();
       await pumpEventQueue();
-      expect(delivered, hasLength(5));
+      expect(delivered.map((f) => f.payload.single), [0, 1, 2, 3, 4]);
     });
 
-    test(
-      'the time the input stays blocked is counted, and only that',
-      () async {
-        // Task 9a89f7: while a route is not taking frames nothing is read off
-        // the connection, so the bytes behind it wait where no arrival stamp
-        // can see them. This is the figure that can.
-        var now = Duration.zero;
-        final timed = FrameRouter(wire.stream, elapsed: () => now);
-        final reading = timed.run(onUnrouted: (_, _) {});
-        unawaited(reading.catchError((_) {}));
-        final stalled = timed.open(1);
+    test('pauses the input once what it holds exceeds the budget, and resumes '
+        'it once taken', () async {
+      // SPEC §4.2: the budget is what keeps the memory-constrained end from
+      // buffering a file's worth of frames nobody is taking.
+      var now = Duration.zero;
+      final timed = FrameRouter(wire.stream, elapsed: () => now);
+      unawaited(timed.run(onUnrouted: (_, _) {}).catchError((_) {}));
+      final stalled = timed.open(1);
+      final reply = timed.open(2).first;
+      Frame? replied;
+      unawaited(reply.then((frame) => replied = frame));
 
-        // A frame for a route nothing listens to yet blocks the input.
-        await send(FrameType.fileBytes, 1, [1]);
-        now = const Duration(milliseconds: 30);
-        expect(timed.inputBlocked, const Duration(milliseconds: 30));
+      await send(FrameType.fileBytes, 1, overBudget);
+      await send(FrameType.control, 2, [9]);
+      now = const Duration(milliseconds: 30);
 
-        final taken = <Frame>[];
-        stalled.listen(taken.add);
-        await pumpEventQueue();
-        now = const Duration(milliseconds: 50);
+      expect(replied, isNull, reason: 'nothing more is read over budget');
+      expect(timed.inputBlocked, const Duration(milliseconds: 30));
 
-        expect(taken, hasLength(1));
-        // Unblocked at 30 ms; the 20 ms since were not blocked.
-        expect(timed.inputBlocked, const Duration(milliseconds: 30));
-      },
-    );
+      final taken = <Frame>[];
+      stalled.listen(taken.add);
+      await pumpEventQueue();
+      now = const Duration(milliseconds: 50);
+
+      expect(taken, hasLength(1));
+      expect(replied?.payload, [9]);
+      // Unblocked at 30 ms; the 20 ms since were not blocked.
+      expect(timed.inputBlocked, const Duration(milliseconds: 30));
+    });
+
+    test('under the budget, blocks nothing and counts nothing', () async {
+      var now = Duration.zero;
+      final timed = FrameRouter(wire.stream, elapsed: () => now);
+      unawaited(timed.run(onUnrouted: (_, _) {}).catchError((_) {}));
+      timed.open(1);
+      final reply = timed.open(2).first;
+
+      await send(FrameType.fileBytes, 1, List<int>.filled(64 * 1024, 1));
+      await send(FrameType.control, 2, [9]);
+      now = const Duration(milliseconds: 30);
+
+      expect((await reply).payload, [9]);
+      expect(timed.inputBlocked, Duration.zero);
+    });
+
+    test('closed with nobody listening gives its bytes back', () async {
+      unawaited(start());
+      router.open(1);
+      final reply = router.open(2).first;
+
+      await send(FrameType.fileBytes, 1, overBudget);
+      await send(FrameType.control, 2, [9]);
+      // The write failed before taking its body (SPEC §7.6).
+      router.close(1, discardRemaining: true);
+
+      expect((await reply).payload, [9]);
+    });
+
+    test('closed after its terminator was kept for it leaves the id '
+        'undiscarded', () async {
+      unawaited(start());
+      router.open(1);
+
+      await send(FrameType.fileBytes, 1, [1]);
+      await send(FrameType.fileBytes, 1);
+      router.close(1, discardRemaining: true);
+      // The whole transfer had already arrived, so nothing more is owed
+      // under this id and a frame carrying it is a fresh exchange.
+      await send(FrameType.control, 1, [2]);
+
+      expect(unrouted.single.payload, [2]);
+    });
 
     test('a router with no clock counts nothing', () async {
       unawaited(start());
       router.open(1);
 
-      await send(FrameType.fileBytes, 1, [1]);
+      await send(FrameType.fileBytes, 1, overBudget);
 
       expect(router.inputBlocked, Duration.zero);
     });

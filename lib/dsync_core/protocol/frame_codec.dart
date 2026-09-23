@@ -16,6 +16,11 @@ import 'package:dsync/dsync_core/models/frame.dart';
 /// Pure byte-array logic — no I/O — so it is unit-testable without a
 /// `Channel` or any transport.
 class FrameCodec {
+  /// How many bytes [frame] occupies on the wire, header included — what a
+  /// reader holding it undelivered is holding, even for an empty terminator.
+  static int wireLength(Frame frame) =>
+      _FrameHeader.length + frame.payload.length;
+
   /// Serializes [frame] to its wire bytes.
   Uint8List encode(Frame frame) {
     final bytes = Uint8List(_FrameHeader.length + frame.payload.length);

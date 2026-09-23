@@ -252,6 +252,43 @@ void main() {
       // keeps the run going, so there is always a next request.
       expect(await call('lock'), isA<AgentSuccess>());
     });
+
+    test('a write still opening its file does not hold up the requests and '
+        'frames behind it (task cff96b)', () async {
+      // The phone's shape (task 9a89f7): a served `writeFile` takes its first
+      // byte frame only once its file is open, and on FUSE that open is a
+      // ~20 ms create. Each request is followed on the wire by its own body,
+      // as `RemoteAgent` sends them, so a router that stops at the first
+      // frame nobody is taking yet reads the next request only after that
+      // create returns, and sixteen creates run one at a time.
+      const writes = 16;
+      const open = Duration(milliseconds: 20);
+      agent.openDelay = open;
+      final wall = Stopwatch()..start();
+
+      final replies = <Future<Frame>>[];
+      for (var i = 0; i < writes; i++) {
+        final exchange = await client.request(
+          AgentRequest('writeFile', {'path': 'f$i', 'mtime': 1, 'mode': 420}),
+        );
+        replies.add(exchange.replies.first);
+        await sendByteStream(
+          client.channel,
+          Stream.value([i]),
+          requestId: exchange.id,
+        );
+      }
+      for (final reply in replies) {
+        expect(AgentResult.fromFrame(await reply), isA<AgentSuccess>());
+      }
+      wall.stop();
+
+      final unlock = await call('unlock') as AgentSuccess;
+      final stages = farSideFromJson(unlock.data)!.writeStages!;
+      expect(agent.peakOpening, greaterThan(writes ~/ 2));
+      expect(stages.meanServing, greaterThan(1.5));
+      expect(wall.elapsed, lessThan(open * (writes ~/ 2)));
+    });
   });
 
   group('malformed frames', () {
@@ -496,6 +533,15 @@ class _FakeAgent implements Agent {
   Object? lockError;
   Object? writeError;
 
+  /// How long [writeFile] spends before it takes its first byte — a stand-in
+  /// for `LocalAgent` opening its file, which on the phone's FUSE storage is
+  /// a ~20 ms create (task 9a89f7).
+  Duration openDelay = Duration.zero;
+  int _opening = 0;
+
+  /// The most writes ever opening their file at once.
+  int peakOpening = 0;
+
   @override
   Future<ReplicaInfo> hello() async => const ReplicaInfo(root: RootPresent());
 
@@ -538,6 +584,9 @@ class _FakeAgent implements Agent {
     // Thrown before `data` is touched, like a parent directory that cannot
     // be created.
     if (writeError != null) throw writeError!;
+    if (++_opening > peakOpening) peakOpening = _opening;
+    await Future<void>.delayed(openDelay);
+    _opening--;
     final bytes = <int>[];
     await for (final chunk in data) {
       bytes.addAll(chunk);

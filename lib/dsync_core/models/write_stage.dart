@@ -8,8 +8,10 @@
 /// at [awaiting]'s start and interleave with [receiving]. What storage costs
 /// once no byte is left to wait for is [storing].
 enum WriteStage {
-  /// Request decoded, handler not yet started: the frame sat in the router's
-  /// queue behind a frame whose route was not taking any.
+  /// Request decoded, handler not yet started. The router dispatches a
+  /// request as soon as it is decoded (task cff96b), so this is the frames
+  /// ahead of it in the same read being routed; before that it was the wait
+  /// behind a frame whose route was not taking any.
   queued,
 
   /// Handler started — `writeFile` called, directory created, file opened —

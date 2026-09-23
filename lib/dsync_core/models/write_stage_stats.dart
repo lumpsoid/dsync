@@ -42,14 +42,16 @@ class WriteStageStats {
   final int peakServing;
 
   /// Summed time every `fileBytes` frame of these writes sat decoded before
-  /// its handler took it: bytes that had arrived and were waiting behind the
-  /// router's head of line rather than on the link.
+  /// its handler took it: bytes that had arrived and were waiting on their
+  /// route — the handler still opening its file, or behind on the ones
+  /// before — rather than on the link.
   final Duration held;
 
   /// How long, over the whole session, the router stopped reading the
-  /// connection because a route was not taking frames — `FrameRouter.
-  /// inputBlocked`. Session-wide rather than per write, and the one queue
-  /// [held] cannot see: bytes that wait undecoded in the socket.
+  /// connection because the frames held for routes not taking them exceeded
+  /// its budget — `FrameRouter.inputBlocked` (task cff96b). Session-wide
+  /// rather than per write, and the one queue [held] cannot see: bytes that
+  /// wait undecoded in the socket.
   final Duration inputBlocked;
 
   WriteStageStats({
