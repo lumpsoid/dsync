@@ -1180,6 +1180,9 @@ void main(List<String> args) async {
 /// [RunController] makes, so the teardown sequence can be asserted without
 /// standing up a remote transport.
 class _RecordingAgent implements Agent {
+  @override
+  Future<void> createRoot() => _wrapped.createRoot();
+
   final Agent _wrapped;
   final Object? helloError;
   final List<String> calls = [];
@@ -1261,6 +1264,9 @@ class _RecordingAgent implements Agent {
 /// failure mode. Mirrors `_FailingWriteAgent` in applier_test.dart, minus
 /// the in-memory bookkeeping that test needs and this one doesn't.
 class _FailingPathsAgent implements Agent {
+  @override
+  Future<void> createRoot() => _wrapped.createRoot();
+
   final Agent _wrapped;
   final Set<String> failOn;
 

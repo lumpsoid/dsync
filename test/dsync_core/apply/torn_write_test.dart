@@ -457,6 +457,9 @@ typedef _Write = Future<FileMetadata> Function({required int failAfter});
 /// records owed after it ([loseRecords], which drops every upsert and
 /// tombstone — the batch §7.3 says may be lost — and keeps the marks).
 class _FaultyAgent implements Agent {
+  @override
+  Future<void> createRoot() => _wrapped.createRoot();
+
   final Agent _wrapped;
   final Future<FileMetadata> Function(_Write write)? _writeFault;
   final bool loseRecords;

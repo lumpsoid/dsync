@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
@@ -507,9 +508,11 @@ void main() {
       r.renderer.render(
         RunReplicasEvent(
           infoA: ReplicaInfo(
+            root: const RootPresent(),
             lastCommitTime: fixedNow.subtract(const Duration(days: 3)),
           ),
           infoB: ReplicaInfo(
+            root: const RootPresent(),
             lastCommitTime: fixedNow.subtract(const Duration(days: 3)),
           ),
         ),
@@ -541,7 +544,10 @@ void main() {
         now: () => fixedNow,
       );
       r.renderer.render(
-        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+        const RunReplicasEvent(
+          infoA: ReplicaInfo(root: RootPresent()),
+          infoB: ReplicaInfo(root: RootPresent()),
+        ),
       );
 
       final output = r.out.buffer.toString();
@@ -553,7 +559,10 @@ void main() {
         'warning note', () {
       final r = _Rendered(profileId: 'notes');
       r.renderer.render(
-        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+        const RunReplicasEvent(
+          infoA: ReplicaInfo(root: RootPresent()),
+          infoB: ReplicaInfo(root: RootPresent()),
+        ),
       );
 
       final output = r.out.buffer.toString();
@@ -567,8 +576,11 @@ void main() {
       final r = _Rendered(profileId: 'notes');
       r.renderer.render(
         RunReplicasEvent(
-          infoA: const ReplicaInfo(),
-          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+          infoA: const ReplicaInfo(root: RootPresent()),
+          infoB: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: DateTime.utc(2026, 1, 1),
+          ),
         ),
       );
 
@@ -583,8 +595,14 @@ void main() {
       final r = _Rendered(profileId: 'notes', lastRunUnfinished: true);
       r.renderer.render(
         RunReplicasEvent(
-          infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
-          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+          infoA: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: DateTime.utc(2026, 1, 1),
+          ),
+          infoB: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: DateTime.utc(2026, 1, 1),
+          ),
         ),
       );
 
@@ -596,7 +614,10 @@ void main() {
     test('a profile whose last run finished carries no such note', () {
       final r = _Rendered(profileId: 'notes');
       r.renderer.render(
-        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+        const RunReplicasEvent(
+          infoA: ReplicaInfo(root: RootPresent()),
+          infoB: ReplicaInfo(root: RootPresent()),
+        ),
       );
 
       expect(r.out.buffer.toString(), isNot(contains('did not finish')));
@@ -606,7 +627,10 @@ void main() {
         'as a "profile" header', () {
       final r = _Rendered(profileId: 'adhoc-3f2a9c1b7e4d0a85', isAdHoc: true);
       r.renderer.render(
-        const RunReplicasEvent(infoA: ReplicaInfo(), infoB: ReplicaInfo()),
+        const RunReplicasEvent(
+          infoA: ReplicaInfo(root: RootPresent()),
+          infoB: ReplicaInfo(root: RootPresent()),
+        ),
       );
 
       final output = r.out.buffer.toString();
@@ -626,8 +650,14 @@ void main() {
       );
       r.renderer.render(
         RunReplicasEvent(
-          infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
-          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+          infoA: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: DateTime.utc(2026, 1, 1),
+          ),
+          infoB: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: DateTime.utc(2026, 1, 1),
+          ),
         ),
       );
 
@@ -641,14 +671,49 @@ void main() {
       expect(
         () => r.renderer.render(
           RunReplicasEvent(
-            infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
-            infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
+            infoA: ReplicaInfo(
+              root: const RootPresent(),
+              lastCommitTime: DateTime.utc(2026, 1, 1),
+            ),
+            infoB: ReplicaInfo(
+              root: const RootPresent(),
+              lastCommitTime: DateTime.utc(2026, 1, 1),
+            ),
           ),
         ),
         returnsNormally,
       );
       expect(r.out.buffer.toString(), isNot(contains('A  ')));
     });
+  });
+
+  test('HumanRenderer.render(RunErrorEvent) names the replica whose root is '
+      'missing (SPEC §4.5)', () {
+    final r = _Rendered(
+      diagnosticsB: ReplicaDiagnostics(
+        archivePath: '/state/notes-b.jsonl',
+        lockPath: '/state/notes-b.lock',
+        location: Location.parse('peer://phone:/sdcard/notes'),
+        locality: Locality.remote,
+      ),
+      profileId: 'notes',
+    );
+    r.renderer.render(
+      const RunErrorEvent(
+        MissingReplicaRootException(
+          onA: false,
+          rootPath: '/sdcard/notes',
+          archivedFiles: 12,
+        ),
+      ),
+    );
+
+    expect(
+      r.err.buffer.toString(),
+      'error: The folder /sdcard/notes on replica B (peer://phone:/sdcard/notes) '
+      'is missing. If it is on a drive that is not mounted, reconnect it; the '
+      'last sync saw 12 files there.\n',
+    );
   });
 
   group('HumanRenderer.render(RunErrorEvent) over a held replica lock '

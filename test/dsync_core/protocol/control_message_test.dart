@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -168,7 +169,10 @@ void main() {
 
   group('replicaInfoToJson / replicaInfoFromJson', () {
     test('round-trips a last-commit time', () {
-      final info = ReplicaInfo(lastCommitTime: DateTime.utc(2024, 1, 1));
+      final info = ReplicaInfo(
+        root: const RootPresent(),
+        lastCommitTime: DateTime.utc(2024, 1, 1),
+      );
 
       final decoded = replicaInfoFromJson(replicaInfoToJson(info));
 
@@ -182,7 +186,7 @@ void main() {
     });
 
     test('round-trips a null last-commit time', () {
-      const info = ReplicaInfo();
+      const info = ReplicaInfo(root: RootPresent());
 
       final decoded = replicaInfoFromJson(replicaInfoToJson(info));
 
@@ -191,11 +195,38 @@ void main() {
     });
 
     test('round-trips an archive path (task ee190c)', () {
-      const info = ReplicaInfo(archivePath: '/state/notes-a.jsonl');
+      const info = ReplicaInfo(
+        root: RootPresent(),
+        archivePath: '/state/notes-a.jsonl',
+      );
 
       final decoded = replicaInfoFromJson(replicaInfoToJson(info));
 
       expect(decoded.archivePath, '/state/notes-a.jsonl');
+    });
+
+    test('round-trips a missing root with its archived count (SPEC §4.5)', () {
+      const info = ReplicaInfo(
+        root: RootMissing(rootPath: '/phone/synth', archivedFiles: 7),
+      );
+
+      final decoded = replicaInfoFromJson(replicaInfoToJson(info));
+
+      expect(
+        decoded.root,
+        isA<RootMissing>()
+            .having((r) => r.rootPath, 'rootPath', '/phone/synth')
+            .having((r) => r.archivedFiles, 'archivedFiles', 7),
+      );
+    });
+
+    test('a present root round-trips as present', () {
+      const info = ReplicaInfo(root: RootPresent());
+
+      expect(
+        replicaInfoFromJson(replicaInfoToJson(info)).root,
+        isA<RootPresent>(),
+      );
     });
   });
 

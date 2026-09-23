@@ -272,6 +272,9 @@ class AgentServer {
           case 'lock':
             await agent.lock();
             await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
+          case 'createRoot':
+            await agent.createRoot();
+            await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'unlock':
             await agent.unlock();
             // The one reply that carries this side's write-path totals: the

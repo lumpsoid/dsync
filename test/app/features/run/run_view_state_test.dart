@@ -8,6 +8,7 @@ import 'package:dsync/app/run_request.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -72,9 +73,11 @@ void main() {
   final happy = <RunEvent>[
     RunReplicasEvent(
       infoA: ReplicaInfo(
+        root: const RootPresent(),
         lastCommitTime: now.subtract(const Duration(hours: 2)),
       ),
       infoB: ReplicaInfo(
+        root: const RootPresent(),
         lastCommitTime: now.subtract(const Duration(hours: 2)),
       ),
     ),
@@ -259,8 +262,14 @@ void main() {
   group('first sync', () {
     RunReplicasEvent replicas({required bool aEmpty, required bool bEmpty}) =>
         RunReplicasEvent(
-          infoA: ReplicaInfo(lastCommitTime: aEmpty ? null : now),
-          infoB: ReplicaInfo(lastCommitTime: bEmpty ? null : now),
+          infoA: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: aEmpty ? null : now,
+          ),
+          infoB: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: bEmpty ? null : now,
+          ),
         );
 
     test('both empty: the warning, worded as an expected first run', () async {

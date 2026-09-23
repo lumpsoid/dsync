@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/agent_listener.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -695,6 +696,10 @@ class SyncRunController {
         deviceName: request.deviceName,
         remoteRoot: request.remoteRootPath,
       );
+    }
+    // SPEC §4.5: side a is this device, side b the peer.
+    if (error is MissingReplicaRootException) {
+      return error.describeOn(error.onA ? 'this device' : request.deviceName);
     }
     return error.toString();
   }

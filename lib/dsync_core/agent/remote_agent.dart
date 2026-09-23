@@ -149,6 +149,9 @@ class RemoteAgent implements Agent {
   @override
   Future<void> unlock() => _exclusive(AgentOp.unlock, _call);
 
+  @override
+  Future<void> createRoot() => _exclusive(AgentOp.createRoot, _call);
+
   /// The one operation family whose success does not come back as a control
   /// frame (SPEC §15.3): every phase of a `scan` replies with
   /// `FrameType.scanResult`, the binary encoding in `scan_result_codec.dart`.

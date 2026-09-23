@@ -12,6 +12,7 @@ import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
@@ -22,6 +23,7 @@ import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+
 import '../../support/scan_session.dart';
 
 const _testSpec = ReplicaSpec(
@@ -47,7 +49,10 @@ void main() {
     test('returns the ReplicaInfo the backing agent reports', () async {
       final (clientChannel, serverChannel) = InMemoryChannel.pair();
       final backingWithCommit = _FakeAgent()
-        ..helloInfo = ReplicaInfo(lastCommitTime: DateTime.utc(2024, 1, 1));
+        ..helloInfo = ReplicaInfo(
+          root: const RootPresent(),
+          lastCommitTime: DateTime.utc(2024, 1, 1),
+        );
       unawaited(AgentServer().serve(serverChannel, (_) => backingWithCommit));
 
       final info = await RemoteAgent(clientChannel, _testSpec).hello();
@@ -769,13 +774,16 @@ Future<void> _withHeldCommit(
 }
 
 class _FakeAgent implements Agent {
+  @override
+  Future<void> createRoot() async {}
+
   bool locked = false;
   List<ScanEntry> scanResult = [];
   final Map<String, List<int>> fileContents = {};
   final Map<String, ArchiveEntry> archive = {};
   String? removedEmptyDirsFor;
   Object? lockError;
-  ReplicaInfo helloInfo = const ReplicaInfo();
+  ReplicaInfo helloInfo = const ReplicaInfo(root: RootPresent());
 
   /// Paths whose commit waits to be released, so a test can hold several
   /// operations open at once and decide the order they are answered in.

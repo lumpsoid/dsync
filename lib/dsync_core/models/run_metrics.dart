@@ -70,6 +70,7 @@ enum AgentOp {
   hello,
   lock,
   unlock,
+  createRoot,
   scan,
   readFile,
   writeFile,

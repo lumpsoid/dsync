@@ -4,6 +4,7 @@ import 'package:dsync/cli/options/verbosity.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
@@ -558,6 +559,15 @@ class HumanRenderer {
       err.writeln(
         'Wait for that run to finish, or stop it, then run this again.',
       );
+      return;
+    }
+    if (event.error case final MissingReplicaRootException missing) {
+      final side = missing.onA ? 'A' : 'B';
+      final location = (missing.onA ? diagnosticsA : diagnosticsB)?.location;
+      final replica = location == null
+          ? 'replica $side'
+          : 'replica $side ($location)';
+      err.writeln('error: ${missing.describeOn(replica)}');
       return;
     }
     err.writeln('error: ${event.error}');

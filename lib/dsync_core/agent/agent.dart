@@ -34,6 +34,11 @@ abstract class Agent {
   /// after a failed run (SPEC §4.3).
   Future<void> unlock();
 
+  /// Creates this replica's root folder, which [hello] reported missing.
+  /// Only ever called once the run has decided the root may be created
+  /// (SPEC §4.5) — this side decides nothing.
+  Future<void> createRoot();
+
   /// Scans this replica and returns the scan as a [ScanSession] — phase 1 of
   /// SPEC §6.1's three-phase exchange, with the other two phases reachable
   /// through it.

@@ -7,6 +7,7 @@ import 'package:dsync/cli/output/json_renderer.dart';
 import 'package:dsync/dsync_core/models/location.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -111,10 +112,11 @@ void main() {
         );
         final event = RunReplicasEvent(
           infoA: ReplicaInfo(
+            root: const RootPresent(),
             lastCommitTime: DateTime.utc(2026, 9, 10, 14, 3),
             archivePath: '/home/me/.local/state/dsync/notes-a.jsonl',
           ),
-          infoB: const ReplicaInfo(),
+          infoB: const ReplicaInfo(root: RootPresent()),
         );
 
         final decoded = (await _renderAll(r, [event])).single;
@@ -154,8 +156,8 @@ void main() {
           ),
         );
         final event = const RunReplicasEvent(
-          infoA: ReplicaInfo(),
-          infoB: ReplicaInfo(),
+          infoA: ReplicaInfo(root: RootPresent()),
+          infoB: ReplicaInfo(root: RootPresent()),
         );
 
         final decoded = (await _renderAll(r, [event])).single;
@@ -169,8 +171,14 @@ void main() {
       test('firstSync is false once both sides have committed', () async {
         final r = _Rendered();
         final event = RunReplicasEvent(
-          infoA: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 1)),
-          infoB: ReplicaInfo(lastCommitTime: DateTime.utc(2026, 1, 2)),
+          infoA: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: DateTime.utc(2026, 1, 1),
+          ),
+          infoB: ReplicaInfo(
+            root: const RootPresent(),
+            lastCommitTime: DateTime.utc(2026, 1, 2),
+          ),
         );
 
         final decoded = (await _renderAll(r, [event])).single;
@@ -181,8 +189,8 @@ void main() {
       test('lastRunUnfinished carries the run marker\'s verdict (task '
           '99f404)', () async {
         const event = RunReplicasEvent(
-          infoA: ReplicaInfo(),
-          infoB: ReplicaInfo(),
+          infoA: ReplicaInfo(root: RootPresent()),
+          infoB: ReplicaInfo(root: RootPresent()),
         );
 
         final unfinished = (await _renderAll(

@@ -11,12 +11,14 @@ import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/plan.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+
 import '../../support/scan_session.dart';
 
 /// Puts [entry] in [agent]'s archive before the run under test starts —
@@ -1166,6 +1168,9 @@ class _TruncatingWriteAgent extends _FailingWriteAgent {
 /// set of paths, used to exercise Applier's per-path failure handling
 /// (SPEC §7.6) without relying on a flaky real-filesystem failure mode.
 class _FailingWriteAgent implements Agent {
+  @override
+  Future<void> createRoot() async {}
+
   final Set<String> failOn;
   final Map<String, List<int>> files = {};
   final Map<String, ArchiveEntry> archive = {};
@@ -1173,7 +1178,7 @@ class _FailingWriteAgent implements Agent {
   _FailingWriteAgent({required this.failOn});
 
   @override
-  Future<ReplicaInfo> hello() async => const ReplicaInfo();
+  Future<ReplicaInfo> hello() async => const ReplicaInfo(root: RootPresent());
 
   @override
   Future<void> lock() async {}
@@ -1244,6 +1249,9 @@ class _FailingWriteAgent implements Agent {
 /// §7.3). Mirrors `_CrashingCommitAgent` in crash_safety_test.dart, but for
 /// the delete/tombstone commit instead of the upsert commit.
 class _CrashingDeleteAgent implements Agent {
+  @override
+  Future<void> createRoot() => _wrapped.createRoot();
+
   final Agent _wrapped;
   final Set<String> crashOn;
   final Set<String> _alreadyCrashed = {};
@@ -1301,6 +1309,9 @@ class _CrashingDeleteAgent implements Agent {
 /// Wraps a real [Agent] and records every call made against it, so the order
 /// operations reach one replica can be asserted (task 0f7dfc).
 class _RecordingCallsAgent implements Agent {
+  @override
+  Future<void> createRoot() => _wrapped.createRoot();
+
   final Agent _wrapped;
   final List<String> calls;
 

@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
@@ -481,6 +482,9 @@ void main() {
 /// A minimal in-memory [Agent] fake — just enough to drive [AgentServer]'s
 /// dispatch logic without a real filesystem or archive.
 class _FakeAgent implements Agent {
+  @override
+  Future<void> createRoot() async {}
+
   bool locked = false;
   int unlockCalls = 0;
   List<ScanEntry> scanResult = [];
@@ -493,7 +497,7 @@ class _FakeAgent implements Agent {
   Object? writeError;
 
   @override
-  Future<ReplicaInfo> hello() async => const ReplicaInfo();
+  Future<ReplicaInfo> hello() async => const ReplicaInfo(root: RootPresent());
 
   @override
   Future<void> lock() async {

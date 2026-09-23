@@ -27,12 +27,13 @@ import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 typedef Presenter = Future<List<PlanAction>> Function(Plan plan);
 
 /// The one owner of the run flow (SPEC §13): resolve locations → connect
-/// both agents → lock → scan both → reconcile → present → apply → compact →
-/// unlock → disconnect → exit. A concrete, single-implementation ordering owner (no
-/// interface, per this project's code principles) — every step's actual
-/// logic lives in its own component ([Agent], [Reconciler], [Applier]); this
-/// class only calls them in the right order and turns the results into
-/// [RunEvent]s the heads render.
+/// both agents → lock → create a missing root (SPEC §4.5) → scan both →
+/// reconcile → present → apply → compact → unlock → disconnect → exit. A
+/// concrete, single-implementation ordering owner (no interface, per this
+/// project's code principles) — every step's actual logic lives in its own
+/// component ([Agent], [Reconciler], [Applier]); this class only calls them
+/// in the right order and turns the results into [RunEvent]s the heads
+/// render.
 ///
 /// Location resolution and profile loading have no implementation anywhere
 /// in this codebase yet (no CLI, no profile parser) — out of scope here.
@@ -151,7 +152,7 @@ class RunController {
         // throwing them here, so this catch would never see them (task
         // c8ed30).
         try {
-          await for (final event in _runLocked()) {
+          await for (final event in _runLocked(infoA, infoB)) {
             yield event;
           }
         } catch (error) {
@@ -200,7 +201,15 @@ class RunController {
 
   /// Scan → reconcile → present → apply → compact, once both replicas are
   /// locked.
-  Stream<RunEvent> _runLocked() async* {
+  Stream<RunEvent> _runLocked(ReplicaInfo infoA, ReplicaInfo infoB) async* {
+    // SPEC §4.5: a root `hello` found missing is created on its first sync
+    // and refused after that. Both sides are judged before either is
+    // created, so a refusal of one leaves the other as it was.
+    final createA = infoA.mustCreateRoot(onA: true);
+    final createB = infoB.mustCreateRoot(onA: false);
+    if (createA) await agentA.createRoot();
+    if (createB) await agentB.createRoot();
+
     // One phase for all three of SPEC §6.1's exchanges on both sides, because
     // they run concurrently side against side: this span is the slower of the
     // two, not their sum, which is what a head needs to compare against the

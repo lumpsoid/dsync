@@ -18,13 +18,17 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:dsync/dsync_core/models/paired_device.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
+import 'package:dsync/dsync_core/models/run_event.dart';
 import 'package:dsync/dsync_core/protocol/control_message.dart';
 import 'package:dsync/dsync_core/protocol/socket_channel.dart';
+import 'package:dsync/dsync_core/run/run_controller.dart';
 import 'package:pointycastle/asn1.dart';
 import 'package:pointycastle/export.dart';
 import 'package:test/test.dart';
+
 import '../../support/scan_session.dart';
 
 /// [AgentListener.bindSecure] and [SocketChannel.connectSecure] over real
@@ -686,6 +690,103 @@ void main() {
     // A protocol-level refusal, not a listener-level one: the session ran
     // to completion and replied, it just declined the root asked for.
     expect(sessionErrors, isEmpty);
+  });
+
+  group('a granted root that does not exist yet (SPEC §4.5)', () {
+    late String grantedRoot;
+    late String otherRoot;
+
+    /// Rooted at whatever the `hello` named, and creating nothing — the way
+    /// a real agent is built, unlike [buildAgent] above, which makes its
+    /// root up front.
+    Agent buildAtSpecRoot(ReplicaSpec spec) => LocalAgent(
+      rootPath: spec.rootPath,
+      archiveStore: JsonlArchiveStore(
+        File('${tempDir.path}/${spec.side}.jsonl'),
+        header,
+      ),
+      replicaLock: ReplicaLock(File('${tempDir.path}/${spec.side}.lock')),
+    );
+
+    setUp(() {
+      grantedRoot = '${tempDir.path}/phone/files/synth';
+      otherRoot = '${tempDir.path}/phone/files/elsewhere';
+    });
+
+    Future<AgentListener> bindAtSpecRoot() => AgentListener.bindSecure(
+      InternetAddress.loopbackIPv4,
+      0,
+      ownIdentity: serverIdentity,
+      pairedDeviceStore: store,
+      buildAgent: buildAtSpecRoot,
+      onSessionError: (error, _) => sessionErrors.add(error),
+      handshakeDeadline: AgentListener.defaultHandshakeDeadline,
+      maxUnauthenticatedConnections:
+          AgentListener.defaultMaxUnauthenticatedConnections,
+    );
+
+    test('is reported missing to an authorized peer, and a first sync '
+        'creates it and completes', () async {
+      final desktop = generateDeviceIdentity(commonName: 'dsync-desktop-2');
+      await store.add(
+        pairedDeviceFor(desktop, name: 'desktop', roots: {grantedRoot}),
+      );
+      final listener = await bindAtSpecRoot();
+      addTearDown(listener.close);
+      final localRoot = Directory('${tempDir.path}/desktop-notes')
+        ..createSync();
+      await File('${localRoot.path}/one.txt').writeAsString('one');
+
+      final events = await RunController(
+        agentA: LocalAgent(
+          rootPath: localRoot.path,
+          archiveStore: JsonlArchiveStore(
+            File('${tempDir.path}/desktop-a.jsonl'),
+            header,
+          ),
+          replicaLock: ReplicaLock(File('${tempDir.path}/desktop-a.lock')),
+        ),
+        agentB: await connectAs(
+          desktop,
+          listener,
+          rootPath: grantedRoot,
+          side: 'b',
+        ),
+        presenter: (plan) async => plan.actions,
+      ).run().toList();
+
+      expect(events.whereType<RunErrorEvent>(), isEmpty);
+      expect(
+        events.whereType<RunReplicasEvent>().single.infoB.root,
+        isA<RootMissing>(),
+      );
+      expect(await File('$grantedRoot/one.txt').readAsString(), 'one');
+    });
+
+    test('an unauthorized missing root still gets the one generic refusal, '
+        'and nothing is created', () async {
+      final desktop = generateDeviceIdentity(commonName: 'dsync-desktop-2');
+      await store.add(
+        pairedDeviceFor(desktop, name: 'desktop', roots: {grantedRoot}),
+      );
+      final listener = await bindAtSpecRoot();
+      addTearDown(listener.close);
+
+      final agent = await connectAs(desktop, listener, rootPath: otherRoot);
+
+      await expectLater(
+        agent.hello(),
+        throwsA(
+          isA<AgentOperationException>().having(
+            (e) => e.message,
+            'message',
+            const UnauthorizedReplicaRootException().toString(),
+          ),
+        ),
+      );
+      expect(await Directory(otherRoot).exists(), isFalse);
+      expect(await Directory('${tempDir.path}/phone').exists(), isFalse);
+    });
   });
 
   test('a stranger connecting does not kill the listener', () async {

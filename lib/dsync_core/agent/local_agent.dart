@@ -8,6 +8,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
@@ -163,8 +164,23 @@ class LocalAgent implements Agent {
     return ReplicaInfo(
       lastCommitTime: await archiveStore.lastCommitTime(),
       archivePath: archivePath,
+      root: await _root(),
     );
   }
+
+  /// Whether [rootPath] is there (SPEC §4.5). The archive is only read for
+  /// a missing root, where its size is what a refusal reports.
+  Future<ReplicaRoot> _root() async {
+    if (await Directory(rootPath).exists()) return const RootPresent();
+    final archive = await archiveStore.load();
+    return RootMissing(
+      rootPath: rootPath,
+      archivedFiles: archive.entries.length,
+    );
+  }
+
+  @override
+  Future<void> createRoot() => Directory(rootPath).create(recursive: true);
 
   @override
   Future<void> lock() => replicaLock.acquire();

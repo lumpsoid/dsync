@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
@@ -214,10 +215,16 @@ ReplicaSpec replicaSpecFromJson(Map<String, dynamic> json) => ReplicaSpec(
 
 /// What `hello` replies with (SPEC §4.2): the replying replica's own
 /// [ReplicaInfo].
+///
+/// A missing root (SPEC §4.5) travels as an added optional key, so a peer
+/// that predates it decodes as [RootPresent] — which is what that peer
+/// assumed anyway, failing in its scan as it always did.
 Map<String, dynamic> replicaInfoToJson(ReplicaInfo info) => {
   if (info.lastCommitTime != null)
     'lastCommitTime': info.lastCommitTime!.microsecondsSinceEpoch,
   if (info.archivePath != null) 'archivePath': info.archivePath,
+  if (info.root case RootMissing(:final rootPath, :final archivedFiles))
+    'missingRoot': {'rootPath': rootPath, 'archivedFiles': archivedFiles},
 };
 
 ReplicaInfo replicaInfoFromJson(Map<String, dynamic> json) => ReplicaInfo(
@@ -225,6 +232,11 @@ ReplicaInfo replicaInfoFromJson(Map<String, dynamic> json) => ReplicaInfo(
       ? null
       : DateTime.fromMicrosecondsSinceEpoch(json['lastCommitTime'] as int),
   archivePath: json['archivePath'] as String?,
+  root: switch (json['missingRoot']) {
+    {'rootPath': final String rootPath, 'archivedFiles': final int files} =>
+      RootMissing(rootPath: rootPath, archivedFiles: files),
+    _ => const RootPresent(),
+  },
 );
 
 /// Thrown by `RemoteAgent` when the peer reports an [AgentFailure] for an

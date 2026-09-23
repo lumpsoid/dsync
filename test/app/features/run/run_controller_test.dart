@@ -332,6 +332,26 @@ void main() {
       expect(controller.state.header!.history, contains('Last synced'));
       expect(controller.state.scanTally!.local.metadataMatched, 1);
     });
+
+    test("the peer's synced folder gone missing is the named failure, on "
+        'that device (SPEC §4.5)', () async {
+      await File('${localRoot.path}/new.txt').writeAsString('from a');
+      make(served(desktopAgent));
+      await startAndAcceptAll(request(dryRun: false));
+      controller.dispose();
+      await remoteRoot.delete(recursive: true);
+
+      await make(served(desktopAgent)).start(request(dryRun: false));
+
+      expect(
+        failed().message,
+        'The folder ${remoteRoot.path} on desktop is missing. If it is on a '
+        'drive that is not mounted, reconnect it; the last sync saw 1 file '
+        'there.',
+      );
+      expect(await remoteRoot.exists(), isFalse);
+      expect(await File('${localRoot.path}/new.txt').exists(), isTrue);
+    });
   });
 
   group('interactive run', () {

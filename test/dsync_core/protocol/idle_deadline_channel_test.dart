@@ -7,6 +7,7 @@ import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/replica_info.dart';
+import 'package:dsync/dsync_core/models/replica_root.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_result.dart';
@@ -20,6 +21,7 @@ import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+
 import '../../support/scan_session.dart';
 
 /// Short enough to keep the suite quick, and far enough apart that a machine
@@ -215,6 +217,9 @@ Future<void> _send(Channel channel, AgentRequest request, int requestId) =>
     channel.send(FrameCodec().encode(request.toFrame(requestId)));
 
 class _FakeAgent implements Agent {
+  @override
+  Future<void> createRoot() async {}
+
   bool locked = false;
   int unlockCalls = 0;
   Future<ScanSession> scanReply = Future.value(
@@ -222,7 +227,7 @@ class _FakeAgent implements Agent {
   );
 
   @override
-  Future<ReplicaInfo> hello() async => const ReplicaInfo();
+  Future<ReplicaInfo> hello() async => const ReplicaInfo(root: RootPresent());
 
   @override
   Future<void> lock() async {

@@ -16,6 +16,7 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/reconcile/reconciler.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:test/test.dart';
+
 import '../../support/scan_session.dart';
 
 /// Crash-safety of the per-path archive commit (SPEC §7.3, §14): killing the
@@ -259,6 +260,9 @@ String _sha256Of(String content) =>
 /// side's commit already landed durably, but before this side's own commit
 /// does (SPEC §7.3).
 class _CrashingCommitAgent implements Agent {
+  @override
+  Future<void> createRoot() => _wrapped.createRoot();
+
   final Agent _wrapped;
   final Set<String> crashOn;
   final Set<String> _alreadyCrashed = {};

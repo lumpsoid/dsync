@@ -74,6 +74,9 @@ class MeteredAgent implements Agent {
   @override
   Future<void> unlock() => _timed(AgentOp.unlock, _inner.unlock);
 
+  @override
+  Future<void> createRoot() => _timed(AgentOp.createRoot, _inner.createRoot);
+
   /// All three of SPEC §6.1's phases are recorded under [AgentOp.scan], so a
   /// remote replica's `scan` count is three rather than one — or two, when
   /// every bucket agreed and phase 3 never happened.

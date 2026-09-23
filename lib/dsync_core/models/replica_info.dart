@@ -1,3 +1,5 @@
+import 'package:dsync/dsync_core/models/replica_root.dart';
+
 /// What an [Agent] reports about its replica in reply to `hello` (SPEC
 /// §4.2).
 ///
@@ -22,5 +24,32 @@ class ReplicaInfo {
   /// it).
   final String? archivePath;
 
-  const ReplicaInfo({this.lastCommitTime, this.archivePath});
+  /// Whether this replica's root folder exists (SPEC §4.5).
+  final ReplicaRoot root;
+
+  const ReplicaInfo({
+    this.lastCommitTime,
+    this.archivePath,
+    required this.root,
+  });
+
+  /// SPEC §4.5: whether a run has to create this replica's root before it
+  /// can scan it.
+  ///
+  /// A missing root is created only on this replica's first sync — no
+  /// archive yet, so an empty folder is exactly what the archive expects.
+  /// Once an archive exists, a missing root is more likely an unmounted
+  /// drive or a deleted folder than a new one, and scanning it would report
+  /// every archived file as deleted; that throws
+  /// [MissingReplicaRootException], naming side [onA].
+  bool mustCreateRoot({required bool onA}) => switch (root) {
+    RootPresent() => false,
+    RootMissing() when lastCommitTime == null => true,
+    RootMissing(:final rootPath, :final archivedFiles) =>
+      throw MissingReplicaRootException(
+        onA: onA,
+        rootPath: rootPath,
+        archivedFiles: archivedFiles,
+      ),
+  };
 }
