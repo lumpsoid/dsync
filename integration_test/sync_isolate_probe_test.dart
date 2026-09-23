@@ -20,8 +20,10 @@
 //
 // That probe writes one flat directory, where the directory's lock serialises
 // creates whatever the concurrency. `--dart-define=PROBE=spread` runs the
-// second probe instead (task 5532c0): fresh writes into a tree of 30 files a
-// directory on FUSE, laid out as write_ops_probe.c lays it out —
+// second probe instead (tasks 5532c0, 7080d6): fresh writes into a tree of 30
+// files a directory on FUSE, then an overwrite of every one of them with
+// different bytes (seed 2 against the fresh pass's 1), each pass timed on its
+// own, laid out as write_ops_probe.c lays it out —
 //   grouped  consecutive files fill one directory at a time;
 //   spread   consecutive files go to different directories, so files being
 //            written at once sit in different directories —
@@ -43,30 +45,54 @@
 // dispatched before its first write returns each create it, in all three.
 // A fresh LocalAgent per run settles its once-per-session mode step on an
 // untimed first write; the sync workers chmod only if that agent does (on
-// FUSE it skips, so neither does).
+// FUSE it skips, so neither does). The overwrite pass reuses that run's agent
+// and the sync lanes' memo, so it finds every parent remembered and creates
+// none — C's `overwrite`, which marks every `dir_made` up front. (A real
+// overwrite session starts with an empty memo and pays one create of an
+// existing directory per directory, ~1 in 30 files; neither probe does.)
 //
 // Per file, both Dart modes issue exactly these syscalls (checked with
-// strace on Linux; the async and sync forms of dart:io are identical):
+// strace on Linux; the async and sync forms of dart:io are identical).
+// Fresh:
 //   stat parent (ENOENT), stat its parent, … up to one that exists, then
 //     mkdir each missing one — only when the memo misses;
 //   stat target (FFI, writeTargetProbe; ENOENT on a fresh write stops it);
 //   stat target (dart:io's File::Open check; ENOENT);
 //   openat O_RDWR|O_CREAT|O_TRUNC 0666; write per 64 KiB chunk; close;
 //   stat + utimensat (setLastModified); [chmod, not on FUSE]; stat.
+// Overwrite — no parent calls, and the target is there:
+//   stat target + access W_OK (writeTargetProbe: one link, writable, so in
+//     place);
+//   stat target (dart:io's File::Open check);
+//   openat O_RDWR|O_CREAT|O_TRUNC 0666; write per 64 KiB chunk; close;
+//   stat + utimensat; [chmod, not on FUSE]; stat.
 // Against write_ops_probe.c's per-file ops, what still differs:
 //   - C calls chmod on every file; the real path skips it on FUSE. C's
 //     `wall` therefore carries one chmod a file that no Dart cell does —
 //     subtract C's `chmod` per_file only at threads=1, where wall ≈ total;
-//   - C has neither of the two ENOENT stats before the open;
+//   - C has neither of the two ENOENT stats before the open on a fresh
+//     write, nor, on an overwrite, the three calls before it (the probe's
+//     stat + access and dart:io's stat), which there find the file;
 //   - C opens O_WRONLY, dart:io O_RDWR;
 //   - C's mkdirs calls mkdir on every path component from `/` (EEXIST
 //     ignored), Dart stats down to the first existing ancestor and mkdirs
-//     only the missing ones;
+//     only the missing ones (fresh only; neither creates on an overwrite);
 //   - C has no byte handoff: no stream (async) or isolate message (sync);
+//   - C's overwrite writes the same bytes again (0x5a both passes); Dart's
+//     writes different ones (seed 2 over 1), as a real overwrite does;
+//   - C's overwrite is a second process on the tree its fresh pass just left
+//     (run_write_ops_probe.sh's pass loop); Dart's follows its fresh pass in
+//     the same process, after an untimed listing;
 //   - sizes share the distribution and seed, not the generator (drand48 vs
 //     dart:math), so the files differ one by one.
 // So a Dart `grouped`/`spread` cell at concurrency C compares with C's
-// `wall_us_per_file` for the same layout at threads=C, less that chmod.
+// `wall_us_per_file` for the same layout, pass and threads=C, less that
+// chmod — for an overwrite, rung 6's ~270 µs at 16 threads.
+//
+// Each fresh cell is ~30 s on the phone; its overwrite, at rung 5's ~1 ms a
+// file or less, adds a few seconds, so the 32 cells (2 layouts × 2 modes × 4
+// concurrencies × 2 repeats) run ~17–19 min where the fresh-only probe ran
+// ~16.
 //
 //   adb shell appops set --uid com.example.dsync MANAGE_EXTERNAL_STORAGE allow
 //   flutter drive --profile -d <id> \
@@ -193,7 +219,7 @@ void main() {
   );
 
   testWidgets(
-    'spread fresh-write probe',
+    'spread fresh-write and overwrite probe',
     (tester) async {
       final results = <String, Object>{};
       final sizes = _sizes();
@@ -208,27 +234,38 @@ void main() {
         if (root.existsSync()) root.deleteSync(recursive: true);
         root.createSync(recursive: true);
         final agent = await _settledAgent(root.path);
-        final clock = Stopwatch()..start();
-        switch (mode) {
-          case 'async':
-            await _asyncTree(agent, layout, sizes, c);
-          case 'sync':
-            await _syncTree(
-              workers.sublist(0, c),
-              root.path,
-              layout,
-              sizes,
-              applyMode: !agent.chmodUnavailable,
-            );
+        // The sync lanes' created-parent memo, kept across both passes as the
+        // agent keeps its own.
+        final createdParents = <String>{};
+        for (final (pass, seed) in [('fresh', 1), ('overwrite', 2)]) {
+          final clock = Stopwatch()..start();
+          switch (mode) {
+            case 'async':
+              await _asyncTree(agent, layout, sizes, c, seed);
+            case 'sync':
+              await _syncTree(
+                workers.sublist(0, c),
+                root.path,
+                layout,
+                sizes,
+                seed,
+                createdParents,
+                applyMode: !agent.chmodUnavailable,
+              );
+          }
+          clock.stop();
+          final landed = root
+              .listSync(recursive: true)
+              .whereType<File>()
+              .length;
+          final perFile = clock.elapsedMicroseconds ~/ _files;
+          _log(
+            'RESULT probe=spread layout=$layout mode=$mode concurrency=$c '
+            'pass=$pass repeat=$repeat landed=$landed usPerFile=$perFile',
+          );
+          final key = pass == 'fresh' ? '' : '-$pass';
+          results['$layout-$mode-c$c$key-r$repeat'] = perFile;
         }
-        clock.stop();
-        final landed = root.listSync(recursive: true).whereType<File>().length;
-        final perFile = clock.elapsedMicroseconds ~/ _files;
-        _log(
-          'RESULT probe=spread layout=$layout mode=$mode concurrency=$c '
-          'pass=fresh repeat=$repeat landed=$landed usPerFile=$perFile',
-        );
-        results['$layout-$mode-c$c-r$repeat'] = perFile;
       }
 
       final cases = [
@@ -306,6 +343,7 @@ Future<void> _asyncTree(
   String layout,
   List<int> sizes,
   int lanes,
+  int seed,
 ) async {
   var next = 0;
   Future<void> lane() async {
@@ -313,7 +351,7 @@ Future<void> _asyncTree(
       final i = next++;
       final written = await agent.writeFile(
         _treePath(layout, i),
-        _chunked(_bytes(sizes[i], 1)),
+        _chunked(_bytes(sizes[i], seed)),
         mtime: _mtimeUs,
         mode: _mode,
       );
@@ -326,16 +364,18 @@ Future<void> _asyncTree(
 
 /// The same work in [workers]: one lane per worker, pulling the next file
 /// from the shared counter and sending it over, so each worker holds one file
-/// at a time. The created-parent memo stays here, where the agent's would —
-/// checked before a file is sent, filled when its write comes back.
+/// at a time. The created-parent memo, [createdParents], stays here, where the
+/// agent's would — checked before a file is sent, filled when its write comes
+/// back.
 Future<void> _syncTree(
   List<_Worker> workers,
   String root,
   String layout,
-  List<int> sizes, {
+  List<int> sizes,
+  int seed,
+  Set<String> createdParents, {
   required bool applyMode,
 }) async {
-  final createdParents = <String>{};
   var next = 0;
   Future<void> lane(_Worker worker) async {
     while (next < sizes.length) {
@@ -344,7 +384,7 @@ Future<void> _syncTree(
       final parent = File(path).parent.path;
       final written = await worker.writeFile(
         path,
-        TransferableTypedData.fromList([_bytes(sizes[i], 1)]),
+        TransferableTypedData.fromList([_bytes(sizes[i], seed)]),
         createParent: !createdParents.contains(parent),
         applyMode: applyMode,
       );
@@ -357,10 +397,11 @@ Future<void> _syncTree(
 }
 
 /// `LocalAgent.writeFile`'s steps in sync form, in its order, for a target
-/// the probe finds writable in place (every one of a fresh write): the parent
-/// if the memo missed, the write-target probe, open, the bytes a chunk per
-/// write, close, mtime, the mode step if the agent takes it, the closing
-/// stat. Returns what writeFile's FileMetadata carries.
+/// the probe finds writable in place (every one here: absent on a fresh
+/// write, a single-link writable file on an overwrite): the parent if the
+/// memo missed, the write-target probe, open, the bytes a chunk per write,
+/// close, mtime, the mode step if the agent takes it, the closing stat.
+/// Returns what writeFile's FileMetadata carries.
 _Written _writeFileSync(
   String path,
   Uint8List bytes, {
