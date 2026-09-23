@@ -127,9 +127,12 @@ void main() {
 
     client.listen((_) {}, onError: close, onDone: close, cancelOnError: true);
 
+    // A handshake that settles does so as soon as the disposal lands, 300ms
+    // in; this window is what the stranding cases wait out in full, so it is
+    // kept to the margin the settling cases need rather than a generous one.
     var resolved = true;
     final result = await outcome.future.timeout(
-      const Duration(seconds: 5),
+      const Duration(milliseconds: 500),
       onTimeout: () {
         resolved = false;
         return null;
