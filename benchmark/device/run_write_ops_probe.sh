@@ -16,6 +16,7 @@ repeats=2
 files=1500
 mounts="fuse,data"
 layout=grouped
+passes="fresh,overwrite"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,7 +24,8 @@ while [[ $# -gt 0 ]]; do
     --repeats) repeats="$2"; shift 2 ;;
     --files)   files="$2";   shift 2 ;;
     --mounts)  mounts="$2";  shift 2 ;;
-    --spread)  layout=spread; shift ;;
+    --layout)  layout="$2";  shift 2 ;;
+    --passes)  passes="$2";  shift 2 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -51,7 +53,7 @@ for (( r = 0; r < repeats; r++ )); do
     for (( i = 0; i < ${#counts[@]}; i++ )); do
       t="${counts[$(( (i + r) % ${#counts[@]} ))]}"
       adb shell "rm -rf $tree"
-      for pass in fresh overwrite; do
+      for pass in ${passes//,/ }; do
         adb shell "$remote/write_ops_probe $t $tree $files $pass 13007 $layout" \
           | tr -d '\r' | sed "s/^/mount=$mount repeat=$r /"
       done

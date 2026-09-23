@@ -22,11 +22,20 @@
 // `mean` bytes and seeded. `fresh` expects the tree gone (the runner removes it,
 // untimed); `overwrite` expects it there.
 //
-// `spread` (the optional last argument) deals consecutive files to different
-// directories rather than filling one directory at a time, so files being
-// written at once sit in different directories.
+// The optional last argument is the layout:
+//   grouped  (default) consecutive files fill one directory at a time;
+//   spread   consecutive files go to different directories, so files being
+//            written at once sit in different directories;
+//   flat     every file in one directory.
 //
-//   write_ops_probe <threads> <root> <files> <fresh|overwrite> [mean] [spread]
+// The `staged` pass is a fresh write in the `spread` layout under
+// <root>/stage, then every file renamed into one directory, <root>/flat: the
+// question it answers is whether creating where creates parallelise and then
+// moving into a single large directory is cheaper than creating there. The two
+// phases are timed separately (`wall_create`, `wall_rename`).
+//
+//   write_ops_probe <threads> <root> <files> <fresh|overwrite|staged> [mean]
+//                   [grouped|spread|flat]
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -40,9 +49,12 @@
 #include <time.h>
 #include <unistd.h>
 
-enum op { MKDIR, OPEN, WRITE, CLOSE, MSTAT, UTIME, CHMOD, STAT, TOTAL, OPS };
-static const char *op_names[OPS] = {"mkdir", "open",  "write", "close", "mstat",
-                                    "utime", "chmod", "stat",  "total"};
+enum op {
+  MKDIR, OPEN, WRITE, CLOSE, MSTAT, UTIME, CHMOD, STAT, RENAME, TOTAL, OPS
+};
+static const char *op_names[OPS] = {"mkdir", "open",  "write", "close",
+                                    "mstat", "utime", "chmod", "stat",
+                                    "rename", "total"};
 
 #define PER_DIR 30
 #define CHUNK 65536
@@ -56,7 +68,11 @@ static atomic_int *dir_made;
 static atomic_long failures;
 static char chunk[CHUNK];
 static long dirs;
-static int spread;
+enum layout { GROUPED, SPREAD, FLAT };
+static enum layout layout;
+static const char *layout_names[] = {"grouped", "spread", "flat"};
+static int renaming; // phase two of `staged`
+static const char *flat_dir;
 
 static double now_us(void) {
   struct timespec t;
@@ -64,7 +80,13 @@ static double now_us(void) {
   return t.tv_sec * 1e6 + t.tv_nsec / 1e3;
 }
 
-static long dir_index(long i) { return spread ? i % dirs : i / PER_DIR; }
+static long dir_index(long i) {
+  switch (layout) {
+  case SPREAD: return i % dirs;
+  case FLAT: return 0;
+  default: return i / PER_DIR;
+  }
+}
 
 static void dir_for(char *out, size_t n, long i) {
   i = dir_index(i) * PER_DIR;
@@ -124,10 +146,22 @@ static int write_one(long i) {
   return 0;
 }
 
+// Moves file [i] from where `write_one` put it to <flat_dir>/f<i>.bin.
+static int rename_one(long i) {
+  char dir[512], from[600], to[600];
+  dir_for(dir, sizeof dir, i);
+  snprintf(from, sizeof from, "%s/f%ld.bin", dir, i);
+  snprintf(to, sizeof to, "%s/f%ld.bin", flat_dir, i);
+  double start = now_us();
+  if (rename(from, to)) return -1;
+  took[i * OPS + RENAME] = now_us() - start;
+  return 0;
+}
+
 static void *worker(void *unused) {
   (void)unused;
   for (long i; (i = atomic_fetch_add(&next_file, 1)) < files;) {
-    if (write_one(i)) atomic_fetch_add(&failures, 1);
+    if (renaming ? rename_one(i) : write_one(i)) atomic_fetch_add(&failures, 1);
   }
   return NULL;
 }
@@ -140,7 +174,7 @@ static int cmp(const void *a, const void *b) {
 int main(int argc, char **argv) {
   if (argc < 5) {
     fprintf(stderr, "usage: write_ops_probe <threads> <root> <files> "
-                    "<fresh|overwrite> [mean] [spread]\n");
+                    "<fresh|overwrite|staged> [mean] [grouped|spread|flat]\n");
     return 2;
   }
   int threads = atoi(argv[1]);
@@ -148,7 +182,19 @@ int main(int argc, char **argv) {
   files = atol(argv[3]);
   const char *pass = argv[4];
   double mean = argc > 5 ? atof(argv[5]) : 13007; // SPEC §5.3's mean
-  spread = argc > 6 && strcmp(argv[6], "spread") == 0;
+  for (int l = 0; argc > 6 && l < 3; l++) {
+    if (strcmp(argv[6], layout_names[l]) == 0) layout = (enum layout)l;
+  }
+  int staged = strcmp(pass, "staged") == 0;
+  char stage_root[512], flat[512];
+  if (staged) {
+    layout = SPREAD;
+    snprintf(stage_root, sizeof stage_root, "%s/stage", root);
+    snprintf(flat, sizeof flat, "%s/flat", root);
+    if (mkdirs(flat)) { perror(flat); return 1; }
+    root = stage_root;
+    flat_dir = flat;
+  }
 
   sizes = malloc(files * sizeof *sizes);
   srand48(4759);
@@ -170,8 +216,21 @@ int main(int argc, char **argv) {
   for (int w = 0; w < threads; w++) pthread_join(pool[w], NULL);
   double wall = now_us() - start;
 
-  printf("RESULT layout=%s pass=%s threads=%d files=%ld failures=%ld wall_us_per_file=%.0f\n",
-         spread ? "spread" : "grouped", pass, threads, files, (long)failures, wall / files);
+  double wall_rename = 0;
+  if (staged) {
+    renaming = 1;
+    atomic_store(&next_file, 0);
+    double at = now_us();
+    for (int w = 0; w < threads; w++) pthread_create(&pool[w], NULL, worker, NULL);
+    for (int w = 0; w < threads; w++) pthread_join(pool[w], NULL);
+    wall_rename = now_us() - at;
+  }
+
+  printf("RESULT layout=%s pass=%s threads=%d files=%ld failures=%ld "
+         "wall_us_per_file=%.0f wall_create=%.0f wall_rename=%.0f\n",
+         staged ? "staged" : layout_names[layout], pass, threads, files,
+         (long)failures, (wall + wall_rename) / files, wall / files,
+         wall_rename / files);
   double *col = malloc(files * sizeof *col);
   for (int o = 0; o < OPS; o++) {
     long n = 0;
