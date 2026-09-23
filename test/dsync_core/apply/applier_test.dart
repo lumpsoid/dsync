@@ -1222,7 +1222,7 @@ class _FailingWriteAgent implements Agent {
           archive[entry.path] = entry;
         case ArchiveTombstone(:final path):
           archive.remove(path);
-        case ArchiveIntent():
+        case ArchiveIntent() || ArchiveIntentWithdrawn():
           // Marks are the store's to keep (SPEC §7.6); this fake models
           // only the entries.
           break;
@@ -1354,6 +1354,7 @@ class _RecordingCallsAgent implements Agent {
         ArchiveUpsert(:final path) => 'archiveCommitUpsert $path',
         ArchiveTombstone(:final path) => 'archiveCommitDelete $path',
         ArchiveIntent(:final path) => 'archiveCommitIntent $path',
+        ArchiveIntentWithdrawn(:final path) => 'archiveCommitWithdraw $path',
       });
     }
     return _wrapped.archiveCommit(commits);

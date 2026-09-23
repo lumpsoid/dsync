@@ -349,6 +349,46 @@ void main() {
     expect(await onB('f').readAsBytes(), old);
   });
 
+  test('a stop lets the writes in flight land, starts nothing more, and '
+      'withdraws the marks of what never started', () async {
+    for (var i = 0; i < 6; i++) {
+      onA('f$i').writeAsStringSync('file $i');
+    }
+    final a = agentOver(dirA, logA, headerA);
+    final b = agentOver(dirB, logB, headerB);
+    final scans = await exchangeScans(
+      await a.scan(RuleSet()),
+      await b.scan(RuleSet()),
+    );
+    final plan = Reconciler().reconcile(scans.onA, scans.onB);
+
+    final stop = Completer<void>();
+    final result = await Applier(concurrency: 1, commitBatchSize: 1).apply(
+      plan,
+      scans.onA,
+      scans.onB,
+      a,
+      b,
+      onAction: (path, type, error) async {
+        if (!stop.isCompleted) stop.complete();
+      },
+      stop: stop.future,
+    );
+    await a.unlock();
+    await b.unlock();
+
+    expect(result.applied, isNotEmpty);
+    expect(result.applied.length, lessThan(6));
+    expect(result.failed, isEmpty);
+    final archiveB = await JsonlArchiveStore(logB, headerB).load();
+    expect(archiveB.untrusted, isEmpty, reason: 'nothing is left marked');
+    for (var i = 0; i < 6; i++) {
+      final applied = result.applied.any((path) => path.path == 'f$i');
+      expect(onB('f$i').existsSync(), applied, reason: 'f$i');
+      expect(archiveB.entries.containsKey('f$i'), applied, reason: 'f$i');
+    }
+  });
+
   test('a stopped run leaves marks only on the windows it reached', () async {
     for (var i = 0; i < 6; i++) {
       onA('f$i').writeAsStringSync('file $i');

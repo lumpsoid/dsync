@@ -375,50 +375,16 @@ void main() {
   });
 
   group('stop', () {
-    test(
-      'reports the number of actions completed, never "cancelled"',
-      () async {
-        var cancelled = false;
-        final events = StreamController<RunEvent>(
-          onCancel: () => cancelled = true,
-        );
-        final done = controller.render(events.stream, request: request);
-        events
-          ..add(happy[5]) // plan
-          ..add(
-            const RunResultEvent(path: 'new.txt', type: ActionType.copyAtoB),
-          )
-          ..add(const RunProgressEvent(completed: 1, total: 2));
-        await Future<void>.delayed(Duration.zero);
-
-        await controller.stop();
-        await done;
-
-        expect(cancelled, isTrue);
-        final stopped = controller.state.phase as SyncRunStopped;
-        expect(stopped.completedActions, 1);
-        final message = stoppedMessage(stopped.completedActions);
-        expect(message, contains('after 1 action'));
-        expect(message.toLowerCase(), isNot(contains('cancel')));
-        expect(message, contains('nothing further'));
-      },
+    const summary = RunSummaryEvent(
+      appliedCount: 2,
+      failedCount: 0,
+      conflictCount: 0,
+      skippedCount: 0,
+      unreadableCount: 0,
     );
 
-    test('an event after stop is not rendered', () async {
-      final events = StreamController<RunEvent>();
-      unawaited(controller.render(events.stream, request: request));
-      await Future<void>.delayed(Duration.zero);
-      await controller.stop();
-
-      events.add(happy.last);
-      await Future<void>.delayed(Duration.zero);
-
-      expect(controller.state.phase, isA<SyncRunStopped>());
-    });
-  });
-
-  group('pause', () {
-    test('suspends the run the way stop does, under its own phase', () async {
+    test('lets the run end, and reports the number of actions completed, never '
+        '"cancelled"', () async {
       var cancelled = false;
       final events = StreamController<RunEvent>(
         onCancel: () => cancelled = true,
@@ -430,10 +396,54 @@ void main() {
         ..add(const RunProgressEvent(completed: 1, total: 2));
       await Future<void>.delayed(Duration.zero);
 
-      await controller.pause();
+      final stopping = controller.stop();
+      // What was in flight at the stop finishes and is still counted; the
+      // run then ends with its summary as any run does.
+      events
+        ..add(
+          const RunResultEvent(path: 'gone.txt', type: ActionType.deleteOnA),
+        )
+        ..add(const RunProgressEvent(completed: 2, total: 2))
+        ..add(summary);
+      await Future<void>.delayed(Duration.zero);
+      expect(cancelled, isFalse, reason: 'ended, not cancelled');
+      await events.close();
+      await stopping;
       await done;
 
-      expect(cancelled, isTrue);
+      final stopped = controller.state.phase as SyncRunStopped;
+      expect(stopped.completedActions, 2);
+      final message = stoppedMessage(stopped.completedActions);
+      expect(message, contains('after 2 action'));
+      expect(message.toLowerCase(), isNot(contains('cancel')));
+      expect(message, contains('nothing further'));
+    });
+  });
+
+  group('pause', () {
+    test('ends the run the way stop does, under its own phase', () async {
+      final events = StreamController<RunEvent>();
+      final done = controller.render(events.stream, request: request);
+      events
+        ..add(happy[5]) // plan
+        ..add(const RunResultEvent(path: 'new.txt', type: ActionType.copyAtoB))
+        ..add(const RunProgressEvent(completed: 1, total: 2));
+      await Future<void>.delayed(Duration.zero);
+
+      final pausing = controller.pause();
+      events.add(
+        const RunSummaryEvent(
+          appliedCount: 1,
+          failedCount: 0,
+          conflictCount: 0,
+          skippedCount: 0,
+          unreadableCount: 0,
+        ),
+      );
+      await events.close();
+      await pausing;
+      await done;
+
       final paused = controller.state.phase as SyncRunPaused;
       expect(paused.completedActions, 1);
       final message = pausedMessage(paused.completedActions);

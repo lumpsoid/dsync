@@ -871,7 +871,34 @@ void main(List<String> args) async {
       expect(await marker.isPresent(), isFalse);
     }, testOn: 'linux');
 
-    test('stays when the run is stopped mid-apply', () async {
+    test('is cleared, with every mark, when the run is stopped mid-apply '
+        'through RunController.stop', () async {
+      for (final name in ['a.txt', 'b.txt', 'c.txt']) {
+        await File('${replicaADir.path}/$name').writeAsString(name);
+      }
+      final controller = RunController(
+        agentA: agentA,
+        agentB: agentB,
+        presenter: (plan) async => plan.actions,
+        runMarker: marker,
+        applyConcurrency: 1,
+        applyCommitBatchSize: 1,
+      );
+
+      final events = <RunEvent>[];
+      await for (final event in controller.run()) {
+        events.add(event);
+        if (event is RunResultEvent) controller.stop();
+      }
+
+      final summary = events.last as RunSummaryEvent;
+      expect(summary.appliedCount, lessThan(3));
+      expect(await marker.isPresent(), isFalse);
+      expect((await reloadB()).untrusted, isEmpty);
+      await expectLocksFree();
+    }, testOn: 'linux');
+
+    test('stays when the run is cancelled mid-apply', () async {
       for (final name in ['a.txt', 'b.txt', 'c.txt']) {
         await File('${replicaADir.path}/$name').writeAsString(name);
       }

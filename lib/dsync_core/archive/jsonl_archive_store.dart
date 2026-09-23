@@ -214,6 +214,10 @@ class JsonlArchiveStore implements ArchiveStore {
       intents.add(path);
       return;
     }
+    if (record['op'] == 'withdraw') {
+      intents.remove(path);
+      return;
+    }
     intents.remove(path);
     if (record['op'] == 'delete') {
       entries.remove(path);
@@ -294,6 +298,13 @@ class JsonlArchiveStore implements ArchiveStore {
   Future<void> commitIntent(String path) => _serialized(() async {
     _record(_intentRecord(path));
     _intents.add(path);
+    await _writeIfDue();
+  });
+
+  @override
+  Future<void> withdrawIntent(String path) => _serialized(() async {
+    _record({'op': 'withdraw', 'path': path});
+    _intents.remove(path);
     await _writeIfDue();
   });
 

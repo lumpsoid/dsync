@@ -487,6 +487,8 @@ class LocalAgent implements Agent {
         case ArchiveIntent(:final path):
           await archiveStore.commitIntent(path);
           marked = true;
+        case ArchiveIntentWithdrawn(:final path):
+          await archiveStore.withdrawIntent(path);
       }
     }
     if (marked) await archiveStore.flush();

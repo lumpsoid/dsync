@@ -315,5 +315,15 @@ void main() {
       final archive = await JsonlArchiveStore(archiveLog, header).load();
       expect(archive.untrusted, {'a.txt'});
     });
+
+    test('a withdrawal crosses the wire and clears the mark (SPEC '
+        '§7.6)', () async {
+      await remote.archiveCommit([const ArchiveIntent('a.txt')]);
+      await remote.archiveCommit([const ArchiveIntentWithdrawn('a.txt')]);
+      await remote.unlock();
+
+      final archive = await JsonlArchiveStore(archiveLog, header).load();
+      expect(archive.untrusted, isEmpty);
+    });
   });
 }

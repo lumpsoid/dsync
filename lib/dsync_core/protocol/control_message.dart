@@ -357,6 +357,7 @@ Map<String, dynamic> archiveCommitToJson(ArchiveCommit commit) =>
       ArchiveUpsert(:final entry) => {'upsert': archiveEntryToJson(entry)},
       ArchiveTombstone(:final path) => {'delete': path},
       ArchiveIntent(:final path) => {'intent': path},
+      ArchiveIntentWithdrawn(:final path) => {'withdraw': path},
     };
 
 ArchiveCommit archiveCommitFromJson(Map<String, dynamic> json) =>
@@ -366,6 +367,7 @@ ArchiveCommit archiveCommitFromJson(Map<String, dynamic> json) =>
       ),
       {'delete': final String path} => ArchiveTombstone(path),
       {'intent': final String path} => ArchiveIntent(path),
+      {'withdraw': final String path} => ArchiveIntentWithdrawn(path),
       _ => throw FormatException('Not an archive commit: $json'),
     };
 

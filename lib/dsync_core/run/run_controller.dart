@@ -87,6 +87,7 @@ class RunController {
 
   final Reconciler _reconciler = Reconciler();
   final Applier _applier;
+  final Completer<void> _stop = Completer<void>();
 
   /// [applyConcurrency] is how many actions overlap (SPEC §7.1, task
   /// 0f7dfc) and [applyCommitBatchSize] how many of their archive records
@@ -167,6 +168,18 @@ class RunController {
     }
   }
 
+  /// Ends the run early and gracefully: nothing further starts, the actions
+  /// already in flight finish and commit, the marks of copies that never
+  /// started are withdrawn (SPEC §7.6), and the run then ends the way any run
+  /// does — compaction, a [RunSummaryEvent], unlock, disconnect — with the
+  /// [runMarker] cleared. Called before the apply, the apply runs nothing.
+  ///
+  /// The alternative, cancelling the stream, parks the apply where it is and
+  /// never returns from it, so none of that happens.
+  void stop() {
+    if (!_stop.isCompleted) _stop.complete();
+  }
+
   /// Hangs up, whatever happened. Inside the locks' `finally` blocks so the
   /// connection is still open when [Agent.unlock] runs.
   ///
@@ -243,10 +256,11 @@ class RunController {
     }
     yield RunPlanEvent(plan);
 
-    final actionsToApply = await metrics.phase(
+    final presented = await metrics.phase(
       RunPhase.present,
       () => presenter(plan),
     );
+    final actionsToApply = _stop.isCompleted ? const <PlanAction>[] : presented;
     for (final action in actionsToApply) {
       yield RunActionEvent(action);
     }
@@ -298,6 +312,7 @@ class RunController {
         return ack.future;
       },
       onReadAhead: metrics.recordReadAhead,
+      stop: _stop.future,
     );
     // Whatever apply() finishes with — normal return or, for a bug that
     // escapes Applier's own per-action try/catch, an error — `pending` must

@@ -82,6 +82,19 @@ final class ArchiveIntent extends ArchiveCommit {
   const ArchiveIntent(this.path);
 }
 
+/// Withdraws [path]'s [ArchiveIntent] without touching its entry (SPEC
+/// §7.6): the write the mark was made for never started, so whatever is on
+/// disk there is what the entry already says, or nothing.
+///
+/// Not flushed ahead of anything. Losing one only leaves the mark, which the
+/// next scan reads as unmarked for as long as the file still matches.
+final class ArchiveIntentWithdrawn extends ArchiveCommit {
+  @override
+  final String path;
+
+  const ArchiveIntentWithdrawn(this.path);
+}
+
 /// A replica's archive: its header plus every entry currently committed,
 /// keyed by path. Returned by [ArchiveStore.snapshot] for scan comparison
 /// (SPEC §5).
@@ -125,6 +138,10 @@ abstract class ArchiveStore {
   /// for it, on the same terms as [commitUpsert] — so a caller that needs the
   /// mark on disk before it acts, which is every caller, follows with [flush].
   Future<void> commitIntent(String path);
+
+  /// Clears [path]'s mark and leaves its entry as it was, on the same terms
+  /// as [commitUpsert]. For a mark whose write never started (SPEC §7.6).
+  Future<void> withdrawIntent(String path);
 
   /// Makes every commit recorded so far durable (SPEC §7.3, §8.2).
   ///

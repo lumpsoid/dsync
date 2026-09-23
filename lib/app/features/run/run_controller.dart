@@ -45,22 +45,20 @@ import '../../screen_wake.dart';
 /// defaulted) so a test drives a whole run through a fake dial and an
 /// in-memory channel; the scope names the real `dialPeer`.
 ///
-/// **What [stop] means.** [RunController.run] is an `async*` generator
-/// whose apply loop hands each action's outcome downstream before that
-/// worker takes another: an `Applier` worker cannot start its next action
-/// until the generator has yielded the last one's result. Cancelling the
-/// subscription therefore parks every worker at an action boundary — each
-/// action whose `RunResultEvent` was delivered is fully applied and
-/// committed on both sides (SPEC §7.3 makes it durable), and nothing beyond
-/// the ones already in flight starts. Since task 0f7dfc that is up to
-/// `Applier.concurrency` actions past the last one reported, not exactly
-/// one: they finish and become durable, they are simply never reported.
-/// The generator's own `finally` blocks still run
-/// on cancel, so both locks are released and both agents disconnected
-/// (SPEC §4.3; `run_controller_test.dart`'s "stopping mid-apply" case
-/// proves it). The view state records [SyncRunStopped] with the number of
-/// actions that completed, and the page says "stopped after N actions" —
-/// not "cancelled", which would claim nothing happened.
+/// **What [stop] means.** [RunController.stop], not a cancel: nothing
+/// further starts, the actions already in flight finish and commit (SPEC
+/// §7.3), the marks of copies that never started are withdrawn (SPEC §7.6),
+/// and the run then ends the way every run does — its summary, both locks
+/// released, both agents disconnected (SPEC §4.3). Cancelling the stream
+/// instead would park the apply where it stood and never return from it,
+/// leaving those marks behind to raise a later edit as an interrupted
+/// conflict. The wait is bounded by the writes in flight, up to
+/// `Applier.concurrency` of them, and by the scan when stopped during one,
+/// which a cancel would have waited out too: an `async*` generator only
+/// notices a cancel at its next `yield`. The view state records
+/// [SyncRunStopped] with the number of actions that completed, and the page
+/// says "stopped after N actions" — not "cancelled", which would claim
+/// nothing happened.
 ///
 /// **Backgrounding pauses a run; it does not end one.** [pause] is [stop]'s
 /// mechanism with a different name on the outcome — the same suspension at
@@ -115,15 +113,13 @@ import '../../screen_wake.dart';
 ///
 /// **The completer is completed exactly once, on every path.** While it is
 /// pending, `RunController.run()` is suspended inside `await presenter(plan)`
-/// holding both replica locks. Cancelling the subscription does *not*
-/// unblock that await — an `async*` generator only notices a cancel at its
-/// next `yield` — so a page that left, or a [stop], while the sheet is up
-/// would otherwise hold both locks until the process dies and the next
-/// run would fail on `ReplicaLockHeldException`. [stop] and [dispose]
-/// therefore complete it first, with the empty list: nothing further
-/// starts, which is exactly the documented stop semantics, and the
-/// generator then reaches its next `yield`, sees the cancel, and runs its
-/// `finally` blocks (unlock, disconnect). [_decide] is the single place
+/// holding both replica locks. Stopping the run does *not* unblock that
+/// await, so a page that left, or a [stop], while the sheet is up would
+/// otherwise hold both locks until the process dies and the next run would
+/// fail on `ReplicaLockHeldException`. [stop] and [dispose] therefore
+/// complete it first, with the empty list: nothing further starts, which is
+/// exactly the documented stop semantics, and the run then ends as usual
+/// (unlock, disconnect). [_decide] is the single place
 /// that completes it and guards `isCompleted`, so no path can complete it
 /// twice.
 class SyncRunController {
@@ -180,6 +176,10 @@ class SyncRunController {
 
   StreamSubscription<RunEvent>? _subscription;
   Completer<void>? _ended;
+
+  /// The run [render] is folding, so [stop], [pause] and [dispose] can end it
+  /// gracefully rather than cancel it (class doc comment).
+  RunController? _run;
   bool _stopRequested = false;
 
   /// Which of the two the pending suspension is — set with [_stopRequested]
@@ -296,7 +296,7 @@ class SyncRunController {
       );
       return;
     }
-    final run = RunController(
+    final run = _run = RunController(
       // SPEC §16 fixes which side is which for this head: it is a client
       // only, so `a` is always this phone's local replica and `b` is always
       // the peer it dialled. Nothing has to be re-derived to say which of
@@ -313,10 +313,11 @@ class SyncRunController {
       rules: RuleSet(ignore: request.ignorePatterns),
     );
     await render(run.run(), request: request);
+    _run = null;
   }
 
   /// Folds [events] into [state] in SPEC §11.4's order, until the stream
-  /// ends or [stop] cancels it. Public so a test can drive the fold from a
+  /// ends. Public so a test can drive the fold from a
   /// hand-built stream with no agents and no socket; [start] is the only
   /// production caller.
   ///
@@ -346,10 +347,10 @@ class SyncRunController {
     await ended.future;
   }
 
-  /// Stops listening. See the class doc comment for what that means: the
-  /// action last reported is durable, nothing further starts, both sides
-  /// are unlocked and disconnected by the generator's own cleanup, and the
-  /// view state says how many actions completed.
+  /// Ends the run early and waits for it to get there. See the class doc
+  /// comment for what that means: nothing further starts, what was in flight
+  /// lands and is recorded, both sides are unlocked and disconnected, and
+  /// the view state says how many actions completed.
   ///
   /// Called while still connecting, it takes effect once the connector
   /// returns — the dial itself is bounded by
@@ -374,25 +375,17 @@ class SyncRunController {
     if (_stopRequested) return;
     _stopRequested = true;
     _pauseRequested = paused;
-    // Before the cancel, which would otherwise never return: see the class
-    // doc comment on the completer.
+    // Before the stop, which would otherwise wait on a sheet nobody answers:
+    // see the class doc comment on the completer.
     _decide(const []);
-    final subscription = _subscription;
     // Still connecting: the phase is recorded where the dial returns, which
     // reads `_pauseRequested` for which of the two this was.
-    if (subscription == null) return;
+    if (_subscription == null) return;
+    // The run ends on its own from here, and its summary is folded as
+    // [SyncRunPaused] or [SyncRunStopped] (`_fold`).
+    _run?.stop();
+    await _ended?.future;
     _subscription = null;
-    // Awaits the generator's `finally` blocks: unlock both, disconnect
-    // both. `onDone` does not fire for a cancelled subscription, so the
-    // phase and the awaited `ended` are settled here instead.
-    await subscription.cancel();
-    _recordPhase(
-      paused
-          ? SyncRunPaused(completedActions: _completedActions)
-          : SyncRunStopped(completedActions: _completedActions),
-    );
-    final ended = _ended;
-    if (ended != null && !ended.isCompleted) ended.complete();
   }
 
   /// Stops listening and closes every write path, so a `RunEvent` (or a
@@ -400,16 +393,16 @@ class SyncRunController {
   /// than written to a disposed `ChangeNotifier`.
   void dispose() {
     _disposed = true;
-    // First, so a run suspended on the sheet can reach the cancel below
-    // and release both locks (class doc comment).
+    // First, so a run suspended on the sheet can reach the stop below and
+    // release both locks (class doc comment).
     _decide(const []);
-    final subscription = _subscription;
     _subscription = null;
-    // Not awaited: the cleanup it triggers (unlock, disconnect) belongs to
-    // the run, not to the page that just left.
-    unawaited(subscription?.cancel());
-    // A `start` still awaiting the stream's end returns now rather than
-    // never: the cancelled subscription's `onDone` will not fire.
+    // Ended rather than cancelled (class doc comment) and not awaited: the
+    // rest of the run belongs to the run, not to the page that just left, and
+    // `_record` drops every event it folds from here on.
+    _run?.stop();
+    // A `start` still awaiting the stream's end returns now, rather than
+    // when the stopped run gets there.
     final ended = _ended;
     if (ended != null && !ended.isCompleted) ended.complete();
     // The page is gone, so there is no screen of this head's to hold on.
@@ -641,6 +634,16 @@ class SyncRunController {
         :final skippedCount,
         :final unreadableCount,
       ):
+        // A stopped run still ends with a summary (`_suspend`); what the page
+        // shows is that it was stopped, and how far it got.
+        if (_stopRequested) {
+          _recordPhase(
+            _pauseRequested
+                ? SyncRunPaused(completedActions: _completedActions)
+                : SyncRunStopped(completedActions: _completedActions),
+          );
+          return;
+        }
         _recordPhase(
           SyncRunFinished(
             applied: appliedCount,

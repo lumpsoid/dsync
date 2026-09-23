@@ -617,6 +617,28 @@ void main() {
       expect(archive.untrusted, {'c.txt'});
     });
 
+    test('a withdrawal clears it and leaves the entry, across a reload and '
+        'a compaction', () async {
+      final store = JsonlArchiveStore(logFile(), header);
+      await store.load();
+      await store.commitUpsert(entry);
+      await store.commitIntent('a.txt');
+      await store.commitIntent('new.txt');
+      await store.withdrawIntent('a.txt');
+      await store.withdrawIntent('new.txt');
+      await store.flush();
+
+      expect(store.snapshot().untrusted, isEmpty);
+      final archive = await JsonlArchiveStore(logFile(), header).load();
+      expect(archive.untrusted, isEmpty);
+      expectEntry(archive.entries['a.txt'], entry);
+      expect(archive.entries.containsKey('new.txt'), isFalse);
+
+      await store.compact();
+      // Header and the one live entry: nothing of the marks is left.
+      expect(await logFile().readAsLines(), hasLength(2));
+    });
+
     test('compaction carries an open intent forward, after the entry it '
         'qualifies', () async {
       final store = JsonlArchiveStore(logFile(), header);

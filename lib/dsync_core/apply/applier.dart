@@ -24,9 +24,10 @@ import 'package:dsync/dsync_core/models/scan_entry.dart';
 /// it so before this fires, which for a successful action means its archive
 /// batch has landed (`CommitPipeline`).
 ///
-/// It is still the only cancellation seam [Applier.apply] has: a caller whose
-/// own consumer stopped wanting more events can simply never resolve the
-/// returned future, and the run parks. What parks is no longer only a worker
+/// It is also a way to cancel [Applier.apply], though not the graceful one,
+/// which is its `stop` argument: a caller whose own consumer stopped wanting
+/// more events can simply never resolve the returned future, and the run
+/// parks — marks and all (SPEC §7.6). What parks is no longer only a worker
 /// at its own action boundary. A failed action is reported by its worker, so
 /// that worker parks; a successful one is reported by the commit stage, and
 /// an unresolved report there stops the batch it belongs to from finishing,
@@ -187,9 +188,19 @@ class Applier {
     Agent agentB, {
     ApplyProgress onAction = _noopApplyProgress,
     ReadAheadReport onReadAhead = _noopReadAheadReport,
+    Future<void>? stop,
   }) async {
     final a = {for (final e in onA) e.path: e};
     final b = {for (final e in onB) e.path: e};
+
+    // Once [stop] completes, nothing further starts: the pump hands out no
+    // more actions, a worker drops what it takes from the queue, and the
+    // writes already in flight finish and commit as usual. What was marked
+    // and never started has its mark withdrawn at the end.
+    var stopped = false;
+    unawaited(stop?.then((_) => stopped = true));
+    final marked = <String, Agent>{};
+    final started = <String>{};
 
     final applied = <AppliedPath>[];
     final failed = <FailedPath>[];
@@ -242,17 +253,29 @@ class Applier {
       var markedUpTo = 0;
       Object? markFailure;
       for (var i = 0; i < actions.length; i++) {
+        if (stopped) break;
         final action = actions[i];
         // The next window is marked only when the pump reaches it, so a run
-        // that stops leaves marks on the copies it had started and at most a
+        // that dies leaves marks on the copies it had started and at most a
         // window of ones it had not — see [_markUntrusted].
         if (i == markedUpTo) {
-          markedUpTo = min(i + markWindow, actions.length);
-          markFailure = await _markUntrusted(
-            actions.sublist(i, markedUpTo),
-            agentA,
-            agentB,
+          final window = actions.sublist(
+            i,
+            min(i + markWindow, actions.length),
           );
+          markedUpTo = i + window.length;
+          markFailure = await _markUntrusted(window, agentA, agentB);
+          if (markFailure == null) {
+            for (final action in window) {
+              switch (action.type) {
+                case ActionType.copyAtoB:
+                  marked[action.path] = agentB;
+                case ActionType.copyBtoA:
+                  marked[action.path] = agentA;
+                default:
+              }
+            }
+          }
         }
         if (markFailure != null &&
             (action.type == ActionType.copyAtoB ||
@@ -290,7 +313,12 @@ class Applier {
       while (true) {
         final ready = await queue.take();
         if (ready == null) return;
+        if (stopped) {
+          ready.prefetch?.discard();
+          continue;
+        }
         final action = ready.action;
+        started.add(action.path);
         final markFailure = ready.markFailure;
         if (markFailure != null) {
           await commits.addFailed(action, markFailure);
@@ -335,6 +363,14 @@ class Applier {
     // still to be reported, and `removeEmptyDirs` is a barrier that would
     // otherwise be waiting on the same connections the last commits need.
     await commits.drain();
+    await _withdrawUnstarted(
+      {
+        for (final MapEntry(:key, :value) in marked.entries)
+          if (!started.contains(key)) key: value,
+      },
+      agentA,
+      agentB,
+    );
     await _pruneEmptiedDirs(emptied);
 
     return ApplyResult(applied: applied, failed: failed);
@@ -356,8 +392,9 @@ class Applier {
   /// front. A mark on a copy that never started is harmless to the next scan,
   /// which reads a file still matching its entry as unmarked, but it clears
   /// only when a later commit touches the path; until then a user's edit
-  /// there is raised as an interrupted conflict. Marking by window bounds
-  /// what a stopped run leaves that way to one [markWindow] plus the queue.
+  /// there is raised as an interrupted conflict. A run that is stopped
+  /// withdraws those marks itself ([_withdrawUnstarted]); marking by window
+  /// bounds what a run that dies leaves to one [markWindow] plus the queue.
   /// The pump runs ahead of the workers, so a window's exchange and fsync
   /// overlap the writes already queued rather than stalling them.
   Future<Object?> _markUntrusted(
@@ -382,6 +419,33 @@ class Applier {
     } catch (error) {
       return error;
     }
+  }
+
+  /// Withdraws the marks of copies that were marked and never started (SPEC
+  /// §7.6) — a stopped run's, which would otherwise keep them until a later
+  /// commit touched each path, raising an edit there as an interrupted
+  /// conflict in the meantime. [unstarted] maps each path to the agent that
+  /// holds its mark.
+  ///
+  /// Best-effort: a withdrawal that fails leaves the marks, which is where
+  /// they would have been without it, and the run's own outcome stands.
+  Future<void> _withdrawUnstarted(
+    Map<String, Agent> unstarted,
+    Agent agentA,
+    Agent agentB,
+  ) async {
+    List<ArchiveCommit> on(Agent agent) => [
+      for (final MapEntry(:key, :value) in unstarted.entries)
+        if (identical(value, agent)) ArchiveIntentWithdrawn(key),
+    ];
+    final onA = on(agentA);
+    final onB = on(agentB);
+    try {
+      await Future.wait([
+        if (onA.isNotEmpty) agentA.archiveCommit(onA),
+        if (onB.isNotEmpty) agentB.archiveCommit(onB),
+      ]);
+    } catch (_) {}
   }
 
   /// Applies one action, returning what it left the two archives owing, or
