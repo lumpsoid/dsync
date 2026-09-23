@@ -4,18 +4,21 @@ import 'package:test/test.dart';
 
 void main() {
   group('UnreadablePaths.from (SPEC §5, task 37bf4f)', () {
-    test('keeps only the unreadable paths, dropping skipped symlinks: a '
-        'symlink is §9 being obeyed, and excluding those from '
-        'reconciliation would change how a symlink on one side and a real '
-        'file on the other resolve today', () {
+    test('covers skipped symlinks as well as unreadable paths: planning '
+        'around a link the scan did not follow writes through it (SPEC '
+        '§5.1)', () {
       final unreadable = UnreadablePaths.from(const [
-        SkippedPath.symlink('link.txt', 'no follow rule matched'),
+        SkippedPath.symlink('link', 'no follow rule matched'),
         SkippedPath.unreadable('locked.txt', 'Permission denied'),
       ]);
 
-      expect(unreadable.roots, ['locked.txt']);
-      expect(unreadable.covers('link.txt'), isFalse);
+      expect(unreadable.roots, ['link', 'locked.txt']);
+      expect(unreadable.covers('link'), isTrue);
+      // A directory link hides everything beneath it, like an unlistable
+      // directory does.
+      expect(unreadable.covers('link/inside.txt'), isTrue);
       expect(unreadable.covers('locked.txt'), isTrue);
+      expect(unreadable.covers('linked.txt'), isFalse);
     });
 
     test('a scan with nothing skipped is empty', () {
@@ -36,11 +39,10 @@ void main() {
     });
 
     test('also keeps case-fold collisions (SPEC §16, task c51db6): despite '
-        'the name, this is every SkippedReason.isFailure, not only '
+        'the name, this is every SkippedReason, not only '
         'SkippedReason.unreadable — a path a scan cannot disambiguate is as '
         'untrustworthy to reconcile as one it could not read', () {
       final unreadable = UnreadablePaths.from(const [
-        SkippedPath.symlink('link.txt', 'no follow rule matched'),
         SkippedPath.caseFoldCollision(
           'notes.txt',
           'folds to the same path as "Notes.txt"',
@@ -49,7 +51,6 @@ void main() {
 
       expect(unreadable.roots, ['notes.txt']);
       expect(unreadable.covers('notes.txt'), isTrue);
-      expect(unreadable.covers('link.txt'), isFalse);
     });
   });
 

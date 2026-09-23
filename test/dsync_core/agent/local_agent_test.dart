@@ -10,6 +10,7 @@ import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
+import 'package:dsync/dsync_core/models/write_target.dart';
 import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -445,6 +446,109 @@ void main() {
 
       expect(seen, isEmpty);
       expect(await _leftoverTempFiles(replicaDir), isEmpty);
+    });
+
+    group('a target an in-place write would get wrong is replaced instead '
+        '(SPEC §7.2)', () {
+      Future<void> writeNew(String path) => agent().writeFile(
+        path,
+        Stream.value(utf8.encode('new')),
+        mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+        mode: 420, // 0o644
+      );
+
+      Future<void> hardLink(String existing, String name) async {
+        final ln = await Process.run('ln', [existing, name]);
+        expect(ln.exitCode, 0, reason: '${ln.stderr}');
+      }
+
+      test('a hard-linked target: the other name keeps its bytes', () async {
+        final target = File('${replicaDir.path}/a.txt')
+          ..writeAsStringSync('old');
+        // Outside the replica, where an in-place write would leave no trace.
+        final other = '${tempDir.path}/elsewhere.txt';
+        await hardLink(target.path, other);
+
+        await writeNew('a.txt');
+
+        expect(await target.readAsString(), 'new');
+        expect(await File(other).readAsString(), 'old');
+        expect(await _leftoverTempFiles(replicaDir), isEmpty);
+      }, testOn: 'linux || mac-os');
+
+      test('a read-only target is written, not refused on every run', () async {
+        final target = File('${replicaDir.path}/a.txt')
+          ..writeAsStringSync('old');
+        posixChmod(target.path, 292); // 0o444
+        addTearDown(() => posixChmod(target.path, 420));
+
+        await writeNew('a.txt');
+
+        expect(await target.readAsString(), 'new');
+        // §7.4: the source's mode lands, as it would on any copy.
+        expect((await target.stat()).mode & 0xFFF, 420);
+      }, testOn: 'linux || mac-os');
+
+      test('a followed symlink is written through, and stays a link — even '
+          'when its target is hard-linked (SPEC §5.1)', () async {
+        final outside = File('${tempDir.path}/target.txt')
+          ..writeAsStringSync('old');
+        final link = Link('${replicaDir.path}/a.txt')..createSync(outside.path);
+
+        await writeNew('a.txt');
+
+        expect(await outside.readAsString(), 'new');
+        expect(await FileSystemEntity.isLink(link.path), isTrue);
+
+        // Now through the replace path: the scratch file goes beside the
+        // target, so the rename replaces the target and not the link.
+        final otherName = '${tempDir.path}/other-name.txt';
+        await hardLink(outside.path, otherName);
+        await agent().writeFile(
+          'a.txt',
+          Stream.value(utf8.encode('newer')),
+          mtime: DateTime.utc(2024, 1, 1).microsecondsSinceEpoch,
+          mode: 420,
+        );
+
+        expect(await outside.readAsString(), 'newer');
+        expect(await File(otherName).readAsString(), 'new');
+        expect(await FileSystemEntity.isLink(link.path), isTrue);
+        expect(await _leftoverTempFiles(tempDir), isEmpty);
+      }, testOn: 'linux || mac-os');
+
+      test('a target the probe cannot read is replaced, and a failed '
+          'replace leaves no scratch file', () async {
+        final unknown = LocalAgent(
+          rootPath: replicaDir.path,
+          archiveStore: archiveStore,
+          replicaLock: replicaLock,
+          writeTargetProbe: (_) => const UnknownWriteTarget('test'),
+        );
+        final target = File('${replicaDir.path}/a.txt')
+          ..writeAsStringSync('old');
+        Stream<List<int>> failing() async* {
+          yield utf8.encode('partial');
+          throw Exception('boom');
+        }
+
+        await expectLater(
+          unknown.writeFile('a.txt', failing(), mtime: 0, mode: 420),
+          throwsException,
+        );
+        // Untouched, unlike an in-place write's torn target.
+        expect(await target.readAsString(), 'old');
+        expect(await _leftoverTempFiles(replicaDir), isEmpty);
+
+        await unknown.writeFile(
+          'a.txt',
+          Stream.value(utf8.encode('new')),
+          mtime: 0,
+          mode: 420,
+        );
+        expect(await target.readAsString(), 'new');
+        expect(unknown.writePath.rename, greaterThan(Duration.zero));
+      });
     });
   });
 

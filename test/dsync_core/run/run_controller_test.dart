@@ -174,6 +174,42 @@ void main() {
     );
 
     test(
+      'a file on one side and an unfollowed symlink on the other plan '
+      'nothing: the copy would otherwise write through the link (SPEC §5.1)',
+      () async {
+        final outside = Directory('${tempDir.path}/outside')..createSync();
+        await File('${outside.path}/target.txt').writeAsString('untouched');
+        await File('${replicaADir.path}/x.txt').writeAsString('from a');
+        await Link('${replicaBDir.path}/x.txt')
+            .create('${outside.path}/target.txt');
+        // A directory link hides the paths beneath it the same way.
+        await Directory('${replicaADir.path}/d').create();
+        await File('${replicaADir.path}/d/inner.txt').writeAsString('from a');
+        await Link('${replicaBDir.path}/d').create(outside.path);
+
+        final events = await RunController(
+          agentA: agentA,
+          agentB: agentB,
+          presenter: (plan) async => plan.actions,
+        ).run().toList();
+
+        final plan = events.whereType<RunPlanEvent>().single.plan;
+        expect(plan.actions, isEmpty);
+        expect(plan.conflicts, isEmpty);
+        expect(
+          await File('${outside.path}/target.txt').readAsString(),
+          'untouched',
+        );
+        expect(await File('${outside.path}/inner.txt').exists(), isFalse);
+        expect(
+          await FileSystemEntity.isLink('${replicaBDir.path}/x.txt'),
+          isTrue,
+        );
+      },
+      testOn: 'linux',
+    );
+
+    test(
       'an unreadable file on one side does not abort the run: everything '
       'else syncs, the path is reported, and the summary counts it '
       'separately from a user-declined skip (SPEC §5, task 37bf4f)',

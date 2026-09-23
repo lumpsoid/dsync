@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/dsync_core/agent/agent.dart';
 import 'package:dsync/dsync_core/agent/read_pool.dart';
 import 'package:dsync/dsync_core/agent/posix_chmod.dart';
+import 'package:dsync/dsync_core/agent/write_target_probe.dart';
 import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/file_metadata.dart';
@@ -12,6 +13,7 @@ import 'package:dsync/dsync_core/models/rule_set.dart';
 import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:dsync/dsync_core/scan/scan_session.dart';
 import 'package:dsync/dsync_core/scan/scanner.dart';
+import 'package:dsync/dsync_core/temp_file.dart';
 import 'package:path/path.dart' as p;
 
 /// [Agent] implementation over the real filesystem (SPEC §4.1).
@@ -86,6 +88,15 @@ class LocalAgent implements Agent {
   /// name.
   final Chmod chmod;
 
+  /// How [writeFile] learns what is already at its target, and so whether
+  /// it may write in place (SPEC §7.2). Defaults to [probeWriteTarget],
+  /// through `dart:ffi`; a plain value for the reason [chmod] is one.
+  final ProbeWriteTarget writeTargetProbe;
+
+  /// Distinguishes this agent's scratch files from each other. See
+  /// [tempPathFor].
+  int _nextTempSequence = 0;
+
   /// Absolute native paths of the destination directories this session has
   /// already created. See [_ensureParent].
   ///
@@ -139,6 +150,7 @@ class LocalAgent implements Agent {
     this.archivePath,
     bool isWindowsReplica = false,
     this.chmod = posixChmod,
+    this.writeTargetProbe = probeWriteTarget,
     p.Style? pathStyle,
     this.readPool,
   }) : scanner = scanner ?? Scanner(),
@@ -285,16 +297,30 @@ class LocalAgent implements Agent {
     if (!_createdParents.contains(parent.path)) await _createParent(parent);
     final createTaken = since();
 
+    // In place, over whatever is there (SPEC §7.6): no temp and no rename,
+    // which on emulated storage is ~22 ms of a ~32 ms write (§7.2). A write
+    // that stops part-way leaves the target torn, which is safe only because
+    // the caller marked the path untrusted, durably, before calling this —
+    // see `Applier._markUntrusted`. Through a followed symlink, the target's
+    // bytes change and the link stays a link (§5.1).
+    //
+    // Unless the target says otherwise — see [WriteTarget] for which ones
+    // and why. Those get a scratch file beside the file the write lands on,
+    // renamed over it: beside the link's *target* for a followed link, so the
+    // rename replaces the target and leaves the link alone. Billed to the
+    // write step, which is where an in-place write pays for opening it.
+    final replace = writeTargetProbe(target.path).writesInPlace
+        ? null
+        : await _replacement(target);
+    final scratch = replace?.scratch;
+    final written = scratch ?? target;
+
     final Duration writeTaken;
     final Duration mtimeTaken;
     final Duration modeTaken;
+    var renameTaken = Duration.zero;
     try {
-      // In place, over whatever is there (SPEC §7.6): no temp and no rename,
-      // which on emulated storage is ~22 ms of a ~32 ms write (§7.2). A write
-      // that stops part-way leaves the target torn, which is safe only
-      // because the caller marked the path untrusted, durably, before
-      // calling this — see `Applier._markUntrusted`.
-      final sink = target.openWrite();
+      final sink = written.openWrite();
       await sink.addStream(data);
       await sink.flush();
       await sink.close();
@@ -304,7 +330,7 @@ class LocalAgent implements Agent {
       writeTaken = since();
 
       try {
-        await target.setLastModified(
+        await written.setLastModified(
           DateTime.fromMicrosecondsSinceEpoch(mtime),
         );
       } on FileSystemException {
@@ -312,8 +338,13 @@ class LocalAgent implements Agent {
         // actually landed, so a setter failure here isn't fatal.
       }
       mtimeTaken = since();
-      _applyMode(target, mode);
+      _applyMode(written, mode);
       modeTaken = since();
+
+      if (replace != null) {
+        await replace.scratch.rename(replace.landing);
+        renameTaken = since();
+      }
     } catch (_) {
       // Forget the parent. A write failing is the only signal this agent
       // gets that a remembered directory may no longer be there, so the
@@ -328,8 +359,10 @@ class LocalAgent implements Agent {
       // way to tell the two apart from here.
       //
       // The target is left as the write left it, torn or not: it is marked
-      // untrusted, and the next run mirrors it from the other side.
+      // untrusted, and the next run mirrors it from the other side. A
+      // scratch file is this write's own, and goes.
       _createdParents.remove(parent.path);
+      if (scratch != null && await scratch.exists()) await scratch.delete();
       rethrow;
     }
 
@@ -344,9 +377,8 @@ class LocalAgent implements Agent {
       // §10.1), so it has to say zero on a real run rather than stop saying
       // anything. It goes when that run has been read.
       chmodSpawns: 0,
-      // Kept, and zero, so a report from this write path lines up column for
-      // column against one from the rename it replaced.
-      rename: Duration.zero,
+      // Zero for an in-place write, which is nearly every one.
+      rename: renameTaken,
       stat: since(),
     );
     return FileMetadata(
@@ -407,6 +439,25 @@ class LocalAgent implements Agent {
     // nothing remembered.
     await parent.create(recursive: true);
     _createdParents.add(parent.path);
+  }
+
+  /// Where a write that cannot go in place streams its bytes, and the path it
+  /// renames them onto: the file the write lands on, which for a followed
+  /// symlink is the link's target (SPEC §5.1), so the link survives.
+  ///
+  /// A target that cannot be resolved — only possible when the probe could
+  /// not say what is there — is replaced at its own path.
+  Future<({File scratch, String landing})> _replacement(File target) async {
+    String landing;
+    try {
+      landing = await target.resolveSymbolicLinks();
+    } on FileSystemException {
+      landing = target.path;
+    }
+    return (
+      scratch: File(tempPathFor(landing, _nextTempSequence++)),
+      landing: landing,
+    );
   }
 
   /// Sets [file]'s permission bits, best-effort (SPEC §7.4).

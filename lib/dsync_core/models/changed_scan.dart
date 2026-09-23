@@ -45,6 +45,8 @@ class ChangedScan {
   /// states, asked of the same data.
   UnreadablePaths get unreadable => UnreadablePaths.from(skippedPaths);
 
-  /// How many of [skippedPaths] count toward exit 1 (SPEC §11.5).
-  int get unreadableCount => unreadable.roots.length;
+  /// How many of [skippedPaths] count toward exit 1 (SPEC §11.5) — the
+  /// same rule as [ScanResult.unreadableCount].
+  int get unreadableCount =>
+      skippedPaths.where((skipped) => skipped.reason.isFailure).length;
 }

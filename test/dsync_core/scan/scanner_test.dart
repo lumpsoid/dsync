@@ -325,6 +325,33 @@ void main() {
       expect(result.skippedPaths.single.detail, 'no follow rule matched');
     }, testOn: 'linux');
 
+    test('an archived file the user replaced with an unfollowed link is not '
+        'reported deleted: that would delete it from the other side for a '
+        'link this scan never looked behind (SPEC §5.1)', () async {
+      await File('${tempDir.path}/target.txt').writeAsString('hello');
+      await Link('${tempDir.path}/was-a-file.txt')
+          .create('${tempDir.path}/target.txt');
+
+      final result = await Scanner().scan(
+        rootPath: tempDir.path,
+        archive: archiveOf({
+          'was-a-file.txt': const ArchiveEntry(
+            path: 'was-a-file.txt',
+            size: 1,
+            mtime: 1,
+            mode: 0644,
+            hash: 'x',
+          ),
+        }),
+      );
+
+      expect(
+        result.entries.map((e) => e.path),
+        isNot(contains('was-a-file.txt')),
+      );
+      expect(result.skippedPaths.map((s) => s.path), ['was-a-file.txt']);
+    }, testOn: 'linux');
+
     test('a followed link that is broken is reported as skipped', () async {
       await Link('${tempDir.path}/link.txt')
           .create('${tempDir.path}/nowhere.txt');

@@ -48,9 +48,10 @@ enum SkippedReason {
   caseFoldCollision;
 
   /// Whether a path skipped for this reason is a failure (SPEC §5.1,
-  /// §11.5): excluded from reconciliation (§6), because the scan's silence
-  /// about the path is not evidence it is genuinely absent, and counted
-  /// toward exit 1. True for [unreadable] and [caseFoldCollision] — both are
+  /// §11.5), counted toward exit 1. Every reason is excluded from
+  /// reconciliation (§6), failure or not, because the scan's silence about
+  /// the path is not evidence it is genuinely absent — see
+  /// `UnreadablePaths`. True for [unreadable] and [caseFoldCollision] — both are
   /// a side unable to stand behind a status for the path, one because it
   /// could not read it, the other because the path might not even be *one*
   /// path on this filesystem. False for [symlink]: that is the tool obeying
