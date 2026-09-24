@@ -69,6 +69,13 @@ impl Hub {
     }
 }
 
+/// One ignore pattern checked on its own, as the head's filter page
+/// takes it in.
+pub(crate) fn check_ignore_pattern(pattern: &str) -> Handled {
+    Glob::new(pattern).map_err(text)?;
+    Ok(ReplyResult::Done)
+}
+
 /// `--ignore`-style patterns as rules.
 pub(crate) fn ignore_rules(patterns: &[String]) -> Result<RuleSet, String> {
     let ignore = patterns

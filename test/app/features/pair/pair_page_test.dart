@@ -1,65 +1,50 @@
-import 'dart:io';
-
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_page.dart';
 import 'package:dsync/app/features/pair/pair_scope.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
 import 'package:dsync/app/features/pair/scan_code_page.dart';
-import 'package:dsync/dsync_core/identity/device_id.dart';
-import 'package:dsync/dsync_core/identity/pairing_payload.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fake_head.dart';
 
 /// Rendering tests for the Pair page, driven the way the scope contract in
 /// `app_scope.dart` intends: the controllers are pinned with
 /// `setController` and the page is pumped directly. Outcomes are written
 /// into the view state by the test standing in for the controller's own
 /// verdicts, except for the submits that go through the controller: one
-/// stops at name validation, the others run the whole path over a temporary
-/// state dir and an enrolment fake that accepts.
+/// stops at name validation, the others run the whole path over a
+/// `FakeCoreLink` that reads every code as the desktop's and accepts.
 ///
 /// The page is two steps, so most tests start by getting a code in: by
 /// camera where that is the point, and otherwise through the Paste button
 /// over a mocked clipboard.
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late PairController controller;
-  late String payloadText;
-  var enrolCalls = 0;
+  const payloadText = 'dsync-pair:v2:fake-desktop-code';
   var paired = 0;
   var showOwnCodeTaps = 0;
 
-  setUpAll(() {
-    payloadText = PairingPayload(
-      certificateDer: certificateDerFromPem(
-        generateDeviceIdentity(commonName: 'desktop').certificatePem,
-      ),
-      address: PeerAddress(host: '192.168.1.5', port: 51234),
-      servicePort: 28771,
-      token: Uint8List.fromList(const [1, 2, 3, 4, 5, 6, 7, 8]),
-    ).encode();
-  });
+  /// How many redemptions the page asked the core for.
+  int enrolCalls() => core.calls.where((c) => c == 'acceptPairing').length;
 
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('pair_page_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
-    controller = PairController(
-      app,
-      enrol: ({
-        required payload,
-        required ownIdentity,
-        required localName,
-        required pairedDeviceStore,
-      }) async => enrolCalls++,
-    );
+  setUp(() {
+    core = FakeCoreLink()
+      ..pairCodeReading = const ReadPairCode(
+        desktopName: 'desktop',
+        address: '192.168.1.5:28771',
+        deviceId: 'dddd-eeee-ffff-0000',
+      );
+    app = fakeApp(core);
+    controller = PairController(app);
     appScope.setController(app);
     pairScope.setController(controller);
     // The clipboard, as the way a test gets a code in when how it arrived
@@ -71,7 +56,6 @@ void main() {
               ? <String, dynamic>{'text': payloadText}
               : null,
         );
-    enrolCalls = 0;
     paired = 0;
     showOwnCodeTaps = 0;
   });
@@ -81,7 +65,6 @@ void main() {
   tearDown(appScope.reset);
   tearDown(pairScope.reset);
   tearDown(() => controller.dispose());
-  tearDown(() => tempDir.delete(recursive: true));
   tearDown(
     () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null),
@@ -131,10 +114,8 @@ void main() {
   }
 
   /// Taps [target] under real time and waits for the page to leave, which is
-  /// the only signal that the submit it started has finished: the work behind
-  /// it is real I/O (the identity is generated into the temp dir), and that
-  /// never completes under the fake clock a widget test body runs on.
-  /// Bounded so a regression fails rather than hangs.
+  /// the only signal that the submit it started has finished. Bounded so a
+  /// regression fails rather than hangs.
   Future<void> tapAndLeave(WidgetTester tester, Finder target) async {
     await tester.runAsync(() async {
       await tester.tap(target);
@@ -196,7 +177,7 @@ void main() {
     );
     expect(find.text('192.168.1.5:28771'), findsOneWidget);
     expect(find.byKey(const Key('pair-submit')), findsOneWidget);
-    expect(enrolCalls, 0);
+    expect(enrolCalls(), 0);
   });
 
   testWidgets('the name arrives filled in from the code it read', (
@@ -245,7 +226,7 @@ void main() {
     await tester.pump();
 
     expect(controller.state.localNameError, isNull);
-    expect(enrolCalls, 0);
+    expect(enrolCalls(), 0);
   });
 
   testWidgets('the paste button reads the code out of the clipboard', (
@@ -268,7 +249,7 @@ void main() {
     expect(find.text('192.168.1.5:28771'), findsOneWidget);
     // And the pasted code names the desktop, as a scanned one does.
     expect(fieldText(tester, 'pair-local-name'), 'desktop');
-    expect(enrolCalls, 0);
+    expect(enrolCalls(), 0);
   });
 
   testWidgets('the camera is a page of its own, and what it reads is shown '
@@ -299,12 +280,15 @@ void main() {
     expect(find.text('scan'), findsNothing);
     expect(find.byKey(const Key('pair-code-card')), findsOneWidget);
     expect(fieldText(tester, 'pair-local-name'), 'desktop');
-    expect(enrolCalls, 0);
+    expect(enrolCalls(), 0);
     expect(paired, 0);
   });
 
   testWidgets('a scanned code that is not a payload says so, with both ways '
       'back in', (tester) async {
+    core.pairCodeReading = const UnreadablePairCode(
+      'Not a dsync pairing payload: expected "dsync-pair:"',
+    );
     await pumpPage(tester, scanner: scanning('https://example.test/'));
 
     await tester.tap(find.byKey(const Key('pair-scan')));
@@ -487,7 +471,7 @@ void main() {
     expect(controller.state.localNameError, isNotNull);
     expect(find.text(controller.state.localNameError!), findsOneWidget);
     expect(paired, 0);
-    expect(enrolCalls, 0);
+    expect(enrolCalls(), 0);
   });
 
   testWidgets('a stale success does not leave by itself', (tester) async {
@@ -513,7 +497,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
     await tapAndLeave(tester, find.byKey(const Key('pair-submit')));
 
-    expect(enrolCalls, 1);
+    expect(enrolCalls(), 1);
     expect(controller.state.outcome, isA<PairSucceeded>());
     expect(paired, 1);
     // Said in words, and naming the desktop it paired with: the page is
@@ -549,7 +533,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
     await tapAndLeave(tester, find.byKey(const Key('pair-submit')));
 
-    expect(enrolCalls, 1);
+    expect(enrolCalls(), 1);
     expect(paired, 1);
   });
 }

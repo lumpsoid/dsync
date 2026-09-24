@@ -41,11 +41,11 @@ class ThisDeviceController {
 
   /// Resolves the state directory into [ThisDeviceViewState.stateDirPath] —
   /// what the page asks for on mounting. A path lookup, not a filesystem
-  /// read: `AppPaths` has already resolved it, and nothing here checks
+  /// read: the core resolved it at `init`, and nothing here checks
   /// whether the directory exists, because the identity the page is showing
   /// was loaded out of it.
   Future<void> loadStateDirPath() async {
-    state.recordStateDirPath((await app.paths).stateDir);
+    state.recordStateDirPath((await app.dirs).stateDir);
   }
 
   /// Re-issues this device's certificate under its existing key, keeping

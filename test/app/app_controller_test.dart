@@ -1,159 +1,86 @@
-import 'dart:io';
-
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_dirs.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/device_identity_info.dart';
+import 'package:dsync/app/core_link/models/profile_draft.dart';
+import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/profile_breakage.dart';
-import 'package:dsync/app/sync_profile.dart';
-import 'package:dsync/app/sync_profile_store.dart';
-import 'package:dsync/dsync_core/identity/certificate_fields.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:test/test.dart';
 
-/// The bootstrap sequence and the device list against a real temporary
-/// directory (SPEC §14, the same house pattern
-/// `device_identity_store_test.dart` uses), with the paths injected so
-/// `path_provider` is never called. The store the controller reads is the
-/// real `PairedDeviceStore` over that directory, so a device added or
-/// damaged "behind its back" is a file the test writes.
+import 'support/fake_head.dart';
+
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late AppController controller;
-  late String certA;
-  late String certB;
 
-  setUpAll(() {
-    certA = generateDeviceIdentity(commonName: 'phone-a').certificatePem;
-    certB = generateDeviceIdentity(commonName: 'phone-b').certificatePem;
+  setUp(() {
+    core = FakeCoreLink();
+    controller = fakeApp(core);
   });
 
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('app_controller_test');
-    controller = AppController(
-      () async => AppPaths(tempDir.path),
-      now: DateTime.now,
-    );
-  });
+  tearDown(() => controller.dispose());
 
-  /// The store as another writer sees it — the Pair feature, or the CLI
-  /// sharing the same state dir — over the same file the controller reads.
-  PairedDeviceStore storeBehindTheControllersBack() =>
-      PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'));
-
-  PairedDevice device(String certificatePem, {required String name}) =>
-      PairedDevice(
-        certificatePem: certificatePem,
-        name: name,
-        agreedReplicaRoots: const {'/home/me/notes'},
-        pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
-        lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
+  group('init', () {
+    test('is sent once, with the support dir and the device name', () async {
+      var asked = 0;
+      final app = AppController(
+        core,
+        supportDir: () async {
+          asked++;
+          return '/data/app/files';
+        },
+        now: fixedNow,
       );
 
-  /// The profile store as another writer sees it — Run setup, saving from
-  /// the form — over the same file the controller reads.
-  SyncProfileStore profileStoreBehindTheControllersBack() =>
-      SyncProfileStore(File('${tempDir.path}/dsync/sync-profiles.json'));
+      await app.dirs;
+      await app.dirs;
+      await app.bootstrap();
 
-  /// A saved run over a folder that exists under the temp dir, so the
-  /// brokenness probe passes unless a test deliberately points the root
-  /// somewhere unusable. [id] is arbitrary — the controller does not derive
-  /// it, that is Run setup's job.
-  Directory savedFolder() =>
-      Directory('${tempDir.path}/documents/notes')..createSync(recursive: true);
-
-  SyncProfile savedProfile({
-    String id = 'p1',
-    String name = 'weekly notes',
-    String? localRootPath,
-  }) => SyncProfile(
-    id: id,
-    name: name,
-    localRootPath: localRootPath ?? savedFolder().path,
-    peerDeviceId: device(certA, name: 'phone').deviceId,
-    remoteRootPath: '~/notes',
-    jobs: 4,
-  );
-
-  void expectSameProfile(SyncProfile? actual, SyncProfile expected) {
-    expect(actual, isNotNull);
-    expect(actual!.id, expected.id);
-    expect(actual.name, expected.name);
-    expect(actual.localRootPath, expected.localRootPath);
-    expect(actual.peerDeviceId, expected.peerDeviceId);
-    expect(actual.remoteRootPath, expected.remoteRootPath);
-    expect(actual.jobs, expected.jobs);
-  }
-
-  tearDown(() async {
-    await tempDir.delete(recursive: true);
-  });
-
-  group('loadOrCreateIdentity', () {
-    test('first call creates an identity under <base>/dsync', () async {
-      final before = await Directory('${tempDir.path}/dsync').exists();
-
-      await controller.loadOrCreateIdentity();
-
-      expect(before, isFalse, reason: 'the store must be what created it');
-      expect(await File('${tempDir.path}/dsync/identity.crt').exists(), isTrue);
-      expect(await File('${tempDir.path}/dsync/identity.key').exists(), isTrue);
+      expect(asked, 1);
+      expect(core.calls.where((call) => call == 'init'), hasLength(1));
+      expect(core.initialised, (
+        supportDir: '/data/app/files',
+        deviceName: AppController.deviceName,
+      ));
+      app.dispose();
     });
 
-    test(
-      'second call returns the same identity, not a new device id',
-      () async {
-        final first = await controller.loadOrCreateIdentity();
+    test('is sent again after it failed', () async {
+      core.failNext = const CoreFailure('no support dir');
+      await expectLater(controller.dirs, throwsA(isA<CoreFailure>()));
 
-        // A fresh controller over the same paths: the identity must come from
-        // disk, not from anything the first controller cached in memory.
-        final again = AppController(
-          () async => AppPaths(tempDir.path),
-          now: DateTime.now,
-        );
-        final second = await again.loadOrCreateIdentity();
+      final dirs = await controller.dirs;
 
-        expect(second.deviceId, first.deviceId);
-        expect(second.certificatePem, first.certificatePem);
-        expect(second.privateKeyPem, first.privateKeyPem);
-      },
-    );
+      expect(dirs.stateDir, '/fake/state');
+      expect(core.calls.where((call) => call == 'init'), hasLength(2));
+    });
 
-    test(
-      'two generations do differ, so the reuse assertion can fail',
-      () async {
-        // Positive control for the test above: identical device ids are only
-        // meaningful if a genuinely new generation would produce a different
-        // one.
-        final first = await controller.loadOrCreateIdentity();
-        final otherDir = await Directory.systemTemp.createTemp('app_ctl_other');
-        addTearDown(() => otherDir.delete(recursive: true));
-        final other = AppController(
-          () async => AppPaths(otherDir.path),
-          now: DateTime.now,
-        );
-
-        final second = await other.loadOrCreateIdentity();
-
-        expect(second.deviceId, isNot(first.deviceId));
-      },
-    );
+    test('settings.json lives in the core\'s state dir', () async {
+      core.dirs = const CoreDirs(
+        stateDir: '/elsewhere/dsync-rs',
+        profilesDir: '/elsewhere/dsync-rs/profiles',
+      );
+      // The store is only a path until it is read, so nothing is created.
+      final settings = await controller.settings;
+      expect(settings, isNotNull);
+      expect(core.calls, ['init']);
+    });
   });
 
   group('bootstrap', () {
-    test('starts loading and lands ready on a fresh state dir', () async {
+    test('starts loading and lands ready with the core\'s identity', () async {
       expect(controller.state.bootstrap, isA<AppBootstrapLoading>());
 
       await controller.bootstrap();
 
-      final ready = controller.state.bootstrap;
-      expect(ready, isA<AppBootstrapReady>());
-      ready as AppBootstrapReady;
-      final identity = await controller.loadOrCreateIdentity();
-      expect(ready.identity.deviceId, identity.deviceId);
+      final ready = controller.state.bootstrap as AppBootstrapReady;
+      expect(ready.identity.deviceId, FakeCoreLink.fakeIdentity.deviceId);
+      expect(ready.identity.name, 'this-device');
       expect(ready.identity.certificateWarning, isNull);
       expect(controller.state.devices, isEmpty);
+      expect(core.calls, ['init', 'showIdentity', 'listDevices']);
     });
 
     test('notifies listeners on each transition', () async {
@@ -168,169 +95,198 @@ void main() {
       expect(seen.last, AppBootstrapReady);
     });
 
-    test('renders the paired devices already in the store', () async {
-      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
+    test('renders the paired devices the core lists', () async {
+      core.devices.add(pairedDevice(name: 'phone'));
 
       await controller.bootstrap();
 
       expect(controller.state.devices.map((d) => d.name), ['phone']);
     });
 
-    test(
-      "warns of this device's own certificate when the clock nears it",
-      () async {
-        // Mint the identity first, read its real `notAfter`, and hand the
-        // second controller a clock ten days short of it: the head has no
-        // seam for a short-lived certificate, and moving the clock is what
-        // `pair list` does in its own test.
-        final identity = await controller.loadOrCreateIdentity();
-        final notAfter = certificateValidityFromDer(identity.certificateDer)
-            .notAfter;
-        final nearExpiry = AppController(
-          () async => AppPaths(tempDir.path),
-          now: () => notAfter.subtract(const Duration(days: 10)),
-        );
-
-        await nearExpiry.bootstrap();
-
-        final ready = nearExpiry.state.bootstrap as AppBootstrapReady;
-        expect(
-          ready.identity.certificateWarning,
-          'certificate for this host expires in 10 days',
-        );
-      },
-    );
-
-    test('fails, naming the state dir, on a half-written identity', () async {
-      final stateDir = Directory('${tempDir.path}/dsync')..createSync();
-      File('${stateDir.path}/identity.crt').writeAsStringSync(certA);
+    test("shows the core's expiry warning for this device", () async {
+      core.identity = DeviceIdentityInfo(
+        deviceId: 'fake-device-id',
+        commonName: 'this-device',
+        issuedAt: DateTime.utc(2016),
+        expiresAt: DateTime.utc(2026, 6, 11),
+        expiryNote: 'certificate for this host expires in 10 days',
+      );
 
       await controller.bootstrap();
 
-      final failed = controller.state.bootstrap;
-      expect(failed, isA<AppBootstrapFailed>());
-      expect((failed as AppBootstrapFailed).message, contains(stateDir.path));
+      final ready = controller.state.bootstrap as AppBootstrapReady;
+      expect(
+        ready.identity.certificateWarning,
+        'certificate for this host expires in 10 days',
+      );
     });
 
-    test('fails, not "no devices", on a corrupt device store', () async {
-      final storeFile = File('${tempDir.path}/dsync/paired-devices.json');
-      storeFile.parent.createSync();
-      storeFile.writeAsStringSync('{"schemaVersion": 1, "devices": ');
+    test('fails with the core\'s own words on a refusal', () async {
+      core.failNext = const CoreFailure(
+        'the identity at /state/identity.crt is half-written',
+      );
 
       await controller.bootstrap();
 
-      final failed = controller.state.bootstrap;
-      expect(failed, isA<AppBootstrapFailed>());
-      expect((failed as AppBootstrapFailed).message, contains(storeFile.path));
+      final failed = controller.state.bootstrap as AppBootstrapFailed;
+      expect(failed.message, contains('/state/identity.crt'));
       expect(controller.state.devices, isEmpty);
+    });
+
+    test('a retry after a failure lands ready', () async {
+      core.failNext = const CoreFailure('damaged');
+      await controller.bootstrap();
+      expect(controller.state.bootstrap, isA<AppBootstrapFailed>());
+
+      await controller.bootstrap();
+
+      expect(controller.state.bootstrap, isA<AppBootstrapReady>());
+    });
+  });
+
+  group('renewIdentity', () {
+    test('records the re-issued identity on the gate', () async {
+      await controller.bootstrap();
+
+      final failure = await controller.renewIdentity(commonName: 'pocket');
+
+      expect(failure, isNull);
+      final ready = controller.state.bootstrap as AppBootstrapReady;
+      expect(ready.identity.name, 'pocket');
+    });
+
+    test('renders a refusal as the message', () async {
+      await controller.bootstrap();
+      core.failNext = const CoreFailure('no identity to renew');
+
+      expect(await controller.renewIdentity(), 'no identity to renew');
+      expect(controller.state.bootstrap, isA<AppBootstrapReady>());
     });
   });
 
   group('refreshDevices', () {
-    test('picks up a device added to the store behind its back', () async {
+    test('picks up a device the core lists since', () async {
       await controller.bootstrap();
       expect(controller.state.devices, isEmpty);
 
-      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
+      core.devices.add(pairedDevice(name: 'phone'));
       await controller.refreshDevices();
 
       expect(controller.state.devices.map((d) => d.name), ['phone']);
     });
 
-    test('renders a row from plain values, not a PairedDevice', () async {
-      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
+    test('renders a row from the core\'s values', () async {
+      core.devices.add(
+        pairedDevice(
+          deviceId: 'abcd-ef01',
+          name: 'phone',
+          address: '10.0.0.7:28771',
+          pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
+          grantedRoots: ['/home/me/notes'],
+        ),
+      );
 
       await controller.refreshDevices();
 
       final row = controller.state.devices.single;
-      expect(row.deviceId, device(certA, name: 'phone').deviceId);
+      expect(row.deviceId, 'abcd-ef01');
       expect(row.address, '10.0.0.7:28771');
       expect(row.pairedAt, DateTime.utc(2026, 9, 15, 11, 21));
       expect(row.agreedRootCount, 1);
       expect(row.certificateWarning, isNull);
     });
 
-    test('rethrows a store that went corrupt after bootstrap', () async {
+    test('rethrows a refusal for the caller to surface', () async {
       await controller.bootstrap();
-      File('${tempDir.path}/dsync/paired-devices.json')
-          .writeAsStringSync('not json');
+      core.failNext = const CoreFailure('paired-devices.json is damaged');
 
       await expectLater(
         controller.refreshDevices(),
-        throwsA(isA<PairedDeviceStoreCorruptException>()),
+        throwsA(isA<CoreFailure>()),
       );
     });
   });
 
-  group('revoke', () {
-    test('removes the row and keeps the others', () async {
-      final store = storeBehindTheControllersBack();
-      await store.add(device(certA, name: 'phone'));
-      await store.add(device(certB, name: 'laptop'));
+  group('device writes', () {
+    setUp(() async {
+      core.devices
+        ..add(pairedDevice(deviceId: 'phone-id', name: 'phone'))
+        ..add(pairedDevice(deviceId: 'laptop-id', name: 'laptop'));
       await controller.bootstrap();
-      final phoneId = device(certA, name: 'phone').deviceId;
+    });
 
-      final failure = await controller.revoke(phoneId);
+    test('revoke removes the row and keeps the others', () async {
+      final failure = await controller.revoke('phone-id');
 
       expect(failure, isNull);
       // Positive control: 'laptop' still present, so an empty list — a
       // broken query — could not pass this.
       expect(controller.state.devices.map((d) => d.name), ['laptop']);
-      expect(await store.byDeviceId(phoneId), isNull);
     });
 
-    test('renders an unknown id as a message, not an exception', () async {
-      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
-      await controller.bootstrap();
-
-      final failure = await controller.revoke('dead beef');
-
-      expect(failure, isNotNull);
-      expect(failure, contains('dead beef'));
-      expect(controller.state.devices.map((d) => d.name), ['phone']);
-    });
-  });
-
-  group('refreshProfiles', () {
     test(
-      'picks up a profile saved behind its back, rendered as a row',
+      'an unknown id renders as a message, and the list is re-read',
       () async {
-        await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
-        await controller.bootstrap();
-        expect(controller.state.profiles, isEmpty);
+        final failure = await controller.revoke('dead beef');
 
-        await profileStoreBehindTheControllersBack().save(savedProfile());
-        await controller.refreshProfiles();
-
-        final row = controller.state.profiles.single;
-        expect(row.id, 'p1');
-        expect(row.name, 'weekly notes');
-        expect(row.peerName, 'phone');
-        expect(row.peerDeviceId, savedProfile().peerDeviceId);
-        expect(row.localRootPath, savedProfile().localRootPath);
-        expect(row.remoteRootPath, '~/notes');
-        expect(row.breakage, isNull);
+        expect(failure, contains('dead beef'));
+        expect(controller.state.devices.map((d) => d.name), [
+          'phone',
+          'laptop',
+        ]);
+        expect(core.calls.last, 'listDevices');
       },
     );
 
-    test('a profile whose run marker is still there renders its last run '
-        'unfinished (task 99f404)', () async {
-      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
-      await profileStoreBehindTheControllersBack().save(savedProfile());
-      await controller.bootstrap();
+    test('rename, grant, address and verification land on the rows', () async {
+      expect(await controller.renameDevice('phone-id', 'pocket'), isNull);
+      expect(await controller.grantRoot('phone-id', '/srv/notes'), isNull);
+      expect(
+        await controller.updateDeviceAddress('phone-id', '10.0.0.9'),
+        isNull,
+      );
+      expect(await controller.markDeviceVerified('phone-id'), isNull);
+
+      final row = controller.state.devices.first;
+      expect(row.name, 'pocket');
+      expect(row.agreedRoots, ['/srv/notes']);
+      expect(row.address, '10.0.0.9:28771');
+      expect(row.isVerified, isTrue);
+
+      expect(await controller.clearDeviceVerification('phone-id'), isNull);
+      expect(await controller.revokeRoot('phone-id', '/srv/notes'), isNull);
+      final cleared = controller.state.devices.first;
+      expect(cleared.isVerified, isFalse);
+      expect(cleared.agreedRoots, isEmpty);
+    });
+  });
+
+  group('profiles', () {
+    test('refreshProfiles renders the head\'s profiles as rows', () async {
+      core.profiles.add(headProfile(name: 'weekly', profileId: 'p1'));
 
       await controller.refreshProfiles();
-      expect(controller.state.profiles.single.lastRunUnfinished, isFalse);
 
-      await (await controller.runMarker('p1')).create();
+      final row = controller.state.profiles.single;
+      expect(row.name, 'weekly');
+      expect(row.profileId, 'p1');
+      expect(row.peerName, 'desktop');
+      expect(row.remoteRootPath, '~/notes');
+      expect(row.breakage, isNull);
+      expect(row.lastRunUnfinished, isFalse);
+    });
+
+    test('a run marker still there renders the last run unfinished', () async {
+      core.profiles.add(headProfile(lastRunUnfinished: true));
+
       await controller.refreshProfiles();
+
       expect(controller.state.profiles.single.lastRunUnfinished, isTrue);
     });
 
-    test('a broken profile does not also offer to run again', () async {
-      await profileStoreBehindTheControllersBack().save(savedProfile());
-      await controller.bootstrap();
-      await (await controller.runMarker('p1')).create();
+    test('an unpaired device renders the profile broken, not gone, and '
+        'not also offered to run again', () async {
+      core.profiles.add(headProfile(peerName: null, lastRunUnfinished: true));
 
       await controller.refreshProfiles();
 
@@ -339,126 +295,109 @@ void main() {
       expect(row.lastRunUnfinished, isFalse);
     });
 
-    test('a revoked device renders the profile broken, not gone', () async {
-      final store = profileStoreBehindTheControllersBack();
-      await store.save(savedProfile());
-      await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
-      await controller.bootstrap();
+    test('a local root the core refuses renders the profile broken', () async {
+      core.profiles.add(headProfile(localRootRefusal: 'no access'));
 
       await controller.refreshProfiles();
-      expect(controller.state.profiles.single.breakage, isNull);
-      expect(controller.state.profiles.single.peerName, 'phone');
 
-      await controller.revoke(controller.state.profiles.single.peerDeviceId);
-      await controller.refreshProfiles();
-
-      final row = controller.state.profiles.single;
-      expect(row.name, 'weekly notes');
-      expect(row.peerName, isNull);
-      expect(row.breakage, isA<ProfileDeviceUnpaired>());
+      expect(
+        controller.state.profiles.single.breakage,
+        isA<ProfileLocalRootUnusable>(),
+      );
     });
 
-    test(
-      'a local root the probe cannot use renders the profile broken',
-      () async {
-        await storeBehindTheControllersBack().add(device(certA, name: 'phone'));
-        await profileStoreBehindTheControllersBack().save(
-          savedProfile(localRootPath: '${tempDir.path}/no-such-folder'),
-        );
-        await controller.bootstrap();
-
-        await controller.refreshProfiles();
-
-        expect(
-          controller.state.profiles.single.breakage,
-          isA<ProfileLocalRootUnusable>(),
-        );
-      },
-    );
-
-    test('rethrows a profile store that went corrupt', () async {
-      await controller.bootstrap();
-      File('${tempDir.path}/dsync/sync-profiles.json')
-          .writeAsStringSync('not json');
+    test('rethrows a refusal', () async {
+      core.failNext = const CoreFailure('profiles unreadable');
 
       await expectLater(
         controller.refreshProfiles(),
-        throwsA(isA<SyncProfileStoreCorruptException>()),
+        throwsA(isA<CoreFailure>()),
       );
     });
-  });
 
-  group('upsertProfile and deleteProfile', () {
-    test(
-      'a save lands in the store and on the rendered list at once',
-      () async {
-        await controller.bootstrap();
+    test('a save lands on the rendered list at once', () async {
+      core.devices.add(pairedDevice());
 
-        await controller.upsertProfile(savedProfile());
+      await controller.saveProfile(
+        'weekly',
+        const ProfileDraft(
+          localRoot: '/sdcard/Notes',
+          peerDeviceId: 'aaaa-bbbb-cccc-dddd',
+          remoteRoot: '~/notes',
+        ),
+      );
 
-        expectSameProfile(
-          await profileStoreBehindTheControllersBack().byId('p1'),
-          savedProfile(),
-        );
-        expect(controller.state.profiles.single.name, 'weekly notes');
-      },
-    );
+      expect(controller.state.profiles.single.name, 'weekly');
+    });
 
-    test(
-      'a second save over the same id replaces, and the list follows',
-      () async {
-        await controller.bootstrap();
-        await controller.upsertProfile(savedProfile());
+    test('a save replacing another name renames it first', () async {
+      core.devices.add(pairedDevice());
+      core.profiles.add(headProfile(name: 'old'));
 
-        await controller.upsertProfile(savedProfile(name: 'renamed'));
+      await controller.saveProfile(
+        'new',
+        const ProfileDraft(
+          localRoot: '/sdcard/Notes',
+          peerDeviceId: 'aaaa-bbbb-cccc-dddd',
+          remoteRoot: '~/notes',
+        ),
+        replacing: 'old',
+      );
 
-        final loaded = await profileStoreBehindTheControllersBack().load();
-        expect(loaded, hasLength(1));
-        expect(loaded.single.name, 'renamed');
-        expect(controller.state.profiles.single.name, 'renamed');
-      },
-    );
+      expect(core.calls, ['renameProfile', 'saveProfile']);
+      expect(controller.state.profiles.map((p) => p.name), ['new']);
+    });
 
-    test('delete removes the row and keeps the others', () async {
-      await controller.bootstrap();
-      await controller.upsertProfile(savedProfile(id: 'p1'));
-      await controller.upsertProfile(savedProfile(id: 'p2', name: 'other'));
+    test('relocate keeps the rest of the profile', () async {
+      core.devices.add(pairedDevice());
+      core.profiles.add(
+        headProfile(name: 'weekly', ignorePatterns: ['**/.git'], jobs: 3),
+      );
 
-      final failure = await controller.deleteProfile('p1');
+      final failure = await controller.relocateProfile(
+        'weekly',
+        localRootPath: '/sdcard/Moved',
+      );
 
       expect(failure, isNull);
-      expect(
-        (await profileStoreBehindTheControllersBack().load()).map((p) => p.id),
-        ['p2'],
+      final saved = core.profiles.single as HeadProfile;
+      expect(saved.localRoot, '/sdcard/Moved');
+      expect(saved.ignorePatterns, ['**/.git']);
+      expect(saved.jobs, 3);
+      expect(saved.remoteRoot, '~/notes');
+    });
+
+    test('relocating a profile that is gone is a message', () async {
+      final failure = await controller.relocateProfile(
+        'gone',
+        localRootPath: '/sdcard/Moved',
       );
-      // Positive control: 'other' still on the list, so an empty list — a
-      // broken query — could not pass this.
-      expect(controller.state.profiles.map((p) => p.name), ['other']);
-    });
 
-    test('renders an unknown id as a message, not an exception', () async {
-      await controller.bootstrap();
-      await controller.upsertProfile(savedProfile());
-
-      final failure = await controller.deleteProfile('gone');
-
-      expect(failure, isNotNull);
       expect(failure, contains('gone'));
-      expect(controller.state.profiles.map((p) => p.name), ['weekly notes']);
-    });
-  });
-
-  test('paths are resolved once and shared', () async {
-    var calls = 0;
-    final counted = AppController(now: DateTime.now, () async {
-      calls++;
-      return AppPaths(tempDir.path);
     });
 
-    await counted.paths;
-    await counted.paths;
-    await counted.loadOrCreateIdentity();
+    test('delete removes the row and keeps the others', () async {
+      core.profiles
+        ..add(headProfile(name: 'a'))
+        ..add(headProfile(name: 'b'));
 
-    expect(calls, 1);
+      expect(await controller.deleteProfile('a'), isNull);
+
+      // Positive control: 'b' still on the list, so an empty list — a
+      // broken query — could not pass this.
+      expect(controller.state.profiles.map((p) => p.name), ['b']);
+    });
+
+    test(
+      'deleting an unknown name renders a message, not an exception',
+      () async {
+        core.profiles.add(headProfile(name: 'weekly'));
+
+        final failure = await controller.deleteProfile('gone');
+
+        expect(failure, contains('gone'));
+        expect(controller.state.profiles.map((p) => p.name), ['weekly']);
+      },
+    );
   });
 }

@@ -56,10 +56,14 @@ async fn a_command_before_init_is_refused_and_init_resolves_the_support_dir() {
         support_dir: Some(support),
         device_name: "phone".to_owned(),
     };
-    assert!(matches!(
-        core.handle(2, init).await.result,
-        ReplyResult::Done
-    ));
+    let ReplyResult::Initialised(dirs) = core.handle(2, init).await.result else {
+        panic!("expected the core's directories");
+    };
+    // Both under the support dir plus the Rust leaf: the head puts its
+    // settings.json in the state dir, so it never writes Dart-era state.
+    let leaf = dir.path().join("support").join(DIR_LEAF);
+    assert_eq!(dirs.state_dir, leaf.to_string_lossy());
+    assert_eq!(dirs.profiles_dir, leaf.join("profiles").to_string_lossy());
     let shown = core.handle(3, CoreCommand::ShowIdentity).await;
     assert!(matches!(shown.result, ReplyResult::Identity(_)));
     // The identity lives under the support dir plus the Rust leaf.
@@ -167,6 +171,86 @@ async fn devices_are_listed_renamed_granted_withdrawn_and_revoked() {
         })
         .await;
     assert!(!garbled.is_empty());
+}
+
+#[tokio::test]
+async fn a_device_s_address_and_verification_are_set_by_hand() {
+    let mut head = Head::new("studio").await;
+    let id = seed_device(&head, "phone");
+
+    let moved = devices(
+        head.ok(CoreCommand::SetDeviceAddress {
+            device_id: id.clone(),
+            address: "10.0.0.7".to_owned(),
+        })
+        .await
+        .1,
+    );
+    assert_eq!(moved[0].address, "10.0.0.7:28771");
+    let with_port = devices(
+        head.ok(CoreCommand::SetDeviceAddress {
+            device_id: id.clone(),
+            address: "[fe80::1]:4000".to_owned(),
+        })
+        .await
+        .1,
+    );
+    assert_eq!(with_port[0].address, "[fe80::1]:4000");
+    let garbled = head
+        .failure(CoreCommand::SetDeviceAddress {
+            device_id: id.clone(),
+            address: "host:notaport".to_owned(),
+        })
+        .await;
+    assert!(!garbled.is_empty());
+    let unpaired = head
+        .failure(CoreCommand::SetDeviceAddress {
+            device_id: seed_unpaired_id(),
+            address: "10.0.0.7".to_owned(),
+        })
+        .await;
+    assert!(unpaired.contains("no paired device"), "{unpaired}");
+
+    assert!(moved[0].verified_at_ms.is_none());
+    let verified = devices(
+        head.ok(CoreCommand::VerifyDevice {
+            device_id: id.clone(),
+        })
+        .await
+        .1,
+    );
+    assert!(verified[0].verified_at_ms.is_some());
+    let cleared = devices(
+        head.ok(CoreCommand::ClearVerification { device_id: id })
+            .await
+            .1,
+    );
+    assert!(cleared[0].verified_at_ms.is_none());
+}
+
+/// A well-formed device id no store holds.
+fn seed_unpaired_id() -> String {
+    DeviceIdentity::generate("stranger", SystemTime::now())
+        .unwrap_or_else(|error| panic!("identity: {error}"))
+        .device_id()
+        .to_string()
+}
+
+#[tokio::test]
+async fn an_ignore_pattern_is_checked_on_its_own() {
+    let mut head = Head::new("studio").await;
+    let (_, good) = head
+        .ok(CoreCommand::CheckIgnorePattern {
+            pattern: "**/*.tmp".to_owned(),
+        })
+        .await;
+    assert!(matches!(good, ReplyResult::Done));
+    let bad = head
+        .failure(CoreCommand::CheckIgnorePattern {
+            pattern: "[unclosed".to_owned(),
+        })
+        .await;
+    assert!(!bad.is_empty());
 }
 
 fn draft(head: &Head, peer: &str, local_leaf: &str) -> ProfileDraft {

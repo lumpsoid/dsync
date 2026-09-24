@@ -1,7 +1,5 @@
 import 'dart:io';
 
-import 'package:dsync/dsync_core/models/host_port.dart';
-
 import '../../app_controller.dart';
 import '../../app_settings.dart';
 import '../../app_settings_store.dart';

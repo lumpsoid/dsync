@@ -553,8 +553,9 @@ class _AddRuleDialogState extends State<_AddRuleDialog> {
 
   /// Adds what is typed and closes — unless the controller refused it, in
   /// which case the dialog stays open showing why.
-  void _add() {
-    widget.controller.addPattern(_pattern.text);
+  Future<void> _add() async {
+    await widget.controller.addPattern(_pattern.text);
+    if (!mounted) return;
     if (widget.controller.state.addError == null) Navigator.of(context).pop();
   }
 

@@ -10,13 +10,14 @@ import 'package:rinf/rinf.dart';
 /// Bootstrap is kicked off here, not by a widget: `DsyncApp` renders
 /// whatever `AppState.bootstrap` says and never starts the sequence itself,
 /// so a widget test can pin a controller through `appScope` and drive the
-/// gate by hand. The binding must be up first because resolving the paths
-/// goes through a platform channel (`path_provider`). The future is not
-/// awaited: the loading screen is what shows until it lands.
+/// gate by hand. The binding must be up first because resolving the
+/// support directory goes through a platform channel (`path_provider`).
+/// The future is not awaited: the loading screen is what shows until it
+/// lands.
 ///
-/// The Rust core (native/hub, task 07876c spike) is started before any of
-/// that: it only loads the library and parks on its signal receivers, so
-/// nothing the head does changes until Dart sends it a signal.
+/// The Rust core (native/hub) is started before any of that: it only loads
+/// the library and parks on its signal receivers until the bootstrap's
+/// `init` reaches it through `appScope`'s `RinfCoreLink` (plan D10).
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeRust(assignRustSignal);

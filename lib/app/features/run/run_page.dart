@@ -8,7 +8,7 @@ import 'run_scope.dart';
 import 'run_timings_sheet.dart';
 import 'run_view_state.dart';
 
-/// The Run page: drive a run for [request] and render its `RunEvent`s
+/// The Run page: drive a run for [request] and render the core's run updates
 /// (SPEC §9, §11.4). Widgets only, per the page role in `app_scope.dart`:
 /// it switches over [SyncRunPhase] and lists the rendered rows in the order
 /// the controller folded them.
@@ -644,7 +644,7 @@ class _ScanTally extends StatelessWidget {
 /// the rows are the record of what happened.
 ///
 /// Expansion is this widget's own state and not the view state's: it is a
-/// rendering of no `RunEvent`, and it stays as the user left it — the outer
+/// rendering of no run update, and it stays as the user left it — the outer
 /// builder rebuilds this widget for the plan and the phase, which does not
 /// touch [State].
 class _PlanSection extends StatefulWidget {

@@ -1,26 +1,27 @@
 import 'package:dsync/app/archive_row.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
-import 'package:dsync/dsync_core/models/stored_archive.dart';
+import 'package:dsync/app/core_link/models/archive_info.dart';
+import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:test/test.dart';
 
 /// [ArchiveRow.render] over plain values: the join between a log on disk
 /// and the saved run that wrote it is a decision, so it is tested as one —
 /// no directory, no controller, no pump.
 void main() {
-  StoredArchive archive({String profileId = 'p1', String? rootPath}) =>
-      StoredArchive(
+  ArchiveInfo archive({String profileId = 'p1', String? rootPath}) =>
+      ArchiveInfo(
         logPath: '/state/dsync/$profileId-a.jsonl',
         profileId: profileId,
-        side: 'a',
+        side: ReplicaSide.a,
         rootPath: rootPath,
         sizeBytes: 4404019,
         lastModified: DateTime(2026, 9, 15, 11, 21),
       );
 
   ProfileRow profile({String? peerName = 'desktop'}) => ProfileRow(
-    id: 'p1',
     name: 'weekly notes',
+    profileId: 'p1',
     peerDeviceId: 'a1b2:c3d4',
     peerName: peerName,
     localRootPath: '/on-device/notes',

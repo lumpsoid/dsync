@@ -2,49 +2,45 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_page.dart';
 import 'package:dsync/app/features/pair_show/pair_show_scope.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
 import 'package:dsync/app/features/pair_show/pairing_offer.dart';
 import 'package:dsync/app/features/pair_show/qr_symbol.dart';
-import 'package:dsync/dsync_core/identity/enrolment_listener.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/models/device_identity.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fake_head.dart';
 
 /// Rendering tests for the Show-this-device's-code page, driven the way the
 /// scope contract in `app_scope.dart` intends: the controllers are pinned
 /// with `setController` and the page is pumped directly.
 ///
-/// The pinned controller's endpoint never finishes binding, so the window a
-/// test opens stays in [PairShowStarting] and each test writes the status it
+/// The fake core never answers the pinned controller's request for a
+/// window, so the window a test opens stays in [PairShowStarting] and each test writes the status it
 /// is about — this file is about what the page shows for a status, not about
 /// how one is reached, which is the controller test's.
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late PairShowController controller;
   var paired = 0;
   String? copied;
 
   setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('pair_show_page_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
-    controller = PairShowController(
-      app,
-      bind: _neverBinds,
-      bindAddress: _loopbackBind,
-    );
+    // A window the core never answers for, so a test's own status is the
+    // only one the page ever renders.
+    core = FakeCoreLink()..holds['showPairing'] = Completer<void>().future;
+    app = fakeApp(core);
+    controller = PairShowController(app, bindAddress: _loopbackBind);
     appScope.setController(app);
     pairShowScope.setController(controller);
     paired = 0;
     copied = null;
-    boundPeerName = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
           if (call.method == 'Clipboard.setData') {
@@ -60,7 +56,6 @@ void main() {
     app.dispose();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null);
-    await tempDir.delete(recursive: true);
   });
 
   PairingOffer offer({String line = 'dsync-pair:v2:aGVsbG8='}) =>
@@ -102,7 +97,7 @@ void main() {
     // Nothing is bound until a name has been given: the name is what the
     // device that redeems the code is recorded under, so it cannot be
     // decided after the fact — and an empty one is not a name.
-    expect(boundPeerName, isNull);
+    expect(core.calls, isNot(contains('showPairing')));
     expect(
       tester
           .widget<FilledButton>(find.byKey(const Key('pair-show-start')))
@@ -179,10 +174,12 @@ void main() {
   testWidgets('an expired window offers a fresh one', (tester) async {
     await pumpPage(tester);
     await openWindow(tester);
-    controller.state.recordStatus(const PairShowExpired());
+    controller.state.recordStatus(const PairShowExpired(Duration(minutes: 7)));
     await tester.pump();
 
     expect(find.byKey(const Key('pair-show-expired')), findsOneWidget);
+    // How long codes last is the core's window, carried on the status.
+    expect(find.textContaining('good for 7 minutes'), findsOneWidget);
     await tester.tap(find.byKey(const Key('pair-show-retry')));
     await tester.pumpAndSettle();
 
@@ -310,8 +307,7 @@ void main() {
 /// this device's identity off disk, which a widget test's clock does not
 /// wait for.
 class _RecordingController extends PairShowController {
-  _RecordingController(super.app)
-    : super(bind: _neverBinds, bindAddress: _loopbackBind);
+  _RecordingController(super.app) : super(bindAddress: _loopbackBind);
 
   String? shownFor;
 
@@ -326,27 +322,6 @@ class _RecordingController extends PairShowController {
   @override
   void answerConfirmation({required bool confirmed}) => answered = confirmed;
 }
-
-/// A bind that never answers, so the window the page opens on `initState`
-/// stays in [PairShowStarting] and a test's own status is the only one the
-/// page ever renders.
-Future<EnrolmentListener> _neverBinds({
-  required InternetAddress address,
-  required DeviceIdentity ownIdentity,
-  required String peerName,
-  required Uint8List token,
-  required DateTime tokenExpiresAt,
-  required PairedDeviceStore pairedDeviceStore,
-  required ConfirmEnrolment confirm,
-  required EnrolmentErrorHandler onError,
-}) {
-  boundPeerName = peerName;
-  return Completer<EnrolmentListener>().future;
-}
-
-/// The name [_neverBinds] was last asked to bind under — what the page said
-/// this device will call whoever redeems the code.
-String? boundPeerName;
 
 /// The bind address every controller in this file is built with: the
 /// loopback interface. A callback because the production one is a store

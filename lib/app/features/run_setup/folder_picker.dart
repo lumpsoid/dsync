@@ -13,9 +13,9 @@ import 'package:permission_handler/permission_handler.dart';
 /// the code that has to ask — and because the platform decides both.
 ///
 /// **It deliberately does not say whether a folder is usable.** That is what
-/// `RunSetupController` probes with plain `dart:io`, because `dart:io` is
-/// what `Scanner` and `LocalAgent` scan and write with: a folder that passes
-/// the probe is scannable by construction, and a folder that fails it is not,
+/// `RunSetupController` asks the core to check — list the folder, write and
+/// remove one entry, exactly what a scan and a write do — so a folder that
+/// passes is usable by construction, and a folder that fails it is not,
 /// whatever any permission API reports. On Android the two are genuinely
 /// separate facts — [pick] launches `ACTION_OPEN_DOCUMENT_TREE`, whose grant
 /// covers the `content://` tree URI it returns, while the *path* that URI
@@ -50,13 +50,13 @@ abstract interface class FolderPicker {
 /// `permission_handler` has no implementation there at all — calling it
 /// would throw a `MissingPluginException` out of the chooser rather than
 /// answer anything. So on desktop both grant methods are inert, and a
-/// refusal from `folderAccessRefusal` stands as the final answer, which is
+/// refusal from the core's folder check stands as the final answer, which is
 /// exactly what it is.
 final class PlatformFolderPicker implements FolderPicker {
   const PlatformFolderPicker({required this.asksForFileAccess});
 
   /// Reads the platform at this one edge and hands a plain value down, the
-  /// way `AppPaths.forThisDevice` and `hostPlatform()` do. Production only;
+  /// way `supportDirForThisDevice` does. Production only;
   /// a test constructs the case it is about with the plain constructor.
   factory PlatformFolderPicker.forThisHost() => PlatformFolderPicker(
     asksForFileAccess: Platform.isAndroid || Platform.isIOS,

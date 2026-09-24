@@ -1,20 +1,14 @@
-import 'package:dsync/dsync_core/models/paired_device.dart';
-
+import 'core_link/models/profile_entry.dart';
 import 'format_path.dart';
 import 'profile_breakage.dart';
-import 'sync_profile.dart';
 
 /// One saved profile as the head's home list displays it: every field is
 /// the value a widget puts on screen, not the fact it would derive it from.
 ///
-/// Deliberately not a `SyncProfile`, for the same reason `PairedDeviceRow`
-/// is not a `PairedDevice`: a widget holding the domain object is a widget
-/// that will eventually branch on it. The branch here is brokenness —
-/// whether this profile can still be run — and it is decided once, in
-/// [render], from facts the controller has already fetched: a fresh read of
-/// the paired-device store ([PairedDeviceStore]'s freshness rule — a device
-/// revoked since the last refresh is unpaired *now*) and the same
-/// filesystem probe Run setup runs on a folder it is offered.
+/// The branch here is brokenness — whether this profile can still be run —
+/// and it is decided once, in [render], from the facts the core listed the
+/// profile with: whether its device is still paired *now*, and the core's
+/// folder check (SPEC §3) on its local root.
 ///
 /// [breakage] is the whole of that decision: a broken profile *renders*
 /// rather than disappearing (the run it names is still the run the user
@@ -24,8 +18,8 @@ import 'sync_profile.dart';
 /// and switches; it never re-derives what is wrong.
 class ProfileRow {
   const ProfileRow({
-    required this.id,
     required this.name,
+    required this.profileId,
     required this.peerDeviceId,
     required this.peerName,
     required this.localRootPath,
@@ -36,46 +30,40 @@ class ProfileRow {
     required this.lastRunUnfinished,
   });
 
-  /// [profile] against the facts fetched for it. [device] is the paired
-  /// device [profile.peerDeviceId] resolves to *now*, `null` when it has
-  /// been revoked; [localRootRefusal] is [folderAccessRefusal]'s verdict on
-  /// the local root, `null` when the folder is still provably usable;
-  /// [runMarkerPresent] is whether the profile's run marker (SPEC §7.6) is
+  /// [profile] as the core listed it: its device's name *now* (`null`
+  /// once revoked), the core's refusal of its local root (`null` while
+  /// the folder is usable), and whether its run marker (SPEC §7.6) is
   /// still there.
-  factory ProfileRow.render(
-    SyncProfile profile, {
-    required PairedDevice? device,
-    required String? localRootRefusal,
-    required bool runMarkerPresent,
-  }) {
+  factory ProfileRow.render(HeadProfile profile) {
     final ProfileBreakage? broken;
-    if (device == null) {
+    if (profile.peerName == null) {
       broken = const ProfileDeviceUnpaired();
-    } else if (localRootRefusal != null) {
+    } else if (profile.localRootRefusal != null) {
       broken = const ProfileLocalRootUnusable();
     } else {
       broken = null;
     }
     return ProfileRow(
-      id: profile.id,
       name: profile.name,
+      profileId: profile.profileId,
       peerDeviceId: profile.peerDeviceId,
-      peerName: device?.name,
-      localRootPath: profile.localRootPath,
-      remoteRootPath: profile.remoteRootPath,
-      localRootLabel: PathLabel.of(profile.localRootPath),
-      remoteRootLabel: PathLabel.of(profile.remoteRootPath),
+      peerName: profile.peerName,
+      localRootPath: profile.localRoot,
+      remoteRootPath: profile.remoteRoot,
+      localRootLabel: PathLabel.of(profile.localRoot),
+      remoteRootLabel: PathLabel.of(profile.remoteRoot),
       breakage: broken,
-      lastRunUnfinished: broken == null && runMarkerPresent,
+      lastRunUnfinished: broken == null && profile.lastRunUnfinished,
     );
   }
 
-  /// The profile's own key, what a tap hands the Run setup page and what a
-  /// delete is addressed by.
-  final String id;
-
-  /// What the user named the run.
+  /// What the user named the run: the profile's key in the core's store,
+  /// what a tap hands the Run setup page and what a delete is addressed by.
   final String name;
+
+  /// The archive id the core derives from the profile's two sides: what
+  /// its archive logs are filed under.
+  final String profileId;
 
   /// The peer's grouped device id, kept as what the row shows in place of
   /// [peerName] when the device has been revoked — an id is all this host

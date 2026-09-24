@@ -18,7 +18,7 @@ use rinf::{DartSignal, RustSignal, SignalPiece};
 use serde::{Deserialize, Serialize};
 
 use crate::views::{
-    ActionView, AddressesView, ArchiveView, ConflictView, DeviceView, EnrolmentEndView,
+    ActionView, AddressesView, ArchiveView, ConflictView, DeviceView, DirsView, EnrolmentEndView,
     FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingShownView,
     PeerContactView, ProbeOutcome, ProfileEntry, ReplicaInfoView, ResultView, RunEndView,
     RunErrorView, RunStartedView, ScanProbeView, ServeStartedView, SideView, SkippedView,
@@ -100,6 +100,21 @@ pub enum CoreCommand {
         device_id: String,
         root: String,
     },
+    /// Where to dial the device from now on (`host` or `host:port`): the
+    /// field a connection records, written by hand or after a probe.
+    SetDeviceAddress {
+        device_id: String,
+        address: String,
+    },
+    /// The operator compared the device's id with the one it shows itself,
+    /// and they matched.
+    VerifyDevice {
+        device_id: String,
+    },
+    /// Takes that confirmation back.
+    ClearVerification {
+        device_id: String,
+    },
     /// Whether the device answers and admits this host, at `address`
     /// (`host` or `host:port`) or where it was last reached.
     ProbePeer {
@@ -166,6 +181,11 @@ pub enum CoreCommand {
         folder: Option<String>,
         ignore: Vec<String>,
     },
+    /// Whether `pattern` is a valid ignore pattern (SPEC §9), before any
+    /// tree is read: `Done`, or `Failed` saying why not.
+    CheckIgnorePattern {
+        pattern: String,
+    },
     /// Lists `path`, writes one entry and removes it (SPEC §3).
     CheckFolder {
         path: String,
@@ -225,6 +245,8 @@ pub enum ReplyResult {
         message: String,
     },
     Done,
+    /// `Init`'s answer: where the core keeps its state and config.
+    Initialised(DirsView),
     Identity(IdentityView),
     PairingShown(PairingShownView),
     PairCode(PairCodeView),

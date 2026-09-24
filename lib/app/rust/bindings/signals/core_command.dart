@@ -24,23 +24,27 @@ abstract class CoreCommand {
       case 10: return CoreCommandRevokeDevice.load(deserializer);
       case 11: return CoreCommandGrantRoot.load(deserializer);
       case 12: return CoreCommandWithdrawGrant.load(deserializer);
-      case 13: return CoreCommandProbePeer.load(deserializer);
-      case 14: return CoreCommandListProfiles.load(deserializer);
-      case 15: return CoreCommandSaveProfile.load(deserializer);
-      case 16: return CoreCommandRenameProfile.load(deserializer);
-      case 17: return CoreCommandDeleteProfile.load(deserializer);
-      case 18: return CoreCommandStartRun.load(deserializer);
-      case 19: return CoreCommandDecideRun.load(deserializer);
-      case 20: return CoreCommandStopRun.load(deserializer);
-      case 21: return CoreCommandStartServe.load(deserializer);
-      case 22: return CoreCommandStopServe.load(deserializer);
-      case 23: return CoreCommandServeAddresses.load(deserializer);
-      case 24: return CoreCommandListArchives.load(deserializer);
-      case 25: return CoreCommandClearArchive.load(deserializer);
-      case 26: return CoreCommandPreviewFilters.load(deserializer);
-      case 27: return CoreCommandListFilterFolder.load(deserializer);
-      case 28: return CoreCommandCheckFolder.load(deserializer);
-      case 29: return CoreCommandProbeScan.load(deserializer);
+      case 13: return CoreCommandSetDeviceAddress.load(deserializer);
+      case 14: return CoreCommandVerifyDevice.load(deserializer);
+      case 15: return CoreCommandClearVerification.load(deserializer);
+      case 16: return CoreCommandProbePeer.load(deserializer);
+      case 17: return CoreCommandListProfiles.load(deserializer);
+      case 18: return CoreCommandSaveProfile.load(deserializer);
+      case 19: return CoreCommandRenameProfile.load(deserializer);
+      case 20: return CoreCommandDeleteProfile.load(deserializer);
+      case 21: return CoreCommandStartRun.load(deserializer);
+      case 22: return CoreCommandDecideRun.load(deserializer);
+      case 23: return CoreCommandStopRun.load(deserializer);
+      case 24: return CoreCommandStartServe.load(deserializer);
+      case 25: return CoreCommandStopServe.load(deserializer);
+      case 26: return CoreCommandServeAddresses.load(deserializer);
+      case 27: return CoreCommandListArchives.load(deserializer);
+      case 28: return CoreCommandClearArchive.load(deserializer);
+      case 29: return CoreCommandPreviewFilters.load(deserializer);
+      case 30: return CoreCommandListFilterFolder.load(deserializer);
+      case 31: return CoreCommandCheckIgnorePattern.load(deserializer);
+      case 32: return CoreCommandCheckFolder.load(deserializer);
+      case 33: return CoreCommandProbeScan.load(deserializer);
       default: throw Exception('Unknown variant index for CoreCommand: ' + index.toString());
     }
   }
@@ -895,6 +899,194 @@ class CoreCommandWithdrawGrant extends CoreCommand {
 }
 
 @immutable
+class CoreCommandSetDeviceAddress extends CoreCommand {
+  const CoreCommandSetDeviceAddress({
+    required this.deviceId,
+    required this.address,
+  }) : super();
+
+  static CoreCommandSetDeviceAddress load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = CoreCommandSetDeviceAddress(
+      deviceId: deserializer.deserializeString(),
+      address: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String deviceId;
+  final String address;
+
+  CoreCommandSetDeviceAddress copyWith({
+    String? deviceId,
+    String? address,
+  }) {
+    return CoreCommandSetDeviceAddress(
+      deviceId: deviceId ?? this.deviceId,
+      address: address ?? this.address,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(13);
+    serializer.serializeString(deviceId);
+    serializer.serializeString(address);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is CoreCommandSetDeviceAddress
+      && deviceId == other.deviceId
+      && address == other.address;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        deviceId,
+        address,
+      );
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'deviceId: $deviceId, '
+        'address: $address'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'CoreCommandSetDeviceAddress';
+  }
+}
+
+@immutable
+class CoreCommandVerifyDevice extends CoreCommand {
+  const CoreCommandVerifyDevice({
+    required this.deviceId,
+  }) : super();
+
+  static CoreCommandVerifyDevice load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = CoreCommandVerifyDevice(
+      deviceId: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String deviceId;
+
+  CoreCommandVerifyDevice copyWith({
+    String? deviceId,
+  }) {
+    return CoreCommandVerifyDevice(
+      deviceId: deviceId ?? this.deviceId,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(14);
+    serializer.serializeString(deviceId);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is CoreCommandVerifyDevice
+      && deviceId == other.deviceId;
+  }
+
+  @override
+  int get hashCode => deviceId.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'deviceId: $deviceId'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'CoreCommandVerifyDevice';
+  }
+}
+
+@immutable
+class CoreCommandClearVerification extends CoreCommand {
+  const CoreCommandClearVerification({
+    required this.deviceId,
+  }) : super();
+
+  static CoreCommandClearVerification load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = CoreCommandClearVerification(
+      deviceId: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String deviceId;
+
+  CoreCommandClearVerification copyWith({
+    String? deviceId,
+  }) {
+    return CoreCommandClearVerification(
+      deviceId: deviceId ?? this.deviceId,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(15);
+    serializer.serializeString(deviceId);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is CoreCommandClearVerification
+      && deviceId == other.deviceId;
+  }
+
+  @override
+  int get hashCode => deviceId.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'deviceId: $deviceId'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'CoreCommandClearVerification';
+  }
+}
+
+@immutable
 class CoreCommandProbePeer extends CoreCommand {
   const CoreCommandProbePeer({
     required this.deviceId,
@@ -926,7 +1118,7 @@ class CoreCommandProbePeer extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(13);
+    serializer.serializeVariantIndex(16);
     serializer.serializeString(deviceId);
     TraitHelpers.serializeOptionStr(address, serializer);
     serializer.decreaseContainerDepth();
@@ -979,7 +1171,7 @@ class CoreCommandListProfiles extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(14);
+    serializer.serializeVariantIndex(17);
     serializer.decreaseContainerDepth();
   }
 
@@ -1040,7 +1232,7 @@ class CoreCommandSaveProfile extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(15);
+    serializer.serializeVariantIndex(18);
     serializer.serializeString(name);
     draft.serialize(serializer);
     serializer.decreaseContainerDepth();
@@ -1110,7 +1302,7 @@ class CoreCommandRenameProfile extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(16);
+    serializer.serializeVariantIndex(19);
     serializer.serializeString(from);
     serializer.serializeString(to);
     serializer.decreaseContainerDepth();
@@ -1175,7 +1367,7 @@ class CoreCommandDeleteProfile extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(17);
+    serializer.serializeVariantIndex(20);
     serializer.serializeString(name);
     serializer.decreaseContainerDepth();
   }
@@ -1244,7 +1436,7 @@ class CoreCommandStartRun extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(18);
+    serializer.serializeVariantIndex(21);
     target.serialize(serializer);
     serializer.serializeBool(dryRun);
     TraitHelpers.serializeOptionStr(address, serializer);
@@ -1318,7 +1510,7 @@ class CoreCommandDecideRun extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(19);
+    serializer.serializeVariantIndex(22);
     serializer.serializeUint64(session);
     decision.serialize(serializer);
     serializer.decreaseContainerDepth();
@@ -1383,7 +1575,7 @@ class CoreCommandStopRun extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(20);
+    serializer.serializeVariantIndex(23);
     serializer.serializeUint64(session);
     serializer.decreaseContainerDepth();
   }
@@ -1447,7 +1639,7 @@ class CoreCommandStartServe extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(21);
+    serializer.serializeVariantIndex(24);
     serializer.serializeString(bind);
     serializer.serializeUint16(port);
     serializer.decreaseContainerDepth();
@@ -1512,7 +1704,7 @@ class CoreCommandStopServe extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(22);
+    serializer.serializeVariantIndex(25);
     serializer.serializeUint64(session);
     serializer.decreaseContainerDepth();
   }
@@ -1559,7 +1751,7 @@ class CoreCommandServeAddresses extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(23);
+    serializer.serializeVariantIndex(26);
     serializer.decreaseContainerDepth();
   }
 
@@ -1603,7 +1795,7 @@ class CoreCommandListArchives extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(24);
+    serializer.serializeVariantIndex(27);
     serializer.decreaseContainerDepth();
   }
 
@@ -1659,7 +1851,7 @@ class CoreCommandClearArchive extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(25);
+    serializer.serializeVariantIndex(28);
     serializer.serializeString(profileId);
     serializer.decreaseContainerDepth();
   }
@@ -1723,7 +1915,7 @@ class CoreCommandPreviewFilters extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(26);
+    serializer.serializeVariantIndex(29);
     serializer.serializeString(root);
     TraitHelpers.serializeVectorStr(ignore, serializer);
     serializer.decreaseContainerDepth();
@@ -1798,7 +1990,7 @@ class CoreCommandListFilterFolder extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(27);
+    serializer.serializeVariantIndex(30);
     serializer.serializeString(root);
     TraitHelpers.serializeOptionStr(folder, serializer);
     TraitHelpers.serializeVectorStr(ignore, serializer);
@@ -1841,6 +2033,65 @@ class CoreCommandListFilterFolder extends CoreCommand {
 }
 
 @immutable
+class CoreCommandCheckIgnorePattern extends CoreCommand {
+  const CoreCommandCheckIgnorePattern({
+    required this.pattern,
+  }) : super();
+
+  static CoreCommandCheckIgnorePattern load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = CoreCommandCheckIgnorePattern(
+      pattern: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String pattern;
+
+  CoreCommandCheckIgnorePattern copyWith({
+    String? pattern,
+  }) {
+    return CoreCommandCheckIgnorePattern(
+      pattern: pattern ?? this.pattern,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(31);
+    serializer.serializeString(pattern);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is CoreCommandCheckIgnorePattern
+      && pattern == other.pattern;
+  }
+
+  @override
+  int get hashCode => pattern.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'pattern: $pattern'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'CoreCommandCheckIgnorePattern';
+  }
+}
+
+@immutable
 class CoreCommandCheckFolder extends CoreCommand {
   const CoreCommandCheckFolder({
     required this.path,
@@ -1867,7 +2118,7 @@ class CoreCommandCheckFolder extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(28);
+    serializer.serializeVariantIndex(32);
     serializer.serializeString(path);
     serializer.decreaseContainerDepth();
   }
@@ -1936,7 +2187,7 @@ class CoreCommandProbeScan extends CoreCommand {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(29);
+    serializer.serializeVariantIndex(33);
     serializer.serializeString(root);
     TraitHelpers.serializeVectorStr(ignore, serializer);
     serializer.serializeUint32(passes);

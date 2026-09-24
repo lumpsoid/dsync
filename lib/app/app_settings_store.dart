@@ -1,26 +1,24 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dsync/dsync_core/models/host_port.dart';
-import 'package:dsync/dsync_core/temp_file.dart';
-
 import 'app_settings.dart';
+import 'atomic_write.dart';
 
 /// The preferences this head keeps for itself (the Settings page's store).
-/// Persisted in the state directory (SPEC §8.3), beside the paired-device
-/// store and the saved profiles.
+/// Persisted in the core's state directory (SPEC §8.3), beside the
+/// paired-device store: the head learns that directory from the core's
+/// answer to `init`, so it never writes where an older build kept its
+/// state.
 ///
 /// **A head-owned store.** Nothing outside the head reads it — the CLI
 /// takes the same decision from `--bind` on the command line — so it lives
-/// under `lib/app/` with the rest of the head rather than in `dsync_core`,
-/// for the reason `SyncProfileStore`'s doc comment gives at length.
+/// under `lib/app/` with the rest of the head rather than in the core.
 ///
-/// The shape is `SyncProfileStore`'s, deliberately one pattern across the
-/// head's stores: **fresh reads** ([load] and [save] each open and parse
+/// **Fresh reads** ([load] and [save] each open and parse
 /// the file — no copy is held across calls, so the address the Settings
 /// page just wrote is the one the next pairing window binds) and **one
-/// versioned JSON document, rewritten atomically** via [tempPathFor] plus
-/// `File.rename`, because a settings document is a handful of values
+/// versioned JSON document, rewritten atomically** via
+/// [writeFileAtomically], because a settings document is a handful of values
 /// changed by a deliberate human action and the whole-document rewrite
 /// costs nothing.
 ///
@@ -41,10 +39,6 @@ class AppSettingsStore {
   static const schemaVersion = 1;
 
   final File _file;
-
-  /// Distinguishes this write's scratch file from another write's, per
-  /// [tempPathFor]'s own contract, within one running process.
-  int _nextTempSequence = 0;
 
   AppSettingsStore(this._file);
 
@@ -80,17 +74,7 @@ class AppSettingsStore {
       'schemaVersion': schemaVersion,
       'network': {'bindAddress': settings.bindAddress.address},
     };
-    await _file.parent.create(recursive: true);
-    final temp = File(tempPathFor(_file.path, _nextTempSequence++));
-    try {
-      // flush: true is fsync: the replacement has to be on disk before the
-      // rename swaps it in, or a crash in that window loses the store.
-      await temp.writeAsString(jsonEncode(document), flush: true);
-      await temp.rename(_file.path);
-    } catch (_) {
-      if (await temp.exists()) await temp.delete();
-      rethrow;
-    }
+    await writeFileAtomically(_file, jsonEncode(document));
   }
 
   AppSettings _parseDocument(String raw) {

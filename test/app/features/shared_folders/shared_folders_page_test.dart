@@ -1,8 +1,7 @@
-import 'dart:io';
-
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_page.dart';
@@ -10,62 +9,38 @@ import 'package:dsync/app/features/shared_folders/shared_folders_scope.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_view_state.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fake_head.dart';
 
 /// The Shared folders page as a rendering test: devices are pushed into
 /// `AppState` already rendered and the page is pumped directly, per the
 /// scope contract. What a toggle does to the store is
 /// `shared_folders_controller_test.dart`'s.
 void main() {
-  late Directory tempDir;
   late AppController app;
   late SharedFoldersController controller;
   late _FakePicker picker;
-  late PairedDevice desktop;
-  late PairedDevice laptop;
+  final desktop = pairedDevice(
+    deviceId: 'desktop-id',
+    name: 'desktop',
+    grantedRoots: ['/home/me/notes'],
+  );
+  final laptop = pairedDevice(
+    deviceId: 'laptop-id',
+    name: 'laptop',
+    address: '10.0.0.8:28771',
+  );
   String? copied;
 
-  setUpAll(() {
-    desktop = PairedDevice(
-      certificatePem: generateDeviceIdentity(commonName: 'desktop')
-          .certificatePem,
-      name: 'desktop',
-      agreedReplicaRoots: const {'/home/me/notes'},
-      pairedAt: DateTime(2026, 9, 15),
-      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-    );
-    laptop = PairedDevice(
-      certificatePem: generateDeviceIdentity(commonName: 'laptop')
-          .certificatePem,
-      name: 'laptop',
-      agreedReplicaRoots: const {},
-      pairedAt: DateTime(2026, 9, 15),
-      lastKnownAddress: PeerAddress(host: '10.0.0.8', port: 28771),
-    );
-  });
-
-  setUp(() async {
-    // A real state dir, because a toggle writes through `AppController` to
-    // a real `PairedDeviceStore` — the page under test is the only fake-free
-    // path to it.
-    tempDir = await Directory.systemTemp.createTemp('shared_folders_page_test');
-    final store = PairedDeviceStore(
-      File('${tempDir.path}/dsync/paired-devices.json'),
-    );
-    await store.add(desktop);
-    await store.add(laptop);
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+  setUp(() {
+    // A toggle writes through `AppController` to the core — the page under
+    // test is the only path to it here.
+    app = fakeApp(FakeCoreLink(devices: [desktop, laptop]));
     picker = _FakePicker();
-    controller = SharedFoldersController(
-      app,
-      environment: const {'HOME': '/home/me'},
-      picker: picker,
-    );
+    controller = SharedFoldersController(app, picker: picker);
     appScope.setController(app);
     sharedFoldersScope.setController(controller);
     copied = null;
@@ -86,10 +61,9 @@ void main() {
   tearDown(appScope.reset);
   tearDown(sharedFoldersScope.reset);
   tearDown(() => controller.dispose());
-  tearDown(() => tempDir.delete(recursive: true));
 
   PairedDeviceRow row(
-    PairedDevice device, {
+    PairedDeviceInfo device, {
     List<String> agreedRoots = const [],
   }) => PairedDeviceRow(
     name: device.name,
@@ -323,9 +297,10 @@ void main() {
     );
     await settleWrites(tester);
 
-    // Typed `~` is expanded the way `dsync pair grant` expands it.
+    // Handed to the core as typed; the core expands `~` the way
+    // `dsync pair grant` does (the fake stores it as given).
     expect(
-      find.byKey(const Key('shared-folder-/home/me/Sync')),
+      find.byKey(const Key('shared-folder-~/Sync')),
       findsOneWidget,
     );
     expect(

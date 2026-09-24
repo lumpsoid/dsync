@@ -1,64 +1,42 @@
-import 'dart:io';
-
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_page.dart';
 import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
-import 'package:dsync/app/features/device_detail/peer_probe.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/device_identity.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fake_head.dart';
 
 /// The Device page as a rendering test: rows are pushed into `AppState`
 /// already rendered and the page is pumped directly, per the scope
 /// contract. What a write does to the store is
 /// `device_detail_controller_test.dart`'s.
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late DeviceDetailController controller;
-  late _FakeProbe probe;
-  late PairedDevice phone;
+  final phone = pairedDevice(
+    deviceId: 'a1b2-c3d4',
+    name: 'desktop',
+    grantedRoots: ['/home/me/notes'],
+    address: '10.0.0.7:28771',
+  );
   var gone = 0;
 
-  setUpAll(() {
-    // The one paired device these tests write against, under a real
-    // certificate: `deviceId` is the hash of its key, so the rows pushed
-    // into `AppState` have to carry the id the store will answer to.
-    phone = PairedDevice(
-      certificatePem: generateDeviceIdentity(commonName: 'desktop')
-          .certificatePem,
-      name: 'desktop',
-      agreedReplicaRoots: const {'/home/me/notes'},
-      pairedAt: DateTime(2026, 9, 15),
-      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-    );
-  });
-
-  setUp(() async {
-    // A real state dir per test, because the check's reachable case writes
-    // the address it reached through to the store — the same
-    // `recordConnection` a run's dial writes.
-    tempDir = await Directory.systemTemp.createTemp('device_detail_page_test');
-    await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
-        .add(phone);
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
-    probe = _FakeProbe();
-    controller = DeviceDetailController(
-      app,
-      environment: const {'HOME': '/home/me'},
-      picker: _NoPicker(),
-      probe: probe,
-    );
+  setUp(() {
+    // The check's reachable case writes the address it reached through the
+    // core, so the fake holds the device the rows below stand for.
+    core = FakeCoreLink(devices: [phone]);
+    app = fakeApp(core);
+    controller = DeviceDetailController(app, picker: _NoPicker());
     appScope.setController(app);
     deviceDetailScope.setController(controller);
     gone = 0;
@@ -67,7 +45,6 @@ void main() {
   tearDown(appScope.reset);
   tearDown(deviceDetailScope.reset);
   tearDown(() => controller.dispose());
-  tearDown(() => tempDir.delete(recursive: true));
 
   PairedDeviceRow row({
     List<String> agreedRoots = const ['/home/me/notes'],
@@ -318,9 +295,10 @@ void main() {
     expect(find.textContaining('10.0.0.9:9100'), findsWidgets);
   });
 
-  testWidgets('an address that will not parse is refused, not written', (
+  testWidgets('an address the core will not read is refused, not written', (
     tester,
   ) async {
+    core.failNext = const CoreFailure('"10.0.0.9:http" has no valid port');
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -331,11 +309,12 @@ void main() {
     );
     await awaitOutcome(tester, const Key('device-address-confirm'));
     await scrollToOutcome(tester);
-    expect(find.textContaining('Not a valid address'), findsOneWidget);
+    expect(find.textContaining('has no valid port'), findsOneWidget);
     expect(find.textContaining('10.0.0.7:28771'), findsOneWidget);
   });
 
   testWidgets('a reachable peer reports where it was reached', (tester) async {
+    core.probeOutcome = const PeerReachable('10.0.0.7:28771');
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -348,7 +327,7 @@ void main() {
   testWidgets('an unreachable peer says so, with the address it tried', (
     tester,
   ) async {
-    probe.result = const PeerUnreachable('Connection refused');
+    core.probeOutcome = const PeerUnreachable('Connection refused');
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -364,7 +343,7 @@ void main() {
   testWidgets('a certificate that is not the pinned one gets its own line', (
     tester,
   ) async {
-    probe.result = const PeerCertificateRefused('unknown certificate');
+    core.probeOutcome = const PeerRefused('unknown certificate');
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -492,20 +471,6 @@ void main() {
 
     expect(find.textContaining('expires in 3 days'), findsOneWidget);
   });
-}
-
-/// A `PeerProbe` that answers with whatever the test set, so the check runs
-/// with no socket at all.
-class _FakeProbe implements PeerProbe {
-  PeerProbeResult result = const PeerReachable();
-
-  @override
-  Future<PeerProbeResult> probe({
-    required PeerAddress address,
-    required String expectedPeerDeviceId,
-    required DeviceIdentity ownIdentity,
-    required DateTime now,
-  }) async => result;
 }
 
 /// The page never opens the chooser in these tests; a picker that would

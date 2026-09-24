@@ -1,12 +1,19 @@
-import 'dart:io';
-
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/filter_folder_summary.dart';
+import 'package:dsync/app/core_link/models/filter_preview.dart';
+import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/features/filters/filters_controller.dart';
 import 'package:dsync/app/features/filters/filters_view_state.dart';
 import 'package:test/test.dart';
 
-/// Covers `FiltersController` over a real temporary tree: the rules it
-/// derives from a tapped row, the verdicts it renders for a listing, and
-/// what it does to a counted preview when the rules move under it.
+import '../../support/fake_head.dart';
+
+/// Covers `FiltersController` over a [FakeCoreLink] that lists a fixed
+/// tree: the rules it derives from a tapped row, the verdicts it renders
+/// for the core's listing, and what it does to a counted preview when the
+/// rules move under it. Which rule covers which path is the core's (SPEC
+/// §9's grammar, native/domain); the fake answers it from a table.
 ///
 /// The tree:
 ///
@@ -17,22 +24,59 @@ import 'package:test/test.dart';
 /// DCIM/.thumbnails/t   5 B
 /// ```
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late FiltersController controller;
 
-  void write(String relativePath, int bytes) {
-    final file = File('${tempDir.path}/$relativePath');
-    file.parent.createSync(recursive: true);
-    file.writeAsBytesSync(List.filled(bytes, 0x61));
-  }
+  /// The rules that would exclude each path, as the core would match them.
+  const coveredBy = {
+    'cache': ['**/cache'],
+    'cache/a.tmp': ['**/*.tmp'],
+    'DCIM/.thumbnails': ['**/.thumbnails', 'DCIM/.thumbnails'],
+  };
 
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('filters_controller_test');
-    write('notes.txt', 12);
-    write('cache/a.tmp', 10);
-    write('DCIM/one.jpg', 30);
-    write('DCIM/.thumbnails/t', 5);
-    controller = FiltersController();
+  const tree = {
+    null: [('cache', null), ('DCIM', null), ('notes.txt', 12)],
+    'cache': [('a.tmp', 10)],
+    'DCIM': [('.thumbnails', null), ('one.jpg', 30)],
+  };
+
+  List<FilterRow> listing(String? folder, List<String> ignore) => [
+    for (final (name, size) in tree[folder] ?? const <(String, int?)>[])
+      () {
+        final path = folder == null ? name : '$folder/$name';
+        final excludedBy = ignore
+            .where((rule) => (coveredBy[path] ?? const []).contains(rule))
+            .firstOrNull;
+        return FilterRow(
+          path: path,
+          name: name,
+          size: size,
+          isFolder: size == null,
+          excludedBy: excludedBy,
+          syncs: excludedBy == null,
+        );
+      }(),
+  ];
+
+  FilterFolderSummary summary(
+    String? path, {
+    required int files,
+    required int bytes,
+    int excludedFiles = 0,
+    int excludedBytes = 0,
+  }) => FilterFolderSummary(
+    path: path,
+    depth: path == null ? 0 : 1,
+    excludedBy: null,
+    includedFiles: files,
+    includedBytes: bytes,
+    excludedFiles: excludedFiles,
+    excludedBytes: excludedBytes,
+  );
+
+  setUp(() {
+    core = FakeCoreLink()..filterListing = listing;
+    controller = FiltersController(fakeApp(core));
   });
 
   // A rule change re-lists the folder without being awaited — that is the
@@ -42,11 +86,10 @@ void main() {
   tearDown(() async {
     await pumpEventQueue();
     controller.dispose();
-    await tempDir.delete(recursive: true);
   });
 
   Future<void> open({List<String> rules = const []}) => controller.open(
-    FiltersArgs(rootPath: tempDir.path, ignorePatterns: rules),
+    FiltersArgs(rootPath: '/tmp/tree', ignorePatterns: rules),
   );
 
   /// The listing on screen, as rows — fails rather than hangs if the
@@ -60,7 +103,7 @@ void main() {
   FilterEntryRow row(String name) => rows().firstWhere((r) => r.name == name);
 
   group('open', () {
-    test('lists the root, folders first, and counts nothing yet', () async {
+    test('lists the root as the core does, and counts nothing yet', () async {
       await open();
 
       expect(rows().map((r) => r.name), ['cache', 'DCIM', 'notes.txt']);
@@ -144,17 +187,21 @@ void main() {
     test('a malformed glob is refused with its own message', () async {
       await open();
 
-      controller.addPattern('[unterminated');
+      core.patternRefusals['[unterminated'] = 'unclosed character class';
 
+      await controller.addPattern('[unterminated');
+
+      expect(core.calls, contains('checkIgnorePattern'));
       expect(controller.state.rules, isEmpty);
-      expect(controller.state.addError, contains('character class'));
+      expect(controller.state.addError, 'unclosed character class');
     });
 
     test('an empty pattern is refused', () async {
       await open();
 
-      controller.addPattern('   ');
+      await controller.addPattern('   ');
 
+      expect(core.calls, isNot(contains('checkIgnorePattern')));
       expect(controller.state.rules, isEmpty);
       expect(controller.state.addError, isNotNull);
     });
@@ -163,9 +210,10 @@ void main() {
       'a pattern that compiles is added, trimmed, and clears the error',
       () async {
         await open();
-        controller.addPattern('[bad');
+        core.patternRefusals['[bad'] = 'unclosed character class';
+        await controller.addPattern('[bad');
 
-        controller.addPattern('  **/*.tmp  ');
+        await controller.addPattern('  **/*.tmp  ');
 
         expect(controller.state.rules, ['**/*.tmp']);
         expect(controller.state.addError, isNull);
@@ -176,6 +224,19 @@ void main() {
   group('runPreview', () {
     test('counts both sides and what each rule removed', () async {
       await open(rules: const ['**/*.tmp', '**/*.raw']);
+      core.filterPreview = FilterPreview(
+        folders: [
+          summary(
+            null,
+            files: 3,
+            bytes: 47,
+            excludedFiles: 1,
+            excludedBytes: 10,
+          ),
+        ],
+        excludedByRule: const {'**/*.tmp': 1, '**/*.raw': 0},
+        unreadableFolders: const [],
+      );
 
       await controller.runPreview();
 
@@ -193,6 +254,11 @@ void main() {
       // The numbers are still the last true answer, so they stay — with
       // the line that says which rules they were counted against.
       await open();
+      core.filterPreview = FilterPreview(
+        folders: [summary(null, files: 4, bytes: 57)],
+        excludedByRule: const {},
+        unreadableFolders: const [],
+      );
       await controller.runPreview();
 
       controller.excludeEverywhere('cache');
@@ -206,6 +272,15 @@ void main() {
 
     test('after counting, a folder row says how much is under it', () async {
       await open();
+      core.filterPreview = FilterPreview(
+        folders: [
+          summary(null, files: 4, bytes: 57),
+          summary('cache', files: 1, bytes: 10),
+          summary('DCIM', files: 2, bytes: 35),
+        ],
+        excludedByRule: const {},
+        unreadableFolders: const [],
+      );
 
       await controller.runPreview();
       // The count re-reads the listing itself, so the numbers land on the
@@ -219,13 +294,18 @@ void main() {
       'a root that went away is a failure on the page, not a throw',
       () async {
         await open();
-        await tempDir.delete(recursive: true);
+        core.failNext = const CoreFailure('No such file or directory');
 
         await controller.runPreview();
 
-        expect(controller.state.preview, isA<FiltersPreviewFailed>());
-        // Recreated so the tearDown has something to delete.
-        await tempDir.create(recursive: true);
+        expect(
+          controller.state.preview,
+          isA<FiltersPreviewFailed>().having(
+            (f) => f.message,
+            'message',
+            contains('No such file or directory'),
+          ),
+        );
       },
     );
   });

@@ -1,5 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:test/test.dart';
 
@@ -74,9 +74,11 @@ void main() {
     });
 
     test('a pinned controller is what every later read sees', () {
-      // Paths are injected so the fake never reaches `path_provider`.
+      // The core and the support dir are injected so the fake never
+      // reaches rinf or `path_provider`.
       final fake = AppController(
-        () async => AppPaths('/fake'),
+        FakeCoreLink(),
+        supportDir: () async => null,
         now: DateTime.now,
       );
       appScope.setController(fake);

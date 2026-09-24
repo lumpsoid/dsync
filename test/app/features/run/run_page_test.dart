@@ -1,62 +1,45 @@
-import 'dart:async';
-
-import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/features/run/replica_connector.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/plan_action.dart';
+import 'package:dsync/app/core_link/models/replica_side.dart';
+import 'package:dsync/app/core_link/models/run_decision.dart';
+import 'package:dsync/app/core_link/models/run_update.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
-import 'package:dsync/dsync_core/models/plan.dart';
-import 'package:dsync/dsync_core/models/scan_entry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_screen_wake.dart';
+import '../../support/fake_head.dart';
+import 'run_fixtures.dart'
+    show conflict, modifiedB, ranEnd, runRequest, plan;
 
 /// Rendering tests for the Run page, driven the way the scope contract in
 /// `app_scope.dart` intends: `runScope.setController(fake)` pins one
 /// instance so that `create()` — which this page calls — returns it, and
 /// the page is pumped directly. Each test writes the case it is about into
 /// the view state before pumping; the page's `initState` then calls
-/// `start`, which refuses a controller that is no longer idle, so no dial
-/// and no store are ever reached. The page disposes the pinned controller
-/// when the tree is torn down, as it would its own.
+/// `start`, which refuses a controller that is no longer idle, so the core
+/// is never asked. The conflict sheet is opened the way a run opens it: the
+/// page starts the run against a `FakeCoreLink` and the fake delivers a plan
+/// that awaits a decision. The page disposes the pinned controller when the
+/// tree is torn down, as it would its own.
 void main() {
+  late FakeCoreLink core;
   late SyncRunController controller;
   late FakeScreenWake screenWake;
   var doneTaps = 0;
 
-  const request = RunRequest(
-    localRootPath: '/data/notes',
-    deviceName: 'desktop',
-    peerDeviceId: 'peer-id',
-    remoteRootPath: '~/notes',
-    addressOverride: null,
-    jobs: 2,
-    dryRun: false,
-  );
-
-  Future<DialResult> neverDial(
-    String host,
-    int port, {
-    required String expectedPeerDeviceId,
-    required ownIdentity,
-    required DateTime now,
-  }) async => fail('the page test must not dial');
+  final request = runRequest();
 
   setUp(() {
     screenWake = FakeScreenWake();
-    controller = SyncRunController(
-      AppController(
-        () async => fail('the page test must not resolve paths'),
-        now: DateTime.now,
-      ),
-      dial: neverDial,
-      screenWake: screenWake,
-    );
+    core = FakeCoreLink(devices: [pairedDevice()]);
+    controller = SyncRunController(fakeApp(core), screenWake: screenWake);
     appScope.setController(controller.app);
     runScope.setController(controller);
     doneTaps = 0;
@@ -102,7 +85,7 @@ void main() {
       expect(find.textContaining('compete with it'), findsOneWidget);
       expect(
         tester
-            .widget<FilledButton>(find.byKey(const Key('read-rate-run')))
+            .widget<FilledButton>(find.byKey(const Key('scan-cost-run')))
             .onPressed,
         isNull,
       );
@@ -129,7 +112,7 @@ void main() {
       expect(find.text(request.localRootPath), findsOneWidget);
       expect(
         tester
-            .widget<FilledButton>(find.byKey(const Key('read-rate-run')))
+            .widget<FilledButton>(find.byKey(const Key('scan-cost-run')))
             .onPressed,
         isNotNull,
       );
@@ -137,36 +120,41 @@ void main() {
   });
 
   group('the Timings sheet (SPEC 17)', () {
-    // The sheet refreshes on a periodic timer while it is open, so
-    // `pumpAndSettle` would never settle: these drive the sheet's route
-    // animation by hand and close it before the test ends, which is what
-    // disposes the timer.
+    // A live run's progress indicator animates for ever, so `pumpAndSettle`
+    // would never settle: the sheet's route animation is driven by hand.
     Future<void> openTimings(WidgetTester tester) async {
       await tester.tap(find.byKey(const Key('run-timings')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
     }
 
-    Future<void> closeTimings(WidgetTester tester) async {
-      tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    /// The page starts the run against the fake, which then ends it the way
+    /// the core does, with its timings report.
+    Future<void> runToTheEnd(WidgetTester tester, String report) async {
+      await pump(tester);
+      final session = core.runStarts.single.session;
+      core
+        ..emitRun(session, const RunConnected([]))
+        ..emitRun(session, ranEnd(timings: report));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
     }
 
-    testWidgets('a live run opens the sheet with its phases', (tester) async {
-      // Offered while the run is still going, not only after it: "why is
-      // this taking so long" is asked during the wait.
-      controller.state.recordStart(dryRun: false);
+    testWidgets('a live run opens the sheet, which says the report comes at '
+        'the end', (tester) async {
+      // Offered while the run is still going: the core reports its timings
+      // when the run ends, and the sheet says so rather than showing nothing.
       await pump(tester);
 
       await openTimings(tester);
 
       expect(find.text('Timings'), findsOneWidget);
-      expect(find.text('Phases'), findsOneWidget);
-      expect(find.text('elapsed'), findsOneWidget);
-      expect(find.byKey(const Key('run-timings-copy')), findsOneWidget);
-
-      await closeTimings(tester);
+      expect(find.byKey(const Key('run-timings-pending')), findsOneWidget);
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('run-timings-copy')))
+            .onPressed,
+        isNull,
+      );
     });
 
     testWidgets('the copy button yields the core report', (tester) async {
@@ -187,23 +175,16 @@ void main() {
         ),
       );
 
-      controller.state.recordStart(dryRun: false);
-      await pump(tester);
+      const report = 'phases\n  connect 12 ms\n  scan 1.2 s';
+      await runToTheEnd(tester, report);
       await openTimings(tester);
+      expect(find.byKey(const Key('run-timings-report')), findsOneWidget);
       await tester.tap(find.byKey(const Key('run-timings-copy')));
       await tester.pump();
 
-      // The same text `dsync sync --timings` prints, so a report from a
-      // phone and one from a desktop can be read side by side. Compared on
-      // its structural lines rather than on the whole string: the headline
-      // carries an elapsed time that moves between the copy and this
-      // assertion.
-      final copied = clipboard.single;
-      expect(copied, contains('phases'));
-      expect(copied, contains('connect'));
-      expect(copied, contains('disconnect'));
-
-      await closeTimings(tester);
+      // The same text `dsync sync --timings` prints, verbatim, so a report
+      // from a phone and one from a desktop can be read side by side.
+      expect(clipboard.single, report);
     });
   });
 
@@ -654,7 +635,7 @@ void main() {
     late _SpyController spy;
 
     setUp(() {
-      spy = _SpyController(controller.app, dial: neverDial);
+      spy = _SpyController(controller.app);
       runScope.setController(spy);
     });
 
@@ -780,8 +761,8 @@ void main() {
       ..recordStart(dryRun: false)
       ..recordPhase(
         const SyncRunReplicaBusy(
-          replicaRootPath: '/storage/emulated/0/Documents/notes',
-          lockPath: '/data/state/notes-a.lock',
+          '"/storage/emulated/0/Documents/notes" is in use by another dsync '
+          'process on this device. (Lock file: /data/state/notes-a.lock)',
         ),
       );
     await pump(tester);
@@ -805,41 +786,35 @@ void main() {
   });
 
   group('the conflict sheet', () {
-    const localBoth = ScanEntry(
-      path: 'both.txt',
-      reason: ScanReason.modified,
-      size: 300,
-    );
-    const remoteBoth = ScanEntry(
-      path: 'both.txt',
-      reason: ScanReason.modified,
-      size: 700,
-    );
-    const plan = Plan(
-      actions: [
-        PlanAction(path: 'new.txt', type: ActionType.copyAtoB, bytes: 2048),
-        PlanAction(path: 'gone.txt', type: ActionType.deleteOnB),
+    final shown = plan(
+      actions: const [
+        CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
+        DeleteAction('gone.txt', on: ReplicaSide.b),
       ],
-      conflicts: [Conflict(path: 'both.txt', onA: localBoth, onB: remoteBoth)],
+      conflicts: [conflict('both.txt', a: modifiedB, b: modifiedB)],
+      awaitingDecision: true,
     );
 
-    /// What the parked presenter will answer, set by [open]. Kept out of
-    /// `open`'s return value on purpose: an `async` helper returning this
-    /// future would chain onto it, and awaiting the helper would then wait
-    /// for the decision the test has not made yet.
-    late Future<List<PlanAction>> decided;
+    /// What the page answered the core with, once it has.
+    List<RunDecision> decided() =>
+        core.decisions[core.runStarts.single.session] ?? const [];
 
-    /// Opens the sheet the way a run does: the controller's own presenter
-    /// parks the completer and moves the phase, so the page's `start` is
-    /// refused and every tap goes through the real input methods.
-    /// [fill] writes what a real run's fold would have written before the
-    /// presenter is asked. It runs *after* `recordStart`, which clears the
-    /// view state for the attempt it begins (`SyncRunViewState.recordStart`).
-    Future<void> open(WidgetTester tester, {VoidCallback? fill}) async {
-      controller.state.recordStart(dryRun: false);
-      fill?.call();
-      decided = controller.present(plan, request: request);
+    /// Opens the sheet the way a run does: the page starts the run against
+    /// the fake, which delivers a plan awaiting a decision, so every tap
+    /// goes through the real input methods. [fill] writes what a real run's
+    /// fold would have written before the plan arrives.
+    Future<void> open(
+      WidgetTester tester, {
+      VoidCallback? fill,
+      RunPlan? awaiting,
+    }) async {
       await pump(tester);
+      fill?.call();
+      final session = core.runStarts.single.session;
+      core
+        ..emitRun(session, const RunConnected([]))
+        ..emitRun(session, awaiting ?? shown);
+      await tester.pump();
     }
 
     testWidgets('renders conflicts first, then actions, and Stop', (
@@ -938,7 +913,7 @@ void main() {
       );
       await tester.pump();
       expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
-      await decided;
+      expect(decided(), hasLength(1));
     });
 
     testWidgets('a direction and a skip reach the returned list on Confirm', (
@@ -959,30 +934,33 @@ void main() {
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
 
-      final actions = await decided;
-      expect(actions.map((a) => a.path), ['both.txt', 'gone.txt']);
-      expect(actions.first.type, ActionType.copyBtoA);
+      final decision = decided().single;
+      expect(decision.keep, [1]);
+      expect(decision.resolve, {0: ReplicaSide.b});
       expect(find.byKey(const Key('run-decisions')), findsNothing);
     });
 
-    testWidgets('Accept all returns the plan unchanged', (tester) async {
+    testWidgets('Accept all keeps the plan unchanged', (tester) async {
       await open(tester);
 
       await tester.tap(find.byKey(const Key('run-accept-all')));
       await tester.pump();
 
-      expect(await decided, same(plan.actions));
+      expect(decided().single.keep, [0, 1]);
+      expect(decided().single.resolve, isEmpty);
       expect(find.byKey(const Key('run-decisions')), findsNothing);
     });
 
-    testWidgets('leaving the page mid-decision completes the presenter', (
+    testWidgets('leaving the page mid-decision stops the run', (
       tester,
     ) async {
       await open(tester);
 
       await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
 
-      expect(await decided, isEmpty);
+      expect(core.stopped, [core.runStarts.single.session]);
+      expect(decided(), isEmpty);
     });
 
     testWidgets('the body is padded by the sheet while it is up', (
@@ -1020,7 +998,7 @@ void main() {
 
       expect(find.byKey(const Key('run-decisions')), findsNothing);
       expect(bottomInset(), 16);
-      await decided;
+      expect(decided(), hasLength(1));
     });
 
     testWidgets('a plan far taller than the sheet is built on demand too', (
@@ -1028,16 +1006,17 @@ void main() {
     ) async {
       // `shrinkWrap: true` would have measured every row of this before the
       // sheet opened, which is the whole reason it is gone.
-      final many = Plan(
-        actions: [
-          for (var i = 0; i < 50000; i++)
-            PlanAction(path: 'file-$i.txt', type: ActionType.copyAtoB),
-        ],
-        conflicts: const [],
+      await open(
+        tester,
+        awaiting: plan(
+          actions: [
+            for (var i = 0; i < 50000; i++)
+              CopyAction('file-$i.txt', from: ReplicaSide.a, bytes: 0),
+          ],
+          conflicts: const [],
+          awaitingDecision: true,
+        ),
       );
-      controller.state.recordStart(dryRun: false);
-      decided = controller.present(many, request: request);
-      await pump(tester);
 
       expect(find.byKey(const Key('decision-file-0.txt')), findsOneWidget);
       expect(find.byKey(const Key('decision-file-49999.txt')), findsNothing);
@@ -1257,30 +1236,19 @@ void main() {
     });
 
     testWidgets("the sheet's conflict line is marked", (tester) async {
-      const plan = Plan(
-        actions: [
-          PlanAction(path: 'new.txt', type: ActionType.copyAtoB, bytes: 2048),
-        ],
-        conflicts: [
-          Conflict(
-            path: 'both.txt',
-            onA: ScanEntry(
-              path: 'both.txt',
-              reason: ScanReason.modified,
-              size: 300,
-            ),
-            onB: ScanEntry(
-              path: 'both.txt',
-              reason: ScanReason.modified,
-              size: 700,
-            ),
-          ),
-        ],
-      );
-      controller.state.recordStart(dryRun: false);
-      // Parked: the test never answers, and the page tears the run down.
-      controller.present(plan, request: request).ignore();
       await pump(tester);
+      final session = core.runStarts.single.session;
+      core.emitRun(
+        session,
+        plan(
+          actions: const [
+            CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
+          ],
+          conflicts: [conflict('both.txt', a: modifiedB, b: modifiedB)],
+          awaitingDecision: true,
+        ),
+      );
+      await tester.pump();
 
       expect(
         find.text('Conflict: this device modified, desktop modified'),
@@ -1334,12 +1302,9 @@ void main() {
 ///
 /// The page's job here is wiring — which lifecycle transition calls which
 /// input method — and that is all this proves. What pausing and resuming
-/// actually *do* is `run_controller_test.dart`'s, where a plain `test` can
-/// await a real suspension; a `testWidgets` body runs under `FakeAsync`,
-/// which does not settle the stream cancel a pause waits on.
+/// actually *do* is `run_controller_test.dart`'s.
 class _SpyController extends SyncRunController {
-  _SpyController(super.app, {required super.dial})
-    : super(screenWake: FakeScreenWake());
+  _SpyController(super.app) : super(screenWake: FakeScreenWake());
 
   int pauses = 0;
   int backgroundResumes = 0;

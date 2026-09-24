@@ -4,7 +4,7 @@ import 'diagnostics_controller.dart';
 /// The cell for [DiagnosticsController]; see the scope contract in
 /// `app_scope.dart`.
 final class DiagnosticsScope extends Scope<DiagnosticsController> {
-  DiagnosticsScope() : super(DiagnosticsController.new);
+  DiagnosticsScope() : super(() => DiagnosticsController(appScope.controller));
 }
 
 /// The single Diagnostics scope.

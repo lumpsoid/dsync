@@ -1,247 +1,120 @@
 import 'dart:async';
 
-import 'package:dsync/dsync_core/agent/agent.dart';
-import 'package:dsync/dsync_core/agent/agent_listener.dart';
-import 'package:dsync/dsync_core/models/plan.dart';
-import 'package:dsync/dsync_core/models/replica_root.dart';
-import 'package:dsync/dsync_core/models/run_event.dart';
-import 'package:dsync/dsync_core/models/scan_entry.dart';
-import 'package:dsync/dsync_core/models/scan_result.dart';
-import 'package:dsync/dsync_core/lock/replica_lock.dart';
-import 'package:dsync/dsync_core/protocol/control_message.dart';
-import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:dsync/dsync_core/models/run_metrics.dart';
-import 'package:dsync/dsync_core/run/run_controller.dart';
-import 'package:dsync/dsync_core/run/run_instruments.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../app_controller.dart';
+import '../../core_link/models/action_result.dart';
+import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/file_status.dart';
+import '../../core_link/models/plan_action.dart';
+import '../../core_link/models/replica_side.dart';
+import '../../core_link/models/run_decision.dart';
+import '../../core_link/models/run_end.dart';
+import '../../core_link/models/run_session.dart';
+import '../../core_link/models/run_summary_info.dart';
+import '../../core_link/models/run_update.dart';
+import '../../core_link/models/scan_tally.dart';
 import '../../run_request.dart';
-import '../run_setup/run_setup_controller.dart';
-import 'plan_decisions.dart';
-import 'replica_connector.dart';
-import 'run_view_state.dart';
 import '../../screen_wake.dart';
+import 'plan_decisions.dart';
+import 'run_view_state.dart';
 
-/// Input methods of the Run page: driving a `dsync_core` [RunController]
-/// and rendering its `RunEvent`s (SPEC §9, §11.4).
+/// Input methods of the Run page: starting a run in the core and rendering
+/// its updates (SPEC §9, §11.4).
 ///
-/// Named `SyncRunController` rather than `RunController` because it drives
-/// `dsync_core`'s [RunController] and imports it without a prefix; the file
-/// keeps the `<feature>_controller.dart` name of the layout in
-/// `app_scope.dart`.
+/// Named `SyncRunController` for the page it serves; the file keeps the
+/// `<feature>_controller.dart` name of the layout in `app_scope.dart`.
 ///
 /// **Handed out by `runScope.create()`, never the cached `controller`.**
-/// Every other feature's page reads the cached instance; this one is the
-/// exception and the reason `create()` exists in the scope contract. Two
-/// runs must never share a loop — a second `start` on a controller whose
-/// stream is still open would fold two runs' events into one view, which
-/// is why [start] runs once and a second attempt goes through [resume],
-/// which is reachable only from a phase whose loop is provably over — and a
-/// `RunEvent` arriving late from a finished run must not write into a view
-/// state a later page has already torn down. So the page that took the
-/// instance calls [dispose], which stops listening and marks every write
-/// path closed.
+/// Two runs must never share a view — a second `start` on a controller
+/// whose run is still reporting would fold two runs' updates into one
+/// view, which is why [start] runs once and a second attempt goes through
+/// [resume], which is reachable only from a phase whose run is provably
+/// over — and an update arriving late from a finished run must not write
+/// into a view state a later page has already torn down. So the page that
+/// took the instance calls [dispose], which marks every write path closed.
 ///
-/// **The connector's `DialPeer` is injected** ([dial], required, not
-/// defaulted) so a test drives a whole run through a fake dial and an
-/// in-memory channel; the scope names the real `dialPeer`.
-///
-/// **What [stop] means.** [RunController.stop], not a cancel: nothing
+/// **What [stop] means.** The core's graceful stop, not a cancel: nothing
 /// further starts, the actions already in flight finish and commit (SPEC
 /// §7.3), the marks of copies that never started are withdrawn (SPEC §7.6),
 /// and the run then ends the way every run does — its summary, both locks
-/// released, both agents disconnected (SPEC §4.3). Cancelling the stream
-/// instead would park the apply where it stood and never return from it,
-/// leaving those marks behind to raise a later edit as an interrupted
-/// conflict. The wait is bounded by the writes in flight, up to
-/// `Applier.concurrency` of them, and by the scan when stopped during one,
-/// which a cancel would have waited out too: an `async*` generator only
-/// notices a cancel at its next `yield`. The view state records
-/// [SyncRunStopped] with the number of actions that completed, and the page
-/// says "stopped after N actions" — not "cancelled", which would claim
-/// nothing happened.
+/// released (SPEC §4.3). The view state records [SyncRunStopped] with the
+/// number of actions that completed, and the page says "stopped after N
+/// actions" — not "cancelled", which would claim nothing happened.
 ///
 /// **Backgrounding pauses a run; it does not end one.** [pause] is [stop]'s
-/// mechanism with a different name on the outcome — the same suspension at
-/// the same action boundary, recorded as [SyncRunPaused] — and [resume]
-/// starts a fresh run for the same request afterwards. The page wires the
-/// two to the app's lifecycle (`run_page.dart`).
-///
-/// Why pause at all, when nothing here can keep the process running: the
-/// OS freezes a backgrounded app, the socket then goes silent, and the far
-/// end's heartbeat deadline (`IdleDeadlineChannel`, which the connector
-/// wraps the peer channel in, SPEC §4.2) fails the session from the other
-/// side — mid-copy, with both replica locks still held on the desktop
-/// until *its* deadline fires too. Pausing first turns that into an
-/// ordinary suspension: the generator's `finally` blocks unlock both sides
-/// and disconnect cleanly, so the run that resumes is not racing a lock the
-/// previous attempt left behind. It is best-effort by nature — the platform
-/// gives a backgrounding app only a short window to finish that teardown —
-/// and the heartbeat deadline remains the backstop for when it runs out.
-///
-/// **What resuming continues.** Nothing is carried over in this process:
-/// [resume] re-dials, re-scans and re-reconciles. It is a continuation
-/// because of where the work is, not because of what is remembered — every
-/// action reported before the pause is applied and committed on both sides
-/// (SPEC §7.3), so the new plan contains what is left and no more. The cost
-/// is a full re-scan, and conflicts that were never resolved are asked
-/// again.
+/// mechanism with a different name on the outcome — [SyncRunPaused] — and
+/// [resume] starts a fresh run for the same request afterwards. The page
+/// wires the two to the app's lifecycle (`run_page.dart`). The OS freezes a
+/// backgrounded app and the far end's heartbeat deadline would then fail
+/// the session mid-copy with both locks held; pausing first turns that
+/// into an ordinary suspension. What resuming continues is where the work
+/// is: every action reported before the pause is committed on both sides,
+/// so the new plan contains what is left and no more.
 ///
 /// **Only a true backgrounding pauses.** The page listens for
-/// `AppLifecycleState.paused` and nothing above it: a notification shade, a
-/// permission dialog and an incoming call are `inactive`, the app is still
-/// running, and a run torn down for one of those would be this class making
-/// the user's day worse for no reason. That distinction is the whole
-/// guard — do not widen it to `inactive`.
+/// `AppLifecycleState.paused` and nothing above it: a notification shade,
+/// a permission dialog and an incoming call are `inactive`, and a run torn
+/// down for one of those would be this class making the user's day worse
+/// for no reason. Do not widen it to `inactive`.
 ///
 /// **The screen is held awake while a run is live** ([ScreenWake],
-/// injected). That is the other half: the pause above handles a screen the
-/// *user* turned off, and the wakelock stops the idle timeout from turning
-/// it off on its own, which is the case nobody asked for. It is released
-/// the moment the run stops being live — including while paused, where
-/// holding it would be a claim on a screen the app cannot even see.
+/// injected), and released the moment it stops being live — including
+/// while paused.
 ///
-/// **The presenter seam.** [present] is the one `Presenter` this head
-/// hands [RunController] (SPEC §11.3). For a dry run it returns nothing.
-/// Otherwise it parks a `Completer`, moves the phase to
-/// [SyncRunAwaitingDecisions] — the conflict sheet — and returns the
-/// completer's future; [resolveConflict], [skip], [keep], [acceptAll] and
-/// [confirm] are the sheet's input methods, and the last two complete it.
-/// [RunController] emits the `RunPlanEvent` and every `RunConflictEvent`
-/// *before* invoking the presenter, so the sheet opens over data the view
-/// state already holds. [acceptAll] is `--batch`: the plan unchanged,
-/// conflicts never resolved.
-///
-/// **The completer is completed exactly once, on every path.** While it is
-/// pending, `RunController.run()` is suspended inside `await presenter(plan)`
-/// holding both replica locks. Stopping the run does *not* unblock that
-/// await, so a page that left, or a [stop], while the sheet is up would
-/// otherwise hold both locks until the process dies and the next run would
-/// fail on `ReplicaLockHeldException`. [stop] and [dispose] therefore
-/// complete it first, with the empty list: nothing further starts, which is
-/// exactly the documented stop semantics, and the run then ends as usual
-/// (unlock, disconnect). [_decide] is the single place
-/// that completes it and guards `isCompleted`, so no path can complete it
-/// twice.
+/// **The plan is the head's to decide.** When the core's plan update says
+/// it is awaiting a decision, this moves the phase to
+/// [SyncRunAwaitingDecisions] — the conflict sheet — whose input methods
+/// are [resolveConflict], [skip], [keep], [acceptAll] and [confirm]; the
+/// last two answer the core. The core waits on that answer holding both
+/// replica locks, so a plan with nothing in it is answered at once, and a
+/// plan that arrives after a stop or a dispose is answered with nothing
+/// kept: nothing further starts, which is exactly the stop semantics. A
+/// dry run is never awaiting a decision. [acceptAll] is `--batch`: the plan
+/// unchanged, conflicts never resolved.
 class SyncRunController {
-  SyncRunController(
-    this.app, {
-    required DialPeer dial,
-    required this.screenWake,
-  }) : _connector = ReplicaConnector(app, dial: dial);
+  SyncRunController(this.app, {required this.screenWake});
 
   final AppController app;
 
-  /// Held while a run is live; see the class doc comment. Injected like
-  /// [app] is, and named in the constructor for the same reason [dial] is:
-  /// it is a platform channel, so a test hands over one it can watch.
+  /// Held while a run is live; see the class doc comment. A platform
+  /// channel, so a test hands over one it can watch.
   final ScreenWake screenWake;
-
-  final ReplicaConnector _connector;
 
   /// The view state this controller renders into; owned here, disposed here.
   final SyncRunViewState state = SyncRunViewState();
 
-  /// This attempt's measurements (SPEC §17), read by the Timings sheet.
-  ///
-  /// **One per attempt, replaced at the top of [_begin]** — not one per
-  /// controller. [resume] runs the same request again after a pause or a
-  /// failure, through this same instance, and every figure a recorder holds
-  /// *accumulates*: phase spans add, operation counts add, and
-  /// [RunMetrics.elapsed] runs from construction. A recorder shared across
-  /// attempts therefore reports two runs as one, with a doubled `scan` and an
-  /// inflated `apply`, and says nothing about having done so — which for the
-  /// one report this project reads its phone numbers off is the worst
-  /// available failure.
-  ///
-  /// Built at the top of the attempt rather than after the dial, so
-  /// [RunMetrics.elapsed] still covers the dial and the TLS handshake: on a
-  /// phone those are a real part of the wait, and a clock started after them
-  /// would report a run faster than the one the user sat through.
-  ///
-  /// Null before the first attempt, which is why [metricsSnapshot] has an
-  /// empty answer to give.
-  RunInstruments? _instruments;
+  /// The core's timings report (plan D11) for the last attempt, once it has
+  /// ended; `null` before. What the Timings sheet shows.
+  final ValueNotifier<String?> timings = ValueNotifier(null);
 
-  /// Everything measured so far in the current attempt. Safe to read mid-run
-  /// — the Timings sheet does exactly that, so a run that is taking too long
-  /// can be inspected while it is still taking too long, which is when
-  /// someone actually wants to look.
-  ///
-  /// Exposed as a snapshot rather than as the recorder, so nothing outside
-  /// can write into it and a widget cannot accidentally hold a view that
-  /// changes under it mid-build.
-  RunMetrics metricsSnapshot() =>
-      _instruments?.snapshot() ??
-      const RunMetrics(elapsed: Duration.zero, phases: {}, replicas: {});
-
-  StreamSubscription<RunEvent>? _subscription;
+  RunSession? _session;
   Completer<void>? _ended;
-
-  /// The run [render] is folding, so [stop], [pause] and [dispose] can end it
-  /// gracefully rather than cancel it (class doc comment).
-  RunController? _run;
   bool _stopRequested = false;
-
-  /// Which of the two the pending suspension is — set with [_stopRequested]
-  /// and read where the phase is finally recorded, including the path where
-  /// the connector is still in flight and there is no phase to record yet.
   bool _pauseRequested = false;
   bool _screenHeld = false;
   bool _disposed = false;
   int _completedActions = 0;
-  Completer<List<PlanAction>>? _decisions;
 
-  /// The sheet's working state while [_decisions] is pending: the choices
-  /// and the request whose device name the rows are worded with. One
-  /// nullable, not two, so they cannot disagree about whether a sheet is up.
   ({PlanDecisions choices, RunRequest request})? _pending;
 
-  /// Connects both sides for [request] and drives one run to its end.
-  /// Completes when the stream has ended, been stopped, or the connection
-  /// failed; the view state carries which.
-  ///
-  /// A `ReplicaConnectFailure` is rendered as [SyncRunFailed] with the
-  /// case's own message (the connector's doc comment gives each case the
-  /// wording it needs). Anything else thrown by the connector is a defect
-  /// and propagates as one.
+  /// Starts [request]'s run. One run per instance — the reason the page
+  /// takes `create()`. A second call is ignored rather than thrown: the
+  /// page fires it from `initState`, where a throw would be a crash with no
+  /// one to catch it. Running the same request again is [resume].
   Future<void> start(RunRequest request) async {
-    // One run per instance — the reason the page takes `create()`. A
-    // second call is a defect in the caller, not a way to run again; it is
-    // ignored rather than thrown because the page fires it from
-    // `initState`, where a throw would be a crash with no one to catch it.
-    // Running the *same request* again after a pause or a failure is
-    // [resume], which is a different question with a different guard.
-    if (state.phase is! SyncRunIdle) return;
+    if (_disposed || state.phase is! SyncRunIdle) return;
     await _begin(request);
   }
 
-  /// The lifecycle's half of [resume]: continues a run that [pause]
-  /// suspended, and only that.
-  ///
-  /// A failed run is deliberately not continued here. Coming back to the
-  /// foreground is not a decision about a run that ended badly — the
-  /// failure may be a stale address or a replica the peer no longer grants
-  /// (SPEC §4.4), and re-dialling it every time the user glances at the
-  /// screen would be this class arguing with them. That one is [resume],
-  /// behind the page's Resume button, where it is asked for.
+  /// [resume], but only out of [SyncRunPaused]: what the page calls when
+  /// the app comes back to the foreground.
   Future<void> resumeFromBackground(RunRequest request) async {
     if (state.phase is! SyncRunPaused) return;
     await resume(request);
   }
 
-  /// Runs [request] again after a [pause] or a failure: a fresh dial, scan
-  /// and plan, rendered into the same view state from nothing (see
-  /// `SyncRunViewState.recordStart`). What makes this a continuation rather
-  /// than a repetition is the class doc comment's "what resuming
-  /// continues".
-  ///
-  /// Only from a phase whose loop is over — [SyncRunPaused],
-  /// [SyncRunFailed], or [SyncRunReplicaBusy], whose own remedy is "try
-  /// again once the other run is done". A finished or stopped run is an
-  /// outcome the user asked for and is not re-run behind their back, and a
-  /// live one has a subscription that must be suspended first; anything
-  /// else is ignored, for the same reason [start]'s guard is.
+  /// Runs [request] again after a pause, a failure or a busy replica.
   Future<void> resume(RunRequest request) async {
     if (_disposed) return;
     final resumable = switch (state.phase) {
@@ -256,119 +129,50 @@ class SyncRunController {
     if (!resumable) return;
     _stopRequested = false;
     _pauseRequested = false;
-    _completedActions = 0;
-    _subscription = null;
-    _ended = null;
     await _begin(request);
   }
 
   Future<void> _begin(RunRequest request) async {
-    // Before anything is measured, and before the dial: this attempt's
-    // numbers are its own, and [RunMetrics.elapsed] runs from here.
-    // No lag sampler: the app's timings sheet is always on offer, so there is
-    // no moment it is known to be wanted (task 7080d6).
-    final instruments = RunInstruments(loopLag: false);
-    _instruments = instruments;
-    state.recordStart(dryRun: request.dryRun);
-    _syncScreenWake(const SyncRunConnecting());
-    final ConnectedAgents agents;
-    try {
-      agents = await _connector.connect(
-        localRootPath: request.localRootPath,
-        deviceName: request.deviceName,
-        remoteRootPath: request.remoteRootPath,
-        addressOverride: request.addressOverride,
-        jobs: request.jobs,
-        instruments: instruments,
-      );
-    } on ReplicaConnectFailure catch (failure) {
-      _recordPhase(SyncRunFailed(failure.toString()));
-      return;
-    }
-    // Stopped, or the page left, while the dial was in flight: no
-    // `RunController` exists yet to hang the agents up, so it is done here —
-    // the only place after the connector's own partial-failure path that
-    // ever disconnects them directly.
-    if (_stopRequested || _disposed) {
-      await _disconnectQuietly(agents.agentA);
-      await _disconnectQuietly(agents.agentB);
-      _recordPhase(
-        _pauseRequested
-            ? const SyncRunPaused(completedActions: 0)
-            : const SyncRunStopped(completedActions: 0),
-      );
-      return;
-    }
-    final run = _run = RunController(
-      // SPEC §16 fixes which side is which for this head: it is a client
-      // only, so `a` is always this phone's local replica and `b` is always
-      // the peer it dialled. Nothing has to be re-derived to say which of
-      // the two is remote.
-      agentA: instruments.agent(agents.agentA, side: 'a', remote: false),
-      agentB: instruments.agent(agents.agentB, side: 'b', remote: true),
-      presenter: (plan) => present(plan, request: request),
-      metrics: instruments.recorder,
-      runMarker: agents.runMarker,
-      // Compiled here, once, from the patterns the profile saved: SPEC §9
-      // has the rules come from the initiating side, and `RunController`
-      // is what hands them to both replicas — the peer receives the
-      // patterns and compiles its own set.
-      rules: RuleSet(ignore: request.ignorePatterns),
-    );
-    await render(run.run(), request: request);
-    _run = null;
-  }
-
-  /// Folds [events] into [state] in SPEC §11.4's order, until the stream
-  /// ends. Public so a test can drive the fold from a
-  /// hand-built stream with no agents and no socket; [start] is the only
-  /// production caller.
-  ///
-  /// [request] supplies what the events do not carry — the two roots and
-  /// the device name for the header, the mode, and the root for SPEC §4.4's
-  /// refusal message — because `RunController` only ever holds two opaque
-  /// `Agent`s (see `RunReplicasEvent`'s doc comment).
-  Future<void> render(
-    Stream<RunEvent> events, {
-    required RunRequest request,
-  }) async {
-    if (_disposed) return;
     _completedActions = 0;
-    _recordPhase(const SyncRunRunning());
+    _pending = null;
+    timings.value = null;
+    state.recordStart(dryRun: request.dryRun);
+    _recordPhase(const SyncRunConnecting());
     final ended = _ended = Completer<void>();
-    _subscription = events.listen(
-      (event) => _record(() => _fold(event, request)),
-      // Belt and braces: `RunController.run()` catches every failure and
-      // emits it as a `RunErrorEvent`, so this path is a generator bug, not
-      // a run failure. Rendered the same way so it is at least visible.
-      onError: (Object error) => _recordPhase(SyncRunFailed(error.toString())),
-      onDone: () {
-        _record(_finishWithoutSummary);
-        if (!ended.isCompleted) ended.complete();
-      },
-    );
-    await ended.future;
+    final RunSession session;
+    try {
+      session = await app.core.startRun(
+        request.target,
+        dryRun: request.dryRun,
+        address: request.address,
+      );
+    } on CoreFailure catch (e) {
+      _recordPhase(SyncRunFailed(e.message));
+      ended.complete();
+      return;
+    }
+    _session = session;
+    // Stopped, or the page left, while the core was taking the request:
+    // the run exists now, so it is stopped like any other.
+    if (_stopRequested) unawaited(_stopQuietly(session));
+    try {
+      await for (final update in session.updates) {
+        if (_disposed) continue;
+        await _fold(update, request, session);
+      }
+    } on CoreFailure catch (e) {
+      _recordPhase(SyncRunFailed(e.message));
+    } finally {
+      if (_session == session) _session = null;
+      _pending = null;
+      if (!ended.isCompleted) ended.complete();
+    }
   }
 
-  /// Ends the run early and waits for it to get there. See the class doc
-  /// comment for what that means: nothing further starts, what was in flight
-  /// lands and is recorded, both sides are unlocked and disconnected, and
-  /// the view state says how many actions completed.
-  ///
-  /// Called while still connecting, it takes effect once the connector
-  /// returns — the dial itself is bounded by
-  /// `ReplicaConnector.peerConnectTimeout` and is not interrupted.
+  /// Stops the run gracefully; see the class doc comment.
   Future<void> stop() => _suspend(paused: false);
 
-  /// Suspends the run because the OS backgrounded the app — the screen went
-  /// off, or the user switched away. Mechanically [stop]; the outcome is
-  /// [SyncRunPaused], which [resume] can continue from. See the class doc
-  /// comment for why a run is torn down for this at all, and why only a
-  /// true backgrounding may call it.
-  ///
-  /// Ignored unless a run is live: a finished, failed, stopped or already
-  /// paused run has nothing to suspend, and backgrounding the app while one
-  /// of those is on screen must not rewrite how it ended.
+  /// Pauses a live run because the app is being backgrounded.
   Future<void> pause() async {
     if (!_isLive(state.phase)) return;
     await _suspend(paused: true);
@@ -378,44 +182,37 @@ class SyncRunController {
     if (_stopRequested) return;
     _stopRequested = true;
     _pauseRequested = paused;
-    // Before the stop, which would otherwise wait on a sheet nobody answers:
-    // see the class doc comment on the completer.
-    _decide(const []);
-    // Still connecting: the phase is recorded where the dial returns, which
-    // reads `_pauseRequested` for which of the two this was.
-    if (_subscription == null) return;
-    // The run ends on its own from here, and its summary is folded as
-    // [SyncRunPaused] or [SyncRunStopped] (`_fold`).
-    _run?.stop();
+    _pending = null;
+    final session = _session;
+    // Still waiting on the core to take the request: [_begin] stops the
+    // session the moment it exists.
+    if (session != null) await _stopQuietly(session);
     await _ended?.future;
-    _subscription = null;
   }
 
-  /// Stops listening and closes every write path, so a `RunEvent` (or a
-  /// connector result) that lands after the page is gone is dropped rather
-  /// than written to a disposed `ChangeNotifier`.
   void dispose() {
     _disposed = true;
-    // First, so a run suspended on the sheet can reach the stop below and
-    // release both locks (class doc comment).
-    _decide(const []);
-    _subscription = null;
-    // Ended rather than cancelled (class doc comment) and not awaited: the
-    // rest of the run belongs to the run, not to the page that just left, and
-    // `_record` drops every event it folds from here on.
-    _run?.stop();
-    // A `start` still awaiting the stream's end returns now, rather than
-    // when the stopped run gets there.
-    final ended = _ended;
-    if (ended != null && !ended.isCompleted) ended.complete();
+    _stopRequested = true;
+    _pending = null;
+    // Stopped rather than abandoned and not awaited: the rest of the run
+    // belongs to the core, not to the page that just left, and every
+    // update folded from here on is dropped.
+    final session = _session;
+    if (session != null) unawaited(_stopQuietly(session));
     // The page is gone, so there is no screen of this head's to hold on.
     _syncScreenWake(const SyncRunIdle());
+    timings.dispose();
     state.dispose();
   }
 
-  /// Whether [phase] is a run with a session behind it: something to
-  /// suspend, and a reason to hold the screen on. The three that are not
-  /// live are the three the page offers Done on, plus idle and paused.
+  Future<void> _stopQuietly(RunSession session) async {
+    try {
+      await app.core.stopRun(session.session);
+    } on CoreFailure {
+      // Already over: its last update says how.
+    }
+  }
+
   bool _isLive(SyncRunPhase phase) => switch (phase) {
     SyncRunConnecting() ||
     SyncRunRunning() ||
@@ -428,19 +225,12 @@ class SyncRunController {
     SyncRunFailed() => false,
   };
 
-  /// Records [phase] and brings the screen's wakelock in step with it. The
-  /// one way this class moves the phase, so the two cannot disagree.
   void _recordPhase(SyncRunPhase phase) {
-    _record(() => state.recordPhase(phase));
+    if (_disposed) return;
+    state.recordPhase(phase);
     _syncScreenWake(phase);
   }
 
-  /// Holds the screen on for as long as the run is live, and lets it go
-  /// otherwise. Not awaited: the wakelock is a platform channel that
-  /// answers whenever it answers, it cannot fail in a way this class can
-  /// act on (`PlatformScreenWake` says why), and a run must never wait on
-  /// it. Guarded by [_screenHeld] so a phase that moves once per applied
-  /// action does not re-ask the platform for what it already holds.
   void _syncScreenWake(SyncRunPhase phase) {
     final wanted = _isLive(phase);
     if (wanted == _screenHeld) return;
@@ -448,58 +238,44 @@ class SyncRunController {
     unawaited(wanted ? screenWake.enable() : screenWake.disable());
   }
 
-  /// The one `Presenter` this head supplies (SPEC §11.3) — see the class
-  /// doc comment's "presenter seam". Public so a test can drive the sheet's
-  /// decision flow over a hand-built plan with no agents; [start] is the
-  /// only production caller.
-  ///
-  /// [request] supplies the mode and the device name the rows are worded
-  /// with, as it does for [render].
-  Future<List<PlanAction>> present(Plan plan, {required RunRequest request}) {
-    // `--dry-run`: the plan and its conflicts were already emitted; keeping
-    // nothing is what makes every proposed action a skip in the summary.
-    if (request.dryRun) return Future.value(const []);
-    // A run already stopped or abandoned must not park a sheet nobody will
-    // answer; nothing to decide needs no sheet either.
-    if (_stopRequested || _disposed) return Future.value(const []);
-    if (plan.conflicts.isEmpty && plan.actions.isEmpty) {
-      return Future.value(const []);
-    }
-    final decisions = _decisions = Completer<List<PlanAction>>();
-    _pending = (choices: PlanDecisions(plan), request: request);
-    _renderDecisions();
-    return decisions.future;
-  }
-
-  /// Picks a direction for the conflict at [path], or puts it back to
-  /// unresolved. Takes effect on [confirm]; ignored while no sheet is up.
+  /// Records [choice] for the conflict at [path] on the open sheet.
   void resolveConflict(String path, SyncRunConflictChoice choice) =>
-      _amend((pending) => pending.resolve(path, choice));
+      _amend((choices) => choices.resolve(path, choice));
 
-  /// Leaves [path] out: a proposed action is dropped, a conflict goes back
-  /// to unresolved. Takes effect on [confirm].
-  void skip(String path) => _amend((pending) => pending.skip(path));
+  /// Drops the proposed action at [path] (or unresolves a conflict).
+  void skip(String path) => _amend((choices) => choices.skip(path));
 
-  /// Undoes [skip] for a proposed action.
-  void keep(String path) => _amend((pending) => pending.keep(path));
+  /// Undoes [skip] for the proposed action at [path].
+  void keep(String path) => _amend((choices) => choices.keep(path));
 
-  /// The `--batch` answer (SPEC §11.3): every proposed action as reconciled,
-  /// no conflict resolved — whatever the sheet showed as chosen so far is
-  /// discarded, because "accept all" has no way to ask which direction an
-  /// unreviewed conflict should go.
+  /// `--batch`: the plan unchanged, conflicts left unresolved.
   void acceptAll() {
     final pending = _pending;
     if (pending == null) return;
-    _decide(pending.choices.plan.actions);
-    _recordPhase(const SyncRunRunning());
+    _answer(RunDecision.acceptAll(pending.choices.plan.actions.length));
   }
 
-  /// Applies the sheet's choices: resolved conflicts and kept actions.
+  /// Answers the core with the sheet's choices.
   void confirm() {
     final pending = _pending;
     if (pending == null) return;
-    _decide(pending.choices.resolved());
+    _answer(pending.choices.resolved());
+  }
+
+  void _answer(RunDecision decision) {
+    _pending = null;
     _recordPhase(const SyncRunRunning());
+    final session = _session;
+    if (session != null) unawaited(_decide(session, decision));
+  }
+
+  Future<void> _decide(RunSession session, RunDecision decision) async {
+    try {
+      await app.core.decideRun(session.session, decision);
+    } on CoreFailure {
+      // The run ended before the answer reached it: its last update says
+      // how.
+    }
   }
 
   void _amend(void Function(PlanDecisions choices) change) {
@@ -509,8 +285,6 @@ class SyncRunController {
     _renderDecisions();
   }
 
-  /// Re-renders the sheet's rows from [_pending]: the whole phase is
-  /// replaced on every input, as `SyncRunAwaitingDecisions` documents.
   void _renderDecisions() {
     final pending = _pending;
     if (pending == null) return;
@@ -522,8 +296,8 @@ class SyncRunController {
           for (final conflict in choices.plan.conflicts)
             SyncRunConflictDecision(
               path: conflict.path,
-              local: _status(conflict.onA),
-              remote: _status(conflict.onB),
+              local: _status(conflict.a),
+              remote: _status(conflict.b),
               choice: choices.choiceFor(conflict.path),
               offered: choices.offeredFor(conflict),
             ),
@@ -532,8 +306,8 @@ class SyncRunController {
           for (final action in choices.plan.actions)
             SyncRunActionDecision(
               path: action.path,
-              action: _actionLabel(action.type, deviceName),
-              bytes: action.bytes,
+              action: _actionLabel(action, deviceName),
+              bytes: _bytes(action),
               kept: choices.isKept(action.path),
             ),
         ],
@@ -541,175 +315,149 @@ class SyncRunController {
     );
   }
 
-  /// Completes the parked presenter with [actions] — once. The one place
-  /// that does; see the class doc comment for why that matters.
-  void _decide(List<PlanAction> actions) {
-    final decisions = _decisions;
-    _decisions = null;
-    _pending = null;
-    if (decisions == null || decisions.isCompleted) return;
-    decisions.complete(actions);
-  }
-
-  /// Runs [write] unless [dispose] has happened. Every write to [state]
-  /// goes through here, because `ChangeNotifier.notifyListeners` after
-  /// `dispose` is an assertion failure, and a late event is the normal
-  /// case after a page leaves mid-run, not an error.
-  void _record(void Function() write) {
-    if (_disposed) return;
-    write();
-  }
-
-  void _fold(RunEvent event, RunRequest request) {
-    switch (event) {
-      case RunReplicasEvent(:final infoA, :final infoB):
+  Future<void> _fold(
+    RunUpdate update,
+    RunRequest request,
+    RunSession session,
+  ) async {
+    switch (update) {
+      case RunConnected():
+        _recordPhase(const SyncRunRunning());
+      case RunReplicas(:final a, :final b):
         state.recordHeader(
           SyncRunHeader(
             localRoot: request.localRootPath,
             remoteRoot: request.remoteRootPath,
             deviceName: request.deviceName,
             history: _history(
-              lastA: infoA.lastCommitTime,
-              lastB: infoB.lastCommitTime,
+              lastA: a.lastCommit,
+              lastB: b.lastCommit,
               deviceName: request.deviceName,
             ),
-            firstSyncWarning:
-                infoA.lastCommitTime == null || infoB.lastCommitTime == null
+            firstSyncWarning: a.lastCommit == null || b.lastCommit == null
                 ? firstSyncWarning
                 : null,
           ),
         );
-      case RunScanTallyEvent(:final tallyA, :final tallyB):
+      case RunScanTally(:final a, :final b):
         state.recordScanTally(
-          SyncRunScanTally(local: _side(tallyA), remote: _side(tallyB)),
+          SyncRunScanTally(local: _side(a), remote: _side(b)),
         );
-      case RunSkippedPathEvent(:final skipped, :final onA):
-        final side = onA ? 'this device' : request.deviceName;
+      case RunSkipped(:final skipped):
+        final side = _sideName(skipped.side, request);
         final line = '${skipped.path} ($side): ${skipped.detail}';
         // `isFailure` is the reason's own verdict on which list this is
         // (SPEC §5.1): a symlink is the tool obeying §9's rules, the other
         // two are a side unable to stand behind a status.
-        if (skipped.reason.isFailure) {
+        if (skipped.isFailure) {
           state.recordUnreadablePath(line);
         } else {
           state.recordSkippedSymlink(line);
         }
-      case RunConflictEvent(:final conflict):
+      case RunConflict(:final conflict):
         state.recordConflict(
           SyncRunConflictRow(
             path: conflict.path,
-            local: _status(conflict.onA),
-            remote: _status(conflict.onB),
+            local: _status(conflict.a),
+            remote: _status(conflict.b),
           ),
         );
-      case RunPlanEvent(:final plan):
+      case RunPlan() && final plan:
         state.recordPlan([
           for (final action in plan.actions)
             SyncRunPlanRow(
               path: action.path,
-              action: _actionLabel(action.type, request.deviceName),
-              bytes: action.bytes,
+              action: _actionLabel(action, request.deviceName),
+              bytes: _bytes(action),
             ),
         ], bytesToTransfer: plan.bytesToTransfer);
-      case RunActionEvent():
-        // The committed plan, announced together ahead of the first result
-        // (see `RunActionEvent`'s doc comment). The page already shows the
-        // plan and marks each row off its own `RunResultEvent`, so there is
-        // nothing further to render for this one.
-        break;
-      case RunResultEvent(:final path, :final type, :final error):
-        state.recordResult(
-          SyncRunResultRow(
-            path: path,
-            action: _actionLabel(type, request.deviceName),
-            error: error?.toString(),
-          ),
-        );
-      case RunProgressEvent(:final completed, :final total):
-        _completedActions = completed;
-        state.recordProgress(
-          SyncRunProgress(completed: completed, total: total),
-        );
-      case RunSummaryEvent(
-        :final appliedCount,
-        :final failedCount,
-        :final conflictCount,
-        :final skippedCount,
-        :final unreadableCount,
-      ):
-        // A stopped run still ends with a summary (`_suspend`); what the page
-        // shows is that it was stopped, and how far it got.
-        if (_stopRequested) {
-          _recordPhase(
-            _pauseRequested
-                ? SyncRunPaused(completedActions: _completedActions)
-                : SyncRunStopped(completedActions: _completedActions),
-          );
-          return;
+        if (!plan.awaitingDecision) break;
+        // A run already stopped must not park a sheet nobody will answer,
+        // and nothing to decide needs no sheet either: the core waits on
+        // the answer holding both locks, so it is given at once.
+        if (_stopRequested ||
+            (plan.actions.isEmpty && plan.conflicts.isEmpty)) {
+          await _decide(session, const RunDecision());
+          break;
         }
-        _recordPhase(
-          SyncRunFinished(
-            applied: appliedCount,
-            skipped: skippedCount,
-            conflicts: conflictCount,
-            failed: failedCount,
-            unreadable: unreadableCount,
-          ),
-        );
-      case RunErrorEvent(:final error):
-        // SPEC §4.3: a held replica lock is its own outcome, not a failure
-        // — `RunController` yields the exception itself, unwrapped, so this
-        // is decided on the type and never on the text of a message.
-        if (error case final ReplicaLockHeldException held) {
-          _recordPhase(
-            SyncRunReplicaBusy(
-              replicaRootPath: request.localRootPath,
-              lockPath: held.path,
+        _pending = (choices: PlanDecisions(plan), request: request);
+        _renderDecisions();
+      case RunApplied(:final results, :final progress):
+        for (final ActionResult(:action, :failure) in results) {
+          state.recordResult(
+            SyncRunResultRow(
+              path: action.path,
+              action: _actionLabel(action, request.deviceName),
+              error: failure,
             ),
           );
-        } else {
-          _recordPhase(SyncRunFailed(_errorMessage(error, request)));
         }
+        if (progress != null) {
+          _completedActions = progress.completed;
+          state.recordProgress(
+            SyncRunProgress(
+              completed: progress.completed,
+              total: progress.total,
+            ),
+          );
+        }
+      case RunSummarized(:final summary):
+        _recordSummary(summary);
+      case RunFailed(:final error):
+        // SPEC §4.3: a held replica lock is its own outcome, not a failure
+        // — the core says which it is, so nothing here reads a message.
+        _recordPhase(
+          error.replicaBusy
+              ? SyncRunReplicaBusy(error.message)
+              : SyncRunFailed(error.message),
+        );
+      case RunEnded(:final end):
+        _recordEnd(end);
     }
   }
 
-  /// A stream that ended while still [SyncRunRunning] emitted neither a
-  /// summary nor an error — which `RunController.run()` never does. Left
-  /// as a failure rather than a silent "finished" so a generator bug shows.
-  void _finishWithoutSummary() {
-    if (state.phase is SyncRunRunning) {
-      _recordPhase(
-        const SyncRunFailed('The run ended without reporting a summary.'),
-      );
+  void _recordSummary(RunSummaryInfo summary) {
+    // A stopped run still ends with a summary; what the page shows is that
+    // it was stopped, and how far it got.
+    if (_stopRequested) {
+      _recordPhase(_suspended(_completedActions));
+      return;
+    }
+    _recordPhase(
+      SyncRunFinished(
+        applied: summary.applied,
+        skipped: summary.skipped,
+        conflicts: summary.conflicts,
+        failed: summary.failed,
+        unreadable: summary.unreadable,
+      ),
+    );
+  }
+
+  void _recordEnd(RunEnd end) {
+    switch (end) {
+      case RunRan(timings: final report):
+        if (!_disposed) timings.value = report;
+        if (state.phase is SyncRunRunning || state.phase is SyncRunConnecting) {
+          _recordPhase(
+            _stopRequested
+                ? _suspended(_completedActions)
+                : const SyncRunFailed(
+                    'The run ended without reporting a summary.',
+                  ),
+          );
+        }
+      case RunNotConnected(:final message):
+        _recordPhase(_stopRequested ? _suspended(0) : SyncRunFailed(message));
+      case RunStoppedConnecting():
+        _recordPhase(_suspended(0));
     }
   }
 
-  /// SPEC §4.4's root refusal arrives as an `AgentOperationException` from
-  /// the `hello`, carrying `UnauthorizedReplicaRootException`'s own text —
-  /// the wire carries a string, so the string is what identifies it. It is
-  /// rendered with `remoteRootNotGrantedMessage`, which says "not granted"
-  /// and nothing about whether the path exists: the head cannot tell, and
-  /// either claim would leak or fabricate. Everything else is shown as its
-  /// own `toString`, the way the CLI prints an `error` line.
-  String _errorMessage(Object error, RunRequest request) {
-    if (error is AgentOperationException &&
-        error.message == const UnauthorizedReplicaRootException().toString()) {
-      return remoteRootNotGrantedMessage(
-        deviceName: request.deviceName,
-        remoteRoot: request.remoteRootPath,
-      );
-    }
-    // SPEC §4.5: side a is this device, side b the peer.
-    if (error is MissingReplicaRootException) {
-      return error.describeOn(error.onA ? 'this device' : request.deviceName);
-    }
-    return error.toString();
-  }
+  SyncRunPhase _suspended(int completedActions) => _pauseRequested
+      ? SyncRunPaused(completedActions: completedActions)
+      : SyncRunStopped(completedActions: completedActions);
 
-  /// The header's history line, worded as `HumanRenderer._renderReplicas`
-  /// words it: both-empty is an expected first run; one side empty is
-  /// named, because a wiped state dir looks exactly like this and the user
-  /// deserves to be told so.
   String _history({
     required DateTime? lastA,
     required DateTime? lastB,
@@ -743,26 +491,21 @@ class SyncRunController {
     if (diff.inMinutes >= 1) return '${diff.inMinutes} minute(s) ago';
     return 'just now';
   }
-
-  Future<void> _disconnectQuietly(Agent agent) async {
-    try {
-      await agent.disconnect();
-    } catch (_) {
-      // The run is already over; a teardown error would only obscure that.
-    }
-  }
 }
 
-/// SPEC §6's "a path one side has never seen", as the page shows it under
-/// the header of a first sync: with no archive on the affected side, a
-/// file present on one side only cannot be told apart from one the other
-/// side deleted, so it is copied, never deleted.
 const firstSyncWarning =
     'First sync: with no archive, a file present on one side only is '
     'copied, never deleted — there is no way yet to tell a new file from a '
     'deleted one.';
 
-SyncRunScanSide _side(ScanReasonTally tally) => SyncRunScanSide(
+/// SPEC §16 fixes which side is which for this head: `a` is this device's
+/// folder and `b` the peer's.
+String _sideName(ReplicaSide side, RunRequest request) => switch (side) {
+  ReplicaSide.a => 'this device',
+  ReplicaSide.b => request.deviceName,
+};
+
+SyncRunScanSide _side(ScanTally tally) => SyncRunScanSide(
   metadataMatched: tally.metadataMatched,
   hashMatched: tally.hashMatched,
   modified: tally.modified,
@@ -770,36 +513,33 @@ SyncRunScanSide _side(ScanReasonTally tally) => SyncRunScanSide(
   deleted: tally.deleted,
 );
 
-/// A conflict side's status word; `null` is a side with no record of the
-/// path at all (`Conflict`'s doc comment).
-String _status(ScanEntry? entry) => switch (entry?.status) {
+String _status(FileStatus? status) => switch (status) {
   null => 'no record',
-  ScanStatus.unchanged => 'unchanged',
-  ScanStatus.created => 'created',
-  ScanStatus.modified => 'modified',
-  ScanStatus.deleted => 'deleted',
-  ScanStatus.untrusted => 'interrupted, may be incomplete',
+  StatusUnchanged() => 'unchanged',
+  StatusCreated() => 'created',
+  StatusModified() => 'modified',
+  StatusDeleted() => 'deleted',
+  StatusUntrusted() ||
+  StatusUntrustedAbsent() => 'interrupted, may be incomplete',
 };
 
-/// What an action does, from this device's point of view: side `a` is
-/// always this device (`ReplicaConnector`'s `ConnectedAgents`).
-String _actionLabel(ActionType type, String deviceName) => switch (type) {
-  ActionType.copyAtoB => 'copy to $deviceName',
-  ActionType.copyBtoA => 'copy to this device',
-  ActionType.deleteOnA => 'delete on this device',
-  ActionType.deleteOnB => 'delete on $deviceName',
-  ActionType.commitOnly => 'same content, record only',
+String _actionLabel(PlanAction action, String deviceName) => switch (action) {
+  CopyAction(from: ReplicaSide.a) => 'copy to $deviceName',
+  CopyAction(from: ReplicaSide.b) => 'copy to this device',
+  DeleteAction(on: ReplicaSide.a) => 'delete on this device',
+  DeleteAction(on: ReplicaSide.b) => 'delete on $deviceName',
+  CommitOnlyAction() => 'same content, record only',
 };
 
-/// [SyncRunStopped]'s line. Says what is true — see the class doc comment
-/// on `SyncRunController` — and never "cancelled".
+int _bytes(PlanAction action) => switch (action) {
+  CopyAction(:final bytes) => bytes,
+  DeleteAction() || CommitOnlyAction() => 0,
+};
+
 String stoppedMessage(int completedActions) =>
     'Stopped after $completedActions action(s). Everything applied so far '
     'is recorded on both sides; nothing further was started.';
 
-/// [SyncRunPaused]'s line. Says the same thing [stoppedMessage] says about
-/// what is durable — the mechanism is identical — and then what is
-/// different: nobody asked for this and it is not over.
 String pausedMessage(int completedActions) =>
     'Paused after $completedActions action(s) — the app was backgrounded. '
     'Everything applied so far is recorded on both sides; the rest '

@@ -13,7 +13,7 @@ final class SyncRunIdle extends SyncRunPhase {
   const SyncRunIdle();
 }
 
-/// `ReplicaConnector.connect` is in flight: no `RunEvent` can have arrived.
+/// The core is connecting both sides: no run update can have arrived.
 final class SyncRunConnecting extends SyncRunPhase {
   const SyncRunConnecting();
 }
@@ -165,25 +165,12 @@ final class SyncRunFailed extends SyncRunPhase {
 /// not claimed — the lock file carries no owner, and one read out of it would
 /// be stale by the time this line is on screen.
 final class SyncRunReplicaBusy extends SyncRunPhase {
-  const SyncRunReplicaBusy({
-    required this.replicaRootPath,
-    required this.lockPath,
-  });
+  const SyncRunReplicaBusy(this.message);
 
-  /// The folder this device syncs — the replica the user recognises.
-  final String replicaRootPath;
-
-  /// The lock file that is held, named so the user can see for themselves
-  /// that it is the one their other run took.
-  final String lockPath;
-
-  /// The whole line to show. Lives here rather than in the page for the
-  /// reason [SyncRunFailed.message] is a field: the phase is what knows
-  /// what happened.
-  String get message =>
-      '"$replicaRootPath" is in use by another dsync process on this '
-      'device. Wait for that run to finish, or stop it, then try again. '
-      '(Lock file: $lockPath)';
+  /// The whole line to show — the core's own, which names the replica and
+  /// the lock file that is held, so the user can see for themselves that
+  /// it is the one their other run took.
+  final String message;
 }
 
 /// SPEC §11.4's run header, rendered: the two locations and what the tool
@@ -287,12 +274,12 @@ final class SyncRunProgress {
   final int total;
 }
 
-/// The rendered values of the Run page: a `dsync_core` run's `RunEvent`s as
+/// The rendered values of the Run page: the core's run updates as
 /// something a widget can display (SPEC §9, §11.4).
 ///
 /// Holds only what the page displays — see the view-state role in
-/// `app_scope.dart`: strings, ints and sealed cases, never a `RunEvent`, a
-/// `Plan` or a `Conflict`. `SyncRunController` folds the stream into these
+/// `app_scope.dart`: strings, ints and sealed cases, never a run update, a
+/// plan or a conflict. `SyncRunController` folds the stream into these
 /// fields in the order SPEC §11.4 fixes — header, scan tally, skipped and
 /// unreadable paths, conflicts, plan, per-action results, summary — and
 /// each field is the rendering of the event that fills it. It is many

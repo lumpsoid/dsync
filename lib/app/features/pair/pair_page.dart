@@ -27,9 +27,9 @@ import 'scan_code_page.dart';
 /// can actually check — which device, and where.
 ///
 /// **The one name here is not something the user has to invent.** The field
-/// arrives filled in with the desktop's own name, read out of the payload it
-/// printed (`default_names.dart`), so the page can be completed by scanning
-/// one code and pressing one button. It stays an ordinary editable field:
+/// arrives filled in with the desktop's own name, as the core reads it out
+/// of the payload it printed, so the page can be completed by scanning one
+/// code and pressing one button. It stays an ordinary editable field:
 /// what is offered is overwritten by whatever the user types, and a field
 /// emptied says so at the keyboard rather than after a tap that did nothing
 /// (`PairController.localNameEdited`).
@@ -125,9 +125,10 @@ class _PairPageState extends State<PairPage> {
   /// decides what it is, and the desktop names itself inside it, so the
   /// field for that name fills itself in as soon as one is readable. Left
   /// alone once the user has put something else there.
-  void _codeEntered(String text) {
+  Future<void> _codeEntered(String text) async {
     final controller = pairScope.controller;
-    controller.codeEntered(text);
+    await controller.codeEntered(text);
+    if (!mounted) return;
     if (controller.state.code case PairCodeRead(:final desktopName)) {
       if (_localName.text != (_offeredDesktopName ?? '')) return;
       _offeredDesktopName = desktopName;
@@ -146,7 +147,7 @@ class _PairPageState extends State<PairPage> {
       ),
     );
     if (raw == null || !mounted) return;
-    _codeEntered(raw);
+    await _codeEntered(raw);
   }
 
   /// The clipboard, as the second way in: the `dsync-pair:v2:` line reaches
@@ -160,7 +161,7 @@ class _PairPageState extends State<PairPage> {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim();
     if (text == null || text.isEmpty || !mounted) return;
-    _codeEntered(text);
+    await _codeEntered(text);
   }
 
   @override

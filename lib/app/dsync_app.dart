@@ -23,12 +23,6 @@ import 'run_request.dart';
 /// The Flutter head's root: the bootstrap gate and the routes between the
 /// pages (SPEC §4.4, §13).
 ///
-/// This file is still where a Flutter dependency leaking into `dsync_core/`
-/// would show up: it is the one root that imports both, so anything
-/// head-specific that crept into the core would surface here as a
-/// dependency cycle. That was its only job while the head was a skeleton;
-/// the rest of it is now the wiring below.
-///
 /// **Navigation lives here and nowhere else.** Every page takes where a tap
 /// leads as a required constructor callback (`ProfilesPage.onOpenProfile`,
 /// `RunSetupPage.onStart`, ...) and holds no `Navigator` of its own — a
@@ -106,8 +100,8 @@ class _BootstrapGate extends StatelessWidget {
           ),
         ),
         AppBootstrapReady() => ProfilesPage(
-          onOpenProfile: (profileId) =>
-              _openRunSetup(context, RunSetupFromProfile(profileId)),
+          onOpenProfile: (profileName) =>
+              _openRunSetup(context, RunSetupFromProfile(profileName)),
           onOpenDevices: () => _openDevices(context),
           onOpenArchives: () => _openArchives(context),
           onOpenSettings: () => _openSettings(context),

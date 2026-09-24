@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'diagnostics_controller.dart';
 import 'diagnostics_scope.dart';
 import 'diagnostics_view_state.dart';
-import 'read_rate_sheet.dart';
 import 'scan_cost_sheet.dart';
 
 /// The Diagnostics page: measure what this device costs, over the replica a
@@ -13,14 +12,15 @@ import 'scan_cost_sheet.dart';
 /// answer is actually asked — "why was that slow" is asked looking at a run,
 /// and the root a probe needs is the one that run was over
 /// (`RunRequest.localRootPath`). It is a page rather than another sheet
-/// because it holds two probes that each run for minutes and each end in a
-/// report of their own; a sheet that spawns sheets is not a place to wait.
+/// because its probe runs for minutes and ends in a report of its own; a
+/// sheet that spawns sheets is not a place to wait. (The read-rate probe
+/// measured the Dart core's I/O and went with it, plan D11.)
 ///
-/// **Nothing here starts, changes or reads a run.** Both probes open files
-/// that are already on this device and count — see [DiagnosticsController].
+/// **Nothing here starts, changes or reads a run.** The probe lists files
+/// that are already on this device and counts — see [DiagnosticsController].
 ///
 /// [blockedReason] is the one thing the Run feature tells this page: a
-/// non-null value disables both probes and is shown as the reason. A probe
+/// non-null value disables the probe and is shown as the reason. A probe
 /// competing with a live run for the same storage measures neither honestly
 /// and slows the run it was opened to explain.
 class DiagnosticsPage extends StatefulWidget {
@@ -30,10 +30,10 @@ class DiagnosticsPage extends StatefulWidget {
     required this.blockedReason,
   });
 
-  /// The local replica root both probes measure, fixed for this page's life.
+  /// The local replica root the probe measures, fixed for this page's life.
   final String rootPath;
 
-  /// Why neither probe may run, or `null` when they may.
+  /// Why the probe may not run, or `null` when it may.
   final String? blockedReason;
 
   @override
@@ -87,32 +87,6 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
                 _ => null,
               },
             ),
-            const SizedBox(height: 24),
-            _Probe(
-              keyPrefix: 'read-rate',
-              title: 'Read rate',
-              description:
-                  'Reads the same files three ways, at every depth from 1 to '
-                  '64, to find what actually limits how fast this device '
-                  'gives up its files. Minutes.',
-              busy: switch (state.readRate) {
-                ReadRateMeasuring(:final done, :final total, :final fraction) =>
-                  _Busy(fraction: fraction, label: 'Sample $done of $total'),
-                _ => null,
-              },
-              error: switch (state.readRate) {
-                ReadRateFailed(:final message) => message,
-                _ => null,
-              },
-              onRun: _blocked ? null : _measureReadRate,
-              onShow: switch (state.readRate) {
-                ReadRateMeasured(:final report) => () => showReadRate(
-                  context,
-                  report,
-                ),
-                _ => null,
-              },
-            ),
           ],
         ),
       ),
@@ -123,12 +97,9 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
 
   Future<void> _measureScanCost() =>
       _controller.measureScanCost(widget.rootPath);
-
-  Future<void> _measureReadRate() =>
-      _controller.measureReadRate(widget.rootPath);
 }
 
-/// Why both probes are disabled. An icon as well as the colour, so the
+/// Why the probe is disabled. An icon as well as the colour, so the
 /// warning does not depend on colour alone.
 class _Blocked extends StatelessWidget {
   const _Blocked({required this.reason});
@@ -238,25 +209,19 @@ class _Probe extends StatelessWidget {
   }
 }
 
-/// A probe in flight: determinate once it knows how far along it is,
-/// indeterminate until then, and labelled either way so a screen reader has
-/// something to read.
+/// A probe in flight, labelled so a screen reader has something to read.
 class _Busy extends StatelessWidget {
-  const _Busy({this.fraction, this.label});
-
-  final double? fraction;
-  final String? label;
+  const _Busy();
 
   @override
   Widget build(BuildContext context) {
-    final text = label ?? 'Measuring';
+    const text = 'Measuring';
     return Row(
       children: [
         SizedBox(
           width: 20,
           height: 20,
           child: CircularProgressIndicator(
-            value: fraction,
             strokeWidth: 2,
             semanticsLabel: text,
           ),

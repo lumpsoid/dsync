@@ -48,7 +48,7 @@ class ProfilesPage extends StatefulWidget {
 
   /// Opens Run setup pre-filled from the tapped profile, by id — the id is
   /// the whole handoff; the destination loads what it needs.
-  final void Function(String profileId) onOpenProfile;
+  final void Function(String profileName) onOpenProfile;
 
   /// Opens the Devices page.
   final VoidCallback onOpenDevices;
@@ -142,7 +142,7 @@ class _ProfilesBody extends StatelessWidget {
   });
 
   final ProfilesController controller;
-  final void Function(String profileId) onOpenProfile;
+  final void Function(String profileName) onOpenProfile;
   final VoidCallback onOpenDevices;
 
   @override
@@ -164,10 +164,10 @@ class _ProfilesBody extends StatelessWidget {
               _ProfileTile(
                 row: row,
                 onTap: row.breakage == null
-                    ? () => onOpenProfile(row.id)
+                    ? () => onOpenProfile(row.name)
                     : null,
-                onRunAgain: () => onOpenProfile(row.id),
-                onPickFolder: () => controller.repickLocalFolder(row.id),
+                onRunAgain: () => onOpenProfile(row.name),
+                onPickFolder: () => controller.repickLocalFolder(row.name),
                 onPairAgain: onOpenDevices,
                 onDelete: () => _confirmDelete(context, row),
               ),
@@ -181,7 +181,7 @@ class _ProfilesBody extends StatelessWidget {
       context: context,
       builder: (context) => _DeleteDialog(row: row),
     );
-    if (confirmed ?? false) await controller.delete(row.id);
+    if (confirmed ?? false) await controller.delete(row.name);
   }
 }
 
@@ -313,7 +313,7 @@ class _ProfileTile extends StatelessWidget {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton(
-                    key: Key('profile-run-again-${row.id}'),
+                    key: Key('profile-run-again-${row.name}'),
                     onPressed: onRunAgain,
                     child: const Text('Run again'),
                   ),
@@ -329,12 +329,12 @@ class _ProfileTile extends StatelessWidget {
                   alignment: Alignment.centerLeft,
                   child: switch (breakage) {
                     ProfileLocalRootUnusable() => TextButton(
-                      key: Key('profile-pick-folder-${row.id}'),
+                      key: Key('profile-pick-folder-${row.name}'),
                       onPressed: onPickFolder,
                       child: const Text('Choose folder'),
                     ),
                     ProfileDeviceUnpaired() => TextButton(
-                      key: Key('profile-pair-again-${row.id}'),
+                      key: Key('profile-pair-again-${row.name}'),
                       onPressed: onPairAgain,
                       child: const Text('Pair again'),
                     ),

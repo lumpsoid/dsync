@@ -70,7 +70,11 @@ final class PairShowPaired extends PairShowStatus {
 /// The token's window ran out with nothing redeemed. The page offers a
 /// fresh one.
 final class PairShowExpired extends PairShowStatus {
-  const PairShowExpired();
+  const PairShowExpired(this.window);
+
+  /// How long the code was good for — the core's own window, so the page
+  /// can say it.
+  final Duration window;
 }
 
 /// The window could not be opened, or it ended in a refusal the other

@@ -2,56 +2,42 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/run_request.dart';
-import 'package:dsync/app/sync_profile.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_folder_picker.dart';
+import '../../support/fake_head.dart';
 
 /// Rendering tests for the Run setup page, driven the way the scope
 /// contract in `app_scope.dart` intends: the controllers are pinned with
 /// `setController` and the page is pumped directly. The page's `initState`
-/// calls `load`, which reads the store — real I/O, so every test first waits
-/// for it under `runAsync`, then writes the case it is about into the view
+/// calls `load`, which asks the core — a [FakeCoreLink] here — so every
+/// test first waits for it under `runAsync`, then writes the case it is about into the view
 /// state as the controller would.
 void main() {
   late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late RunSetupController controller;
   late FakeFolderPicker picker;
-  late PairedDevice desktop;
-  late String certA;
+  final desktop = pairedDevice(deviceId: 'desk-id', name: 'desktop');
   final started = <RunRequest>[];
   var saved = 0;
 
-  setUpAll(() {
-    certA = generateDeviceIdentity(commonName: 'desktop').certificatePem;
-  });
-
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('run_setup_page_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    core = FakeCoreLink(devices: [desktop]);
+    app = fakeApp(core);
     picker = FakeFolderPicker();
     controller = RunSetupController(app, picker: picker);
-    desktop = PairedDevice(
-      certificatePem: certA,
-      name: 'desktop',
-      agreedReplicaRoots: const {'/home/me/notes'},
-      pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
-      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-    );
-    await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
-        .add(desktop);
     appScope.setController(app);
     runSetupScope.setController(controller);
     started.clear();
@@ -149,8 +135,7 @@ void main() {
       .enabled;
 
   testWidgets('loading: a progress indicator and no form', (tester) async {
-    // Inside `runAsync`, like `pumpLoaded`: `load` is real `dart:io`, and
-    // in the fake-async zone its completions would only arrive on a pump.
+    // Inside `runAsync`, like `pumpLoaded`.
     //
     // The frame `pumpWidget` renders is `load`'s first state, recorded
     // synchronously before its first `await` — and nothing rebuilds the
@@ -250,24 +235,11 @@ void main() {
   testWidgets('an edit says which profile it is about to write back over', (
     tester,
   ) async {
-    final localRoot = Directory('${tempDir.path}/documents/notes')
-      ..createSync(recursive: true);
-    // Through the store, under `runAsync`: writing it is real file I/O,
-    // which the test binding's fake async never completes on its own.
-    await tester.runAsync(() async {
-      await (await app.profiles).save(
-        SyncProfile(
-          id: 'p1',
-          name: 'weekly',
-          localRootPath: localRoot.path,
-          peerDeviceId: desktop.deviceId,
-          remoteRootPath: '~/notes',
-          jobs: 4,
-        ),
-      );
-    });
+    core.profiles.add(
+      headProfile(name: 'weekly', peerDeviceId: desktop.deviceId),
+    );
 
-    await pumpLoaded(tester, source: const RunSetupFromProfile('p1'));
+    await pumpLoaded(tester, source: const RunSetupFromProfile('weekly'));
 
     // Navigated into from the home list, this page *is* the profile — so
     // it is titled as one, and the name is the field that says which.
@@ -286,23 +258,15 @@ void main() {
 
   testWidgets('a profile whose last run did not finish is warned about '
       'before it runs again (task 99f404)', (tester) async {
-    final localRoot = Directory('${tempDir.path}/documents/notes')
-      ..createSync(recursive: true);
-    await tester.runAsync(() async {
-      await (await app.profiles).save(
-        SyncProfile(
-          id: 'p1',
-          name: 'weekly',
-          localRootPath: localRoot.path,
-          peerDeviceId: desktop.deviceId,
-          remoteRootPath: '~/notes',
-          jobs: 4,
-        ),
-      );
-      await (await app.runMarker('p1')).create();
-    });
+    core.profiles.add(
+      headProfile(
+        name: 'weekly',
+        peerDeviceId: desktop.deviceId,
+        lastRunUnfinished: true,
+      ),
+    );
 
-    await pumpLoaded(tester, source: const RunSetupFromProfile('p1'));
+    await pumpLoaded(tester, source: const RunSetupFromProfile('weekly'));
 
     expect(
       find.byKey(const Key('run-setup-last-run-unfinished')),
@@ -346,7 +310,9 @@ void main() {
 
   testWidgets('a folder the head cannot use is a snackbar with a way to fix '
       'it, and the form is untouched', (tester) async {
-    picker.onPick = () => '${tempDir.path}/elsewhere/no-such-tree';
+    final refused = '${tempDir.path}/elsewhere/no-such-tree';
+    picker.onPick = () => refused;
+    core.folderRefusals[refused] = 'dsync cannot use $refused.';
     await pumpLoaded(tester);
 
     await pickFolder(
@@ -500,12 +466,11 @@ void main() {
     controller.state.recordOutcome(
       const RunSetupStarted(
         RunRequest(
+          target: SavedProfileTarget('weekly'),
           localRootPath: '/docs/notes',
           deviceName: 'desktop',
-          peerDeviceId: 'ab:cd',
           remoteRootPath: '~/notes',
-          addressOverride: null,
-          jobs: 4,
+          address: null,
           dryRun: true,
         ),
       ),
@@ -554,15 +519,17 @@ void main() {
     final request = started.single;
     expect(request.localRootPath, picked);
     expect(request.deviceName, 'desktop');
-    expect(request.peerDeviceId, desktop.deviceId);
+    expect(
+      (request.target as DraftTarget).draft.peerDeviceId,
+      desktop.deviceId,
+    );
     expect(request.remoteRootPath, '~/notes');
-    expect(request.addressOverride?.host, '10.0.0.9');
-    expect(request.addressOverride?.port, 4242);
+    expect(request.address, '10.0.0.9:4242');
     expect(request.dryRun, isFalse);
   });
 
   group('the Diagnostics entry (task 8347dd)', () {
-    testWidgets('waits for a folder, since the probes need one to measure', (
+    testWidgets('waits for a folder, since the probe needs one to measure', (
       tester,
     ) async {
       await pumpLoaded(tester);
@@ -593,7 +560,7 @@ void main() {
       expect(find.text('Diagnostics'), findsOneWidget);
       expect(
         tester
-            .widget<FilledButton>(find.byKey(const Key('read-rate-run')))
+            .widget<FilledButton>(find.byKey(const Key('scan-cost-run')))
             .onPressed,
         isNotNull,
       );

@@ -1,53 +1,42 @@
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/archive_row.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
-import 'package:dsync/dsync_core/lock/replica_lock.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// [ArchivesController] over a real state directory: the controller's job is
-/// to join what is on disk with the saved runs the home list holds, so the
-/// disk half is real files in a temp directory and the other half is rows
-/// written into `AppState`.
+import '../../support/fake_head.dart';
+
+/// [ArchivesController] over a [FakeCoreLink]: the controller's job is to
+/// join what the core lists with the saved runs the home list holds, and to
+/// render the core's answer to a delete — the disk half is the core's.
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late ArchivesController controller;
 
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('dsync_archives_ctrl_');
-    await Directory('${tempDir.path}/dsync').create(recursive: true);
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+  setUp(() {
+    core = FakeCoreLink();
+    app = fakeApp(core);
     controller = ArchivesController(app);
   });
 
-  tearDown(() async {
-    controller.dispose();
-    await tempDir.delete(recursive: true);
-  });
+  tearDown(() => controller.dispose());
 
-  Future<File> writeLog(
-    String profileId,
-    String side, {
-    String rootPath = '/on-device/notes',
-  }) async {
-    final file = File('${tempDir.path}/dsync/$profileId-$side.jsonl');
-    await file.writeAsString(
-      '${jsonEncode({'op': 'header', 'schemaVersion': 2, 'profileId': profileId, 'rootPath': rootPath})}\n',
-    );
-    return file;
+  String log(String profileId, [ReplicaSide side = ReplicaSide.a]) {
+    final info = archiveInfo(profileId: profileId, side: side);
+    core.archives.add(info);
+    return info.logPath;
   }
 
   ProfileRow profile(String id, String name, {String? peerName = 'desktop'}) =>
       ProfileRow(
-        id: id,
         name: name,
+        profileId: id,
         peerDeviceId: 'a1b2:c3d4',
         peerName: peerName,
         localRootPath: '/on-device/notes',
@@ -62,8 +51,10 @@ void main() {
 
   List<String> titles() => [for (final row in rows()) row.title];
 
+  const busy = 'A sync run is using this history right now.';
+
   test('an archive is named after the saved run that wrote it', () async {
-    await writeLog('p1', 'a');
+    log('p1');
     app.state.recordProfiles([profile('p1', 'weekly notes')]);
 
     await controller.refresh();
@@ -73,7 +64,7 @@ void main() {
   });
 
   test('an archive names the device its run syncs with', () async {
-    await writeLog('p1', 'a');
+    log('p1');
     app.state.recordProfiles([profile('p1', 'weekly notes')]);
 
     await controller.refresh();
@@ -82,7 +73,7 @@ void main() {
   });
 
   test('a run whose device was revoked keeps the id as its peer', () async {
-    await writeLog('p1', 'a');
+    log('p1');
     app.state.recordProfiles([profile('p1', 'weekly notes', peerName: null)]);
 
     await controller.refresh();
@@ -91,7 +82,7 @@ void main() {
   });
 
   test('an archive no saved run points at has no device to name', () async {
-    await writeLog('p9', 'a');
+    log('p9');
     app.state.recordProfiles(const []);
 
     await controller.refresh();
@@ -100,7 +91,7 @@ void main() {
   });
 
   test('an archive no saved run points at says so', () async {
-    await writeLog('p9', 'a');
+    log('p9');
     app.state.recordProfiles(const []);
 
     await controller.refresh();
@@ -113,102 +104,107 @@ void main() {
     await controller.refresh();
 
     expect(controller.state.listing, isA<ArchivesReady>());
-    expect((controller.state.listing as ArchivesReady).rows, isEmpty);
+    expect(rows(), isEmpty);
   });
 
-  test('the total is what the logs cost together', () async {
-    final one = await writeLog('p1', 'a');
-    final two = await writeLog('p2', 'a');
+  test('a listing the core cannot read is the failure it names', () async {
+    core.failNext = const CoreFailure('state dir unreadable');
 
     await controller.refresh();
 
     expect(
-      (controller.state.listing as ArchivesReady).totalBytes,
-      await one.length() + await two.length(),
+      controller.state.listing,
+      isA<ArchivesFailed>().having(
+        (f) => f.message,
+        'message',
+        'state dir unreadable',
+      ),
     );
   });
 
-  test('deleting one removes its log and re-renders the rest', () async {
-    final gone = await writeLog('p1', 'a');
-    await writeLog('p2', 'a');
+  test('the total is what the logs cost together', () async {
+    log('p1');
+    log('p2');
+
     await controller.refresh();
 
-    await controller.delete(gone.path);
+    expect((controller.state.listing as ArchivesReady).totalBytes, 2 * 2048);
+  });
 
-    expect(await gone.exists(), isFalse);
+  test('deleting one clears its history and re-renders the rest', () async {
+    final gone = log('p1');
+    log('p2');
+    await controller.refresh();
+
+    await controller.delete(gone);
+
+    expect(core.calls, contains('clearArchive'));
     expect(titles(), ['p2']);
     expect(controller.state.error, isNull);
+  });
+
+  test('deleting one side clears both sides of its history', () async {
+    // The core clears per archive id, both sides as one decision.
+    final a = log('p1', ReplicaSide.a);
+    log('p1', ReplicaSide.b);
+    log('p2');
+    await controller.refresh();
+
+    await controller.delete(a);
+
+    expect(titles(), ['p2']);
   });
 
   test(
     'deleting everything leaves the device as if it had never synced',
     () async {
-      await writeLog('p1', 'a');
-      await writeLog('p1', 'b');
-      await writeLog('p2', 'a');
+      log('p1', ReplicaSide.a);
+      log('p1', ReplicaSide.b);
+      log('p2');
       await controller.refresh();
 
       await controller.deleteAll();
 
-      expect((controller.state.listing as ArchivesReady).rows, isEmpty);
-      // No log left at all. The empty `.lock` files each delete took its
-      // guard on are not archives and are left behind on purpose — see
-      // `ArchiveInventory.delete`.
-      expect([
-        for (final e in await Directory(
-          '${tempDir.path}/dsync',
-        ).list().toList())
-          if (e.path.endsWith('.jsonl')) e.path,
-      ], isEmpty);
+      expect(rows(), isEmpty);
+      expect(core.archives, isEmpty);
     },
   );
 
-  test('a run in this app keeps its history from being deleted', () async {
-    final log = await writeLog('p1', 'a');
+  test('a run keeps its history from being deleted', () async {
+    final held = log('p1');
     await controller.refresh();
-    // The lock `LocalAgent.lock()` holds for the length of a run — taken
-    // here in this process, exactly as the head's own Run page takes it.
-    final run = ReplicaLock(File('${tempDir.path}/dsync/p1-a.lock'));
-    await run.acquire();
-    addTearDown(run.release);
+    core.archiveRefusals['p1'] = busy;
 
-    await controller.delete(log.path);
+    await controller.delete(held);
 
-    expect(await log.exists(), isTrue);
-    expect(controller.state.error, contains('Wait for it to finish'));
+    expect(controller.state.error, busy);
     expect(titles(), ['p1']);
   });
 
   test('deleting all stops at a log a run is using', () async {
-    final held = await writeLog('p1', 'a');
-    await writeLog('p2', 'a');
+    log('p1');
+    log('p2');
     await controller.refresh();
-    final run = ReplicaLock(File('${tempDir.path}/dsync/p1-a.lock'));
-    await run.acquire();
-    addTearDown(run.release);
+    core.archiveRefusals['p1'] = busy;
 
     await controller.deleteAll();
 
-    // Whichever it reached first, the locked one survived and the user was
-    // told — not left with a shorter list and no idea what was kept.
-    expect(await held.exists(), isTrue);
-    expect(controller.state.error, isNotNull);
+    // The locked one survived and the user was told — not left with a
+    // shorter list and no idea what was kept.
+    expect(controller.state.error, busy);
     expect(titles(), contains('p1'));
   });
 
   test('deleting the ticked ones leaves the rest alone', () async {
-    final gone = await writeLog('p1', 'a');
-    final kept = await writeLog('p2', 'a');
-    final alsoGone = await writeLog('p3', 'a');
+    final gone = log('p1');
+    log('p2');
+    final alsoGone = log('p3');
     await controller.refresh();
 
-    controller.toggleSelection(gone.path);
-    controller.toggleSelection(alsoGone.path);
+    controller.toggleSelection(gone);
+    controller.toggleSelection(alsoGone);
     await controller.deleteSelected();
 
-    expect(await gone.exists(), isFalse);
-    expect(await alsoGone.exists(), isFalse);
-    expect(await kept.exists(), isTrue);
     expect(titles(), ['p2']);
     expect(controller.state.error, isNull);
     // Everything ticked is gone, so the page is out of selection mode with
@@ -219,42 +215,40 @@ void main() {
   test(
     'a ticked log a run is using stops the delete and stays ticked',
     () async {
-      final held = await writeLog('p1', 'a');
-      final other = await writeLog('p2', 'a');
+      // Listed first, so the delete reaches it before the held one.
+      final other = log('p2');
+      final held = log('p1');
       await controller.refresh();
-      final run = ReplicaLock(File('${tempDir.path}/dsync/p1-a.lock'));
-      await run.acquire();
-      addTearDown(run.release);
+      core.archiveRefusals['p1'] = busy;
 
-      controller.toggleSelection(held.path);
-      controller.toggleSelection(other.path);
+      controller.toggleSelection(held);
+      controller.toggleSelection(other);
       await controller.deleteSelected();
 
-      expect(await held.exists(), isTrue);
-      expect(controller.state.error, contains('Wait for it to finish'));
+      expect(controller.state.error, busy);
       // What is still ticked is exactly what was not deleted: trying again
       // after the run ends is the same button.
-      expect(controller.state.selected, {held.path});
+      expect(controller.state.selected, {held});
     },
   );
 
   test('unticking the last row leaves selection mode', () async {
-    final log = await writeLog('p1', 'a');
+    final path = log('p1');
     await controller.refresh();
 
-    controller.toggleSelection(log.path);
+    controller.toggleSelection(path);
     expect(controller.state.isSelecting, isTrue);
-    controller.toggleSelection(log.path);
+    controller.toggleSelection(path);
 
     expect(controller.state.isSelecting, isFalse);
   });
 
   test('a row deleted from under a tick drops the tick', () async {
-    final log = await writeLog('p1', 'a');
+    final path = log('p1');
     await controller.refresh();
-    controller.toggleSelection(log.path);
+    controller.toggleSelection(path);
 
-    await log.delete();
+    core.archives.clear();
     await controller.refresh();
 
     expect(controller.state.selected, isEmpty);
@@ -263,21 +257,23 @@ void main() {
   test(
     'deleting the ticked ones before the list is read does nothing',
     () async {
-      await writeLog('p1', 'a');
+      log('p1');
 
       await controller.deleteSelected();
 
-      expect((controller.state.listing as ArchivesReady).rows, hasLength(1));
+      expect(core.calls, isNot(contains('clearArchive')));
+      expect(rows(), hasLength(1));
     },
   );
 
   test('deleting all before the list is read does nothing', () async {
-    await writeLog('p1', 'a');
+    log('p1');
 
     await controller.deleteAll();
 
     // The listing was `ArchivesLoading`, so there was nothing to delete —
     // and the refresh that follows finds the log still there.
-    expect((controller.state.listing as ArchivesReady).rows, hasLength(1));
+    expect(core.calls, isNot(contains('clearArchive')));
+    expect(rows(), hasLength(1));
   });
 }

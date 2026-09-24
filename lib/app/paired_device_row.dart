@@ -1,21 +1,14 @@
-import 'package:dsync/dsync_core/identity/certificate_expiry.dart';
-import 'package:dsync/dsync_core/identity/certificate_fields.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
-
+import 'core_link/models/paired_device_info.dart';
 import 'format_path.dart';
 
 /// One paired device as the head displays it (SPEC §4.4, §13): every field
 /// is the value a widget puts on screen, not the fact it would derive it
 /// from.
 ///
-/// Deliberately not a `PairedDevice`. A widget that holds one is a widget
-/// that will eventually branch on it — `if (device.isExpired)`, a
-/// re-derivation of the SPEC §4.4 expiry rule at the widget border, one
-/// per page, drifting. So the branch happens once, here, in [render]: the
-/// row carries the *rendered* warning or its absence, and a page only
-/// decides whether there is a line to show. The fields are `String`, `int`
-/// and `DateTime` by construction; nothing from `dsync_core` crosses into
-/// `AppState`.
+/// The core has already applied the SPEC §4.4 expiry rule: the row
+/// carries its *rendered* warning or its absence, and a page only decides
+/// whether there is a line to show. The fields are `String`, `int` and
+/// `DateTime` by construction.
 ///
 /// [pairedAt] stays a `DateTime` rather than a formatted string because
 /// its rendering is a locale question the widget layer owns; nothing about
@@ -33,32 +26,22 @@ class PairedDeviceRow {
     required this.verifiedAt,
   });
 
-  /// [device] as of [now]: the one place a `PairedDevice` becomes a row,
-  /// and the one place the head consults `certificateExpiryWithin` for a
-  /// peer — the same rule `pair list` and the run header use.
-  factory PairedDeviceRow.render(PairedDevice device, {required DateTime now}) {
-    final address = device.lastKnownAddress;
-    final der = device.certificateDer;
-    final validity = certificateValidityFromDer(der);
-    return PairedDeviceRow(
-      name: device.name,
-      deviceId: device.deviceId,
-      address: address.text,
-      pairedAt: device.pairedAt,
-      agreedRootLabels: {
-        for (final root in device.agreedReplicaRoots.toList()..sort())
-          root: elidePath(root),
-      },
-      certificateIssuedAt: validity.notBefore,
-      certificateExpiresAt: validity.notAfter,
-      certificateWarning: certificateExpiryWithin(
-        der,
-        owner: device.name,
-        now: now,
-      )?.message,
-      verifiedAt: device.verifiedAt,
-    );
-  }
+  /// [device] as the core answered it: the one place a paired device
+  /// becomes a row.
+  factory PairedDeviceRow.render(PairedDeviceInfo device) => PairedDeviceRow(
+    name: device.name,
+    deviceId: device.deviceId,
+    address: device.address,
+    pairedAt: device.pairedAt,
+    agreedRootLabels: {
+      for (final root in [...device.grantedRoots]..sort())
+        root: elidePath(root),
+    },
+    certificateIssuedAt: device.issuedAt,
+    certificateExpiresAt: device.expiresAt,
+    certificateWarning: device.expiryNote,
+    verifiedAt: device.verifiedAt,
+  );
 
   final String name;
 

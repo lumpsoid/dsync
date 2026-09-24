@@ -1,25 +1,26 @@
-import 'package:dsync/dsync_core/models/plan.dart';
-
+import '../../core_link/models/conflict_info.dart';
+import '../../core_link/models/replica_side.dart';
+import '../../core_link/models/run_decision.dart';
+import '../../core_link/models/run_update.dart';
 import 'run_view_state.dart';
 
-/// The user's choices over one `Plan` while the conflict sheet is up
-/// (SPEC §11.3), and the `PlanAction` list they add up to.
+/// The user's choices over one plan while the conflict sheet is up
+/// (SPEC §11.3), and the [RunDecision] they add up to.
 ///
 /// A pure rule over the plan and the choices, kept apart from
-/// `SyncRunController` so it is exercised with plain values: the
-/// `Presenter` contract is nothing but the returned list (its doc comment
-/// in `dsync_core/run/run_controller.dart`), so resolving a conflict *adds*
-/// an entry, skipping a proposed action *drops* one, and a conflict left
-/// [SyncRunConflictChoice.unresolved] is simply absent — which is what
-/// `RunController` counts under `conflictCount`, not `skippedCount`.
+/// `SyncRunController` so it is exercised with plain values. The core's
+/// answer is indices: which of the plan's actions to keep, and which
+/// conflicts to settle toward which side. Skipping a proposed action
+/// leaves its index out; a conflict left [SyncRunConflictChoice.unresolved]
+/// is simply absent from the resolutions — which the core counts as a
+/// conflict, not a skip.
 ///
-/// Side `a` is this device and side `b` the peer, as `ReplicaConnector`
-/// wires them: keeping local is `copyAtoB`, keeping the peer's copy is
-/// `copyBtoA`.
+/// Side `a` is this device and side `b` the peer: keeping local is
+/// settling toward `a`, keeping the peer's copy toward `b`.
 class PlanDecisions {
   PlanDecisions(this.plan);
 
-  final Plan plan;
+  final RunPlan plan;
   final Map<String, SyncRunConflictChoice> _choices = {};
   final Set<String> _skipped = {};
 
@@ -33,7 +34,7 @@ class PlanDecisions {
     _choices[path] = choice;
   }
 
-  /// Leaves [path] out of the result: a proposed action is dropped, a
+  /// Leaves [path] out of the decision: a proposed action is dropped, a
   /// conflict goes back to unresolved.
   void skip(String path) {
     if (_conflictAt(path) != null) {
@@ -46,7 +47,7 @@ class PlanDecisions {
   /// Undoes [skip] for a proposed action.
   void keep(String path) => _skipped.remove(path);
 
-  Conflict? _conflictAt(String path) {
+  ConflictInfo? _conflictAt(String path) {
     for (final conflict in plan.conflicts) {
       if (conflict.path == path) return conflict;
     }
@@ -62,35 +63,29 @@ class PlanDecisions {
   /// cannot be the side kept (there is nothing there to copy), so a
   /// one-sided conflict offers only the other direction, as the CLI's
   /// prompt does. Leaving it unresolved is always offered.
-  List<SyncRunConflictChoice> offeredFor(Conflict conflict) => [
+  List<SyncRunConflictChoice> offeredFor(ConflictInfo conflict) => [
     SyncRunConflictChoice.unresolved,
-    if (conflict.onA != null) SyncRunConflictChoice.keepLocal,
-    if (conflict.onB != null) SyncRunConflictChoice.keepRemote,
+    if (conflict.a != null) SyncRunConflictChoice.keepLocal,
+    if (conflict.b != null) SyncRunConflictChoice.keepRemote,
   ];
 
-  /// What the presenter returns: resolved conflicts first, then the
-  /// proposed actions not skipped, each in plan order.
-  List<PlanAction> resolved() => [
-    for (final conflict in plan.conflicts) ?_conflictAction(conflict),
-    for (final action in plan.actions)
-      if (isKept(action.path)) action,
-  ];
+  /// What the core is answered with: the proposed actions not skipped, and
+  /// each resolved conflict settled toward the side kept.
+  RunDecision resolved() => RunDecision(
+    keep: [
+      for (final (index, action) in plan.actions.indexed)
+        if (isKept(action.path)) index,
+    ],
+    resolve: {
+      for (final (index, conflict) in plan.conflicts.indexed)
+        index: ?_sideKept(choiceFor(conflict.path)),
+    },
+  );
 
-  /// The action a direction pick adds. Its `bytes` is the kept side's
-  /// scanned size — the file the copy will move — so the total the page
-  /// shows stays honest; a kept side whose entry records no size (a
-  /// `deleted` status has none) contributes zero, the one case this
-  /// under-reports, and the copy of a deleted file that would follow is
-  /// the CLI presenter's call as much as this one's.
-  PlanAction? _conflictAction(Conflict conflict) {
-    final choice = choiceFor(conflict.path);
-    if (choice == SyncRunConflictChoice.unresolved) return null;
-    final keepLocal = choice == SyncRunConflictChoice.keepLocal;
-    final source = keepLocal ? conflict.onA : conflict.onB;
-    return PlanAction(
-      path: conflict.path,
-      type: keepLocal ? ActionType.copyAtoB : ActionType.copyBtoA,
-      bytes: source?.size ?? 0,
-    );
-  }
+  static ReplicaSide? _sideKept(SyncRunConflictChoice choice) =>
+      switch (choice) {
+        SyncRunConflictChoice.unresolved => null,
+        SyncRunConflictChoice.keepLocal => ReplicaSide.a,
+        SyncRunConflictChoice.keepRemote => ReplicaSide.b,
+      };
 }

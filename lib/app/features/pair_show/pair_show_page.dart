@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:dsync/dsync_core/identity/enrolment_listener.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -161,11 +160,11 @@ class _PairShowPageState extends State<PairShowPage> {
                 // Rendered as the window it is: the page is leaving, and says so
                 // through the snackbar `_statusChanged` raises.
                 PairShowPaired() => const SizedBox.shrink(),
-                PairShowExpired() => _Ended(
+                PairShowExpired(:final window) => _Ended(
                   key: const Key('pair-show-expired'),
                   message:
                       'Nothing used this code before it ran out. Codes are good '
-                      'for ${defaultEnrolmentTokenTtl.inMinutes} minutes, so the '
+                      'for ${window.inMinutes} minutes, so the '
                       'other device needs to be ready before you show one.',
                   isError: false,
                   onRetry: () => unawaited(_showAnother()),

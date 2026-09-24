@@ -1,76 +1,50 @@
-import 'dart:io';
-
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_view_state.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:test/test.dart';
 
-/// The Shared folders controller over a real `AppController` and a real
-/// `PairedDeviceStore` in a temporary directory — the setup
-/// `device_detail_controller_test.dart` uses — so every refusal it renders
-/// is the store's own and every grant is checked where it actually lands:
-/// per device, which is the only place a root is stored.
+import '../../support/fake_head.dart';
+
+/// The Shared folders controller over a real `AppController` and a
+/// `FakeCoreLink`, so every refusal it renders is the core's own and every
+/// grant is checked where it lands: per device, which is the only place a
+/// root is stored.
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late SharedFoldersController controller;
   late _FakePicker picker;
-  late String certA;
-  late String certB;
 
-  setUpAll(() {
-    certA = generateDeviceIdentity(commonName: 'phone-a').certificatePem;
-    certB = generateDeviceIdentity(commonName: 'phone-b').certificatePem;
-  });
-
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('shared_folders_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+  setUp(() {
+    core = FakeCoreLink();
+    app = fakeApp(core);
     picker = _FakePicker();
-    controller = SharedFoldersController(
-      app,
-      environment: const {'HOME': '/home/me'},
-      picker: picker,
-    );
+    controller = SharedFoldersController(app, picker: picker);
   });
 
-  tearDown(() async {
+  tearDown(() {
     controller.dispose();
     app.dispose();
-    await tempDir.delete(recursive: true);
   });
-
-  PairedDeviceStore store() =>
-      PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'));
-
-  PairedDevice device(
-    String certificatePem, {
-    required String name,
-    Set<String> roots = const {},
-  }) => PairedDevice(
-    certificatePem: certificatePem,
-    name: name,
-    agreedReplicaRoots: roots,
-    pairedAt: DateTime.utc(2026, 9, 15),
-    lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-  );
 
   /// Two paired devices, the first holding [roots], and the head booted
   /// over them. Returns their ids in order.
   Future<(String, String)> pairTwo({
-    Set<String> roots = const {'/home/me/notes'},
+    List<String> roots = const ['/home/me/notes'],
   }) async {
-    final desktop = device(certA, name: 'desktop', roots: roots);
-    final laptop = device(certB, name: 'laptop');
-    await store().add(desktop);
-    await store().add(laptop);
+    core.devices
+      ..add(
+        pairedDevice(
+          deviceId: 'desktop-id',
+          name: 'desktop',
+          grantedRoots: roots,
+        ),
+      )
+      ..add(pairedDevice(deviceId: 'laptop-id', name: 'laptop'));
     await app.bootstrap();
-    return (desktop.deviceId, laptop.deviceId);
+    return ('desktop-id', 'laptop-id');
   }
 
   String done() => (controller.state.outcome as SharedFoldersDone).message;
@@ -89,7 +63,7 @@ void main() {
     );
 
     test('is empty while nothing is granted', () async {
-      await pairTwo(roots: const {});
+      await pairTwo(roots: const []);
 
       expect(controller.folders, isEmpty);
       expect(controller.devicesForNewFolder.length, 2);
@@ -104,16 +78,15 @@ void main() {
 
       expect(done(), 'Sharing /home/me/notes with laptop.');
       expect(controller.folders.single.shareCount, 2);
-      final stored = await store().load();
       expect(
-        stored.firstWhere((d) => d.deviceId == laptop).agreedReplicaRoots,
-        {'/home/me/notes'},
+        core.devices.firstWhere((d) => d.deviceId == laptop).grantedRoots,
+        ['/home/me/notes'],
       );
     });
 
-    test('renders the store\'s refusal for a device that is gone', () async {
+    test('renders the core\'s refusal for a device that is gone', () async {
       final (_, laptop) = await pairTwo();
-      await store().revoke(laptop);
+      core.devices.removeWhere((d) => d.deviceId == laptop);
 
       await controller.share(laptop, '/home/me/notes');
 
@@ -146,20 +119,23 @@ void main() {
   });
 
   group('shareNewFolder', () {
-    test('expands a typed path the way the CLI does', () async {
-      final (desktop, laptop) = await pairTwo(roots: const {});
+    test('grants the typed path, trimmed, to every device chosen', () async {
+      final (desktop, laptop) = await pairTwo(roots: const []);
 
-      await controller.shareNewFolder('~/Sync', [desktop, laptop]);
+      await controller.shareNewFolder('  ~/Sync ', [desktop, laptop]);
 
-      expect(controller.folders.single.rootPath, '/home/me/Sync');
+      // The core expands `~` as `dsync pair grant` does; the head hands
+      // the path over as typed.
+      expect(core.calls.where((call) => call == 'grantRoot'), hasLength(2));
+      expect(controller.folders.single.rootPath, '~/Sync');
       expect(controller.folders.single.shareCount, 2);
-      expect(done(), 'Sharing /home/me/Sync with 2 devices.');
+      expect(done(), 'Sharing ~/Sync with 2 devices.');
     });
 
     test(
       'refuses a folder shared with nobody, because it stores nothing',
       () async {
-        final _ = await pairTwo(roots: const {});
+        final _ = await pairTwo(roots: const []);
 
         await controller.shareNewFolder('~/Sync', const []);
 
@@ -169,7 +145,7 @@ void main() {
     );
 
     test('refuses an empty path as a field error', () async {
-      final (desktop, _) = await pairTwo(roots: const {});
+      final (desktop, _) = await pairTwo(roots: const []);
 
       await controller.shareNewFolder('   ', [desktop]);
 
@@ -178,7 +154,7 @@ void main() {
     });
 
     test('does not probe the folder — a grant is authorization', () async {
-      final (desktop, _) = await pairTwo(roots: const {});
+      final (desktop, _) = await pairTwo(roots: const []);
 
       await controller.shareNewFolder('/not/here/yet', [desktop]);
 

@@ -1,6 +1,5 @@
-import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/folder_access.dart';
-import 'package:dsync/app/sync_profile_store.dart';
+import '../../app_controller.dart';
+import '../../core_link/models/core_failure.dart';
 
 import '../run_setup/folder_picker.dart';
 import 'profiles_view_state.dart';
@@ -19,8 +18,8 @@ import 'profiles_view_state.dart';
 /// Navigation is not an input here. Tapping a row opens Run setup
 /// pre-filled from it, and the empty state and the app bar point at
 /// Devices, but both destinations are other features; the page takes them
-/// as callbacks carrying a profile id (cross-feature handoff carries an
-/// id, not data) and the entrypoint wires them to routes. A row broken by
+/// as callbacks carrying a profile's name — its key in the core's store
+/// (cross-feature handoff carries an id, not data) and the entrypoint wires them to routes. A row broken by
 /// a revoked device is remedied that way too — the "Pair with it again"
 /// button is the Devices callback the page already holds, because pairing
 /// is reached from Devices and this page owns no `Navigator`.
@@ -29,8 +28,8 @@ import 'profiles_view_state.dart';
 /// [repickLocalFolder] runs the platform chooser over a profile whose
 /// folder grant was withdrawn and saves the folder the user picks. It takes
 /// the same [FolderPicker] Run setup takes and proves a picked folder with
-/// the same `folderAccessRefusal` probe, so the home list cannot accept a
-/// folder Run setup would reject.
+/// the same core folder check, so the home list cannot accept a folder Run
+/// setup would reject.
 class ProfilesController {
   ProfilesController(this.app, {required this.picker});
 
@@ -43,7 +42,7 @@ class ProfilesController {
   /// The view state this controller renders into; owned here, disposed here.
   final ProfilesViewState state = ProfilesViewState();
 
-  /// Re-reads the store into `AppState.profiles`, on the page's mounting
+  /// Re-reads the core's profiles into `AppState.profiles`, on the page's mounting
   /// (the home must list what survived the last session the moment it
   /// shows) and for a pull-to-refresh. A store that has gone corrupt lands
   /// on [ProfilesViewState.error] rather than escaping: the list keeps its
@@ -52,24 +51,24 @@ class ProfilesController {
   Future<void> refresh() async {
     try {
       await app.refreshProfiles();
-    } on SyncProfileStoreCorruptException catch (e) {
-      state.recordError(e.toString());
+    } on CoreFailure catch (e) {
+      state.recordError(e.message);
       return;
     }
     state.clearError();
   }
 
-  /// Deletes the saved profile named [id] and re-renders the list. The
-  /// confirmation happens before this is called. An id that matches
+  /// Deletes the saved profile [name] and re-renders the list. The
+  /// confirmation happens before this is called. A name that matches
   /// nothing is a stale row, shown as a message while the refresh removes
   /// the row; a store that has gone corrupt is shown as [refresh] shows
   /// it.
-  Future<void> delete(String id) async {
+  Future<void> delete(String name) async {
     final String? failure;
     try {
-      failure = await app.deleteProfile(id);
-    } on SyncProfileStoreCorruptException catch (e) {
-      state.recordError(e.toString());
+      failure = await app.deleteProfile(name);
+    } on CoreFailure catch (e) {
+      state.recordError(e.message);
       return;
     }
     if (failure == null) {
@@ -79,7 +78,7 @@ class ProfilesController {
     }
   }
 
-  /// Re-points the profile saved under [id] at a folder the user picks,
+  /// Re-points the profile [name] at a folder the user picks,
   /// the remedy for a row broken by a withdrawn folder grant — in place of
   /// the round trip through Devices and Run setup that deleting and saving
   /// it again would cost.
@@ -91,7 +90,7 @@ class ProfilesController {
   /// its own message on [ProfilesViewState.error] and the profile keeps the
   /// root it had. Only a folder that passes is saved, and the list is
   /// re-rendered, which is what clears the row's breakage.
-  Future<void> repickLocalFolder(String id) async {
+  Future<void> repickLocalFolder(String name) async {
     // The last failure's line is about the last attempt, not this one.
     state.clearError();
     final String? picked;
@@ -104,20 +103,19 @@ class ProfilesController {
     }
     if (picked == null) return;
 
-    var refusal = await folderAccessRefusal(picked);
-    if (refusal != null && await picker.requestAccess()) {
-      refusal = await folderAccessRefusal(picked);
-    }
-    if (refusal != null) {
-      state.recordError(refusal);
-      return;
-    }
-
     final String? failure;
     try {
-      failure = await app.relocateProfile(id, localRootPath: picked);
-    } on SyncProfileStoreCorruptException catch (e) {
-      state.recordError(e.toString());
+      var refusal = await app.core.checkFolder(picked);
+      if (refusal != null && await picker.requestAccess()) {
+        refusal = await app.core.checkFolder(picked);
+      }
+      if (refusal != null) {
+        state.recordError(refusal);
+        return;
+      }
+      failure = await app.relocateProfile(name, localRootPath: picked);
+    } on CoreFailure catch (e) {
+      state.recordError(e.message);
       return;
     }
     if (failure == null) {

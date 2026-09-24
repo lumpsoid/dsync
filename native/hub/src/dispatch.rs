@@ -9,9 +9,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use dsync_core::{ProfileStore, StateDir};
 use dsync_domain::{DirPath, DirRule, HostFacts, StateDirChoice, Tuning};
 
+use crate::diagnostics::check_ignore_pattern;
 use crate::outbox::Outbox;
 use crate::sessions::Sessions;
 use crate::signals::{CoreCommand, CoreReply, ReplyResult};
+use crate::views::DirsView;
 
 /// A command's answer, or the message saying why there is none.
 pub(crate) type Handled = Result<ReplyResult, String>;
@@ -87,6 +89,10 @@ impl Core {
         let state =
             StateDir::resolve(&StateDirChoice::Rule(rule.clone()), &self.facts).map_err(text)?;
         let profiles = ProfileStore::resolve(&rule, &self.facts).map_err(text)?;
+        let dirs = DirsView {
+            state_dir: state.path().to_string_lossy().into_owned(),
+            profiles_dir: profiles.dir().to_string_lossy().into_owned(),
+        };
         let hub = Hub {
             facts: self.facts.clone(),
             state,
@@ -97,7 +103,7 @@ impl Core {
             sessions: Sessions::default(),
         };
         *self.hub.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(hub));
-        Ok(ReplyResult::Done)
+        Ok(ReplyResult::Initialised(dirs))
     }
 }
 
@@ -141,6 +147,11 @@ impl Hub {
             CoreCommand::WithdrawGrant { device_id, root } => {
                 self.withdraw_grant(&device_id, &root)
             }
+            CoreCommand::SetDeviceAddress { device_id, address } => {
+                self.set_device_address(&device_id, &address)
+            }
+            CoreCommand::VerifyDevice { device_id } => self.verify_device(&device_id),
+            CoreCommand::ClearVerification { device_id } => self.clear_verification(&device_id),
             CoreCommand::ProbePeer { device_id, address } => {
                 self.probe_peer(&device_id, address).await
             }
@@ -168,6 +179,7 @@ impl Hub {
                 folder,
                 ignore,
             } => self.list_filter_folder(root, folder, &ignore).await,
+            CoreCommand::CheckIgnorePattern { pattern } => check_ignore_pattern(&pattern),
             CoreCommand::CheckFolder { path } => self.check_folder(path).await,
             CoreCommand::ProbeScan {
                 root,

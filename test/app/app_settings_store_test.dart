@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
+import 'package:dsync/app/atomic_write.dart';
 import 'package:test/test.dart';
 
 /// Covers `AppSettingsStore` against real temporary directories (SPEC §14),
@@ -139,5 +140,38 @@ void main() {
         'settings.json',
       ]);
     });
+  });
+
+  group('writeFileAtomically', () {
+    test('replaces a document whole', () async {
+      final file = File('${tempDir.path}/doc.json');
+      await file.writeAsString('old');
+
+      await writeFileAtomically(file, 'new');
+
+      expect(await file.readAsString(), 'new');
+      expect(tempDir.listSync().map((e) => e.path.split('/').last), [
+        'doc.json',
+      ]);
+    });
+
+    test(
+      'a failed swap leaves the target as it was and no scratch file',
+      () async {
+        // A directory cannot be renamed over: the swap is the step that fails.
+        final target = Directory('${tempDir.path}/doc.json');
+        await File('${target.path}/inside').create(recursive: true);
+
+        await expectLater(
+          writeFileAtomically(File(target.path), 'new'),
+          throwsA(isA<FileSystemException>()),
+        );
+
+        expect(await File('${target.path}/inside').exists(), isTrue);
+        expect(tempDir.listSync().map((e) => e.path.split('/').last), [
+          'doc.json',
+        ]);
+      },
+    );
   });
 }

@@ -103,4 +103,48 @@ void main() {
     await expectLater(link.listDevices(), throwsA(isA<CoreFailure>()));
     expect(await link.listDevices(), isEmpty);
   });
+
+  test('init answers with the core\'s directories and records its '
+      'arguments', () async {
+    final link = FakeCoreLink();
+    final dirs = await link.init(
+      supportDir: '/data/files',
+      deviceName: 'pixel',
+    );
+    expect(dirs.stateDir, '/fake/state');
+    expect(dirs.profilesDir, '/fake/state/profiles');
+    expect(link.initialised, (supportDir: '/data/files', deviceName: 'pixel'));
+  });
+
+  test('an address, and a confirmation, are set and cleared on the '
+      'device', () async {
+    final link = FakeCoreLink(devices: [phone()])
+      ..verifiedNow = DateTime.utc(2026, 7);
+    final bare = await link.setDeviceAddress('phone-id', '10.0.0.9');
+    expect(bare.single.address, '10.0.0.9:28771');
+    final ported = await link.setDeviceAddress('phone-id', '10.0.0.9:4000');
+    expect(ported.single.address, '10.0.0.9:4000');
+    final verified = await link.verifyDevice('phone-id');
+    expect(verified.single.verifiedAt, DateTime.utc(2026, 7));
+    final cleared = await link.clearVerification('phone-id');
+    expect(cleared.single.verifiedAt, isNull);
+    // Positive control for the clear: the rest of the device is unchanged.
+    expect(cleared.single.address, '10.0.0.9:4000');
+    await expectLater(
+      link.verifyDevice('stranger'),
+      throwsA(isA<CoreFailure>()),
+    );
+  });
+
+  test('an ignore pattern is refused only when told to', () async {
+    final link = FakeCoreLink();
+    link.patternRefusals['[bad'] = 'unclosed [';
+    await link.checkIgnorePattern('**/*.tmp');
+    await expectLater(
+      link.checkIgnorePattern('[bad'),
+      throwsA(
+        isA<CoreFailure>().having((f) => f.message, 'message', 'unclosed ['),
+      ),
+    );
+  });
 }

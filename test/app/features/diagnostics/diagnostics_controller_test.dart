@@ -1,124 +1,74 @@
-import 'dart:io';
-
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/scan_probe_layer.dart';
+import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/features/diagnostics/diagnostics_controller.dart';
 import 'package:dsync/app/features/diagnostics/diagnostics_view_state.dart';
-import 'package:dsync/dsync_core/models/read_probe_report.dart';
-import 'package:dsync/dsync_core/models/scan_probe_report.dart';
-import 'package:dsync/dsync_core/probe/read_probe.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// What the Diagnostics controller owes its page: an outcome for each probe
-/// that a switch can be exhaustive over, progress while a sweep runs, and a
-/// readable line when a root cannot be read. The probes' own correctness is
-/// tested against the probes.
+import '../../support/fake_head.dart';
+
+/// What the Diagnostics controller owes its page: an outcome a switch can be
+/// exhaustive over, the core's report when it measured, and a readable line
+/// when a root cannot be read. The probe's own correctness is the core's
+/// (native/hub/tests/hub/commands.rs).
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late DiagnosticsController controller;
 
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('diagnostics_test');
-    controller = DiagnosticsController();
-    await File('${tempDir.path}/a.txt').writeAsString('a');
+  setUp(() {
+    core = FakeCoreLink();
+    controller = DiagnosticsController(fakeApp(core));
   });
 
-  tearDown(() async {
-    if (tempDir.existsSync()) await tempDir.delete(recursive: true);
-  });
+  const layer = ScanProbeLayer(
+    label: 'list',
+    elapsed: Duration(milliseconds: 12),
+    files: 1,
+    directories: 1,
+    bytes: 1,
+    microsPerFile: 12000,
+  );
 
-  group('scan cost', () {
-    test('measures the given root and reports every rung', () async {
-      await controller.measureScanCost(tempDir.path, passes: 1);
-
-      final outcome = controller.state.scanCost;
-      expect(outcome, isA<ScanCostMeasured>());
-      final report = (outcome as ScanCostMeasured).report;
-      expect(
-        report.passes.single.layers,
-        hasLength(ScanProbeLayer.values.length),
-      );
-    });
-
-    test(
-      'a root that vanished fails with the OS reason and the way out',
-      () async {
-        final gone = '${tempDir.path}/gone';
-
-        await controller.measureScanCost(gone, passes: 1);
-
-        expect(
-          controller.state.scanCost,
-          isA<ScanCostFailed>().having(
-            (f) => f.message,
-            'message',
-            allOf(contains('Could not read'), contains('all files')),
-          ),
-        );
-      },
+  test('measures the given root and records the core\'s report', () async {
+    core.scanProbe = const ScanProbeResult(
+      root: '/tmp/notes',
+      report: 'scan probe: /tmp/notes',
+      passes: [
+        [layer],
+      ],
     );
-  });
+    final seen = <ScanCostOutcome>[];
+    controller.state.addListener(() => seen.add(controller.state.scanCost));
 
-  group('read rate', () {
-    test('sweeps every mode at every depth and reports the curve', () async {
-      await controller.measureReadRate(tempDir.path);
+    await controller.measureScanCost('/tmp/notes', passes: 1);
 
-      final outcome = controller.state.readRate;
-      expect(outcome, isA<ReadRateMeasured>());
-      final report = (outcome as ReadRateMeasured).report;
-      expect(
-        report.samples,
-        hasLength(ReadProbeMode.values.length * ReadProbe.defaultDepths.length),
-      );
-    });
-
-    test('progress counts up to the total the page was promised', () async {
-      final seen = <ReadRateMeasuring>[];
-      controller.state.addListener(() {
-        if (controller.state.readRate case final ReadRateMeasuring m) {
-          seen.add(m);
-        }
-      });
-
-      await controller.measureReadRate(tempDir.path);
-
-      // The first is the one recorded before any sample landed, and it is
-      // what tells the page the total up front — a sweep that only reported
-      // progress once it had some could not show a determinate bar at all.
-      expect(seen.first.done, 0);
-      expect(seen.first.fraction, isNull);
-      expect(seen.last.done, seen.last.total);
-      for (var i = 1; i < seen.length; i++) {
-        expect(
-          seen[i].done,
-          seen[i - 1].done + 1,
-          reason: 'progress skipped or repeated a sample',
-        );
-      }
-    });
-
-    test(
-      'a root that vanished fails with the same line the scan gives',
-      () async {
-        await controller.measureReadRate('${tempDir.path}/gone');
-
-        expect(
-          controller.state.readRate,
-          isA<ReadRateFailed>().having(
-            (f) => f.message,
-            'message',
-            allOf(contains('Could not read'), contains('all files')),
-          ),
-        );
-      },
-    );
+    expect(seen.first, isA<ScanCostMeasuring>());
+    final outcome = controller.state.scanCost;
+    expect(outcome, isA<ScanCostMeasured>());
+    expect((outcome as ScanCostMeasured).report, same(core.scanProbe));
+    expect(core.calls, ['probeScan']);
   });
 
   test(
-    'the two probes are independent: one measured leaves the other idle',
+    'a root the core cannot read fails with its reason and the way out',
     () async {
-      await controller.measureScanCost(tempDir.path, passes: 1);
+      core.failNext = const CoreFailure('No such file or directory');
 
-      expect(controller.state.scanCost, isA<ScanCostMeasured>());
-      expect(controller.state.readRate, isA<ReadRateIdle>());
+      await controller.measureScanCost('/tmp/gone', passes: 1);
+
+      expect(
+        controller.state.scanCost,
+        isA<ScanCostFailed>().having(
+          (f) => f.message,
+          'message',
+          allOf(
+            contains('Could not read /tmp/gone'),
+            contains('No such file or directory'),
+            contains('all files'),
+          ),
+        ),
+      );
     },
   );
 }

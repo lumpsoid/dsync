@@ -1,5 +1,9 @@
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
+
 import 'app_controller.dart';
-import 'app_paths.dart';
+import 'core_link/rinf_core_link.dart';
 
 /// # How the Flutter head is put together
 ///
@@ -11,7 +15,7 @@ import 'app_paths.dart';
 ///   dsync_app.dart              MaterialApp + routes
 ///   app_state.dart              the one application state
 ///   app_scope.dart              cell for AppState + AppController (this file)
-///   app_controller.dart         bootstrap: identity, stores
+///   app_controller.dart         bootstrap: the core link, identity, lists
 ///   features/<feature>/
 ///     <feature>_page.dart       widgets only
 ///     <feature>_view_state.dart ChangeNotifier, one view's data
@@ -22,13 +26,14 @@ import 'app_paths.dart';
 /// The roles, in the direction data flows:
 ///
 /// - A **controller** is the orchestrator. Its constructor takes its
-///   dependencies (the [AppController], a store, a connector) — never a
+///   dependencies (the [AppController], through it the `CoreLink`, a
+///   folder picker) — never a
 ///   service locator — so a test constructs it with fakes and a scope
 ///   constructs it with the real ones. Its public methods are the *inputs* a
 ///   widget can send (`pair(payload)`, `revoke(id)`, `start()`), named for
 ///   intent. It owns its view state and disposes it.
 /// - A **view state** is a `ChangeNotifier` of *already-rendered* values:
-///   strings, enums, sealed cases. No `dsync_core` decision logic lives on it
+///   strings, enums, sealed cases. No core decision logic lives on it
 ///   and no `Future` hangs off it — the controller awaits, decides, and then
 ///   writes the verdict as a value the widget only has to display.
 /// - A **page** is widgets only. It calls controller input methods and reads
@@ -53,7 +58,7 @@ import 'app_paths.dart';
 /// - `create()` — a *fresh* instance from the factory, never cached. For a
 ///   view that must own its instance and `dispose()` it. The Run page is the
 ///   reason this exists alongside `controller`: two runs must never share a
-///   loop, and a `RunEvent` arriving late from a finished run must not write
+///   view, and a run update arriving late from a finished run must not write
 ///   into a view state that a later page has already torn down. A page that
 ///   calls `create()` calls `dispose()` on what it got.
 /// - `setController(c)` — pin one instance: both `controller` and `create()`
@@ -115,12 +120,32 @@ abstract base class Scope<C> {
 }
 
 /// The cell for the head's [AppController] — and, through it, the one
-/// `AppState`. Every feature scope's default factory reaches this for the
-/// dependencies its controller borrows from the application.
+/// `AppState` and the one `CoreLink`. Every feature scope's default
+/// factory reaches this for the dependencies its controller borrows from
+/// the application.
+///
+/// The default factory is the production wiring: the [RinfCoreLink] over
+/// the Rust hub (`main` starts rinf before anything reads this), the
+/// platform's support directory where the core needs the head to supply
+/// one, and the wall clock.
 final class AppScope extends Scope<AppController> {
   AppScope()
-    : super(() => AppController(AppPaths.forThisDevice, now: DateTime.now));
+    : super(
+        () => AppController(
+          RinfCoreLink(),
+          supportDir: supportDirForThisDevice,
+          now: DateTime.now,
+        ),
+      );
 }
+
+/// The directory the core keeps its state under on Android and iOS, where
+/// only the app knows its own sandbox (`path_provider`); `null` on the
+/// desktop, where the core resolves its directories as the CLI does.
+Future<String?> supportDirForThisDevice() async =>
+    Platform.isAndroid || Platform.isIOS
+    ? (await getApplicationSupportDirectory()).path
+    : null;
 
 /// The single application scope. A page or a feature scope reaches the
 /// application through this and nothing else.

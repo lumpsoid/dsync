@@ -1,10 +1,8 @@
-import 'dart:io';
-
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
@@ -13,6 +11,8 @@ import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fake_head.dart';
 
 /// Rendering tests for the Devices page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controllers are pinned with
@@ -29,10 +29,7 @@ void main() {
   var sharedFoldersOpened = 0;
 
   setUp(() {
-    app = AppController(
-      () async => AppPaths(Directory.systemTemp.path),
-      now: DateTime.now,
-    );
+    app = fakeApp(FakeCoreLink());
     controller = DevicesController(app);
     appScope.setController(app);
     devicesScope.setController(controller);
@@ -67,8 +64,8 @@ void main() {
   );
 
   ProfileRow profile(String id, {required String peerDeviceId}) => ProfileRow(
-    id: id,
     name: 'run $id',
+    profileId: id,
     peerDeviceId: peerDeviceId,
     peerName: 'phone',
     localRootPath: '/on-device/notes',

@@ -1,7 +1,5 @@
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-
 import '../../app_controller.dart';
-import '../../root_path_expansion.dart';
+import '../../core_link/models/core_failure.dart';
 import '../../shared_folder_row.dart';
 import '../run_setup/folder_picker.dart';
 import 'shared_folders_view_state.dart';
@@ -15,9 +13,9 @@ import 'shared_folders_view_state.dart';
 /// four devices was four typed paths on four pages before this existed,
 /// and four chances to type it differently.
 ///
-/// Takes the [AppController] it borrows the application from, the
-/// [environment] a typed path is expanded against and the [picker] a chosen
-/// folder comes from, per the controller role in `app_scope.dart`.
+/// Takes the [AppController] it borrows the application from and the
+/// [picker] a chosen folder comes from, per the controller role in
+/// `app_scope.dart`.
 ///
 /// **No state of its own beyond the last outcome.** [folders] is an
 /// inversion of `AppState.devices`, computed on read in
@@ -32,23 +30,14 @@ import 'shared_folders_view_state.dart';
 /// next time it asks. The peer is told nothing either way, and nothing here
 /// says — or could say — what that peer serves back.
 class SharedFoldersController {
-  SharedFoldersController(
-    this.app, {
-    required this.environment,
-    required this.picker,
-  });
+  SharedFoldersController(this.app, {required this.picker});
 
   final AppController app;
 
-  /// The process environment a typed root path is expanded against — the
-  /// same map, for the same reason, `DeviceDetailController` takes. A plain
-  /// map, so a test expands against values it chose.
-  final Map<String, String> environment;
-
   /// The platform's folder chooser, borrowed from Run setup rather than
   /// declared again: it is the same question — which folder on this host —
-  /// and what it hands back is a path like any other, expanded and stored
-  /// through the same call a typed one is.
+  /// and what it hands back is a path like any other, stored through the
+  /// same call a typed one is.
   ///
   /// Nothing here probes the folder. A grant is authorization, not
   /// reachability: the root a peer will ask for may not exist yet on the
@@ -101,8 +90,8 @@ class SharedFoldersController {
     );
   }
 
-  /// Shares a folder that is not on the page yet: [rawPath] expanded once,
-  /// through [expandRootPath], then granted to each of [deviceIds].
+  /// Shares a folder that is not on the page yet: [rawPath] granted to each
+  /// of [deviceIds], the core expanding `~` as `dsync pair grant` does.
   ///
   /// At least one device is required, and that is not a nicety. A root is
   /// stored per device; granting it to nobody would write nothing at all,
@@ -127,21 +116,12 @@ class SharedFoldersController {
       );
       return;
     }
-    final String expanded;
-    try {
-      expanded = expandRootPath(trimmed, environment);
-    } on FormatException catch (e) {
-      state.recordOutcome(
-        SharedFoldersFailed('Not a valid path: ${e.message}'),
-      );
-      return;
-    }
     for (final deviceId in deviceIds) {
       await _write(
-        () => app.grantRoot(deviceId, expanded),
+        () => app.grantRoot(deviceId, trimmed),
         done: deviceIds.length == 1
-            ? 'Sharing $expanded with ${_nameOf(deviceId)}.'
-            : 'Sharing $expanded with ${deviceIds.length} devices.',
+            ? 'Sharing $trimmed with ${_nameOf(deviceId)}.'
+            : 'Sharing $trimmed with ${deviceIds.length} devices.',
       );
       if (state.outcome is SharedFoldersFailed) return;
     }
@@ -200,8 +180,8 @@ class SharedFoldersController {
     final String? failure;
     try {
       failure = await op();
-    } on PairedDeviceStoreCorruptException catch (e) {
-      state.recordOutcome(SharedFoldersFailed(e.toString()));
+    } on CoreFailure catch (e) {
+      state.recordOutcome(SharedFoldersFailed(e.message));
       return;
     }
     state.recordOutcome(

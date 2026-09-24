@@ -1,7 +1,3 @@
-import 'package:dsync/dsync_core/identity/pairing_payload.dart';
-
-import 'default_names.dart';
-
 /// What the Pair page has to pair *with*: the `dsync-pair:v2:` payload the
 /// user scanned or pasted, as the page shows it (SPEC §4.4).
 ///
@@ -27,7 +23,7 @@ final class PairCodeMissing extends PairCode {
 
 /// A text that is not a payload this build can use — the wrong QR code
 /// entirely, a truncated paste, a version from a later release.
-/// [message] is `PairingPayload.decode`'s own, which already distinguishes
+/// [message] is the core's own reading of it, which already distinguishes
 /// them.
 final class PairCodeUnreadable extends PairCode {
   const PairCodeUnreadable(this.message);
@@ -35,29 +31,33 @@ final class PairCodeUnreadable extends PairCode {
   final String message;
 }
 
-/// A payload that decoded: the device the user is about to pair with, and
+/// A payload the core read: the device the user is about to pair with, and
 /// where it is answering.
 ///
-/// [desktopName] and [address] are derived at construction from [payload],
-/// so the card the user reads and the exchange that follows can never be
-/// describing two different devices.
+/// [desktopName] and [address] are the core's reading of [payload], taken
+/// together, so the card the user reads and the exchange that follows can
+/// never be describing two different devices.
 final class PairCodeRead extends PairCode {
-  PairCodeRead(this.payload)
-    : desktopName = desktopNameFor(payload),
-      address = payload.serviceAddress.text;
+  const PairCodeRead({
+    required this.payload,
+    required this.desktopName,
+    required this.address,
+  });
 
-  /// The decoded payload, redeemed by `PairController.submitPayload`.
-  final PairingPayload payload;
+  /// The payload line as scanned or pasted, redeemed by
+  /// `PairController.submitPayload`.
+  final String payload;
 
-  /// What the desktop calls itself, and so what the page offers as the name
-  /// to list it under here.
+  /// What the desktop calls itself (its certificate's name, or its host
+  /// when that is empty), and so what the page offers as the name to list
+  /// it under here.
   final String desktopName;
 
-  /// `host:port` — where the desktop says it will answer from now on
-  /// ([PairingPayload.serviceAddress]), not the one-shot enrolment endpoint
-  /// this pairing redeems against. Shown because a device on the wrong
-  /// network is the failure this flow has most of, and because this is the
-  /// address the pairing leaves behind, so the user sees it before anything
-  /// is sent rather than after the first sync fails.
+  /// `host:port` — where the desktop says it will answer from now on, not
+  /// the one-shot enrolment endpoint this pairing redeems against. Shown
+  /// because a device on the wrong network is the failure this flow has
+  /// most of, and because this is the address the pairing leaves behind,
+  /// so the user sees it before anything is sent rather than after the
+  /// first sync fails.
   final String address;
 }

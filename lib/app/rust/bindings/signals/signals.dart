@@ -23,6 +23,7 @@ part 'core_command.dart';
 part 'core_reply.dart';
 part 'core_request.dart';
 part 'device_view.dart';
+part 'dirs_view.dart';
 part 'enrolment_end_view.dart';
 part 'enrolment_update.dart';
 part 'enrolment_update_body.dart';

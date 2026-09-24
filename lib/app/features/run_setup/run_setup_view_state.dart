@@ -6,7 +6,7 @@ import '../../run_request.dart';
 /// "opened for a device" and "opened for a profile" from being two nullable
 /// fields that must stay in step. [RunSetupFromDevice] is a blank form for
 /// the device the Devices page named; [RunSetupFromProfile] is the profile
-/// the home list named, whose values pre-fill the form and whose id is
+/// the home list named, whose values pre-fill the form and whose name is
 /// what an edit saves back over.
 sealed class RunSetupSource {
   const RunSetupSource();
@@ -19,11 +19,11 @@ final class RunSetupFromDevice extends RunSetupSource {
   final String deviceId;
 }
 
-/// The saved profile named [profileId], pre-filled.
+/// The saved profile called [profileName], pre-filled.
 final class RunSetupFromProfile extends RunSetupSource {
-  const RunSetupFromProfile(this.profileId);
+  const RunSetupFromProfile(this.profileName);
 
-  final String profileId;
+  final String profileName;
 }
 
 /// The saved profile's values as the page's text fields should start out:
@@ -68,9 +68,8 @@ final class RunSetupPeerLoading extends RunSetupPeer {
 /// being read.
 ///
 /// Nothing here says whether the root about to be typed is granted: only
-/// the desktop knows, and SPEC §4.4 has it answer uninformatively —
-/// `remoteRootNotGrantedMessage`, off that refusal, is where the head
-/// learns it.
+/// the desktop knows, and SPEC §4.4 has it answer uninformatively — the
+/// run's refusal is where the head learns it.
 final class RunSetupPeerLoaded extends RunSetupPeer {
   const RunSetupPeerLoaded({required this.name});
 

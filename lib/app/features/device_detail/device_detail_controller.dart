@@ -1,25 +1,21 @@
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
-
 import '../../app_controller.dart';
+import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/peer_probe_outcome.dart';
 import '../../paired_device_row.dart';
-import '../../peer_address_text.dart';
-import '../../root_path_expansion.dart';
 import '../run_setup/folder_picker.dart';
 import 'device_detail_view_state.dart';
-import 'peer_probe.dart';
 
 /// Input methods of the Device page: one paired device, and everything this
 /// host decides about it (SPEC §4.4, §13) — what it is called here, which
 /// of this host's replica roots it may reach, and whether it is trusted at
 /// all.
 ///
-/// Takes the [AppController] it borrows the application from and the
-/// [environment] it expands a typed path against as constructor arguments,
-/// per the controller role in `app_scope.dart`. The device itself is
-/// `AppState`'s and this controller reads it back through [device] by the
-/// id [select] was given — cross-feature handoff carries an id, not data,
-/// so the page is opened with an id and the row is loaded here.
+/// Takes the [AppController] it borrows the application — and through it
+/// the core — from as a constructor argument, per the controller role in
+/// `app_scope.dart`. The device itself is `AppState`'s and this controller
+/// reads it back through [device] by the id [select] was given —
+/// cross-feature handoff carries an id, not data, so the page is opened
+/// with an id and the row is loaded here.
 ///
 /// **Every write here is local and one-sided, and that is the whole
 /// design** (SPEC §4.4): a name is this host's own label, a grant is this
@@ -33,30 +29,18 @@ import 'peer_probe.dart';
 /// a grant recorded on a phone authorizes a connection nothing will ever
 /// make. It is still recorded, and still shown, because the store is the
 /// same store `dsync agent` reads on a desktop sharing this state directory
-/// (`AppPaths`) — which is exactly where the grant does bite.
+/// — which is exactly where the grant does bite.
 class DeviceDetailController {
-  DeviceDetailController(
-    this.app, {
-    required this.environment,
-    required this.picker,
-    required this.probe,
-  });
+  DeviceDetailController(this.app, {required this.picker});
 
   final AppController app;
-
-  /// The dial behind [testConnection] — a socket, and the one thing on this
-  /// page a test cannot run, which is what earns it an interface (see
-  /// [PeerProbe]). Required rather than defaulted, as `ReplicaConnector`'s
-  /// `dial` is and for the same reason: the scope names the real one, so a
-  /// fake cannot arrive in production by omission.
-  final PeerProbe probe;
 
   /// The platform's folder chooser, borrowed from Run setup rather than
   /// declared again here: it is the same question — which folder on this
   /// host — and a second interface over the same two platform channels
   /// would be a rename of this one. Used only to fill the grant field; what
-  /// it hands back is a path like any other, and it is expanded and stored
-  /// through the same call a typed one is.
+  /// it hands back is a path like any other, and it is stored through the
+  /// same call a typed one is.
   ///
   /// Nothing here probes the folder the way Run setup does. A grant is
   /// about *authorization*, not reachability: the root a peer will ask for
@@ -65,13 +49,6 @@ class DeviceDetailController {
   /// a question nobody asked. The `hello` handler that compares a requested
   /// root against this set is where a missing folder is found out.
   final FolderPicker picker;
-
-  /// The process environment a typed root path is expanded against — the
-  /// same `Location.expandedPath` call `dsync pair grant` makes, so a `~`
-  /// resolves to the same directory here and there and what lands in the
-  /// store is the form `PairedDevice.agreedReplicaRoots` is documented to
-  /// hold. A plain map, so a test expands against values it chose.
-  final Map<String, String> environment;
 
   /// The view state this controller renders into; owned here, disposed here.
   final DeviceDetailViewState state = DeviceDetailViewState();
@@ -121,103 +98,71 @@ class DeviceDetailController {
   /// hand — and remembered, which is the difference between this and Run
   /// setup's per-run override).
   ///
-  /// [rawAddress] is `host` or `host:port`, read by [parsePeerAddress] — the
-  /// head's one rule for an address a user typed. Blank text and a text that
-  /// will not parse are both field errors rendered here rather than refusals
-  /// from the store: the page has a field the user can fix, and an empty
+  /// [rawAddress] is `host` or `host:port`, read by the core — the one rule
+  /// for an address a user typed; one that will not parse comes back as the
+  /// core's refusal. Blank text is a field error rendered here: an empty
   /// field on *this* page means nothing was typed, not "use the cached
   /// address".
   Future<void> updateAddress(String rawAddress) async {
     final id = _deviceId;
     if (id == null) return;
-    final PeerAddress? address;
-    try {
-      address = parsePeerAddress(rawAddress);
-    } on FormatException catch (e) {
-      state.recordOutcome(
-        DeviceDetailFailed('Not a valid address: ${e.message}'),
-      );
-      return;
-    }
-    if (address == null) {
+    final address = rawAddress.trim();
+    if (address.isEmpty) {
       state.recordOutcome(
         const DeviceDetailFailed('Give an address, as host or host:port.'),
       );
       return;
     }
-    final target = address;
     await _write(
-      () => app.updateDeviceAddress(id, target),
-      done:
-          'This device will be reached at '
-          '${target.text}.',
+      () => app.updateDeviceAddress(id, address),
+      done: 'This device will be reached at $address.',
     );
   }
 
-  /// Dials the device at the address on file and says which of SPEC §4.4's
-  /// three answers came back: it answered and presented the pinned key, the
-  /// address did not answer, or something answered with a certificate this
-  /// host has not pinned.
+  /// Dials the device where it was last reached and says which of SPEC
+  /// §4.4's three answers came back: it answered and presented the pinned
+  /// key, the address did not answer, or something answered with a
+  /// certificate this host has not pinned.
   ///
   /// The third is told apart from the second on purpose — the address is
   /// right in that case and the fix is on the pairing, so reporting it as
   /// "unreachable" would send the user to re-type an address that was
   /// already correct.
   ///
-  /// Fetching and deciding are kept apart, per CLAUDE.md: everything the
-  /// dial needs — the row, this device's identity, the clock — is loaded
-  /// here and handed down, and [PeerProbe] only reports what the dial
-  /// established. A reachable answer is then recorded through the same
-  /// `recordConnection` path a run's successful dial writes, so an address
-  /// typed on this page and proved from it stops needing Run setup's
-  /// per-run override.
+  /// The core's probe opens and records nothing; a reachable answer is then
+  /// recorded as where to dial the device next, the field a run's
+  /// successful dial writes, so an address typed on this page and proved
+  /// from it stops needing Run setup's per-run override.
   Future<void> testConnection() async {
     final id = _deviceId;
     final row = device;
     if (id == null || row == null) return;
-    final PeerAddress? address;
+    final PeerProbeOutcome result;
     try {
-      address = parsePeerAddress(row.address);
-    } on FormatException catch (e) {
-      state.recordOutcome(
-        DeviceDetailFailed('Not a valid address: ${e.message}'),
-      );
+      result = await app.core.probePeer(id);
+    } on CoreFailure catch (e) {
+      state.recordOutcome(DeviceDetailFailed(e.message));
       return;
     }
-    if (address == null) {
-      state.recordOutcome(
-        const DeviceDetailFailed(
-          'No address on file for this device. Enter one first.',
-        ),
-      );
-      return;
-    }
-    final target = address;
-    final result = await probe.probe(
-      address: target,
-      expectedPeerDeviceId: id,
-      ownIdentity: await app.loadOrCreateIdentity(),
-      now: app.now(),
-    );
-    final where = target.text;
     switch (result) {
-      case PeerReachable():
+      case PeerReachable(:final address):
         await _write(
-          () => app.updateDeviceAddress(id, target),
-          done: 'Reached ${row.name} at $where.',
+          () => app.updateDeviceAddress(id, address),
+          done: 'Reached ${row.name} at $address.',
         );
-      case PeerUnreachable(:final cause):
+      case PeerUnreachable(:final message):
         state.recordOutcome(
           DeviceDetailFailed(
-            'Could not reach ${row.name} at $where: $cause. Check that it is '
-            'awake and on the same network, or enter its address by hand.',
+            'Could not reach ${row.name} at ${row.address}: $message. Check '
+            'that it is awake and on the same network, or enter its address '
+            'by hand.',
           ),
         );
-      case PeerCertificateRefused(:final detail):
+      case PeerRefused(:final message):
         state.recordOutcome(
           DeviceDetailFailed(
-            'Something answered at $where, but it did not present the '
-            'certificate this device pinned for ${row.name}: $detail',
+            'Something answered at ${row.address}, but it did not present '
+            'the certificate this device pinned for ${row.name}: $message',
           ),
         );
     }
@@ -277,11 +222,10 @@ class DeviceDetailController {
   /// Authorizes this device to reach [rawPath] on this host — pairing's
   /// second step (SPEC §4.4), the same write `dsync pair grant` makes.
   ///
-  /// [rawPath] is expanded exactly as that command expands it, through
-  /// [expandRootPath] — the one rule, shared with the host-level Shared
-  /// folders page — so the stored string is the one a `hello` handler
-  /// compares a requested root against byte for byte; a path that will not
-  /// parse is a field error, not a refusal from the store.
+  /// The core expands [rawPath] exactly as that command does, so the
+  /// stored string is the one a `hello` handler compares a requested root
+  /// against byte for byte; a path that will not parse is the core's
+  /// refusal.
   Future<void> grantRoot(String rawPath) async {
     final id = _deviceId;
     if (id == null) return;
@@ -290,16 +234,9 @@ class DeviceDetailController {
       state.recordOutcome(const DeviceDetailFailed('Give a folder to share.'));
       return;
     }
-    final String expanded;
-    try {
-      expanded = expandRootPath(trimmed, environment);
-    } on FormatException catch (e) {
-      state.recordOutcome(DeviceDetailFailed('Not a valid path: ${e.message}'));
-      return;
-    }
     await _write(
-      () => app.grantRoot(id, expanded),
-      done: 'Sharing $expanded with this device.',
+      () => app.grantRoot(id, trimmed),
+      done: 'Sharing $trimmed with this device.',
     );
   }
 
@@ -345,10 +282,11 @@ class DeviceDetailController {
   /// The shape every write here shares: run it, and render either [done] or
   /// the refusal it came back with.
   ///
-  /// A store that has gone corrupt since the list was last read lands on
-  /// [DeviceDetailFailed] rather than escaping, the same as on the Devices
-  /// page: the message — `core`'s own, naming the file — is what the user
-  /// needs to act on, and the row already on screen is the last good one.
+  /// A store that has gone unreadable since the list was last read lands
+  /// on [DeviceDetailFailed] rather than escaping, the same as on the
+  /// Devices page: the message — the core's own, naming the file — is what
+  /// the user needs to act on, and the row already on screen is the last
+  /// good one.
   Future<void> _write(
     Future<String?> Function() op, {
     required String done,
@@ -356,8 +294,8 @@ class DeviceDetailController {
     final String? failure;
     try {
       failure = await op();
-    } on PairedDeviceStoreCorruptException catch (e) {
-      state.recordOutcome(DeviceDetailFailed(e.toString()));
+    } on CoreFailure catch (e) {
+      state.recordOutcome(DeviceDetailFailed(e.message));
       return;
     }
     state.recordOutcome(

@@ -51,7 +51,10 @@ impl Head {
             support_dir,
             device_name: name.to_owned(),
         };
-        assert!(matches!(head.ask(init).await.1, ReplyResult::Done));
+        assert!(matches!(
+            head.ask(init).await.1,
+            ReplyResult::Initialised(_)
+        ));
         head
     }
 

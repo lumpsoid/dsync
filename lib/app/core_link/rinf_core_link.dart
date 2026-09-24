@@ -4,6 +4,7 @@ import '../rust/bindings/bindings.dart' as wire;
 import 'core_link.dart';
 import 'correlation.dart';
 import 'models/archive_info.dart';
+import 'models/core_dirs.dart';
 import 'models/core_failure.dart';
 import 'models/device_identity_info.dart';
 import 'models/enrolment_update.dart';
@@ -119,10 +120,17 @@ final class RinfCoreLink implements CoreLink {
       : _unexpected(result);
 
   @override
-  Future<void> init({String? supportDir, required String deviceName}) => _ask(
-    wire.CoreCommandInit(supportDir: supportDir, deviceName: deviceName),
-    _done,
-  );
+  Future<CoreDirs> init({String? supportDir, required String deviceName}) =>
+      _ask(
+        wire.CoreCommandInit(supportDir: supportDir, deviceName: deviceName),
+        (result) => switch (result) {
+          wire.ReplyResultInitialised(:final value) => CoreDirs(
+            stateDir: value.stateDir,
+            profilesDir: value.profilesDir,
+          ),
+          _ => _unexpected(result),
+        },
+      );
 
   @override
   Future<DeviceIdentityInfo> showIdentity() =>
@@ -227,6 +235,23 @@ final class RinfCoreLink implements CoreLink {
         wire.CoreCommandWithdrawGrant(deviceId: deviceId, root: root),
         _devices,
       );
+
+  @override
+  Future<List<PairedDeviceInfo>> setDeviceAddress(
+    String deviceId,
+    String address,
+  ) => _ask(
+    wire.CoreCommandSetDeviceAddress(deviceId: deviceId, address: address),
+    _devices,
+  );
+
+  @override
+  Future<List<PairedDeviceInfo>> verifyDevice(String deviceId) =>
+      _ask(wire.CoreCommandVerifyDevice(deviceId: deviceId), _devices);
+
+  @override
+  Future<List<PairedDeviceInfo>> clearVerification(String deviceId) =>
+      _ask(wire.CoreCommandClearVerification(deviceId: deviceId), _devices);
 
   @override
   Future<PeerProbeOutcome> probePeer(String deviceId, {String? address}) =>
@@ -388,6 +413,10 @@ final class RinfCoreLink implements CoreLink {
       _ => _unexpected(result),
     },
   );
+
+  @override
+  Future<void> checkIgnorePattern(String pattern) =>
+      _ask(wire.CoreCommandCheckIgnorePattern(pattern: pattern), _done);
 
   @override
   Future<String?> checkFolder(String path) => _ask(

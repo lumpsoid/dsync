@@ -1,11 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 
-import 'package:dsync/dsync_core/models/filter_folder_entry.dart';
-import 'package:dsync/dsync_core/models/filter_preview_report.dart';
-import 'package:dsync/dsync_core/models/rule_set.dart';
-import 'package:dsync/dsync_core/scan/filter_preview.dart';
-
+import '../../app_controller.dart';
+import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/filter_folder_summary.dart';
+import '../../core_link/models/filter_preview.dart';
+import '../../core_link/models/filter_row.dart';
 import '../../format_bytes.dart';
 import 'filters_view_state.dart';
 
@@ -19,24 +18,29 @@ import 'filters_view_state.dart';
 /// they do not want; asking them to write `**/.thumbnails` first is asking
 /// them to learn a pattern language to state something they can already
 /// point at. [addPattern] stays for the case pointing cannot express — a
-/// suffix across the whole tree — and is where a pattern is compiled and
-/// refused if it is malformed, so an invalid rule never reaches the store.
+/// suffix across the whole tree — and is where the core checks a pattern
+/// and it is refused if it is malformed, so an invalid rule never reaches
+/// the store.
 ///
 /// **Browsing is instant; counting is asked for.** Opening a folder is one
-/// listing (`listFilterFolder`) and happens on every tap and after every
+/// listing (the core's `listFilterFolder`) and happens on every tap and after every
 /// rule change, because a row's verdict changes with the rules and a stale
 /// verdict is a lie about what syncs. The totals need a walk of the whole
-/// tree (`previewFilters`), which on a phone's storage is seconds, so they
+/// tree (the core's `previewFilters`), which on a phone's storage is seconds, so they
 /// are counted when the user presses Preview and marked stale — never
 /// silently recomputed, and never quietly left looking current — when a
 /// rule changes under them.
 ///
-/// **No store, no navigation.** This controller reads the filesystem and
-/// nothing else: the rules it edits belong to the Run setup form that
+/// **No store, no navigation.** This controller asks the core about the
+/// folder and nothing else: the rules it edits belong to the Run setup form that
 /// opened this page, which is what saves them onto the profile. That is
 /// also why [FiltersViewState.rules] is the page's result — the page hands
 /// the list back as it pops.
 class FiltersController {
+  FiltersController(this.app);
+
+  final AppController app;
+
   /// The view state this controller renders into; owned here, disposed
   /// here.
   final FiltersViewState state = FiltersViewState();
@@ -48,7 +52,7 @@ class FiltersController {
   /// under it. Not the summary — that is already rendered on the view
   /// state — and not cleared when a rule changes, because the counts read
   /// off it are the tree's own and do not move when the rules do.
-  FilterPreviewReport? _report;
+  FilterPreview? _report;
 
   /// Bumped by every listing and every walk, so a result that arrives
   /// after the user has moved on — opened another folder, changed a rule,
@@ -110,20 +114,21 @@ class FiltersController {
   }
 
   /// Adds [pattern] as written — the advanced entry, for a rule no row can
-  /// be pointed at. Compiled here: a malformed glob is refused with the
-  /// [FormatException]'s own message and never becomes a rule.
-  void addPattern(String pattern) {
+  /// be pointed at. Checked by the core first: a malformed glob is refused
+  /// with its own message and never becomes a rule.
+  Future<void> addPattern(String pattern) async {
     final trimmed = pattern.trim();
     if (trimmed.isEmpty) {
       state.recordAddError(_patternRequired);
       return;
     }
     try {
-      RuleSet(ignore: [trimmed]);
-    } on FormatException catch (e) {
-      state.recordAddError(e.message);
+      await app.core.checkIgnorePattern(trimmed);
+    } on CoreFailure catch (e) {
+      if (!_disposed) state.recordAddError(e.message);
       return;
     }
+    if (_disposed) return;
     _addRule(trimmed);
   }
 
@@ -145,10 +150,10 @@ class FiltersController {
     final generation = ++_generation;
     state.recordPreview(const FiltersPreviewRunning());
 
-    final FilterPreviewReport report;
+    final FilterPreview report;
     try {
-      report = await previewFilters(rootPath: _rootPath, rules: _ruleSet());
-    } on FileSystemException catch (e) {
+      report = await app.core.previewFilters(_rootPath, state.rules);
+    } on CoreFailure catch (e) {
       if (!_current(generation)) return;
       state.recordPreview(
         FiltersPreviewFailed('Could not read $_rootPath: ${e.message}'),
@@ -159,15 +164,16 @@ class FiltersController {
     if (!_current(generation)) return;
 
     _report = report;
+    final root = report.folders.firstWhere((folder) => folder.path == null);
     state.recordPreview(
       FiltersPreviewReady(
-        syncing: _amount(report.includedFiles, report.includedBytes),
-        excluded: _amount(report.excludedFiles, report.excludedBytes),
+        syncing: _amount(root.includedFiles, root.includedBytes),
+        excluded: _amount(root.excludedFiles, root.excludedBytes),
         unreadable: _unreadableLine(report.unreadableFolders),
         stale: false,
       ),
       ruleCounts: {
-        for (final entry in report.excludedFilesByPattern.entries)
+        for (final entry in report.excludedByRule.entries)
           entry.key: entry.value == 0
               ? _removesNothing
               : '−${_files(entry.value)}',
@@ -208,14 +214,14 @@ class FiltersController {
     _folderPath = relativePath;
     state.recordFolder(const FiltersFolderLoading());
 
-    final List<FilterFolderEntry> entries;
+    final List<FilterRow> entries;
     try {
-      entries = await listFilterFolder(
-        rootPath: _rootPath,
-        relativePath: relativePath,
-        rules: _ruleSet(),
+      entries = await app.core.listFilterFolder(
+        _rootPath,
+        relativePath.isEmpty ? null : relativePath,
+        state.rules,
       );
-    } on FileSystemException catch (e) {
+    } on CoreFailure catch (e) {
       if (!_current(generation)) return;
       state.recordFolder(FiltersFolderFailed('Could not open: ${e.message}'));
       return;
@@ -235,42 +241,40 @@ class FiltersController {
   /// because that number is a fact about the tree rather than about the
   /// rules, so it stays true while a preview goes stale. Whether any of it
   /// syncs is [FilterEntryRow.status]'s answer, right beside it.
-  FilterEntryRow _rowFor(FilterFolderEntry entry) {
-    final folder = entry.kind == FilterEntryKind.folder
-        ? _countedFolder(entry.path)
-        : null;
+  FilterEntryRow _rowFor(FilterRow entry) {
+    final folder = entry.isFolder ? _countedFolder(entry.path) : null;
+    final size = entry.size;
+    // Neither a folder nor a file with a size: a link or a device node,
+    // which no sync carries (SPEC §5.1).
+    final uncarried = !entry.isFolder && size == null;
     return FilterEntryRow(
       name: entry.name,
       path: entry.path,
-      isFolder: entry.kind == FilterEntryKind.folder,
+      isFolder: entry.isFolder,
       status: switch (entry) {
-        FilterFolderEntry(kind: FilterEntryKind.other) =>
-          const FilterEntryUncarried(_uncarried),
-        FilterFolderEntry(excludedBy: final pattern?) => FilterEntryExcluded(
-          pattern,
-        ),
+        _ when uncarried => const FilterEntryUncarried(_uncarried),
+        FilterRow(excludedBy: final pattern?) => FilterEntryExcluded(pattern),
         _ => const FilterEntrySyncs(),
       },
-      detail: switch (entry.kind) {
-        FilterEntryKind.file => formatBytes(entry.sizeBytes ?? 0),
-        FilterEntryKind.folder =>
-          folder == null
-              ? null
-              : _amount(
-                  folder.includedFiles + folder.excludedFiles,
-                  folder.includedBytes + folder.excludedBytes,
-                ),
-        FilterEntryKind.other => null,
+      detail: switch ((entry.isFolder, size)) {
+        (false, final bytes?) => formatBytes(bytes),
+        (true, _) when folder != null => _amount(
+          folder.includedFiles + folder.excludedFiles,
+          folder.includedBytes + folder.excludedBytes,
+        ),
+        _ => null,
       },
     );
   }
 
   /// The walked node for [relativePath], or `null` when no walk has
   /// covered it — before the first preview, or for a folder created since.
-  FilterPreviewFolder? _countedFolder(String relativePath) =>
-      _report?.folderAt(relativePath);
-
-  RuleSet _ruleSet() => RuleSet(ignore: state.rules);
+  FilterFolderSummary? _countedFolder(String relativePath) {
+    for (final folder in _report?.folders ?? const <FilterFolderSummary>[]) {
+      if (folder.path == relativePath) return folder;
+    }
+    return null;
+  }
 
   /// The refusal for a [what] ("name", "path") SPEC §9 cannot match
   /// literally, or `null` when it can.

@@ -1,4 +1,5 @@
 import 'models/archive_info.dart';
+import 'models/core_dirs.dart';
 import 'models/device_identity_info.dart';
 import 'models/filter_preview.dart';
 import 'models/filter_row.dart';
@@ -30,8 +31,8 @@ abstract interface class CoreLink {
   /// Must come first. [supportDir] is the app's support directory on
   /// Android and iOS; on the desktop it is `null` and the core resolves
   /// its directories as the CLI does. [deviceName] names an identity
-  /// created on this device.
-  Future<void> init({String? supportDir, required String deviceName});
+  /// created on this device. Answers with where the core keeps its state.
+  Future<CoreDirs> init({String? supportDir, required String deviceName});
 
   /// This device's identity, created on first use.
   Future<DeviceIdentityInfo> showIdentity();
@@ -76,6 +77,20 @@ abstract interface class CoreLink {
 
   /// [root] exactly as the device's grants hold it.
   Future<List<PairedDeviceInfo>> withdrawGrant(String deviceId, String root);
+
+  /// Where to dial the device from now on: [address] as `host` or
+  /// `host:port`, the field a connection records.
+  Future<List<PairedDeviceInfo>> setDeviceAddress(
+    String deviceId,
+    String address,
+  );
+
+  /// The operator compared the device's id with the one it shows itself,
+  /// and they matched.
+  Future<List<PairedDeviceInfo>> verifyDevice(String deviceId);
+
+  /// Takes that confirmation back.
+  Future<List<PairedDeviceInfo>> clearVerification(String deviceId);
 
   /// Whether the device answers and admits this host, at [address]
   /// (`host` or `host:port`) or where it was last reached.
@@ -128,6 +143,10 @@ abstract interface class CoreLink {
     String? folder,
     List<String> ignorePatterns,
   );
+
+  /// Throws `CoreFailure` saying why when [pattern] is not a valid ignore
+  /// pattern (SPEC §9).
+  Future<void> checkIgnorePattern(String pattern);
 
   /// Why [path] cannot be a replica root, or `null` when it can (SPEC §3).
   Future<String?> checkFolder(String path);

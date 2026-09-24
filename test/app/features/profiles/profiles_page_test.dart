@@ -1,10 +1,8 @@
-import 'dart:io';
-
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
@@ -15,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_folder_picker.dart';
+import '../../support/fake_head.dart';
 
 /// Rendering tests for the profiles home, driven the way the scope contract
 /// in `app_scope.dart` intends: the controllers are pinned with
@@ -31,10 +30,7 @@ void main() {
   var serveOpened = 0;
 
   setUp(() {
-    app = AppController(
-      () async => AppPaths(Directory.systemTemp.path),
-      now: DateTime.now,
-    );
+    app = fakeApp(FakeCoreLink());
     controller = _RecordingProfilesController(app, picker: FakeFolderPicker());
     appScope.setController(app);
     profilesScope.setController(controller);
@@ -76,8 +72,8 @@ void main() {
   );
 
   ProfileRow ok() => ProfileRow(
-    id: 'p1',
     name: 'weekly',
+    profileId: 'p1',
     peerDeviceId: 'a1b2:c3d4',
     peerName: 'desktop',
     localRootPath: '/on-device/notes',
@@ -89,8 +85,8 @@ void main() {
   );
 
   ProfileRow broken() => ProfileRow(
-    id: 'p2',
     name: 'revoked',
+    profileId: 'p2',
     peerDeviceId: 'dead:beef',
     peerName: null,
     localRootPath: '/on-device/notes',
@@ -102,8 +98,8 @@ void main() {
   );
 
   ProfileRow folderLost() => ProfileRow(
-    id: 'p3',
     name: 'no folder',
+    profileId: 'p3',
     peerDeviceId: 'a1b2:c3d4',
     peerName: 'desktop',
     localRootPath: '/on-device/gone',
@@ -232,7 +228,7 @@ void main() {
 
     await tester.tap(find.text('weekly'));
 
-    expect(opened, ['p1']);
+    expect(opened, ['weekly']);
   });
 
   testWidgets('a profile whose last run did not finish warns and offers to '
@@ -240,8 +236,8 @@ void main() {
     ready();
     app.state.recordProfiles([
       ProfileRow(
-        id: 'p1',
         name: 'weekly',
+        profileId: 'p1',
         peerDeviceId: 'a1b2:c3d4',
         peerName: 'desktop',
         localRootPath: '/on-device/notes',
@@ -255,9 +251,9 @@ void main() {
     await pumpPage(tester);
 
     expect(find.textContaining('The last run did not finish'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('profile-run-again-p1')));
+    await tester.tap(find.byKey(const Key('profile-run-again-weekly')));
 
-    expect(opened, ['p1']);
+    expect(opened, ['weekly']);
   });
 
   testWidgets('a profile whose last run finished shows no such warning', (
@@ -268,7 +264,7 @@ void main() {
     await pumpPage(tester);
 
     expect(find.textContaining('did not finish'), findsNothing);
-    expect(find.byKey(const Key('profile-run-again-p1')), findsNothing);
+    expect(find.byKey(const Key('profile-run-again-weekly')), findsNothing);
   });
 
   testWidgets('a broken profile renders — visible, unrunnable, with its '
@@ -304,7 +300,7 @@ void main() {
     app.state.recordProfiles([broken()]);
     await pumpPage(tester);
 
-    await tester.tap(find.byKey(const Key('profile-pair-again-p2')));
+    await tester.tap(find.byKey(const Key('profile-pair-again-revoked')));
     await tester.pumpAndSettle();
 
     // Pair is reached through Devices, which is the seam this page holds.
@@ -320,14 +316,14 @@ void main() {
     await pumpPage(tester);
     expect(find.textContaining('no longer accessible'), findsOneWidget);
     // One remedy per breakage: this row is not the pairing one.
-    expect(find.byKey(const Key('profile-pair-again-p3')), findsNothing);
+    expect(find.byKey(const Key('profile-pair-again-no folder')), findsNothing);
 
-    await tester.tap(find.byKey(const Key('profile-pick-folder-p3')));
+    await tester.tap(find.byKey(const Key('profile-pick-folder-no folder')));
     await tester.pumpAndSettle();
 
     // The row asks its own controller, by id, and nothing navigates away
     // to do it. What the ask then does is `profiles_controller_test.dart`'s.
-    expect(controller.repicked, ['p3']);
+    expect(controller.repicked, ['no folder']);
     expect(opened, isEmpty);
     expect(devicesOpened, 0);
   });
@@ -377,5 +373,5 @@ class _RecordingProfilesController extends ProfilesController {
   final List<String> repicked = [];
 
   @override
-  Future<void> repickLocalFolder(String id) async => repicked.add(id);
+  Future<void> repickLocalFolder(String name) async => repicked.add(name);
 }

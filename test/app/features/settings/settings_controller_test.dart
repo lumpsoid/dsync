@@ -1,10 +1,13 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_dirs.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
 import 'package:test/test.dart';
+
+import '../../support/fake_head.dart';
 
 /// `SettingsController` against a real settings store in a temporary state
 /// directory: what it accepts, what it refuses, and what the page is left
@@ -16,7 +19,12 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('settings_controller_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    final core = FakeCoreLink()
+      ..dirs = CoreDirs(
+        stateDir: tempDir.path,
+        profilesDir: '${tempDir.path}/profiles',
+      );
+    app = fakeApp(core);
     controller = SettingsController(app);
   });
 
@@ -26,7 +34,7 @@ void main() {
   });
 
   Future<File> settingsFile() async =>
-      File('${(await app.paths).stateDir}/settings.json');
+      File('${(await app.dirs).stateDir}/settings.json');
 
   group('load', () {
     test('shows the default bind address on a first run', () async {

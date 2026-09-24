@@ -12,21 +12,22 @@ abstract class ReplyResult {
     switch (index) {
       case 0: return ReplyResultFailed.load(deserializer);
       case 1: return ReplyResultDone.load(deserializer);
-      case 2: return ReplyResultIdentity.load(deserializer);
-      case 3: return ReplyResultPairingShown.load(deserializer);
-      case 4: return ReplyResultPairCode.load(deserializer);
-      case 5: return ReplyResultDevice.load(deserializer);
-      case 6: return ReplyResultDevices.load(deserializer);
-      case 7: return ReplyResultPeerProbed.load(deserializer);
-      case 8: return ReplyResultProfiles.load(deserializer);
-      case 9: return ReplyResultRunStarted.load(deserializer);
-      case 10: return ReplyResultServeStarted.load(deserializer);
-      case 11: return ReplyResultAddresses.load(deserializer);
-      case 12: return ReplyResultArchives.load(deserializer);
-      case 13: return ReplyResultFilterPreview.load(deserializer);
-      case 14: return ReplyResultFilterFolder.load(deserializer);
-      case 15: return ReplyResultFolderChecked.load(deserializer);
-      case 16: return ReplyResultScanProbe.load(deserializer);
+      case 2: return ReplyResultInitialised.load(deserializer);
+      case 3: return ReplyResultIdentity.load(deserializer);
+      case 4: return ReplyResultPairingShown.load(deserializer);
+      case 5: return ReplyResultPairCode.load(deserializer);
+      case 6: return ReplyResultDevice.load(deserializer);
+      case 7: return ReplyResultDevices.load(deserializer);
+      case 8: return ReplyResultPeerProbed.load(deserializer);
+      case 9: return ReplyResultProfiles.load(deserializer);
+      case 10: return ReplyResultRunStarted.load(deserializer);
+      case 11: return ReplyResultServeStarted.load(deserializer);
+      case 12: return ReplyResultAddresses.load(deserializer);
+      case 13: return ReplyResultArchives.load(deserializer);
+      case 14: return ReplyResultFilterPreview.load(deserializer);
+      case 15: return ReplyResultFilterFolder.load(deserializer);
+      case 16: return ReplyResultFolderChecked.load(deserializer);
+      case 17: return ReplyResultScanProbe.load(deserializer);
       default: throw Exception('Unknown variant index for ReplyResult: ' + index.toString());
     }
   }
@@ -152,6 +153,65 @@ class ReplyResultDone extends ReplyResult {
 }
 
 @immutable
+class ReplyResultInitialised extends ReplyResult {
+  const ReplyResultInitialised({
+    required this.value,
+  }) : super();
+
+  static ReplyResultInitialised load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = ReplyResultInitialised(
+      value: DirsView.deserialize(deserializer),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final DirsView value;
+
+  ReplyResultInitialised copyWith({
+    DirsView? value,
+  }) {
+    return ReplyResultInitialised(
+      value: value ?? this.value,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(2);
+    value.serialize(serializer);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is ReplyResultInitialised
+      && value == other.value;
+  }
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'value: $value'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'ReplyResultInitialised';
+  }
+}
+
+@immutable
 class ReplyResultIdentity extends ReplyResult {
   const ReplyResultIdentity({
     required this.value,
@@ -178,7 +238,7 @@ class ReplyResultIdentity extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(2);
+    serializer.serializeVariantIndex(3);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -237,7 +297,7 @@ class ReplyResultPairingShown extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(3);
+    serializer.serializeVariantIndex(4);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -296,7 +356,7 @@ class ReplyResultPairCode extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(4);
+    serializer.serializeVariantIndex(5);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -355,7 +415,7 @@ class ReplyResultDevice extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(5);
+    serializer.serializeVariantIndex(6);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -414,7 +474,7 @@ class ReplyResultDevices extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(6);
+    serializer.serializeVariantIndex(7);
     TraitHelpers.serializeVectorDeviceView(value, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -473,7 +533,7 @@ class ReplyResultPeerProbed extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(7);
+    serializer.serializeVariantIndex(8);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -532,7 +592,7 @@ class ReplyResultProfiles extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(8);
+    serializer.serializeVariantIndex(9);
     TraitHelpers.serializeVectorProfileEntry(value, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -591,7 +651,7 @@ class ReplyResultRunStarted extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(9);
+    serializer.serializeVariantIndex(10);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -650,7 +710,7 @@ class ReplyResultServeStarted extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(10);
+    serializer.serializeVariantIndex(11);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -709,7 +769,7 @@ class ReplyResultAddresses extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(11);
+    serializer.serializeVariantIndex(12);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -768,7 +828,7 @@ class ReplyResultArchives extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(12);
+    serializer.serializeVariantIndex(13);
     TraitHelpers.serializeVectorArchiveView(value, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -827,7 +887,7 @@ class ReplyResultFilterPreview extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(13);
+    serializer.serializeVariantIndex(14);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -886,7 +946,7 @@ class ReplyResultFilterFolder extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(14);
+    serializer.serializeVariantIndex(15);
     TraitHelpers.serializeVectorFilterRowView(value, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -945,7 +1005,7 @@ class ReplyResultFolderChecked extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(15);
+    serializer.serializeVariantIndex(16);
     TraitHelpers.serializeOptionStr(refusal, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -1004,7 +1064,7 @@ class ReplyResultScanProbe extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(16);
+    serializer.serializeVariantIndex(17);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }

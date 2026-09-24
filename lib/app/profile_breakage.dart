@@ -25,7 +25,7 @@ final class ProfileDeviceUnpaired extends ProfileBreakage {
       'again to run this profile.';
 }
 
-/// The profile's local root no longer passes `folderAccessRefusal` — the
+/// The profile's local root no longer passes the core's folder check — the
 /// grant was withdrawn, or the folder moved. The remedy is to point the
 /// profile at a folder this head can read and write, which the home list
 /// does with the same chooser Run setup uses.

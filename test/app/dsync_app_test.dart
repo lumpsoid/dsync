@@ -3,8 +3,9 @@ import 'dart:io';
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/dsync_app.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
@@ -15,7 +16,6 @@ import 'package:dsync/app/features/pair/pair_scope.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
-import 'package:dsync/app/features/run/replica_connector.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
@@ -26,25 +26,20 @@ import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/run_request.dart';
-import 'package:dsync/app/sync_profile.dart';
-import 'package:dsync/app/sync_profile_store.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_folder_picker.dart';
 import '../support/fake_screen_wake.dart';
+import 'support/fake_head.dart';
 
 /// The entrypoint's wiring: the bootstrap gate renders each `AppBootstrap`
 /// case, and a tap on Devices lands on the route this file promised. Driven
 /// the way the scope contract in `app_scope.dart` intends — the controllers
 /// pinned with `setController`, the Run scope's factory swapped for a fresh
 /// pinned controller per `create()`, the app pumped directly, the gate moved
-/// by writing `AppState` as `AppController.bootstrap()` would. `bootstrap()`
-/// itself is `main()`'s to call, so the I/O here is Run setup's own: a store
-/// read, and the one write the last test makes to go with it.
+/// by writing `AppState` as `AppController.bootstrap()` would. The core is a
+/// `FakeCoreLink`; the real I/O here is Run setup's own local folder.
 ///
 /// **Real I/O is real, and `flutter_test` runs the body against a fake
 /// clock.** A `Future` that completes from a real read or write — a store,
@@ -57,12 +52,12 @@ import '../support/fake_screen_wake.dart';
 ///
 /// The Run feature is pinned, not driven: a fresh `SyncRunController` per
 /// `create()` whose phase is already the failed run these routes are about.
-/// What a failed run *renders* is `run_page_test.dart`'s and what a refused
-/// dial *causes* is `replica_connector_test.dart`'s; this file's subject is
+/// What a failed run *renders* is `run_page_test.dart`'s; this file's subject is
 /// the route stack — Run setup pushed, Run over it, and a back that finds
 /// the form still filled.
 void main() {
   late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late DevicesController devices;
   late PairController pair;
@@ -72,17 +67,10 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('dsync_app_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    core = FakeCoreLink();
+    app = fakeApp(core);
     devices = DevicesController(app);
-    pair = PairController(
-      app,
-      enrol: ({
-        required payload,
-        required ownIdentity,
-        required localName,
-        required pairedDeviceStore,
-      }) => throw StateError('no enrolment in this test'),
-    );
+    pair = PairController(app);
     profiles = ProfilesController(app, picker: FakeFolderPicker());
     runSetupPicker = FakeFolderPicker();
     runSetup = RunSetupController(app, picker: runSetupPicker);
@@ -148,17 +136,6 @@ void main() {
   RunRequest requestIn(WidgetTester tester) =>
       tester.widget<RunPage>(find.byType(RunPage)).request;
 
-  /// A dial that must never happen: the Run controller this file pins is
-  /// never idle, so `SyncRunController.start` returns before the connector
-  /// reads a store, an identity or an address.
-  Future<DialResult> neverDial(
-    String host,
-    int port, {
-    required String expectedPeerDeviceId,
-    required ownIdentity,
-    required DateTime now,
-  }) async => fail('the entrypoint test must not dial');
-
   testWidgets('renders the bootstrap screen while loading', (tester) async {
     await tester.pumpWidget(const DsyncApp());
 
@@ -222,15 +199,12 @@ void main() {
   ) async {
     // The one test in this file that drives `bootstrap()` rather than
     // writing its outcome: the subject *is* the second call, so a pinned
-    // state would prove nothing. Both attempts are real I/O against
-    // `tempDir`, hence `runAsync` throughout — see the file doc comment.
-    final store = File('${tempDir.path}/dsync/paired-devices.json');
+    // state would prove nothing. The first attempt meets the core's refusal
+    // of a damaged device store — a condition a user can go and fix.
+    core.failNext = const CoreFailure(
+      'paired-devices.json at /state is damaged',
+    );
     await tester.runAsync(() async {
-      // A device store that exists and cannot be decoded: the
-      // `PairedDeviceStoreCorruptException` half of what the gate renders,
-      // and a condition a user can go and fix.
-      await store.parent.create(recursive: true);
-      await store.writeAsString('not json');
       await app.bootstrap();
       await tester.pumpWidget(const DsyncApp());
     });
@@ -239,9 +213,7 @@ void main() {
     expect(find.byType(ProfilesPage), findsNothing);
 
     await tester.runAsync(() async {
-      // Fixed behind the app's back, the way a user would: the file is
-      // readable now and says the same thing an untouched install does.
-      await store.writeAsString('{"schemaVersion": 1, "devices": []}');
+      // Fixed behind the app's back: the core reads it now.
       await tester.tap(find.byKey(const Key('bootstrap-retry')));
       await runRealTimeUntil(
         tester,
@@ -346,39 +318,23 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final desktop = PairedDevice(
-      certificatePem: generateDeviceIdentity(commonName: 'desktop')
-          .certificatePem,
-      name: 'desktop',
-      agreedReplicaRoots: const {'/home/me/notes'},
-      pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
-      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-    );
+    final desktop = pairedDevice(deviceId: 'a1b2:c3d4', name: 'desktop');
     final localRoot = Directory('${tempDir.path}/notes')
       ..createSync(recursive: true);
-    final profileId = ReplicaConnector.profileIdFor(
-      localRootPath: localRoot.path,
-      peerDeviceId: desktop.deviceId,
-      remoteRootPath: '~/notes',
-    );
 
     ready();
-    // Real stores: the home page reads them on mounting, and Run setup
+    // The home page lists the core's profiles on mounting, and Run setup
     // reads the profile behind the row the tap names.
+    core.devices.add(desktop);
+    core.profiles.add(
+      headProfile(
+        name: 'weekly',
+        localRoot: localRoot.path,
+        peerDeviceId: desktop.deviceId,
+        remoteRoot: '~/notes',
+      ),
+    );
     await tester.runAsync(() async {
-      await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
-          .add(desktop);
-      await SyncProfileStore(File('${tempDir.path}/dsync/sync-profiles.json'))
-          .save(
-            SyncProfile(
-              id: profileId,
-              name: 'weekly',
-              localRootPath: localRoot.path,
-              peerDeviceId: desktop.deviceId,
-              remoteRootPath: '~/notes',
-              jobs: 4,
-            ),
-          );
       await tester.pumpWidget(const DsyncApp());
       await runRealTimeUntil(tester, () => app.state.profiles.isNotEmpty);
       // The condition is the state write; the frame that renders the row
@@ -395,7 +351,7 @@ void main() {
 
     expect(find.byType(RunSetupPage), findsOneWidget);
     final page = tester.widget<RunSetupPage>(find.byType(RunSetupPage));
-    expect((page.source as RunSetupFromProfile).profileId, profileId);
+    expect((page.source as RunSetupFromProfile).profileName, 'weekly');
     // Pre-filled from the profile, editable, no typing: the name and the
     // remote root through the fields the page owns, the folder through the
     // controller's selection.
@@ -418,14 +374,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final desktop = PairedDevice(
-      certificatePem: generateDeviceIdentity(commonName: 'desktop')
-          .certificatePem,
-      name: 'desktop',
-      agreedReplicaRoots: const {'/home/me/notes'},
-      pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
-      lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-    );
+    final desktop = pairedDevice(deviceId: 'a1b2:c3d4', name: 'desktop');
     final localRoot = Directory('${tempDir.path}/notes')
       ..createSync(recursive: true);
 
@@ -450,11 +399,7 @@ void main() {
     var runs = 0;
     runScope.setFactory(() {
       runs++;
-      return SyncRunController(
-          app,
-          dial: neverDial,
-          screenWake: FakeScreenWake(),
-        )
+      return SyncRunController(app, screenWake: FakeScreenWake())
         ..state.recordStart(dryRun: true)
         ..state.recordPhase(
           const SyncRunFailed('Could not reach "desktop": refused.'),
@@ -462,10 +407,8 @@ void main() {
     });
 
     await tester.runAsync(() async {
-      // The store is what Run setup's `load` reads, and writing it is real
-      // I/O that has to happen in this zone — see the file doc comment.
-      await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
-          .add(desktop);
+      // What Run setup's `load` reads.
+      core.devices.add(desktop);
       await tester.pumpWidget(const DsyncApp());
       await tester.tap(find.byKey(const Key('profiles-open-devices')));
       await tester.pumpAndSettle();
@@ -521,8 +464,7 @@ void main() {
     final first = requestIn(tester);
     expect(first.localRootPath, localRoot.path);
     expect(first.remoteRootPath, '~/notes');
-    expect(first.addressOverride?.host, '10.0.0.9');
-    expect(first.addressOverride?.port, 4242);
+    expect(first.address, '10.0.0.9:4242');
 
     await tester.pageBack();
     // Settled: a single frame leaves the popped route's exit animation at
@@ -548,7 +490,6 @@ void main() {
     final second = requestIn(tester);
     expect(second.localRootPath, localRoot.path);
     expect(second.remoteRootPath, '~/notes');
-    expect(second.addressOverride?.host, '10.0.0.9');
-    expect(second.addressOverride?.port, 4242);
+    expect(second.address, '10.0.0.9:4242');
   });
 }

@@ -1,7 +1,8 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_dirs.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_page.dart';
@@ -9,6 +10,8 @@ import 'package:dsync/app/features/settings/settings_scope.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fake_head.dart';
 
 /// The Settings page as a rendering test: the view state is written
 /// directly and the page is pumped, per the scope contract. Nothing here
@@ -21,7 +24,12 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('settings_page_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    final core = FakeCoreLink()
+      ..dirs = CoreDirs(
+        stateDir: tempDir.path,
+        profilesDir: '${tempDir.path}/profiles',
+      );
+    app = fakeApp(core);
     controller = _RecordingController(app);
     appScope.setController(app);
     settingsScope.setController(controller);

@@ -77,6 +77,31 @@ impl Hub {
         self.change_devices(|devices| devices.withdraw_grant(&id, root))
     }
 
+    /// Where to dial the device next: the address a connection records,
+    /// kept with the certificate already pinned (nothing was presented).
+    pub(crate) fn set_device_address(&self, device_id: &str, address: &str) -> Handled {
+        let id = device(device_id)?;
+        let address = PeerAddress::parse(address).map_err(text)?;
+        self.change_devices(|devices| {
+            let pinned = devices
+                .get(&id)
+                .ok_or(PairingError::NotPaired(id))?
+                .certificate()
+                .clone();
+            devices.record_connection(&id, address, pinned)
+        })
+    }
+
+    pub(crate) fn verify_device(&self, device_id: &str) -> Handled {
+        let id = device(device_id)?;
+        self.change_devices(|devices| devices.verify(&id, SystemTime::now()))
+    }
+
+    pub(crate) fn clear_verification(&self, device_id: &str) -> Handled {
+        let id = device(device_id)?;
+        self.change_devices(|devices| devices.clear_verification(&id))
+    }
+
     /// The dial's own handshake, then closed: nothing opened or recorded.
     pub(crate) async fn probe_peer(&self, device_id: &str, address: Option<String>) -> Handled {
         let id = device(device_id)?;

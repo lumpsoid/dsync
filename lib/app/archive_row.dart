@@ -1,5 +1,4 @@
-import 'package:dsync/dsync_core/models/stored_archive.dart';
-
+import 'core_link/models/archive_info.dart';
 import 'format_bytes.dart';
 import 'format_path.dart';
 import 'profile_row.dart';
@@ -9,7 +8,7 @@ import 'profile_row.dart';
 /// strings and branches on nothing.
 ///
 /// [render] is where the two facts the head has are joined: `core`'s
-/// [StoredArchive] — what is on disk — and the saved run whose id matches
+/// [ArchiveInfo] — what is on disk — and the saved run whose id matches
 /// it, if the home list still has one. The caller fetches both and hands
 /// them here; this decides how they read. That is CLAUDE.md's "the caller
 /// loads the facts, then calls down for the verdict".
@@ -24,6 +23,11 @@ class ArchiveRow {
   /// The log this row deletes. The handoff back to the controller is this
   /// path and nothing else — it is `core`'s own key for the file.
   final String logPath;
+
+  /// The archive id the log is filed under: what clearing it is addressed
+  /// by, both sides at once (a history kept on one side only records a
+  /// propagation the other no longer remembers).
+  final String profileId;
 
   /// The saved run's name, or the profile id when no saved run matches —
   /// honest either way, and the id is what `dsync archive list` prints on a
@@ -69,6 +73,7 @@ class ArchiveRow {
 
   const ArchiveRow({
     required this.logPath,
+    required this.profileId,
     required this.title,
     required this.peerLine,
     required this.location,
@@ -81,12 +86,13 @@ class ArchiveRow {
   /// Renders [archive] against the saved run it belongs to, [profile],
   /// which is `null` when the home list has no run under that id any more.
   static ArchiveRow render(
-    StoredArchive archive, {
+    ArchiveInfo archive, {
     required ProfileRow? profile,
   }) {
     final rootPath = archive.rootPath;
     return ArchiveRow(
       logPath: archive.logPath,
+      profileId: archive.profileId,
       title: profile?.name ?? archive.profileId,
       peerLine: switch (profile) {
         null => null,

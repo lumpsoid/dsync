@@ -1,73 +1,60 @@
 import 'package:dsync/app/paired_device_row.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
 import 'package:test/test.dart';
 
-/// `PairedDeviceRow.render` over plain values: the one place a peer's
-/// certificate is consulted for the SPEC §4.4 warning, so the branch is
-/// checked here and no page test has to.
+import 'support/fake_head.dart';
+
+/// `PairedDeviceRow.render` over the core's answer. The certificate and
+/// the SPEC §4.4 expiry rule are the core's (domain `certificate_validity`
+/// tests); this checks the row's own rendering of what it was given.
 void main() {
   final issued = DateTime.utc(2026, 9, 1);
-  final identity = generateDeviceIdentity(
-    commonName: 'phone',
-    now: issued,
-    validFor: const Duration(days: 60),
-  );
-  final device = PairedDevice(
-    certificatePem: identity.certificatePem,
+  final device = pairedDevice(
+    deviceId: 'abcd-ef01',
     name: 'phone',
-    agreedReplicaRoots: const {'/a', '/b'},
+    grantedRoots: ['/b', '/a'],
+    address: 'phone.local:28771',
     pairedAt: issued,
-    lastKnownAddress: PeerAddress(host: 'phone.local', port: 28771),
+    issuedAt: issued,
+    expiresAt: issued.add(const Duration(days: 60)),
   );
 
   test('renders every field as a displayable value', () {
-    final row = PairedDeviceRow.render(device, now: issued);
+    final row = PairedDeviceRow.render(device);
 
     expect(row.name, 'phone');
-    expect(row.deviceId, device.deviceId);
+    expect(row.deviceId, 'abcd-ef01');
     expect(row.address, 'phone.local:28771');
     expect(row.pairedAt, issued);
     expect(row.agreedRootCount, 2);
-    // Sorted, so the order on screen is the set's rather than the JSON
-    // document's — a `Set` has none of its own to promise.
+    // Sorted, so the order on screen is the set's rather than the store's.
     expect(row.agreedRoots, ['/a', '/b']);
-    expect(row.certificateIssuedAt, isNot(row.certificateExpiresAt));
+    expect(row.certificateIssuedAt, issued);
     expect(row.certificateExpiresAt, issued.add(const Duration(days: 60)));
     expect(row.certificateWarning, isNull);
+    expect(row.isVerified, isFalse);
   });
 
   test('the count is the list\'s, so the two cannot disagree', () {
-    final unsorted = PairedDeviceRow.render(
-      PairedDevice(
-        certificatePem: identity.certificatePem,
-        name: 'phone',
-        agreedReplicaRoots: const {'/z', '/a'},
-        pairedAt: issued,
-        lastKnownAddress: PeerAddress(host: 'phone.local', port: 28771),
-      ),
-      now: issued,
-    );
+    final row = PairedDeviceRow.render(pairedDevice(grantedRoots: ['/z', '/a']));
 
-    expect(unsorted.agreedRoots, ['/a', '/z']);
-    expect(unsorted.agreedRootCount, unsorted.agreedRoots.length);
+    expect(row.agreedRoots, ['/a', '/z']);
+    expect(row.agreedRootCount, row.agreedRoots.length);
   });
 
-  test('carries the rendered expiry warning once inside the window', () {
+  test("carries the core's expiry warning as the line to show", () {
     final row = PairedDeviceRow.render(
-      device,
-      now: issued.add(const Duration(days: 50)),
-    );
-
-    expect(row.certificateWarning, 'certificate for phone expires in 10 days');
-  });
-
-  test('says so once the certificate has expired', () {
-    final row = PairedDeviceRow.render(
-      device,
-      now: issued.add(const Duration(days: 63)),
+      pairedDevice(expiryNote: 'certificate for phone expired 3 days ago'),
     );
 
     expect(row.certificateWarning, 'certificate for phone expired 3 days ago');
+  });
+
+  test('a confirmation is carried as its date', () {
+    final row = PairedDeviceRow.render(
+      pairedDevice(verifiedAt: DateTime.utc(2026, 9, 2)),
+    );
+
+    expect(row.verifiedAt, DateTime.utc(2026, 9, 2));
+    expect(row.isVerified, isTrue);
   });
 }

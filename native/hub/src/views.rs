@@ -54,6 +54,14 @@ impl From<SideView> for Side {
     }
 }
 
+/// Where the core keeps its state (identity, pairings, archives, and the
+/// head's own `settings.json` beside them) and its saved profiles.
+#[derive(Serialize, SignalPiece)]
+pub struct DirsView {
+    pub state_dir: String,
+    pub profiles_dir: String,
+}
+
 /// This device: its id, the name its certificate carries, the window and
 /// SPEC §4.4's expiry warning when due.
 #[derive(Serialize, SignalPiece)]

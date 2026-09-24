@@ -1,103 +1,59 @@
 import 'dart:io';
 
-import 'package:dsync/dsync_core/models/location.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
-import 'package:dsync/dsync_core/scan/scanner.dart';
-
 import '../../app_controller.dart';
-import '../../folder_access.dart';
-import '../../peer_address_text.dart';
+import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/paired_device_info.dart';
+import '../../core_link/models/profile_draft.dart';
+import '../../core_link/models/profile_entry.dart';
+import '../../core_link/models/run_target.dart';
 import '../../run_request.dart';
-import '../../sync_profile.dart';
-import '../run/replica_connector.dart';
 import 'folder_picker.dart';
 import 'run_setup_view_state.dart';
 
 /// Input methods of the Run setup page: building the two locations a run
 /// needs, blank or from a saved profile (SPEC §2, §4.4, §11.2, §12).
 ///
-/// Takes the [AppController] it borrows the application from as a
-/// constructor argument, per the controller role in `app_scope.dart`. It
-/// opens no socket: [start] validates and builds a [RunRequest] — the only
-/// place one is constructed — and the Run feature is what connects.
+/// Takes the [AppController] it borrows the application — and through it
+/// the core — from as a constructor argument, per the controller role in
+/// `app_scope.dart`. It starts nothing: [start] validates and builds a
+/// [RunRequest] — the only place one is constructed — and the Run feature
+/// is what asks the core to run it.
 ///
 /// **The local side is one folder, and the user names it.** There is a
 /// single way in — the platform's own folder chooser ([pickLocalFolder]) —
 /// so a replica lands where the user pointed and where a file manager can
-/// reach it. The page once also listed every directory under
-/// `AppPaths.documentsDir` as a candidate, and that guessed: on Android and
-/// iOS that directory is app-private, so a replica in it is one no other
-/// app can open, while on desktop it is the user's own `~/Documents`, so
-/// the control enumerated their data as if each folder in it were a sync
-/// candidate. Which folder to sync is the user's to state.
+/// reach it. Which folder to sync is the user's to state.
 ///
-/// A picked folder is *probed*, not trusted: [pickLocalFolder] lists it and
-/// writes and deletes one entry in it before taking it as the root. The
-/// probe is plain `dart:io`, which is exactly what `Scanner` and
-/// `LocalAgent` scan and write a replica with, so a folder that passes it is
-/// scannable by construction and a folder that fails it is refused here —
-/// with a line the page raises as a snackbar — rather than mid-run. That is
-/// also why the head asks the filesystem rather than a permission API: on
-/// Android the chooser's own grant covers the `content://` tree URI it
-/// returns and *not* the path that URI converts to, which is openable only
-/// under All-files access (`MANAGE_EXTERNAL_STORAGE`, declared in
-/// `android/app/src/main/AndroidManifest.xml`), so a failed probe is met by
-/// asking for that grant once (`FolderPicker.requestAccess`) and probing
-/// again. Paths that convert to no filesystem at all — the Downloads
-/// provider, a cloud document provider — simply fail the probe, which is the
-/// refusal working. A refused folder leaves the form with no local root and
-/// says why (`RunSetupViewState.folderAccessError`, raised as a snackbar
-/// with the way to the Settings screen): there is deliberately no fallback
-/// to a folder the user did not choose, because the only one always
-/// available is the app-private one no file manager can reach.
+/// A picked folder is *checked*, not trusted: the core lists it and writes
+/// and deletes one entry in it (SPEC §3) before the form takes it as the
+/// root — exactly what a scan and a write will do to it — so a folder that
+/// fails is refused here, with a line the page raises as a snackbar, rather
+/// than mid-run. On Android the chooser's own grant covers the
+/// `content://` tree URI it returns and *not* the path that URI converts
+/// to, which is openable only under All-files access
+/// (`MANAGE_EXTERNAL_STORAGE`), so a failed check is met by asking for that
+/// grant once (`FolderPicker.requestAccess`) and checking again. There is
+/// deliberately no fallback to a folder the user did not choose.
 ///
-/// Either way the local root is an absolute path, so it is safe to use
-/// unexpanded: `Location.expandedPath` — which throws when `HOME` is unset,
-/// as it is on a mobile head — is never called here.
+/// A picked folder lasts the visit unless the run is saved: [start] stores
+/// it in a profile when the run is given a name, so a folder picked once
+/// comes back as the form's value the next time its profile is opened.
 ///
-/// A picked folder lasts the visit unless the run is saved: the
-/// saved-profile work is here now, and [start] is what stores a replica
-/// root — in a [SyncProfile], when the run is given a name — so a folder
-/// picked once comes back as the form's value the next time its profile is
-/// opened, rather than forcing a re-pick. Nothing persists it for a run
-/// left unnamed; that run was a one-off.
-///
-/// **The remote root is sent exactly as typed, never expanded.** The desktop
-/// resolves `~` in its own environment (`ReplicaSpec.rootPath`,
-/// `_specFor` in `lib/cli/agents/connected_replicas.dart`), and must have
-/// run `dsync pair grant <name> <root>` for that path as it expands there.
-/// [start] only checks that the text is a plain path a desktop could have
-/// granted: not a `peer://`, `ssh://` or `host:path` location, because those
-/// are the head's own vocabulary and the desktop would parse the remainder
-/// as a root it has not granted.
+/// **The remote root is sent exactly as typed, never expanded.** The
+/// desktop resolves `~` in its own environment and must have granted that
+/// path as it expands there. Whether it is a plain path at all is the
+/// core's to refuse when the run starts or the profile is saved.
 ///
 /// **A refusal says "not granted", and nothing about the path.** When the
 /// desktop refuses the root, the reply is deliberately uninformative
-/// (SPEC §4.4; `UnauthorizedReplicaRootException` in
-/// `lib/dsync_core/agent/agent_listener.dart`): "does not exist", "could not
-/// be read" and "not on your list" are made indistinguishable on purpose,
-/// so the peer that asked cannot probe a desktop's filesystem. The head
-/// genuinely cannot tell which it was, and [remoteRootNotGrantedMessage] —
-/// what the Run feature shows for that reply — must not be "improved" into
-/// claiming the path does or does not exist; either would fabricate. That
-/// refusal is the *only* place the head learns a root is not granted:
-/// `PairedDevice.agreedReplicaRoots` is what this device grants the peer,
-/// never the reverse, and the head grants nothing, so it is always empty —
-/// nothing up front may be derived from it.
+/// (SPEC §4.4): "does not exist", "could not be read" and "not on your
+/// list" are indistinguishable on purpose, so the peer that asked cannot
+/// probe a desktop's filesystem. That refusal, shown by the Run page in the
+/// core's words, is the *only* place the head learns a root is not granted.
 ///
 /// **Dry run is opt-in: the switch defaults OFF, a constant.** A dry run
 /// is something the user asks for per run ([setDryRun]), and the choice is
-/// not remembered — [load] resets it with the rest of the visit. This
-/// gives up SPEC §11.3's "show a plan before the first sync applies"
-/// safety on the head: an earlier default derived ON from the absence of
-/// an archive for the `(local root, peer device id, remote root)` triple,
-/// and in practice read as "always on", because a dry run commits nothing,
-/// so the archive that would have flipped the default never appeared until
-/// an applying run — precisely the run the switch was in the way of. If
-/// the first-sync safety is wanted back, it belongs as a confirmation on
-/// the plan the Run page already shows — the point where the head knows
-/// what would change — not as a pre-filled switch guessing from an
-/// archive file.
+/// not remembered — [load] resets it with the rest of the visit.
 class RunSetupController {
   RunSetupController(this.app, {required this.picker});
 
@@ -116,22 +72,23 @@ class RunSetupController {
   /// The saved profile this form was opened from, or `null` on a blank
   /// one — what an edit saves back over, so renaming a run or retyping its
   /// remote root updates the one profile instead of saving a second beside
-  /// it. Set by [load], cleared with it.
-  String? _profileId;
+  /// it. Set by [load], and by a save.
+  String? _profileName;
+
+  /// The loaded profile's scan concurrency, kept so an edit saved from the
+  /// form does not drop it (the form has no field for it).
+  int? _profileJobs;
 
   /// Reads what the page was opened for — the device the Devices page
   /// named, or the saved profile the home list named, via [source]. A
-  /// device id that matches nothing, or a profile id that names a deleted
+  /// device id that matches nothing, or a profile name that names a deleted
   /// profile, is rendered as [RunSetupPeerMissing], not thrown.
   ///
   /// A profile's values pre-fill the form: its local root becomes the
-  /// form's chosen folder — a profile that did not show the folder it syncs
-  /// would force a re-pick on every visit — and its name and remote root go
-  /// out as [RunSetupViewState.prefill] for the page's text fields. Its id
-  /// is kept in [_profileId] for [start]. What is *not* carried over is the
-  /// per-run state: the dry-run switch resets, and the address field stays
-  /// empty — the cached address is what empty means, and the profile does
-  /// not save one (SPEC §4.4's hatch is per run).
+  /// form's chosen folder, and its name and remote root go out as
+  /// [RunSetupViewState.prefill] for the page's text fields. What is *not*
+  /// carried over is the per-run state: the dry-run switch resets, and the
+  /// address field stays empty — the cached address is what empty means.
   ///
   /// Starts a visit: the chosen folder, the typed remote root and the
   /// dry-run choice are this device's, not carried over from the last one
@@ -145,66 +102,76 @@ class RunSetupController {
     state.recordOutcome(const RunSetupIdle());
     state.recordPeer(const RunSetupPeerLoading());
     state.recordPrefill(null);
+    _profileName = null;
+    _profileJobs = null;
+    _peerDeviceId = null;
 
-    final String deviceId;
-    switch (source) {
-      case RunSetupFromDevice(deviceId: final id):
-        _profileId = null;
-        deviceId = id;
-      case RunSetupFromProfile(:final profileId):
-        final profile = await (await app.profiles).byId(profileId);
-        if (profile == null) {
-          _profileId = null;
-          state.recordPeer(
-            RunSetupPeerMissing(
-              'No saved profile has the id $profileId any more. Go back to '
-              'the home list and pick one that is still saved.',
+    try {
+      final String deviceId;
+      switch (source) {
+        case RunSetupFromDevice(deviceId: final id):
+          deviceId = id;
+        case RunSetupFromProfile(:final profileName):
+          final profile = (await app.core.listProfiles())
+              .whereType<HeadProfile>()
+              .where((profile) => profile.name == profileName)
+              .firstOrNull;
+          if (profile == null) {
+            state.recordPeer(
+              RunSetupPeerMissing(
+                'No saved run is called "$profileName" any more. Go back to '
+                'the home list and pick one that is still saved.',
+              ),
+            );
+            return;
+          }
+          deviceId = profile.peerDeviceId;
+          _profileName = profile.name;
+          _profileJobs = profile.jobs;
+          state.recordLocalRoot(profile.localRoot);
+          state.recordIgnorePatterns(profile.ignorePatterns);
+          state.recordPrefill(
+            RunSetupPrefill(
+              profileName: profile.name,
+              remoteRoot: profile.remoteRoot,
+              lastRunUnfinished: profile.lastRunUnfinished,
             ),
           );
-          return;
-        }
-        deviceId = profile.peerDeviceId;
-        _profileId = profile.id;
-        state.recordLocalRoot(profile.localRootPath);
-        state.recordIgnorePatterns(profile.ignorePatterns);
-        state.recordPrefill(
-          RunSetupPrefill(
-            profileName: profile.name,
-            remoteRoot: profile.remoteRootPath,
-            lastRunUnfinished: await (await app.runMarker(
-              profile.id,
-            )).isPresent(),
+      }
+      final device = _deviceWith(deviceId, await app.core.listDevices());
+      if (device == null) {
+        state.recordPeer(
+          RunSetupPeerMissing(
+            'No paired device has the id $deviceId any more. Go back and '
+            'pick one that is still paired.',
           ),
         );
+        return;
+      }
+      _peerDeviceId = device.deviceId;
+      // Last: [RunSetupPeerLoaded] is what the page renders the whole form
+      // on, and nothing about this visit is still in flight once it lands.
+      state.recordPeer(RunSetupPeerLoaded(name: device.name));
+    } on CoreFailure catch (e) {
+      state.recordPeer(RunSetupPeerMissing(e.message));
     }
-    final device = await (await app.pairedDevices).byDeviceId(deviceId);
-    if (device == null) {
-      _peerDeviceId = null;
-      state.recordPeer(
-        RunSetupPeerMissing(
-          'No paired device has the id $deviceId any more. Go back and pick '
-          'one that is still paired.',
-        ),
-      );
-      return;
+  }
+
+  static PairedDeviceInfo? _deviceWith(
+    String deviceId,
+    List<PairedDeviceInfo> devices,
+  ) {
+    for (final device in devices) {
+      if (device.deviceId == deviceId) return device;
     }
-    _peerDeviceId = device.deviceId;
-    // Last: [RunSetupPeerLoaded] is what the page renders the whole form
-    // on, and nothing about this visit is still in flight once it lands,
-    // which is what lets a caller treat it as the end of the loading.
-    state.recordPeer(RunSetupPeerLoaded(name: device.name));
+    return null;
   }
 
   /// Opens the platform folder chooser and, if the user picks a folder,
-  /// proves this head can read and write it before taking it as the local
-  /// replica root.
-  ///
-  /// A dismissed chooser changes nothing. A folder that fails the probe —
-  /// even after the grant the probe's failure prompts for — is not taken:
-  /// `RunSetupViewState.folderAccessError` carries the reason and the page
-  /// raises it, with the way to fix it, over a form that still holds
-  /// whatever folder it held before. See the class doc comment for why the
-  /// verdict is a filesystem probe rather than a permission check.
+  /// has the core prove it usable before taking it as the local replica
+  /// root. A dismissed chooser changes nothing. A folder that fails — even
+  /// after the grant its failure prompts for — is not taken:
+  /// `RunSetupViewState.folderAccessError` carries the reason.
   Future<void> pickLocalFolder() async {
     state.recordFolderAccessError(null);
     final String? picked;
@@ -220,9 +187,12 @@ class RunSetupController {
     }
     if (picked == null) return;
 
-    var refusal = await folderAccessRefusal(picked);
-    if (refusal != null && await picker.requestAccess()) {
-      refusal = await folderAccessRefusal(picked);
+    final String? refusal;
+    try {
+      refusal = await _usableRefusal(picked);
+    } on CoreFailure catch (e) {
+      state.recordFolderAccessError(e.message);
+      return;
     }
     if (refusal != null) {
       state.recordFolderAccessError(refusal);
@@ -231,6 +201,14 @@ class RunSetupController {
 
     state.recordLocalRoot(picked);
     state.recordOutcome(const RunSetupIdle());
+  }
+
+  /// The core's refusal of [path], asking for the All-files grant once and
+  /// checking again when the first check refuses.
+  Future<String?> _usableRefusal(String path) async {
+    final refusal = await app.core.checkFolder(path);
+    if (refusal == null || !await picker.requestAccess()) return refusal;
+    return app.core.checkFolder(path);
   }
 
   /// Opens the OS settings page that grants access to folders outside the
@@ -244,19 +222,15 @@ class RunSetupController {
   }
 
   /// The user moved the dry-run switch: this run is a dry one iff they
-  /// turned it on. The next visit starts over — see the class doc comment.
+  /// turned it on. The next visit starts over.
   void setDryRun(bool dryRun) {
     state.recordDryRun(dryRun);
   }
 
-  /// The Filters page came back with [patterns] — SPEC §9 `ignore` globs.
-  ///
-  /// Recorded, not validated: every pattern that reaches here was compiled
-  /// where it was written (`FiltersController.addPattern`), so a malformed
-  /// one never becomes a rule in the first place. They travel with both
-  /// ways out of this page — the run applies them, and the profile saves
-  /// them — so a folder excluded here stays excluded on the next run
-  /// without being chosen again.
+  /// The Filters page came back with [patterns] — SPEC §9 `ignore` globs,
+  /// each already checked where it was written (`FiltersController`). They
+  /// travel with both ways out of this page — the run applies them, and
+  /// the profile saves them.
   void setIgnorePatterns(List<String> patterns) {
     state.recordIgnorePatterns(patterns);
     state.recordOutcome(const RunSetupIdle());
@@ -264,75 +238,61 @@ class RunSetupController {
 
   /// Validates every field and, when all hold, records a [RunSetupStarted]
   /// carrying the one [RunRequest] this page produces — and, when
-  /// [profileName] names it, saves the run as a [SyncProfile] for the home
-  /// list. Saving happens on a path where every field has validated — this
-  /// one and [save] — so a profile is never saved for a run that could not
-  /// start; an empty [profileName] saves nothing, which is what a one-off
-  /// run leaves blank.
-  ///
-  /// A form opened from a profile saves over that profile's id — renaming
-  /// it or retyping its remote root updates the one entry — and a blank
-  /// form saves under a fresh [ReplicaConnector.profileIdFor] derivation
-  /// over the triple, the id the archive and lock will be keyed under when
-  /// this request runs. The per-run choices are not saved: [address] is
-  /// SPEC §4.4's hatch, and the dry-run switch is per run.
+  /// [profileName] names it, saves the run as a profile for the home list
+  /// first and runs that profile. An empty [profileName] saves nothing and
+  /// runs the pair as a one-off.
   ///
   /// [address] is SPEC §4.4's manual re-entry hatch — `host` or
-  /// `host:port`, empty for the cached address. The port range is
-  /// `PeerAddress`'s rule, refused at construction; it is not re-checked
-  /// here. [remoteRoot] is validated as the class doc comment says and
-  /// carried unexpanded.
+  /// `host:port`, empty for the cached address; the core reads it when the
+  /// run starts. The per-run choices are not saved.
   Future<void> start({
     required String remoteRoot,
     required String address,
     required String profileName,
   }) async {
-    final form = _validate(remoteRoot: remoteRoot, address: address);
+    final form = _validate(remoteRoot: remoteRoot);
     if (form == null) return;
 
     state.recordOutcome(const RunSetupStarting());
     try {
       // On demand: a folder listed a moment ago may have been removed by a
       // file manager since, and a missing local root is not a run.
-      await Directory(form.localRootPath).create(recursive: true);
+      await Directory(form.draft.localRoot).create(recursive: true);
     } on FileSystemException catch (e) {
       state.recordOutcome(
-        RunSetupFailed('Could not open ${form.localRootPath}: ${e.message}'),
+        RunSetupFailed('Could not open ${form.draft.localRoot}: ${e.message}'),
       );
       return;
     }
-    final request = RunRequest(
-      localRootPath: form.localRootPath,
-      deviceName: form.deviceName,
-      peerDeviceId: form.peerDeviceId,
-      remoteRootPath: form.remoteRootPath,
-      addressOverride: form.addressOverride,
-      jobs: _jobs,
-      dryRun: state.dryRun,
-      ignorePatterns: state.ignorePatterns,
-    );
     final name = profileName.trim();
-    if (name.isNotEmpty) await _saveProfile(form, name);
-    state.recordOutcome(RunSetupStarted(request));
+    if (name.isNotEmpty && !await _saveProfile(form, name)) return;
+    final typed = address.trim();
+    state.recordOutcome(
+      RunSetupStarted(
+        RunRequest(
+          target: name.isEmpty
+              ? DraftTarget(form.draft)
+              : SavedProfileTarget(name),
+          localRootPath: form.draft.localRoot,
+          deviceName: form.deviceName,
+          remoteRootPath: form.draft.remoteRoot,
+          address: typed.isEmpty ? null : typed,
+          dryRun: state.dryRun,
+        ),
+      ),
+    );
   }
 
-  /// Saves the form as a [SyncProfile] and stops there — what renaming a
-  /// saved run, or fixing its remote root, needs when the user is not
-  /// committing to a sync.
-  ///
-  /// The same validation [start] applies, surfaced the same way: a field
-  /// that does not hold gets its own line and nothing is written. The one
-  /// rule only this path has is that a profile needs a name — [start] reads
-  /// an empty one as "this run is a one-off", which is not something Save
-  /// can mean — and its refusal lands on the outcome line, where the other
-  /// whole-form refusals land. Saving touches no filesystem: only [start]
-  /// creates the local root, because only a run needs it to exist.
+  /// Saves the form as a profile and stops there — what renaming a saved
+  /// run, or fixing its remote root, needs when the user is not committing
+  /// to a sync. The same validation [start] applies; the one rule only this
+  /// path has is that a profile needs a name.
   Future<void> save({
     required String remoteRoot,
     required String address,
     required String profileName,
   }) async {
-    final form = _validate(remoteRoot: remoteRoot, address: address);
+    final form = _validate(remoteRoot: remoteRoot);
     if (form == null) return;
     final name = profileName.trim();
     if (name.isEmpty) {
@@ -341,47 +301,33 @@ class RunSetupController {
     }
 
     state.recordOutcome(const RunSetupStarting());
-    await _saveProfile(form, name);
-    state.recordOutcome(const RunSetupSaved());
+    if (await _saveProfile(form, name)) {
+      state.recordOutcome(const RunSetupSaved());
+    }
   }
 
-  /// Writes [form] under [name]: over the profile this form was opened
-  /// from when there was one, under a fresh [ReplicaConnector.profileIdFor]
-  /// derivation over the triple when there was not — the id the archive and
-  /// lock are keyed under when this form runs. The id is remembered, so a
-  /// second save in the same visit updates the entry the first one made
-  /// rather than saving a second beside it.
-  Future<void> _saveProfile(_ValidatedForm form, String name) async {
-    final id =
-        _profileId ??
-        ReplicaConnector.profileIdFor(
-          localRootPath: form.localRootPath,
-          peerDeviceId: form.peerDeviceId,
-          remoteRootPath: form.remoteRootPath,
-        );
-    await app.upsertProfile(
-      SyncProfile(
-        id: id,
-        name: name,
-        localRootPath: form.localRootPath,
-        peerDeviceId: form.peerDeviceId,
-        remoteRootPath: form.remoteRootPath,
-        jobs: _jobs,
-        ignorePatterns: state.ignorePatterns,
-      ),
-    );
-    _profileId = id;
+  /// Writes [form] as the profile [name] — over the profile this form was
+  /// opened from, renamed when the name changed — and remembers the name,
+  /// so a second save in the same visit updates the entry the first one
+  /// made. A refusal (a name that is not file-safe, a remote root that is
+  /// not a plain path) is the outcome line, and answers `false`.
+  Future<bool> _saveProfile(_ValidatedForm form, String name) async {
+    try {
+      await app.saveProfile(name, form.draft, replacing: _profileName);
+    } on CoreFailure catch (e) {
+      state.recordOutcome(RunSetupFailed(e.message));
+      return false;
+    }
+    _profileName = name;
+    return true;
   }
 
   /// The one validation pass, shared by [start] and [save] so the two
-  /// cannot drift: the loaded peer, the chosen local folder, the typed
-  /// remote root and the address override, as a single value when all of
-  /// them hold. Records every field's line either way, and answers `null` —
-  /// with the outcome reset — when any of them did not.
-  _ValidatedForm? _validate({
-    required String remoteRoot,
-    required String address,
-  }) {
+  /// cannot drift: the loaded peer, the chosen local folder and the typed
+  /// remote root, as a single value when all of them hold. Records every
+  /// field's line either way, and answers `null` — with the outcome reset —
+  /// when any of them did not.
+  _ValidatedForm? _validate({required String remoteRoot}) {
     final peer = state.peer;
     final peerDeviceId = _peerDeviceId;
     if (peer is! RunSetupPeerLoaded || peerDeviceId == null) {
@@ -393,92 +339,41 @@ class RunSetupController {
 
     final localRootPath = state.localRoot;
     final remote = remoteRoot.trim();
-    // A blank address field is the per-run override left empty, which is
-    // the normal case: `null` here means "dial the address the device was
-    // last reached at", not "the user typed something wrong".
-    PeerAddress? addressOverride;
-    String? addressError;
-    try {
-      addressOverride = parsePeerAddress(address);
-    } on FormatException catch (e) {
-      addressError = e.message;
-    }
     final localFolderError = localRootPath == null
         ? _localFolderRequired
         : null;
-    final remoteRootError = _remoteRootError(remote);
+    final remoteRootError = remote.isEmpty ? _remoteRootRequired : null;
     state.recordFieldErrors(
       localFolder: localFolderError,
       remoteRoot: remoteRootError,
-      address: addressError,
+      address: null,
     );
-    if (localRootPath == null ||
-        remoteRootError != null ||
-        addressError != null) {
+    if (localRootPath == null || remoteRootError != null) {
       state.recordOutcome(const RunSetupIdle());
       return null;
     }
     return _ValidatedForm(
-      localRootPath: localRootPath,
       deviceName: peer.name,
-      peerDeviceId: peerDeviceId,
-      remoteRootPath: remote,
-      addressOverride: addressOverride,
+      draft: ProfileDraft(
+        localRoot: localRootPath,
+        peerDeviceId: peerDeviceId,
+        remoteRoot: remote,
+        jobs: _profileJobs,
+        ignorePatterns: state.ignorePatterns,
+      ),
     );
   }
 
   void dispose() => state.dispose();
 }
 
-/// The line the Run feature shows when the desktop's reply to the root was
-/// SPEC §4.4's uninformative refusal. Says the path was not granted and
-/// nothing else — see `RunSetupController`'s doc comment for why it must
-/// not say whether the path exists.
-String remoteRootNotGrantedMessage({
-  required String deviceName,
-  required String remoteRoot,
-}) =>
-    '$deviceName has not granted this path to this device. On it, run '
-    '`dsync pair grant <this device> $remoteRoot` for the exact path as it '
-    'expands there, then start again.';
-
-/// The remote root field's validation line, or `null`.
-String? _remoteRootError(String remote) {
-  if (remote.isEmpty) return _remoteRootRequired;
-  final Location location;
-  try {
-    location = Location.parse(remote);
-  } on FormatException catch (e) {
-    return e.message;
-  }
-  if (location.host != null) return _remoteRootNotAPath;
-  return null;
-}
-
-/// A validated form: everything `RunSetupController.start` needs to build a
-/// [RunRequest] and everything `RunSetupController.save` needs to build a
-/// [SyncProfile]. Built only by `_validate`, so holding one is proof every
-/// field validated.
+/// What [RunSetupController._validate] answers when every field holds.
 class _ValidatedForm {
-  const _ValidatedForm({
-    required this.localRootPath,
-    required this.deviceName,
-    required this.peerDeviceId,
-    required this.remoteRootPath,
-    required this.addressOverride,
-  });
+  const _ValidatedForm({required this.deviceName, required this.draft});
 
-  final String localRootPath;
   final String deviceName;
-  final String peerDeviceId;
-  final String remoteRootPath;
-  final PeerAddress? addressOverride;
+  final ProfileDraft draft;
 }
-
-/// The same default the CLI takes when no `--jobs` is given
-/// (`lib/cli/agents/connected_replicas.dart`). One value for the request and
-/// the profile saved beside it, so a save and a start agree.
-final int _jobs = Scanner().jobs;
 
 const _localFolderRequired = 'Pick the folder to sync on this device.';
 const _profileNameRequired =
@@ -486,6 +381,3 @@ const _profileNameRequired =
     'nothing to save.';
 const _remoteRootRequired =
     'Type the folder on the desktop, as it was granted there.';
-const _remoteRootNotAPath =
-    'Type a plain path on the desktop, such as ~/notes — the device is '
-    'already chosen, so no `peer://`, `ssh://` or `host:` prefix.';

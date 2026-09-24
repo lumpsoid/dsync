@@ -8,7 +8,7 @@ import 'filters_controller.dart';
 /// filesystem and edits a list of patterns, and the folder it works over
 /// arrives as the page's argument rather than from the application.
 final class FiltersScope extends Scope<FiltersController> {
-  FiltersScope() : super(FiltersController.new);
+  FiltersScope() : super(() => FiltersController(appScope.controller));
 }
 
 /// The single filters scope.

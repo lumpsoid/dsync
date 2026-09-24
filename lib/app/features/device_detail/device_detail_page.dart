@@ -517,9 +517,8 @@ class _RenameDialogState extends State<_RenameDialog> {
 
 /// Where to reach the device: `host`, or `host:port` when it listens
 /// somewhere other than the default. Pops the typed text, or nothing when
-/// cancelled — what counts as an address is `parsePeerAddress`'s and
-/// `PeerAddress`'s, decided once in the controller, so this dialog holds no
-/// rule of its own and a bad address comes back as the page's own error
+/// cancelled — what counts as an address is the core's, decided when the
+/// controller hands it over, so this dialog holds no rule of its own and a bad address comes back as the page's own error
 /// line rather than as two disagreeing validations.
 ///
 /// Pre-filled with what is on file, because correcting an address is

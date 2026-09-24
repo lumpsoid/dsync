@@ -1,6 +1,9 @@
 import 'dart:async';
-import 'dart:io';
 
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/filter_folder_summary.dart';
+import 'package:dsync/app/core_link/models/filter_preview.dart';
+import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/features/filters/filters_controller.dart';
 import 'package:dsync/app/features/filters/filters_page.dart';
 import 'package:dsync/app/features/filters/filters_scope.dart';
@@ -8,11 +11,13 @@ import 'package:dsync/app/features/filters/filters_view_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_head.dart';
+
 /// Rendering tests for the Filters page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controller is pinned with
 /// `setController` and the page is pumped directly. The controller is the
-/// real one over a temporary tree — it reads the filesystem and nothing
-/// else — so every step that touches disk runs under `runAsync`.
+/// real one over a [FakeCoreLink] listing a fixed tree (which rule covers
+/// which path comes from a table: the grammar is the core's).
 ///
 /// The tree:
 ///
@@ -22,32 +27,48 @@ import 'package:flutter_test/flutter_test.dart';
 /// DCIM/one.jpg         30 B
 /// ```
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late FiltersController controller;
   final navigator = GlobalKey<NavigatorState>();
   final done = <List<String>>[];
 
-  void write(String relativePath, int bytes) {
-    final file = File('${tempDir.path}/$relativePath');
-    file.parent.createSync(recursive: true);
-    file.writeAsBytesSync(List.filled(bytes, 0x61));
-  }
+  const coveredBy = {
+    'cache': ['**/cache'],
+    'cache/a.tmp': ['**/*.tmp'],
+  };
+  const tree = {
+    null: [('cache', null), ('DCIM', null), ('notes.txt', 12)],
+    'cache': [('a.tmp', 10)],
+    'DCIM': [('one.jpg', 30)],
+  };
 
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('filters_page_test');
-    write('notes.txt', 12);
-    write('cache/a.tmp', 10);
-    write('DCIM/one.jpg', 30);
-    controller = FiltersController();
+  List<FilterRow> listing(String? folder, List<String> ignore) => [
+    for (final (name, size) in tree[folder] ?? const <(String, int?)>[])
+      () {
+        final path = folder == null ? name : '$folder/$name';
+        final excludedBy = ignore
+            .where((rule) => (coveredBy[path] ?? const []).contains(rule))
+            .firstOrNull;
+        return FilterRow(
+          path: path,
+          name: name,
+          size: size,
+          isFolder: size == null,
+          excludedBy: excludedBy,
+          syncs: excludedBy == null,
+        );
+      }(),
+  ];
+
+  setUp(() {
+    core = FakeCoreLink()..filterListing = listing;
+    controller = FiltersController(fakeApp(core));
     filtersScope.setController(controller);
     done.clear();
   });
 
   tearDown(filtersScope.reset);
-  tearDown(() async {
-    controller.dispose();
-    await tempDir.delete(recursive: true);
-  });
+  tearDown(() => controller.dispose());
 
   /// Waits, in real time, for the state [what] names — by listening, not
   /// by sampling, and bounded so a regression fails instead of hanging.
@@ -123,7 +144,7 @@ void main() {
         navigator.currentState!.push(
           MaterialPageRoute<void>(
             builder: (_) => FiltersPage(
-              args: FiltersArgs(rootPath: tempDir.path, ignorePatterns: rules),
+              args: FiltersArgs(rootPath: '/tmp/tree', ignorePatterns: rules),
               onDone: done.add,
             ),
           ),
@@ -172,8 +193,8 @@ void main() {
     // under `runAsync`, which does not drive animations.
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
-    // Then the re-listing it started, which is real filesystem work: the
-    // *new* listing, not the one already on screen.
+    // Then the re-listing it started: the *new* listing, not the one
+    // already on screen.
     await pumpUntil(
       tester,
       () =>
@@ -189,6 +210,21 @@ void main() {
 
   testWidgets('Preview counts what the rules keep and drop', (tester) async {
     await pumpPage(tester, rules: const ['**/*.tmp']);
+    core.filterPreview = const FilterPreview(
+      folders: [
+        FilterFolderSummary(
+          path: null,
+          depth: 0,
+          excludedBy: null,
+          includedFiles: 2,
+          includedBytes: 42,
+          excludedFiles: 1,
+          excludedBytes: 10,
+        ),
+      ],
+      excludedByRule: {'**/*.tmp': 1},
+      unreadableFolders: [],
+    );
 
     await tester.runAsync(() async {
       await tester.tap(find.byKey(const Key('filters-preview')));
@@ -209,6 +245,21 @@ void main() {
     tester,
   ) async {
     await pumpPage(tester);
+    core.filterPreview = const FilterPreview(
+      folders: [
+        FilterFolderSummary(
+          path: null,
+          depth: 0,
+          excludedBy: null,
+          includedFiles: 3,
+          includedBytes: 52,
+          excludedFiles: 0,
+          excludedBytes: 0,
+        ),
+      ],
+      excludedByRule: {},
+      unreadableFolders: [],
+    );
     await tester.runAsync(() async {
       await tester.tap(find.byKey(const Key('filters-preview')));
       await settleUntil(

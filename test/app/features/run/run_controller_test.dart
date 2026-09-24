@@ -1,676 +1,294 @@
-import 'dart:async';
-import 'dart:io';
-
-import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
-import 'package:dsync/app/features/run/replica_connector.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/run_end.dart';
+import 'package:dsync/app/core_link/models/run_target.dart';
+import 'package:dsync/app/core_link/models/run_update.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
-import 'package:dsync/dsync_core/models/run_metrics.dart';
-import 'package:dsync/dsync_core/agent/agent.dart';
-import 'package:dsync/dsync_core/agent/agent_listener.dart';
-import 'package:dsync/dsync_core/agent/agent_server.dart';
-import 'package:dsync/dsync_core/agent/local_agent.dart';
-import 'package:dsync/dsync_core/archive/jsonl_archive_store.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/lock/replica_lock.dart';
-import 'package:dsync/dsync_core/models/archive.dart';
-import 'package:dsync/dsync_core/models/device_identity.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
-import 'package:dsync/dsync_core/models/replica_spec.dart';
-import 'package:dsync/dsync_core/protocol/in_memory_channel.dart';
-import 'package:dsync/dsync_core/protocol/socket_channel.dart';
 import 'package:test/test.dart';
 
-import '../../../support/fake_screen_wake.dart';
+import '../../support/fake_head.dart';
+import 'run_fixtures.dart';
 
-/// `SyncRunController` driven end to end with no socket: a real
-/// `AppController` and paired-device store in a temporary directory, and a
-/// dial that hands back one end of an `InMemoryChannel` with a real
-/// `AgentServer` over a real `LocalAgent` on the other — the same shape the
-/// desktop's listener has, minus TLS. So the events the view state folds
-/// are `RunController`'s own, over a real scan and reconcile.
+/// `SyncRunController` driving a run through the `CoreLink` seam, with the
+/// core played by a `FakeCoreLink`: what the head asks the core for, and
+/// how each of the core's answers — refusals, updates, ends — lands on the
+/// page's phase, the screen wakelock and the timings. What the run itself
+/// does (dialling, scanning, locks, applying) is the core's, tested in
+/// native/core and native/hub.
 void main() {
-  late Directory tempDir;
-  late AppController app;
-  late DeviceIdentity desktop;
-  late Directory localRoot;
-  late Directory remoteRoot;
-  late SyncRunController controller;
-  late FakeScreenWake screenWake;
+  late RunHarness harness;
 
-  setUpAll(() {
-    desktop = generateDeviceIdentity(commonName: 'desktop');
-  });
+  SyncRunController controller() => harness.controller;
 
-  setUp(() async {
-    screenWake = FakeScreenWake();
-    tempDir = await Directory.systemTemp.createTemp('sync_run_controller_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
-    localRoot = Directory('${tempDir.path}/documents/notes')
-      ..createSync(recursive: true);
-    remoteRoot = Directory('${tempDir.path}/desktop/notes')
-      ..createSync(recursive: true);
-    await PairedDeviceStore(File('${tempDir.path}/dsync/paired-devices.json'))
-        .add(
-          PairedDevice(
-            certificatePem: desktop.certificatePem,
-            name: 'desktop',
-            agreedReplicaRoots: {remoteRoot.path},
-            pairedAt: DateTime.utc(2026, 9, 15, 11, 21),
-            lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-          ),
+  setUp(() => harness = RunHarness());
+  tearDown(() => harness.dispose());
+
+  /// A plan the sheet opens over.
+  RunPlan sheet() => plan(awaitingDecision: true);
+
+  group('what the core is asked', () {
+    test(
+      'the request\'s target, dry-run flag and typed address, once',
+      () async {
+        await harness.start(
+          runRequest(dryRun: true, address: '192.168.1.9:4000'),
         );
-  });
 
-  tearDown(() async {
-    app.dispose();
-    await tempDir.delete(recursive: true);
-  });
+        final asked = harness.core.runStarts.single;
+        expect(asked.target, isA<DraftTarget>());
+        expect((asked.target as DraftTarget).draft.remoteRoot, '~/notes');
+        expect(asked.dryRun, isTrue);
+        expect(asked.address, '192.168.1.9:4000');
+        expect(controller().state.dryRun, isTrue);
+      },
+    );
 
-  RunRequest request({
-    required bool dryRun,
-    String deviceName = 'desktop',
-    PeerAddress? addressOverride,
-  }) => RunRequest(
-    localRootPath: localRoot.path,
-    deviceName: deviceName,
-    peerDeviceId: desktop.deviceId,
-    remoteRootPath: remoteRoot.path,
-    addressOverride: addressOverride,
-    jobs: 2,
-    dryRun: dryRun,
-  );
+    test('a saved profile is run by its name', () async {
+      harness.core.profiles.add(headProfile(name: 'notes'));
+      await harness.start(
+        const RunRequest(
+          target: SavedProfileTarget('notes'),
+          localRootPath: '/data/notes',
+          deviceName: 'desktop',
+          remoteRootPath: '~/notes',
+          address: null,
+          dryRun: false,
+        ),
+      );
 
-  /// The desktop's side `b`, built the way `AgentListener` would build it
-  /// from the `hello`'s spec: a `LocalAgent` over [remoteRoot], keyed by the
-  /// profile id the head sent.
-  Agent desktopAgent(ReplicaSpec spec) => LocalAgent(
-    rootPath: remoteRoot.path,
-    archiveStore: JsonlArchiveStore(
-      File('${tempDir.path}/desktop/${spec.profileId}-b.jsonl'),
-      ArchiveHeader(
-        schemaVersion: 1,
-        profileId: spec.profileId,
-        rootPath: remoteRoot.path,
-      ),
-    ),
-    replicaLock: ReplicaLock(
-      File('${tempDir.path}/desktop/${spec.profileId}-b.lock'),
-    ),
-  );
-
-  /// A dial answered by a served in-memory channel. [buildAgent] is what
-  /// the far end builds for the `hello`; a throw there is what SPEC §4.4's
-  /// root refusal looks like from this side.
-  DialPeer served(Agent Function(ReplicaSpec spec) buildAgent) =>
-      (
-        host,
-        port, {
-        required expectedPeerDeviceId,
-        required ownIdentity,
-        required now,
-      }) async {
-        final (near, far) = InMemoryChannel.pair();
-        // A session the head hangs up before its `hello` ends the far
-        // end's `serve` with a handshake error — on a desktop that goes to
-        // its `SessionErrorHandler`, not to the peer; here it is dropped.
-        unawaited(AgentServer().serve(far, buildAgent).catchError((_) {}));
-        return (channel: near, presentedCertificatePem: desktop.certificatePem);
-      };
-
-  DialPeer failing(Object error) =>
-      (
-        host,
-        port, {
-        required expectedPeerDeviceId,
-        required ownIdentity,
-        required now,
-      }) async => throw error;
-
-  SyncRunController make(DialPeer dial) =>
-      controller = SyncRunController(app, dial: dial, screenWake: screenWake);
-
-  SyncRunFailed failed() => controller.state.phase as SyncRunFailed;
-
-  /// Waits for the sheet: `start` is still awaiting the stream, so the
-  /// phase is polled rather than awaited — a bounded poll is what a page
-  /// would see too, and it cannot deadlock on the test's own zone.
-  Future<void> untilAwaiting() async {
-    final deadline = DateTime.now().add(const Duration(seconds: 10));
-    while (controller.state.phase is! SyncRunAwaitingDecisions) {
-      if (DateTime.now().isAfter(deadline)) {
-        fail('the sheet never opened: ${controller.state.phase}');
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-  }
-
-  /// A run answered the `--batch` way (SPEC §11.3): the sheet opens and
-  /// "accept all" takes the plan as reconciled.
-  Future<void> startAndAcceptAll(RunRequest request) async {
-    final started = controller.start(request);
-    await untilAwaiting();
-    controller.acceptAll();
-    await started;
-  }
-
-  group('connect failures, rendered per case', () {
-    test('unpaired device', () async {
-      await make(served(desktopAgent))
-          .start(request(dryRun: true, deviceName: 'laptop'));
-
-      expect(failed().message, contains('No pairing for "laptop"'));
+      final target = harness.core.runStarts.single.target;
+      expect((target as SavedProfileTarget).name, 'notes');
+      expect(harness.core.runStarts.single.address, isNull);
     });
+  });
 
-    test('peer unreachable names the address tried', () async {
-      await make(failing(const SocketException('Connection refused')))
-          .start(request(dryRun: true));
+  group('a run the core refuses or cannot connect', () {
+    test('a refused start is the failed phase in the core\'s words', () async {
+      harness.core.failNext = const CoreFailure('no paired device "laptop"');
+      await harness.start();
+      await harness.done;
 
       expect(
-        failed().message,
-        allOf(contains('10.0.0.7:28771'), contains('by hand')),
+        (controller().state.phase as SyncRunFailed).message,
+        'no paired device "laptop"',
+      );
+      expect(harness.screenWake.held, isFalse);
+    });
+
+    test('a peer that cannot be reached is the failed phase with the core\'s '
+        'message', () async {
+      await harness.start();
+      await harness.emit([
+        const RunEnded(
+          RunNotConnected('Could not reach "desktop" at 10.0.0.7:28771'),
+        ),
+      ]);
+      await harness.done;
+
+      expect(
+        (controller().state.phase as SyncRunFailed).message,
+        contains('10.0.0.7:28771'),
       );
     });
-
-    test("the peer's expired certificate names the peer", () async {
-      await make(failing(PeerCertificateExpiredException(desktop.deviceId)))
-          .start(request(dryRun: true));
-
-      expect(failed().message, contains('`dsync pair renew` on that device'));
-    });
-
-    test("this device's expired certificate names this device", () async {
-      app.dispose();
-      app = AppController(
-        () async => AppPaths(tempDir.path),
-        now: () => DateTime.now().add(const Duration(days: 365 * 20)),
-      );
-      await make(served(desktopAgent)).start(request(dryRun: true));
-
-      expect(failed().message, contains('own certificate'));
-    });
-  });
-
-  test(
-    "SPEC §4.4's root refusal from the hello is the not-granted line",
-    () async {
-      await make(served((_) => throw const UnauthorizedReplicaRootException()))
-          .start(request(dryRun: true));
-
-      expect(failed().message, contains('desktop has not granted this path'));
-      expect(failed().message, contains(remoteRoot.path));
-    },
-  );
-
-  test('a far end that hangs up under the version handshake is rendered as '
-      'unreachable, with the address tried (SPEC §4.4)', () async {
-    // The shape a revoked (or never-paired) device sees under TLS 1.3:
-    // the dial itself succeeds and the refusal is the channel closing
-    // before `hello` — see `_PeerAgent` in `replica_connector.dart`.
-    // The dial closes the far end the moment it is handed out; the near
-    // end's version handshake then finds nothing to read.
-    Future<DialResult> hangsUp(
-      String host,
-      int port, {
-      required String expectedPeerDeviceId,
-      required DeviceIdentity ownIdentity,
-      required DateTime now,
-    }) async {
-      final (near, far) = InMemoryChannel.pair();
-      far.input.listen((_) {});
-      // Not awaited: a `StreamController.close()` only completes once the
-      // near end has listened and drained the done event — which is `hello`
-      // itself — so awaiting it here would time the dial out instead, and
-      // "unreachable" would come from the timeout rather than the rewrap.
-      unawaited(far.close());
-      return (channel: near, presentedCertificatePem: desktop.certificatePem);
-    }
-
-    await make(hangsUp).start(request(dryRun: true));
-
-    expect(
-      failed().message,
-      allOf(
-        startsWith('Could not reach "desktop" at 10.0.0.7:28771'),
-        contains('Enter its address by hand'),
-        // The cause travels with it, the way the CLI's "Cannot reach
-        // replica b: <cause>" line carries it.
-        contains('Channel closed before version handshake'),
-      ),
-    );
   });
 
   group('dry run', () {
-    test('the plan and its conflicts are reported, nothing is applied, and '
-        'every proposed action counts as skipped', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      await File('${localRoot.path}/both.txt').writeAsString('a version');
-      await File('${remoteRoot.path}/both.txt').writeAsString('b version');
+    test('the plan and its conflicts are reported, nothing is decided, and '
+        'the summary is the finished phase', () async {
+      await harness.run([
+        const RunConnected([]),
+        replicas(),
+        plan(),
+        RunConflict(conflict('both.txt', a: createdA, b: createdA)),
+        summarized(skipped: 2, conflicts: 1),
+      ], request: runRequest(dryRun: true));
 
-      await make(served(desktopAgent)).start(request(dryRun: true));
-
-      final state = controller.state;
-      expect(state.header, isNotNull);
+      final state = controller().state;
       expect(state.header!.firstSyncWarning, isNotNull);
-      expect(state.scanTally!.local.created, 2);
-      expect(state.plan.map((r) => r.path), ['new.txt']);
-      expect(state.plan.single.action, 'copy to desktop');
-      expect(state.conflicts.map((r) => r.path), ['both.txt']);
-      expect(state.conflicts.single.local, 'created');
-      expect(state.conflicts.single.remote, 'created');
+      expect(state.plan.map((r) => r.path), ['new.txt', 'gone.txt']);
+      expect(state.conflicts.single.path, 'both.txt');
       expect(state.results, isEmpty);
-      expect(state.progress, isNull);
+      expect(harness.core.decisions, isEmpty);
       final finished = state.phase as SyncRunFinished;
-      expect(finished.applied, 0);
-      expect(finished.skipped, 1);
+      expect(finished.skipped, 2);
       expect(finished.conflicts, 1);
-      expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
     });
-
-    test('a hand-entered address a dry run reached becomes the last-known '
-        'address, and the Devices row shows it', () async {
-      // SPEC §4.4's manual re-entry hatch, tried first after a phone moves
-      // network — as a dry run, the natural way to prove the new address
-      // before letting anything apply. A dry run that reached the peer
-      // proves the address exactly as an applying one does, so the cache
-      // must follow it here too, and the next visit to Run setup needs
-      // nothing typed (the empty field is the cached address).
-      final before = app.state.devices;
-      await make(served(desktopAgent)).start(
-        request(
-          dryRun: true,
-          addressOverride: PeerAddress(host: '192.168.1.9', port: 4000),
-        ),
-      );
-      expect(controller.state.phase, isA<SyncRunFinished>());
-
-      final recorded = (await (await app.pairedDevices).byName('desktop'))!
-          .lastKnownAddress;
-      expect(recorded.host, '192.168.1.9');
-      expect(recorded.port, 4000);
-      // The Devices page reads this process's cached copy of the store, not
-      // the file: it was stale before this connect ([before] is whatever the
-      // page last saw), and it is the connector's refresh that has brought
-      // the row in line with the address that just worked.
-      expect(app.state.devices.single.address, '192.168.1.9:4000');
-      expect(
-        before.map((row) => row.address),
-        isNot(contains('192.168.1.9:4000')),
-      );
-    });
-  });
-
-  group('batch run', () {
-    test('applies the plan and reports each action', () async {
-      // Positive control for the dry run: the same tree, applied.
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-
-      make(served(desktopAgent));
-      await startAndAcceptAll(request(dryRun: false));
-
-      final state = controller.state;
-      expect(state.results.single.path, 'new.txt');
-      expect(state.results.single.error, isNull);
-      expect(state.progress!.completed, 1);
-      expect((state.phase as SyncRunFinished).applied, 1);
-      expect(await File('${remoteRoot.path}/new.txt').exists(), isTrue);
-    });
-
-    test('a second run of the same pair is no longer a first sync', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      make(served(desktopAgent));
-      await startAndAcceptAll(request(dryRun: false));
-      controller.dispose();
-
-      // Nothing left to do, so no sheet opens: `start` runs to the end.
-      await make(served(desktopAgent)).start(request(dryRun: false));
-
-      expect(controller.state.header!.firstSyncWarning, isNull);
-      expect(controller.state.header!.history, contains('Last synced'));
-      expect(controller.state.scanTally!.local.metadataMatched, 1);
-    });
-
-    test("the peer's synced folder gone missing is the named failure, on "
-        'that device (SPEC §4.5)', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      make(served(desktopAgent));
-      await startAndAcceptAll(request(dryRun: false));
-      controller.dispose();
-      await remoteRoot.delete(recursive: true);
-
-      await make(served(desktopAgent)).start(request(dryRun: false));
-
-      expect(
-        failed().message,
-        'The folder ${remoteRoot.path} on desktop is missing. If it is on a '
-        'drive that is not mounted, reconnect it; the last sync saw 1 file '
-        'there.',
-      );
-      expect(await remoteRoot.exists(), isFalse);
-      expect(await File('${localRoot.path}/new.txt').exists(), isTrue);
-    });
-  });
-
-  group('interactive run', () {
-    test('a resolved conflict is applied in the chosen direction and a '
-        'skipped action is not', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      await File('${localRoot.path}/both.txt').writeAsString('a version');
-      await File('${remoteRoot.path}/both.txt').writeAsString('b version');
-
-      final started = make(served(desktopAgent)).start(request(dryRun: false));
-      await untilAwaiting();
-      controller.resolveConflict('both.txt', SyncRunConflictChoice.keepLocal);
-      controller.skip('new.txt');
-      controller.confirm();
-      await started;
-
-      final state = controller.state;
-      final finished = state.phase as SyncRunFinished;
-      expect(finished.applied, 1);
-      expect(finished.skipped, 1);
-      expect(finished.conflicts, 1);
-      expect(state.results.single.path, 'both.txt');
-      expect(state.results.single.action, 'copy to desktop');
-      expect(
-        await File('${remoteRoot.path}/both.txt').readAsString(),
-        'a version',
-      );
-      expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
-    });
-
-    test('stop while the sheet is up applies nothing and releases both '
-        'locks', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      final started = make(served(desktopAgent)).start(request(dryRun: false));
-      await untilAwaiting();
-
-      await controller.stop();
-      await started;
-
-      expect(controller.state.phase, isA<SyncRunStopped>());
-      expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
-      // Both locks are free again: a run suspended on the presenter holds
-      // them, and only completing the parked completer lets the generator
-      // reach its cleanup. A held lock throws here.
-      final profileId = ReplicaConnector.profileIdFor(
-        localRootPath: localRoot.path,
-        peerDeviceId: desktop.deviceId,
-        remoteRootPath: remoteRoot.path,
-      );
-      final lockA = ReplicaLock.forProfile(
-        profileId: profileId,
-        side: 'a',
-        platform: (await app.paths).stateDirPlatform,
-      );
-      await lockA.acquire();
-      await lockA.release();
-      final lockB = ReplicaLock(
-        File('${tempDir.path}/desktop/$profileId-b.lock'),
-      );
-      await lockB.acquire();
-      await lockB.release();
-    });
-
-    test(
-      'leaving the page while the sheet is up lets the run finish',
-      () async {
-        await File('${localRoot.path}/new.txt').writeAsString('from a');
-        final started = make(served(desktopAgent))
-            .start(request(dryRun: false));
-        await untilAwaiting();
-
-        controller.dispose();
-        await started;
-
-        // The generator's cleanup is not awaited by dispose; a second run of
-        // the same pair proves both locks came free.
-        await make(served(desktopAgent)).start(request(dryRun: true));
-        expect(controller.state.phase, isA<SyncRunFinished>());
-      },
-    );
   });
 
   group('a replica already in use (SPEC §4.3)', () {
-    /// This device's own lock for the pair [request] names, held by someone
-    /// else — another `dsync` process, or the Archives page in this one.
-    /// Same file either way: the in-process guard and the OS lock give the
-    /// run the same refusal.
-    Future<ReplicaLock> holdLocalReplica() async {
-      final lock = ReplicaLock.forProfile(
-        profileId: ReplicaConnector.profileIdFor(
-          localRootPath: localRoot.path,
-          peerDeviceId: desktop.deviceId,
-          remoteRootPath: remoteRoot.path,
-        ),
-        side: 'a',
-        platform: (await app.paths).stateDirPlatform,
-      );
-      await lock.acquire();
-      return lock;
-    }
+    test('is its own phase, not a failed run, with the core\'s line', () async {
+      await harness.run([
+        runFailed('"/data/notes" is in use (lock x)', replicaBusy: true),
+      ]);
 
-    test('is its own phase, not a failed run', () async {
-      final held = await holdLocalReplica();
-      addTearDown(held.release);
-
-      await make(served(desktopAgent)).start(request(dryRun: true));
-
-      expect(controller.state.phase, isA<SyncRunReplicaBusy>());
-    });
-
-    test('names the folder, the lock file, and what to do about it', () async {
-      final held = await holdLocalReplica();
-      addTearDown(held.release);
-
-      await make(served(desktopAgent)).start(request(dryRun: true));
-
-      final busy = controller.state.phase as SyncRunReplicaBusy;
-      expect(busy.replicaRootPath, localRoot.path);
-      expect(busy.lockPath, held.path);
-      expect(busy.message, contains(localRoot.path));
-      expect(busy.message, contains(held.path));
-      expect(busy.message, contains('another dsync process on this device'));
-      expect(busy.message, contains('Wait for that run to finish'));
-      // Not `ReplicaLockHeldException.toString()`, which is the line an
-      // ordinary failure would have shown.
-      expect(busy.message, isNot(contains('Replica lock held:')));
+      final busy = controller().state.phase as SyncRunReplicaBusy;
+      expect(busy.message, '"/data/notes" is in use (lock x)');
     });
 
     test('is retried by Resume once the other holder is done', () async {
-      final held = await holdLocalReplica();
-      await make(served(desktopAgent)).start(request(dryRun: true));
-      expect(controller.state.phase, isA<SyncRunReplicaBusy>());
+      await harness.run([runFailed('in use', replicaBusy: true)]);
+      expect(controller().state.phase, isA<SyncRunReplicaBusy>());
 
-      await held.release();
-      await controller.resume(request(dryRun: true));
+      await harness.resume();
+      expect(harness.core.runStarts, hasLength(2));
+      await harness.emit([summarized(applied: 1), ranEnd()]);
+      await harness.done;
 
-      expect(controller.state.phase, isA<SyncRunFinished>());
+      expect(controller().state.phase, isA<SyncRunFinished>());
     });
   });
 
   group('backgrounding', () {
-    test('pausing suspends the run, and resuming finishes the work', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      final started = make(served(desktopAgent)).start(request(dryRun: false));
-      await untilAwaiting();
+    test('pausing stops the run, and resuming starts it again', () async {
+      await harness.start();
+      await harness.emit([const RunConnected([]), sheet()]);
+      expect(controller().state.phase, isA<SyncRunAwaitingDecisions>());
 
-      await controller.pause();
-      await started;
+      final pausing = controller().pause();
+      await pump();
+      expect(harness.core.stopped, [harness.session]);
+      await harness.emit([summarized(), ranEnd()]);
+      await pausing;
+      await harness.done;
 
-      final paused = controller.state.phase as SyncRunPaused;
+      final paused = controller().state.phase as SyncRunPaused;
       expect(paused.completedActions, 0);
-      // Suspended, not finished: nothing was applied, and the screen is no
-      // longer held for a run the app cannot see.
-      expect(await File('${remoteRoot.path}/new.txt').exists(), isFalse);
-      expect(screenWake.held, isFalse);
+      // Suspended, not finished: the screen is no longer held for a run the
+      // app cannot see.
+      expect(harness.screenWake.held, isFalse);
 
-      final resumed = controller.resume(request(dryRun: false));
-      await untilAwaiting();
-      expect(screenWake.held, isTrue);
-      controller.acceptAll();
-      await resumed;
+      harness.done = controller().resumeFromBackground(runRequest());
+      await pump();
+      expect(harness.core.runStarts, hasLength(2));
+      expect(harness.screenWake.held, isTrue);
+      await harness.emit([const RunConnected([]), sheet()]);
+      controller().acceptAll();
+      await harness.emit([summarized(applied: 2), ranEnd()]);
 
-      expect(controller.state.phase, isA<SyncRunFinished>());
-      expect(await File('${remoteRoot.path}/new.txt').readAsString(), 'from a');
-      expect(screenWake.held, isFalse);
+      expect(controller().state.phase, isA<SyncRunFinished>());
+      expect(harness.core.decisions[harness.session], hasLength(1));
+      expect(harness.screenWake.held, isFalse);
     });
 
-    test('the resumed run renders from nothing, not on top of the '
-        'paused one', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      final started = make(served(desktopAgent)).start(request(dryRun: false));
-      await untilAwaiting();
-      expect(controller.state.plan, hasLength(1));
-      await controller.pause();
-      await started;
+    test('the resumed run renders from nothing, not on top of the paused '
+        'one', () async {
+      await harness.start();
+      await harness.emit([const RunConnected([]), sheet()]);
+      expect(controller().state.plan, hasLength(2));
+      final pausing = controller().pause();
+      await harness.emit([summarized(), ranEnd()]);
+      await pausing;
 
-      // The same path is planned again by the resumed run; one row, not two.
-      final resumed = controller.resume(request(dryRun: false));
-      await untilAwaiting();
-      expect(controller.state.plan, hasLength(1));
-      controller.acceptAll();
-      await resumed;
-
-      expect(controller.state.results, hasLength(1));
+      // The same paths are planned again by the resumed run; two rows, not
+      // four.
+      await harness.resume();
+      await harness.emit([const RunConnected([]), sheet()]);
+      expect(controller().state.plan, hasLength(2));
     });
 
-    test('the resumed run is measured from nothing, not on top of the '
-        'paused one', () async {
-      // Every figure a recorder holds accumulates and `elapsed` runs from its
-      // construction, so a shared one reports two attempts as one run — a
-      // doubled `scan`, an inflated `apply` — and says nothing about it.
-      // These are the numbers this project reads its phone results off.
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      final started = make(served(desktopAgent)).start(request(dryRun: false));
-      await untilAwaiting();
-      await controller.pause();
-      await started;
+    test(
+      'the resumed run\'s timings are its own, not the paused one\'s',
+      () async {
+        await harness.start();
+        await harness.emit([const RunConnected([])]);
+        final pausing = controller().pause();
+        await harness.emit([summarized(), ranEnd(timings: 'first attempt')]);
+        await pausing;
+        expect(controller().timings.value, 'first attempt');
 
-      final paused = controller.metricsSnapshot();
-      expect(paused.phases[RunPhase.scan], isNotNull);
-
-      final resumed = controller.resume(request(dryRun: false));
-      await untilAwaiting();
-      controller.acceptAll();
-      await resumed;
-
-      final after = controller.metricsSnapshot();
-      expect(after.phases[RunPhase.connect], isNotNull);
-      // One attempt's worth of each side's operations, not two.
-      expect(
-        after.replicas['a']!.ops[AgentOp.hello]!.count,
-        1,
-        reason: 'the first attempt said hello too',
-      );
-      expect(after.elapsed, lessThan(paused.elapsed + after.elapsed));
-    });
+        await harness.resume();
+        expect(controller().timings.value, isNull);
+        await harness.emit([summarized(), ranEnd(timings: 'second attempt')]);
+        expect(controller().timings.value, 'second attempt');
+      },
+    );
 
     test('a run that is over is neither paused nor resumed', () async {
-      await make(served(desktopAgent)).start(request(dryRun: true));
-      final finished = controller.state.phase;
+      await harness.run([summarized()]);
+      final finished = controller().state.phase;
 
-      await controller.pause();
-      await controller.resume(request(dryRun: false));
+      await controller().pause();
+      await controller().resume(runRequest());
 
-      expect(controller.state.phase, same(finished));
+      expect(controller().state.phase, same(finished));
+      expect(harness.core.stopped, isEmpty);
+      expect(harness.core.runStarts, hasLength(1));
     });
 
     test('coming back to a run that never paused changes nothing', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      final started = make(served(desktopAgent)).start(request(dryRun: false));
-      await untilAwaiting();
-      final phase = controller.state.phase;
+      await harness.start();
+      await harness.emit([const RunConnected([]), sheet()]);
+      final phase = controller().state.phase;
 
       // The lifecycle fires this on every return to the foreground, including
       // the ones that never backgrounded a run (a notification, a dialog).
-      await controller.resumeFromBackground(request(dryRun: false));
+      await controller().resumeFromBackground(runRequest());
 
-      expect(controller.state.phase, same(phase));
-      controller.acceptAll();
-      await started;
-      expect(controller.state.phase, isA<SyncRunFinished>());
+      expect(controller().state.phase, same(phase));
+      expect(harness.core.runStarts, hasLength(1));
     });
 
     test('the screen is held for exactly as long as the run is live', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      await make(served(desktopAgent)).start(request(dryRun: true));
+      await harness.run([
+        const RunConnected([]),
+        replicas(),
+        plan(),
+        summarized(),
+      ], request: runRequest(dryRun: true));
 
       // Once on, once off — never re-asked for what it already holds, and
       // the dry run's phase moves several times in between.
-      expect(screenWake.calls, [true, false]);
-      expect(screenWake.held, isFalse);
+      expect(harness.screenWake.calls, [true, false]);
+      expect(harness.screenWake.held, isFalse);
     });
 
-    test('leaving the page releases the screen', () async {
-      await File('${localRoot.path}/new.txt').writeAsString('from a');
-      final started = make(served(desktopAgent)).start(request(dryRun: false));
-      await untilAwaiting();
-      expect(screenWake.held, isTrue);
+    test('leaving the page releases the screen and stops the run', () async {
+      await harness.start();
+      await harness.emit([const RunConnected([]), sheet()]);
+      expect(harness.screenWake.held, isTrue);
 
-      controller.dispose();
-      await started;
+      controller().dispose();
+      await pump();
 
-      expect(screenWake.held, isFalse);
+      expect(harness.screenWake.held, isFalse);
+      expect(harness.core.stopped, [harness.session]);
     });
   });
 
   test('a second start on the same instance is refused', () async {
-    await make(served(desktopAgent)).start(request(dryRun: true));
-    final phase = controller.state.phase;
+    await harness.run([summarized()]);
+    final phase = controller().state.phase;
 
-    await controller.start(request(dryRun: false));
+    await controller().start(runRequest(dryRun: true));
 
-    expect(controller.state.phase, same(phase));
+    expect(controller().state.phase, same(phase));
+    expect(harness.core.runStarts, hasLength(1));
+  });
+
+  test('stop before the core has taken the request: the run is stopped the '
+      'moment it exists, zero actions', () async {
+    final started = controller().start(runRequest());
+    final stopping = controller().stop();
+    await pump();
+    expect(harness.core.stopped, [harness.session]);
+
+    await harness.emit([const RunEnded(RunStoppedConnecting())]);
+    await started;
+    await stopping;
+
+    final stopped = controller().state.phase as SyncRunStopped;
+    expect(stopped.completedActions, 0);
   });
 
   test(
-    'stop while connecting: no run, both sides hung up, zero actions',
+    'the timings sheet\'s report is the core\'s, once the run ends',
     () async {
-      final release = Completer<void>();
-      final dial = served(desktopAgent);
-      final started = make((
-        host,
-        port, {
-        required expectedPeerDeviceId,
-        required ownIdentity,
-        required now,
-      }) async {
-        await release.future;
-        return dial(
-          host,
-          port,
-          expectedPeerDeviceId: expectedPeerDeviceId,
-          ownIdentity: ownIdentity,
-          now: now,
-        );
-      }).start(request(dryRun: false));
-      await Future<void>.delayed(Duration.zero);
-      expect(controller.state.phase, isA<SyncRunConnecting>());
+      await harness.start();
+      expect(controller().timings.value, isNull);
+      await harness.emit([summarized(), ranEnd(timings: 'phase scan 1.2 s')]);
 
-      final stopping = controller.stop();
-      release.complete();
-      await started;
-      await stopping;
-
-      final stopped = controller.state.phase as SyncRunStopped;
-      expect(stopped.completedActions, 0);
-      // Side a's lock was never taken and is acquirable; a held one would
-      // throw here.
-      final lock = ReplicaLock.forProfile(
-        profileId: ReplicaConnector.profileIdFor(
-          localRootPath: localRoot.path,
-          peerDeviceId: desktop.deviceId,
-          remoteRootPath: remoteRoot.path,
-        ),
-        side: 'a',
-        platform: (await app.paths).stateDirPlatform,
-      );
-      await lock.acquire();
-      await lock.release();
+      expect(controller().timings.value, 'phase scan 1.2 s');
     },
   );
 }

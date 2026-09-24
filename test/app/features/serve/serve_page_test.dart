@@ -1,23 +1,18 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_page.dart';
 import 'package:dsync/app/features/serve/serve_scope.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
-import 'package:dsync/dsync_core/agent/agent.dart';
-import 'package:dsync/dsync_core/agent/agent_listener.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/models/device_identity.dart';
-import 'package:dsync/dsync_core/models/replica_spec.dart';
-import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_screen_wake.dart';
+import '../../support/fake_head.dart';
 
 /// The Serve page as a rendering test: every [ServeStatus] case, what the
 /// page says about the folders this host serves, and the two calls the
@@ -28,13 +23,11 @@ import '../../../support/fake_screen_wake.dart';
 /// to call them and to draw what the view state holds, and whether a bind
 /// actually works is `serve_controller_test.dart`'s question.
 void main() {
-  late Directory tempDir;
   late AppController app;
   late _FakeServeController controller;
 
   setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('serve_page_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+    app = fakeApp(FakeCoreLink());
     appScope.setController(app);
     controller = _FakeServeController(app);
     serveScope.setController(controller);
@@ -44,10 +37,7 @@ void main() {
   // next test.
   tearDown(appScope.reset);
   tearDown(serveScope.reset);
-  tearDown(() async {
-    app.dispose();
-    await tempDir.delete(recursive: true);
-  });
+  tearDown(() => app.dispose());
 
   PairedDeviceRow row(String name, {Map<String, String> roots = const {}}) =>
       PairedDeviceRow(
@@ -201,12 +191,7 @@ void main() {
 /// controller writes with.
 class _FakeServeController extends ServeController {
   _FakeServeController(super.app)
-    : super(
-        bind: _refuse,
-        bindAddress: _loopback,
-        environment: const {},
-        screenWake: FakeScreenWake(),
-      );
+    : super(bindAddress: _loopback, screenWake: FakeScreenWake());
 
   int starts = 0;
   int stops = 0;
@@ -226,14 +211,3 @@ class _FakeServeController extends ServeController {
 }
 
 Future<InternetAddress> _loopback() async => InternetAddress.loopbackIPv4;
-
-Future<AgentListener> _refuse(
-  InternetAddress address,
-  int port, {
-  required DeviceIdentity ownIdentity,
-  required PairedDeviceStore pairedDeviceStore,
-  required Agent Function(ReplicaSpec spec) buildAgent,
-  required SessionErrorHandler onSessionError,
-  required Map<String, String> environment,
-  required WritePathStats? Function(Agent agent)? writePath,
-}) => throw StateError('the page must not bind anything');

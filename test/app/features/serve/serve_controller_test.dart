@@ -1,38 +1,28 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/app_paths.dart';
+import 'package:dsync/app/app_settings.dart';
+import 'package:dsync/app/app_settings_store.dart';
+import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/serve_update.dart' as core_update;
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
-import 'package:dsync/dsync_core/agent/agent.dart';
-import 'package:dsync/dsync_core/agent/agent_listener.dart';
-import 'package:dsync/dsync_core/agent/local_agent.dart';
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-import 'package:dsync/dsync_core/identity/self_signed_certificate.dart';
-import 'package:dsync/dsync_core/models/device_identity.dart';
-import 'package:dsync/dsync_core/models/paired_device.dart';
-import 'package:dsync/dsync_core/models/replica_spec.dart';
-import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:test/test.dart';
 
 import '../../../support/fake_screen_wake.dart';
+import '../../support/fake_head.dart';
 
-/// The Serve controller over a real `AgentListener.bindSecure` on an
-/// ephemeral loopback port and a real `AppController` in a temporary
-/// directory — the socket is the thing this feature owns, so faking it away
-/// would leave nothing worth testing. What the fake [_Bind] adds is a hold
-/// on the arguments the listener was given: the `onSessionError` handler and
-/// the `buildAgent` closure are the two seams the listener would otherwise
-/// only call from a real peer's connection, and both have observable
-/// behaviour of their own.
-///
-/// What a peer connecting actually gets is `head_to_head_e2e_test.dart`'s
-/// business, not this file's.
+/// The Serve controller over a real `AppController` and a `FakeCoreLink`
+/// whose serving session the test drives: when it asks the core to serve
+/// and to stop, what it shows for the core's story, and the wakelock it
+/// holds meanwhile. What a peer connecting actually gets is the core's
+/// (native/hub/tests/hub/pairing.rs, native/cli/tests).
 void main() {
-  late Directory tempDir;
+  late FakeCoreLink core;
   late AppController app;
   late FakeScreenWake screenWake;
-  late _Bind bind;
   late ServeController controller;
 
   /// Set by the one test that disposes the controller itself, so the
@@ -41,135 +31,191 @@ void main() {
 
   ServeController build({
     Future<InternetAddress> Function()? bindAddress,
-    Future<String?> Function()? advertisableAddress,
-    Map<String, String> environment = const {},
-  }) {
-    return ServeController(
-      app,
-      bind: bind.call,
-      bindAddress: bindAddress ?? (() async => InternetAddress.loopbackIPv4),
-      environment: environment,
-      screenWake: screenWake,
-      advertisableAddress: advertisableAddress ?? (() async => '10.0.0.5'),
-      // Ephemeral: this suite must not depend on 28771 being free on the
-      // machine it runs on, and the controller reads the port it actually
-      // landed on back off the socket for exactly this case.
-      port: 0,
-    );
-  }
+    int port = defaultPeerPort,
+  }) => ServeController(
+    app,
+    bindAddress: bindAddress ?? (() async => InternetAddress.loopbackIPv4),
+    screenWake: screenWake,
+    port: port,
+  );
 
-  setUp(() async {
-    tempDir = await Directory.systemTemp.createTemp('serve_controller_test');
-    app = AppController(() async => AppPaths(tempDir.path), now: DateTime.now);
+  setUp(() {
+    core = FakeCoreLink();
+    app = fakeApp(core);
     screenWake = FakeScreenWake();
-    bind = _Bind();
     disposed = false;
     controller = build();
   });
 
-  tearDown(() async {
+  tearDown(() {
     if (!disposed) controller.dispose();
     app.dispose();
-    await tempDir.delete(recursive: true);
   });
 
-  test('start binds and reports where to dial this device', () async {
+  int serveCalls() => core.calls.where((c) => c == 'startServe').length;
+
+  /// The session the fake opened last: nothing else here opens one.
+  int session() => serveCalls();
+
+  /// Lets the controller fold what the fake just emitted.
+  Future<void> settle() => Future<void>.delayed(Duration.zero);
+
+  test('start asks the core to serve on the stored bind address and the '
+      'default port, and shows where to dial this device', () async {
     await controller.start();
 
+    expect(core.servedOn, (bind: '127.0.0.1', port: defaultPeerPort));
     final status = controller.state.status;
     expect(status, isA<ServeListening>());
-    expect(controller.boundPort, isNotNull);
-    // The wildcard-free chain `PairShowController` uses for the pairing
-    // payload: a bind to one interface settles the host itself, and only a
-    // wildcard falls through to this device's own guess.
-    expect(
-      (status as ServeListening).address,
-      '127.0.0.1:${controller.boundPort}',
-    );
+    // What to type on the other device is the core's own advertisement.
+    expect((status as ServeListening).address, '192.168.1.5:$defaultPeerPort');
+    expect(controller.boundPort, defaultPeerPort);
     expect(screenWake.held, isTrue);
   });
 
-  test('a wildcard bind advertises this device\'s own address', () async {
+  test(
+    'a port the core cannot bind is a refusal naming it, not a throw',
+    () async {
+      core.failures['startServe'] = const CoreFailure('Address already in use');
+
+      await controller.start();
+
+      final status = controller.state.status;
+      expect(status, isA<ServeFailed>());
+      expect(
+        (status as ServeFailed).message,
+        contains('Address already in use'),
+      );
+      expect(status.message, contains('127.0.0.1:$defaultPeerPort'));
+      expect(status.message, contains('dsync agent --serve'));
+      // The wakelock must not survive a bind that never happened.
+      expect(screenWake.held, isFalse);
+      expect(controller.boundPort, isNull);
+    },
+  );
+
+  test('a damaged settings file refuses rather than serving on the '
+      'defaults', () async {
     controller = build(
-      bindAddress: () async => InternetAddress.anyIPv4,
-      advertisableAddress: () async => '10.0.0.5',
+      bindAddress: () async =>
+          throw const AppSettingsStoreCorruptException('/s.json', 'bad'),
     );
 
     await controller.start();
 
     expect(
-      (controller.state.status as ServeListening).address,
-      '10.0.0.5:${controller.boundPort}',
+      (controller.state.status as ServeFailed).message,
+      contains('/s.json'),
     );
-  });
-
-  test('a port already held is a refusal naming it, not a throw', () async {
-    bind.failure = const SocketException(
-      'Failed to create server socket',
-      osError: OSError('Address already in use', 98),
-    );
-    await controller.start();
-
-    final status = controller.state.status;
-    expect(status, isA<ServeFailed>());
-    expect((status as ServeFailed).message, contains('Address already in use'));
-    expect(status.message, contains('dsync agent --serve'));
-    // The wakelock must not survive a bind that never happened.
+    expect(serveCalls(), 0);
     expect(screenWake.held, isFalse);
-    expect(controller.boundPort, isNull);
   });
 
-  test('stop closes the listener, and a second stop is a no-op', () async {
+  test('stop asks the core to stop, and a second stop is a no-op', () async {
     await controller.start();
-    final port = controller.boundPort!;
 
     await controller.stop();
 
+    expect(core.stopped, [session()]);
     expect(controller.state.status, isA<ServeStopped>());
     expect(screenWake.held, isFalse);
     expect(controller.boundPort, isNull);
-    await expectLater(
-      Socket.connect(InternetAddress.loopbackIPv4, port),
-      throwsA(isA<SocketException>()),
-    );
 
     await controller.stop();
+    expect(core.stopped, [session()]);
     expect(controller.state.status, isA<ServeStopped>());
   });
 
-  test('a second start while listening binds nothing more', () async {
-    await controller.start();
-    final port = controller.boundPort;
-
+  test('a second start while serving asks for nothing more', () async {
     await controller.start();
 
-    expect(bind.calls, 1);
-    expect(controller.boundPort, port);
+    await controller.start();
+
+    expect(serveCalls(), 1);
   });
 
-  test('dispose while listening closes the socket', () async {
-    await controller.start();
-    final port = controller.boundPort!;
+  test('a stop while the core is still binding stops what it bound', () async {
+    final binding = Completer<void>();
+    core.holds['startServe'] = binding.future;
+    final started = controller.start();
+    await settle();
 
-    controller.dispose();
-    disposed = true;
-    // The close is fired without being awaited (a `dispose` is
-    // synchronous), so give the event loop the turn it needs.
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await controller.stop();
+    binding.complete();
+    await started;
 
-    await expectLater(
-      Socket.connect(InternetAddress.loopbackIPv4, port),
-      throwsA(isA<SocketException>()),
-    );
+    expect(core.stopped, [session()]);
+    expect(controller.state.status, isA<ServeStopped>());
     expect(screenWake.held, isFalse);
+  });
+
+  test(
+    'dispose while serving stops the core and releases the screen',
+    () async {
+      await controller.start();
+
+      controller.dispose();
+      disposed = true;
+      // The stop is fired without being awaited (a `dispose` is
+      // synchronous), so give the event loop the turn it needs.
+      await settle();
+
+      expect(core.stopped, [session()]);
+      expect(screenWake.held, isFalse);
+    },
+  );
+
+  test('each connection event is a timestamped line, newest first', () async {
+    await controller.start();
+
+    core
+      ..emitServe(
+        session(),
+        const core_update.ServeSessionStarted(
+          from: '10.0.0.7:5000',
+          deviceId: 'dddd',
+          name: 'phone-b',
+        ),
+      )
+      ..emitServe(session(), const core_update.ServeServing('/home/me/notes'))
+      ..emitServe(
+        session(),
+        const core_update.ServeSessionEnded(
+          from: '10.0.0.7:5000',
+          deviceId: 'dddd',
+          name: 'phone-b',
+          failure: null,
+        ),
+      )
+      ..emitServe(
+        session(),
+        const core_update.ServeSessionEnded(
+          from: '10.0.0.7:5001',
+          deviceId: 'dddd',
+          name: 'phone-b',
+          failure: 'connection reset',
+        ),
+      );
+    await settle();
+
+    expect(controller.state.sessions, [
+      '12:00:00  phone-b: connection reset',
+      '12:00:00  phone-b disconnected',
+      '12:00:00  Serving /home/me/notes',
+      '12:00:00  phone-b connected from 10.0.0.7:5000',
+    ]);
   });
 
   test('the session log is bounded however many probes arrive', () async {
     await controller.start();
 
     for (var i = 0; i < 100; i++) {
-      bind.onSessionError!(HandshakeException('probe $i'), StackTrace.empty);
+      core.emitServe(
+        session(),
+        core_update.ServeRefused(from: '10.0.0.66:$i', message: 'probe $i'),
+      );
     }
+    await settle();
 
     expect(controller.state.sessions, hasLength(ServeViewState.maxSessions));
     // Newest first: the last probe is the one a user is looking for.
@@ -177,28 +223,13 @@ void main() {
     expect(controller.state.sessions.first, contains('Refused'));
   });
 
-  test('an authorized root is expanded against this head\'s environment '
-      'and logged as served', () async {
-    controller = build(environment: const {'HOME': '/home/me'});
+  test('a fresh start begins from an empty log', () async {
     await controller.start();
-
-    final agent = bind.buildAgent!(
-      const ReplicaSpec(
-        rootPath: '~/notes',
-        profileId: 'p1',
-        side: 'b',
-        jobs: 2,
-      ),
+    core.emitServe(
+      session(),
+      const core_update.ServeRefused(from: '10.0.0.66:1', message: 'old'),
     );
-
-    expect(agent, isA<LocalAgent>());
-    expect((agent as LocalAgent).rootPath, '/home/me/notes');
-    expect(controller.state.sessions.single, contains('/home/me/notes'));
-  });
-
-  test('a fresh bind starts from an empty log', () async {
-    await controller.start();
-    bind.onSessionError!(HandshakeException('old'), StackTrace.empty);
+    await settle();
     await controller.stop();
 
     await controller.start();
@@ -206,69 +237,45 @@ void main() {
     expect(controller.state.sessions, isEmpty);
   });
 
+  test('a listener that fails on its own is the page\'s failure', () async {
+    await controller.start();
+
+    core.emitServe(
+      session(),
+      const core_update.ServeStopped('accept: too many open files'),
+    );
+    await settle();
+
+    expect(
+      (controller.state.status as ServeFailed).message,
+      'accept: too many open files',
+    );
+    expect(screenWake.held, isFalse);
+    expect(controller.boundPort, isNull);
+  });
+
+  test('the stop this page asked for is not reported as a failure', () async {
+    await controller.start();
+    final serving = session();
+
+    await controller.stop();
+    core.emitServe(serving, const core_update.ServeStopped('aborted'));
+    await settle();
+
+    expect(controller.state.status, isA<ServeStopped>());
+  });
+
   test('devices granted nothing are named, because their refusal says '
       'nothing (SPEC §4.4)', () async {
-    final store = PairedDeviceStore(
-      File('${tempDir.path}/dsync/paired-devices.json'),
-    );
-    await store.add(
-      PairedDevice(
-        certificatePem: generateDeviceIdentity(commonName: 'phone-b')
-            .certificatePem,
-        name: 'phone-b',
-        agreedReplicaRoots: const {},
-        pairedAt: DateTime.utc(2026, 9, 15),
-        lastKnownAddress: PeerAddress(host: '10.0.0.7', port: 28771),
-      ),
-    );
+    core.devices.add(pairedDevice(deviceId: 'dddd', name: 'phone-b'));
     await app.refreshDevices();
 
     expect(controller.devicesReachingNothing, ['phone-b']);
     expect(controller.folders, isEmpty);
 
-    await app.grantRoot(
-      (await store.byName('phone-b'))!.deviceId,
-      '/home/me/notes',
-    );
+    await app.grantRoot('dddd', '/home/me/notes');
 
     expect(controller.devicesReachingNothing, isEmpty);
     expect(controller.folders.single.rootPath, '/home/me/notes');
   });
-}
-
-/// The [BindAgentListener] this suite hands the controller: remembers what
-/// it was called with, then binds the real listener on loopback — or throws
-/// [failure] when the test is about a bind that could not happen.
-class _Bind {
-  SocketException? failure;
-  int calls = 0;
-  SessionErrorHandler? onSessionError;
-  Agent Function(ReplicaSpec spec)? buildAgent;
-
-  Future<AgentListener> call(
-    InternetAddress address,
-    int port, {
-    required DeviceIdentity ownIdentity,
-    required PairedDeviceStore pairedDeviceStore,
-    required Agent Function(ReplicaSpec spec) buildAgent,
-    required SessionErrorHandler onSessionError,
-    required Map<String, String> environment,
-    required WritePathStats? Function(Agent agent)? writePath,
-  }) async {
-    calls++;
-    this.onSessionError = onSessionError;
-    this.buildAgent = buildAgent;
-    final failure = this.failure;
-    if (failure != null) throw failure;
-    return AgentListener.bindSecure(
-      address,
-      port,
-      ownIdentity: ownIdentity,
-      pairedDeviceStore: pairedDeviceStore,
-      buildAgent: buildAgent,
-      onSessionError: onSessionError,
-      environment: environment,
-      writePath: writePath,
-    );
-  }
 }

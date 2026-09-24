@@ -3,6 +3,7 @@ import 'dart:async';
 import 'core_link.dart';
 import 'correlation.dart';
 import 'models/archive_info.dart';
+import 'models/core_dirs.dart';
 import 'models/core_failure.dart';
 import 'models/device_identity_info.dart';
 import 'models/enrolment_update.dart';
@@ -72,12 +73,21 @@ final class FakeCoreLink implements CoreLink {
 
   /// Local roots [checkFolder] refuses, with the refusal.
   final Map<String, String> folderRefusals = {};
+
+  /// Archive ids [clearArchive] refuses (a run holds their lock), with the
+  /// refusal.
+  final Map<String, String> archiveRefusals = {};
   FilterPreview filterPreview = const FilterPreview(
     folders: [],
     excludedByRule: {},
     unreadableFolders: [],
   );
   List<FilterRow> filterRows = const [];
+
+  /// When set, what [listFilterFolder] answers for a folder (`null`: the
+  /// root) under the given patterns, in place of [filterRows].
+  List<FilterRow> Function(String? folder, List<String> ignorePatterns)?
+  filterListing;
   ScanProbeResult scanProbe = const ScanProbeResult(
     root: '',
     report: '',
@@ -87,8 +97,40 @@ final class FakeCoreLink implements CoreLink {
   CoreFailure? failNext;
   final List<String> calls = [];
 
+  /// Refusals by call name: every call of that name throws its failure
+  /// (after being recorded in [calls]) until the entry is removed.
+  final Map<String, CoreFailure> failures = {};
+
+  /// Holds by call name: a call of that name is recorded, then waits for
+  /// its future before answering — so a test can look at what the code
+  /// under test shows while the core is still working.
+  final Map<String, Future<void>> holds = {};
+
+  /// What [init] answers: where the core keeps its state.
+  CoreDirs dirs = const CoreDirs(
+    stateDir: '/fake/state',
+    profilesDir: '/fake/state/profiles',
+  );
+
+  /// Ignore patterns [checkIgnorePattern] refuses, with the refusal.
+  final Map<String, String> patternRefusals = {};
+
+  /// When [verifyDevice] records a confirmation.
+  DateTime verifiedNow = DateTime.utc(2026, 6);
+
+  /// The last `startServe`'s arguments, once called.
+  ({String bind, int port})? servedOn;
+
+  /// The last `showPairing`'s arguments, once called.
+  ({String name, String bind, String? advertise, int servicePort})?
+  shownPairing;
+
   /// `init`'s arguments, once called.
   ({String? supportDir, String deviceName})? initialised;
+
+  /// Every [startRun], in order: the session it opened and what it asked.
+  final List<({int session, RunTarget target, bool dryRun, String? address})>
+  runStarts = [];
 
   final Map<int, List<RunDecision>> decisions = {};
   final List<int> stopped = [];
@@ -113,6 +155,8 @@ final class FakeCoreLink implements CoreLink {
 
   Future<T> _answer<T>(String call, T Function() answer) async {
     calls.add(call);
+    if (holds[call] case final hold?) await hold;
+    if (failures[call] case final refusal?) throw refusal;
     final failure = failNext;
     if (failure != null) {
       failNext = null;
@@ -139,14 +183,16 @@ final class FakeCoreLink implements CoreLink {
     PairedDeviceInfo device, {
     String? name,
     List<String>? grantedRoots,
+    String? address,
+    ({DateTime? at})? verified,
   }) => PairedDeviceInfo(
     deviceId: device.deviceId,
     name: name ?? device.name,
     commonName: device.commonName,
     grantedRoots: grantedRoots ?? device.grantedRoots,
-    address: device.address,
+    address: address ?? device.address,
     pairedAt: device.pairedAt,
-    verifiedAt: device.verifiedAt,
+    verifiedAt: verified == null ? device.verifiedAt : verified.at,
     issuedAt: device.issuedAt,
     expiresAt: device.expiresAt,
     expiryNote: device.expiryNote,
@@ -158,9 +204,10 @@ final class FakeCoreLink implements CoreLink {
   );
 
   @override
-  Future<void> init({String? supportDir, required String deviceName}) =>
+  Future<CoreDirs> init({String? supportDir, required String deviceName}) =>
       _answer('init', () {
         initialised = (supportDir: supportDir, deviceName: deviceName);
+        return dirs;
       });
 
   @override
@@ -187,6 +234,12 @@ final class FakeCoreLink implements CoreLink {
     String? advertise,
     required int servicePort,
   }) => _answer('showPairing', () {
+    shownPairing = (
+      name: name,
+      bind: bind,
+      advertise: advertise,
+      servicePort: servicePort,
+    );
     final session = ++_nextSession;
     return PairingWindow(
       session: session,
@@ -285,6 +338,41 @@ final class FakeCoreLink implements CoreLink {
         ),
       );
 
+  /// [address] as typed; `host` alone gets the default port, as the core
+  /// reads it.
+  @override
+  Future<List<PairedDeviceInfo>> setDeviceAddress(
+    String deviceId,
+    String address,
+  ) => _answer(
+    'setDeviceAddress',
+    () => _replaceDevice(
+      deviceId,
+      (device) => _with(
+        device,
+        address: address.contains(':') ? address : '$address:28771',
+      ),
+    ),
+  );
+
+  @override
+  Future<List<PairedDeviceInfo>> verifyDevice(String deviceId) => _answer(
+    'verifyDevice',
+    () => _replaceDevice(
+      deviceId,
+      (device) => _with(device, verified: (at: verifiedNow)),
+    ),
+  );
+
+  @override
+  Future<List<PairedDeviceInfo>> clearVerification(String deviceId) => _answer(
+    'clearVerification',
+    () => _replaceDevice(
+      deviceId,
+      (device) => _with(device, verified: (at: null)),
+    ),
+  );
+
   @override
   Future<PeerProbeOutcome> probePeer(String deviceId, {String? address}) =>
       _answer('probePeer', () {
@@ -368,6 +456,12 @@ final class FakeCoreLink implements CoreLink {
     String? address,
   }) => _answer('startRun', () {
     final session = ++_nextSession;
+    runStarts.add((
+      session: session,
+      target: target,
+      dryRun: dryRun,
+      address: address,
+    ));
     return RunSession(
       session: session,
       profileId: switch (target) {
@@ -395,11 +489,13 @@ final class FakeCoreLink implements CoreLink {
   @override
   Future<ServeSession> startServe({required String bind, required int port}) =>
       _answer('startServe', () {
+        servedOn = (bind: bind, port: port);
         final session = ++_nextSession;
+        final bound = port == 0 ? 28771 : port;
         return ServeSession(
           session: session,
-          port: port == 0 ? 28771 : port,
-          advertised: '${addresses.preferred ?? '127.0.0.1'}:$port',
+          port: bound,
+          advertised: '${addresses.preferred ?? '127.0.0.1'}:$bound',
           deviceId: identity.deviceId,
           updates: _serves.open(session),
         );
@@ -420,6 +516,9 @@ final class FakeCoreLink implements CoreLink {
   @override
   Future<List<ArchiveInfo>> clearArchive(String profileId) =>
       _answer('clearArchive', () {
+        if (archiveRefusals[profileId] case final refusal?) {
+          throw CoreFailure(refusal);
+        }
         archives.removeWhere((archive) => archive.profileId == profileId);
         return [...archives];
       });
@@ -435,7 +534,18 @@ final class FakeCoreLink implements CoreLink {
     String root,
     String? folder,
     List<String> ignorePatterns,
-  ) => _answer('listFilterFolder', () => filterRows);
+  ) => _answer(
+    'listFilterFolder',
+    () => filterListing?.call(folder, ignorePatterns) ?? filterRows,
+  );
+
+  @override
+  Future<void> checkIgnorePattern(String pattern) =>
+      _answer('checkIgnorePattern', () {
+        if (patternRefusals[pattern] case final refusal?) {
+          throw CoreFailure(refusal);
+        }
+      });
 
   @override
   Future<String?> checkFolder(String path) =>

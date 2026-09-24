@@ -1,7 +1,6 @@
-import 'package:dsync/dsync_core/identity/paired_device_store.dart';
-
 import '../../app_bootstrap.dart';
 import '../../app_controller.dart';
+import '../../core_link/models/core_failure.dart';
 import '../../device_identity_row.dart';
 import 'devices_view_state.dart';
 
@@ -89,8 +88,8 @@ class DevicesController {
   Future<void> refresh() async {
     try {
       await app.refreshDevices();
-    } on PairedDeviceStoreCorruptException catch (e) {
-      state.recordError(e.toString());
+    } on CoreFailure catch (e) {
+      state.recordError(e.message);
       return;
     }
     state.clearError();
