@@ -23,6 +23,9 @@ tokio-util.workspace = true
 futures-util.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "io-util", "io-std", "net", "process", "time", "macros"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

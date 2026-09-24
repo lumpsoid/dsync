@@ -2,8 +2,7 @@
 //! other holder on the host: in another process and in this one.
 //!
 //! Two mechanisms, because neither covers both cases on every platform:
-//! - The OS lock ([`File::try_lock`]: `flock` on unix, `LockFileEx` on
-//!   Windows) serializes against a second process. The kernel owns it, so
+//! - The OS lock (`flock` on unix, `LockFileEx` on Windows) serializes against a second process. The kernel owns it, so
 //!   a holder that dies - SIGKILL included - releases it with no cleanup;
 //!   the file left behind is empty and no obstacle. Nothing is ever written
 //!   into it: a PID file that is read back and trusted is exactly the
@@ -11,9 +10,8 @@
 //! - A process-wide registry of held paths serializes against this
 //!   process's own other holders: the Flutter head runs its sync in the
 //!   same process as the UI that can delete the archive under it. `flock`
-//!   happens to cover that too, but the POSIX `fcntl` locks some platforms
-//!   substitute do not, so the guarantee does not rest on which one std
-//!   picked.
+//!   happens to cover that too, but the guarantee does not rest on the OS
+//!   lock's per-open-file semantics.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -90,7 +88,7 @@ impl Drop for ReplicaLock {
         // not then find the file still locked. Closing the file would
         // release it too, but only after this returns. An unlock that
         // fails leaves that close to do it.
-        let _ = self.file.unlock();
+        let _ = unlock(&self.file);
         held().remove(&self.key);
     }
 }
@@ -107,13 +105,52 @@ fn lock_file(path: &Path) -> Result<File, LockError> {
         .truncate(false)
         .open(path)
         .map_err(io)?;
-    match file.try_lock() {
+    match try_lock(&file) {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => Err(LockError::Held {
             path: path.to_owned(),
         }),
         Err(TryLockError::Error(error)) => Err(io(error)),
     }
+}
+
+// std's `File::try_lock` returns `Unsupported` on Android, so unix takes
+// `flock` directly; Windows keeps std's `LockFileEx`.
+#[cfg(unix)]
+fn try_lock(file: &File) -> Result<(), TryLockError> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `file` owns the descriptor and outlives the call.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    // `EWOULDBLOCK` (= `EAGAIN` on Linux and Android) maps to `WouldBlock`.
+    if error.kind() == io::ErrorKind::WouldBlock {
+        Err(TryLockError::WouldBlock)
+    } else {
+        Err(TryLockError::Error(error))
+    }
+}
+
+#[cfg(unix)]
+fn unlock(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: as in `try_lock`.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock(file: &File) -> Result<(), TryLockError> {
+    file.try_lock()
+}
+
+#[cfg(not(unix))]
+fn unlock(file: &File) -> io::Result<()> {
+    file.unlock()
 }
 
 fn held() -> std::sync::MutexGuard<'static, BTreeSet<PathBuf>> {

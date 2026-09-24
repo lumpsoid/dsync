@@ -347,6 +347,7 @@ dependencies = [
  "dsync-domain",
  "futures-util",
  "if-addrs",
+ "libc",
  "pem",
  "postcard",
  "rcgen",
