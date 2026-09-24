@@ -28,6 +28,21 @@ impl StateDir {
         &self.0
     }
 
+    /// `<state>/identity.crt`: this installation's certificate (PEM).
+    pub fn identity_certificate(&self) -> PathBuf {
+        self.0.join("identity.crt")
+    }
+
+    /// `<state>/identity.key`: its private key (PKCS#8 PEM, owner-only).
+    pub fn identity_key(&self) -> PathBuf {
+        self.0.join("identity.key")
+    }
+
+    /// `<state>/paired-devices.json`.
+    pub fn paired_devices(&self) -> PathBuf {
+        self.0.join("paired-devices.json")
+    }
+
     /// `<state>/<profileId>-<side>.jsonl`.
     pub fn archive_log(&self, profile: &ProfileId, side: Side) -> PathBuf {
         self.0

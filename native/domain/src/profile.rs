@@ -141,6 +141,69 @@ impl Profile {
         }
     }
 
+    /// This profile as TOML text that [`Profile::parse`] reads back to an
+    /// equal profile. Optional tables and keys at their defaults are left
+    /// out, so a profile written by the store reads like one written by
+    /// hand; locations are spelled as typed, nothing expanded.
+    pub fn to_toml(&self) -> String {
+        let mut replicas = Table::new();
+        for side in Side::BOTH {
+            let replica = self.replica(side);
+            replicas.insert(side.key().to_owned(), replica.to_string().into());
+            if let Some(device) = replica.peer_device() {
+                replicas.insert(format!("{side}_device_id"), device.to_string().into());
+            }
+        }
+        let mut root = Table::new();
+        root.insert("replicas".to_owned(), replicas.into());
+
+        let mut rules = Table::new();
+        for (key, globs) in [
+            ("ignore", self.rules.ignore()),
+            ("follow", self.rules.follow()),
+        ] {
+            if !globs.is_empty() {
+                rules.insert(key.to_owned(), words(globs.iter().map(Glob::as_str)));
+            }
+        }
+        insert_unless_empty(&mut root, "rules", rules);
+
+        let mut options = Table::new();
+        if let Some(bytes) = self.warn_size_bytes {
+            // Parsed from a TOML integer, so it always fits back into one.
+            options.insert(
+                "warn_size_bytes".to_owned(),
+                i64::try_from(bytes).unwrap_or(i64::MAX).into(),
+            );
+        }
+        if let Some(jobs) = self.jobs {
+            options.insert(
+                "jobs".to_owned(),
+                i64::try_from(jobs.get()).unwrap_or(i64::MAX).into(),
+            );
+        }
+        insert_unless_empty(&mut root, "options", options);
+
+        let mut ssh = Table::new();
+        for side in Side::BOTH {
+            let access = self.ssh(side);
+            let mut table = Table::new();
+            if !access.options().is_empty() {
+                table.insert(
+                    "options".to_owned(),
+                    words(access.options().iter().map(SshOption::as_str)),
+                );
+            }
+            if access.command() != &SshCommand::default() {
+                table.insert("command".to_owned(), access.command().to_string().into());
+            }
+            insert_unless_empty(&mut ssh, side.key(), table);
+        }
+        insert_unless_empty(&mut root, "ssh", ssh);
+
+        root.to_string()
+    }
+
     /// The id this profile's archive and state are named by: the same one
     /// an ad-hoc run over the same pair derives (plan OQ6).
     pub fn id(&self, facts: &HostFacts) -> Result<ProfileId, ExpandError> {
@@ -155,6 +218,16 @@ fn invalid(key: &str, reason: impl fmt::Display) -> ProfileError {
     ProfileError::InvalidValue {
         key: key.to_owned(),
         reason: reason.to_string(),
+    }
+}
+
+fn words<'a>(items: impl Iterator<Item = &'a str>) -> Value {
+    Value::Array(items.map(Value::from).collect())
+}
+
+fn insert_unless_empty(parent: &mut Table, key: &str, table: Table) {
+    if !table.is_empty() {
+        parent.insert(key.to_owned(), table.into());
     }
 }
 

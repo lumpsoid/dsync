@@ -1,0 +1,164 @@
+//! One device this installation has paired with (SPEC §4.4).
+
+use std::collections::BTreeSet;
+use std::time::SystemTime;
+
+use dsync_domain::host_port::PeerAddress;
+use dsync_domain::{DeviceId, PeerName};
+
+use crate::certificate::Certificate;
+
+/// A paired device: the certificate pinned for it (its device id is the
+/// certificate's key hash, never stored beside it, so the two cannot
+/// drift), this host's own name for it, the replica roots it may reach,
+/// where it was last reached, and whether the user has confirmed its id
+/// out of band.
+///
+/// The key cannot change within one pairing - [`Self::record_connection`]
+/// refuses a certificate over another key - so a confirmation is about
+/// this entry's key for as long as the entry exists; a re-pairing is a new
+/// entry with none.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PairedDevice {
+    certificate: Certificate,
+    name: PeerName,
+    granted_roots: BTreeSet<String>,
+    paired_at: SystemTime,
+    last_known_address: PeerAddress,
+    verified_at: Option<SystemTime>,
+}
+
+/// A certificate offered for a device carries a different key: not a
+/// renewal of that device but another device.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the certificate offered for device {expected} carries a different key ({presented})")]
+pub struct DifferentKey {
+    pub expected: DeviceId,
+    pub presented: DeviceId,
+}
+
+impl PairedDevice {
+    /// A new pairing with no granted roots and no confirmation, reached at
+    /// `address` (seeded from the pairing payload).
+    pub fn new(
+        certificate: Certificate,
+        name: PeerName,
+        address: PeerAddress,
+        paired_at: SystemTime,
+    ) -> PairedDevice {
+        PairedDevice {
+            certificate,
+            name,
+            granted_roots: BTreeSet::new(),
+            paired_at,
+            last_known_address: address,
+            verified_at: None,
+        }
+    }
+
+    /// Every field, for the store reading one back.
+    pub(crate) fn restore(
+        certificate: Certificate,
+        name: PeerName,
+        granted_roots: BTreeSet<String>,
+        paired_at: SystemTime,
+        last_known_address: PeerAddress,
+        verified_at: Option<SystemTime>,
+    ) -> PairedDevice {
+        PairedDevice {
+            certificate,
+            name,
+            granted_roots,
+            paired_at,
+            last_known_address,
+            verified_at,
+        }
+    }
+
+    pub fn device_id(&self) -> DeviceId {
+        self.certificate.device_id()
+    }
+
+    pub fn certificate(&self) -> &Certificate {
+        &self.certificate
+    }
+
+    pub fn name(&self) -> &PeerName {
+        &self.name
+    }
+
+    /// The expanded replica roots this device may reach.
+    pub fn granted_roots(&self) -> &BTreeSet<String> {
+        &self.granted_roots
+    }
+
+    pub fn paired_at(&self) -> SystemTime {
+        self.paired_at
+    }
+
+    pub fn last_known_address(&self) -> &PeerAddress {
+        &self.last_known_address
+    }
+
+    /// When the user confirmed this device's id, if they have.
+    pub fn verified_at(&self) -> Option<SystemTime> {
+        self.verified_at
+    }
+
+    /// Whether this device may reach `expanded_root` - the check a `hello`
+    /// is held to: exact-string membership of the root already expanded
+    /// (`Location::expanded_path`), no normalization, no prefix match.
+    pub fn serves_root(&self, expanded_root: &str) -> bool {
+        self.granted_roots.contains(expanded_root)
+    }
+
+    /// Lets this device reach `expanded_root`. Idempotent.
+    pub fn grant(&mut self, expanded_root: String) {
+        self.granted_roots.insert(expanded_root);
+    }
+
+    /// Takes a grant back. A root never granted is not an error: the
+    /// caller wants "this device does not reach it" either way.
+    pub fn withdraw_grant(&mut self, expanded_root: &str) {
+        self.granted_roots.remove(expanded_root);
+    }
+
+    /// Relabels the device. Uniqueness among paired names is the paired
+    /// set's rule ([`crate::PairedDevices::rename`]), which sees them all.
+    pub(crate) fn rename(&mut self, name: PeerName) {
+        self.name = name;
+    }
+
+    /// A successful connection: where it reached the device, and the
+    /// certificate it presented - the pinned one, or a renewal of it under
+    /// the same key, which replaces it. A certificate over another key is
+    /// refused and nothing changes.
+    pub fn record_connection(
+        &mut self,
+        address: PeerAddress,
+        presented: Certificate,
+    ) -> Result<(), DifferentKey> {
+        if presented.device_id() != self.device_id() {
+            return Err(DifferentKey {
+                expected: self.device_id(),
+                presented: presented.device_id(),
+            });
+        }
+        self.last_known_address = address;
+        self.certificate = presented;
+        Ok(())
+    }
+
+    /// The user compared this device's id against the one it shows
+    /// itself, at `at`, and said they matched.
+    pub fn verify(&mut self, at: SystemTime) {
+        self.verified_at = Some(at);
+    }
+
+    /// Takes a confirmation back (made in haste, or against the wrong
+    /// screen). The pairing is exactly as trusted as before: the
+    /// confirmation was never what made it trusted.
+    pub fn clear_verification(&mut self) {
+        self.verified_at = None;
+    }
+}

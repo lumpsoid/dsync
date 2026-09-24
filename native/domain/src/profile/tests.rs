@@ -344,3 +344,62 @@ fn profile_names_are_file_safe() {
     assert!(ProfileName::parse("com0").is_ok());
     assert!(ProfileName::parse("console").is_ok());
 }
+
+/// `parse(to_toml(p)) == p`, and the text is stable across a second trip.
+fn round_trips(text: &str) -> String {
+    let profile = ok(text);
+    let written = profile.to_toml();
+    assert_eq!(parse(&written), Ok(profile), "{written}");
+    assert_eq!(ok(&written).to_toml(), written);
+    written
+}
+
+#[test]
+fn a_profile_round_trips_through_toml() {
+    let full = format!(
+        r#"
+[replicas]
+a = "~/notes"
+b = "peer://phone:/sdcard/notes"
+b_device_id = "{DEVICE}"
+
+[rules]
+ignore = ["**/.git", "*.tmp"]
+follow = ["shared"]
+
+[options]
+warn_size_bytes = 500_000_000
+jobs = 4
+
+[ssh.a]
+options = ["-p", "2222"]
+command = "/opt/bin/dsync"
+"#
+    );
+    let written = round_trips(&full);
+    assert!(written.contains("b_device_id"), "{written}");
+    assert!(written.contains("[ssh.a]"), "{written}");
+
+    for text in [
+        MINIMAL,
+        "[replicas]\na = \"ssh://me@host:/x\"\nb = \"host2:~/y\"\n",
+        "[replicas]\na = \"unix:///run/s.sock:/x\"\nb = \"C:/not/windows/on/unix\"\n",
+        "[replicas]\na = \"/a\"\nb = \"/b\"\n[ssh.b]\ncommand = \"dsync-dev\"\n",
+    ] {
+        round_trips(text);
+    }
+}
+
+#[test]
+fn defaults_are_left_out_of_the_written_text() {
+    let written = ok(MINIMAL).to_toml();
+    for absent in ["[rules]", "[options]", "[ssh", "device_id"] {
+        assert!(!written.contains(absent), "{absent} in {written}");
+    }
+    // Positive control: a set option is written.
+    assert!(
+        ok(&format!("{MINIMAL}[options]\njobs = 2\n"))
+            .to_toml()
+            .contains("jobs = 2")
+    );
+}

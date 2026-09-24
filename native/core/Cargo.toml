@@ -9,6 +9,13 @@ dsync-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+x509-parser.workspace = true
+pem.workspace = true
+time.workspace = true
+if-addrs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+rustls.workspace = true

@@ -10,8 +10,10 @@
 //! home, environment, working directory, platform) are passed in.
 
 mod action;
+mod advertisable_address;
 mod app_dirs;
 mod archive;
+mod certificate_validity;
 mod changed_scan;
 mod conflict;
 mod content_hash;
@@ -53,10 +55,12 @@ mod unreadable_paths;
 mod write_target;
 
 pub use action::Action;
+pub use advertisable_address::{chosen_advertisable_host, preferred_advertisable_address};
 pub use app_dirs::{
     DIR_LEAF, DirError, DirPath, DirRule, EmptyDirPath, StateDirChoice, config_dir, state_dir,
 };
 pub use archive::{Archive, ArchiveCommit};
+pub use certificate_validity::{CertificateExpiry, CertificateOwner, CertificateValidity};
 pub use changed_scan::ChangedScan;
 pub use conflict::Conflict;
 pub use content_hash::{ContentHash, ContentHashError};

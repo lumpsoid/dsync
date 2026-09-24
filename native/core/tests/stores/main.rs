@@ -3,6 +3,9 @@
 mod archive_inventory;
 mod archive_store;
 mod atomic_write;
+mod identity_store;
+mod paired_device_store;
+mod profile_store;
 mod replica_lock;
 mod run_marker;
 mod state_dirs;
