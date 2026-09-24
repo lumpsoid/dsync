@@ -514,6 +514,70 @@ void main() {
       },
     );
   });
+
+  // Task 7080d6: the serving isolate's event-loop lag rides back on `unlock`
+  // only when `hello` asked for it, and only once a write started it.
+  group('served loop lag', () {
+    Future<Map<String, dynamic>> unlockAfterWrite({
+      required bool ask,
+      required bool write,
+    }) async {
+      final (channel, server) = InMemoryChannel.pair();
+      final client = _RawClient(channel);
+      final serving = AgentServer().serve(server, (_) => _FakeAgent());
+      await client.handshake();
+      final hello = await client.request(
+        AgentRequest('hello', {
+          'replica': replicaSpecToJson(_testSpec),
+          if (ask) helloLoopLagParam: true,
+        }),
+      );
+      await hello.replies.first;
+      if (write) {
+        final exchange = await client.request(
+          AgentRequest('writeFile', {'path': 'f', 'mtime': 1, 'mode': 420}),
+        );
+        await sendByteStream(
+          client.channel,
+          Stream.value([1]),
+          requestId: exchange.id,
+        );
+        await exchange.replies.first;
+        // Long enough for the 5 ms sampler to tick at least once.
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      }
+      final unlock = await client.request(const AgentRequest('unlock'));
+      final result =
+          AgentResult.fromFrame(await unlock.replies.first) as AgentSuccess;
+      await client.channel.close();
+      // The sampler's timer is gone once the session ends, or `serve` would
+      // leave the isolate busy.
+      await expectLater(serving, completes);
+      return result.data;
+    }
+
+    test('reports ticks from the first write to unlock when asked', () async {
+      final lag = farSideFromJson(
+        await unlockAfterWrite(ask: true, write: true),
+      )!.loopLag!;
+      expect(lag.ticks, greaterThan(0));
+      expect(lag.window, greaterThan(Duration.zero));
+    });
+
+    test('is absent when hello did not ask', () async {
+      final far = farSideFromJson(
+        await unlockAfterWrite(ask: false, write: true),
+      )!;
+      expect(far.loopLag, isNull);
+    });
+
+    test('is absent from a session that wrote nothing', () async {
+      final far = farSideFromJson(
+        await unlockAfterWrite(ask: true, write: false),
+      )!;
+      expect(far.loopLag, isNull);
+    });
+  });
 }
 
 /// A minimal in-memory [Agent] fake — just enough to drive [AgentServer]'s

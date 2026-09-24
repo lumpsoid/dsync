@@ -5,6 +5,7 @@ import 'package:dsync/dsync_core/agent/remote_agent.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/protocol/channel.dart';
 import 'package:dsync/dsync_core/protocol/metered_channel.dart';
+import 'package:dsync/dsync_core/run/loop_lag_sampler.dart';
 import 'package:dsync/dsync_core/run/run_metrics_recorder.dart';
 
 /// Everything a run is measured with, assembled in one place (SPEC §17).
@@ -37,11 +38,40 @@ class RunInstruments {
   /// be a second place for it to drift.
   final RunMetricsRecorder recorder;
 
+  /// This isolate's event-loop lag sampler, feeding [recorder] per phase, or
+  /// null when the head did not ask for it (SPEC §17, task 7080d6).
+  final LoopLagSampler? _loopLag;
+
   /// [elapsed] defaults to a [Stopwatch] started here, which is why a head
   /// constructs this at the top of a run attempt rather than earlier:
   /// [RunMetrics.elapsed] is measured from this moment.
-  RunInstruments({Elapsed? elapsed})
-    : recorder = RunMetricsRecorder(elapsed: elapsed);
+  ///
+  /// [loopLag] starts sampling this isolate's event-loop lag now, and asks
+  /// every remote replica's server to sample its own — a timer every few
+  /// milliseconds on both ends, so only when someone is going to read the
+  /// figure (`--timings`). A head that sets it must call [close].
+  factory RunInstruments({Elapsed? elapsed, required bool loopLag}) {
+    final recorder = RunMetricsRecorder(elapsed: elapsed);
+    return RunInstruments._(
+      recorder,
+      loopLag
+          ? (LoopLagSampler(
+              period: LoopLagSampler.defaultPeriod,
+              onLag: recorder.recordLoopLag,
+            )..start())
+          : null,
+    );
+  }
+
+  RunInstruments._(this.recorder, this._loopLag);
+
+  /// Whether this run samples event-loop lag — and so whether a remote
+  /// replica's `hello` asks its server to sample its own.
+  bool get loopLag => _loopLag != null;
+
+  /// Stops this isolate's lag sampler, if one runs. Its pending timer would
+  /// otherwise keep a CLI process's event loop alive after the run.
+  void close() => _loopLag?.stop();
 
   /// [inner] timed at the `Agent` boundary as the replica named [side].
   ///

@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/process_memory.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
@@ -6,6 +7,7 @@ import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
+import 'package:dsync/dsync_core/run/loop_lag_tally.dart';
 import 'package:dsync/dsync_core/run/resident_memory.dart';
 
 export 'package:dsync/dsync_core/run/elapsed.dart' show Elapsed;
@@ -87,6 +89,10 @@ class RunMetricsRecorder {
   final Map<String, _ReplicaRecord> _replicas = {};
 
   ReadAheadStats? _readAhead;
+
+  /// This isolate's event-loop lag, per phase, from whatever sampler the head
+  /// started (task 7080d6). Empty when none was.
+  final Map<RunPhase, LoopLagTally> _loopLag = {};
 
   /// Where a resident-set reading comes from, and what this process held when
   /// the recorder was built — the run's baseline, since the peak the kernel
@@ -232,6 +238,9 @@ class RunMetricsRecorder {
     if (record.far?.writeStages case final stages?) {
       replica.writeStages = stages;
     }
+    if (record.far?.loopLag case final lag?) {
+      replica.servedLoopLag = lag;
+    }
   }
 
   /// Opens a flush of [bytes] framed protocol carrying [frames] frames on
@@ -370,6 +379,34 @@ class RunMetricsRecorder {
   /// so there is nothing here to add up (SPEC §17).
   void recordReadAhead(ReadAheadStats stats) => _readAhead = stats;
 
+  /// One tick of this isolate's event-loop lag sampler (SPEC §17, task
+  /// 7080d6), credited to every phase open on the run's clock. A tick with
+  /// none open — before the run, or while a person reads the plan — is
+  /// nobody's and is dropped.
+  void recordLoopLag(Duration lag) {
+    for (final phase in _phaseStarts.keys) {
+      if (_onTheClock(phase)) {
+        _loopLag.putIfAbsent(phase, LoopLagTally.new).add(lag);
+      }
+    }
+  }
+
+  /// Each sampled phase's lag, over the phase's span so far.
+  Map<RunPhase, LoopLagStats> _loopLagAsOfNow() {
+    final now = _elapsed();
+    return {
+      for (final MapEntry(key: phase, value: tally) in _loopLag.entries)
+        phase: tally.stats(
+          window:
+              (_phases[phase] ?? Duration.zero) +
+              switch (_phaseStarts[phase]) {
+                final start? => now - start,
+                null => Duration.zero,
+              },
+        ),
+    };
+  }
+
   /// [_running] including the stretch that is open right now, if one is, so
   /// a mid-run snapshot reads as a clock rather than as the last phase
   /// boundary.
@@ -393,6 +430,7 @@ class RunMetricsRecorder {
     phases: Map.unmodifiable(_phases),
     readAhead: _readAhead,
     memory: _memoryAsOfNow(),
+    loopLag: _loopLagAsOfNow(),
     replicas: {
       for (final entry in _replicas.entries)
         entry.key: ReplicaMetrics(
@@ -406,6 +444,7 @@ class RunMetricsRecorder {
           peerSendWait: entry.value.peerSendWait,
           writePath: entry.value.writePathSource?.call(),
           writeStages: entry.value.writeStages,
+          servedLoopLag: entry.value.servedLoopLag,
           framesSent: entry.value.framesSent,
           quiet: Map.unmodifiable(entry.value.quiet),
           awaiting: Map.unmodifiable(entry.value.awaiting),
@@ -443,6 +482,10 @@ class _ReplicaRecord {
   /// The served peer's per-stage `writeFile` occupancy, as of the `unlock`
   /// reply that carried it, or null before one did.
   WriteStageStats? writeStages;
+
+  /// The served peer's event-loop lag, as of the `unlock` reply that carried
+  /// it, or null before one did.
+  LoopLagStats? servedLoopLag;
 
   /// Flushes handed to the transport and not yet written. While this is
   /// above zero the link is carrying something and neither idle figure

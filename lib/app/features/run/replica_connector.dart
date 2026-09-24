@@ -288,6 +288,7 @@ class ReplicaConnector {
       // per-operation figures are split where they happened rather than
       // reconstructed from each other afterwards.
       onExchange: instruments.exchanges(spec.side),
+      askLoopLag: instruments.loopLag,
     );
   }
 
@@ -448,6 +449,7 @@ final class _PeerAgent extends RemoteAgent {
     required this.deviceName,
     required this.address,
     required super.onExchange,
+    required super.askLoopLag,
   });
 
   @override

@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
+import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/process_memory.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
@@ -481,6 +482,12 @@ class ReplicaMetrics {
   /// replica, which is not served, or a run that ended before its `unlock`.
   final WriteStageStats? writeStages;
 
+  /// How late the served peer's isolate — the one reading this connection —
+  /// ran a periodic timer from its first served write to `unlock` (SPEC §17,
+  /// task 7080d6), or null unless this run asked for it and the peer
+  /// reported it.
+  final LoopLagStats? servedLoopLag;
+
   /// How long this replica's transport had nothing to carry, per phase, and
   /// how long it had something outstanding and was waiting for it (SPEC §17).
   ///
@@ -514,6 +521,7 @@ class ReplicaMetrics {
     this.peerSendWait,
     this.writePath,
     this.writeStages,
+    this.servedLoopLag,
     this.quiet = const {},
     this.awaiting = const {},
   });
@@ -679,12 +687,19 @@ class RunMetrics {
   /// is why the report prints them together.
   final ProcessMemory? memory;
 
+  /// How late this process's own isolate — the one driving the run and
+  /// reading both connections — ran a periodic timer, per phase (SPEC §17,
+  /// task 7080d6). Empty unless the head asked for it (`--timings`); a phase
+  /// absent is one no tick fired in.
+  final Map<RunPhase, LoopLagStats> loopLag;
+
   const RunMetrics({
     required this.elapsed,
     required this.phases,
     required this.replicas,
     this.readAhead,
     this.memory,
+    this.loopLag = const {},
   });
 
   /// Both sides' operations summed — the run's total request count.

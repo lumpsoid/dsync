@@ -364,6 +364,7 @@ Future<_ResolvedSide> _resolveSshSide({
     // and what the peer said about that same call, so this side's figures are
     // split where they happened rather than reconstructed afterwards.
     onExchange: instruments.exchanges(side),
+    askLoopLag: instruments.loopLag,
     transportDiagnostics: () => channel.recentStderr,
   );
 
@@ -426,6 +427,7 @@ Future<_ResolvedSide> _resolveSocketSide({
     // and what the peer said about that same call, so this side's figures are
     // split where they happened rather than reconstructed afterwards.
     onExchange: instruments.exchanges(side),
+    askLoopLag: instruments.loopLag,
   );
 
   return (
@@ -600,6 +602,7 @@ Future<_ResolvedSide> _resolvePeerSide({
     // and what the peer said about that same call, so this side's figures are
     // split where they happened rather than reconstructed afterwards.
     onExchange: instruments.exchanges(side),
+    askLoopLag: instruments.loopLag,
   );
 
   return (
@@ -720,8 +723,9 @@ class _DiagnosedRemoteAgent extends RemoteAgent {
     required ReplicaSpec spec,
     required this._side,
     required ExchangeSink onExchange,
+    required bool askLoopLag,
     this._transportDiagnostics = _noTransportDiagnostics,
-  }) : super(channel, spec, onExchange: onExchange);
+  }) : super(channel, spec, onExchange: onExchange, askLoopLag: askLoopLag);
 
   static List<String> _noTransportDiagnostics() => const [];
 

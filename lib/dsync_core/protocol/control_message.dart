@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
+import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
@@ -92,6 +93,13 @@ const farSendWaitKey = 'farSendWaitMicros';
 const farInboundWaitKey = 'farInboundWaitMicros';
 const farWritePathKey = 'farWritePath';
 const farWriteStagesKey = 'farWriteStages';
+const farLoopLagKey = 'farLoopLag';
+
+/// The `hello` parameter that asks the serving side to sample its event
+/// loop's lag and report it on the `unlock` reply (SPEC §17, task 7080d6).
+/// Absent unless the initiator is showing timings; an older server ignores
+/// it and reports nothing, which reads as absent rather than as zero.
+const helloLoopLagParam = 'loopLag';
 
 /// What the peer said this exchange cost it, or null if it said nothing.
 ///
@@ -113,6 +121,7 @@ FarSideReport? farSideFromJson(Map<String, dynamic> data) {
         : null,
     writePath: writePathFromJson(data[farWritePathKey]),
     writeStages: writeStagesFromJson(data[farWriteStagesKey]),
+    loopLag: loopLagFromJson(data[farLoopLagKey]),
   );
 }
 
@@ -195,6 +204,32 @@ WriteStageStats? writeStagesFromJson(Object? data) {
   );
 }
 
+/// The peer's event-loop lag as it travels (SPEC §17, task 7080d6).
+Map<String, dynamic> loopLagToJson(LoopLagStats lag) => {
+  'ticks': lag.ticks,
+  'windowMicros': lag.window.inMicroseconds,
+  'lateMicros': lag.late.inMicroseconds,
+  'maxMicros': lag.max.inMicroseconds,
+  'p50Micros': lag.p50.inMicroseconds,
+  'p90Micros': lag.p90.inMicroseconds,
+};
+
+/// [data] read back, or null when the peer sent none — an older build, an
+/// initiator that did not ask, or any reply but `unlock`.
+LoopLagStats? loopLagFromJson(Object? data) {
+  if (data is! Map<String, dynamic>) return null;
+  Duration micros(String key) =>
+      Duration(microseconds: data[key] is int ? data[key] as int : 0);
+  return LoopLagStats(
+    ticks: data['ticks'] is int ? data['ticks'] as int : 0,
+    window: micros('windowMicros'),
+    late: micros('lateMicros'),
+    max: micros('maxMicros'),
+    p50: micros('p50Micros'),
+    p90: micros('p90Micros'),
+  );
+}
+
 /// The operation succeeded; [data] carries whatever result it returns, empty
 /// for operations with nothing to report beyond having happened.
 class AgentSuccess extends AgentResult {
@@ -219,6 +254,7 @@ class AgentSuccess extends AgentResult {
       farWritePathKey: writePathToJson(steps),
     if (report.writeStages case final stages?)
       farWriteStagesKey: writeStagesToJson(stages),
+    if (report.loopLag case final lag?) farLoopLagKey: loopLagToJson(lag),
   });
 
   @override

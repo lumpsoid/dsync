@@ -71,6 +71,11 @@ class RemoteAgent implements Agent {
   /// §17). Public because it is a seam the owner supplies, not internal state.
   final ExchangeSink? onExchange;
 
+  /// Whether [hello] asks the server to sample its event-loop lag and report
+  /// it on the `unlock` reply (SPEC §17, task 7080d6). False for a caller
+  /// that is not showing timings.
+  final bool askLoopLag;
+
   /// Where the instants every [ExchangeRecord] is made of come from.
   /// Injected for the reason `RequestWindow`'s is: a test asserts a queue
   /// wait with plain values instead of sleeping.
@@ -109,6 +114,7 @@ class RemoteAgent implements Agent {
     ReplicaSpec spec, {
     RequestWindow? window,
     this.onExchange,
+    this.askLoopLag = false,
     Elapsed? elapsed,
   }) : _channel = channel,
        _spec = spec,
@@ -137,7 +143,10 @@ class RemoteAgent implements Agent {
       _router.close(Frame.noRequest);
     }
     return _exchange(
-      AgentRequest(AgentOp.hello.name, {'replica': replicaSpecToJson(_spec)}),
+      AgentRequest(AgentOp.hello.name, {
+        'replica': replicaSpecToJson(_spec),
+        if (askLoopLag) helloLoopLagParam: true,
+      }),
       (id, replies) async =>
           replicaInfoFromJson(await _awaitResult(record, replies)),
     );

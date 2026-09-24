@@ -1,3 +1,4 @@
+import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
@@ -69,5 +70,54 @@ void main() {
 
   test('prints nothing for a peer that reported no stages', () {
     expect(formatRunMetrics(_withStages(null)), isNot(contains('write stage')));
+  });
+
+  group('event-loop lag (task 7080d6)', () {
+    const lag = LoopLagStats(
+      ticks: 1000,
+      window: Duration(seconds: 10),
+      late: Duration(seconds: 2),
+      max: Duration(milliseconds: 212),
+      p50: Duration(microseconds: 1200),
+      p90: Duration(milliseconds: 58),
+    );
+
+    test("prints this isolate's lag per phase and the served peer's", () {
+      final report = formatRunMetrics(
+        RunMetrics(
+          elapsed: const Duration(seconds: 12),
+          phases: const {},
+          loopLag: const {RunPhase.apply: lag},
+          replicas: {
+            'b': const ReplicaMetrics(
+              side: 'b',
+              remote: true,
+              ops: {},
+              wireBytesSent: 0,
+              wireBytesReceived: 0,
+              servedLoopLag: lag,
+            ),
+          },
+        ),
+      );
+      const line =
+          '1,000 ticks over 10.0 s · mean 2.0 ms · p50 1.2 ms · p90 58.0 ms · '
+          'max 212.0 ms · 2000.0 ms late (20%)';
+      expect(
+        report,
+        contains(
+          'event-loop lag (this isolate, 5 ms timer; about 1 ms a tick is the '
+          "timer's own rounding)\n"
+          '  apply       $line\n',
+        ),
+      );
+      expect(report, contains('  served loop lag: $line\n'));
+    });
+
+    test('prints neither when nothing was sampled', () {
+      final report = formatRunMetrics(_withStages(null));
+      expect(report, isNot(contains('loop lag')));
+      expect(report, isNot(contains('event-loop lag')));
+    });
   });
 }

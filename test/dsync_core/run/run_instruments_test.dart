@@ -26,7 +26,7 @@ import 'package:test/test.dart';
 /// here rather than left to each of the call sites to get right.
 void main() {
   test('agent, channel and exchanges all write into one ledger', () async {
-    final instruments = RunInstruments();
+    final instruments = RunInstruments(loopLag: false);
     final (client, _) = InMemoryChannel.pair();
 
     final agent = instruments.agent(_LockOnlyAgent(), side: 'b', remote: true);
@@ -60,7 +60,7 @@ void main() {
   test('a fresh instance shares nothing with the last one', () {
     // One per run *attempt*: every figure a recorder holds accumulates, so a
     // second attempt through the same instance would report both as one run.
-    final first = RunInstruments();
+    final first = RunInstruments(loopLag: false);
     first.exchanges('b')(
       const ExchangeRecord(
         op: AgentOp.lock,
@@ -69,7 +69,7 @@ void main() {
       ),
     );
 
-    expect(RunInstruments().snapshot().replicas, isEmpty);
+    expect(RunInstruments(loopLag: false).snapshot().replicas, isEmpty);
   });
 
   group("a local replica's write path (task 4c55fd)", () {
@@ -100,7 +100,7 @@ void main() {
     tearDown(() => tempDir.delete(recursive: true));
 
     test('reaches the ledger without the call site asking for it', () async {
-      final instruments = RunInstruments();
+      final instruments = RunInstruments(loopLag: false);
       final agent = instruments.agent(local, side: 'a', remote: false);
 
       await agent.writeFile(
@@ -122,7 +122,7 @@ void main() {
     test('is read at snapshot time, so a later write is in it too', () async {
       // The figures are cumulative, so the registration is a source and not a
       // sample — the same reason `watchWrites` is one.
-      final instruments = RunInstruments();
+      final instruments = RunInstruments(loopLag: false);
       final agent = instruments.agent(local, side: 'a', remote: false);
 
       await agent.writeFile(
@@ -147,7 +147,7 @@ void main() {
       // A remote replica's breakdown arrives on its `unlock` reply. Zero here
       // would read as "it wrote nothing", which is the one thing these figures
       // exist to distinguish.
-      final instruments = RunInstruments();
+      final instruments = RunInstruments(loopLag: false);
       final agent = instruments.agent(
         _LockOnlyAgent(),
         side: 'b',
@@ -161,7 +161,7 @@ void main() {
   });
 
   test('a channel with no sink to flush reports absent, not zero', () async {
-    final instruments = RunInstruments();
+    final instruments = RunInstruments(loopLag: false);
     final (client, _) = InMemoryChannel.pair();
     final channel = instruments.channel(client, side: 'b');
 

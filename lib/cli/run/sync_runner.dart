@@ -217,155 +217,160 @@ class SyncRunner {
     // `peer://` run against a phone those are a real part of what the user
     // waited for, and a clock started after them would report a run that
     // was faster than the one they sat through (SPEC §17).
-    final instruments = RunInstruments();
-
-    final connected = await resolveReplicaAgents(
-      effective,
-      environment: environment,
-      platform: platform,
-      localAddressLookup: sharedLocalAddressLookup,
-      sshExecutable: sshExecutable,
-      instruments: instruments,
-    );
-
-    // Task 99f404: read before the run, which replaces it with its own.
-    final runMarker = RunMarker.forProfile(
-      profileId: effective.profileId,
-      environment: environment,
-      platform: platform.stateDirPlatform,
-    );
-    final lastRunUnfinished = await runMarker.isPresent();
-
-    final controller = RunController(
-      agentA: _metered(
-        connected.agentA,
-        'a',
-        connected.diagnosticsA,
-        instruments,
-      ),
-      agentB: _metered(
-        connected.agentB,
-        'b',
-        connected.diagnosticsB,
-        instruments,
-      ),
-      presenter: _choosePresenter(options),
-      rules: effective.rules,
-      metrics: instruments.recorder,
-      runMarker: runMarker,
-    );
-
-    // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC
-    // §11.4, task ee190c) shows the derived id in a different place than a
-    // profile run shows its name — see HumanRenderer.isAdHoc.
-    final isAdHoc = target is AdHocTarget;
-
-    final void Function(RunEvent) render;
-    if (options.json) {
-      render = JsonRenderer(
-        out: stdout,
-        err: stderr,
-        profileId: effective.profileId,
-        diagnosticsA: connected.diagnosticsA,
-        diagnosticsB: connected.diagnosticsB,
-        lastRunUnfinished: lastRunUnfinished,
-      ).render;
-    } else {
-      final renderer = HumanRenderer(
-        out: stdout,
-        err: stderr,
-        verbosity: options.verbosity,
-        warnSizeBytes: effective.warnSizeBytes,
-        rules: effective.rules,
-        diagnosticsA: connected.diagnosticsA,
-        diagnosticsB: connected.diagnosticsB,
-        profileId: effective.profileId,
-        isAdHoc: isAdHoc,
-        lastRunUnfinished: lastRunUnfinished,
-      );
-      renderer.renderPreamble(); // no-op below Verbosity.verbose.
-      render = renderer.render;
-    }
-
-    // task fc661b: a SIGINT stops the run between actions rather than
-    // mid-copy; task 7ba6b5: so does a SIGTERM. task e6be5d: and a stop
-    // that does not finish stopping — a scan mid-flight, an archive flush,
-    // a remote agent that stopped answering — ends this process anyway,
-    // within `stopDeadline`. All three rules live in [StopSequence], scoped
-    // to this run; `dsync agent --stdio` never calls `SyncRunner`, so it
-    // never installs one, and already exits cleanly on the EOF killing its
-    // `ssh` gives it.
-    //
-    // Released only after the last line this run writes, not after the
-    // event loop ends: the interrupt note and `--timings` below are on the
-    // exit path too, and the deadline covers what it can right up to the
-    // return.
-    final stop = StopSequence()..watch();
-    // task f750ae: the first signal stops the run the way the app's Stop
-    // does, through `RunController.stop`, rather than by cancelling the
-    // stream: the writes in flight finish and commit, the marks of copies
-    // that never started are withdrawn (SPEC §7.6), the summary arrives and
-    // the run marker is cleared. Cancelling would park `Applier.apply` where
-    // it stood and do none of that. A second signal, or the deadline, still
-    // ends the process from inside [StopSequence].
-    stop.code.then((_) => controller.stop()).ignore();
+    // `--timings` also samples event-loop lag, here and on every served
+    // replica (task 7080d6); closed in the `finally` below.
+    final instruments = RunInstruments(loopLag: options.timings);
     try {
-      RunSummaryEvent? summary;
-      RunErrorEvent? error;
-      var planned = 0;
-      var finished = 0;
-      await for (final event in controller.run()) {
-        render(event);
-        switch (event) {
-          case RunSummaryEvent e:
-            summary = e;
-          case RunErrorEvent e:
-            error = e;
-          case RunActionEvent():
-            planned++;
-          case RunResultEvent():
-            finished++;
-          default:
-            break;
-        }
-      }
+      final connected = await resolveReplicaAgents(
+        effective,
+        environment: environment,
+        platform: platform,
+        localAddressLookup: sharedLocalAddressLookup,
+        sshExecutable: sshExecutable,
+        instruments: instruments,
+      );
 
-      // task fc661b: report what was applied before stopping, rather than
-      // just changing the exit code silently. The summary (rendered above
-      // like any other event) already says what landed; this line only says
-      // *why* the exit code is about to say "interrupted", and whether the
-      // stop cut the plan short. A run stopped before its apply offers
-      // nothing to apply, so it reports no results at all.
-      final interruptedBy = stop.interruptedBy;
-      if (interruptedBy != null) {
-        final by = 'interrupted (${interruptedBy.label})';
-        stderr.writeln(
-          finished == 0
-              ? '$by before applying any changes.'
-              : finished < planned
-              ? '$by partway through applying — the changes already in '
-                    'progress finished (see above); the rest of the plan was '
-                    'not attempted.'
-              : '$by; this run had already finished applying — see above.',
+      // Task 99f404: read before the run, which replaces it with its own.
+      final runMarker = RunMarker.forProfile(
+        profileId: effective.profileId,
+        environment: environment,
+        platform: platform.stateDirPlatform,
+      );
+      final lastRunUnfinished = await runMarker.isPresent();
+
+      final controller = RunController(
+        agentA: _metered(
+          connected.agentA,
+          'a',
+          connected.diagnosticsA,
+          instruments,
+        ),
+        agentB: _metered(
+          connected.agentB,
+          'b',
+          connected.diagnosticsB,
+          instruments,
+        ),
+        presenter: _choosePresenter(options),
+        rules: effective.rules,
+        metrics: instruments.recorder,
+        runMarker: runMarker,
+      );
+
+      // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC
+      // §11.4, task ee190c) shows the derived id in a different place than a
+      // profile run shows its name — see HumanRenderer.isAdHoc.
+      final isAdHoc = target is AdHocTarget;
+
+      final void Function(RunEvent) render;
+      if (options.json) {
+        render = JsonRenderer(
+          out: stdout,
+          err: stderr,
+          profileId: effective.profileId,
+          diagnosticsA: connected.diagnosticsA,
+          diagnosticsB: connected.diagnosticsB,
+          lastRunUnfinished: lastRunUnfinished,
+        ).render;
+      } else {
+        final renderer = HumanRenderer(
+          out: stdout,
+          err: stderr,
+          verbosity: options.verbosity,
+          warnSizeBytes: effective.warnSizeBytes,
+          rules: effective.rules,
+          diagnosticsA: connected.diagnosticsA,
+          diagnosticsB: connected.diagnosticsB,
+          profileId: effective.profileId,
+          isAdHoc: isAdHoc,
+          lastRunUnfinished: lastRunUnfinished,
         );
+        renderer.renderPreamble(); // no-op below Verbosity.verbose.
+        render = renderer.render;
       }
 
-      // After the summary and after the interrupt note, so it never comes
-      // between a reader and the outcome — and on stderr, so `--json`'s
-      // stdout stays a clean JSON Lines stream (SPEC §11.4). Printed for a
-      // failed or interrupted run too: those are the runs whose timings
-      // someone is most likely to be asking about.
-      if (options.timings) {
-        stderr.write(formatRunMetrics(instruments.snapshot()));
-      }
+      // task fc661b: a SIGINT stops the run between actions rather than
+      // mid-copy; task 7ba6b5: so does a SIGTERM. task e6be5d: and a stop
+      // that does not finish stopping — a scan mid-flight, an archive flush,
+      // a remote agent that stopped answering — ends this process anyway,
+      // within `stopDeadline`. All three rules live in [StopSequence], scoped
+      // to this run; `dsync agent --stdio` never calls `SyncRunner`, so it
+      // never installs one, and already exits cleanly on the EOF killing its
+      // `ssh` gives it.
+      //
+      // Released only after the last line this run writes, not after the
+      // event loop ends: the interrupt note and `--timings` below are on the
+      // exit path too, and the deadline covers what it can right up to the
+      // return.
+      final stop = StopSequence()..watch();
+      // task f750ae: the first signal stops the run the way the app's Stop
+      // does, through `RunController.stop`, rather than by cancelling the
+      // stream: the writes in flight finish and commit, the marks of copies
+      // that never started are withdrawn (SPEC §7.6), the summary arrives and
+      // the run marker is cleared. Cancelling would park `Applier.apply` where
+      // it stood and do none of that. A second signal, or the deadline, still
+      // ends the process from inside [StopSequence].
+      stop.code.then((_) => controller.stop()).ignore();
+      try {
+        RunSummaryEvent? summary;
+        RunErrorEvent? error;
+        var planned = 0;
+        var finished = 0;
+        await for (final event in controller.run()) {
+          render(event);
+          switch (event) {
+            case RunSummaryEvent e:
+              summary = e;
+            case RunErrorEvent e:
+              error = e;
+            case RunActionEvent():
+              planned++;
+            case RunResultEvent():
+              finished++;
+            default:
+              break;
+          }
+        }
 
-      return RunOutcome(
-        summary: summary,
-        error: error,
-        interruptedBy: interruptedBy,
-      ).exitCode;
+        // task fc661b: report what was applied before stopping, rather than
+        // just changing the exit code silently. The summary (rendered above
+        // like any other event) already says what landed; this line only says
+        // *why* the exit code is about to say "interrupted", and whether the
+        // stop cut the plan short. A run stopped before its apply offers
+        // nothing to apply, so it reports no results at all.
+        final interruptedBy = stop.interruptedBy;
+        if (interruptedBy != null) {
+          final by = 'interrupted (${interruptedBy.label})';
+          stderr.writeln(
+            finished == 0
+                ? '$by before applying any changes.'
+                : finished < planned
+                ? '$by partway through applying — the changes already in '
+                      'progress finished (see above); the rest of the plan was '
+                      'not attempted.'
+                : '$by; this run had already finished applying — see above.',
+          );
+        }
+
+        // After the summary and after the interrupt note, so it never comes
+        // between a reader and the outcome — and on stderr, so `--json`'s
+        // stdout stays a clean JSON Lines stream (SPEC §11.4). Printed for a
+        // failed or interrupted run too: those are the runs whose timings
+        // someone is most likely to be asking about.
+        if (options.timings) {
+          stderr.write(formatRunMetrics(instruments.snapshot()));
+        }
+
+        return RunOutcome(
+          summary: summary,
+          error: error,
+          interruptedBy: interruptedBy,
+        ).exitCode;
+      } finally {
+        await stop.release();
+      }
     } finally {
-      await stop.release();
+      instruments.close();
     }
   }
 

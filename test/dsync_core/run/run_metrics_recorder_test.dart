@@ -110,6 +110,32 @@ void main() {
     });
   });
 
+  // Task 7080d6: a lag tick belongs to the phases open on the run's clock.
+  group('loop lag', () {
+    test('credits a tick to the open phase, over its span', () {
+      metrics.recordLoopLag(const Duration(seconds: 1)); // before the run
+      metrics.beginPhase(RunPhase.apply);
+      metrics.recordLoopLag(const Duration(milliseconds: 2));
+      metrics.recordLoopLag(const Duration(milliseconds: 58));
+      advance(const Duration(milliseconds: 600));
+      metrics.endPhase(RunPhase.apply);
+
+      final lag = metrics.snapshot().loopLag;
+      expect(lag.keys, [RunPhase.apply]);
+      expect(lag[RunPhase.apply]!.ticks, 2);
+      expect(lag[RunPhase.apply]!.late, const Duration(milliseconds: 60));
+      expect(lag[RunPhase.apply]!.window, const Duration(milliseconds: 600));
+    });
+
+    test('drops a tick while only present is open', () {
+      metrics.beginPhase(RunPhase.present);
+      metrics.recordLoopLag(const Duration(milliseconds: 5));
+      metrics.endPhase(RunPhase.present);
+
+      expect(metrics.snapshot().loopLag, isEmpty);
+    });
+  });
+
   group('operations', () {
     test('repeated calls accumulate count, total and max', () {
       for (final span in const [

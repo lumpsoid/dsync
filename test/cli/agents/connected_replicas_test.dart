@@ -65,7 +65,7 @@ void main() {
       final environment = stateEnv;
 
       final result = await resolveReplicaAgents(
-        instruments: RunInstruments(),
+        instruments: RunInstruments(loopLag: false),
         optionsFor(Location.parse(rootA.path), Location.parse(rootB.path)),
         environment: environment,
         platform: const LinuxHost(),
@@ -146,7 +146,7 @@ void main() {
         final rootB = await tempDir.createTemp('root-b');
 
         final result = await resolveReplicaAgents(
-          instruments: RunInstruments(),
+          instruments: RunInstruments(loopLag: false),
           optionsFor(
             Location.parse('me@this-host:${tempDir.path}/notes'),
             Location.parse(rootB.path),
@@ -173,7 +173,7 @@ void main() {
         final rootA = await tempDir.createTemp('root-a');
 
         final result = await resolveReplicaAgents(
-          instruments: RunInstruments(),
+          instruments: RunInstruments(loopLag: false),
           optionsFor(
             Location.parse(rootA.path),
             Location.parse('me@foreign-host:/sdcard/notes'),
@@ -210,7 +210,7 @@ void main() {
       final rootA = await tempDir.createTemp('root-a');
 
       final result = await resolveReplicaAgents(
-        instruments: RunInstruments(),
+        instruments: RunInstruments(loopLag: false),
         optionsFor(
           Location.parse(rootA.path),
           Location.parse('ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes'),
@@ -260,7 +260,7 @@ void main() {
       addTearDown(server.close);
 
       final result = await resolveReplicaAgents(
-        instruments: RunInstruments(),
+        instruments: RunInstruments(loopLag: false),
         optionsFor(
           Location.parse(rootA.path),
           Location.parse('unix://$socketPath:/srv/notes'),
@@ -300,7 +300,7 @@ void main() {
 
         await expectLater(
           resolveReplicaAgents(
-            instruments: RunInstruments(),
+            instruments: RunInstruments(loopLag: false),
             optionsFor(
               Location.parse(rootA.path),
               Location.parse('unix://$stale:/srv/notes'),
@@ -384,7 +384,7 @@ void main() {
 
       await expectLater(
         resolveReplicaAgents(
-          instruments: RunInstruments(),
+          instruments: RunInstruments(loopLag: false),
           optionsFor(
             Location.parse(rootA.path),
             Location.parse('peer://phone:/sdcard/notes'),
@@ -446,7 +446,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       final result = await resolveReplicaAgents(
-        instruments: RunInstruments(),
+        instruments: RunInstruments(loopLag: false),
         optionsFor(
           Location.parse(rootA.path),
           Location.parse('peer://phone:/srv/notes'),
@@ -503,7 +503,7 @@ void main() {
 
       await expectLater(
         resolveReplicaAgents(
-          instruments: RunInstruments(),
+          instruments: RunInstruments(loopLag: false),
           optionsFor(
             Location.parse(rootA.path),
             Location.parse('peer://phone:/srv/notes'),
@@ -558,7 +558,7 @@ void main() {
 
       await expectLater(
         resolveReplicaAgents(
-          instruments: RunInstruments(),
+          instruments: RunInstruments(loopLag: false),
           optionsFor(
             Location.parse(rootA.path),
             Location.parse('peer://phone:/srv/notes'),
@@ -624,7 +624,7 @@ void main() {
       await Process.run('chmod', ['+x', script.path]);
 
       final result = await resolveReplicaAgents(
-        instruments: RunInstruments(),
+        instruments: RunInstruments(loopLag: false),
         optionsFor(
           Location.parse(rootA.path),
           Location.parse('me@foreign-host:/sdcard/notes'),
@@ -667,7 +667,7 @@ void main() {
       );
 
       final result = await resolveReplicaAgents(
-        instruments: RunInstruments(),
+        instruments: RunInstruments(loopLag: false),
         optionsFor(
           Location.parse(rootA.path),
           Location.parse('me@foreign-host:/sdcard/notes'),
@@ -706,7 +706,7 @@ void main() {
 
         await expectLater(
           resolveReplicaAgents(
-            instruments: RunInstruments(),
+            instruments: RunInstruments(loopLag: false),
             optionsFor(
               Location.parse(rootA.path),
               Location.parse('me@foreign-host:/sdcard/notes'),
@@ -745,7 +745,7 @@ void main() {
         // second time.
         await expectLater(
           resolveReplicaAgents(
-            instruments: RunInstruments(),
+            instruments: RunInstruments(loopLag: false),
             optionsFor(
               Location.parse('me@side-a-host:/notes'),
               Location.parse('~/notes'),

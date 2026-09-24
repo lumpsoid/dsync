@@ -113,7 +113,7 @@ void main() {
     remoteRootPath: remoteRootPath,
     addressOverride: addressOverride,
     jobs: 2,
-    instruments: RunInstruments(),
+    instruments: RunInstruments(loopLag: false),
   );
 
   Future<void> disconnectBoth(ConnectedAgents agents) async {

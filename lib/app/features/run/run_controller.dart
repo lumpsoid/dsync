@@ -265,7 +265,9 @@ class SyncRunController {
   Future<void> _begin(RunRequest request) async {
     // Before anything is measured, and before the dial: this attempt's
     // numbers are its own, and [RunMetrics.elapsed] runs from here.
-    final instruments = RunInstruments();
+    // No lag sampler: the app's timings sheet is always on offer, so there is
+    // no moment it is known to be wanted (task 7080d6).
+    final instruments = RunInstruments(loopLag: false);
     _instruments = instruments;
     state.recordStart(dryRun: request.dryRun);
     _syncScreenWake(const SyncRunConnecting());

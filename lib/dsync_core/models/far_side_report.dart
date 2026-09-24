@@ -1,3 +1,4 @@
+import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
 
@@ -79,6 +80,12 @@ class FarSideReport {
   /// [writePath].
   final WriteStageStats? writeStages;
 
+  /// How late the peer's serving isolate — the one reading this connection
+  /// and running its writes — ran a periodic timer from its first served
+  /// write to `unlock` (SPEC §17, task 7080d6), or null unless `hello` asked
+  /// for it. Carried once, on the `unlock` reply, like [writeStages].
+  final LoopLagStats? loopLag;
+
   const FarSideReport({
     required this.span,
     this.inFlight,
@@ -86,5 +93,6 @@ class FarSideReport {
     this.inboundWait,
     this.writePath,
     this.writeStages,
+    this.loopLag,
   });
 }

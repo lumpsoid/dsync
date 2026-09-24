@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/far_side_report.dart';
+import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
@@ -111,6 +112,42 @@ void main() {
             .toFrame(1),
       ) as AgentSuccess;
       expect(farSideFromJson(plain.data)!.writeStages, isNull);
+    });
+
+    test('carries the served loop lag whole, and none when not sent', () {
+      const lag = LoopLagStats(
+        ticks: 900,
+        window: Duration(seconds: 6),
+        late: Duration(milliseconds: 3100),
+        max: Duration(milliseconds: 212),
+        p50: Duration(microseconds: 1200),
+        p90: Duration(milliseconds: 58),
+      );
+      final decoded = AgentResult.fromFrame(
+        const AgentSuccess()
+            .withFarSide(
+              const FarSideReport(
+                span: Duration(milliseconds: 1),
+                loopLag: lag,
+              ),
+            )
+            .toFrame(1),
+      ) as AgentSuccess;
+      final back = farSideFromJson(decoded.data)!.loopLag!;
+
+      expect(back.ticks, 900);
+      expect(back.window, lag.window);
+      expect(back.late, lag.late);
+      expect(back.max, lag.max);
+      expect(back.p50, lag.p50);
+      expect(back.p90, lag.p90);
+
+      final plain = AgentResult.fromFrame(
+        const AgentSuccess()
+            .withFarSide(const FarSideReport(span: Duration(milliseconds: 1)))
+            .toFrame(1),
+      ) as AgentSuccess;
+      expect(farSideFromJson(plain.data)!.loopLag, isNull);
     });
 
     test('skips a stage this build does not know', () {

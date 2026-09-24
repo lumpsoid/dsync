@@ -1,7 +1,9 @@
+import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
+import 'package:dsync/dsync_core/run/loop_lag_sampler.dart';
 
 /// Renders [RunMetrics] as the plain-text report both heads show (SPEC §17).
 ///
@@ -68,6 +70,23 @@ String formatRunMetrics(RunMetrics metrics) {
       '${formatMetricBytes(memory.baselineRss)} at the top of the run '
       '(+${formatMetricBytes(memory.growth)})',
     );
+  }
+
+  // How late this process's own event loop ran a short timer, per phase
+  // (task 7080d6): time spent queued inside this isolate, which the link's
+  // figures below would otherwise absorb.
+  if (metrics.loopLag.isNotEmpty) {
+    out.writeln();
+    out.writeln(
+      'event-loop lag (this isolate, '
+      '${LoopLagSampler.defaultPeriod.inMilliseconds} ms timer; about 1 ms '
+      'a tick is the timer\'s own rounding)',
+    );
+    for (final phase in RunPhase.values) {
+      if (metrics.loopLag[phase] case final lag?) {
+        out.writeln('  ${phase.name.padRight(12)}${_formatLoopLag(lag)}');
+      }
+    }
   }
 
   for (final replica in metrics.replicas.values) {
@@ -227,6 +246,12 @@ String formatRunMetrics(RunMetrics metrics) {
           'in the session',
         );
       }
+      // The served peer's own event loop, first write to `unlock` (task
+      // 7080d6): whether the isolate that reads this connection was busy
+      // enough to read it late.
+      if (replica.servedLoopLag case final lag?) {
+        out.writeln('  served loop lag: ${_formatLoopLag(lag)}');
+      }
       // Two figures rather than one, per phase, and the split is the answer
       // a single `idle` total could never give (SPEC §17): `quiet` is time
       // with nothing outstanding at all, which more callers would fill, and
@@ -320,6 +345,18 @@ String formatRunMetrics(RunMetrics metrics) {
 
   return out.toString();
 }
+
+/// One [LoopLagStats] as a line: ticks over the window, the distribution,
+/// and how much of the window was spent late.
+String _formatLoopLag(LoopLagStats lag) =>
+    '${formatMetricCount(lag.ticks)} ticks over '
+    '${formatMetricDuration(lag.window)} · '
+    'mean ${formatMetricDuration(lag.mean)} · '
+    'p50 ${formatMetricDuration(lag.p50)} · '
+    'p90 ${formatMetricDuration(lag.p90)} · '
+    'max ${formatMetricDuration(lag.max)} · '
+    '${formatMetricDuration(lag.late)} late '
+    '(${(lag.lateShare * 100).toStringAsFixed(0)}%)';
 
 /// One share of [total] out of [count], for the cumulative peer-side totals
 /// that arrive summed over every call that fed them.
