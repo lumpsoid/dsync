@@ -3,10 +3,13 @@
 //! SPEC §11.5's code. See native/NOTES.md.
 
 mod agent;
+mod archive;
 mod args;
 mod failure;
 mod host;
 mod interactive;
+mod pair;
+mod qr;
 mod render;
 mod stop;
 mod sync;
@@ -56,6 +59,8 @@ fn run(cli: Cli, host: &Host) -> u8 {
                 sync::sync(Command::Status, &args.target, flags, host).await
             }
             CliCommand::Agent(args) => agent::agent(args, host).await,
+            CliCommand::Pair(command) => pair::pair(command, host).await,
+            CliCommand::Archive(command) => archive::archive(command, host),
         }
     });
     // Not a graceful drop: a blocking read of stdin, or a session still

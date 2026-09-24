@@ -10,10 +10,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use dsync_core::{ArchiveHeader, ArchiveInventory, ArchiveStore, StateDir, StoredArchive};
-use dsync_domain::{Archive, Tuning};
+use dsync_core::{
+    ArchiveHeader, ArchiveInventory, ArchiveStore, DeviceIdentity, PairedDevice, PairedDeviceStore,
+    PairedDevices, StateDir, StoredArchive,
+};
+use dsync_domain::host_port::PeerAddress;
+use dsync_domain::{Archive, PeerName, Tuning};
 use tempfile::TempDir;
 
 /// The binary under test.
@@ -133,6 +137,27 @@ impl Site {
         Spawned::start(command, hold)
     }
 
+    /// `dsync args…` with `pty` as both stdin and stderr - a terminal
+    /// behind each, as an operator's shell gives it - and `TERM` set, its
+    /// stderr read back off the terminal.
+    #[cfg(unix)]
+    pub fn spawn_on_terminal(&self, args: &[&str], pty: &Pty) -> Spawned {
+        let mut command = self.command(DSYNC);
+        command
+            .args(args)
+            .env("TERM", "xterm-256color")
+            .stdin(pty.stdin())
+            .stdout(Stdio::piped())
+            .stderr(pty.stdin());
+        let mut child = command.spawn().unwrap();
+        let stdout: ChildStdout = child.stdout.take().unwrap();
+        Spawned {
+            child,
+            stdout: Lines::collect(stdout, None),
+            stderr: Lines::collect(pty.output(), None),
+        }
+    }
+
     /// Puts an `ssh` on this site's `PATH` that skips ssh's own options
     /// and the destination and runs the far command in a local shell, as
     /// sshd would, printing `banner` first when there is one.
@@ -244,7 +269,7 @@ impl Lines {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {}
                 }
-                let line = line.trim_end_matches('\n').to_owned();
+                let line = line.trim_end_matches(['\n', '\r']).to_owned();
                 let mut seen = filling.seen.lock().unwrap();
                 let holds = hold.is_some_and(|matches| matches(&line));
                 seen.lines.push(line);
@@ -426,9 +451,60 @@ impl Pty {
         Stdio::from(self.terminal.try_clone().unwrap())
     }
 
+    /// What the child writes to the terminal (and its echo of what was
+    /// typed), `\r\n`-terminated.
+    pub fn output(&self) -> std::fs::File {
+        self.master.try_clone().unwrap()
+    }
+
     /// Types `line` and Enter.
     pub fn type_line(&mut self, line: &str) {
         use std::io::Write;
         writeln!(self.master, "{line}").unwrap();
     }
+}
+
+/// A device paired in `state` as `name` at 192.168.1.5, granted `roots`,
+/// its certificate issued at `issued`.
+pub fn seed_device(state: &Path, name: &str, roots: &[&str], issued: SystemTime) -> PairedDevice {
+    let identity = DeviceIdentity::generate(name, issued).unwrap();
+    let mut device = PairedDevice::new(
+        identity.certificate().clone(),
+        PeerName::parse(name).unwrap(),
+        PeerAddress::new("192.168.1.5", 28771).unwrap(),
+        issued,
+    );
+    for root in roots {
+        device.grant((*root).to_owned());
+    }
+    PairedDeviceStore::new(&StateDir::new(state))
+        .update(|devices| devices.add(device.clone()))
+        .unwrap();
+    device
+}
+
+/// The devices paired in `state`.
+pub fn paired(state: &Path) -> PairedDevices {
+    PairedDeviceStore::new(&StateDir::new(state))
+        .load()
+        .unwrap()
+}
+
+/// An archive log for `profile`'s `side` in `state`: a header naming
+/// `root`, then `commits` upserts. Its path.
+pub fn seed_log(state: &Path, profile: &str, side: &str, root: &str, commits: usize) -> PathBuf {
+    std::fs::create_dir_all(state).unwrap();
+    let path = state.join(format!("{profile}-{side}.jsonl"));
+    let mut lines = vec![
+        serde_json::json!({"op": "header", "schemaVersion": 2, "profileId": profile, "rootPath": root})
+            .to_string(),
+    ];
+    for i in 0..commits {
+        lines.push(
+            serde_json::json!({"op": "upsert", "path": format!("f{i}.txt"), "size": 1, "mtime": 1, "mode": 420, "hash": "h"})
+                .to_string(),
+        );
+    }
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    path
 }

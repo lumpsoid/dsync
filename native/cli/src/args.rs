@@ -31,6 +31,176 @@ pub enum CliCommand {
     /// ssh on the remote host), on a unix socket, or to paired devices over
     /// the network (SPEC §4.4).
     Agent(AgentArgs),
+    /// Pair devices for the authenticated network transport, and authorize
+    /// a paired device for a replica root (SPEC §4.4).
+    #[command(subcommand, arg_required_else_help = false)]
+    Pair(PairCommand),
+    /// Inspect and delete the per-replica archive logs this host keeps
+    /// (SPEC §8).
+    #[command(subcommand, arg_required_else_help = false)]
+    Archive(ArchiveCommand),
+}
+
+/// `dsync pair …` (SPEC §4.4). Missing a subcommand is a usage error.
+#[derive(Subcommand, Debug)]
+pub enum PairCommand {
+    /// Generate a pairing payload for this device and wait for one other
+    /// device to redeem it (SPEC §4.4).
+    Show(PairShowArgs),
+    /// Accept a pairing payload from `dsync pair show` (SPEC §4.4) and
+    /// record the enrolling device.
+    Accept(PairAcceptArgs),
+    /// List paired devices (SPEC §4.4).
+    List(ListArgs),
+    /// Remove a paired device from this host's own store (SPEC §4.4). Local
+    /// only - the far end still trusts this host until it runs the same
+    /// command.
+    Revoke(PairRevokeArgs),
+    /// Authorize a paired device to reach a replica root on this host
+    /// (SPEC §4.4).
+    Grant(PairGrantArgs),
+    /// Re-issue this host's identity certificate under its existing key
+    /// (SPEC §4.4). The device id does not change; paired devices keep
+    /// their pairing.
+    Renew(StateDirArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PairShowArgs {
+    /// This host's own label for the device that redeems this payload
+    /// (SPEC §4.4) - local, like a `~/.ssh/config` Host alias, and what
+    /// `dsync pair grant` and `peer://` address it by. Required.
+    #[arg(long, value_name = "NAME")]
+    pub name: String,
+    /// The port this device's `dsync agent --serve` listens on. Goes into
+    /// the payload as the address the paired device dials from then on, so
+    /// give it here if --serve runs on a non-default port.
+    #[arg(
+        long,
+        value_name = "PORT",
+        default_value_t = Tuning::DEFAULT.peer_port,
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
+    pub serve_port: u16,
+    /// The address the pairing endpoint binds. Defaults to 0.0.0.0, every
+    /// IPv4 interface; :: for a dual-stack socket; or one interface's own
+    /// address to answer only there - which is then what the payload
+    /// advertises, unless --advertise says otherwise. An address literal,
+    /// not a hostname; if it cannot be bound, this fails rather than
+    /// falling back.
+    #[arg(long, value_name = "ADDRESS")]
+    pub bind: Option<String>,
+    /// The address the payload tells the other device to dial. Defaults to
+    /// --bind's when that named one interface, and otherwise to the first
+    /// non-loopback address this machine has - a guess, and the wrong one
+    /// on a host with a VPN up or a second NIC. An address literal.
+    #[arg(long, value_name = "ADDRESS")]
+    pub advertise: Option<String>,
+    #[command(flatten)]
+    pub state: StateDirArgs,
+}
+
+impl PairShowArgs {
+    /// `--bind`, or every IPv4 interface: `::` fails outright where IPv6
+    /// is disabled, so it is opt-in.
+    pub fn bind(&self) -> Result<IpAddr, Failure> {
+        match &self.bind {
+            None => Ok(IpAddr::from([0, 0, 0, 0])),
+            Some(text) => {
+                parse_bind_address(text).map_err(|error| Failure::usage(format!("--bind: {error}")))
+            }
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct PairAcceptArgs {
+    /// The payload `dsync pair show` printed on the other device.
+    #[arg(value_name = "PAYLOAD")]
+    pub payload: String,
+    /// This host's own label for the device being paired (SPEC §4.4) -
+    /// local, like a `~/.ssh/config` Host alias. Required: naming is a
+    /// deliberate operator choice. What the other device calls this one is
+    /// its own choice, made by `dsync pair show --name` there.
+    #[arg(long, value_name = "NAME")]
+    pub name: String,
+    #[command(flatten)]
+    pub state: StateDirArgs,
+}
+
+/// A listing: `pair list` and `archive list`.
+#[derive(Args, Debug)]
+pub struct ListArgs {
+    /// Machine-readable output (JSON Lines) on stdout (SPEC §11.4).
+    #[arg(long)]
+    pub json: bool,
+    #[command(flatten)]
+    pub state: StateDirArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct PairRevokeArgs {
+    /// The paired device's name (see `dsync pair list`).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    #[command(flatten)]
+    pub state: StateDirArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct PairGrantArgs {
+    /// The paired device's name (see `dsync pair list`).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// The replica root to authorize it for; a leading ~ expands against
+    /// this host's home, as a peer's requested root does.
+    #[arg(value_name = "PATH")]
+    pub path: String,
+    #[command(flatten)]
+    pub state: StateDirArgs,
+}
+
+/// `dsync archive …` (SPEC §8). Missing a subcommand is a usage error.
+#[derive(Subcommand, Debug)]
+pub enum ArchiveCommand {
+    /// List the archive logs this host keeps, and what they cost on disk.
+    List(ListArgs),
+    /// Delete a profile's archive logs (or --all of them). The next run
+    /// rescans from scratch; no replica file is touched.
+    Clear(ArchiveClearArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ArchiveClearArgs {
+    /// The profile: its name, or the id `dsync archive list` prints.
+    #[arg(value_name = "PROFILE", required_unless_present = "all")]
+    pub profile: Option<String>,
+    /// Every archive on this host, rather than one profile's.
+    #[arg(long, conflicts_with = "profile")]
+    pub all: bool,
+    #[command(flatten)]
+    pub state: StateDirArgs,
+}
+
+/// What `archive clear` deletes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ClearTarget {
+    All,
+    /// A profile name, or an id as `archive list` prints it.
+    Profile(String),
+}
+
+impl ArchiveClearArgs {
+    /// clap has already refused both, and neither.
+    pub fn target(&self) -> Result<ClearTarget, Failure> {
+        match (&self.profile, self.all) {
+            (None, true) => Ok(ClearTarget::All),
+            (Some(profile), false) => Ok(ClearTarget::Profile(profile.clone())),
+            _ => Err(Failure::usage(
+                "dsync archive clear takes either a profile or --all, not both.",
+            )),
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -120,7 +290,7 @@ impl RunArgs {
     }
 }
 
-/// `--state-dir` (SPEC §11.2): on `agent` here, and on every `pair` and
+/// `--state-dir` (SPEC §11.2): on `agent`, and on every `pair` and
 /// `archive` subcommand; never on `sync`/`status` (SPEC §8.3).
 #[derive(Args, Debug)]
 pub struct StateDirArgs {
@@ -424,6 +594,61 @@ mod tests {
     #[test]
     fn an_unrecognized_flag_is_a_parse_error() {
         assert!(parse(&["agent", "--stdio", "--frobnicate"]).is_err());
+    }
+
+    #[test]
+    fn every_pair_and_archive_subcommand_takes_state_dir() {
+        let commands: &[&[&str]] = &[
+            &["pair", "show", "--name", "phone"],
+            &["pair", "accept", "--name", "desktop", "code"],
+            &["pair", "list"],
+            &["pair", "revoke", "phone"],
+            &["pair", "grant", "phone", "/n"],
+            &["pair", "renew"],
+            &["archive", "list"],
+            &["archive", "clear", "--all"],
+        ];
+        for command in commands {
+            let mut argv = command.to_vec();
+            argv.extend(["--state-dir", "/srv/dsync"]);
+            assert!(parse(&argv).is_ok(), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn a_pair_or_archive_with_no_subcommand_is_an_error_not_help() {
+        for argv in [&["pair"][..], &["archive"]] {
+            let kind = parse(argv).unwrap_err().kind();
+            assert_eq!(kind, clap::error::ErrorKind::MissingSubcommand, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn show_defaults_to_every_ipv4_interface_and_the_peer_port() {
+        let Ok(Cli {
+            command: CliCommand::Pair(PairCommand::Show(args)),
+        }) = parse(&["pair", "show", "--name", "phone"])
+        else {
+            panic!("show did not parse");
+        };
+        assert_eq!(args.bind().unwrap(), IpAddr::from([0, 0, 0, 0]));
+        assert_eq!(args.serve_port, Tuning::DEFAULT.peer_port);
+        assert!(parse(&["pair", "show", "--name", "p", "--serve-port", "0"]).is_err());
+    }
+
+    #[test]
+    fn archive_clear_takes_a_profile_or_all() {
+        let target = |argv: &[&str]| match parse(argv).expect("parses").command {
+            CliCommand::Archive(ArchiveCommand::Clear(args)) => args.target().unwrap(),
+            other => panic!("not clear: {other:?}"),
+        };
+        assert_eq!(target(&["archive", "clear", "--all"]), ClearTarget::All);
+        assert_eq!(
+            target(&["archive", "clear", "notes"]),
+            ClearTarget::Profile("notes".into())
+        );
+        assert!(parse(&["archive", "clear"]).is_err());
+        assert!(parse(&["archive", "clear", "notes", "--all"]).is_err());
     }
 
     #[test]

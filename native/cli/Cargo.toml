@@ -16,6 +16,7 @@ clap = { version = "4", features = ["derive"] }
 dsync-core.workspace = true
 dsync-domain.workspace = true
 gethostname = "1"
+qrcode = { version = "0.14", default-features = false }
 serde_json.workspace = true
 time = { workspace = true, features = ["local-offset", "formatting", "macros"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "time", "sync", "net"] }

@@ -22,6 +22,14 @@ use time::UtcOffset;
 pub use human::HumanRenderer;
 pub use json::JsonRenderer;
 
+/// `at` as an RFC 3339 UTC timestamp, for listings; `None` only past what
+/// the format can write (the year 9999).
+pub fn rfc3339(at: SystemTime) -> Option<String> {
+    time::OffsetDateTime::from(at)
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()
+}
+
 /// How a replica is reached, as the run header names it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Transport {

@@ -6,11 +6,17 @@
 mod support;
 
 mod agent_stdio;
+mod archive;
 mod commands;
 mod dirs;
 #[cfg(unix)]
 mod interactive;
 mod output;
+mod pair;
+#[cfg(unix)]
+mod pairing;
+#[cfg(unix)]
+mod peer;
 #[cfg(unix)]
 mod real_ssh;
 #[cfg(unix)]
