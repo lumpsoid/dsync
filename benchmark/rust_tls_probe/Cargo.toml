@@ -1,0 +1,13 @@
+[package]
+name = "rust_tls_probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of the Flutter build (task 4dc926). See README.md.
+[workspace]
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "net", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }

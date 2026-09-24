@@ -42,7 +42,12 @@
 // loop (the filter is run via _IOService._dispatch and Timer.run).
 // Per case the phone prints MiB/s over its own clock from the first byte to
 // the last, the read count, read events, bytes per read (mean/max) and the
-// gaps between reads (p50/p90/max). The desktop prints its own rate to the
+// gaps between reads (p50/p90/max), and, for a one-connection case and a
+// multi-connection case's `total`, the process's CPU (user + system, all
+// threads, from /proc/self/stat at 10 ms resolution; `cpu -` where there is
+// no /proc) from the connection's accept (after the handshake, for TLS) to
+// its last read, in seconds and in ms per MiB received: the battery side of
+// a receiving stack. The desktop prints its own rate to the
 // last write accepted and to the phone's close, so a sender-bound case shows.
 // Reading it: plain/raw near 26 MiB/s and tls near 8 puts the ceiling in the
 // TLS layer; raw well under plain's puts it in dart:io's raw read path; tls
@@ -98,6 +103,12 @@
 //   dart run benchmark/socket_pump.dart send --host 192.168.0.61 \
 //     [--port 47470] [--mib 128] [--chunk-kib 256] [--big-chunk-kib 4096] \
 //     [--cases …, default all; must match the phone's CASES]
+//
+// The same sender also feeds benchmark/rust_tls_probe, the receiver in Rust
+// (rustls); its src/main.rs header has the port and case mapping. That receiver loads the
+// probe identity from PEM files, written with:
+//   dart run benchmark/socket_pump.dart export-identity <dir>
+// (<dir>/cert.pem and <dir>/key.pem, PKCS#8).
 //
 // Desktop-only check, both halves on this host over 127.0.0.1:
 //   dart run benchmark/socket_pump.dart receive [--port 47470] [--cases …]
@@ -235,12 +246,51 @@ DeviceIdentity probeIdentity() => generateDeviceIdentity(
 );
 
 /// One connection's bytes and its first and last read on the wall clock
-/// (µs since epoch), comparable across isolates; sendable between them.
-typedef ReadSpan = ({int bytes, int firstUs, int lastUs});
+/// (µs since epoch), comparable across isolates, and the process's CPU ticks
+/// ([processCpuTicks]) as its reading began and ended; sendable between them.
+typedef ReadSpan = ({
+  int bytes,
+  int firstUs,
+  int lastUs,
+  int? cpuStartTicks,
+  int? cpuEndTicks,
+});
+
+/// Clock ticks per second in /proc/self/stat: USER_HZ, 100 on Linux and
+/// Android alike.
+const _ticksPerSecond = 100;
+
+/// This process's CPU so far, user plus system, in clock ticks, all threads
+/// and so all isolates: fields 14 and 15 of /proc/self/stat. Null where
+/// there is no /proc (macOS, Windows).
+int? processCpuTicks() {
+  final String stat;
+  try {
+    stat = File('/proc/self/stat').readAsStringSync();
+  } on FileSystemException {
+    return null;
+  }
+  // Fields from the 3rd on follow the parenthesised command name, which may
+  // itself hold spaces.
+  final fields = stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+  return int.parse(fields[11]) + int.parse(fields[12]);
+}
+
+/// `cpu 1.23 s 9.6 ms/MiB`: the process CPU between two [processCpuTicks]
+/// samples, in all and per MiB of [bytes].
+String _cpu(int? startTicks, int? endTicks, int bytes) {
+  if (startTicks == null || endTicks == null) return 'cpu -';
+  final seconds = (endTicks - startTicks) / _ticksPerSecond;
+  final mib = bytes / (1 << 20);
+  return 'cpu ${seconds.toStringAsFixed(2)} s '
+      '${(seconds * 1000 / mib).toStringAsFixed(1)} ms/MiB';
+}
 
 /// What one connection's reads looked like on the receiving side.
 class ReadLog {
   final int _startWallUs = DateTime.now().microsecondsSinceEpoch;
+  final int? _cpuStartTicks = processCpuTicks();
+  int? _cpuEndTicks;
   final Stopwatch _clock = Stopwatch()..start();
   final List<int> _at = [];
   final List<int> _sizes = [];
@@ -251,6 +301,10 @@ class ReadLog {
     _sizes.add(bytes);
   }
 
+  /// Samples the process CPU as the reading ends; the start was sampled as
+  /// this log was made, once the connection was accepted (and handshaken).
+  void stop() => _cpuEndTicks = processCpuTicks();
+
   /// Null when nothing was read.
   ReadSpan? get span => _at.isEmpty
       ? null
@@ -258,9 +312,13 @@ class ReadLog {
           bytes: _sizes.fold<int>(0, (a, b) => a + b),
           firstUs: _startWallUs + _at.first,
           lastUs: _startWallUs + _at.last,
+          cpuStartTicks: _cpuStartTicks,
+          cpuEndTicks: _cpuEndTicks,
         );
 
-  String report(String label) {
+  /// [withCpu] adds the process CPU over this connection's reading: only
+  /// meaningful when no other connection is read meanwhile.
+  String report(String label, {required bool withCpu}) {
     if (_at.isEmpty) return '$label: no bytes';
     final bytes = _sizes.fold<int>(0, (a, b) => a + b);
     final spanUs = max(1, _at.last - _at.first);
@@ -278,7 +336,8 @@ class ReadLog {
         'bytes/read mean ${(bytes / _at.length / 1024).toStringAsFixed(1)} KiB '
         'max ${(_sizes.reduce(max) / 1024).toStringAsFixed(1)} KiB  '
         'gap ms p50 ${pct(0.5)} p90 ${pct(0.9)} '
-        'max ${gaps.isEmpty ? '-' : ms(gaps.last)}';
+        'max ${gaps.isEmpty ? '-' : ms(gaps.last)}'
+        '${withCpu ? '  ${_cpu(_cpuStartTicks, _cpuEndTicks, bytes)}' : ''}';
   }
 }
 
@@ -349,12 +408,21 @@ String _aggregate(PumpCase pumpCase, List<ReadSpan> spans) {
   final bytes = spans.fold<int>(0, (a, s) => a + s.bytes);
   final firstUs = spans.map((s) => s.firstUs).reduce(min);
   final lastUs = spans.map((s) => s.lastUs).reduce(max);
+  final starts = [for (final s in spans) s.cpuStartTicks];
+  final ends = [for (final s in spans) s.cpuEndTicks];
+  final cpu = starts.contains(null) || ends.contains(null)
+      ? 'cpu -'
+      : _cpu(
+          starts.cast<int>().reduce(min),
+          ends.cast<int>().reduce(max),
+          bytes,
+        );
   final seconds = max(1, lastUs - firstUs) / 1e6;
   final mib = bytes / (1 << 20);
   return '$label ${(mib / seconds).toStringAsFixed(1)} MiB/s  '
       '${mib.toStringAsFixed(0)} MiB in ${seconds.toStringAsFixed(2)} s over '
       '${spans.length}/${pumpCase.connections} connections, first byte on any '
-      'to last byte on all';
+      'to last byte on all  $cpu';
 }
 
 /// The receiving side's context: the probe identity, a client certificate
@@ -382,7 +450,8 @@ Future<void> _listen(
   void Function()? onAccepted,
 }) async {
   void report(ReadLog reads) {
-    log(reads.report(label));
+    reads.stop();
+    log(reads.report(label, withCpu: pumpCase.connections == 1));
     if (reads.span case final span?) onSpan(span);
   }
 
@@ -734,9 +803,16 @@ Future<void> main(List<String> arguments) async {
       );
     case ['receive']:
       await receive(port: port, cases: cases, log: stdout.writeln);
+    case ['export-identity', final dir]:
+      final identity = probeIdentity();
+      await Directory(dir).create(recursive: true);
+      await File('$dir/cert.pem').writeAsString(identity.certificatePem);
+      await File('$dir/key.pem').writeAsString(identity.privateKeyPem);
+      stdout.writeln('wrote $dir/cert.pem and $dir/key.pem');
     default:
       stderr.writeln(
-        'usage: dart run benchmark/socket_pump.dart send|receive\n'
+        'usage: dart run benchmark/socket_pump.dart '
+        'send|receive|export-identity <dir>\n'
         '${parser.usage}',
       );
       exitCode = 64;
