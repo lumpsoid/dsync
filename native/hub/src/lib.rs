@@ -9,9 +9,13 @@ use std::sync::Arc;
 
 use dsync_core::identity::Identity;
 use dsync_core::peer_pin::PeerPin;
-use dsync_core::server::{DEFAULT_WRITERS, Received, ServeEvent, ServeOptions, serve};
+use dsync_core::server::{Received, ServeEvent, ServeOptions, serve};
+use dsync_core::write_error::WriteError;
+use dsync_core::write_stats::Stage;
 use rinf::{DartSignal, RustSignal, dart_shutdown, write_interface};
-use signals::{ServeFailed, ServeReady, StartServe, StopServe, TransferDone, TransferProgress};
+use signals::{
+    ServeFailed, ServeReady, StageTiming, StartServe, StopServe, TransferDone, TransferProgress,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -64,7 +68,7 @@ async fn serve_once(identity: Arc<Identity>, request: StartServe) {
         root: PathBuf::from(request.root),
         port: request.port,
         allow,
-        writers: DEFAULT_WRITERS,
+        writers: request.writers as usize,
     };
     let (events, forwarded) = mpsc::unbounded_channel();
     let forwarder = tokio::spawn(forward(forwarded));
@@ -72,7 +76,11 @@ async fn serve_once(identity: Arc<Identity>, request: StartServe) {
     // Every progress signal goes out before the one that ends the transfer.
     let _ = forwarder.await;
     match served {
-        Ok(Received { peer, metrics }) => TransferDone {
+        Ok(Received {
+            peer,
+            metrics,
+            writes,
+        }) => TransferDone {
             peer_device_id: peer.to_string(),
             files: metrics.files,
             bytes: metrics.bytes,
@@ -81,6 +89,26 @@ async fn serve_once(identity: Arc<Identity>, request: StartServe) {
             files_per_second: metrics.files_per_second(),
             cpu_seconds: metrics.cpu_seconds(),
             cpu_ms_per_mib: metrics.cpu_ms_per_mib(),
+            writer_cpu_seconds: writes.writer_cpu.map(|c| c.as_secs_f64()),
+            other_cpu_seconds: writes.other_cpu(metrics.cpu).map(|c| c.as_secs_f64()),
+            writers: writes.writers as u32,
+            writers_busy: writes.writers_busy(metrics.wall),
+            queue_wait_mean_ms: writes
+                .mean_queue_wait()
+                .map_or(0.0, |d| d.as_secs_f64() * 1000.0),
+            queue_wait_total_seconds: writes.queue_wait.as_secs_f64(),
+            stages: Stage::ALL
+                .into_iter()
+                .filter_map(|stage| {
+                    let time = writes.stage(stage);
+                    time.mean().map(|mean| StageTiming {
+                        name: stage.name().to_string(),
+                        count: time.count,
+                        mean_ms: mean.as_secs_f64() * 1000.0,
+                        total_seconds: time.total.as_secs_f64(),
+                    })
+                })
+                .collect(),
         }
         .send_signal_to_dart(),
         Err(e) => fail(e),
@@ -108,8 +136,13 @@ async fn forward(mut events: mpsc::UnboundedReceiver<ServeEvent>) {
 }
 
 fn fail(error: anyhow::Error) {
+    let write = error.downcast_ref::<WriteError>();
     ServeFailed {
         message: format!("{error:#}"),
+        path: write.map(|w| w.path.to_string()),
+        stage: write.map(|w| w.stage.name().to_string()),
+        io_kind: write.map(|w| format!("{:?}", w.kind())),
+        os_code: write.and_then(WriteError::os_code),
     }
     .send_signal_to_dart();
 }

@@ -2,13 +2,16 @@
 //! native/NOTES.md.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dsync_core::client::{PushOptions, push};
 use dsync_core::identity::Identity;
+use dsync_core::order::Order;
 use dsync_core::peer_pin::PeerPin;
-use dsync_core::server::{DEFAULT_WRITERS, ServeEvent, ServeOptions, serve};
+use dsync_core::server::{ServeEvent, ServeOptions, serve};
+use dsync_core::slow_create;
 use tokio::sync::mpsc;
 
 #[derive(Parser)]
@@ -41,11 +44,16 @@ enum Command {
         #[arg(long)]
         allow: PeerPin,
         /// Blocking file-writer threads.
-        #[arg(long, default_value_t = DEFAULT_WRITERS)]
+        #[arg(long, default_value_t = 16)]
         writers: usize,
         /// Print a line per file written.
         #[arg(long)]
         verbose: bool,
+        /// TEST ONLY: make every file create sleep this long, one create at
+        /// a time per folder, as Android's FUSE storage does
+        /// (core/src/slow_create.rs). 0 is off.
+        #[arg(long, default_value_t = 0, hide = true)]
+        simulate_create_ms: u64,
     },
     /// Send a directory's tree to a server.
     Push {
@@ -57,6 +65,10 @@ enum Command {
         /// The server's device id (ANY is accepted for testing).
         #[arg(long)]
         pin: PeerPin,
+        /// The order files go out in: `walk` (path order) or `spread`
+        /// (consecutive files from different folders).
+        #[arg(long, default_value_t = Order::Spread)]
+        order: Order,
     },
 }
 
@@ -83,8 +95,13 @@ fn main() -> anyhow::Result<()> {
             allow,
             writers,
             verbose,
+            simulate_create_ms,
         } => {
             println!("id {}", identity.device_id());
+            if simulate_create_ms > 0 {
+                slow_create::set(Duration::from_millis(simulate_create_ms));
+                println!("SIMULATING slow creates: {simulate_create_ms} ms, serialised per folder");
+            }
             let (tx, mut rx) = mpsc::unbounded_channel();
             let printer = runtime.spawn(async move {
                 let mut progress_events = 0u64;
@@ -107,18 +124,26 @@ fn main() -> anyhow::Result<()> {
                 allow,
                 writers,
             };
-            let received = runtime.block_on(serve(&identity, options, tx))?;
+            let served = runtime.block_on(serve(&identity, options, tx));
             let progress_events = runtime.block_on(printer)?;
+            let received = served.context("serve failed")?;
             println!(
-                "received {}  progress events {progress_events}  writers {writers}",
+                "received {}  progress events {progress_events}",
                 received.metrics
             );
+            for line in received
+                .writes
+                .report(received.metrics.wall, received.metrics.cpu)
+            {
+                println!("{line}");
+            }
         }
         Command::Push {
             dir,
             host,
             port,
             pin,
+            order,
         } => {
             println!("id {}", identity.device_id());
             let report = runtime.block_on(push(
@@ -128,10 +153,11 @@ fn main() -> anyhow::Result<()> {
                     host,
                     port,
                     pin,
+                    order,
                 },
             ))?;
             println!("server {}", report.server);
-            println!("sent {}", report.metrics);
+            println!("sent {}  order {order}", report.metrics);
         }
     }
     Ok(())

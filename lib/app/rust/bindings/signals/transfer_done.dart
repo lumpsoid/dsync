@@ -26,6 +26,13 @@ class TransferDone {
     required this.filesPerSecond,
     this.cpuSeconds,
     this.cpuMsPerMib,
+    this.writerCpuSeconds,
+    this.otherCpuSeconds,
+    required this.writers,
+    required this.writersBusy,
+    required this.queueWaitMeanMs,
+    required this.queueWaitTotalSeconds,
+    required this.stages,
   });
 
   static TransferDone deserialize(BinaryDeserializer deserializer) {
@@ -39,6 +46,13 @@ class TransferDone {
       filesPerSecond: deserializer.deserializeFloat64(),
       cpuSeconds: TraitHelpers.deserializeOptionF64(deserializer),
       cpuMsPerMib: TraitHelpers.deserializeOptionF64(deserializer),
+      writerCpuSeconds: TraitHelpers.deserializeOptionF64(deserializer),
+      otherCpuSeconds: TraitHelpers.deserializeOptionF64(deserializer),
+      writers: deserializer.deserializeUint32(),
+      writersBusy: deserializer.deserializeFloat64(),
+      queueWaitMeanMs: deserializer.deserializeFloat64(),
+      queueWaitTotalSeconds: deserializer.deserializeFloat64(),
+      stages: TraitHelpers.deserializeVectorStageTiming(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -61,6 +75,13 @@ class TransferDone {
   final double filesPerSecond;
   final double? cpuSeconds;
   final double? cpuMsPerMib;
+  final double? writerCpuSeconds;
+  final double? otherCpuSeconds;
+  final int writers;
+  final double writersBusy;
+  final double queueWaitMeanMs;
+  final double queueWaitTotalSeconds;
+  final List<StageTiming> stages;
 
   TransferDone copyWith({
     String? peerDeviceId,
@@ -71,6 +92,13 @@ class TransferDone {
     double? filesPerSecond,
     double? Function()? cpuSeconds,
     double? Function()? cpuMsPerMib,
+    double? Function()? writerCpuSeconds,
+    double? Function()? otherCpuSeconds,
+    int? writers,
+    double? writersBusy,
+    double? queueWaitMeanMs,
+    double? queueWaitTotalSeconds,
+    List<StageTiming>? stages,
   }) {
     return TransferDone(
       peerDeviceId: peerDeviceId ?? this.peerDeviceId,
@@ -81,6 +109,13 @@ class TransferDone {
       filesPerSecond: filesPerSecond ?? this.filesPerSecond,
       cpuSeconds: cpuSeconds == null ? this.cpuSeconds : cpuSeconds(),
       cpuMsPerMib: cpuMsPerMib == null ? this.cpuMsPerMib : cpuMsPerMib(),
+      writerCpuSeconds: writerCpuSeconds == null ? this.writerCpuSeconds : writerCpuSeconds(),
+      otherCpuSeconds: otherCpuSeconds == null ? this.otherCpuSeconds : otherCpuSeconds(),
+      writers: writers ?? this.writers,
+      writersBusy: writersBusy ?? this.writersBusy,
+      queueWaitMeanMs: queueWaitMeanMs ?? this.queueWaitMeanMs,
+      queueWaitTotalSeconds: queueWaitTotalSeconds ?? this.queueWaitTotalSeconds,
+      stages: stages ?? this.stages,
     );
   }
 
@@ -94,6 +129,13 @@ class TransferDone {
     serializer.serializeFloat64(filesPerSecond);
     TraitHelpers.serializeOptionF64(cpuSeconds, serializer);
     TraitHelpers.serializeOptionF64(cpuMsPerMib, serializer);
+    TraitHelpers.serializeOptionF64(writerCpuSeconds, serializer);
+    TraitHelpers.serializeOptionF64(otherCpuSeconds, serializer);
+    serializer.serializeUint32(writers);
+    serializer.serializeFloat64(writersBusy);
+    serializer.serializeFloat64(queueWaitMeanMs);
+    serializer.serializeFloat64(queueWaitTotalSeconds);
+    TraitHelpers.serializeVectorStageTiming(stages, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -116,7 +158,14 @@ class TransferDone {
       && mibPerSecond == other.mibPerSecond
       && filesPerSecond == other.filesPerSecond
       && cpuSeconds == other.cpuSeconds
-      && cpuMsPerMib == other.cpuMsPerMib;
+      && cpuMsPerMib == other.cpuMsPerMib
+      && writerCpuSeconds == other.writerCpuSeconds
+      && otherCpuSeconds == other.otherCpuSeconds
+      && writers == other.writers
+      && writersBusy == other.writersBusy
+      && queueWaitMeanMs == other.queueWaitMeanMs
+      && queueWaitTotalSeconds == other.queueWaitTotalSeconds
+      && listEquals(stages, other.stages);
   }
 
   @override
@@ -129,6 +178,13 @@ class TransferDone {
         filesPerSecond,
         cpuSeconds,
         cpuMsPerMib,
+        writerCpuSeconds,
+        otherCpuSeconds,
+        writers,
+        writersBusy,
+        queueWaitMeanMs,
+        queueWaitTotalSeconds,
+        stages,
       );
 
   @override
@@ -144,7 +200,14 @@ class TransferDone {
         'mibPerSecond: $mibPerSecond, '
         'filesPerSecond: $filesPerSecond, '
         'cpuSeconds: $cpuSeconds, '
-        'cpuMsPerMib: $cpuMsPerMib'
+        'cpuMsPerMib: $cpuMsPerMib, '
+        'writerCpuSeconds: $writerCpuSeconds, '
+        'otherCpuSeconds: $otherCpuSeconds, '
+        'writers: $writers, '
+        'writersBusy: $writersBusy, '
+        'queueWaitMeanMs: $queueWaitMeanMs, '
+        'queueWaitTotalSeconds: $queueWaitTotalSeconds, '
+        'stages: $stages'
         ')';
       return true;
     }());

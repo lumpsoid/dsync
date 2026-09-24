@@ -43,10 +43,23 @@ impl RelPath {
         &self.0
     }
 
+    /// The parent folder, `/`-joined; `""` for a file at the root.
+    pub fn folder(&self) -> &str {
+        self.0.rsplit_once('/').map_or("", |(folder, _)| folder)
+    }
+
     /// Where this path lands under [root].
     pub fn under(&self, root: &Path) -> PathBuf {
         let mut path = root.to_path_buf();
         path.extend(self.0.split('/'));
+        path
+    }
+
+    /// Where this path's folder lands under [root]: [root] itself for a
+    /// file at the root.
+    pub fn folder_under(&self, root: &Path) -> PathBuf {
+        let mut path = root.to_path_buf();
+        path.extend(self.folder().split('/').filter(|s| !s.is_empty()));
         path
     }
 }
@@ -65,6 +78,11 @@ mod tests {
     fn plain_paths_parse_and_land_under_the_root() {
         let path = RelPath::parse("a/b/c.txt").unwrap();
         assert_eq!(path.under(Path::new("/r")), PathBuf::from("/r/a/b/c.txt"));
+        assert_eq!(path.folder(), "a/b");
+        assert_eq!(path.folder_under(Path::new("/r")), PathBuf::from("/r/a/b"));
+        let top = RelPath::parse("c.txt").unwrap();
+        assert_eq!(top.folder(), "");
+        assert_eq!(top.folder_under(Path::new("/r")), PathBuf::from("/r"));
     }
 
     #[test]

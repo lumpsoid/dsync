@@ -16,6 +16,7 @@ export '../serde/serde.dart';
 part 'trait_helpers.dart';
 part 'serve_failed.dart';
 part 'serve_ready.dart';
+part 'stage_timing.dart';
 part 'start_serve.dart';
 part 'stop_serve.dart';
 part 'transfer_done.dart';

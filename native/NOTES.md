@@ -37,28 +37,51 @@ The core, in brief:
   length, the `/` path, a u64 size, an i64+u32 mtime, and the bytes; then
   an end tag. The server answers once, with a summary (files and bytes),
   after the last file is on disk. There is no per-file ack, so it pipelines.
-- **Server** (`server.rs`): accepts one connection. The socket is read on
-  tokio through a 256 KiB `BufReader`. Each file goes whole to one of N
-  blocking writer threads (`spawn_blocking`), round robin. Each thread
-  creates parent dirs (cached), writes, and sets the mtime on the handle.
-  Each queue is bounded (8 chunks), which is the back-pressure. Events:
-  `Ready`, `Connected`, `FileDone` (one per file), and `Progress`, throttled
-  to one per 50 ms (`throttle.rs`).
-- **Client** (`client.rs`): walks the directory (regular files only), then a
-  blocking reader thread frames headers and content into 256 KiB chunks.
-  Chunks run across file boundaries, so small files batch. The async side
-  writes the chunks to the TLS stream through a 256 KiB `BufWriter`.
-- **Metrics** (`metrics.rs`, `cpu.rs`): bytes, files, wall time, MiB/s,
-  files/s, and process CPU from `/proc/self/stat` utime+stime (Linux and
-  Android), as seconds and ms per MiB. The server measures from the end of
-  the handshake to the last file on disk. The client measures from the end
-  of the handshake to the server's summary.
+- **Server** (`server.rs`, `writer.rs`): accepts one connection. The socket
+  is read on tokio through a 256 KiB `BufReader`. Files go to N blocking
+  writer threads (`spawn_blocking`) through **one shared queue, in arrival
+  order**: each file is written whole by whichever writer is free first, so
+  a slow create holds up only its own writer and the client's order is the
+  order the files reach the disk. Received bytes not yet written are
+  bounded at 16 MiB across all files (a semaphore; each chunk returns its
+  share once written), which is the back-pressure. Per file: probe the
+  target, create the parent folders (fresh files only; once per folder per
+  transfer, shared by the writers), open, write, set the mtime on the
+  handle, close. Events: `Ready`, `Connected`, `FileDone` (one per file),
+  and `Progress`, throttled to one per 50 ms (`throttle.rs`).
+- **Overwrites** mirror the Dart core's SPEC §7.2 WriteTarget: a
+  single-link file is **truncated and written in place**; a file with other
+  hard links, or one this process may not open for writing, gets a temp
+  beside it (beside a followed link's target) renamed over it. A fresh path
+  is created. No fsync, as before.
+- **Errors** (`write_error.rs`): the first writer error stops every writer
+  and the socket reader, and is what `serve` returns: the file, the stage,
+  and the `io::Error` (kind and OS code). The hub puts them in
+  `ServeFailed`'s `path`, `stage`, `io_kind`, `os_code`.
+- **Client** (`client.rs`, `order.rs`): walks the directory (regular files
+  only), orders it (`--order spread`, the default: one file per folder in
+  turn, round robin, as the Dart apply's `spreadAcrossFolders`, 5d8c28;
+  `walk`: path order), then a blocking reader thread frames headers and
+  content into 256 KiB chunks. Chunks run across file boundaries, so small
+  files batch. The async side writes the chunks to the TLS stream through a
+  256 KiB `BufWriter`.
+- **Metrics** (`metrics.rs`, `cpu.rs`, `write_stats.rs`): bytes, files, wall
+  time, MiB/s, files/s, and process CPU from `/proc/self/stat` utime+stime
+  (Linux and Android), as seconds and ms per MiB. The server measures from
+  the end of the handshake to the last file on disk. The client measures
+  from the end of the handshake to the server's summary. The server also
+  times every stage of every file on the monotonic clock (count, mean,
+  total: `probe`, `mkdir`, `create` for a new file, `open` for an in-place
+  overwrite, `wait` for the file's bytes from the socket, `write`, `mtime`,
+  `close`, `rename`), the queue wait (header in to a writer taking the
+  file), **writers busy** (summed per-file busy time over wall: the mean
+  number of writers in flight), and the writer threads' own CPU
+  (`CLOCK_THREAD_CPUTIME_ID`, ns resolution) against the rest of the
+  process. `serve` prints them, and `TransferDone` carries them.
 
-**Writer pool size:** the default is 4 (`--writers` on the CLI; the hub uses
-the default). On the desktop, 1 and 4 writers are within noise: both trees
-land in page cache in tens of ms, see below. The pool is there for the
-phone: `/storage/emulated/0` is FUSE, where each create is a round trip. It
-is the first knob to turn if small files are slow there.
+**Writer count** is explicit everywhere: `StartServe.writers` (the
+integration test's `WRITERS`, default 16) and `serve --writers` (default
+16). The core has no default.
 
 ## Build and run
 
@@ -69,12 +92,15 @@ Android targets itself.
 # Core and CLI
 cargo build --release --manifest-path native/Cargo.toml -p dsync-cli
 native/target/release/dsync-rs id [--identity DIR]      # default $XDG_CONFIG_HOME/dsync-rs
-native/target/release/dsync-rs serve --root DIR --port 47670 --allow <peer-id>|ANY [--writers 4] [--verbose]
-native/target/release/dsync-rs push DIR --host H --port 47670 --pin <server-id>
+native/target/release/dsync-rs serve --root DIR --port 47670 --allow <peer-id>|ANY [--writers 16] [--verbose]
+native/target/release/dsync-rs push DIR --host H --port 47670 --pin <server-id> [--order spread|walk]
+# TEST ONLY, hidden: every create sleeps N ms, one at a time per folder (FUSE-like)
+native/target/release/dsync-rs serve ... --simulate-create-ms 15
 
 # Gates
 cargo test --manifest-path native/Cargo.toml
-cargo clippy --manifest-path native/Cargo.toml --all-targets
+cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path native/Cargo.toml --check
 
 # Regenerating the Dart side of the signals after editing hub/src/signals.rs.
 # The rinf CLI runs from a checkout of rinf 8.10.1, not a global install:
@@ -88,9 +114,12 @@ flutter build apk --release
 # The rinf integration test (Linux shown; on the phone, -d <serial>)
 flutter drive --profile -d linux --driver=test_driver/integration_test.dart \
   --target=integration_test/rust_spike_test.dart \
-  [--dart-define=ROOT=<dir>] [--dart-define=PORT=47670] [--dart-define=ALLOW=<id>|ANY]
-# once it prints `[rust-spike] ready port … id <id>`:
-native/target/release/dsync-rs push <tree> --host <host> --port 47670 --pin <id>
+  [--dart-define=ROOT=<dir>] [--dart-define=PORT=47670] [--dart-define=ALLOW=<id>|ANY] \
+  [--dart-define=WRITERS=16] [--dart-define=TRANSFERS=1]
+# each time it prints `[rust-spike] transfer k/N ready port … id <id>`:
+native/target/release/dsync-rs push <tree> --host <host> --port 47670 --pin <id> [--order walk|spread]
+# TRANSFERS=2 serves two transfers into one root, one identity: push the same
+# tree twice for a fresh pass and an overwrite pass.
 ```
 
 ## How the build is integrated
@@ -169,6 +198,71 @@ rows show the throttle at work: 7 signals in 0.34 s. The app's CPU is the
 whole Flutter process, engine included. Every received tree was checked
 byte for byte (`diff -r`) with its mtimes, down to the nanosecond. The phone
 run is the one that answers the question.
+
+## Step 2: writer count, folder spread, overwrite, stage timing
+
+Step 1 on the OnePlus 6 (desktop `push` → the app, fresh roots in
+`/storage/emulated/0`): the large tree ran at 25–29.5 MiB/s, but the small
+tree took ~11–12 ms a file against the Dart core's ~4.5–7. The pool was 4
+writers, each fed round robin, and files went out folder by folder, so the
+writes in flight were mostly in one folder, where FUSE creates serialise.
+Step 2 changes that (see Layout): writer count explicit end to end
+(default 16), one shared queue in arrival order, `--order spread` by
+default, in-place overwrites, per-stage timing, and real write errors.
+
+**Local sweep** (the small tree, 1,500 × ~13 KiB, 30 a folder; CLI → CLI
+over loopback into ext4; three runs each, medians; every run checked with
+`diff -r` and nanosecond mtimes). A whole transfer is 10–30 ms here, so
+these check correctness and the cost of the timing, not speed: the
+differences between rows are noise.
+
+| writers | order | pass | runs | ms/file (median) | files/s | server cpu ms/MiB | writers busy | create/open mean ms | queue wait mean ms | cpu writers / rest s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 4 | spread | fresh | 3 | 0.009 | 109554 | 1.5 | 2.60 | 0.006 | 0.027 | 0.028 / 0.007 |
+| 4 | walk | fresh | 3 | 0.012 | 86325 | 2.6 | 3.07 | 0.009 | 0.296 | 0.035 / 0.015 |
+| 16 | spread | fresh | 3 | 0.010 | 101689 | 2.6 | 4.36 | 0.015 | 0.047 | 0.041 / 0.009 |
+| 16 | walk | fresh | 3 | 0.012 | 82927 | 4.1 | 6.60 | 0.043 | 0.057 | 0.071 / 0.011 |
+| 32 | spread | fresh | 3 | 0.013 | 79232 | 3.1 | 3.99 | 0.008 | 0.049 | 0.045 / 0.016 |
+| 32 | walk | fresh | 3 | 0.011 | 91366 | 4.1 | 6.98 | 0.042 | 0.030 | 0.069 / 0.011 |
+| 4 | spread | overwrite | 3 | 0.013 | 78601 | 2.1 | 3.60 | 0.006 | 4.861 | 0.031 / 0.009 |
+| 4 | walk | overwrite | 3 | 0.012 | 83034 | 2.1 | 3.62 | 0.006 | 3.526 | 0.029 / 0.011 |
+| 16 | spread | overwrite | 3 | 0.011 | 90832 | 3.6 | 12.70 | 0.010 | 2.340 | 0.053 / 0.016 |
+| 16 | walk | overwrite | 3 | 0.015 | 66769 | 3.6 | 12.39 | 0.010 | 3.974 | 0.056 / 0.012 |
+| 32 | spread | overwrite | 3 | 0.014 | 69407 | 3.6 | 25.33 | 0.010 | 6.297 | 0.055 / 0.015 |
+| 32 | walk | overwrite | 3 | 0.022 | 44763 | 3.6 | 28.06 | 0.010 | 6.924 | 0.059 / 0.011 |
+
+The timing itself costs nothing visible: the whole server CPU stays at
+1.5–4 ms/MiB, as in step 1. On ext4 the overwrite pass spends its time in
+`close` (ext4 flushes a file truncated and rewritten on close,
+`auto_da_alloc`); that is not what FUSE will show.
+
+CLI → app (rinf, `flutter drive --profile -d linux`, WRITERS=16,
+TRANSFERS=2, spread, same root): fresh 1,500 files in 0.02 s, 69 k files/s,
+cpu 4.6 ms/MiB; overwrite 76 k files/s, 3.6 ms/MiB, every file through
+`open` (in place), none created. Both transfers served on one port and one
+identity, and the tree matched byte for byte with its mtimes.
+
+**Slow-create simulation** (`serve --simulate-create-ms 15`, test only: each
+create sleeps 15 ms holding a lock on its folder, as FUSE does; one run
+each, fresh pass):
+
+| writers | order | pass | runs | ms/file (median) | files/s | server cpu ms/MiB | writers busy | create/open mean ms | queue wait mean ms | cpu writers / rest s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 4 | spread | fresh | 1 | 3.831 | 261 | 10.8 | 4.00 | 15.238 | 2571.189 | 0.165 / 0.045 |
+| 4 | walk | fresh | 1 | 13.699 | 73 | 13.4 | 4.00 | 54.985 | 9249.068 | 0.170 / 0.090 |
+| 16 | spread | fresh | 1 | 0.955 | 1047 | 8.3 | 15.94 | 15.184 | 633.115 | 0.133 / 0.027 |
+| 16 | walk | fresh | 1 | 7.812 | 128 | 13.4 | 15.84 | 123.599 | 5158.751 | 0.195 / 0.065 |
+| 32 | spread | fresh | 1 | 0.484 | 2064 | 7.7 | 31.54 | 15.235 | 312.000 | 0.128 / 0.022 |
+| 32 | walk | fresh | 1 | 5.263 | 190 | 11.9 | 31.26 | 164.474 | 3386.485 | 0.174 / 0.056 |
+
+Spread scales with the writers exactly as the model says, 15 ms / writers
+(3.83, 0.955, 0.484 ms a file), with the writers all busy and each create
+at its 15 ms. Walk does not: at 4 writers it is one folder at a time (13.7
+ms a file; a create's mean is 55 ms, 40 of it waiting on the folder's
+lock), and more writers help only because a window of 16 or 32 consecutive
+files straddles two folders of 30 (7.8 and 5.3 ms a file; creates' means
+124 and 164 ms). On the phone, spread at 16–32 writers should reach the storage's
+own floor, ~4.4 ms a file for the Dart apply (SPEC §7.2).
 
 ## What was awkward
 
@@ -254,8 +348,10 @@ All-files grant (`MANAGE_EXTERNAL_STORAGE`).
    a scan and plan exchange, deletes and renames, resume, and integrity
    (hash per file or per chunk). Does the Rust core re-implement SPEC's
    protocol, or replace it (there are no users)?
-3. **The durability contract.** No fsync, no temp-file-plus-rename, and a
-   file is written in place. Whatever the Dart core's apply path guarantees
+3. **The durability contract.** No fsync. A file is written in place, with
+   §7.2's temp-and-rename kept for hard-linked and unwritable targets, but
+   without §7.6's marks, so a transfer cut part-way leaves a half-written
+   file. Whatever the Dart core's apply path guarantees
    (lib/dsync_core/apply) has to move over.
 4. **The signal surface.** How big is the API between head and core
    (profiles, pairing, runs, conflicts)? Per-file events stay in Rust here;
@@ -264,8 +360,9 @@ All-files grant (`MANAGE_EXTERNAL_STORAGE`).
 5. **Threading on the phone.** The hub runs a multi-thread tokio runtime
    (one worker per core, 8 on the OnePlus 6), plus writer threads. Should
    it be capped on big.LITTLE? Measure CPU ms/MiB with 2 workers against 8.
-6. **Writer count on FUSE storage.** Is 4 right for `/storage/emulated/0`?
-   The hub has no knob yet; the CLI has `--writers`.
+6. **Writer count on FUSE storage.** 16 by default now, set by
+   `StartServe.writers`; the phone sweep (4/16/32, walk against spread)
+   decides it.
 7. **Gradle 9.** Upstream the Cargokit fix to rinf (or cargokit), or keep
    the vendored copy?
 8. **The Dart CLI and `lib/dsync_core`.** Delete them at the switch, and do

@@ -21,6 +21,7 @@ use crate::cpu::process_cpu;
 use crate::device_id::DeviceId;
 use crate::identity::Identity;
 use crate::metrics::TransferMetrics;
+use crate::order::Order;
 use crate::peer_pin::PeerPin;
 use crate::rel_path::RelPath;
 use crate::tls;
@@ -34,6 +35,7 @@ pub struct PushOptions {
     pub host: String,
     pub port: u16,
     pub pin: PeerPin,
+    pub order: Order,
 }
 
 pub struct PushReport {
@@ -46,6 +48,7 @@ pub struct PushReport {
 pub async fn push(identity: &Identity, options: PushOptions) -> anyhow::Result<PushReport> {
     let dir = options.dir.clone();
     let files = tokio::task::spawn_blocking(move || walk(&dir)).await??;
+    let files = options.order.arrange(files, |f| &f.header.path);
     let expected = Summary {
         files: files.len() as u64,
         bytes: files.iter().map(|f| f.header.size).sum(),

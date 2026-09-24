@@ -2,13 +2,15 @@
 part of 'signals.dart';
 
 /// Dart asks Rust to receive one tree into [root] on [port], from the peer
-/// whose device id is [allow_peer_id] (or `ANY`).
+/// whose device id is [allow_peer_id] (or `ANY`), with [writers] blocking
+/// file-writer threads (at least one).
 @immutable
 class StartServe {
   const StartServe({
     required this.root,
     required this.port,
     required this.allowPeerId,
+    required this.writers,
   });
 
   static StartServe deserialize(BinaryDeserializer deserializer) {
@@ -17,6 +19,7 @@ class StartServe {
       root: deserializer.deserializeString(),
       port: deserializer.deserializeUint16(),
       allowPeerId: deserializer.deserializeString(),
+      writers: deserializer.deserializeUint32(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -34,16 +37,19 @@ class StartServe {
   final String root;
   final int port;
   final String allowPeerId;
+  final int writers;
 
   StartServe copyWith({
     String? root,
     int? port,
     String? allowPeerId,
+    int? writers,
   }) {
     return StartServe(
       root: root ?? this.root,
       port: port ?? this.port,
       allowPeerId: allowPeerId ?? this.allowPeerId,
+      writers: writers ?? this.writers,
     );
   }
 
@@ -52,6 +58,7 @@ class StartServe {
     serializer.serializeString(root);
     serializer.serializeUint16(port);
     serializer.serializeString(allowPeerId);
+    serializer.serializeUint32(writers);
     serializer.decreaseContainerDepth();
   }
 
@@ -69,7 +76,8 @@ class StartServe {
     return other is StartServe
       && root == other.root
       && port == other.port
-      && allowPeerId == other.allowPeerId;
+      && allowPeerId == other.allowPeerId
+      && writers == other.writers;
   }
 
   @override
@@ -77,6 +85,7 @@ class StartServe {
         root,
         port,
         allowPeerId,
+        writers,
       );
 
   @override
@@ -87,7 +96,8 @@ class StartServe {
       fullString = '$runtimeType('
         'root: $root, '
         'port: $port, '
-        'allowPeerId: $allowPeerId'
+        'allowPeerId: $allowPeerId, '
+        'writers: $writers'
         ')';
       return true;
     }());

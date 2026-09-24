@@ -2,7 +2,9 @@
 part of 'signals.dart';
 
 /// Serving ended without a finished transfer: bind, handshake, I/O, or a
-/// refused peer. A [StopServe] ends it without this.
+/// refused peer. A [StopServe] ends it without this. When a writer failed,
+/// the last four say on which file, at which stage, and the io error's kind
+/// and OS code.
 @immutable
 class ServeFailed {
   /// An async broadcast stream that listens for signals from Rust.
@@ -19,12 +21,20 @@ class ServeFailed {
 
   const ServeFailed({
     required this.message,
+    this.path,
+    this.stage,
+    this.ioKind,
+    this.osCode,
   });
 
   static ServeFailed deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = ServeFailed(
       message: deserializer.deserializeString(),
+      path: TraitHelpers.deserializeOptionStr(deserializer),
+      stage: TraitHelpers.deserializeOptionStr(deserializer),
+      ioKind: TraitHelpers.deserializeOptionStr(deserializer),
+      osCode: TraitHelpers.deserializeOptionI32(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -40,18 +50,34 @@ class ServeFailed {
   }
 
   final String message;
+  final String? path;
+  final String? stage;
+  final String? ioKind;
+  final int? osCode;
 
   ServeFailed copyWith({
     String? message,
+    String? Function()? path,
+    String? Function()? stage,
+    String? Function()? ioKind,
+    int? Function()? osCode,
   }) {
     return ServeFailed(
       message: message ?? this.message,
+      path: path == null ? this.path : path(),
+      stage: stage == null ? this.stage : stage(),
+      ioKind: ioKind == null ? this.ioKind : ioKind(),
+      osCode: osCode == null ? this.osCode : osCode(),
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(message);
+    TraitHelpers.serializeOptionStr(path, serializer);
+    TraitHelpers.serializeOptionStr(stage, serializer);
+    TraitHelpers.serializeOptionStr(ioKind, serializer);
+    TraitHelpers.serializeOptionI32(osCode, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -67,11 +93,21 @@ class ServeFailed {
     if (other.runtimeType != runtimeType) return false;
 
     return other is ServeFailed
-      && message == other.message;
+      && message == other.message
+      && path == other.path
+      && stage == other.stage
+      && ioKind == other.ioKind
+      && osCode == other.osCode;
   }
 
   @override
-  int get hashCode => message.hashCode;
+  int get hashCode => Object.hash(
+        message,
+        path,
+        stage,
+        ioKind,
+        osCode,
+      );
 
   @override
   String toString() {
@@ -79,7 +115,11 @@ class ServeFailed {
 
     assert(() {
       fullString = '$runtimeType('
-        'message: $message'
+        'message: $message, '
+        'path: $path, '
+        'stage: $stage, '
+        'ioKind: $ioKind, '
+        'osCode: $osCode'
         ')';
       return true;
     }());
