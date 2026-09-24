@@ -1,0 +1,23 @@
+[package]
+# rinf's build (cargokit) expects this crate at native/hub under this name.
+name = "hub"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+# `lib` for tests, `cdylib` for Linux, Android, Windows, `staticlib` for
+# iOS and macOS.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+wildcard_imports = "deny"
+
+[dependencies]
+anyhow.workspace = true
+dsync-core.workspace = true
+rinf = "=8.10.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }

@@ -22,6 +22,8 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    - third_party/**
+    - native/**
 
 linter:
   # The lint rules applied to this project can be customized in the

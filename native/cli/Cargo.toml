@@ -1,0 +1,15 @@
+[package]
+name = "dsync-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "dsync-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+dsync-core.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }

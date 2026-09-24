@@ -1,6 +1,8 @@
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/dsync_app.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart';
 import 'package:flutter/material.dart';
+import 'package:rinf/rinf.dart';
 
 /// Entrypoint of the Flutter head. Flutter requires this file at this path;
 /// the head itself lives under `lib/app/` per SPEC §13.
@@ -11,8 +13,13 @@ import 'package:flutter/material.dart';
 /// gate by hand. The binding must be up first because resolving the paths
 /// goes through a platform channel (`path_provider`). The future is not
 /// awaited: the loading screen is what shows until it lands.
-void main() {
+///
+/// The Rust core (native/hub, task 07876c spike) is started before any of
+/// that: it only loads the library and parks on its signal receivers, so
+/// nothing the head does changes until Dart sends it a signal.
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initializeRust(assignRustSignal);
   appScope.controller.bootstrap();
   runApp(const DsyncApp());
 }

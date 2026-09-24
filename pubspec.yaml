@@ -161,6 +161,23 @@ dependencies:
   # `dart build` this pin is what keeps one pubspec serving both heads.
   path_provider_foundation: 2.5.1
 
+  # The Flutter head's bridge to the Rust core in native/ (task 07876c
+  # spike). An FFI plugin with no Dart build hook, so it leaves
+  # `dart compile exe` of the Dart CLI alone (see path_provider_foundation
+  # above); the CLI never imports it. Pinned to the `rinf` crate's version in
+  # native/hub/Cargo.toml: the two halves speak one ABI.
+  rinf: 8.10.1
+  # Imported by the Dart code `rinf gen` writes (lib/app/rust/bindings);
+  # pinned for the reason every pin here gives.
+  meta: 1.19.0
+  tuple: 2.0.2
+
+# rinf 8.10.1 as published, with its Cargokit Gradle task patched for Gradle 9
+# (third_party/rinf/PATCHED.md). Drop this once rinf ships the fix.
+dependency_overrides:
+  rinf:
+    path: third_party/rinf
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -216,3 +233,10 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# `rinf gen` (native/NOTES.md) writes the Dart side of native/hub's signals
+# here; committed, so the app builds and analyzes without the rinf CLI.
+rinf:
+  gen_input_crates:
+    - hub
+  gen_output_dir: lib/app/rust/bindings
