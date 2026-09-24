@@ -38,7 +38,7 @@ pub struct CoreRequest {
 #[derive(Deserialize, SignalPiece)]
 pub enum CoreCommand {
     /// Must come first. `support_dir` is the app's own support directory
-    /// on Android and iOS (the `dsync-rs` leaf is appended to it); on the
+    /// on Android and iOS (the `dsync` leaf is appended to it); on the
     /// desktop it is absent and the directories resolve as the CLI's do.
     /// `device_name` names an identity created on this device.
     Init {

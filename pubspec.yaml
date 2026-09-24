@@ -19,9 +19,9 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  # Pinned, not a range (SPEC §3): every host that runs an agent must speak the
-  # same protocol and write the same archive format, so the toolchain is fixed
-  # rather than resolved per machine.
+  # Pinned, not a range: the version this pubspec is developed and gated
+  # against. The wire protocol and archive format are the Rust core's now
+  # (native/), not this SDK's.
   sdk: 3.13.3
 
 # Dependencies specify other packages that your package needs in order to work.
@@ -39,31 +39,21 @@ dependencies:
   cupertino_icons: ^1.0.8
   crypto: ^3.0.7
 
-  # Pinned, not a range (SPEC §3, same rationale as the SDK pin above): the
-  # CLI's flag parsing (§11.2) and profile format (§12) must behave
-  # identically on every host that runs an agent, so the toolchain is fixed
-  # rather than resolved per machine.
+  # Kept only for benchmark/interleaved_pairs.dart's own flag parsing now
+  # that the Dart CLI, which this was pinned for (SPEC §3's cross-host
+  # protocol identity), is gone. No protocol reason to pin it exactly any
+  # more; left at its prior version rather than floated in this change.
   args: 2.7.0
-  toml: 0.18.0
 
-  # Pinned for the same reason, and more sharply: this builds the X.509
-  # identity certificate a paired peer is authenticated by (task 4ec17f), so
-  # a byte that differs between two hosts' builds is a handshake that fails
-  # rather than a rendering that looks odd. Pure Dart — its only `dart:ffi`
-  # import is an Argon2 implementation nothing here uses — so it carries to
-  # every platform the heads run on.
-  pointycastle: 4.0.0
-
-  # Pure path-manipulation library (no I/O, no platform detection) used to
-  # split a native, OS-spelled path back into its last segment given an
-  # explicit `Style` (SPEC §3's read-side conversion) — already resolved
-  # transitively, made direct now that `lib/` imports it itself.
+  # Pure path-manipulation library (no I/O, no platform detection), used
+  # directly by integration_test/head_pairs_and_syncs_with_cli_test.dart to
+  # build scratch paths.
   path: ^1.9.1
 
   # Pinned, not a range (SPEC §3, same rationale as the other pins above):
   # this is the QR *encoder* `dsync pair show`'s terminal renderer draws over
   # (task e17997) — see that renderer's own doc comment
-  # (`lib/cli/output/qr_terminal_renderer.dart`) for why this is a dependency
+  # (`native/cli/src/qr.rs`) for why this is a dependency
   # rather than the hand-roll `self_signed_certificate.dart` chose for the
   # X.509 assembly next to it. Pure Dart, one transitive dependency (`meta`,
   # already resolved into this project through `flutter` itself, so this adds
@@ -80,9 +70,8 @@ dependencies:
   # (§3), plus the one below: this is a platform-channel plugin, so the pin
   # fixes the Android, iOS and macOS code that opens the camera, not only the
   # Dart call `lib/app/features/pair/` makes. Its Dart side reaches the
-  # camera through `MobileScanner`; `dsync_core/` never imports it, and
-  # neither does `lib/cli/`, so the four v1 targets with no `app` head are
-  # untouched (§3).
+  # camera through `MobileScanner`; nothing under `native/` imports it, so
+  # the Rust-only builds are untouched (§3).
   mobile_scanner: 7.4.2
 
   # The platform directory picker the Run setup page offers for a local
@@ -91,16 +80,15 @@ dependencies:
   # plugin, so the pin fixes the native code that launches
   # `ACTION_OPEN_DOCUMENT_TREE` and converts the tree URI it returns into a
   # path, which is the half of this that decides whether `dart:io` has
-  # anything openable to probe. `dsync_core/` never imports it, and neither
-  # does `lib/cli/`.
+  # anything openable to probe. Nothing under `native/` imports it.
   file_picker: 13.1.0
 
   # Requests the one permission that makes a picked path openable through
   # `dart:io` on targetSdk 30+ — Android's All-files access
   # (`MANAGE_EXTERNAL_STORAGE`, declared in
   # `android/app/src/main/AndroidManifest.xml`). The picker's own grant
-  # covers the `content://` tree URI, not the path; `Scanner` and
-  # `LocalAgent` open paths. Pinned for the same platform-channel reason as
+  # covers the `content://` tree URI, not the path; a run's scan and apply
+  # steps open paths. Pinned for the same platform-channel reason as
   # the plugins above: the native side is what actually shows the Settings
   # screen and reports what the user chose there.
   # 12.0.1, not 13.x: `permission_handler_android` 14 compiles against
@@ -119,8 +107,8 @@ dependencies:
   # code, and neither needs a permission. It does not — and cannot — stop a
   # user who presses the power button; that case is the lifecycle pause in
   # `run_controller.dart`, and the two are complementary halves of the same
-  # requirement. `dsync_core/` never imports it, and neither does `lib/cli/`,
-  # so the v1 targets with no `app` head are untouched (§3). It brings `http`
+  # requirement. Nothing under `native/` imports it, so the Rust-only builds
+  # are untouched (§3). It brings `http`
   # and `package_info_plus` into the closure (its web half reads the browser's
   # user agent); both are transitive and neither is imported here.
   wakelock_plus: 1.8.0
@@ -136,36 +124,29 @@ dependencies:
   # would let two builds of the head resolve different plugin
   # implementations, and a directory that moves between builds is a device
   # identity — and every pairing recorded against it — that is no longer
-  # found, not a cosmetic difference. `dsync_core/` never imports it
-  # (SPEC §3); only the app head does.
-  # The allocator `dart:ffi` itself does not ship: `LocalAgent`'s mode step
-  # is `chmod(2)` through FFI rather than a process spawn
-  # (`lib/dsync_core/agent/posix_chmod.dart`), and that needs a C string,
-  # which means `malloc` and `free`. Pure Dart over `dart:ffi`, no native
-  # build step, no plugin — so it carries to every v1 target (SPEC §3) and
-  # costs `dart compile exe` nothing. Already in the closure transitively
-  # before this; named here now that `lib/` imports it directly. Pinned, not
-  # a range, for the reason every other pin here gives.
+  # found, not a cosmetic difference. Nothing under `native/` imports it;
+  # only the app head does.
+  # The allocator `dart:ffi` itself does not ship for that reason:
+  # `benchmark/dir_stat_probe.dart`'s `ffi-*` rungs call libc `stat`,
+  # `fstatat` and `getdents64` directly, and that needs C strings, which
+  # means `malloc` and `free`. Pure Dart over `dart:ffi`, no native build
+  # step, no plugin. Pinned, not a range, for the reason every other pin
+  # here gives.
   ffi: 2.2.0
 
   path_provider: 2.1.6
   # The iOS/macOS half of `path_provider` above, pinned one step below its
   # current release on purpose, and named here rather than left to resolve
   # because a caret would take that step. 2.6.0 swapped the plugin-based
-  # implementation for direct FFI through `objective_c`, and `objective_c`
-  # carries a Dart *build hook* — which `dart compile exe`, the way the CLI
-  # binary is built (`test/support/dsync_binary.dart`), refuses outright
-  # ("does not support build hooks, use `dart build`"). Merely being in the
-  # package graph is enough to trip it; the CLI never imports either. 2.5.1
-  # is the last plugin-based release, and until the CLI's build moves to
-  # `dart build` this pin is what keeps one pubspec serving both heads.
+  # implementation for direct FFI through `objective_c`, which carries a
+  # Dart *build hook* this project's toolchain has not been verified
+  # against. 2.5.1 is the last plugin-based release; revisit this pin next
+  # time `path_provider` needs a bump.
   path_provider_foundation: 2.5.1
 
   # The Flutter head's bridge to the Rust core in native/ (task 07876c
-  # spike). An FFI plugin with no Dart build hook, so it leaves
-  # `dart compile exe` of the Dart CLI alone (see path_provider_foundation
-  # above); the CLI never imports it. Pinned to the `rinf` crate's version in
-  # native/hub/Cargo.toml: the two halves speak one ABI.
+  # spike). An FFI plugin with no Dart build hook. Pinned to the `rinf`
+  # crate's version in native/hub/Cargo.toml: the two halves speak one ABI.
   rinf: 8.10.1
   # Imported by the Dart code `rinf gen` writes (lib/app/rust/bindings);
   # pinned for the reason every pin here gives.

@@ -44,7 +44,7 @@ fn copies_to_the_far_agent_honours_ignore_and_jobs_and_commits_both_archives() {
 
     let expected = ["from-remote.txt".to_owned(), "go.txt".to_owned()].into();
     let near = archives(&site.state_dir());
-    let far = archives(&site.path("remote-state/dsync-rs"));
+    let far = archives(&site.path("remote-state/dsync"));
     assert_eq!(near.len(), 1, "one archive here, for side A");
     assert_eq!(far.len(), 1, "one archive there, for side B");
     for (_, archive) in near.iter().chain(&far) {

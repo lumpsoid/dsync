@@ -1,6 +1,5 @@
-//! Plan D0: with the XDG variables pointed at a temp dir, every store
-//! writes under `dsync-rs/` and nothing else appears - so a Rust run never
-//! touches the Dart core's `dsync/`.
+//! With the XDG variables pointed at a temp dir, every store writes under
+//! `dsync/` and nothing else appears there.
 
 use dsync_core::{ArchiveInventory, ArchiveStore, ReplicaLock, RunMarker, StateDir};
 use dsync_domain::{
@@ -10,7 +9,7 @@ use dsync_domain::{
 use crate::support::{names_in, path, profile, upsert};
 
 #[test]
-fn every_store_writes_under_the_dsync_rs_leaf_only() {
+fn every_store_writes_under_the_dsync_leaf_only() {
     let home = tempfile::tempdir().unwrap();
     let state_home = home.path().join("state");
     let config_home = home.path().join("config");
@@ -30,10 +29,10 @@ fn every_store_writes_under_the_dsync_rs_leaf_only() {
         "/".into(),
     );
     let state = StateDir::resolve(&StateDirChoice::Rule(DirRule::Xdg), &host).unwrap();
-    assert_eq!(state.path(), state_home.join("dsync-rs"));
+    assert_eq!(state.path(), state_home.join("dsync"));
     assert_eq!(
         config_dir(&DirRule::Xdg, &host).unwrap(),
-        config_home.join("dsync-rs")
+        config_home.join("dsync")
     );
 
     let _lock = ReplicaLock::acquire(&state.lock(&profile(), Side::A)).unwrap();
@@ -58,7 +57,7 @@ fn every_store_writes_under_the_dsync_rs_leaf_only() {
     drop(store);
 
     // Positive control: the stores did write, and where expected.
-    assert_eq!(names_in(&state_home), ["dsync-rs"]);
+    assert_eq!(names_in(&state_home), ["dsync"]);
     assert_eq!(
         names_in(state.path()).len(),
         3,

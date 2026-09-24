@@ -8,7 +8,7 @@ use crate::support::profile;
 #[test]
 fn is_absent_until_created_and_after_deleted() {
     let dir = tempfile::tempdir().unwrap();
-    let state = StateDir::new(dir.path().join("dsync-rs"));
+    let state = StateDir::new(dir.path().join("dsync"));
     let marker = RunMarker::new(state.run_marker(&profile()));
     assert!(!marker.is_present().unwrap());
 

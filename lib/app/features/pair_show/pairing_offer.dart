@@ -71,7 +71,7 @@ final class PairingOffer {
 /// The error-correction level the on-screen symbol is encoded at.
 ///
 /// The same level, for the same reason, as
-/// `qrErrorCorrectLevelForTerminal` (`lib/cli/output/qr_terminal_renderer.dart`,
+/// `TERMINAL_EC_LEVEL` (`native/cli/src/qr.rs`,
 /// whose doc comment carries the measured sizing): a payload of a few
 /// hundred base64 characters stays at a module count a phone camera resolves
 /// comfortably, and the resilience stronger levels buy is resilience against

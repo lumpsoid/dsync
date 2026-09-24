@@ -78,7 +78,7 @@ impl Site {
 
     /// The state directory the platform rule puts under it.
     pub fn state_dir(&self) -> PathBuf {
-        self.state_home().join("dsync-rs")
+        self.state_home().join("dsync")
     }
 
     pub fn config_home(&self) -> PathBuf {
@@ -87,7 +87,7 @@ impl Site {
 
     /// `name`'s profile file, with `toml` as its text.
     pub fn profile(&self, name: &str, toml: &str) {
-        let dir = self.config_home().join("dsync-rs").join("profiles");
+        let dir = self.config_home().join("dsync").join("profiles");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{name}.toml")), toml).unwrap();
     }

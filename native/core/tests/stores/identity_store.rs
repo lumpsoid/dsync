@@ -270,7 +270,7 @@ fn resolves_the_standard_path_under_xdg_state_home() {
     let store = DeviceIdentityStore::new(&state);
     assert_eq!(
         store.certificate_path(),
-        state_home.join("dsync-rs/identity.crt")
+        state_home.join("dsync/identity.crt")
     );
-    assert_eq!(store.key_path(), state_home.join("dsync-rs/identity.key"));
+    assert_eq!(store.key_path(), state_home.join("dsync/identity.key"));
 }

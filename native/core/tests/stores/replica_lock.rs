@@ -33,7 +33,7 @@ fn creates_the_lock_file_and_succeeds_when_nothing_holds_it() {
 #[test]
 fn creates_the_state_directory_too() {
     let dir = tempfile::tempdir().unwrap();
-    let nested = dir.path().join("state/dsync-rs/p-a.lock");
+    let nested = dir.path().join("state/dsync/p-a.lock");
     let _lock = ReplicaLock::acquire(&nested).unwrap();
     assert!(nested.exists());
 }

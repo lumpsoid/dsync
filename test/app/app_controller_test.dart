@@ -59,8 +59,8 @@ void main() {
 
     test('settings.json lives in the core\'s state dir', () async {
       core.dirs = const CoreDirs(
-        stateDir: '/elsewhere/dsync-rs',
-        profilesDir: '/elsewhere/dsync-rs/profiles',
+        stateDir: '/elsewhere/dsync',
+        profilesDir: '/elsewhere/dsync/profiles',
       );
       // The store is only a path until it is read, so nothing is created.
       final settings = await controller.settings;

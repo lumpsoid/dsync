@@ -55,7 +55,7 @@ fn syncs_both_directions_over_a_real_ssh_and_commits_both_archives() {
     let expected: BTreeSet<String> = ["from-remote.txt", "notes/deep.txt", "top.txt"]
         .map(str::to_owned)
         .into();
-    for state in [site.state_dir(), site.path("remote-state/dsync-rs")] {
+    for state in [site.state_dir(), site.path("remote-state/dsync")] {
         let logs = archives(&state);
         assert_eq!(logs.len(), 1, "one archive in {}", state.display());
         assert_eq!(archived_paths(&logs[0].1), expected);

@@ -5,13 +5,11 @@
 #
 # Flutter is pinned to the release whose bundled Dart is exactly the
 # `sdk: 3.13.3` pubspec.yaml pins (3.47.3 and 3.47.4 both ship it; this is
-# the later one). `dart pub get` needs a Flutter SDK even for the `dart test`
-# job, because pubspec.yaml depends on `flutter` from the SDK, so that job
-# installs the same toolchain and differs only in which host runs the suite:
-# `dart`, not `flutter_tester` (see test/support/dsync_binary.dart).
+# the later one).
 #
 # `cargo` gates native/ (the Rust workspace: dsync-domain, dsync-core,
-# dsync-cli and hub) on the same three OSes.
+# dsync-cli and hub) on the same three OSes — the CLI and the core now live
+# there, not in `lib/`.
 name: test
 
 on:
@@ -47,33 +45,6 @@ jobs:
       - run: dart analyze
 
       - run: flutter test
-
-      # The suites `dart_test.yaml` skips by default — the real CLI, a real
-      # unix socket, a real SIGINT. They are kept out of the edit loop because
-      # they AOT-compile `bin/dsync.dart` first, not because they are
-      # optional: this matrix is the only place macOS and Windows answer SPEC
-      # §3's platform questions at all.
-      - run: flutter test --tags e2e --run-skipped
-
-  dart-test:
-    name: dart test (ubuntu-latest)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - run: dart --version
-
-      - run: dart pub get
-
-      - run: dart test test/dsync_core test/cli
-
-      - run: dart test --tags e2e --run-skipped test/dsync_core test/cli
 
   cargo:
     name: cargo (${{ matrix.os }})

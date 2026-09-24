@@ -5,7 +5,7 @@
 //
 // Every piece of state lives in temp dirs: the app's core resolves its
 // state and config under XDG_STATE_HOME / XDG_CONFIG_HOME (plus the
-// `dsync-rs` leaf), and the CLI gets `--state-dir`. Run from the repo root:
+// `dsync` leaf), and the CLI gets `--state-dir`. Run from the repo root:
 //
 //   (cd native && cargo build -p dsync-cli)
 //   work=$(mktemp -d)
@@ -77,7 +77,7 @@ void main() {
     expect(app.state.bootstrap, isA<AppBootstrapReady>());
     expect(
       (await app.dirs).stateDir,
-      p.join(Platform.environment['XDG_STATE_HOME']!, 'dsync-rs'),
+      p.join(Platform.environment['XDG_STATE_HOME']!, 'dsync'),
     );
 
     // Pairing: the app shows its code, the CLI redeems it, the app's

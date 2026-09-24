@@ -3,8 +3,8 @@ import 'package:qr/qr.dart';
 
 /// A QR symbol, painted from an already-encoded [QrImage] (SPEC §4.4).
 ///
-/// The screen counterpart of `renderPairingQr`
-/// (`lib/cli/output/qr_terminal_renderer.dart`): the same encoder, drawn as
+/// The screen counterpart of `render_pairing_qr`
+/// (`native/cli/src/qr.rs`): the same encoder, drawn as
 /// rectangles instead of half-block glyphs. It takes the encoded image
 /// rather than the payload because encoding can refuse a payload that is too
 /// large, and that verdict belongs to the value the controller built

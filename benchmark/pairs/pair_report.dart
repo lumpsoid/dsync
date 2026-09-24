@@ -1,7 +1,6 @@
-import 'package:dsync/dsync_core/run/run_metrics_report.dart';
-
 import 'pair_order.dart';
 import 'pair_run.dart';
+import 'run_timings.dart';
 
 /// How far from its own arm's median a run's total may land, either way,
 /// before it is flagged. 9d2158 §9.0's rule is that a slow run is the anomaly

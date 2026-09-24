@@ -618,6 +618,6 @@ fn resolves_the_standard_path_under_xdg_state_home() {
     let state = StateDir::resolve(&StateDirChoice::Rule(DirRule::Xdg), &host).unwrap();
     assert_eq!(
         PairedDeviceStore::new(&state).path(),
-        state_home.join("dsync-rs/paired-devices.json")
+        state_home.join("dsync/paired-devices.json")
     );
 }

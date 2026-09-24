@@ -75,6 +75,23 @@ class RunTimings {
 final _phaseRow = RegExp(r'^  (\w+)\s+(\S.*)$');
 final _durationText = RegExp(r'^\s*(\d+(?:\.\d+)?)\s*(µs|ms|s)\s*$');
 
+/// A duration at [_duration]'s precision, the write side of the same
+/// round-trip: microseconds below a millisecond, milliseconds below ten
+/// seconds, seconds above.
+///
+/// Fixed precision rather than the widest unit that fits, because every
+/// value a pair report prints is read against the one above it in a column —
+/// "1.2 s" over "834 ms" is two units to reconcile where "1.2 s" over "0.8 s"
+/// is none.
+String formatMetricDuration(Duration value) {
+  final micros = value.inMicroseconds;
+  if (micros < 1000) return '$micros µs';
+  if (micros < 10 * Duration.microsecondsPerSecond) {
+    return '${(micros / 1000).toStringAsFixed(1)} ms';
+  }
+  return '${(micros / Duration.microsecondsPerSecond).toStringAsFixed(1)} s';
+}
+
 /// The report's three duration spellings back to a [Duration]; null for the
 /// em dash or anything else.
 Duration? _duration(String text) {

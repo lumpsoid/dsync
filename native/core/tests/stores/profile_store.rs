@@ -221,7 +221,7 @@ fn resolves_under_xdg_config_home_and_falls_back_to_dot_config() {
     let store = ProfileStore::resolve(&DirRule::Xdg, &with_xdg).unwrap();
     assert_eq!(
         store.path(&name("notes")),
-        PathBuf::from("/xdg/config/dsync-rs/profiles/notes.toml")
+        PathBuf::from("/xdg/config/dsync/profiles/notes.toml")
     );
 
     for unset in [vec![], vec![("XDG_CONFIG_HOME", "")]] {
@@ -229,7 +229,7 @@ fn resolves_under_xdg_config_home_and_falls_back_to_dot_config() {
         let store = ProfileStore::resolve(&DirRule::Xdg, &fallback).unwrap();
         assert_eq!(
             store.path(&name("notes")),
-            PathBuf::from("/home/me/.config/dsync-rs/profiles/notes.toml")
+            PathBuf::from("/home/me/.config/dsync/profiles/notes.toml")
         );
     }
 }
@@ -241,7 +241,7 @@ fn resolves_under_the_macos_and_windows_config_dirs() {
         ProfileStore::resolve(&DirRule::MacOs, &mac)
             .unwrap()
             .path(&name("notes")),
-        PathBuf::from("/Users/me/Library/Application Support/dsync-rs/profiles/notes.toml")
+        PathBuf::from("/Users/me/Library/Application Support/dsync/profiles/notes.toml")
     );
     let windows = host(
         Platform::Windows,
@@ -252,14 +252,14 @@ fn resolves_under_the_macos_and_windows_config_dirs() {
         ProfileStore::resolve(&DirRule::Windows, &windows)
             .unwrap()
             .dir(),
-        PathBuf::from("C:/Users/me/AppData/Roaming/dsync-rs/profiles")
+        PathBuf::from("C:/Users/me/AppData/Roaming/dsync/profiles")
     );
     let supplied = DirRule::HostSupplied(DirPath::parse("/data/app/files").unwrap());
     assert_eq!(
         ProfileStore::resolve(&supplied, &host(Platform::Unix, None, &[]))
             .unwrap()
             .dir(),
-        PathBuf::from("/data/app/files/dsync-rs/profiles")
+        PathBuf::from("/data/app/files/dsync/profiles")
     );
 }
 

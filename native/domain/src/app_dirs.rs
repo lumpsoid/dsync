@@ -9,10 +9,10 @@ use crate::host_facts::HostFacts;
 
 /// The directory name every rule below appends (plan D0).
 ///
-/// `dsync-rs` while the Dart core still owns `dsync`: a Rust run must never
-/// open the Dart app's state files under the same names with a new schema.
-/// The switch-over phase flips this to `dsync`.
-pub const DIR_LEAF: &str = "dsync-rs";
+/// `dsync`: the Rust core is the only core now. Every store still refuses a
+/// file with a foreign or older schema, naming it and saying to delete it,
+/// which is what a Dart-era file left behind in this directory hits.
+pub const DIR_LEAF: &str = "dsync";
 
 /// A directory path given outright: never empty, because an empty one
 /// would resolve every state file relative to whatever directory the
@@ -160,8 +160,8 @@ fn variable(
 
 #[cfg(test)]
 mod tests {
-    //! The cases of `test/dsync_core/state_dir_test.dart` and
-    //! `config_dir_test.dart`, with the `dsync-rs` leaf.
+    //! The state and config dir rules (SPEC §8.3, §12), with the `dsync`
+    //! leaf.
 
     use super::*;
     use crate::platform::Platform;
@@ -194,11 +194,11 @@ mod tests {
         );
         assert_eq!(
             state(DirRule::Xdg, &everything).unwrap(),
-            PathBuf::from("/xdg/state/dsync-rs")
+            PathBuf::from("/xdg/state/dsync")
         );
         assert_eq!(
             config_dir(&DirRule::Xdg, &everything).unwrap(),
-            PathBuf::from("/xdg/config/dsync-rs")
+            PathBuf::from("/xdg/config/dsync")
         );
 
         for home_only in [
@@ -210,11 +210,11 @@ mod tests {
         ] {
             assert_eq!(
                 state(DirRule::Xdg, &home_only).unwrap(),
-                PathBuf::from("/home/me/.local/state/dsync-rs")
+                PathBuf::from("/home/me/.local/state/dsync")
             );
             assert_eq!(
                 config_dir(&DirRule::Xdg, &home_only).unwrap(),
-                PathBuf::from("/home/me/.config/dsync-rs")
+                PathBuf::from("/home/me/.config/dsync")
             );
         }
     }
@@ -224,7 +224,7 @@ mod tests {
         let termux = host(Some("/data/data/com.termux/files/home"), &[]);
         assert_eq!(
             state(DirRule::Xdg, &termux).unwrap(),
-            PathBuf::from("/data/data/com.termux/files/home/.local/state/dsync-rs")
+            PathBuf::from("/data/data/com.termux/files/home/.local/state/dsync")
         );
     }
 
@@ -251,7 +251,7 @@ mod tests {
                 ("XDG_CONFIG_HOME", "/xdg/config"),
             ],
         );
-        let expected = PathBuf::from("/Users/me/Library/Application Support/dsync-rs");
+        let expected = PathBuf::from("/Users/me/Library/Application Support/dsync");
         assert_eq!(state(DirRule::MacOs, &mac).unwrap(), expected);
         assert_eq!(config_dir(&DirRule::MacOs, &mac).unwrap(), expected);
     }
@@ -283,11 +283,11 @@ mod tests {
         );
         assert_eq!(
             state(DirRule::Windows, &win).unwrap(),
-            PathBuf::from("C:/Users/me/AppData/Local/dsync-rs")
+            PathBuf::from("C:/Users/me/AppData/Local/dsync")
         );
         assert_eq!(
             config_dir(&DirRule::Windows, &win).unwrap(),
-            PathBuf::from("C:/Users/me/AppData/Roaming/dsync-rs")
+            PathBuf::from("C:/Users/me/AppData/Roaming/dsync")
         );
     }
 
@@ -326,17 +326,17 @@ mod tests {
         assert_eq!(
             state(ios.clone(), &noisy).unwrap(),
             PathBuf::from(
-                "/var/mobile/Containers/Data/Application/X/Library/Application Support/dsync-rs"
+                "/var/mobile/Containers/Data/Application/X/Library/Application Support/dsync"
             )
         );
         let android = supplied("/data/user/0/dev.dsync/files");
         assert_eq!(
             state(android.clone(), &host(None, &[])).unwrap(),
-            PathBuf::from("/data/user/0/dev.dsync/files/dsync-rs")
+            PathBuf::from("/data/user/0/dev.dsync/files/dsync")
         );
         assert_eq!(
             config_dir(&android, &noisy).unwrap(),
-            PathBuf::from("/data/user/0/dev.dsync/files/dsync-rs")
+            PathBuf::from("/data/user/0/dev.dsync/files/dsync")
         );
     }
 
