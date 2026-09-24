@@ -6,7 +6,7 @@
 //   flutter drive --profile -d <serial> \
 //     --driver=test_driver/integration_test.dart \
 //     --target=integration_test/socket_pump_probe_test.dart \
-//     [--dart-define=PORT=47470] [--dart-define=CASES=plain,raw,tls,adapter,tls-big]
+//     [--dart-define=PORT=47470] [--dart-define=CASES=tls,tls-iso,…]
 //
 // then, from the desktop, once the phone prints `listening`:
 //
@@ -18,10 +18,8 @@ import 'package:integration_test/integration_test.dart';
 import '../benchmark/socket_pump.dart';
 
 const _port = int.fromEnvironment('PORT', defaultValue: defaultPumpPort);
-const _cases = String.fromEnvironment(
-  'CASES',
-  defaultValue: 'plain,raw,tls,adapter,tls-big',
-);
+// Empty for every case.
+const _cases = String.fromEnvironment('CASES');
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -29,7 +27,7 @@ void main() {
   testWidgets('socket pump probe', (tester) async {
     await receive(
       port: _port,
-      cases: PumpCase.parse(_cases),
+      cases: PumpCase.parse(_cases.isEmpty ? PumpCase.allLabels : _cases),
       log: (line) => debugPrint('[probe] $line'),
     );
   }, timeout: Timeout.none);

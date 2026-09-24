@@ -16,14 +16,34 @@
 //              own adapter, each `input` chunk a read: what the adapter adds;
 //   tls-big  — `tls` again, the sender offering --big-chunk-kib per write
 //              instead of --chunk-kib: whether the ~4 KiB read size follows
-//              the sender's writes or is a property of the record / buffer.
+//              the sender's writes or is a property of the record / buffer;
+//   plain-iso, tls-iso, adapter-iso — plain, tls and adapter with the
+//              receiver in a background isolate (Isolate.spawn from the one
+//              `receive` runs on): the isolate builds its own SecurityContext
+//              from the same seed, binds, accepts, handshakes and reads, and
+//              sends its report back;
+//   tls-iso-busy — tls-iso while the spawning isolate burns 4 ms of every
+//              16 ms frame from accept to the isolate's exit, a stand-in for
+//              the app's own work on the UI isolate.
+// On the phone `receive` runs on the Flutter root isolate, whose event loop
+// is the embedder's UI task runner; a spawned isolate has a plain Dart
+// message loop. A secure socket's every read event takes a trip through that
+// loop (the filter is run via _IOService._dispatch and Timer.run).
 // Per case the phone prints MiB/s over its own clock from the first byte to
 // the last, the read count, read events, bytes per read (mean/max) and the
 // gaps between reads (p50/p90/max). The desktop prints its own rate to the
 // last write accepted and to the phone's close, so a sender-bound case shows.
 // Reading it: plain/raw near 26 MiB/s and tls near 8 puts the ceiling in the
 // TLS layer; raw well under plain's puts it in dart:io's raw read path; tls
-// near raw with adapter at 8 puts it in dsync's adapter.
+// near raw with adapter at 8 puts it in dsync's adapter. tls-iso well above
+// tls puts the cost in the root isolate's embedder event loop (and receiving
+// in a background isolate escapes it; tls-iso-busy says whether it still does
+// with the UI isolate working); tls-iso equal to tls puts it elsewhere.
+// Desktop reference, 127.0.0.1, 128 MiB: under `dart run` every TLS case,
+// -iso or not, runs at 290–375 MiB/s; in the Flutter Linux app
+// (`flutter drive --profile -d linux`) tls/adapter/tls-big drop to 3.3 MiB/s
+// at 1.1 ms per ~4 KiB read while tls-iso/adapter-iso/tls-iso-busy stay at
+// 317–361 MiB/s.
 //
 // TLS is production's configuration: default SecurityContext (so TLS version
 // and cipher are BoringSSL's defaults, as in production), certificate and key
@@ -34,12 +54,14 @@
 // One difference from a real pull: here the phone is the TLS server, where a
 // pull's phone may be the client; after the handshake TLS 1.3 is symmetric.
 //
-// Phone half (listens on PORT..PORT+4, prints its addresses, ends once every
-// case in CASES has been served once; ~1 min at the default 128 MiB):
+// Phone half (listens on PORT..PORT+8, one port per case in the order above:
+// plain +0, raw +1, tls +2, adapter +3, tls-big +4, plain-iso +5, tls-iso +6,
+// adapter-iso +7, tls-iso-busy +8; prints its addresses, ends once every case
+// in CASES, default all, has been served once; ~1–2 min at 128 MiB):
 //   flutter drive --profile -d <serial> \
 //     --driver=test_driver/integration_test.dart \
 //     --target=integration_test/socket_pump_probe_test.dart \
-//     [--dart-define=PORT=47470] [--dart-define=CASES=plain,raw,tls,adapter,tls-big]
+//     [--dart-define=PORT=47470] [--dart-define=CASES=tls,tls-iso,…]
 // (`flutter test integration_test/socket_pump_probe_test.dart -d <serial>`
 // works too, but runs the Dart side in debug JIT; --profile is AOT like the
 // shipped app, and is what the other on-device probes use.)
@@ -48,14 +70,19 @@
 // the phone half also prints its interface addresses):
 //   dart run benchmark/socket_pump.dart send --host 192.168.0.61 \
 //     [--port 47470] [--mib 128] [--chunk-kib 256] [--big-chunk-kib 4096] \
-//     [--cases plain,raw,tls,adapter,tls-big]
+//     [--cases …, default all; must match the phone's CASES]
 //
 // Desktop-only check, both halves on this host over 127.0.0.1:
 //   dart run benchmark/socket_pump.dart receive [--port 47470] [--cases …]
 //   dart run benchmark/socket_pump.dart send --host 127.0.0.1
+// or with the Flutter Linux app as the receiver (then the same `send`):
+//   flutter drive --profile -d linux \
+//     --driver=test_driver/integration_test.dart \
+//     --target=integration_test/socket_pump_probe_test.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -70,27 +97,54 @@ const defaultPumpPort = 47470;
 const _handshakeDeadline = Duration(seconds: 15);
 
 /// One measured case: the port it is served on (base + [portOffset]), how
-/// the phone receives it, and whether the sender offers its big writes.
+/// the phone receives it, whether the sender offers its big writes, and
+/// whether the receiver runs in a background isolate rather than the one
+/// [receive] was called on (with the caller's isolate kept busy meanwhile
+/// for [busyRoot]).
 enum PumpCase {
   plain(0, PumpReceiver.socket, secure: false),
   raw(1, PumpReceiver.rawSocket, secure: false),
   tls(2, PumpReceiver.rawSecureSocket, secure: true),
   adapter(3, PumpReceiver.rawSecureByteSocket, secure: true),
-  tlsBig(4, PumpReceiver.rawSecureSocket, secure: true, bigWrites: true);
+  tlsBig(4, PumpReceiver.rawSecureSocket, secure: true, bigWrites: true),
+  plainIso(5, PumpReceiver.socket, secure: false, inIsolate: true),
+  tlsIso(6, PumpReceiver.rawSecureSocket, secure: true, inIsolate: true),
+  adapterIso(
+    7,
+    PumpReceiver.rawSecureByteSocket,
+    secure: true,
+    inIsolate: true,
+  ),
+  tlsIsoBusy(
+    8,
+    PumpReceiver.rawSecureSocket,
+    secure: true,
+    inIsolate: true,
+    busyRoot: true,
+  );
 
   final int portOffset;
   final PumpReceiver receiver;
   final bool secure;
   final bool bigWrites;
+  final bool inIsolate;
+  final bool busyRoot;
 
   const PumpCase(
     this.portOffset,
     this.receiver, {
     required this.secure,
     this.bigWrites = false,
+    this.inIsolate = false,
+    this.busyRoot = false,
   });
 
-  String get label => this == tlsBig ? 'tls-big' : name;
+  /// `tlsIsoBusy` → `tls-iso-busy`.
+  String get label =>
+      name.replaceAllMapped(RegExp('[A-Z]'), (m) => '-${m[0]!.toLowerCase()}');
+
+  /// Every case: the default for both halves.
+  static String get allLabels => values.map((c) => c.label).join(',');
 
   static List<PumpCase> parse(String list) => [
     for (final label in list.split(','))
@@ -135,7 +189,7 @@ class ReadLog {
     String pct(double p) =>
         gaps.isEmpty ? '-' : ms(gaps[((gaps.length - 1) * p).round()]);
     final mib = bytes / (1 << 20);
-    return '${pumpCase.label.padRight(8)} '
+    return '${pumpCase.label.padRight(12)} '
         '${(mib / (spanUs / 1e6)).toStringAsFixed(1)} MiB/s  '
         '${mib.toStringAsFixed(0)} MiB in ${(spanUs / 1e6).toStringAsFixed(2)} s  '
         'reads ${_at.length} (${(_at.length / (spanUs / 1e6)).round()}/s)'
@@ -155,11 +209,7 @@ Future<void> receive({
   required List<PumpCase> cases,
   required void Function(String line) log,
 }) async {
-  final identity = probeIdentity();
-  final context = SecurityContext(withTrustedRoots: false)
-    ..useCertificateChainBytes(utf8.encode(identity.certificatePem))
-    ..usePrivateKeyBytes(utf8.encode(identity.privateKeyPem))
-    ..setTrustedCertificatesBytes(utf8.encode(identity.certificatePem));
+  final context = _serverContext();
 
   for (final interface in await NetworkInterface.list()) {
     for (final address in interface.addresses) {
@@ -170,34 +220,138 @@ Future<void> receive({
   final served = <Future<void>>[];
   for (final pumpCase in cases) {
     final at = port + pumpCase.portOffset;
-    void report(ReadLog reads) => log(reads.report(pumpCase));
-    // Logged and not rethrown, so one failed case leaves the others served.
-    void failed(Object error) => log('${pumpCase.label} failed: $error');
-    if (pumpCase.receiver == PumpReceiver.socket) {
-      final server = await ServerSocket.bind(InternetAddress.anyIPv4, at);
-      served.add(
-        server.first
-            .then((socket) async {
-              await server.close();
-              return _readSocket(socket);
-            })
-            .then(report, onError: failed),
-      );
+    if (pumpCase.inIsolate) {
+      await _listenInIsolate(pumpCase, at, log, served);
     } else {
-      final server = await RawServerSocket.bind(InternetAddress.anyIPv4, at);
-      served.add(
-        server.first
-            .then((socket) async {
-              await server.close();
-              return _readRaw(pumpCase, socket, context);
-            })
-            .then(report, onError: failed),
-      );
+      await _listen(pumpCase, at, context, log, served);
     }
     log('listening ${pumpCase.label} on port $at');
   }
   await Future.wait(served);
   log('done');
+}
+
+/// The receiving side's context: the probe identity, a client certificate
+/// required to be that same identity.
+SecurityContext _serverContext() {
+  final identity = probeIdentity();
+  return SecurityContext(withTrustedRoots: false)
+    ..useCertificateChainBytes(utf8.encode(identity.certificatePem))
+    ..usePrivateKeyBytes(utf8.encode(identity.privateKeyPem))
+    ..setTrustedCertificatesBytes(utf8.encode(identity.certificatePem));
+}
+
+/// Binds [pumpCase]'s receiver on [at] in the calling isolate and adds to
+/// [served] a future that completes once its one connection has been read
+/// and reported. [onAccepted] runs as that connection arrives.
+Future<void> _listen(
+  PumpCase pumpCase,
+  int at,
+  SecurityContext context,
+  void Function(String line) log,
+  List<Future<void>> served, {
+  void Function()? onAccepted,
+}) async {
+  void report(ReadLog reads) => log(reads.report(pumpCase));
+  // Logged and not rethrown, so one failed case leaves the others served.
+  void failed(Object error) => log('${pumpCase.label} failed: $error');
+  if (pumpCase.receiver == PumpReceiver.socket) {
+    final server = await ServerSocket.bind(InternetAddress.anyIPv4, at);
+    served.add(
+      server.first
+          .then((socket) async {
+            onAccepted?.call();
+            await server.close();
+            return _readSocket(socket);
+          })
+          .then(report, onError: failed),
+    );
+  } else {
+    final server = await RawServerSocket.bind(InternetAddress.anyIPv4, at);
+    served.add(
+      server.first
+          .then((socket) async {
+            onAccepted?.call();
+            await server.close();
+            return _readRaw(pumpCase, socket, context);
+          })
+          .then(report, onError: failed),
+    );
+  }
+}
+
+/// What a background receiver sends the isolate that spawned it besides its
+/// log lines (Strings), sent as the index.
+enum _IsolateSignal { bound, accepted }
+
+/// [_listen] for [pumpCase] inside a new isolate: the isolate builds its own
+/// SecurityContext from the same seed, binds, accepts, handshakes and reads,
+/// and sends back its log lines. Returns once it is bound, and adds to
+/// [served] a future that completes once the isolate has exited.
+Future<void> _listenInIsolate(
+  PumpCase pumpCase,
+  int at,
+  void Function(String line) log,
+  List<Future<void>> served,
+) async {
+  final messages = ReceivePort();
+  final bound = Completer<void>();
+  final exited = Completer<void>();
+  void Function()? stopBusy;
+  messages.listen((message) {
+    switch (message) {
+      case String line:
+        log(line);
+      case int signal:
+        switch (_IsolateSignal.values[signal]) {
+          case _IsolateSignal.bound:
+            bound.complete();
+          case _IsolateSignal.accepted:
+            if (pumpCase.busyRoot) stopBusy = _keepBusy();
+        }
+      case [final error, _]: // onError
+        log('${pumpCase.label} failed: $error');
+      case null: // onExit
+        stopBusy?.call();
+        messages.close();
+        if (!bound.isCompleted) bound.complete();
+        exited.complete();
+    }
+  });
+  await Isolate.spawn(
+    _receiveInIsolate,
+    (messages.sendPort, pumpCase.index, at),
+    onError: messages.sendPort,
+    onExit: messages.sendPort,
+  );
+  served.add(exited.future);
+  await bound.future;
+}
+
+Future<void> _receiveInIsolate((SendPort, int, int) message) async {
+  final (root, caseIndex, at) = message;
+  final served = <Future<void>>[];
+  await _listen(
+    PumpCase.values[caseIndex],
+    at,
+    _serverContext(),
+    root.send,
+    served,
+    onAccepted: () => root.send(_IsolateSignal.accepted.index),
+  );
+  root.send(_IsolateSignal.bound.index);
+  await Future.wait(served);
+}
+
+/// Stands in for the app's own work on the root isolate while a background
+/// isolate receives: 4 ms of computation in every 16 ms frame. Returns its
+/// stop.
+void Function() _keepBusy() {
+  final timer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+    final spin = Stopwatch()..start();
+    while (spin.elapsedMicroseconds < 4000) {}
+  });
+  return timer.cancel;
 }
 
 Future<ReadLog> _readSocket(Socket socket) async {
@@ -312,7 +466,7 @@ Future<void> send({
     raw.close().ignore();
     final mib = bytes / (1 << 20);
     stdout.writeln(
-      '${pumpCase.label.padRight(8)} sent ${mib.toStringAsFixed(0)} MiB in '
+      '${pumpCase.label.padRight(12)} sent ${mib.toStringAsFixed(0)} MiB in '
       '${(writeSize / 1024).round()} KiB writes: '
       '${(mib / written).toStringAsFixed(1)} MiB/s to the last write '
       '(${written.toStringAsFixed(2)} s), '
@@ -403,7 +557,7 @@ Future<void> main(List<String> arguments) async {
     ..addOption('mib', defaultsTo: '128')
     ..addOption('chunk-kib', defaultsTo: '256')
     ..addOption('big-chunk-kib', defaultsTo: '4096')
-    ..addOption('cases', defaultsTo: 'plain,raw,tls,adapter,tls-big');
+    ..addOption('cases', defaultsTo: PumpCase.allLabels);
   final parsed = parser.parse(arguments);
   final port = int.parse(parsed.option('port')!);
   final cases = PumpCase.parse(parsed.option('cases')!);
