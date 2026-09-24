@@ -1,6 +1,6 @@
 # The Rust half of dsync (task rust-core-port): `dsync-domain` (pure rules),
 # `dsync-core` (the I/O core), the `dsync` CLI, and the rinf hub the
-# Flutter head loads. See NOTES.md.
+# Flutter head loads. See SPEC.md §13.
 #
 # rinf's own template puts this workspace at the Flutter project root; it
 # lives here instead so the Rust tree is one self-contained directory.

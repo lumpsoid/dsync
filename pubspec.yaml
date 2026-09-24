@@ -215,7 +215,7 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 
-# `rinf gen` (native/NOTES.md) writes the Dart side of native/hub's signals
+# `rinf gen` (SPEC.md §13) writes the Dart side of native/hub's signals
 # here; committed, so the app builds and analyzes without the rinf CLI.
 rinf:
   gen_input_crates:

@@ -1,6 +1,6 @@
 //! `dsync`: the command line (SPEC §11). `main` reads the host's facts
 //! once, parses argv, runs the command on a tokio runtime and exits with
-//! SPEC §11.5's code. See native/NOTES.md.
+//! SPEC §11.5's code. See SPEC.md §11 and §13.
 
 mod agent;
 mod archive;

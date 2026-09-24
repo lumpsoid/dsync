@@ -22,7 +22,7 @@ import 'models/serve_session.dart';
 ///
 /// An interface because the real implementation cannot run where the
 /// head's tests run: `flutter test` cannot load the native library
-/// (native/NOTES.md), so controllers are tested against [FakeCoreLink]
+/// (SPEC.md §14), so controllers are tested against [FakeCoreLink]
 /// and the app runs on [RinfCoreLink].
 ///
 /// Every call throws `CoreFailure` with the core's own message when the

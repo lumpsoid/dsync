@@ -1,5 +1,5 @@
 This is the published `rinf` 8.10.1 package from pub.dev, vendored with one
-patch, until rinf ships a fix (task 07876c spike; see native/NOTES.md):
+patch, until rinf ships a fix (task 07876c spike; see SPEC.md §13):
 
 - `cargokit/gradle/plugin.gradle`: `CargoKitBuildTask` runs the Cargokit
   build tool through an injected `ExecOperations` instead of `project.exec`,
