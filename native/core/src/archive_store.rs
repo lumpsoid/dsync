@@ -238,7 +238,17 @@ impl ArchiveStore {
             // pending commits.
             return self.rewrite();
         }
-        self.append().map_err(|source| self.io(source))
+        if let Err(source) = self.append() {
+            // `append` may have already moved `pending` into its own write
+            // buffer, or written part of it, before failing - either way the
+            // log can no longer be trusted to grow cleanly by appending to
+            // it. Force the next flush through `rewrite`, which rebuilds the
+            // whole log from `archive` (already holding every pending
+            // commit) instead of risking a dropped or torn line.
+            self.needs_repair = true;
+            return Err(self.io(source));
+        }
+        Ok(())
     }
 
     /// Folds the log down to one line per live path and mark (SPEC §8.2).

@@ -619,6 +619,42 @@ fn a_batch_is_torn_never_interleaved_by_a_crash_mid_append() {
     assert_eq!(names(&fixture.reloaded()), ["a.txt", "c.txt"]);
 }
 
+/// A failed append must not drop the commits it was carrying: `archive`
+/// already holds them, and the next flush has to get them onto disk by
+/// rewriting the whole log rather than by resuming the append.
+#[cfg(unix)]
+#[test]
+fn a_failed_append_is_recovered_by_a_rewrite_on_the_next_flush() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    committed(&mut store, [entry()]);
+    store.flush().unwrap(); // The log exists, so appending to it can be blocked.
+
+    fs::set_permissions(fixture.log(), fs::Permissions::from_mode(0o444)).unwrap();
+    if OpenOptions::new().append(true).open(fixture.log()).is_ok() {
+        // Running as root: permissions do not bind, so there is nothing to
+        // provoke. Say so rather than pass vacuously.
+        fs::set_permissions(fixture.log(), fs::Permissions::from_mode(0o644)).unwrap();
+        eprintln!("skipped: file permissions do not bind for this user");
+        return;
+    }
+
+    committed(&mut store, [at("b.txt")]);
+    let result = store.flush();
+    assert!(matches!(result, Err(ArchiveError::Io { .. })), "{result:?}");
+
+    // The directory stays writable throughout: the recovery rewrite goes
+    // through `write_atomically`, which only needs to create a temp file
+    // and rename it in place.
+    fs::set_permissions(fixture.log(), fs::Permissions::from_mode(0o644)).unwrap();
+    store.flush().unwrap();
+    drop(store);
+
+    assert_eq!(names(&fixture.reloaded()), ["a.txt", "b.txt"]);
+}
+
 // --- compact ---
 
 fn updated() -> ArchiveCommit {
