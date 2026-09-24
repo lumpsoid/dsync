@@ -27,8 +27,8 @@ use crate::replica_lock::ReplicaLock;
 use crate::scan_session::ScanSession;
 use crate::scanner::Scanner;
 use crate::state_dir::StateDir;
-use crate::write_stats::WriteStats;
 use crate::writer_pool::WriterPool;
+use dsync_domain::WriteStats;
 
 /// Chunks a read holds ready ahead of its consumer: one being taken, one
 /// being read.
@@ -344,6 +344,14 @@ impl Replica for LocalReplica {
 
     async fn compact(&self) -> Result<(), ReplicaError> {
         self.blocking(|shared| Ok(shared.store().compact()?)).await
+    }
+
+    async fn close(self) -> Result<(), ReplicaError> {
+        Ok(())
+    }
+
+    fn write_stats(&self) -> Option<WriteStats> {
+        Some(LocalReplica::write_stats(self))
     }
 }
 

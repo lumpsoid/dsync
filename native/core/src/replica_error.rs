@@ -46,6 +46,17 @@ pub enum ReplicaError {
     RemoteArchive(String),
 }
 
+impl ReplicaError {
+    /// Whether this failure ends the whole run rather than one action: the
+    /// connection is gone, or an archive can no longer record anything.
+    pub fn ends_run(&self) -> bool {
+        matches!(
+            self,
+            ReplicaError::Link(_) | ReplicaError::Archive(_) | ReplicaError::RemoteArchive(_)
+        )
+    }
+}
+
 /// The filesystem operation a [`ReplicaError::File`] failed in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum FileOp {

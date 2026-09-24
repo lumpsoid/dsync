@@ -20,8 +20,16 @@ pub struct Tuning {
     pub request_window: usize,
     /// Received-but-unprocessed bytes before the router stops reading.
     pub router_budget_bytes: usize,
-    /// Chunk size a streamed body is read ahead and sent in.
+    /// Chunk size a streamed body is read ahead and sent in; also what the
+    /// apply's read-ahead reserves for one source read (SPEC §7.2).
     pub read_ahead_chunk_bytes: usize,
+    /// Bytes the apply's read-ahead may reserve across every source read
+    /// open at once (SPEC §7.2).
+    pub read_ahead_budget_bytes: usize,
+    /// Actions the apply may have under way at once, source reads started
+    /// ahead of their writes included: the writers plus a lead of eight
+    /// (SPEC §7.2's 24 open reads).
+    pub read_ahead_streams: usize,
     /// Buffer a file is read into for sending, one chunk per read (plan
     /// D3: at least 256 KiB, the size the scanner hashes with).
     pub read_buffer_bytes: usize,
@@ -59,6 +67,8 @@ impl Tuning {
         request_window: 32,
         router_budget_bytes: 1024 * 1024,
         read_ahead_chunk_bytes: 64 * 1024,
+        read_ahead_budget_bytes: 1024 * 1024,
+        read_ahead_streams: 16 + 8,
         read_buffer_bytes: 256 * 1024,
         writer_buffer_bytes: 16 * 1024 * 1024,
         heartbeat: Duration::from_secs(5),
@@ -92,6 +102,10 @@ mod tests {
         assert_eq!(tuning.request_window, 32);
         assert_eq!(tuning.router_budget_bytes, 1 << 20);
         assert_eq!(tuning.read_ahead_chunk_bytes, 1 << 16);
+        assert_eq!(tuning.read_ahead_budget_bytes, 1 << 20);
+        assert_eq!(tuning.read_ahead_streams, 24);
+        assert!(tuning.read_ahead_streams >= tuning.writers);
+        assert!(tuning.read_ahead_chunk_bytes <= tuning.read_ahead_budget_bytes);
         assert_eq!(tuning.read_buffer_bytes, 1 << 18);
         assert_eq!(tuning.writer_buffer_bytes, 1 << 24);
         assert_eq!(tuning.heartbeat, Duration::from_secs(5));

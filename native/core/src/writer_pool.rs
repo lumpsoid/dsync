@@ -24,7 +24,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use crate::body::Body;
 use crate::file_write::{Chunk, Destination, write_file};
 use crate::write_error::WriteError;
-use crate::write_stats::{Stage, WriteStats};
+use dsync_domain::{Stage, WriteStats};
 
 /// One file, as a write hands it to the pool; its bytes follow on
 /// `chunks`.

@@ -14,6 +14,8 @@ pub struct RunSummary {
     /// Planned actions the decider did not keep. A dry run keeps none, so
     /// its pending work lands here and exits 1.
     pub skipped: usize,
+    /// Conflicts the decider left unresolved (SPEC §11.5): one it resolved
+    /// became a kept action and is counted as applied or failed.
     pub conflicts: usize,
     pub failed: usize,
     /// Skipped paths that count as failures, both sides (SPEC §5.1).
@@ -39,7 +41,11 @@ impl RunSummary {
                 .iter()
                 .filter(|action| !kept.contains(action.path()))
                 .count(),
-            conflicts: plan.conflicts.len(),
+            conflicts: plan
+                .conflicts
+                .iter()
+                .filter(|conflict| !kept.contains(&conflict.path))
+                .count(),
             failed,
             unreadable,
         }
@@ -110,6 +116,25 @@ mod tests {
             from: Side::A,
             bytes: 1,
         });
-        assert_eq!(RunSummary::of(&plan, &kept, 4, 0, 0).skipped, 0);
+        let summary = RunSummary::of(&plan, &kept, 4, 0, 0);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.conflicts, 0);
+    }
+
+    #[test]
+    fn an_unresolved_conflict_is_counted_a_resolved_one_is_not() {
+        let mut plan = plan();
+        plan.conflicts.push(Conflict {
+            path: path("y"),
+            a: None,
+            b: None,
+        });
+        let mut kept = plan.actions.clone();
+        kept.push(Action::Delete {
+            path: path("y"),
+            on: Side::B,
+        });
+        assert_eq!(RunSummary::of(&plan, &kept, 4, 0, 0).conflicts, 1);
+        assert_eq!(RunSummary::of(&plan, &plan.actions, 3, 0, 0).conflicts, 2);
     }
 }

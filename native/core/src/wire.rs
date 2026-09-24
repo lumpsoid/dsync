@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use dsync_domain::{
     ArchiveCommit, ChangedScan, FileMeta, RelPath, ReplicaInfo, ReplicaSpec, RuleSet, ScanEntry,
+    Stage, WriteStats,
 };
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +21,6 @@ use crate::replica_error::{FileOp, ReplicaError};
 use crate::replica_lock::LockError;
 use crate::scanner::UnreadableRoot;
 use crate::write_error::WriteError;
-use crate::write_stats::Stage;
 
 /// One operation of the `Replica` contract, as asked of the far side.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -63,6 +63,9 @@ pub(crate) enum Reply {
     /// The file opened; its body follows under the same id.
     Opened,
     Written(FileMeta),
+    /// The lock is released; with the served replica's writer stats, for
+    /// the initiator's report (SPEC §17).
+    Unlocked(Option<Box<WriteStats>>),
 }
 
 /// A reply frame's payload.
@@ -423,6 +426,8 @@ mod tests {
             )]),
             Reply::Opened,
             Reply::Written(file(6).meta),
+            Reply::Unlocked(None),
+            Reply::Unlocked(Some(Box::new(WriteStats::one_writer()))),
         ] {
             round_trip::<Answer>(Ok(reply));
         }

@@ -19,6 +19,8 @@ if-addrs.workspace = true
 subtle.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
+tokio-util.workspace = true
+futures-util.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "io-util", "io-std", "net", "process", "time", "macros"] }
 
 [dev-dependencies]

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use dsync_domain::{
     ArchiveCommit, Bucket, BucketCount, BucketDigests, FileMeta, RelPath, ReplicaInfo, ReplicaSpec,
-    RuleSet, ScanEntry, Tuning,
+    RuleSet, ScanEntry, Tuning, WriteStats,
 };
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::oneshot;
@@ -47,6 +47,8 @@ pub struct RemoteReplica {
     window: RequestWindow,
     tasks: Tasks,
     ssh: Option<Box<SshChild>>,
+    /// The far side's writer stats, as its last `unlock` reported them.
+    served_stats: Mutex<Option<Box<WriteStats>>>,
 }
 
 /// The connection's shared state: the outbox, and the exchanges waiting
@@ -137,6 +139,7 @@ impl RemoteReplica {
             window: RequestWindow::new(tuning.request_window),
             tasks: Tasks { reading, writing },
             ssh: None,
+            served_stats: Mutex::new(None),
         })
     }
 
@@ -377,7 +380,16 @@ impl Replica for RemoteReplica {
 
     async fn unlock(&self) -> Result<(), ReplicaError> {
         let _all = self.window.barrier().await;
-        done(self.call(Request::Unlock).await?, "unlock")
+        match self.call(Request::Unlock).await? {
+            Reply::Unlocked(stats) => {
+                *self
+                    .served_stats
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = stats;
+                Ok(())
+            }
+            _ => Err(unexpected("unlock")),
+        }
     }
 
     async fn create_root(&self) -> Result<(), ReplicaError> {
@@ -535,6 +547,18 @@ impl Replica for RemoteReplica {
     async fn compact(&self) -> Result<(), ReplicaError> {
         let _all = self.window.barrier().await;
         done(self.call(Request::Compact).await?, "compact")
+    }
+
+    async fn close(self) -> Result<(), ReplicaError> {
+        RemoteReplica::close(self).await
+    }
+
+    fn write_stats(&self) -> Option<WriteStats> {
+        self.served_stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_deref()
+            .cloned()
     }
 }
 

@@ -13,6 +13,8 @@ pub mod atomic_write;
 mod body;
 mod case_folding;
 mod certificate;
+mod connector;
+mod cpu;
 mod device_identity;
 mod device_identity_store;
 mod enrolment_dialer;
@@ -40,6 +42,7 @@ mod replica_error;
 mod replica_lock;
 mod replica_server;
 mod request_window;
+pub mod run;
 mod run_marker;
 mod scan_pool;
 mod scan_probe;
@@ -54,7 +57,6 @@ mod unix_transport;
 mod version_handshake;
 mod wire;
 mod write_error;
-mod write_stats;
 mod writer_pool;
 
 pub use any_replica::AnyReplica;
@@ -65,8 +67,10 @@ pub use archive_store::{
 pub use body::{Body, BodyDropped, BodyError, BodySender, body_channel};
 pub use case_folding::probe_case_folding;
 pub use certificate::{Certificate, CertificateError};
+pub use connector::{ConnectError, ConnectFailure, Connector};
 pub use device_identity::{DeviceIdentity, IdentityIssueError, IdentityPairError};
 pub use device_identity_store::{DeviceIdentityStore, IdentityError};
+pub use dsync_domain::{Stage, StageTime, WriteStats};
 pub use enrolment_dialer::{EnrolError, EnrolmentDialer, read_pair_code};
 pub use enrolment_listener::{
     EnrolmentBindError, EnrolmentEnd, EnrolmentEvent, EnrolmentListener, EnrolmentRefusal,
@@ -93,6 +97,10 @@ pub use replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Replica}
 pub use replica_error::{FileOp, ReplicaError};
 pub use replica_lock::{LockError, ReplicaLock};
 pub use replica_server::ReplicaServer;
+pub use run::{
+    ActionFailure, BatchDecider, Decider, DryRunDecider, Run, RunError, RunEvent, RunReport,
+    RunStop, Stopped,
+};
 pub use run_marker::RunMarker;
 pub use scan_probe::ScanProbe;
 pub use scan_session::ScanSession;
@@ -105,4 +113,3 @@ pub use transport::{Liveness, Transport};
 pub use unix_transport::{UnixBindError, bind_unix, dial_unix};
 pub use version_handshake::PROTOCOL_VERSION;
 pub use write_error::WriteError;
-pub use write_stats::{Stage, StageTime, WriteStats};

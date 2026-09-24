@@ -15,7 +15,7 @@ use std::future::Future;
 
 use dsync_domain::{
     ArchiveCommit, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, RelPath, ReplicaInfo,
-    RuleSet, ScanEntry,
+    RuleSet, ScanEntry, WriteStats,
 };
 
 use crate::body::Body;
@@ -125,6 +125,17 @@ pub trait Replica: Send + Sync {
 
     /// Folds the archive log down to one line per live path (SPEC §8.2).
     fn compact(&self) -> impl Future<Output = Result<(), ReplicaError>> + Send;
+
+    /// Ends the replica in order, after [`Replica::unlock`]: a remote one's
+    /// connection is closed; a local one has nothing to close.
+    fn close(self) -> impl Future<Output = Result<(), ReplicaError>> + Send
+    where
+        Self: Sized;
+
+    /// Where this replica's writers have spent their time so far (SPEC
+    /// §17): a local replica's own pool, or what a remote one's server
+    /// reported with its last `unlock`. `None` until there is a figure.
+    fn write_stats(&self) -> Option<WriteStats>;
 }
 
 /// Phase 1 of a scan exchange, and the ticket to phase 2.

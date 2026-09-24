@@ -76,7 +76,7 @@ impl fmt::Display for Stage {
 }
 
 /// How many times one stage ran and how long it took in all.
-#[derive(Clone, Copy, Default, Debug, PartialEq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StageTime {
     pub count: u64,
     pub total: Duration,
@@ -89,7 +89,7 @@ impl StageTime {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WriteStats {
     pub writers: usize,
     /// Files written to the end and landed.

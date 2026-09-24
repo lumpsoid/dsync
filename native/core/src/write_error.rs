@@ -7,7 +7,7 @@ use std::io;
 
 use dsync_domain::RelPath;
 
-use crate::write_stats::Stage;
+use dsync_domain::Stage;
 
 #[derive(Debug)]
 pub struct WriteError {

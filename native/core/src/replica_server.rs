@@ -196,7 +196,10 @@ impl<R: Replica> Served<R> {
         let answer: Result<Reply, ReplicaError> = match request {
             Request::Hello(_) => replica.hello().await.map(Reply::Hello),
             Request::Lock => replica.lock().await.map(|()| Reply::Done),
-            Request::Unlock => replica.unlock().await.map(|()| Reply::Done),
+            Request::Unlock => replica
+                .unlock()
+                .await
+                .map(|()| Reply::Unlocked(replica.write_stats().map(Box::new))),
             Request::CreateRoot => replica.create_root().await.map(|()| Reply::Done),
             Request::OpenScan(rules) => replica.open_scan(&rules).await.map(|opened| {
                 self.set_scan(ServedScan::Opened(opened.next));

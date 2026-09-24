@@ -33,6 +33,15 @@ impl Action {
         }
     }
 
+    /// The side a copy writes onto: where it is marked before its bytes
+    /// land (SPEC §7.6). `None` for an action that writes no file.
+    pub fn writes_onto(&self) -> Option<Side> {
+        match self {
+            Action::Copy { from, .. } => Some(from.other()),
+            Action::Delete { .. } | Action::CommitOnly { .. } => None,
+        }
+    }
+
     /// Bytes this action moves: a copy's source size, zero otherwise.
     pub fn bytes(&self) -> u64 {
         match self {

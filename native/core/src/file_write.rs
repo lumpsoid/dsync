@@ -17,7 +17,7 @@ use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use crate::body::BodyError;
 use crate::scanner::stat;
 use crate::write_error::WriteError;
-use crate::write_stats::{Stage, WriteStats};
+use dsync_domain::{Stage, WriteStats};
 
 /// One piece of a file's body as the pool hands it to a writer. A chunk
 /// holds its share of the pool's byte budget until it is written.

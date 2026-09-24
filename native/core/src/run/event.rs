@@ -1,0 +1,147 @@
+//! What a run tells whoever watches it (SPEC §11.4): the header, the scan's
+//! findings, the plan, each action's outcome as it lands, the summary, and
+//! every failure. The CLI renders these (human or `--json`); the head gets
+//! them through the hub.
+
+use std::io;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use dsync_domain::{
+    Action, BucketCountMismatch, Conflict, IncompleteTransfer, MissingReplicaRoot, Plan,
+    ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side, SkippedPath, UnevenCommitOnly,
+};
+
+use crate::replica_error::ReplicaError;
+
+/// One step of a run, in the order the run takes them.
+#[derive(Clone, Debug)]
+pub enum RunEvent {
+    /// Both `hello` replies, before anything else: the run header's facts.
+    /// `last_run_unfinished` is SPEC §7.6's run marker, as found before
+    /// this run touched it.
+    Replicas {
+        a: ReplicaInfo,
+        b: ReplicaInfo,
+        last_run_unfinished: bool,
+    },
+    /// Both scans' SPEC §5.2 branch counts, once both are done.
+    ScanTally { a: ScanTally, b: ScanTally },
+    /// A path a scan skipped or could not read (SPEC §5.1), side A's first.
+    Skipped { side: Side, skipped: SkippedPath },
+    /// A path the reconciler would not resolve, before the plan.
+    Conflict(Conflict),
+    /// The plan, before the decider sees it. `exceeds_warn_size` is SPEC
+    /// §10's warning, under the run's `warn_size_bytes`.
+    Plan { plan: Plan, exceeds_warn_size: bool },
+    /// One action the decider approved, conflict resolutions included,
+    /// before the apply starts.
+    Action(Action),
+    /// One action's outcome, in completion order (SPEC §7.1). An action
+    /// reported applied is durable on both sides.
+    Result {
+        action: Action,
+        outcome: Result<(), ActionFailure>,
+    },
+    /// Outcomes so far against the approved total, after each result.
+    Progress { completed: usize, total: usize },
+    /// The run completed (SPEC §11.4); absent from a run that failed.
+    Summary(RunSummary),
+    /// A failure. One event per failure; after one that ends the run, only
+    /// the unlocks' own failures can follow.
+    Error(RunError),
+}
+
+/// Why a run could not go on.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum RunError {
+    #[error("replica {side}: {} failed: {source}", op.name())]
+    Replica {
+        side: Side,
+        op: ReplicaOp,
+        #[source]
+        source: Arc<ReplicaError>,
+    },
+    /// SPEC §4.5's refusal: a root missing once its replica has synced.
+    /// Rendered with the device it is on by whoever knows it
+    /// ([`MissingReplicaRoot::describe`]).
+    #[error(transparent)]
+    MissingRoot(MissingReplicaRoot),
+    /// The two sides digested under different bucket counts: a far side
+    /// that did not follow the exchange.
+    #[error(transparent)]
+    Exchange(BucketCountMismatch),
+    #[error("the run marker {}: {source}", path.display())]
+    Marker {
+        path: PathBuf,
+        #[source]
+        source: Arc<io::Error>,
+    },
+}
+
+impl RunError {
+    pub(crate) fn replica(side: Side, op: ReplicaOp) -> impl FnOnce(ReplicaError) -> RunError {
+        move |source| RunError::Replica {
+            side,
+            op,
+            source: Arc::new(source),
+        }
+    }
+
+    /// The side the failure is on, where it is on one.
+    pub fn side(&self) -> Option<Side> {
+        match self {
+            RunError::Replica { side, .. } => Some(*side),
+            RunError::MissingRoot(missing) => Some(missing.side),
+            RunError::Exchange(_) | RunError::Marker { .. } => None,
+        }
+    }
+}
+
+/// Why one action failed (SPEC §7.6). The path is left as it landed, its
+/// mark (if any) stays, and the next run resolves it.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum ActionFailure {
+    /// A replica operation failed: the action's own, its window's mark, or
+    /// the commit batch it was in (a failed batch fails every action in
+    /// it, since some of its commits may have landed and some not).
+    #[error("replica {side}: {} failed: {source}", op.name())]
+    Replica {
+        side: Side,
+        op: ReplicaOp,
+        #[source]
+        source: Arc<ReplicaError>,
+    },
+    #[error(transparent)]
+    IncompleteTransfer(#[from] IncompleteTransfer),
+    #[error(transparent)]
+    UnevenCommitOnly(#[from] UnevenCommitOnly),
+    /// A copy whose source the scan did not see as a file.
+    #[error("replica {side} has no file to copy at this path")]
+    NoSource { side: Side },
+}
+
+impl ActionFailure {
+    pub(crate) fn replica(side: Side, op: ReplicaOp) -> impl FnOnce(ReplicaError) -> ActionFailure {
+        move |source| ActionFailure::Replica {
+            side,
+            op,
+            source: Arc::new(source),
+        }
+    }
+
+    /// The failure that ends the whole run, when this is one (see
+    /// [`ReplicaError::ends_run`]).
+    pub(crate) fn ends_run(&self) -> Option<RunError> {
+        match self {
+            ActionFailure::Replica { side, op, source } if source.ends_run() => {
+                Some(RunError::Replica {
+                    side: *side,
+                    op: *op,
+                    source: source.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+}

@@ -4,6 +4,7 @@
 
 use dsync_domain::{
     ArchiveCommit, Bucket, BucketCount, FileMeta, RelPath, ReplicaInfo, RuleSet, ScanEntry,
+    WriteStats,
 };
 
 use crate::body::Body;
@@ -15,17 +16,6 @@ use crate::replica_error::ReplicaError;
 pub enum AnyReplica {
     Local(LocalReplica),
     Remote(RemoteReplica),
-}
-
-impl AnyReplica {
-    /// Ends the replica in order: a remote one's connection is closed (see
-    /// [`RemoteReplica::close`]); a local one has nothing to close.
-    pub async fn close(self) -> Result<(), ReplicaError> {
-        match self {
-            AnyReplica::Local(_) => Ok(()),
-            AnyReplica::Remote(remote) => remote.close().await,
-        }
-    }
 }
 
 /// `$call` on whichever replica this is.
@@ -103,5 +93,19 @@ impl Replica for AnyReplica {
 
     async fn compact(&self) -> Result<(), ReplicaError> {
         delegate!(self.compact())
+    }
+
+    async fn close(self) -> Result<(), ReplicaError> {
+        match self {
+            AnyReplica::Local(local) => local.close().await,
+            AnyReplica::Remote(remote) => remote.close().await,
+        }
+    }
+
+    fn write_stats(&self) -> Option<WriteStats> {
+        match self {
+            AnyReplica::Local(local) => Replica::write_stats(local),
+            AnyReplica::Remote(remote) => Replica::write_stats(remote),
+        }
     }
 }
