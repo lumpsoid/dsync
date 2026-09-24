@@ -155,3 +155,81 @@ async fn a_dial_that_finishes_in_time_is_untouched_by_the_bound() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn a_probe_proves_admission_and_leaves_nothing_behind() {
+    let server = Host::new(identity("desktop"));
+    let client = Host::new(identity("phone"));
+    server.pair(&client.identity, "phone", somewhere(), &[]);
+    client.pair(&server.identity, "desktop", somewhere(), &[]);
+    let serving = serve(&server).await;
+    let before = client.paired("desktop");
+
+    let probed = with_deadline(
+        "probe",
+        client
+            .dialer()
+            .probe(&name("desktop"), Some(address_of(serving.at))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(probed, address_of(serving.at));
+    assert_eq!(client.paired("desktop"), before, "a probe records nothing");
+    assert_eq!(serving.opened(), 0, "a probe opens no replica");
+    serving.assert_running();
+}
+
+#[tokio::test]
+async fn a_probe_of_a_peer_that_does_not_admit_this_host_is_refused() {
+    let server = Host::new(identity("desktop"));
+    let client = Host::new(identity("phone"));
+    client.pair(&server.identity, "desktop", somewhere(), &[]);
+    let serving = serve(&server).await;
+    let probed = with_deadline(
+        "probe",
+        client
+            .dialer()
+            .probe(&name("desktop"), Some(address_of(serving.at))),
+    )
+    .await;
+    assert!(
+        matches!(probed, Err(PeerDialError::RefusedByPeer { .. })),
+        "{probed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_dial_notes_a_certificate_close_to_its_end() {
+    // Issued so that ten days of its lifetime are left.
+    let lifetime = dsync_domain::CertificateValidity::LIFETIME;
+    let ageing = crate::support::identity_issued(
+        "phone",
+        SystemTime::now() - lifetime + Duration::from_secs(10 * 24 * 60 * 60),
+    );
+    let server = Host::new(identity("desktop"));
+    let client = Host::new(ageing);
+    server.pair(&client.identity, "phone", somewhere(), &[]);
+    client.pair(&server.identity, "desktop", somewhere(), &[]);
+    let serving = serve(&server).await;
+    let dialed = with_deadline("dial", client.dial("desktop", Some(serving.at), "/"))
+        .await
+        .unwrap();
+    let notes: Vec<String> = dialed.expiries.iter().map(ToString::to_string).collect();
+    with_deadline("close", dialed.replica.close())
+        .await
+        .unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("this host"), "{notes:?}");
+
+    // Positive control's converse: fresh certificates on both ends say nothing.
+    let fresh = Host::new(identity("laptop"));
+    server.pair(&fresh.identity, "laptop", somewhere(), &[]);
+    fresh.pair(&server.identity, "desktop", somewhere(), &[]);
+    let dialed = with_deadline("dial", fresh.dial("desktop", Some(serving.at), "/"))
+        .await
+        .unwrap();
+    assert!(dialed.expiries.is_empty());
+    with_deadline("close", dialed.replica.close())
+        .await
+        .unwrap();
+}

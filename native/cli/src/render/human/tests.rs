@@ -451,3 +451,51 @@ fn the_preamble_is_silent_unless_verbose() {
     assert_eq!(preamble(&fixtures::view(), Verbosity::Normal), "");
     assert_eq!(preamble(&fixtures::view(), Verbosity::Quiet), "");
 }
+
+#[test]
+fn a_dialled_peer_s_certificate_notes_sit_under_its_side() {
+    use dsync_core::PeerContact;
+    use dsync_domain::host_port::PeerAddress;
+    use dsync_domain::{
+        CertificateExpiry, CertificateOwner, CertificateValidity, DeviceId, PeerName,
+    };
+
+    let now = std::time::SystemTime::now();
+    let ending = CertificateValidity::new(now, now + Duration::from_secs(5 * 86_400));
+    let expiry = |owner| {
+        ending
+            .expiry_within(owner, now, CertificateExpiry::DEFAULT_WINDOW)
+            .unwrap()
+    };
+    let peer = PeerContact {
+        side: Side::B,
+        device: DeviceId::from_spki_der(b"spki"),
+        address: PeerAddress::new("192.168.1.5", 28771).unwrap(),
+        expiries: vec![
+            expiry(CertificateOwner::ThisHost),
+            expiry(CertificateOwner::Peer(PeerName::parse("phone").unwrap())),
+        ],
+    };
+    let view = fixtures::view();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut renderer = HumanRenderer::new(&mut out, &mut err, Verbosity::Normal, &view, clock());
+    renderer.peer_contacts(&[peer]);
+    renderer.render(&replicas(Some(120), Some(120), false));
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[2], "B  box:notes  ssh", "{text}");
+    assert!(
+        lines[3].starts_with("   certificate for this host expires in"),
+        "{text}"
+    );
+    assert!(
+        lines[4].starts_with("   certificate for phone expires in"),
+        "{text}"
+    );
+    // Positive control: without notes, the header goes straight on.
+    assert!(!out_of_header().contains("certificate"));
+}
+
+fn out_of_header() -> String {
+    out(Verbosity::Normal, &[replicas(Some(120), Some(120), false)])
+}

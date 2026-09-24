@@ -13,6 +13,7 @@ use dsync_domain::{
 };
 
 use crate::replica_error::ReplicaError;
+use crate::replica_lock::LockError;
 
 /// One step of a run, in the order the run takes them.
 #[derive(Clone, Debug)]
@@ -86,6 +87,16 @@ impl RunError {
             op,
             source: Arc::new(source),
         }
+    }
+
+    /// SPEC §4.3: another run holds a replica's lock. Its own outcome, not
+    /// a failure of this run: the remedy is to wait for that one.
+    pub fn replica_busy(&self) -> bool {
+        matches!(
+            self,
+            RunError::Replica { source, .. }
+                if matches!(**source, ReplicaError::Lock(LockError::Held { .. }))
+        )
     }
 
     /// The side the failure is on, where it is on one.

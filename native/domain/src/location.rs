@@ -95,6 +95,8 @@ pub enum LocationError {
     UnixUnsupported(String),
     #[error("{raw:?}: {source}")]
     DeviceName { raw: String, source: PeerNameError },
+    #[error("{0:?} is not a path on this machine")]
+    NotLocal(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -155,6 +157,32 @@ impl Location {
             }));
         }
         parse_unschemed(raw, platform)
+    }
+
+    /// A path on this machine - a folder a picker returned - refused when
+    /// SPEC §2 would read it as anything else, so it reads back the same
+    /// from a profile.
+    pub fn local(path: &str, platform: Platform) -> Result<Location, LocationError> {
+        match Location::parse(path, platform)? {
+            local @ Location::Local(_) => Ok(local),
+            _ => Err(LocationError::NotLocal(path.to_owned())),
+        }
+    }
+
+    /// `peer://<device>:<path>` from its parts, as a head builds one from a
+    /// paired device and the path typed for it.
+    pub fn peer(device: PeerName, path: &str) -> Result<Location, LocationError> {
+        let raw = || format!("{PEER}{device}:{path}");
+        if path.is_empty() {
+            return Err(empty(&raw(), "path"));
+        }
+        if path.contains('\0') {
+            return Err(LocationError::Nul(raw()));
+        }
+        Ok(Location::Peer(PeerLocation {
+            device,
+            path: path.to_owned(),
+        }))
     }
 
     /// The replica path, as typed (unexpanded).

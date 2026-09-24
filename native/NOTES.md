@@ -9,9 +9,10 @@ of CPU per MiB; a standalone rustls receiver ran at the full Wi-Fi link
 (~30 MiB/s) on one connection at ~10–12 ms/MiB
 (benchmark/rust_tls_probe, commit 448a510).
 
-**Update (task rust-core-port):** the spike below now lives in `native/spike/`
-(crate `dsync-spike`); `native/core` and `native/domain` are the new crates of
-the port, being rewritten from scratch.
+**Update (task rust-core-port):** the spike's code is gone (its crate
+`dsync-spike` and its integration test were deleted in phase 14, when the hub
+was rewritten on `dsync-core`); what follows is its findings, kept for the
+record. `native/core` and `native/domain` are the port's crates.
 
 ## Layout
 
@@ -21,7 +22,7 @@ One Cargo workspace (`native/Cargo.toml`, `native/Cargo.lock`):
 |---|---|---|
 | `dsync-core` (lib `dsync_core`) | `core/` | identity, device ids, pinned mutual TLS, framing, server, client, metrics |
 | `dsync-cli` (bin `dsync`) | `cli/` | the product CLI on `dsync-core`: `sync`, `status`, `agent` (SPEC §11); the spike's `id`/`serve`/`push` are gone (phase 12) |
-| `hub` | `hub/` | the rinf entry crate: signals and the task that runs the server |
+| `hub` | `hub/` | the rinf entry crate: intent-named commands over `dsync-core`, one reply per command, and the run/serve/pairing session streams (plan D10); read by `lib/app/core_link` only |
 
 The core, in brief:
 
@@ -117,16 +118,6 @@ cargo run --manifest-path <rinf>/rust_crate_cli/Cargo.toml -- gen
 flutter build linux --release
 flutter build apk --release
 
-# The rinf integration test (Linux shown; on the phone, -d <serial>)
-flutter drive --profile -d linux --driver=test_driver/integration_test.dart \
-  --target=integration_test/rust_spike_test.dart \
-  [--dart-define=ROOT=<dir>] [--dart-define=PORT=47670] [--dart-define=ALLOW=<id>|ANY] \
-  [--dart-define=WRITERS=16] [--dart-define=TRANSFERS=1]
-# each time it prints `[rust-spike] transfer k/N ready port … id <id>`
-# (its `dsync-rs push` client went with the spike CLI in phase 12):
-native/target/release/dsync-rs push <tree> --host <host> --port 47670 --pin <id> [--order walk|spread]
-# TRANSFERS=2 serves two transfers into one root, one identity: push the same
-# tree twice for a fresh pass and an overwrite pass.
 ```
 
 ## How the build is integrated
@@ -163,8 +154,8 @@ native/target/release/dsync-rs push <tree> --host <host> --port 47670 --pin <id>
   Upstream cargokit main has the same `project.exec` call.
 - `lib/main.dart` awaits `initializeRust(assignRustSignal)` before the
   existing bootstrap. The hub only parks on its signal receivers until Dart
-  sends `StartServe`. Integration tests don't run `main`, so
-  `rust_spike_test.dart` calls `initializeRust` itself.
+  sends a `CoreRequest`. Integration tests don't run `main`, so one that
+  drives the hub must call `initializeRust` itself.
 - The generated bindings import `meta` and `tuple`, so both are now pinned
   direct dependencies.
 

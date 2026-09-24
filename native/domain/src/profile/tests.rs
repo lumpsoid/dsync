@@ -403,3 +403,35 @@ fn defaults_are_left_out_of_the_written_text() {
             .contains("jobs = 2")
     );
 }
+
+#[test]
+fn a_profile_built_from_values_writes_what_parse_reads_back() {
+    let local = ReplicaLocation::new(
+        Location::parse("/home/me/notes", Platform::Unix).unwrap(),
+        None,
+    )
+    .unwrap();
+    let peer = ReplicaLocation::new(
+        Location::parse("peer://phone:/sdcard/notes", Platform::Unix).unwrap(),
+        Some(DEVICE.parse().unwrap()),
+    )
+    .unwrap();
+    let rules = RuleSet::new(vec![Glob::new("**/.git").unwrap()], vec![]);
+    let built = Profile::new(local.clone(), peer.clone())
+        .with_rules(rules.clone())
+        .with_jobs(Jobs::new(3).unwrap());
+    assert_eq!(built.replica(Side::A), &local);
+    assert_eq!(built.replica(Side::B), &peer);
+    assert_eq!(built.rules(), &rules);
+    assert_eq!(built.jobs(), Some(Jobs::new(3).unwrap()));
+    let written = built.to_toml();
+    assert!(written.contains("b_device_id"), "{written}");
+    assert_eq!(ok(&written), built);
+
+    // Nothing set, nothing written beyond the replicas.
+    let bare = Profile::new(local, peer).to_toml();
+    assert!(
+        !bare.contains("[rules]") && !bare.contains("[options]"),
+        "{bare}"
+    );
+}

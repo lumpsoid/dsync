@@ -42,7 +42,9 @@ async fn connect(
     connector: &Connector,
     options: &EffectiveOptions,
 ) -> Result<(AnyReplica, AnyReplica), ConnectError> {
-    with_deadline("connect", connector.connect(options)).await
+    with_deadline("connect", connector.connect(options))
+        .await
+        .map(|connected| (connected.a, connected.b))
 }
 
 fn local_root(replica: &AnyReplica) -> Option<String> {
@@ -160,7 +162,10 @@ async fn connect_serving(
         tokio::join!(connector.connect(options), serving)
     })
     .await;
-    (connected, session)
+    (
+        connected.map(|connected| (connected.a, connected.b)),
+        session,
+    )
 }
 
 /// A served session's task, as a value rather than a future to await.

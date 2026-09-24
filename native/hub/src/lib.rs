@@ -1,148 +1,84 @@
-//! The rinf hub: the Rust core behind the Flutter head. Dart starts and
-//! stops a one-transfer server with signals; Rust reports it back with
-//! signals (signals.rs).
+//! The rinf hub: the Flutter head's way into `dsync-core` (plan D10).
+//!
+//! Thin by rule: decode a signal, call a core flow, encode what it
+//! returned - no business `if` here; every verdict is the core's or the
+//! domain's. The rinf plumbing is this file alone: it reads the host's
+//! facts once, hands each [`signals::CoreRequest`] to [`Core::handle`] and
+//! sends its [`signals::CoreReply`], and drains the [`Outbox`] of stream
+//! signals into Dart. Everything below it is plain async Rust, driven the
+//! same way by the tests (tests/).
+//!
+//! Signals are bincode, rinf's fixed choice (plan OQ5); the replica wire
+//! protocol stays postcard.
 
-mod signals;
+mod archives;
+mod devices;
+mod diagnostics;
+mod dispatch;
+mod outbox;
+mod pairing;
+mod profiles;
+mod run;
+mod serve;
+mod sessions;
+pub mod signals;
+pub mod views;
 
-use std::path::PathBuf;
+use std::env;
 use std::sync::Arc;
 
-use dsync_spike::identity::Identity;
-use dsync_spike::peer_pin::PeerPin;
-use dsync_spike::server::{Received, ServeEvent, ServeOptions, serve};
-use dsync_spike::write_error::WriteError;
-use dsync_spike::write_stats::Stage;
+use dsync_domain::{HostFacts, Platform};
 use rinf::{DartSignal, RustSignal, dart_shutdown, write_interface};
-use signals::{
-    ServeFailed, ServeReady, StageTiming, StartServe, StopServe, TransferDone, TransferProgress,
-};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+
+pub use dispatch::Core;
+pub use outbox::{Outbox, Outgoing};
+pub use run::BATCH_INTERVAL;
+use signals::CoreRequest;
 
 write_interface!();
 
-// Multithreaded: the socket, TLS and the writer pool's hand-offs run on
-// worker threads, never on the thread that called into Rust.
+// Multithreaded: sockets, TLS, scans and the writer pool's hand-offs run
+// on worker threads, never on the thread that called into Rust. The core
+// itself never creates a runtime.
 #[tokio::main]
 async fn main() {
-    tokio::spawn(serve_on_request());
+    let (out, mut outgoing) = Outbox::channel();
+    let core = Arc::new(Core::new(host_facts(), out));
+    tokio::spawn(async move {
+        while let Some(signal) = outgoing.recv().await {
+            match signal {
+                Outgoing::Run(update) => update.send_signal_to_dart(),
+                Outgoing::Serve(update) => update.send_signal_to_dart(),
+                Outgoing::Enrolment(update) => update.send_signal_to_dart(),
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let requests = CoreRequest::get_dart_signal_receiver();
+        while let Some(pack) = requests.recv().await {
+            let core = core.clone();
+            tokio::spawn(async move {
+                let CoreRequest { id, command } = pack.message;
+                core.handle(id, command).await.send_signal_to_dart();
+            });
+        }
+    });
     dart_shutdown().await;
 }
 
-/// Runs one server at a time, as Dart asks. A new [StartServe] replaces the
-/// running one; [StopServe] ends it.
-async fn serve_on_request() {
-    // One identity for the app's run: the spike keeps no key on disk
-    // (where it belongs in the app is an open question, NOTES.md).
-    let identity = match Identity::generate() {
-        Ok(identity) => Arc::new(identity),
-        Err(e) => return fail(e),
-    };
-    let starts = StartServe::get_dart_signal_receiver();
-    let stops = StopServe::get_dart_signal_receiver();
-    let mut running: Option<JoinHandle<()>> = None;
-    loop {
-        tokio::select! {
-            Some(start) = starts.recv() => {
-                if let Some(task) = running.take() {
-                    task.abort();
-                }
-                running = Some(tokio::spawn(serve_once(identity.clone(), start.message)));
-            }
-            Some(_) = stops.recv() => {
-                if let Some(task) = running.take() {
-                    task.abort();
-                }
-            }
-            else => break,
-        }
-    }
-}
-
-async fn serve_once(identity: Arc<Identity>, request: StartServe) {
-    let allow: PeerPin = match request.allow_peer_id.parse() {
-        Ok(pin) => pin,
-        Err(e) => return fail(e),
-    };
-    let options = ServeOptions {
-        root: PathBuf::from(request.root),
-        port: request.port,
-        allow,
-        writers: request.writers as usize,
-    };
-    let (events, forwarded) = mpsc::unbounded_channel();
-    let forwarder = tokio::spawn(forward(forwarded));
-    let served = serve(&identity, options, events).await;
-    // Every progress signal goes out before the one that ends the transfer.
-    let _ = forwarder.await;
-    match served {
-        Ok(Received {
-            peer,
-            metrics,
-            writes,
-        }) => TransferDone {
-            peer_device_id: peer.to_string(),
-            files: metrics.files,
-            bytes: metrics.bytes,
-            wall_seconds: metrics.wall.as_secs_f64(),
-            mib_per_second: metrics.mib_per_second(),
-            files_per_second: metrics.files_per_second(),
-            cpu_seconds: metrics.cpu_seconds(),
-            cpu_ms_per_mib: metrics.cpu_ms_per_mib(),
-            writer_cpu_seconds: writes.writer_cpu.map(|c| c.as_secs_f64()),
-            other_cpu_seconds: writes.other_cpu(metrics.cpu).map(|c| c.as_secs_f64()),
-            writers: writes.writers as u32,
-            writers_busy: writes.writers_busy(metrics.wall),
-            queue_wait_mean_ms: writes
-                .mean_queue_wait()
-                .map_or(0.0, |d| d.as_secs_f64() * 1000.0),
-            queue_wait_total_seconds: writes.queue_wait.as_secs_f64(),
-            stages: Stage::ALL
-                .into_iter()
-                .filter_map(|stage| {
-                    let time = writes.stage(stage);
-                    time.mean().map(|mean| StageTiming {
-                        name: stage.name().to_string(),
-                        count: time.count,
-                        mean_ms: mean.as_secs_f64() * 1000.0,
-                        total_seconds: time.total.as_secs_f64(),
-                    })
-                })
-                .collect(),
-        }
-        .send_signal_to_dart(),
-        Err(e) => fail(e),
-    }
-}
-
-/// Passes the core's events on to Dart.
-async fn forward(mut events: mpsc::UnboundedReceiver<ServeEvent>) {
-    while let Some(event) = events.recv().await {
-        match event {
-            ServeEvent::Ready { port, device_id } => ServeReady {
-                port,
-                device_id: device_id.to_string(),
-            }
-            .send_signal_to_dart(),
-            ServeEvent::Connected { .. } => {}
-            ServeEvent::Progress { files, bytes } => {
-                TransferProgress { files, bytes }.send_signal_to_dart()
-            }
-            // Per-file completion stays in Rust: Dart sees it as the
-            // throttled count.
-            ServeEvent::FileDone { .. } => {}
-        }
-    }
-}
-
-fn fail(error: anyhow::Error) {
-    let write = error.downcast_ref::<WriteError>();
-    ServeFailed {
-        message: format!("{error:#}"),
-        path: write.map(|w| w.path.to_string()),
-        stage: write.map(|w| w.stage.name().to_string()),
-        io_kind: write.map(|w| format!("{:?}", w.kind())),
-        os_code: write.and_then(WriteError::os_code),
-    }
-    .send_signal_to_dart();
+/// This process's environment and working directory, read once. An
+/// unreadable working directory resolves nothing relative: the head only
+/// ever hands in absolute paths.
+fn host_facts() -> HostFacts {
+    let vars: Vec<(String, String)> = env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
+    let home = vars
+        .iter()
+        .find(|(name, _)| name == "HOME")
+        .map(|(_, value)| value.clone());
+    let cwd = env::current_dir()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    HostFacts::new(Platform::HOST, home, vars, cwd)
 }

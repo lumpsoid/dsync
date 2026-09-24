@@ -3,7 +3,7 @@
 //! nothing - which of this machine's interface addresses (fetched by the
 //! core) to guess.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use crate::host_port::{is_wildcard_address, normalized_host};
 
@@ -22,6 +22,17 @@ pub fn chosen_advertisable_host(advertise: Option<&str>, bind: IpAddr) -> Option
         None if is_wildcard_address(bind) => None,
         None => Some(normalized_host(&bind.to_string())),
     }
+}
+
+/// The host to advertise: what the operator chose
+/// ([`chosen_advertisable_host`]), else the best of this machine's
+/// `interfaces` ([`preferred_advertisable_address`]), else loopback - only
+/// useful to a peer on this same machine, but a true answer where nothing
+/// better is known.
+pub fn advertised_host(advertise: Option<&str>, bind: IpAddr, interfaces: &[IpAddr]) -> String {
+    chosen_advertisable_host(advertise, bind)
+        .or_else(|| preferred_advertisable_address(interfaces).map(|address| address.to_string()))
+        .unwrap_or_else(|| Ipv4Addr::LOCALHOST.to_string())
 }
 
 /// The best guess among this machine's interface `addresses` at one a
@@ -135,5 +146,14 @@ mod tests {
             preferred_advertisable_address(&[ip("169.254.3.4")]),
             Some(ip("169.254.3.4"))
         );
+    }
+
+    #[test]
+    fn the_advertised_host_is_the_choice_then_the_guess_then_loopback() {
+        let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let lan: IpAddr = "192.168.1.5".parse().unwrap();
+        assert_eq!(advertised_host(Some("tunnel"), any, &[lan]), "tunnel");
+        assert_eq!(advertised_host(None, any, &[lan]), "192.168.1.5");
+        assert_eq!(advertised_host(None, any, &[]), "127.0.0.1");
     }
 }

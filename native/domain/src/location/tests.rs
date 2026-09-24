@@ -495,3 +495,43 @@ fn a_device_name_is_validated_as_a_peer_name() {
         Err(LocationError::DeviceName { .. })
     ));
 }
+
+#[test]
+fn a_local_location_from_a_picked_folder_must_read_back_as_local() {
+    let local = Location::local("/home/me/notes", Platform::Unix).unwrap();
+    assert!(matches!(local, Location::Local(_)));
+    assert_eq!(
+        Location::parse(&local.to_string(), Platform::Unix).unwrap(),
+        local
+    );
+    assert!(matches!(
+        Location::local(r"C:\notes", Platform::Windows),
+        Ok(Location::Local(_))
+    ));
+    assert!(matches!(
+        Location::local("host:notes", Platform::Unix),
+        Err(LocationError::NotLocal(_))
+    ));
+    assert!(matches!(
+        Location::local("", Platform::Unix),
+        Err(LocationError::Empty)
+    ));
+}
+
+#[test]
+fn a_peer_location_from_its_parts_is_the_one_parse_reads() {
+    let phone = PeerName::parse("my phone").unwrap();
+    let built = Location::peer(phone.clone(), "/sdcard/notes").unwrap();
+    assert_eq!(
+        built,
+        Location::parse("peer://my phone:/sdcard/notes", Platform::Unix).unwrap()
+    );
+    assert!(matches!(
+        Location::peer(phone.clone(), ""),
+        Err(LocationError::EmptyPart { part: "path", .. })
+    ));
+    assert!(matches!(
+        Location::peer(phone, "a\0b"),
+        Err(LocationError::Nul(_))
+    ));
+}

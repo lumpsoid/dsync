@@ -140,6 +140,15 @@ pub enum PeerAddressError {
     ZeroPort,
 }
 
+/// A typed address that is not one ([`PeerAddress::parse`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PeerAddressParseError {
+    #[error(transparent)]
+    Syntax(#[from] HostPortError),
+    #[error(transparent)]
+    Address(#[from] PeerAddressError),
+}
+
 impl PeerAddress {
     pub fn new(host: &str, port: u16) -> Result<PeerAddress, PeerAddressError> {
         let host = host.trim();
@@ -156,6 +165,15 @@ impl PeerAddress {
     /// `host` on the default peer port ([`Tuning::peer_port`]).
     pub fn with_default_port(host: &str) -> Result<PeerAddress, PeerAddressError> {
         PeerAddress::new(host, Tuning::DEFAULT.peer_port)
+    }
+
+    /// An address typed by hand (SPEC §4.4's re-entry when a device has
+    /// moved): `host` or `host:port`, IPv6 bracketed when it has a port. No
+    /// port is the default peer port.
+    pub fn parse(text: &str) -> Result<PeerAddress, PeerAddressParseError> {
+        let typed = parse_host_port(text)?;
+        let port = typed.port.unwrap_or(Tuning::DEFAULT.peer_port);
+        Ok(PeerAddress::new(&typed.host, port)?)
     }
 
     pub fn host(&self) -> &str {
@@ -341,5 +359,26 @@ mod tests {
         assert!(is_wildcard_address(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
         assert!(!is_wildcard_address(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(!is_wildcard_address(IpAddr::V4(Ipv4Addr::new(10, 8, 0, 3))));
+    }
+
+    #[test]
+    fn a_typed_peer_address_takes_the_default_port_unless_it_names_one() {
+        let parsed = |text| PeerAddress::parse(text).map(|a| a.to_string());
+        assert_eq!(parsed("192.168.1.5"), Ok("192.168.1.5:28771".into()));
+        assert_eq!(parsed(" phone.lan:4000 "), Ok("phone.lan:4000".into()));
+        assert_eq!(parsed("[fe80::1]:9"), Ok("[fe80::1]:9".into()));
+        assert_eq!(parsed("fe80::1"), Ok("[fe80::1]:28771".into()));
+        assert!(matches!(
+            PeerAddress::parse("host:x"),
+            Err(PeerAddressParseError::Syntax(_))
+        ));
+        assert!(matches!(
+            PeerAddress::parse("host:0"),
+            Err(PeerAddressParseError::Address(PeerAddressError::ZeroPort))
+        ));
+        assert!(matches!(
+            PeerAddress::parse("  "),
+            Err(PeerAddressParseError::Address(PeerAddressError::EmptyHost))
+        ));
     }
 }

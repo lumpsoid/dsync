@@ -65,7 +65,9 @@ mod write_stats;
 mod write_target;
 
 pub use action::Action;
-pub use advertisable_address::{chosen_advertisable_host, preferred_advertisable_address};
+pub use advertisable_address::{
+    advertised_host, chosen_advertisable_host, preferred_advertisable_address,
+};
 pub use app_dirs::{
     DIR_LEAF, DirError, DirPath, DirRule, EmptyDirPath, StateDirChoice, config_dir, state_dir,
 };

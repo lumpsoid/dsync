@@ -14,7 +14,9 @@ use std::io::{self, Write};
 use std::time::SystemTime;
 
 use dsync_core::{DeviceIdentityStore, PairedDevice, PairedDeviceStore, PairedDevices, StateDir};
-use dsync_domain::{CertificateExpiry, CertificateOwner, DeviceId, Location, PeerName};
+use dsync_domain::{
+    CertificateExpiry, CertificateOwner, DeviceId, Location, PeerName, PeerNameError,
+};
 use serde_json::{Value, json};
 
 use crate::args::{ListArgs, PairCommand, PairGrantArgs, PairRevokeArgs, StateDirArgs};
@@ -38,13 +40,13 @@ fn state_dir(args: &StateDirArgs, host: &Host) -> Result<StateDir, Failure> {
     StateDir::resolve(&args.choice()?, &host.facts).map_err(Failure::error)
 }
 
-/// `--name` as a device name. A blank one names nothing an operator could
-/// address later, so it is refused like a missing one.
+/// `--name` as a device name. A blank one ([`PeerNameError::Empty`]) is
+/// reported like a missing one.
 fn peer_name(text: &str, missing: &str) -> Result<PeerName, Failure> {
-    if text.trim().is_empty() {
-        return Err(Failure::usage(missing));
-    }
-    PeerName::parse(text).map_err(|error| Failure::usage(format!("--name: {error}")))
+    PeerName::parse(text).map_err(|error| match error {
+        PeerNameError::Empty => Failure::usage(missing),
+        other => Failure::usage(format!("--name: {other}")),
+    })
 }
 
 /// The id of the device paired as `name`.

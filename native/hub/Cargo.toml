@@ -5,6 +5,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+# The Flutter head's way into dsync-core (plan D10): intent-named commands
+# in, one reply per command out, and three session streams. Thin by rule:
+# decode a signal, call a core flow, encode what it returned. See
+# src/lib.rs.
+
 [lib]
 # `lib` for tests, `cdylib` for Linux, Android, Windows, `staticlib` for
 # iOS and macOS.
@@ -16,8 +21,12 @@ expect_used = "deny"
 wildcard_imports = "deny"
 
 [dependencies]
-anyhow.workspace = true
-dsync-spike.workspace = true
+dsync-core.workspace = true
+dsync-domain.workspace = true
 rinf = "=8.10.1"
-serde = { version = "1", features = ["derive"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }
+serde.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

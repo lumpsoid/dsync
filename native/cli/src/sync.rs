@@ -84,13 +84,15 @@ pub async fn sync(
         Renderer::Human(human)
     };
 
-    let (a, b) = connector.connect(&options).await.map_err(|error| {
+    let connected = connector.connect(&options).await.map_err(|error| {
         Failure::error(format!(
             "Cannot reach replica {}: {}",
             crate::render::words::side(error.side),
             error.failure
         ))
     })?;
+    renderer.peer_contacts(&connected.peers);
+    let (a, b) = (connected.a, connected.b);
 
     let signals = os_signals()
         .map_err(|error| Failure::error(format!("cannot trap stop signals: {error}")))?;

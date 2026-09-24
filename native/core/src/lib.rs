@@ -23,6 +23,7 @@ mod enrolment_message;
 mod enrolment_token;
 mod file_write;
 mod filter_listing;
+mod folder_access;
 mod frame;
 mod inbound;
 mod interface_addresses;
@@ -67,7 +68,7 @@ pub use archive_store::{
 pub use body::{Body, BodyDropped, BodyError, BodySender, body_channel};
 pub use case_folding::probe_case_folding;
 pub use certificate::{Certificate, CertificateError};
-pub use connector::{ConnectError, ConnectFailure, Connector};
+pub use connector::{ConnectError, ConnectFailure, Connected, Connector, PeerContact};
 pub use device_identity::{DeviceIdentity, IdentityIssueError, IdentityPairError};
 pub use device_identity_store::{DeviceIdentityStore, IdentityError};
 pub use dsync_domain::{Stage, StageTime, WriteStats};
@@ -79,6 +80,7 @@ pub use enrolment_listener::{
 pub use enrolment_message::{EnrolmentDenial, EnrolmentMessageError};
 pub use enrolment_token::TokenRefusal;
 pub use filter_listing::{UnlistableFolder, list_filter_folder, preview_filters_at};
+pub use folder_access::{ACCESS_PROBE_NAME, FolderRefused, check_folder_access};
 pub use interface_addresses::interface_addresses;
 pub use link_error::LinkError;
 pub use local_replica::LocalReplica;

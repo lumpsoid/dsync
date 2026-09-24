@@ -8,7 +8,8 @@ use std::str::FromStr;
 /// Uniqueness within the paired set is the store's rule (it alone sees
 /// every name).
 ///
-/// Refused: empty, and any `:` - `peer://<name>:<path>` splits at the first
+/// Refused: empty or blank (whitespace only names nothing anyone could
+/// address later), and any `:` - `peer://<name>:<path>` splits at the first
 /// colon, so a name containing one is not addressable (SPEC §2) and would
 /// be a pairing no location could ever reach. Control characters are
 /// refused too: the name is printed in run headers and pair listings.
@@ -17,7 +18,7 @@ pub struct PeerName(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PeerNameError {
-    #[error("a device name cannot be empty")]
+    #[error("a device name cannot be empty or blank")]
     Empty,
     #[error("device name {0:?} contains \":\", which peer:// cannot address")]
     Colon(String),
@@ -27,7 +28,7 @@ pub enum PeerNameError {
 
 impl PeerName {
     pub fn parse(text: &str) -> Result<Self, PeerNameError> {
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return Err(PeerNameError::Empty);
         }
         if text.contains(':') {
@@ -71,6 +72,11 @@ mod tests {
             );
         }
         assert_eq!(PeerName::parse(""), Err(PeerNameError::Empty));
+        assert_eq!(PeerName::parse(" \t "), Err(PeerNameError::Empty));
+        assert_eq!(
+            PeerName::parse(" a ").map(|n| n.to_string()),
+            Ok(" a ".into())
+        );
         assert!(matches!(
             PeerName::parse("a:b"),
             Err(PeerNameError::Colon(_))

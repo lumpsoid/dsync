@@ -11,7 +11,7 @@
 # `dart`, not `flutter_tester` (see test/support/dsync_binary.dart).
 #
 # `cargo` gates native/ (the Rust workspace: dsync-domain, dsync-core,
-# dsync-cli, hub, and the quarantined dsync-spike) on the same three OSes.
+# dsync-cli and hub) on the same three OSes.
 name: test
 
 on:

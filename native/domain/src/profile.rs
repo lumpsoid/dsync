@@ -71,6 +71,33 @@ const SSH_SIDES: &[&str] = &["a", "b"];
 const SSH_KEYS: &[&str] = &["options", "command"];
 
 impl Profile {
+    /// A profile of `a` and `b` built from values, as the head creates one
+    /// (plan OQ1): no rules, no options, default ssh access until the
+    /// `with_` calls below add them. Both locations are already typed, so
+    /// nothing here can fail.
+    pub fn new(a: ReplicaLocation, b: ReplicaLocation) -> Profile {
+        Profile {
+            a,
+            b,
+            rules: RuleSet::default(),
+            warn_size_bytes: None,
+            jobs: None,
+            ssh_a: SshAccess::default(),
+            ssh_b: SshAccess::default(),
+        }
+    }
+
+    pub fn with_rules(self, rules: RuleSet) -> Profile {
+        Profile { rules, ..self }
+    }
+
+    pub fn with_jobs(self, jobs: Jobs) -> Profile {
+        Profile {
+            jobs: Some(jobs),
+            ..self
+        }
+    }
+
     /// Parses a profile's TOML text; locations by `platform`'s rules.
     pub fn parse(text: &str, platform: Platform) -> Result<Profile, ProfileError> {
         let root: Table = text

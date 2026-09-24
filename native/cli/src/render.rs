@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use dsync_core::{RunEvent, SshLaunch, StateDir};
+use dsync_core::{PeerContact, RunEvent, SshLaunch, StateDir};
 use dsync_domain::{
     EffectiveOptions, Locality, Location, ProfileId, ProfileName, ReplicaLocation, RuleSet, Side,
 };
@@ -173,6 +173,13 @@ impl<O: Write, E: Write> Renderer<'_, O, E> {
         match self {
             Renderer::Human(human) => human.render(event),
             Renderer::Json(json) => json.render(event),
+        }
+    }
+
+    /// The header's peer notes; human mode only, as the Dart CLI's were.
+    pub fn peer_contacts(&mut self, peers: &[PeerContact]) {
+        if let Renderer::Human(human) = self {
+            human.peer_contacts(peers);
         }
     }
 }

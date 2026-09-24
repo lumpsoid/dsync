@@ -9,7 +9,7 @@
 //! stderr.
 
 use std::io::{self, IsTerminal, Write};
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -17,7 +17,7 @@ use dsync_core::{
     DeviceIdentityStore, EnrolmentBindError, EnrolmentEnd, EnrolmentEvent, EnrolmentListener,
     EnrolmentRefusal, PairedDeviceStore, PendingEnrolment, interface_addresses,
 };
-use dsync_domain::{Tuning, chosen_advertisable_host, preferred_advertisable_address};
+use dsync_domain::{Tuning, advertised_host};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
 use tokio::sync::Mutex;
 
@@ -67,9 +67,9 @@ pub async fn show(args: PairShowArgs, host: &Host) -> Result<u8, Failure> {
     })?;
     let stop = StopSequence::watch(signals, STOP_DEADLINE, exit_process);
 
-    let advertised = chosen_advertisable_host(args.advertise.as_deref(), bind)
-        .or_else(guessed_host)
-        .unwrap_or_else(|| Ipv4Addr::LOCALHOST.to_string());
+    // An unreadable interface list is only a worse guess.
+    let interfaces = interface_addresses().unwrap_or_default();
+    let advertised = advertised_host(args.advertise.as_deref(), bind, &interfaces);
     let payload = listener
         .payload(&advertised, args.serve_port)
         .map_err(|error| Failure::Fatal(format!("dsync pair show: {error}")))?
@@ -116,12 +116,6 @@ pub async fn show(args: PairShowArgs, host: &Host) -> Result<u8, Failure> {
                 .to_owned(),
         )),
     }
-}
-
-/// This machine's own guess at an address a peer could dial.
-fn guessed_host() -> Option<String> {
-    let addresses = interface_addresses().ok()?;
-    preferred_advertisable_address(&addresses).map(|address| address.to_string())
 }
 
 /// The commentary under the payload line, and the QR when the terminal

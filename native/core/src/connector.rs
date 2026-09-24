@@ -12,7 +12,10 @@ use std::ffi::OsString;
 use std::io;
 
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{EffectiveOptions, ExpandError, Locality, Location, ReplicaSpec, Side, Tuning};
+use dsync_domain::{
+    CertificateExpiry, DeviceId, EffectiveOptions, ExpandError, Locality, Location, ReplicaSpec,
+    Side, Tuning,
+};
 
 use crate::any_replica::AnyReplica;
 use crate::archive_store::ArchiveError;
@@ -33,6 +36,24 @@ pub struct Connector {
     peers: Option<PeerDialer>,
     peer_address: Option<PeerAddress>,
     ssh_program: Option<OsString>,
+}
+
+/// Both sides of a run, connected, and what dialling learned about each
+/// `peer://` one.
+pub struct Connected {
+    pub a: AnyReplica,
+    pub b: AnyReplica,
+    pub peers: Vec<PeerContact>,
+}
+
+/// A `peer://` side as its dial found it: the device, where it answered,
+/// and the certificate notes the run header shows under it (SPEC §4.4).
+#[derive(Clone, Debug)]
+pub struct PeerContact {
+    pub side: Side,
+    pub device: DeviceId,
+    pub address: PeerAddress,
+    pub expiries: Vec<CertificateExpiry>,
 }
 
 /// One side could not be connected. Fatal for the run (SPEC §11.5 exit 3).
@@ -126,13 +147,14 @@ impl Connector {
 
     /// Both sides, A first. A side that fails closes the one already
     /// connected before the failure is returned.
-    pub async fn connect(
-        &self,
-        options: &EffectiveOptions,
-    ) -> Result<(AnyReplica, AnyReplica), ConnectError> {
-        let a = self.side(options, Side::A).await?;
+    pub async fn connect(&self, options: &EffectiveOptions) -> Result<Connected, ConnectError> {
+        let (a, peer_a) = self.side(options, Side::A).await?;
         match self.side(options, Side::B).await {
-            Ok(b) => Ok((a, b)),
+            Ok((b, peer_b)) => Ok(Connected {
+                a,
+                b,
+                peers: peer_a.into_iter().chain(peer_b).collect(),
+            }),
             Err(error) => {
                 let _ = a.close().await;
                 Err(error)
@@ -144,7 +166,7 @@ impl Connector {
         &self,
         options: &EffectiveOptions,
         side: Side,
-    ) -> Result<AnyReplica, ConnectError> {
+    ) -> Result<(AnyReplica, Option<PeerContact>), ConnectError> {
         let location = options.replica(side).to_location();
         let spec = ReplicaSpec {
             root: location.path().to_owned(),
@@ -152,9 +174,10 @@ impl Connector {
             side,
             jobs: options.jobs.unwrap_or(self.tuning.scan_jobs),
         };
+        let local = |replica| (replica, None);
         let connected = match (location.locality(&self.local_addresses), &location) {
             (Locality::InProcess, _) | (_, Location::Local(_)) => {
-                self.open_local(&location, spec).await
+                self.open_local(&location, spec).await.map(local)
             }
             (Locality::Remote, Location::Ssh(ssh)) => {
                 let mut launch = SshLaunch::new(options.ssh(side), ssh.user(), ssh.host());
@@ -163,15 +186,25 @@ impl Connector {
                 }
                 RemoteReplica::over_ssh(&launch, spec, &self.tuning)
                     .await
-                    .map(AnyReplica::Remote)
+                    .map(|replica| local(AnyReplica::Remote(replica)))
                     .map_err(ConnectFailure::from)
             }
-            (Locality::Remote, Location::Unix(unix)) => self.dial_socket(unix.socket(), spec).await,
+            (Locality::Remote, Location::Unix(unix)) => {
+                self.dial_socket(unix.socket(), spec).await.map(local)
+            }
             (Locality::Remote, Location::Peer(peer)) => match &self.peers {
                 Some(dialer) => dialer
                     .dial(peer.device(), self.peer_address.clone(), spec)
                     .await
-                    .map(|dialed| AnyReplica::Remote(dialed.replica))
+                    .map(|dialed| {
+                        let contact = PeerContact {
+                            side,
+                            device: dialed.device,
+                            address: dialed.address,
+                            expiries: dialed.expiries,
+                        };
+                        (AnyReplica::Remote(dialed.replica), Some(contact))
+                    })
                     .map_err(ConnectFailure::from),
                 None => Err(ConnectFailure::NoIdentity),
             },

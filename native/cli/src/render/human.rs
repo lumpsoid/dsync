@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
 
-use dsync_core::{LockError, ReplicaError, RunError, RunEvent};
+use dsync_core::{LockError, PeerContact, ReplicaError, RunError, RunEvent};
 use dsync_domain::{
     Action, Conflict, ReplicaInfo, RunSummary, ScanTally, Side, SkippedPath, SkippedReason, Status,
     Verbosity,
@@ -24,6 +24,9 @@ pub struct HumanRenderer<'v, O: Write, E: Write> {
     verbosity: Verbosity,
     view: &'v RunView,
     clock: Wallclock,
+    /// Lines under each side's header row: SPEC §4.4's certificate expiry
+    /// warnings for a `peer://` side, known once it is dialled.
+    notes: Vec<(Side, String)>,
 }
 
 impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
@@ -40,7 +43,20 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
             verbosity,
             view,
             clock,
+            notes: Vec::new(),
         }
+    }
+
+    /// What dialling learned about each `peer://` side, for the header.
+    pub fn peer_contacts(&mut self, peers: &[PeerContact]) {
+        self.notes = peers
+            .iter()
+            .flat_map(|peer| {
+                peer.expiries
+                    .iter()
+                    .map(|expiry| (peer.side, expiry.to_string()))
+            })
+            .collect();
     }
 
     /// `--verbose` only: the merged rules, and how each side is reached.
@@ -142,6 +158,9 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
                 replica.location,
                 replica.transport().label()
             );
+            for (_, note) in self.notes.iter().filter(|(noted, _)| *noted == side) {
+                let _ = writeln!(self.out, "   {note}");
+            }
             if self.verbosity == Verbosity::Verbose
                 && let Some(archive) = &info.archive_path
             {

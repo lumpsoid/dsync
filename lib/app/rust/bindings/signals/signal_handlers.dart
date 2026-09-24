@@ -1,40 +1,40 @@
 part of 'signals.dart';
 
 final assignRustSignal = <String, void Function(Uint8List, Uint8List)>{
-  'ServeFailed': (Uint8List messageBytes, Uint8List binary) {
-    final message = ServeFailed.bincodeDeserialize(messageBytes);
+  'CoreReply': (Uint8List messageBytes, Uint8List binary) {
+    final message = CoreReply.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(
       message,
       binary,
     );
-    _serveFailedStreamController.add(rustSignal);
-    ServeFailed.latestRustSignal = rustSignal;
+    _coreReplyStreamController.add(rustSignal);
+    CoreReply.latestRustSignal = rustSignal;
   },
-  'ServeReady': (Uint8List messageBytes, Uint8List binary) {
-    final message = ServeReady.bincodeDeserialize(messageBytes);
+  'EnrolmentUpdate': (Uint8List messageBytes, Uint8List binary) {
+    final message = EnrolmentUpdate.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(
       message,
       binary,
     );
-    _serveReadyStreamController.add(rustSignal);
-    ServeReady.latestRustSignal = rustSignal;
+    _enrolmentUpdateStreamController.add(rustSignal);
+    EnrolmentUpdate.latestRustSignal = rustSignal;
   },
-  'TransferDone': (Uint8List messageBytes, Uint8List binary) {
-    final message = TransferDone.bincodeDeserialize(messageBytes);
+  'RunUpdate': (Uint8List messageBytes, Uint8List binary) {
+    final message = RunUpdate.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(
       message,
       binary,
     );
-    _transferDoneStreamController.add(rustSignal);
-    TransferDone.latestRustSignal = rustSignal;
+    _runUpdateStreamController.add(rustSignal);
+    RunUpdate.latestRustSignal = rustSignal;
   },
-  'TransferProgress': (Uint8List messageBytes, Uint8List binary) {
-    final message = TransferProgress.bincodeDeserialize(messageBytes);
+  'ServeUpdate': (Uint8List messageBytes, Uint8List binary) {
+    final message = ServeUpdate.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(
       message,
       binary,
     );
-    _transferProgressStreamController.add(rustSignal);
-    TransferProgress.latestRustSignal = rustSignal;
+    _serveUpdateStreamController.add(rustSignal);
+    ServeUpdate.latestRustSignal = rustSignal;
   },
 };

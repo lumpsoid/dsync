@@ -1,8 +1,6 @@
 # The Rust half of dsync (task rust-core-port): `dsync-domain` (pure rules),
-# `dsync-core` (the I/O core being rewritten), the `dsync` CLI, the rinf
-# hub the Flutter head loads, and the quarantined `dsync-spike` (the original
-# spike core; the hub still builds against it until a later phase replaces
-# it). See NOTES.md.
+# `dsync-core` (the I/O core), the `dsync` CLI, and the rinf hub the
+# Flutter head loads. See NOTES.md.
 #
 # rinf's own template puts this workspace at the Flutter project root; it
 # lives here instead so the Rust tree is one self-contained directory.
@@ -11,12 +9,11 @@
 
 [workspace]
 resolver = "3"
-members = ["domain", "core", "cli", "hub", "spike"]
+members = ["domain", "core", "cli", "hub"]
 
 [workspace.dependencies]
 dsync-domain = { path = "domain" }
 dsync-core = { path = "core" }
-dsync-spike = { path = "spike" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7", default-features = false }

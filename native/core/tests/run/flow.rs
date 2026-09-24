@@ -236,6 +236,9 @@ async fn a_failing_scan_is_one_error_and_both_sides_still_unlock_and_close() {
             ..
         }]
     ));
+    // A scan failure is not a busy replica (the lock-held test is the
+    // positive case).
+    assert!(!finished.errors()[0].replica_busy());
     assert!(finished.report.summary.is_none());
     assert_eq!(finished.exit_code(), 3);
     for log in [&log_a, &log_b] {
@@ -288,6 +291,7 @@ async fn a_lock_held_on_b_is_an_error_after_which_a_is_unlocked() {
         unreachable!()
     };
     assert!(matches!(**source, ReplicaError::Lock(_)), "{source:?}");
+    assert!(finished.errors()[0].replica_busy());
     assert_eq!(finished.exit_code(), 3);
     assert_eq!(
         log_a.calls(),
