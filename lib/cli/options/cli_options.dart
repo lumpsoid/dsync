@@ -1,3 +1,5 @@
+import 'package:dsync/dsync_core/apply/applier.dart';
+
 import 'cli_options_error.dart';
 import 'sync_target.dart';
 import 'verbosity.dart';
@@ -46,6 +48,11 @@ class CliOptions {
   final int? warnSizeBytes;
   final int? jobs;
 
+  /// `--apply-concurrency`, a hidden benchmark knob (task 7080d6): how many
+  /// apply actions overlap. [Applier.defaultConcurrency] when the flag is
+  /// absent, which is the depth every other run uses.
+  final int applyConcurrency;
+
   /// `--ssh-option` values, in the order they were given, additive to
   /// whatever a profile's `[ssh.a]`/`[ssh.b]` contributes (SPEC §4.2) — see
   /// [SshAccess.withFlags].
@@ -84,9 +91,11 @@ class CliOptions {
     required bool quiet,
     String? warnSizeRaw,
     String? jobsRaw,
+    required String? applyConcurrencyRaw,
   }) : verbosity = Verbosity.resolve(verbose: verbose, quiet: quiet),
        warnSizeBytes = _parseWarnSize(warnSizeRaw),
-       jobs = _parseJobs(jobsRaw) {
+       jobs = _parseJobs(jobsRaw),
+       applyConcurrency = _parseApplyConcurrency(applyConcurrencyRaw) {
     // An empty string in either would reach ssh as an argv word: an empty
     // option reads as a second destination, an empty command as a remote
     // shell line starting with `agent`. Both fail a long way from the flag
@@ -116,6 +125,17 @@ class CliOptions {
     if (value == null || value < 0) {
       throw CliOptionsError(
         '--warn-size must be a non-negative integer, got "$raw"',
+      );
+    }
+    return value;
+  }
+
+  static int _parseApplyConcurrency(String? raw) {
+    if (raw == null) return Applier.defaultConcurrency;
+    final value = int.tryParse(raw);
+    if (value == null || value <= 0) {
+      throw CliOptionsError(
+        '--apply-concurrency must be a positive integer, got "$raw"',
       );
     }
     return value;

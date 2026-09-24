@@ -2,6 +2,7 @@ import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/process_memory.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
@@ -241,6 +242,9 @@ class RunMetricsRecorder {
     if (record.far?.loopLag case final lag?) {
       replica.servedLoopLag = lag;
     }
+    if (record.far?.reads case final reads?) {
+      replica.servedReads = reads;
+    }
   }
 
   /// Opens a flush of [bytes] framed protocol carrying [frames] frames on
@@ -445,6 +449,7 @@ class RunMetricsRecorder {
           writePath: entry.value.writePathSource?.call(),
           writeStages: entry.value.writeStages,
           servedLoopLag: entry.value.servedLoopLag,
+          servedReads: entry.value.servedReads,
           framesSent: entry.value.framesSent,
           quiet: Map.unmodifiable(entry.value.quiet),
           awaiting: Map.unmodifiable(entry.value.awaiting),
@@ -486,6 +491,10 @@ class _ReplicaRecord {
   /// The served peer's event-loop lag, as of the `unlock` reply that carried
   /// it, or null before one did.
   LoopLagStats? servedLoopLag;
+
+  /// The served peer's read cadence, as of the `unlock` reply that carried
+  /// it, or null before one did.
+  ReadCadenceStats? servedReads;
 
   /// Flushes handed to the transport and not yet written. While this is
   /// above zero the link is carrying something and neither idle figure

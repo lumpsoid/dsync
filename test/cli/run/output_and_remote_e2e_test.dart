@@ -197,6 +197,7 @@ void main() {
       verbose: false,
       quiet: false,
       jobsRaw: jobsRaw,
+      applyConcurrencyRaw: null,
     );
 
     test('copies a file to the real remote agent, honors --ignore and '

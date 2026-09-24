@@ -5,6 +5,7 @@ import 'package:dsync/dsync_core/agent/write_stage_tally.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/replica_spec.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
@@ -19,6 +20,7 @@ import 'package:dsync/dsync_core/protocol/version_handshake.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
 import 'package:dsync/dsync_core/run/loop_lag_sampler.dart';
 import 'package:dsync/dsync_core/run/loop_lag_tally.dart';
+import 'package:dsync/dsync_core/run/read_cadence_tally.dart';
 
 /// The remote end of the framed protocol (SPEC §4.2): performs the version
 /// handshake, then the required `hello` prologue, then routes control-frame
@@ -134,10 +136,11 @@ class AgentServer {
     // that dies between `lock` and `unlock` would leave the replica locked
     // for the life of the agent.
     Agent? sessionAgent;
-    // This isolate's event-loop lag, when the initiator's `hello` asked for
-    // it (SPEC §17, task 7080d6). Stopped in the `finally` as well as on
-    // `unlock`, so a session that ends any other way leaves no timer behind.
-    _ServedLoopLag? loopLag;
+    // This isolate's event-loop lag and this connection's read cadence, when
+    // the initiator's `hello` asked for them (SPEC §17, task 7080d6). Stopped
+    // in the `finally` as well as on `unlock`, so a session that ends any
+    // other way leaves no timer behind.
+    _ServedTimings? timings;
     try {
       // Both version frames carry [Frame.noRequest] — the handshake precedes
       // every request, so there is no request for them to belong to.
@@ -192,7 +195,7 @@ class AgentServer {
       }
       sessionAgent = agent;
       if (request.params[helloLoopLagParam] == true) {
-        loopLag = _ServedLoopLag(clock);
+        timings = _ServedTimings(clock, router);
       }
       final info = await agent.hello();
       await _reply(
@@ -230,7 +233,7 @@ class AgentServer {
           writePath,
           stages,
           clock,
-          loopLag,
+          timings,
         );
         inFlight.add(handled);
         unawaited(handled.whenComplete(() => inFlight.remove(handled)));
@@ -238,7 +241,7 @@ class AgentServer {
 
       await reading;
     } finally {
-      loopLag?.stop();
+      timings?.stop();
       await router.cancel();
       // Handlers first, then the lock: a dispatch still finishing is still
       // touching this replica, and releasing the lock out from under it
@@ -275,7 +278,7 @@ class AgentServer {
     WritePathStats? Function(Agent agent)? writePath,
     WriteStageTally stages,
     Elapsed clock,
-    _ServedLoopLag? loopLag,
+    _ServedTimings? timings,
   ) async {
     final id = frame.requestId;
     // Started before the request is even decoded, because what this measures
@@ -303,6 +306,7 @@ class AgentServer {
             await _reply(channel, const AgentSuccess(), id, farSide, inFlight);
           case 'unlock':
             await agent.unlock();
+            final served = timings?.stop();
             // The one reply that carries this side's write-path totals: the
             // last exchange of a run (SPEC §4.3), so the totals are complete
             // and nothing before it has paid for seven integers it could not
@@ -321,7 +325,8 @@ class AgentServer {
                 final stats when stats.files > 0 => stats,
                 _ => null,
               },
-              loopLag?.stop(),
+              served?.loopLag,
+              served?.reads,
             );
           case 'scan':
             final session = await agent.scan(
@@ -345,11 +350,7 @@ class AgentServer {
                   path as String,
               ],
             );
-            await _sendScanPayload(
-              channel,
-              id,
-              encodeBucketDigests(digests),
-            );
+            await _sendScanPayload(channel, id, encodeBucketDigests(digests));
           case scanBucketsOp:
             final entries = await scan.held.entriesIn([
               for (final bucket in request.params['buckets'] as List)
@@ -364,10 +365,10 @@ class AgentServer {
             );
           case 'writeFile':
             bodyComplete = false;
-            // The lag this session reports is the apply's: sampling starts
-            // with the first write rather than at `hello`, so a scan's
-            // quieter loop does not dilute it.
-            loopLag?.start();
+            // The lag and reads this session reports are the apply's:
+            // sampling starts with the first write rather than at `hello`, so
+            // a scan's quieter loop does not dilute them.
+            timings?.start();
             // Ended in the `finally` rather than after the reply, so a write
             // that fails still leaves its stage and the live counts stay
             // true for the writes after it.
@@ -467,11 +468,7 @@ class AgentServer {
     List<int> payload,
   ) => channel.send(
     FrameCodec().encode(
-      Frame(
-        type: FrameType.scanResult,
-        requestId: requestId,
-        payload: payload,
-      ),
+      Frame(type: FrameType.scanResult, requestId: requestId, payload: payload),
     ),
   );
 
@@ -485,6 +482,7 @@ class AgentServer {
     WritePathStats? writePath,
     WriteStageStats? writeStages,
     LoopLagStats? loopLag,
+    ReadCadenceStats? reads,
   ]) {
     final stamped = farSide != null && result is AgentSuccess
         ? result.withFarSide(
@@ -496,6 +494,7 @@ class AgentServer {
               writePath: writePath,
               writeStages: writeStages,
               loopLag: loopLag,
+              reads: reads,
             ),
           )
         : result;
@@ -572,17 +571,26 @@ class _HeldScan {
   }
 }
 
-/// The serving isolate's event-loop lag for one session (SPEC §17, task
-/// 7080d6): sampled from the first served write until `unlock`, on the
-/// session's clock so its window reads against the write stages'.
+/// The serving isolate's event-loop lag and the connection's read cadence
+/// for one session (SPEC §17, task 7080d6): both taken from the first served
+/// write until `unlock`, on the session's clock so their window reads
+/// against the write stages'.
 ///
 /// The isolate sampled is the one running [AgentServer.serve] — the one
 /// reading the connection, and, because `LocalAgent.writeFile` runs its
 /// `dart:io` calls from the same isolate, the one their completions queue
 /// on. On the phone that is the app's main isolate.
-class _ServedLoopLag {
+///
+/// The reads are counted at the router's listener, which is also where each
+/// frame's arrival is stamped: a request's far clock starts in the same
+/// synchronous callback that decoded it, so the only wait before it that
+/// Dart can see is the `queued` write stage. What these add is how the bytes
+/// got to that listener — steadily or in bursts.
+class _ServedTimings {
   final Elapsed _clock;
+  final FrameRouter _router;
   final LoopLagTally _tally = LoopLagTally();
+  final ReadCadenceTally _reads = ReadCadenceTally();
   late final LoopLagSampler _sampler = LoopLagSampler(
     period: LoopLagSampler.defaultPeriod,
     onLag: _tally.add,
@@ -590,23 +598,29 @@ class _ServedLoopLag {
   Duration? _startedAt;
   Duration? _stoppedAt;
 
-  _ServedLoopLag(this._clock);
+  _ServedTimings(this._clock, this._router);
 
   /// Starts sampling at the first call; later calls, and calls after
   /// [stop], change nothing.
   void start() {
-    if (_startedAt != null) return;
+    if (_startedAt != null || _stoppedAt != null) return;
     _startedAt = _clock();
     _sampler.start();
+    _router.readCadence = _reads;
   }
 
   /// Stops sampling and says what was seen, or null if no write ever
   /// started it — a push, where this end only reads.
-  LoopLagStats? stop() {
+  ({LoopLagStats loopLag, ReadCadenceStats reads})? stop() {
     _sampler.stop();
+    _router.readCadence = null;
     final started = _startedAt;
-    if (started == null) return null;
     final stopped = _stoppedAt ??= _clock();
-    return _tally.stats(window: stopped - started);
+    if (started == null) return null;
+    final window = stopped - started;
+    return (
+      loopLag: _tally.stats(window: window),
+      reads: _reads.stats(window: window),
+    );
   }
 }

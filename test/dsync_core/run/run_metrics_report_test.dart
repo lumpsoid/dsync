@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
@@ -118,6 +119,42 @@ void main() {
       final report = formatRunMetrics(_withStages(null));
       expect(report, isNot(contains('loop lag')));
       expect(report, isNot(contains('event-loop lag')));
+      expect(report, isNot(contains('served reads')));
+    });
+
+    test("prints the served peer's read cadence", () {
+      final report = formatRunMetrics(
+        RunMetrics(
+          elapsed: const Duration(seconds: 12),
+          phases: const {},
+          replicas: {
+            'b': const ReplicaMetrics(
+              side: 'b',
+              remote: true,
+              ops: {},
+              wireBytesSent: 0,
+              wireBytesReceived: 0,
+              servedReads: ReadCadenceStats(
+                reads: 3001,
+                window: Duration(seconds: 6),
+                bytes: 3001 * 2048,
+                maxBytes: 65536,
+                gaps: Duration(seconds: 6),
+                p50Gap: Duration(microseconds: 300),
+                p90Gap: Duration(milliseconds: 4),
+                maxGap: Duration(milliseconds: 90),
+              ),
+            ),
+          },
+        ),
+      );
+      expect(
+        report,
+        contains(
+          '  served reads: 3,001 reads over 6000.0 ms · 2.0 KiB mean, 64.0 KiB '
+          'max · gap mean 2.0 ms · p50 300 µs · p90 4.0 ms · max 90.0 ms\n',
+        ),
+      );
     });
   });
 }

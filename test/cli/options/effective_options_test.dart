@@ -31,6 +31,7 @@ void main() {
       quiet: false,
       warnSizeRaw: warnSizeRaw,
       jobsRaw: jobsRaw,
+      applyConcurrencyRaw: null,
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/run_metrics.dart';
 import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
@@ -252,6 +253,13 @@ String formatRunMetrics(RunMetrics metrics) {
       if (replica.servedLoopLag case final lag?) {
         out.writeln('  served loop lag: ${_formatLoopLag(lag)}');
       }
+      // The same window seen from the served peer's connection reader: how
+      // often this run's bytes reached it and in what sizes. Rare, large
+      // reads with long gaps are bytes held below Dart — kernel or TLS —
+      // which no frame's arrival stamp can show.
+      if (replica.servedReads case final reads?) {
+        out.writeln('  served reads: ${_formatReadCadence(reads)}');
+      }
       // Two figures rather than one, per phase, and the split is the answer
       // a single `idle` total could never give (SPEC §17): `quiet` is time
       // with nothing outstanding at all, which more callers would fill, and
@@ -357,6 +365,18 @@ String _formatLoopLag(LoopLagStats lag) =>
     'max ${formatMetricDuration(lag.max)} · '
     '${formatMetricDuration(lag.late)} late '
     '(${(lag.lateShare * 100).toStringAsFixed(0)}%)';
+
+/// One [ReadCadenceStats] as a line: reads over the window, their sizes,
+/// and the gaps between them.
+String _formatReadCadence(ReadCadenceStats reads) =>
+    '${formatMetricCount(reads.reads)} reads over '
+    '${formatMetricDuration(reads.window)} · '
+    '${formatMetricBytes(reads.meanBytes)} mean, '
+    '${formatMetricBytes(reads.maxBytes)} max · '
+    'gap mean ${formatMetricDuration(reads.meanGap)} · '
+    'p50 ${formatMetricDuration(reads.p50Gap)} · '
+    'p90 ${formatMetricDuration(reads.p90Gap)} · '
+    'max ${formatMetricDuration(reads.maxGap)}';
 
 /// One share of [total] out of [count], for the cumulative peer-side totals
 /// that arrive summed over every call that fed them.

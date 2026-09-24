@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/protocol/frame_router.dart';
+import 'package:dsync/dsync_core/run/read_cadence_tally.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -285,6 +286,38 @@ void main() {
       // the origin of a clock that was never started.
       expect((await reply).arrivedAt, isNull);
     });
+  });
+
+  // Task 7080d6: every chunk off the input is a read, counted on the router's
+  // clock once something asked and not before.
+  test('counts each chunk as one read once a tally is set', () async {
+    var now = Duration.zero;
+    final timed = FrameRouter(wire.stream, elapsed: () => now);
+    unawaited(
+      timed
+          .run(onUnrouted: (frame, _) => unrouted.add(frame))
+          .catchError((_) {}),
+    );
+    final frame = codec.encode(
+      const Frame(type: FrameType.control, requestId: 1, payload: [1, 2]),
+    );
+
+    wire.add(frame); // before anything asked: not counted
+    await pumpEventQueue();
+    final tally = ReadCadenceTally();
+    timed.readCadence = tally;
+    now = const Duration(milliseconds: 10);
+    wire.add(frame);
+    await pumpEventQueue();
+    now = const Duration(milliseconds: 14);
+    wire.add(Uint8List.fromList([...frame, ...frame]));
+    await pumpEventQueue();
+
+    final stats = tally.stats(window: const Duration(milliseconds: 4));
+    expect(stats.reads, 2);
+    expect(stats.bytes, frame.length * 3);
+    expect(stats.maxBytes, frame.length * 2);
+    expect(stats.maxGap, const Duration(milliseconds: 4));
   });
 
   group('a route not taking frames', () {

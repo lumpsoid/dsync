@@ -564,11 +564,23 @@ void main() {
       expect(lag.window, greaterThan(Duration.zero));
     });
 
+    test('reports the reads from the first write to unlock', () async {
+      final reads = farSideFromJson(
+        await unlockAfterWrite(ask: true, write: true),
+      )!.reads!;
+      // At least the write's own body frames and the unlock request; the
+      // in-memory pair hands each send over as its own chunk.
+      expect(reads.reads, greaterThanOrEqualTo(2));
+      expect(reads.bytes, greaterThan(0));
+      expect(reads.window, greaterThan(Duration.zero));
+    });
+
     test('is absent when hello did not ask', () async {
       final far = farSideFromJson(
         await unlockAfterWrite(ask: false, write: true),
       )!;
       expect(far.loopLag, isNull);
+      expect(far.reads, isNull);
     });
 
     test('is absent from a session that wrote nothing', () async {
@@ -576,6 +588,7 @@ void main() {
         await unlockAfterWrite(ask: true, write: false),
       )!;
       expect(far.loopLag, isNull);
+      expect(far.reads, isNull);
     });
   });
 }

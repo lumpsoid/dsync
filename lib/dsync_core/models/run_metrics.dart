@@ -1,6 +1,7 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
 import 'package:dsync/dsync_core/models/process_memory.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/read_ahead_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
@@ -488,6 +489,11 @@ class ReplicaMetrics {
   /// reported it.
   final LoopLagStats? servedLoopLag;
 
+  /// How the served peer's connection reader was handed this run's bytes,
+  /// over the same window as [servedLoopLag] (SPEC §17, task 7080d6), or
+  /// null unless this run asked for it and the peer reported it.
+  final ReadCadenceStats? servedReads;
+
   /// How long this replica's transport had nothing to carry, per phase, and
   /// how long it had something outstanding and was waiting for it (SPEC §17).
   ///
@@ -522,6 +528,7 @@ class ReplicaMetrics {
     this.writePath,
     this.writeStages,
     this.servedLoopLag,
+    this.servedReads,
     this.quiet = const {},
     this.awaiting = const {},
   });

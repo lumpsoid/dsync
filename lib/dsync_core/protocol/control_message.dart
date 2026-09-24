@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dsync/dsync_core/models/archive.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
@@ -94,9 +95,12 @@ const farInboundWaitKey = 'farInboundWaitMicros';
 const farWritePathKey = 'farWritePath';
 const farWriteStagesKey = 'farWriteStages';
 const farLoopLagKey = 'farLoopLag';
+const farReadsKey = 'farReads';
 
 /// The `hello` parameter that asks the serving side to sample its event
-/// loop's lag and report it on the `unlock` reply (SPEC §17, task 7080d6).
+/// loop's lag and count its connection's reads, and report both on the
+/// `unlock` reply (SPEC §17, task 7080d6). Named for the first of them; the
+/// wire name stays so older servers keep reading it.
 /// Absent unless the initiator is showing timings; an older server ignores
 /// it and reports nothing, which reads as absent rather than as zero.
 const helloLoopLagParam = 'loopLag';
@@ -122,6 +126,7 @@ FarSideReport? farSideFromJson(Map<String, dynamic> data) {
     writePath: writePathFromJson(data[farWritePathKey]),
     writeStages: writeStagesFromJson(data[farWriteStagesKey]),
     loopLag: loopLagFromJson(data[farLoopLagKey]),
+    reads: readCadenceFromJson(data[farReadsKey]),
   );
 }
 
@@ -230,6 +235,36 @@ LoopLagStats? loopLagFromJson(Object? data) {
   );
 }
 
+/// The peer's read cadence as it travels (SPEC §17, task 7080d6).
+Map<String, dynamic> readCadenceToJson(ReadCadenceStats reads) => {
+  'reads': reads.reads,
+  'windowMicros': reads.window.inMicroseconds,
+  'bytes': reads.bytes,
+  'maxBytes': reads.maxBytes,
+  'gapsMicros': reads.gaps.inMicroseconds,
+  'p50GapMicros': reads.p50Gap.inMicroseconds,
+  'p90GapMicros': reads.p90Gap.inMicroseconds,
+  'maxGapMicros': reads.maxGap.inMicroseconds,
+};
+
+/// [data] read back, or null when the peer sent none — the same cases as
+/// [loopLagFromJson].
+ReadCadenceStats? readCadenceFromJson(Object? data) {
+  if (data is! Map<String, dynamic>) return null;
+  int count(String key) => data[key] is int ? data[key] as int : 0;
+  Duration micros(String key) => Duration(microseconds: count(key));
+  return ReadCadenceStats(
+    reads: count('reads'),
+    window: micros('windowMicros'),
+    bytes: count('bytes'),
+    maxBytes: count('maxBytes'),
+    gaps: micros('gapsMicros'),
+    p50Gap: micros('p50GapMicros'),
+    p90Gap: micros('p90GapMicros'),
+    maxGap: micros('maxGapMicros'),
+  );
+}
+
 /// The operation succeeded; [data] carries whatever result it returns, empty
 /// for operations with nothing to report beyond having happened.
 class AgentSuccess extends AgentResult {
@@ -255,6 +290,7 @@ class AgentSuccess extends AgentResult {
     if (report.writeStages case final stages?)
       farWriteStagesKey: writeStagesToJson(stages),
     if (report.loopLag case final lag?) farLoopLagKey: loopLagToJson(lag),
+    if (report.reads case final reads?) farReadsKey: readCadenceToJson(reads),
   });
 
   @override

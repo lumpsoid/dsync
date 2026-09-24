@@ -1,5 +1,6 @@
 import 'package:dsync/dsync_core/models/exchange_record.dart';
 import 'package:dsync/dsync_core/models/far_side_report.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_band.dart';
 import 'package:dsync/dsync_core/models/write_path_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
@@ -538,6 +539,30 @@ void main() {
       expect(stats.meanWireTime, const Duration(milliseconds: 40));
       // 25 ms, not 40 − 15: the link is per call, then averaged.
       expect(stats.meanLinkTime, const Duration(milliseconds: 25));
+    });
+
+    test("keeps the served peer's read cadence off its unlock reply", () {
+      const reads = ReadCadenceStats(
+        reads: 10,
+        window: Duration(seconds: 1),
+        bytes: 1000,
+        maxBytes: 400,
+        gaps: Duration(milliseconds: 900),
+        p50Gap: Duration(milliseconds: 90),
+        p90Gap: Duration(milliseconds: 100),
+        maxGap: Duration(milliseconds: 100),
+      );
+      metrics.recordExchange(
+        'b',
+        const ExchangeRecord(
+          op: AgentOp.unlock,
+          queueWait: Duration.zero,
+          wire: Duration(milliseconds: 5),
+          far: FarSideReport(span: Duration(milliseconds: 1), reads: reads),
+        ),
+      );
+
+      expect(metrics.snapshot().replicas['b']!.servedReads, same(reads));
     });
 
     test('a far side dearer than the exchange reads as no link time', () {

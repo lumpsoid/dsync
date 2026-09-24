@@ -255,6 +255,7 @@ class SyncRunner {
         rules: effective.rules,
         metrics: instruments.recorder,
         runMarker: runMarker,
+        applyConcurrency: options.applyConcurrency,
       );
 
       // SPEC §11.1: an ad-hoc run has no profile name, so the run header (SPEC

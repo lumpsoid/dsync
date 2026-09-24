@@ -1,4 +1,5 @@
 import 'package:args/args.dart';
+import 'package:dsync/dsync_core/apply/applier.dart';
 
 /// Names for the SPEC §11.2 flags [addCommonSyncFlags] registers.
 ///
@@ -14,6 +15,7 @@ class CommonSyncFlags {
   static const multiOptionIgnore = 'ignore';
   static const optionWarnSize = 'warn-size';
   static const optionJobs = 'jobs';
+  static const optionApplyConcurrency = 'apply-concurrency';
   static const multiOptionSshOption = 'ssh-option';
   static const optionRemoteDsync = 'remote-dsync';
   static const flagTimings = 'timings';
@@ -62,6 +64,15 @@ void addCommonSyncFlags(ArgParser parser, {bool includeDryRun = true}) {
       help: 'Size in bytes to warn above.',
     )
     ..addOption(CommonSyncFlags.optionJobs, help: 'Hash parallelism.')
+    // Hidden: a benchmark's knob (task 7080d6), not a tuning a user is meant
+    // to reach for — the apply's depth is SPEC §7.1's to state.
+    ..addOption(
+      CommonSyncFlags.optionApplyConcurrency,
+      hide: true,
+      help:
+          'Benchmarks only: how many apply actions overlap. Defaults to '
+          '${Applier.defaultConcurrency}.',
+    )
     ..addMultiOption(
       CommonSyncFlags.multiOptionSshOption,
       help:

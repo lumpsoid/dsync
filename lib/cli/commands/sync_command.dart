@@ -53,6 +53,9 @@ class SyncCommand extends Command<int> {
         quiet: results.flag(CommonSyncFlags.flagQuiet),
         warnSizeRaw: results.option(CommonSyncFlags.optionWarnSize),
         jobsRaw: results.option(CommonSyncFlags.optionJobs),
+        applyConcurrencyRaw: results.option(
+          CommonSyncFlags.optionApplyConcurrency,
+        ),
       );
     } on CliOptionsError catch (error) {
       usageException(error.message);

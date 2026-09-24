@@ -12,9 +12,9 @@
 // builds; alternated in one sitting they share it. The radio snapshot either
 // side of each run is the check that they did.
 //
-// What one run is. `<arm command> sync <profile> --batch --timings`, driven
-// from the desktop, with the phone serving (its Serve page, or `dsync agent
-// --serve`). The profile's desktop root must contain --tree, which must be
+// What one run is. `<arm binary> sync <profile> --batch --timings [arm words]`,
+// driven from the desktop, with the phone serving (its Serve page, or `dsync
+// agent --serve`). The profile's desktop root must contain --tree, which must be
 // empty or absent: the driver owns it for the session and leaves it empty.
 // Before the first run, and after every --switch, one file is synced into
 // the phone and away again, untimed, so a phone that cannot write into the
@@ -36,7 +36,9 @@
 //
 // Arms. `--arm name=command` twice, in the order the ratio is taken (second
 // over first). The command is split on spaces and must run the dsync CLI —
-// usually a binary from `dart compile exe bin/dsync.dart` at each commit. An
+// usually a binary from `dart compile exe bin/dsync.dart` at each commit.
+// Words after the binary are `sync` options, appended after `sync <profile>
+// --batch --timings`: `--arm c4='/tmp/dsync --apply-concurrency 4'`. An
 // arm that lives on the *phone* (a different APK) gets `--switch
 // name=command` too: it is run through `sh -c` whenever the session moves to
 // that arm, and the driver then waits for Enter, since the phone's Serve page
@@ -269,12 +271,14 @@ class _Session {
     String label,
   ) async {
     final command = commands[arm];
+    // The arm's own words go after `sync`, not before it: `sync`'s options
+    // (`--apply-concurrency 4`, say) are unknown to the top-level parser.
     final result = await Process.run(command.first, [
-      ...command.skip(1),
       'sync',
       profile,
       '--batch',
       '--timings',
+      ...command.skip(1),
     ]);
     File(
       '${out.path}/$label.txt',

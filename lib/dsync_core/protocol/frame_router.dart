@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:dsync/dsync_core/models/frame.dart';
 import 'package:dsync/dsync_core/protocol/frame_codec.dart';
 import 'package:dsync/dsync_core/run/elapsed.dart';
+import 'package:dsync/dsync_core/run/read_cadence_tally.dart';
 
 /// Reads one connection's frames and hands each to the exchange its
 /// [Frame.requestId] names (SPEC §4.2, task 0f7dfc).
@@ -128,6 +129,13 @@ class FrameRouter {
   };
   Duration _blocked = Duration.zero;
 
+  /// Where every read off the input is counted from now on, on [_clock]
+  /// (SPEC §17, task 7080d6), or null while nothing asked. Settable because
+  /// what asks — a served session's `hello` — is read off this same router,
+  /// and the window it measures starts at the first served write. Ignored by
+  /// a router with no clock.
+  ReadCadenceTally? readCadence;
+
   FrameRouter(Stream<Uint8List> input, {Elapsed? elapsed})
     : _input = input,
       _clock = elapsed;
@@ -220,7 +228,11 @@ class FrameRouter {
       // subscription is *paused* while the budget is exceeded, so a chunk
       // that waited for it to drain is stamped when it was finally read, and
       // that wait lands in the span rather than disappearing out of it.
-      frames = _decoder.add(chunk, arrivedAt: _clock?.call());
+      final at = _clock?.call();
+      if ((readCadence, at) case (final cadence?, final at?)) {
+        cadence.add(at: at, bytes: chunk.length);
+      }
+      frames = _decoder.add(chunk, arrivedAt: at);
       for (final frame in frames) {
         if (_closed) return;
         _route(frame);

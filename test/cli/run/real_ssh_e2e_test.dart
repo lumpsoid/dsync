@@ -147,6 +147,7 @@ Future<void> main() async {
         remoteCommand: remoteCommand,
         verbose: false,
         quiet: false,
+        applyConcurrencyRaw: null,
       );
       // The same derivation `SyncRunner.run` is about to do, with the same
       // inputs (SPEC §8.1, §8.3) — recomputed rather than read back off the

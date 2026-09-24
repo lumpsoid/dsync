@@ -363,6 +363,7 @@ CliOptions _batchOptions(
   remoteCommand: remoteCommand,
   verbose: false,
   quiet: true,
+  applyConcurrencyRaw: null,
 );
 
 /// Reads a positive-integer knob from the process environment.

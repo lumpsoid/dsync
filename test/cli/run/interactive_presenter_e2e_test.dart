@@ -84,6 +84,7 @@ void main() {
       json: false,
       verbose: false,
       quiet: false,
+      applyConcurrencyRaw: null,
     );
 
     test(

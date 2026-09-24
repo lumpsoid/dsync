@@ -1,4 +1,5 @@
 import 'package:dsync/cli/options/cli_options.dart';
+import 'package:dsync/dsync_core/apply/applier.dart';
 import 'package:dsync/cli/options/cli_options_error.dart';
 import 'package:dsync/cli/options/sync_target.dart';
 import 'package:dsync/cli/options/verbosity.dart';
@@ -17,6 +18,7 @@ void main() {
     bool quiet = false,
     String? warnSizeRaw,
     String? jobsRaw,
+    String? applyConcurrencyRaw,
   }) {
     return CliOptions(
       target: target ?? const ProfileTarget('work'),
@@ -30,6 +32,7 @@ void main() {
       quiet: quiet,
       warnSizeRaw: warnSizeRaw,
       jobsRaw: jobsRaw,
+      applyConcurrencyRaw: applyConcurrencyRaw,
     );
   }
 
@@ -148,6 +151,25 @@ void main() {
     test('--jobs a positive integer is accepted and parsed', () {
       final options = build(jobsRaw: '4');
       expect(options.jobs, 4);
+    });
+
+    test('--apply-concurrency absent is the Applier default', () {
+      expect(build().applyConcurrency, Applier.defaultConcurrency);
+    });
+
+    test('--apply-concurrency a positive integer is accepted and parsed', () {
+      expect(build(applyConcurrencyRaw: '4').applyConcurrency, 4);
+    });
+
+    test('--apply-concurrency zero or non-integer is rejected', () {
+      expect(
+        () => build(applyConcurrencyRaw: '0'),
+        throwsA(isA<CliOptionsError>()),
+      );
+      expect(
+        () => build(applyConcurrencyRaw: 'four'),
+        throwsA(isA<CliOptionsError>()),
+      );
     });
 
     test('--warn-size negative is rejected', () {

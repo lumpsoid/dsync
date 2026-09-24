@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:dsync/dsync_core/models/far_side_report.dart';
 import 'package:dsync/dsync_core/models/loop_lag_stats.dart';
+import 'package:dsync/dsync_core/models/read_cadence_stats.dart';
 import 'package:dsync/dsync_core/models/sink_write_stats.dart';
 import 'package:dsync/dsync_core/models/write_stage.dart';
 import 'package:dsync/dsync_core/models/write_stage_stats.dart';
@@ -148,6 +149,46 @@ void main() {
             .toFrame(1),
       ) as AgentSuccess;
       expect(farSideFromJson(plain.data)!.loopLag, isNull);
+    });
+
+    test('carries the served read cadence whole, and none when not sent', () {
+      const reads = ReadCadenceStats(
+        reads: 4200,
+        window: Duration(seconds: 6),
+        bytes: 20000000,
+        maxBytes: 65536,
+        gaps: Duration(milliseconds: 5900),
+        p50Gap: Duration(microseconds: 300),
+        p90Gap: Duration(milliseconds: 4),
+        maxGap: Duration(milliseconds: 90),
+      );
+      final decoded = AgentResult.fromFrame(
+        const AgentSuccess()
+            .withFarSide(
+              const FarSideReport(
+                span: Duration(milliseconds: 1),
+                reads: reads,
+              ),
+            )
+            .toFrame(1),
+      ) as AgentSuccess;
+      final back = farSideFromJson(decoded.data)!.reads!;
+
+      expect(back.reads, 4200);
+      expect(back.window, reads.window);
+      expect(back.bytes, reads.bytes);
+      expect(back.maxBytes, reads.maxBytes);
+      expect(back.gaps, reads.gaps);
+      expect(back.p50Gap, reads.p50Gap);
+      expect(back.p90Gap, reads.p90Gap);
+      expect(back.maxGap, reads.maxGap);
+
+      final plain = AgentResult.fromFrame(
+        const AgentSuccess()
+            .withFarSide(const FarSideReport(span: Duration(milliseconds: 1)))
+            .toFrame(1),
+      ) as AgentSuccess;
+      expect(farSideFromJson(plain.data)!.reads, isNull);
     });
 
     test('skips a stage this build does not know', () {
