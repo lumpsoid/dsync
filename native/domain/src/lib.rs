@@ -31,6 +31,8 @@ mod jobs;
 mod location;
 mod metric_format;
 mod options_error;
+mod pair_code;
+mod pairing_payload;
 mod peer_name;
 mod plan;
 mod platform;
@@ -89,6 +91,8 @@ pub use location::{
 };
 pub use metric_format::{format_bytes, format_count, format_duration};
 pub use options_error::OptionsError;
+pub use pair_code::{PairCode, ReadPairCode, default_peer_name};
+pub use pairing_payload::{EnrolmentToken, PairingPayload, PairingPayloadError};
 pub use peer_name::{PeerName, PeerNameError};
 pub use plan::Plan;
 pub use platform::Platform;

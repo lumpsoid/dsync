@@ -15,6 +15,10 @@ mod case_folding;
 mod certificate;
 mod device_identity;
 mod device_identity_store;
+mod enrolment_dialer;
+mod enrolment_listener;
+mod enrolment_message;
+mod enrolment_token;
 mod file_write;
 mod filter_listing;
 mod frame;
@@ -63,6 +67,13 @@ pub use case_folding::probe_case_folding;
 pub use certificate::{Certificate, CertificateError};
 pub use device_identity::{DeviceIdentity, IdentityIssueError, IdentityPairError};
 pub use device_identity_store::{DeviceIdentityStore, IdentityError};
+pub use enrolment_dialer::{EnrolError, EnrolmentDialer, read_pair_code};
+pub use enrolment_listener::{
+    EnrolmentBindError, EnrolmentEnd, EnrolmentEvent, EnrolmentListener, EnrolmentRefusal,
+    PendingEnrolment,
+};
+pub use enrolment_message::{EnrolmentDenial, EnrolmentMessageError};
+pub use enrolment_token::TokenRefusal;
 pub use filter_listing::{UnlistableFolder, list_filter_folder, preview_filters_at};
 pub use interface_addresses::interface_addresses;
 pub use link_error::LinkError;

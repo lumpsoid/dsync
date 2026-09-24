@@ -320,6 +320,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -332,6 +333,7 @@ dependencies = [
 name = "dsync-domain"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
  "sha2",
  "thiserror 2.0.21",

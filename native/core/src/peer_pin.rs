@@ -233,6 +233,28 @@ pub(crate) fn client_config(
         .with_client_auth_cert(chain(identity), key(identity))
 }
 
+/// The enrolment listener's TLS config: presents `identity` and asks for
+/// no client certificate - the enrolling device is not paired yet, so its
+/// certificate travels as data inside the encrypted request (SPEC §4.4).
+pub(crate) fn enrolment_server_config(
+    identity: &DeviceIdentity,
+) -> Result<ServerConfig, rustls::Error> {
+    ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_no_client_auth()
+        .with_single_cert(chain(identity), key(identity))
+}
+
+/// The enrolling side's TLS config: admits the server through `pin` (the
+/// key in the pairing payload) and presents no certificate.
+pub(crate) fn enrolment_client_config(pin: Arc<PeerPin>) -> Result<ClientConfig, rustls::Error> {
+    Ok(ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .dangerous()
+        .with_custom_certificate_verifier(pin)
+        .with_no_client_auth())
+}
+
 pub(crate) fn server_name() -> ServerName<'static> {
     ServerName::DnsName(
         SERVER_NAME
