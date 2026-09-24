@@ -3,6 +3,7 @@
 //
 //   dart run benchmark/synthetic_tree.dart create <dir>
 //   dart run benchmark/synthetic_tree.dart create <dir> --files 3000 --per-dir 30
+//   dart run benchmark/synthetic_tree.dart create <dir> --files 300 --mean-bytes 5242880
 //   dart run benchmark/synthetic_tree.dart modify <dir> --round 1
 //
 // `create` writes the tree the device harness writes
@@ -11,7 +12,12 @@
 // pull of it onto an empty phone folder is the fresh pass, and its per-file
 // cost reads directly against the harness's 15.4 ms a file at 16 workers, where
 // the source was local and there was no link. `--per-dir 100000` puts every
-// file in one directory.
+// file in one directory. `--mean-bytes` draws at another mean instead. Each
+// file is a slice of one seeded random buffer, 16 means long (1 MiB at least,
+// 64 MiB at most), and no file is longer than the buffer: an exponential draw
+// passes 16 means once in ~9 million files, and past 4 MiB, where the cap
+// shortens the buffer, 5 MiB clips once in ~360,000. The default mean keeps the
+// 1 MiB buffer, so its trees are byte-for-byte what they always were.
 //
 // `modify` rewrites every file under <dir> at the same size with bytes it has
 // not held before, so the next pull overwrites each one. Use a new `--round`
@@ -20,12 +26,13 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-const _meanBytes = 13007; // SPEC §5.3's 179.5 MiB / 14,471
+const _defaultMeanBytes = 13007; // SPEC §5.3's 179.5 MiB / 14,471
 
 void main(List<String> args) {
   if (args.length < 2) {
     stderr.writeln(
-      'usage: synthetic_tree.dart create <dir> [--files N] [--per-dir N]\n'
+      'usage: synthetic_tree.dart create <dir> [--files N] [--per-dir N] '
+      '[--mean-bytes N]\n'
       '       synthetic_tree.dart modify <dir> [--round N]',
     );
     exit(2);
@@ -41,6 +48,7 @@ void main(List<String> args) {
         root,
         files: options['--files'] ?? 3000,
         perDir: options['--per-dir'] ?? 30,
+        meanBytes: options['--mean-bytes'] ?? _defaultMeanBytes,
       );
     case 'modify':
       _modify(root, options['--round'] ?? 1);
@@ -50,13 +58,18 @@ void main(List<String> args) {
   }
 }
 
-void _create(Directory root, {required int files, required int perDir}) {
+void _create(
+  Directory root, {
+  required int files,
+  required int perDir,
+  required int meanBytes,
+}) {
   if (root.existsSync() && root.listSync().isNotEmpty) {
     stderr.writeln('${root.path} is not empty');
     exit(1);
   }
   final random = Random(58609);
-  final buffer = Uint8List(1 << 20);
+  final buffer = Uint8List((meanBytes * 16).clamp(1 << 20, 64 << 20));
   for (var i = 0; i < buffer.length; i++) {
     buffer[i] = random.nextInt(256);
   }
@@ -69,7 +82,7 @@ void _create(Directory root, {required int files, required int perDir}) {
     if (dirs.add(dir.path)) dir.createSync(recursive: true);
     final size = min(
       buffer.length,
-      max(1, (-log(1 - random.nextDouble()) * _meanBytes).round()),
+      max(1, (-log(1 - random.nextDouble()) * meanBytes).round()),
     );
     final offset = random.nextInt(buffer.length - size + 1);
     File('${dir.path}/f$i.bin')

@@ -29,6 +29,11 @@
 //                     run first rewrites every file (synthetic_tree.dart
 //                     modify), so the run overwrites all of them.
 //
+// Trees. `--files` (3000) and `--per-dir` (30) shape each timed tree;
+// `--mean-bytes` sets its mean file size, and when omitted synthetic_tree.dart
+// keeps its own default, SPEC §5.3's mean. The one-file probe is always
+// drawn at that default.
+//
 // Arms. `--arm name=command` twice, in the order the ratio is taken (second
 // over first). The command is split on spaces and must run the dsync CLI —
 // usually a binary from `dart compile exe bin/dsync.dart` at each commit. An
@@ -63,6 +68,7 @@ Future<void> main(List<String> args) async {
     ..addOption('pairs', defaultsTo: '3')
     ..addOption('files', defaultsTo: '3000')
     ..addOption('per-dir', defaultsTo: '30')
+    ..addOption('mean-bytes')
     ..addOption(
       'order',
       allowed: [for (final order in PairOrder.values) order.name],
@@ -94,6 +100,10 @@ Future<void> main(List<String> args) async {
     fresh: options.option('pass') == 'fresh',
     files: int.parse(options.option('files')!),
     perDir: int.parse(options.option('per-dir')!),
+    meanBytes: switch (options.option('mean-bytes')) {
+      final value? => int.parse(value),
+      null => null,
+    },
     names: names,
     commands: [for (final name in names) arms[name]!.split(' ')],
     switches: [for (final name in names) switches[name]],
@@ -120,6 +130,7 @@ class _Session {
     required this.fresh,
     required this.files,
     required this.perDir,
+    required this.meanBytes,
     required this.names,
     required this.commands,
     required this.switches,
@@ -133,6 +144,9 @@ class _Session {
   final bool fresh;
   final int files;
   final int perDir;
+
+  /// The timed trees' mean file size; null leaves synthetic_tree.dart's own.
+  final int? meanBytes;
   final List<String> names;
   final List<List<String>> commands;
   final List<String?> switches;
@@ -340,6 +354,7 @@ class _Session {
     '$files',
     '--per-dir',
     '$perDir',
+    if (meanBytes case final mean?) ...['--mean-bytes', '$mean'],
   ]);
 
   Future<void> _syntheticTree(List<String> args) async {
