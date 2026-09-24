@@ -7,6 +7,7 @@ class PairRun {
   const PairRun({
     required this.arm,
     required this.timings,
+    required this.applied,
     required this.radioStart,
     required this.radioEnd,
   });
@@ -15,6 +16,10 @@ class PairRun {
   final int arm;
 
   final RunTimings timings;
+
+  /// The actions the run applied. Every run of a session should apply the
+  /// same number; one that did not timed a different tree.
+  final int applied;
 
   /// Null when the snapshot could not be read — the phone was off the
   /// network or adb failed. Shown as such; a run without its radio is not

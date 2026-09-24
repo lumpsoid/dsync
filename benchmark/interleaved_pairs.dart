@@ -16,6 +16,10 @@
 // from the desktop, with the phone serving (its Serve page, or `dsync agent
 // --serve`). The profile's desktop root must contain --tree, which must be
 // empty or absent: the driver owns it for the session and leaves it empty.
+// Before the first run, and after every --switch, one file is synced into
+// the phone and away again, untimed, so a phone that cannot write into the
+// share stops the session before it is timed. Any sync with a failed action
+// stops it too.
 //
 //   --pass fresh      each run pulls a new tree, `<tree>/run-NN`, created
 //                     untimed before it; after the run the tree is deleted and
@@ -48,6 +52,7 @@ import 'pairs/pair_order.dart';
 import 'pairs/pair_report.dart';
 import 'pairs/pair_run.dart';
 import 'pairs/radio_snapshot.dart';
+import 'pairs/run_counts.dart';
 import 'pairs/run_timings.dart';
 
 Future<void> main(List<String> args) async {
@@ -142,7 +147,7 @@ class _Session {
       _fail('${tree.path} must be empty or absent: the session owns it');
     }
     out.createSync(recursive: true);
-    stdout.writeln('writing to ${out.path}');
+    stdout.writeln('session folder: ${out.path}');
     if (await _radio('preflight') == null) {
       _fail(
         'no radio snapshot: is the phone attached over adb, authorised, and '
@@ -155,6 +160,9 @@ class _Session {
       final tag = 'run-${'${index + 1}'.padLeft(2, '0')}';
       if (arm != current) {
         await _switchTo(arm);
+        if (current == null || switches[arm] != null) {
+          await _probeWrite(arm, tag);
+        }
         current = arm;
       }
       final Directory runTree;
@@ -172,20 +180,28 @@ class _Session {
 
       stdout.writeln('$tag: ${names[arm]}');
       final radioStart = await _radio('$tag-start');
-      final report = await _sync(arm, '$tag-${names[arm]}');
+      final synced = await _sync(arm, '$tag-${names[arm]}');
       final radioEnd = await _radio('$tag-end');
-      final timings = RunTimings.parse(report);
+      final timings = RunTimings.parse(synced.report);
       if (timings == null) {
         _fail('$tag printed no --timings report; see ${out.path}');
       }
+      final applied = synced.counts.applied;
       _runs.add(
         PairRun(
           arm: arm,
           timings: timings,
+          applied: applied,
           radioStart: radioStart,
           radioEnd: radioEnd,
         ),
       );
+      if (usualApplied(_runs) case final usual? when applied != usual) {
+        stdout.writeln(
+          'warning: $tag applied $applied actions where the session\'s other '
+          'runs applied $usual; it is flagged in the summary',
+        );
+      }
       _writeSummary();
 
       if (fresh) {
@@ -197,7 +213,9 @@ class _Session {
       Directory('${tree.path}/base').deleteSync(recursive: true);
       await _sync(order.sequence(pairs).last, 'cleanup');
     }
-    stdout.write(_writeSummary());
+    stdout
+      ..write(_writeSummary())
+      ..writeln('session folder: ${out.path}');
   }
 
   String _writeSummary() {
@@ -228,8 +246,14 @@ class _Session {
   }
 
   /// One sync with [arm]'s binary, its output saved under [label]. Returns
-  /// the `--timings` report, which the CLI prints on stderr.
-  Future<String> _sync(int arm, String label) async {
+  /// the `--timings` report, which the CLI prints on stderr, and the counts
+  /// of its stdout summary. Any failed action ends the session: a run whose
+  /// writes failed timed nothing, and the untimed syncs around it leave the
+  /// tree in a state the next run would time instead.
+  Future<({String report, RunCounts counts})> _sync(
+    int arm,
+    String label,
+  ) async {
     final command = commands[arm];
     final result = await Process.run(command.first, [
       ...command.skip(1),
@@ -241,12 +265,49 @@ class _Session {
     File(
       '${out.path}/$label.txt',
     ).writeAsStringSync('${result.stdout}\n--- stderr ---\n${result.stderr}');
+    final counts = RunCounts.parse(result.stdout as String);
+    if (counts != null && counts.failed > 0) {
+      _fail(
+        '$label: ${counts.failed} actions failed (${counts.applied} applied), '
+        'so it is no timing; is the phone\'s All-files grant still there? '
+        'See ${out.path}/$label.txt',
+      );
+    }
     if (result.exitCode != 0) {
       _fail(
         '$label: dsync exited ${result.exitCode}; see ${out.path}/$label.txt',
       );
     }
-    return result.stderr as String;
+    if (counts == null) {
+      _fail('$label printed no summary line; see ${out.path}/$label.txt');
+    }
+    return (report: result.stderr as String, counts: counts);
+  }
+
+  /// Syncs one file into the phone and back out, untimed, so a phone that
+  /// cannot write into the share (no All-files grant, a wiped install) stops
+  /// the session before a run times it. Run before the first run and after
+  /// every switch, since an install is what loses the grant.
+  Future<void> _probeWrite(int arm, String tag) async {
+    final label = '$tag-probe-${names[arm]}';
+    final probe = Directory('${tree.path}/probe');
+    await _syntheticTree([
+      'create',
+      probe.path,
+      '--files',
+      '1',
+      '--per-dir',
+      '1',
+    ]);
+    final written = await _sync(arm, label);
+    if (written.counts.applied == 0) {
+      _fail(
+        '$label: the probe file was not synced; is --tree inside the '
+        'profile\'s desktop root? See ${out.path}/$label.txt',
+      );
+    }
+    probe.deleteSync(recursive: true);
+    await _sync(arm, '$label-cleanup');
   }
 
   /// Captures `cmd wifi status` and `dumpsys wifi` as they are, then parses

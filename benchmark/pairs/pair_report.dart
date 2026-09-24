@@ -3,12 +3,14 @@ import 'package:dsync/dsync_core/run/run_metrics_report.dart';
 import 'pair_order.dart';
 import 'pair_run.dart';
 
-/// How far over its own arm's median a run's total may land before it is
-/// flagged as slow. 9d2158 §9.0's rule is that a slow run is the anomaly and
-/// is re-run before anything is reasoned from it; this is the line that makes
-/// "slow" a reading rather than a judgement. Set at the link's measured
-/// run-to-run spread on a phase total, ~13%, rounded up.
-const slowRunMargin = 0.15;
+/// How far from its own arm's median a run's total may land, either way,
+/// before it is flagged. 9d2158 §9.0's rule is that a slow run is the anomaly
+/// and is re-run before anything is reasoned from it; a fast one is as much an
+/// anomaly — a run that did less, or an air that briefly cleared — and is
+/// flagged the same way. This is the line that makes "slow" and "fast" a
+/// reading rather than a judgement. Set at the link's measured run-to-run
+/// spread on a phase total, ~13%, rounded up.
+const outlierMargin = 0.15;
 
 /// The phases a pair is compared on besides the run total.
 const comparedPhases = ['scan', 'apply'];
@@ -43,13 +45,15 @@ String renderPairReport({
   out.writeln(
     'run  ${'arm'.padRight(_armWidth(arms))}'
     '${'total'.padLeft(10)}'
-    '${[for (final phase in comparedPhases) phase.padLeft(10)].join()}',
+    '${[for (final phase in comparedPhases) phase.padLeft(10)].join()}'
+    '${'applied'.padLeft(10)}',
   );
   for (final (index, run) in runs.indexed) {
     out.writeln(
       '${'${index + 1}'.padRight(5)}${arms[run.arm].padRight(_armWidth(arms))}'
       '${formatMetricDuration(run.timings.total).padLeft(10)}'
-      '${[for (final phase in comparedPhases) _phase(run, phase).padLeft(10)].join()}',
+      '${[for (final phase in comparedPhases) _phase(run, phase).padLeft(10)].join()}'
+      '${'${run.applied}'.padLeft(10)}',
     );
   }
 
@@ -131,7 +135,8 @@ String renderPairReport({
     ..writeln()
     ..writeln(
       flags.isEmpty
-          ? 'no run flagged: none slow, the radio held through every run'
+          ? 'no run flagged: none slow or fast, every run applied the same '
+                'count, the radio held through every run'
           : 're-run before reading the comparison:',
     );
   for (final flag in flags) {
@@ -147,13 +152,22 @@ List<String> _flags(
 ) {
   final flags = <String>[];
   final baseline = runs.isEmpty ? null : runs.first.radioStart;
+  final usual = usualApplied(runs);
   for (final (index, run) in runs.indexed) {
     final label = 'run ${index + 1} (${arms[run.arm]})';
-    final over = run.timings.total.inMicroseconds / medians[run.arm] - 1;
-    if (over > slowRunMargin) {
+    final off = run.timings.total.inMicroseconds / medians[run.arm] - 1;
+    if (off.abs() > outlierMargin) {
       flags.add(
-        '$label: slow, ${(over * 100).toStringAsFixed(0)}% over its arm\'s '
-        'median',
+        '$label: ${off > 0 ? 'slow' : 'fast'}, '
+        '${(off.abs() * 100).toStringAsFixed(0)}% '
+        '${off > 0 ? 'over' : 'under'} its arm\'s median; '
+        '${_byPhase(run, runs)}',
+      );
+    }
+    if (run.applied != usual) {
+      flags.add(
+        '$label: applied ${run.applied} actions where the session\'s other '
+        'runs applied $usual: it timed a different tree',
       );
     }
     final changes = run.radioChanges;
@@ -174,6 +188,47 @@ List<String> _flags(
     }
   }
   return flags;
+}
+
+/// The action count most of the session's runs applied, the earliest on a
+/// tie; null for no runs. A run that applied another count is the odd one.
+int? usualApplied(List<PairRun> runs) {
+  final tally = <int, int>{};
+  for (final run in runs) {
+    tally[run.applied] = (tally[run.applied] ?? 0) + 1;
+  }
+  int? usual;
+  for (final MapEntry(key: count, value: seen) in tally.entries) {
+    if (usual == null || seen > tally[usual]!) usual = count;
+  }
+  return usual;
+}
+
+/// Where an outlier's time went: each compared phase against the same
+/// phase's median in the run's arm, the phase that moved most first.
+String _byPhase(PairRun run, List<PairRun> runs) {
+  final moves = <(String, double, double)>[];
+  for (final phase in comparedPhases) {
+    final own = run.timings.phases[phase];
+    if (own == null) continue;
+    final median = _median([
+      for (final other in runs)
+        if (other.arm == run.arm)
+          if (other.timings.phases[phase] case final elapsed?)
+            elapsed.inMicroseconds.toDouble(),
+    ]);
+    if (median == 0) continue;
+    final delta = own.inMicroseconds - median;
+    moves.add((phase, delta, delta / median));
+  }
+  if (moves.isEmpty) return 'no phase read';
+  moves.sort((a, b) => b.$2.abs().compareTo(a.$2.abs()));
+  return [
+    for (final (phase, delta, share) in moves)
+      '$phase ${delta < 0 ? '−' : '+'}'
+          '${formatMetricDuration(Duration(microseconds: delta.abs().round()))} '
+          '(${share < 0 ? '−' : '+'}${(share.abs() * 100).toStringAsFixed(0)}%)',
+  ].join(', ');
 }
 
 double? _measure(PairRun run, String measure) => measure == 'total'

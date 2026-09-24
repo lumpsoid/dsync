@@ -20,13 +20,20 @@ const _steady = RadioSnapshot(
 PairRun run(
   int arm,
   double totalSeconds, {
+  double scanSeconds = 2,
+  int applied = 3000,
   RadioSnapshot? start = _steady,
   RadioSnapshot? end = _steady,
 }) {
   final total = Duration(milliseconds: (totalSeconds * 1000).round());
+  final scan = Duration(milliseconds: (scanSeconds * 1000).round());
   return PairRun(
     arm: arm,
-    timings: RunTimings(total: total, phases: {'apply': total * 0.9}),
+    timings: RunTimings(
+      total: total,
+      phases: {'scan': scan, 'apply': total - scan},
+    ),
+    applied: applied,
     radioStart: start,
     radioEnd: end,
   );
@@ -82,8 +89,52 @@ void main() {
       run(1, 50),
     ]);
 
-    expect(text, contains('run 3 (before): slow, 29% over its arm\'s median'));
+    expect(
+      text,
+      contains(
+        'run 3 (before): slow, 29% over its arm\'s median; '
+        'apply +20.0 s (+29%), scan +0 µs (+0%)',
+      ),
+    );
     expect(text, isNot(contains('run 1 (before): slow')));
+  });
+
+  test('flags a fast run too, and names the phase that moved', () {
+    // Median of after is 60 s with a 10 s scan; run 4's scan took 1 s.
+    final text = report([
+      run(0, 60),
+      run(1, 60, scanSeconds: 10),
+      run(0, 60),
+      run(1, 50, scanSeconds: 1),
+      run(0, 60),
+      run(1, 60, scanSeconds: 10),
+    ]);
+
+    expect(
+      text,
+      contains(
+        'run 4 (after): fast, 17% under its arm\'s median; '
+        'scan −9000.0 ms (−90%), apply −1000.0 ms (−2%)',
+      ),
+    );
+  });
+
+  test('flags a run that applied a different count from the others', () {
+    final text = report([
+      run(0, 60),
+      run(1, 60),
+      run(0, 60, applied: 6000),
+      run(1, 60),
+    ]);
+
+    expect(
+      text,
+      contains(
+        'run 3 (before): applied 6000 actions where the session\'s other '
+        'runs applied 3000',
+      ),
+    );
+    expect(usualApplied([run(0, 60, applied: 6000), run(1, 60)]), 6000);
   });
 
   test('flags a radio that moved during a run', () {
