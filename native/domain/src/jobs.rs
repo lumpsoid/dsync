@@ -7,7 +7,10 @@ use std::fmt;
 /// [`Jobs::MAX`]: past the core count more threads only contend for the
 /// disk, and a typo like `jobs = 4000` should be an error, not 4000
 /// threads.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, serde::Serialize, serde::Deserialize,
+)]
+#[serde(try_from = "u16", into = "u16")]
 pub struct Jobs(u16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -28,6 +31,20 @@ impl Jobs {
 
     pub fn get(self) -> usize {
         usize::from(self.0)
+    }
+}
+
+impl TryFrom<u16> for Jobs {
+    type Error = JobsError;
+
+    fn try_from(count: u16) -> Result<Self, Self::Error> {
+        Jobs::new(i64::from(count))
+    }
+}
+
+impl From<Jobs> for u16 {
+    fn from(jobs: Jobs) -> u16 {
+        jobs.0
     }
 }
 

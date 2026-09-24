@@ -3,7 +3,9 @@
 use std::fmt;
 
 /// Replica `a` or replica `b` of a pair (SPEC §12's `[replicas] a, b`).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub enum Side {
     A,
     B,

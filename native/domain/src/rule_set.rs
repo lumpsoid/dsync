@@ -12,7 +12,7 @@ use crate::rel_path::RelPath;
 /// pruned subtree reads as a tree of deletions and is propagated as one.
 ///
 /// `follow` matches a link's own path only.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct RuleSet {
     ignore: Vec<Glob>,
     follow: Vec<Glob>,

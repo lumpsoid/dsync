@@ -12,7 +12,7 @@ use crate::rel_path::RelPath;
 use crate::scan_entry::FileState;
 
 /// One path's worth of archive change (SPEC §7.3, §7.6).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ArchiveCommit {
     /// Records `file` at `path`, superseding any earlier entry and mark.
     Upsert { path: RelPath, file: FileState },

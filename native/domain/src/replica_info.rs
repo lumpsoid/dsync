@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use crate::side::Side;
 
 /// Whether a replica's root folder exists (SPEC §4.5).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ReplicaRoot {
     Present,
     /// Missing, with the file count its archive holds, for the message.
@@ -16,7 +16,7 @@ pub enum ReplicaRoot {
 }
 
 /// A replica's `hello` reply.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplicaInfo {
     /// When its archive last committed; `None` if it never has (SPEC §8.2).
     /// Reported by the replica because the initiator cannot stat an

@@ -210,7 +210,10 @@ fn expand_vars(path: &str, facts: &HostFacts) -> String {
 /// key gets a new id and a first sync; and a named profile and an ad-hoc
 /// run over the same pair share an archive - the archive records what two
 /// replicas last agreed on, and rules only filter it.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[derive(
+    Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, serde::Serialize, serde::Deserialize,
+)]
+#[serde(try_from = "String", into = "String")]
 pub struct ProfileId(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -247,6 +250,20 @@ impl ProfileId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for ProfileId {
+    type Error = ProfileIdError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        ProfileId::parse(&text)
+    }
+}
+
+impl From<ProfileId> for String {
+    fn from(id: ProfileId) -> String {
+        id.0
     }
 }
 

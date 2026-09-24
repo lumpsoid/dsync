@@ -5,7 +5,7 @@ use crate::rel_path::RelPath;
 
 /// A file's metadata as a scan read it: what the fast path compares and
 /// what a commit records.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileMeta {
     pub size: u64,
     /// Microseconds since the epoch (SPEC §5.2).
@@ -14,14 +14,14 @@ pub struct FileMeta {
 }
 
 /// A file present on disk right now: its metadata and content hash.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileState {
     pub meta: FileMeta,
     pub hash: ContentHash,
 }
 
 /// Which of SPEC §5.2's two branches found a file unchanged.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Unchanged {
     /// Step 1: size and mtime matched the archive; nothing was hashed.
     MetadataMatched,
@@ -36,7 +36,7 @@ pub enum Unchanged {
 /// entry cannot carry a size, and every present file carries its hash, so
 /// the reconciler never needs a fallback for a field that "cannot" be
 /// missing.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Status {
     /// The file matches its archive entry.
     Unchanged { file: FileState, by: Unchanged },
@@ -84,7 +84,7 @@ impl Status {
 }
 
 /// One scanned path and its status.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ScanEntry {
     pub path: RelPath,
     pub status: Status,

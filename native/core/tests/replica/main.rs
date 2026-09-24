@@ -1,16 +1,24 @@
 //! The `Replica` contract over `LocalReplica` on real temp dirs: hello,
-//! lock, the scan exchange, reads, the write path and its crash safety.
-//! No mock replicas (plan D4).
+//! lock, the scan exchange, reads, the write path and its crash safety -
+//! and the same contract through `RemoteReplica` <-> `ReplicaServer`, with
+//! the protocol and its transports. No mock replicas (plan D4).
 
 mod child;
 mod commit;
 mod crash;
 mod hello_lock;
+mod pipelining;
 mod read;
+mod remote;
 mod removal;
 mod scan;
+mod served;
+#[cfg(unix)]
+mod ssh;
 mod support;
 mod torn;
+#[cfg(unix)]
+mod unix;
 mod write;
 mod write_target;
 

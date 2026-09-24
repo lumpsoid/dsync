@@ -5,7 +5,7 @@ use crate::scan_entry::{ScanEntry, Status, Unchanged};
 /// Counts over a *whole* scan. Carried beside the changed entries in the
 /// exchange because it cannot be derived from them: the two branches it
 /// most needs, the fast path and the rehash, are the ones never sent.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ScanTally {
     pub metadata_matched: usize,
     pub hash_matched: usize,

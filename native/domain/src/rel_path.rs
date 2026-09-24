@@ -25,7 +25,10 @@ use std::str::FromStr;
 ///   segment, not only the first, because the join is per segment. A `:`
 ///   elsewhere (`log:old`) is an ordinary unix name and is kept;
 /// - NUL, which no filesystem accepts in a name.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[derive(
+    Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, serde::Serialize, serde::Deserialize,
+)]
+#[serde(try_from = "String", into = "String")]
 pub struct RelPath(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -135,6 +138,22 @@ impl RelPath {
 fn starts_with_drive(segment: &str) -> bool {
     let bytes = segment.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// The wire's way in: a path decoded off a connection is parsed like any
+/// other, so a remote peer cannot name a path outside the root.
+impl TryFrom<String> for RelPath {
+    type Error = RelPathError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        RelPath::parse(&text)
+    }
+}
+
+impl From<RelPath> for String {
+    fn from(path: RelPath) -> String {
+        path.0
+    }
 }
 
 impl FromStr for RelPath {

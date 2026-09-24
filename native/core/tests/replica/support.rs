@@ -1,6 +1,7 @@
 //! Fixtures for the replica tests: two replica roots and a state dir in a
 //! temp dir, the deadline every async test runs under, and the exchange and
-//! copy a run would drive, in SPEC order, over [`LocalReplica`]s.
+//! copy a run would drive, in SPEC order, over any [`Replica`], local or
+//! remote.
 
 use std::fs;
 use std::future::Future;
@@ -233,7 +234,7 @@ impl Exchanged {
 }
 
 /// Scans both replicas and exchanges the scans the way a run does.
-pub async fn exchange(a: &LocalReplica, b: &LocalReplica) -> Exchanged {
+pub async fn exchange(a: &impl Replica, b: &impl Replica) -> Exchanged {
     let rules = RuleSet::default();
     let opened_a = a.open_scan(&rules).await.unwrap();
     let opened_b = b.open_scan(&rules).await.unwrap();
@@ -284,7 +285,7 @@ pub async fn exchange(a: &LocalReplica, b: &LocalReplica) -> Exchanged {
 
 /// Records every file `replica` holds as synced: what a first run that
 /// found both sides already equal leaves behind.
-pub async fn seed(replica: &LocalReplica) {
+pub async fn seed(replica: &impl Replica) {
     let opened = replica.open_scan(&RuleSet::default()).await.unwrap();
     let upserts = opened
         .changed
@@ -315,8 +316,8 @@ pub enum CopyUntil {
 /// the destination (durable before the bytes), the read, the write, then
 /// the upsert on each side.
 pub async fn copy(
-    from: &LocalReplica,
-    to: &LocalReplica,
+    from: &impl Replica,
+    to: &impl Replica,
     relative: &str,
     source: FileState,
     until: CopyUntil,
@@ -349,7 +350,7 @@ pub async fn copy(
 /// Applies `exchanged`'s plan the way a run does, for the actions these
 /// tests produce - copies and commit-only records - then makes both
 /// archives durable.
-pub async fn apply(a: &LocalReplica, b: &LocalReplica, exchanged: &Exchanged) {
+pub async fn apply(a: &impl Replica, b: &impl Replica, exchanged: &Exchanged) {
     for action in &exchanged.plan.actions {
         let relative = action.path().as_str();
         let file_on = |side| {
@@ -367,15 +368,14 @@ pub async fn apply(a: &LocalReplica, b: &LocalReplica, exchanged: &Exchanged) {
                 copy(b, a, relative, file_on(Side::B), CopyUntil::Done).await;
             }
             Action::CommitOnly { path } => {
-                for (replica, side) in [(a, Side::A), (b, Side::B)] {
-                    replica
-                        .commit(vec![ArchiveCommit::Upsert {
-                            path: path.clone(),
-                            file: file_on(side),
-                        }])
-                        .await
-                        .unwrap();
-                }
+                let upsert = |side| {
+                    vec![ArchiveCommit::Upsert {
+                        path: path.clone(),
+                        file: file_on(side),
+                    }]
+                };
+                a.commit(upsert(Side::A)).await.unwrap();
+                b.commit(upsert(Side::B)).await.unwrap();
             }
             Action::Delete { .. } => panic!("no test here deletes"),
         }

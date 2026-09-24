@@ -17,7 +17,8 @@ use std::str::FromStr;
 /// through the glob syntax into regex features SPEC §9 does not offer. The
 /// source is kept: rules travel to a remote replica as written, and the
 /// far side compiles them itself.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Glob {
     source: String,
     tokens: Vec<Token>,
@@ -112,6 +113,20 @@ impl Glob {
     /// Whether the whole of `path` matches.
     pub fn is_match(&self, path: &str) -> bool {
         matches(&self.tokens, path)
+    }
+}
+
+impl TryFrom<String> for Glob {
+    type Error = GlobError;
+
+    fn try_from(pattern: String) -> Result<Self, Self::Error> {
+        Glob::new(&pattern)
+    }
+}
+
+impl From<Glob> for String {
+    fn from(glob: Glob) -> String {
+        glob.source
     }
 }
 

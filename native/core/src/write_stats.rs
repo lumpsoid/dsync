@@ -11,7 +11,7 @@ use std::fmt;
 use std::time::Duration;
 
 /// One step of writing a file, in the order a file goes through them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Stage {
     /// Creating the parent folders, once per folder per session.
     Mkdir,

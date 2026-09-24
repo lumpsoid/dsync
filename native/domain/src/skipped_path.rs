@@ -7,7 +7,7 @@ use crate::unreadable_paths::UnreadablePaths;
 ///
 /// Every reason keeps the path out of reconciliation (the scan's silence
 /// about it is not evidence it is absent); only some are failures.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum SkippedReason {
     /// A symlink not followed: no follow rule matched, the link is broken,
     /// its target is neither a file nor a directory, or following it would
@@ -39,7 +39,7 @@ impl SkippedReason {
 }
 
 /// Where a skipped entry sits.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum SkippedAt {
     /// A path the replica can name.
     Path(RelPath),
@@ -56,7 +56,7 @@ pub enum SkippedAt {
 /// One skipped entry. `reason` is what the tool does about it; `detail` is
 /// what actually happened, for the reader ("broken link", the OS's message,
 /// the path it collided with).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SkippedPath {
     pub at: SkippedAt,
     pub reason: SkippedReason,

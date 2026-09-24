@@ -10,7 +10,7 @@ use crate::unreadable_paths::UnreadablePaths;
 /// itself: the entries that are not `unchanged`, every skipped path (they
 /// have no `(path, hash)` pair to digest, and must reach the report and
 /// the exit code), and the tally over the whole scan.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChangedScan {
     pub entries: Vec<ScanEntry>,
     pub skipped: Vec<SkippedPath>,

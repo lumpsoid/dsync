@@ -8,7 +8,9 @@ use crate::hex;
 /// The SHA-256 of a file's content. Computing it streams file bytes, which
 /// is the core's job; this is the value it produces and the archive keeps,
 /// written as 64 lowercase hex digits.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct ContentHash([u8; 32]);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

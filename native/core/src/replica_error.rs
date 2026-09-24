@@ -5,6 +5,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::archive_store::ArchiveError;
+use crate::link_error::LinkError;
 use crate::replica_lock::LockError;
 use crate::scanner::UnreadableRoot;
 use crate::write_error::WriteError;
@@ -30,10 +31,23 @@ pub enum ReplicaError {
     /// issued by another replica, or spent by a newer scan.
     #[error("no scan exchange is open at that phase on this replica")]
     NoScan,
+    /// The connection to a remote replica failed; every operation
+    /// outstanding on it fails with this.
+    #[error(transparent)]
+    Link(#[from] LinkError),
+    /// The far side refused to serve this replica: its `hello` was refused
+    /// before anything touched the filesystem there (a root the device is
+    /// not granted), or a request came before `hello`.
+    #[error("the far side refused: {0}")]
+    Refused(String),
+    /// A remote replica's archive failed, in the far side's words. Fatal
+    /// for the run, like a local [`ReplicaError::Archive`].
+    #[error("the far side's archive: {0}")]
+    RemoteArchive(String),
 }
 
 /// The filesystem operation a [`ReplicaError::File`] failed in.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum FileOp {
     CreateRoot,
     Read,
