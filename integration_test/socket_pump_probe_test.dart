@@ -8,9 +8,10 @@
 //     --target=integration_test/socket_pump_probe_test.dart \
 //     [--dart-define=PORT=47470] [--dart-define=CASES=tls,tls-iso,…]
 //
-// then, from the desktop, once the phone prints `listening`:
+// then, from the desktop, once the phone prints `listening` for every case:
 //
-//   dart run benchmark/socket_pump.dart send --host 192.168.0.61
+//   dart run benchmark/socket_pump.dart send --host 192.168.0.61 \
+//     [--cases …, the same list as CASES]
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';

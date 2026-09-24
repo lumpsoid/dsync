@@ -24,7 +24,18 @@
 //              sends its report back;
 //   tls-iso-busy — tls-iso while the spawning isolate burns 4 ms of every
 //              16 ms frame from accept to the isolate's exit, a stand-in for
-//              the app's own work on the UI isolate.
+//              the app's own work on the UI isolate;
+//   tls-iso-x2, tls-iso-x4, tls-iso-x8 — tls-iso over N connections, each
+//              accepted and read in its own spawned isolate, the --mib split
+//              evenly across them and sent on all at once (the desktop
+//              handshakes every connection before pumping any);
+//   tls-x4-root — 4 connections as `tls`, all read in the one isolate
+//              `receive` runs on: whether more connections alone help;
+//   adapter-iso-x4 — adapter-iso over 4 connections, as tls-iso-x4.
+// A multi-connection case prints a line per connection (`tls-iso-x4#2`, with
+// that connection's MiB/s and reads/s) and then a `total` line: all bytes
+// over the wall-clock span from the first byte on any connection to the last
+// byte on all of them.
 // On the phone `receive` runs on the Flutter root isolate, whose event loop
 // is the embedder's UI task runner; a spawned isolate has a plain Dart
 // message loop. A secure socket's every read event takes a trip through that
@@ -39,11 +50,21 @@
 // tls puts the cost in the root isolate's embedder event loop (and receiving
 // in a background isolate escapes it; tls-iso-busy says whether it still does
 // with the UI isolate working); tls-iso equal to tls puts it elsewhere.
+// tls-iso-xN near N × tls-iso (until the link, ~26–30 MiB/s, or the CPU
+// binds) puts the remaining per-read cost in each connection, not in the
+// process; tls-iso-xN flat at tls-iso's rate puts it in something the
+// connections share. tls-x4-root near 4 × tls says the root loop's cost is
+// per connection too; flat at tls, that it is the loop's own.
 // Desktop reference, 127.0.0.1, 128 MiB: under `dart run` every TLS case,
 // -iso or not, runs at 290–375 MiB/s; in the Flutter Linux app
 // (`flutter drive --profile -d linux`) tls/adapter/tls-big drop to 3.3 MiB/s
 // at 1.1 ms per ~4 KiB read while tls-iso/adapter-iso/tls-iso-busy stay at
-// 317–361 MiB/s.
+// 317–361 MiB/s. Multi-connection totals, `dart run` / Flutter Linux:
+// tls-iso-x2 499 / 481, tls-iso-x4 665 / 651, tls-iso-x8 625 / 681,
+// adapter-iso-x4 640 / 605 MiB/s (loopback flattens past 4 connections);
+// tls-x4-root 455 under `dart run` but 12.4 in the Flutter app, 3.1 MiB/s per
+// connection at 1.24 ms per read: there the root loop's cost is per
+// connection.
 //
 // TLS is production's configuration: default SecurityContext (so TLS version
 // and cipher are BoringSSL's defaults, as in production), certificate and key
@@ -54,14 +75,20 @@
 // One difference from a real pull: here the phone is the TLS server, where a
 // pull's phone may be the client; after the handshake TLS 1.3 is symmetric.
 //
-// Phone half (listens on PORT..PORT+8, one port per case in the order above:
+// Phone half (listens on PORT..PORT+30, one port per connection, each case's
+// connections on consecutive ports from its offset, in the order above:
 // plain +0, raw +1, tls +2, adapter +3, tls-big +4, plain-iso +5, tls-iso +6,
-// adapter-iso +7, tls-iso-busy +8; prints its addresses, ends once every case
-// in CASES, default all, has been served once; ~1–2 min at 128 MiB):
+// adapter-iso +7, tls-iso-busy +8, tls-iso-x2 +9–10, tls-iso-x4 +11–14,
+// tls-iso-x8 +15–22, tls-x4-root +23–26, adapter-iso-x4 +27–30; each port
+// accepts once; prints its addresses, ends once every case in CASES, default
+// all, has been served once; a few minutes at 128 MiB, so pick a subset):
 //   flutter drive --profile -d <serial> \
 //     --driver=test_driver/integration_test.dart \
 //     --target=integration_test/socket_pump_probe_test.dart \
 //     [--dart-define=PORT=47470] [--dart-define=CASES=tls,tls-iso,…]
+// Recommended subset for the multi-connection question (the same list goes
+// to the desktop's --cases):
+//   plain,plain-iso,tls,tls-iso,tls-iso-x2,tls-iso-x4,tls-iso-x8,tls-x4-root
 // (`flutter test integration_test/socket_pump_probe_test.dart -d <serial>`
 // works too, but runs the Dart side in debug JIT; --profile is AOT like the
 // shipped app, and is what the other on-device probes use.)
@@ -121,14 +148,50 @@ enum PumpCase {
     secure: true,
     inIsolate: true,
     busyRoot: true,
+  ),
+  tlsIsoX2(
+    9,
+    PumpReceiver.rawSecureSocket,
+    secure: true,
+    inIsolate: true,
+    connections: 2,
+  ),
+  tlsIsoX4(
+    11,
+    PumpReceiver.rawSecureSocket,
+    secure: true,
+    inIsolate: true,
+    connections: 4,
+  ),
+  tlsIsoX8(
+    15,
+    PumpReceiver.rawSecureSocket,
+    secure: true,
+    inIsolate: true,
+    connections: 8,
+  ),
+  tlsX4Root(23, PumpReceiver.rawSecureSocket, secure: true, connections: 4),
+  adapterIsoX4(
+    27,
+    PumpReceiver.rawSecureByteSocket,
+    secure: true,
+    inIsolate: true,
+    connections: 4,
   );
 
+  /// The first of this case's [connections] consecutive ports, one per
+  /// connection, from the base port.
   final int portOffset;
   final PumpReceiver receiver;
   final bool secure;
   final bool bigWrites;
+
+  /// Each connection read in its own background isolate.
   final bool inIsolate;
   final bool busyRoot;
+
+  /// Parallel connections the case's bytes are split evenly across.
+  final int connections;
 
   const PumpCase(
     this.portOffset,
@@ -137,7 +200,11 @@ enum PumpCase {
     this.bigWrites = false,
     this.inIsolate = false,
     this.busyRoot = false,
+    this.connections = 1,
   });
+
+  /// Connection [i]'s label: the case's own for a one-connection case.
+  String connectionLabel(int i) => connections == 1 ? label : '$label#$i';
 
   /// `tlsIsoBusy` → `tls-iso-busy`.
   String get label =>
@@ -167,8 +234,13 @@ DeviceIdentity probeIdentity() => generateDeviceIdentity(
   now: DateTime.utc(2026, 1, 1),
 );
 
+/// One connection's bytes and its first and last read on the wall clock
+/// (µs since epoch), comparable across isolates; sendable between them.
+typedef ReadSpan = ({int bytes, int firstUs, int lastUs});
+
 /// What one connection's reads looked like on the receiving side.
 class ReadLog {
+  final int _startWallUs = DateTime.now().microsecondsSinceEpoch;
   final Stopwatch _clock = Stopwatch()..start();
   final List<int> _at = [];
   final List<int> _sizes = [];
@@ -179,8 +251,17 @@ class ReadLog {
     _sizes.add(bytes);
   }
 
-  String report(PumpCase pumpCase) {
-    if (_at.isEmpty) return '${pumpCase.label}: no bytes';
+  /// Null when nothing was read.
+  ReadSpan? get span => _at.isEmpty
+      ? null
+      : (
+          bytes: _sizes.fold<int>(0, (a, b) => a + b),
+          firstUs: _startWallUs + _at.first,
+          lastUs: _startWallUs + _at.last,
+        );
+
+  String report(String label) {
+    if (_at.isEmpty) return '$label: no bytes';
     final bytes = _sizes.fold<int>(0, (a, b) => a + b);
     final spanUs = max(1, _at.last - _at.first);
     final gaps = [for (var i = 1; i < _at.length; i++) _at[i] - _at[i - 1]]
@@ -189,7 +270,7 @@ class ReadLog {
     String pct(double p) =>
         gaps.isEmpty ? '-' : ms(gaps[((gaps.length - 1) * p).round()]);
     final mib = bytes / (1 << 20);
-    return '${pumpCase.label.padRight(12)} '
+    return '${label.padRight(16)} '
         '${(mib / (spanUs / 1e6)).toStringAsFixed(1)} MiB/s  '
         '${mib.toStringAsFixed(0)} MiB in ${(spanUs / 1e6).toStringAsFixed(2)} s  '
         'reads ${_at.length} (${(_at.length / (spanUs / 1e6)).round()}/s)'
@@ -220,15 +301,60 @@ Future<void> receive({
   final served = <Future<void>>[];
   for (final pumpCase in cases) {
     final at = port + pumpCase.portOffset;
-    if (pumpCase.inIsolate) {
-      await _listenInIsolate(pumpCase, at, log, served);
-    } else {
-      await _listen(pumpCase, at, context, log, served);
+    final spans = <ReadSpan>[];
+    final connections = <Future<void>>[];
+    for (var i = 0; i < pumpCase.connections; i++) {
+      final label = pumpCase.connectionLabel(i);
+      if (pumpCase.inIsolate) {
+        await _listenInIsolate(
+          pumpCase,
+          at + i,
+          label,
+          log,
+          spans.add,
+          connections,
+        );
+      } else {
+        await _listen(
+          pumpCase,
+          at + i,
+          label,
+          context,
+          log,
+          spans.add,
+          connections,
+        );
+      }
     }
-    log('listening ${pumpCase.label} on port $at');
+    final last = at + pumpCase.connections - 1;
+    log(
+      'listening ${pumpCase.label} on port '
+      '${last == at ? '$at' : '$at-$last'}',
+    );
+    served.add(
+      Future.wait(connections).then((_) {
+        if (pumpCase.connections > 1) log(_aggregate(pumpCase, spans));
+      }),
+    );
   }
   await Future.wait(served);
   log('done');
+}
+
+/// A multi-connection case over all its connections: bytes from the first
+/// byte on any connection to the last byte on all of them.
+String _aggregate(PumpCase pumpCase, List<ReadSpan> spans) {
+  final label = '${pumpCase.label} total'.padRight(16);
+  if (spans.isEmpty) return '$label no bytes';
+  final bytes = spans.fold<int>(0, (a, s) => a + s.bytes);
+  final firstUs = spans.map((s) => s.firstUs).reduce(min);
+  final lastUs = spans.map((s) => s.lastUs).reduce(max);
+  final seconds = max(1, lastUs - firstUs) / 1e6;
+  final mib = bytes / (1 << 20);
+  return '$label ${(mib / seconds).toStringAsFixed(1)} MiB/s  '
+      '${mib.toStringAsFixed(0)} MiB in ${seconds.toStringAsFixed(2)} s over '
+      '${spans.length}/${pumpCase.connections} connections, first byte on any '
+      'to last byte on all';
 }
 
 /// The receiving side's context: the probe identity, a client certificate
@@ -243,18 +369,25 @@ SecurityContext _serverContext() {
 
 /// Binds [pumpCase]'s receiver on [at] in the calling isolate and adds to
 /// [served] a future that completes once its one connection has been read
-/// and reported. [onAccepted] runs as that connection arrives.
+/// and reported as [label], its span handed to [onSpan]. [onAccepted] runs as
+/// that connection arrives.
 Future<void> _listen(
   PumpCase pumpCase,
   int at,
+  String label,
   SecurityContext context,
   void Function(String line) log,
+  void Function(ReadSpan span) onSpan,
   List<Future<void>> served, {
   void Function()? onAccepted,
 }) async {
-  void report(ReadLog reads) => log(reads.report(pumpCase));
+  void report(ReadLog reads) {
+    log(reads.report(label));
+    if (reads.span case final span?) onSpan(span);
+  }
+
   // Logged and not rethrown, so one failed case leaves the others served.
-  void failed(Object error) => log('${pumpCase.label} failed: $error');
+  void failed(Object error) => log('$label failed: $error');
   if (pumpCase.receiver == PumpReceiver.socket) {
     final server = await ServerSocket.bind(InternetAddress.anyIPv4, at);
     served.add(
@@ -281,17 +414,19 @@ Future<void> _listen(
 }
 
 /// What a background receiver sends the isolate that spawned it besides its
-/// log lines (Strings), sent as the index.
+/// log lines (Strings) and its [ReadSpan], sent as the index.
 enum _IsolateSignal { bound, accepted }
 
-/// [_listen] for [pumpCase] inside a new isolate: the isolate builds its own
-/// SecurityContext from the same seed, binds, accepts, handshakes and reads,
-/// and sends back its log lines. Returns once it is bound, and adds to
-/// [served] a future that completes once the isolate has exited.
+/// [_listen] for [pumpCase] on [at] inside a new isolate: the isolate builds
+/// its own SecurityContext from the same seed, binds, accepts, handshakes and
+/// reads, and sends back its log lines and its span. Returns once it is bound,
+/// and adds to [served] a future that completes once the isolate has exited.
 Future<void> _listenInIsolate(
   PumpCase pumpCase,
   int at,
+  String label,
   void Function(String line) log,
+  void Function(ReadSpan span) onSpan,
   List<Future<void>> served,
 ) async {
   final messages = ReceivePort();
@@ -302,6 +437,8 @@ Future<void> _listenInIsolate(
     switch (message) {
       case String line:
         log(line);
+      case final ReadSpan span:
+        onSpan(span);
       case int signal:
         switch (_IsolateSignal.values[signal]) {
           case _IsolateSignal.bound:
@@ -310,7 +447,7 @@ Future<void> _listenInIsolate(
             if (pumpCase.busyRoot) stopBusy = _keepBusy();
         }
       case [final error, _]: // onError
-        log('${pumpCase.label} failed: $error');
+        log('$label failed: $error');
       case null: // onExit
         stopBusy?.call();
         messages.close();
@@ -320,7 +457,7 @@ Future<void> _listenInIsolate(
   });
   await Isolate.spawn(
     _receiveInIsolate,
-    (messages.sendPort, pumpCase.index, at),
+    (messages.sendPort, pumpCase.index, at, label),
     onError: messages.sendPort,
     onExit: messages.sendPort,
   );
@@ -328,13 +465,15 @@ Future<void> _listenInIsolate(
   await bound.future;
 }
 
-Future<void> _receiveInIsolate((SendPort, int, int) message) async {
-  final (root, caseIndex, at) = message;
+Future<void> _receiveInIsolate((SendPort, int, int, String) message) async {
+  final (root, caseIndex, at, label) = message;
   final served = <Future<void>>[];
   await _listen(
     PumpCase.values[caseIndex],
     at,
+    label,
     _serverContext(),
+    root.send,
     root.send,
     served,
     onAccepted: () => root.send(_IsolateSignal.accepted.index),
@@ -447,27 +586,49 @@ Future<void> send({
     ..usePrivateKeyBytes(utf8.encode(identity.privateKeyPem));
   final pinned = identity.certificateDer;
 
+  /// Connection [at]: its plain socket and the socket written (the same one
+  /// unless [secure]).
+  Future<(RawSocket, RawSocket)> connect(int at, {required bool secure}) async {
+    final raw = await RawSocket.connect(host, at);
+    if (!secure) return (raw, raw);
+    final secured = await secureClientWithin(
+      raw,
+      host: host,
+      context: context,
+      deadline: _handshakeDeadline,
+      onBadCertificate: (certificate) => _sameBytes(certificate.der, pinned),
+    );
+    return (raw, secured);
+  }
+
   for (final pumpCase in cases) {
     final writeSize = pumpCase.bigWrites ? bigChunk : chunk;
-    final raw = await RawSocket.connect(host, port + pumpCase.portOffset);
-    final RawSocket socket;
-    if (pumpCase.secure) {
-      socket = await secureClientWithin(
-        raw,
-        host: host,
-        context: context,
-        deadline: _handshakeDeadline,
-        onBadCertificate: (certificate) => _sameBytes(certificate.der, pinned),
-      );
-    } else {
-      socket = raw;
+    final n = pumpCase.connections;
+    final at = port + pumpCase.portOffset;
+    // Every connection handshaken before any is pumped, so they start
+    // together.
+    final sockets = await Future.wait([
+      for (var i = 0; i < n; i++) connect(at + i, secure: pumpCase.secure),
+    ]);
+    final share = bytes ~/ n;
+    final pumped = await Future.wait([
+      for (var i = 0; i < n; i++)
+        _pump(
+          sockets[i].$2,
+          i == 0 ? bytes - share * (n - 1) : share,
+          writeSize,
+        ),
+    ]);
+    for (final (raw, _) in sockets) {
+      raw.close().ignore();
     }
-    final (:written, :closed) = await _pump(socket, bytes, writeSize);
-    raw.close().ignore();
+    final written = pumped.map((p) => p.written).reduce(max);
+    final closed = pumped.map((p) => p.closed).reduce(max);
     final mib = bytes / (1 << 20);
     stdout.writeln(
-      '${pumpCase.label.padRight(12)} sent ${mib.toStringAsFixed(0)} MiB in '
-      '${(writeSize / 1024).round()} KiB writes: '
+      '${pumpCase.label.padRight(16)} sent ${mib.toStringAsFixed(0)} MiB '
+      '${n > 1 ? 'over $n connections ' : ''}'
+      'in ${(writeSize / 1024).round()} KiB writes: '
       '${(mib / written).toStringAsFixed(1)} MiB/s to the last write '
       '(${written.toStringAsFixed(2)} s), '
       '${(mib / closed).toStringAsFixed(1)} MiB/s to the phone\'s close '
