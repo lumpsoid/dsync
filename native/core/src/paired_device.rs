@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{DeviceId, PeerName};
+use dsync_domain::{DeviceId, PeerName, ReplicaSpec};
 
 use crate::certificate::Certificate;
 
@@ -110,6 +110,16 @@ impl PairedDevice {
     /// (`Location::expanded_path`), no normalization, no prefix match.
     pub fn serves_root(&self, expanded_root: &str) -> bool {
         self.granted_roots.contains(expanded_root)
+    }
+
+    /// Whether this device may open the replica `spec` names, its root
+    /// expanded against this host's `home` ([`ReplicaSpec::expanded_root`],
+    /// the expansion the replica factory uses too). A root that cannot be
+    /// expanded is not served. Pure: nothing here asks the filesystem, so
+    /// a missing, unreadable and ungranted root are refused alike.
+    pub fn serves_spec(&self, spec: &ReplicaSpec, home: Option<&str>) -> bool {
+        spec.expanded_root(home)
+            .is_ok_and(|root| self.serves_root(&root))
     }
 
     /// Lets this device reach `expanded_root`. Idempotent.

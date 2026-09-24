@@ -59,6 +59,25 @@ impl CertificateValidity {
         self.not_after < now
     }
 
+    /// Whether the certificate is valid at `now`: not before `notBefore`,
+    /// not after `notAfter`. What a peer's handshake holds a presented
+    /// certificate to, in both directions - pinning verifiers bypass the
+    /// usual chain checks, dates included, so this is the only place a
+    /// date is checked.
+    pub fn check_at(&self, now: SystemTime) -> Result<(), OutOfValidity> {
+        if now < self.not_before {
+            Err(OutOfValidity::NotYetValid {
+                not_before: self.not_before,
+            })
+        } else if self.is_expired(now) {
+            Err(OutOfValidity::Expired {
+                not_after: self.not_after,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     /// The certificate's standing at `now`, or `None` while expiry is
     /// further away than `window` - the one rule every warning site
     /// consults.
@@ -75,6 +94,18 @@ impl CertificateValidity {
         };
         Some(CertificateExpiry { owner, standing })
     }
+}
+
+/// Why a certificate is not valid at an instant
+/// ([`CertificateValidity::check_at`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+pub enum OutOfValidity {
+    /// Its `notBefore` is still ahead: a clock far behind on one side, or
+    /// a certificate issued in the future.
+    #[error("is not valid yet")]
+    NotYetValid { not_before: SystemTime },
+    #[error("has expired")]
+    Expired { not_after: SystemTime },
 }
 
 /// Whose certificate an expiry is about.
@@ -220,6 +251,23 @@ mod tests {
         assert!(!validity.is_expired(now()));
         assert!(validity.is_expired(now() + Duration::from_secs(1)));
         assert!(!validity.is_expired(now() - Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn check_at_refuses_before_not_before_and_after_not_after() {
+        let validity = CertificateValidity::new(now(), now() + DAY);
+        assert_eq!(validity.check_at(now()), Ok(()));
+        assert_eq!(validity.check_at(now() + DAY), Ok(()));
+        assert_eq!(
+            validity.check_at(now() - Duration::from_secs(1)),
+            Err(OutOfValidity::NotYetValid { not_before: now() })
+        );
+        assert_eq!(
+            validity.check_at(now() + DAY + Duration::from_secs(1)),
+            Err(OutOfValidity::Expired {
+                not_after: now() + DAY
+            })
+        );
     }
 
     #[test]

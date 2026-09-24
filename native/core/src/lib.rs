@@ -25,6 +25,10 @@ mod local_replica;
 mod paired_device;
 mod paired_device_store;
 mod paired_devices;
+mod peer_dialer;
+mod peer_event;
+mod peer_listener;
+mod peer_pin;
 mod profile_store;
 mod remote_replica;
 mod replica;
@@ -68,6 +72,10 @@ pub use paired_device_store::{
     PAIRED_DEVICES_SCHEMA_VERSION, PairedDeviceStore, PairedDeviceStoreError,
 };
 pub use paired_devices::{PairedDevices, PairingError};
+pub use peer_dialer::{DialedPeer, PeerDialError, PeerDialer};
+pub use peer_event::{PeerEvent, PeerRefusal};
+pub use peer_listener::{NOT_GRANTED, PeerBindError, PeerListener, bind_peer};
+pub use peer_pin::CertificateRefusal;
 pub use profile_store::{ProfileStore, ProfileStoreError};
 pub use remote_replica::RemoteReplica;
 pub use replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Replica};

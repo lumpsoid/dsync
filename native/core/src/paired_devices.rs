@@ -140,6 +140,8 @@ mod tests {
 
     use std::time::Duration;
 
+    use dsync_domain::{Jobs, ProfileId, ReplicaSpec, Side};
+
     use super::*;
     use crate::device_identity::DeviceIdentity;
 
@@ -192,6 +194,24 @@ mod tests {
         ] {
             assert!(!phone.serves_root(near_miss), "{near_miss}");
         }
+    }
+
+    #[test]
+    fn serves_a_spec_whose_expanded_root_is_granted() {
+        let spec = |root: &str| ReplicaSpec {
+            root: root.to_owned(),
+            profile: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            side: Side::B,
+            jobs: Jobs::DEFAULT,
+        };
+        let mut phone = device(&identity(), "phone");
+        phone.grant("/home/me/notes".to_owned());
+        assert!(phone.serves_spec(&spec("~/notes"), Some("/home/me")));
+        assert!(phone.serves_spec(&spec("/home/me/notes"), None));
+        assert!(!phone.serves_spec(&spec("~/notes"), Some("/home/you")));
+        // No home to expand against: refused, never guessed at.
+        assert!(!phone.serves_spec(&spec("~/notes"), None));
+        assert!(!phone.serves_spec(&spec("/home/me/notes/"), Some("/home/me")));
     }
 
     #[test]

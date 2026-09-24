@@ -66,7 +66,9 @@ pub use app_dirs::{
 };
 pub use archive::{Archive, ArchiveCommit};
 pub use case_folding::CaseFolding;
-pub use certificate_validity::{CertificateExpiry, CertificateOwner, CertificateValidity};
+pub use certificate_validity::{
+    CertificateExpiry, CertificateOwner, CertificateValidity, OutOfValidity,
+};
 pub use changed_scan::ChangedScan;
 pub use conflict::Conflict;
 pub use content_hash::{ContentHash, ContentHashError};

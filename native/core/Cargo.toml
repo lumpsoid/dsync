@@ -16,9 +16,10 @@ x509-parser.workspace = true
 pem.workspace = true
 time.workspace = true
 if-addrs.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "io-util", "io-std", "net", "process", "time", "macros"] }
 
 [dev-dependencies]
 tempfile.workspace = true
-rustls.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

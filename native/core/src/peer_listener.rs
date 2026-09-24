@@ -1,0 +1,324 @@
+//! The peer:// listener (SPEC §4.4): the engine behind `dsync agent
+//! --serve` and the head's Serve page. Serves paired devices over mutual
+//! TLS, each connection its own [`ReplicaServer`] session.
+//!
+//! Two bounds hold before a peer has authenticated, so a stranger costs
+//! this host at most a descriptor and a TLS session for a while: at most
+//! [`Tuning::unauthenticated_connections`] connections mid-handshake (the
+//! next is closed at accept, before any TLS), each cut off at
+//! [`Tuning::handshake`]. A timer and a counter, not a rate limiter: they
+//! need no key, and per-address is wrong behind NAT.
+//!
+//! After the handshake the authenticated key selects the paired device,
+//! and its `hello` is held to that device's grants: the root, expanded as
+//! the factory will expand it, must be one the device was granted, or the
+//! session gets one generic refusal before the factory - and so the
+//! filesystem - is reached. A missing, an unreadable and an ungranted root
+//! cannot be told apart from the refusal, so a paired device cannot map
+//! this host's filesystem by asking.
+
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use dsync_domain::{HostFacts, ReplicaSpec, Tuning};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::server::TlsStream;
+
+use crate::device_identity::DeviceIdentity;
+use crate::paired_device::PairedDevice;
+use crate::paired_device_store::PairedDeviceStore;
+use crate::paired_devices::PairedDevices;
+use crate::peer_event::{PeerEvent, PeerRefusal};
+use crate::peer_pin::{CertificateRefusal, PeerPin, presented, server_config};
+use crate::replica::Replica;
+use crate::replica_error::ReplicaError;
+use crate::replica_server::ReplicaServer;
+use crate::transport::{Liveness, Transport};
+
+/// The one answer to a `hello` for a root the device may not reach -
+/// whether it exists, is readable or is simply not granted.
+pub const NOT_GRANTED: &str = "this device is not authorized to reach that replica";
+
+#[derive(Debug, thiserror::Error)]
+#[error("cannot listen on {address}: {source}")]
+pub struct PeerBindError {
+    pub address: SocketAddr,
+    #[source]
+    pub source: io::Error,
+}
+
+/// Listens for peers on `address:port` ([`Tuning::peer_port`] by default,
+/// the `--bind` address and `--port`).
+pub async fn bind_peer(address: IpAddr, port: u16) -> Result<TcpListener, PeerBindError> {
+    let address = SocketAddr::new(address, port);
+    TcpListener::bind(address)
+        .await
+        .map_err(|source| PeerBindError { address, source })
+}
+
+/// Serves paired devices the replicas `open` opens, presenting
+/// `identity`, and admitting whoever the paired-device store holds at the
+/// moment each connection is accepted.
+pub struct PeerListener<F> {
+    open: Arc<F>,
+    identity: DeviceIdentity,
+    paired: PairedDeviceStore,
+    home: Option<String>,
+    tuning: Tuning,
+}
+
+impl<F, Opening, R> PeerListener<F>
+where
+    F: Fn(ReplicaSpec) -> Opening + Send + Sync + 'static,
+    Opening: Future<Output = Result<R, ReplicaError>> + Send + 'static,
+    R: Replica + 'static,
+{
+    /// `open` is the replica factory, as for [`ReplicaServer::new`]; it
+    /// must expand the spec's root with [`ReplicaSpec::expanded_root`]
+    /// against `host`'s home, the expansion the grant check uses.
+    pub fn new(
+        open: F,
+        identity: DeviceIdentity,
+        paired: PairedDeviceStore,
+        host: &HostFacts,
+        tuning: Tuning,
+    ) -> PeerListener<F> {
+        PeerListener {
+            open: Arc::new(open),
+            identity,
+            paired,
+            home: host.home().map(str::to_owned),
+            tuning,
+        }
+    }
+
+    /// Serves every connection `listener` accepts, each its own session,
+    /// concurrently, until accepting fails. Each connection's story goes
+    /// to `events`; one failing does not stop the others.
+    pub async fn serve(
+        self: Arc<Self>,
+        listener: TcpListener,
+        events: impl Fn(PeerEvent) + Send + Sync + 'static,
+    ) -> io::Result<()> {
+        let events = Arc::new(events);
+        let limit = self.tuning.unauthenticated_connections;
+        let unauthenticated = Arc::new(Semaphore::new(limit));
+        loop {
+            let (stream, from) = listener.accept().await?;
+            // Taken here, in accept order, so the connection over the
+            // limit is the one refused, before it costs a task or any TLS.
+            let Ok(permit) = unauthenticated.clone().try_acquire_owned() else {
+                drop(stream);
+                events(PeerEvent::Refused {
+                    from,
+                    why: PeerRefusal::OverCapacity { limit },
+                });
+                continue;
+            };
+            let (served, events) = (self.clone(), events.clone());
+            tokio::spawn(async move {
+                if let Err(error) = stream.set_nodelay(true) {
+                    let why = PeerRefusal::Handshake(error);
+                    return events(PeerEvent::Refused { from, why });
+                }
+                let authenticated = served.authenticate(stream, permit).await;
+                let (tls, device) = match authenticated {
+                    Ok(authenticated) => authenticated,
+                    Err(why) => return events(PeerEvent::Refused { from, why }),
+                };
+                let (id, name) = (device.device_id(), device.name().clone());
+                events(PeerEvent::Started {
+                    from,
+                    device: id,
+                    name: name.clone(),
+                });
+                let (open, home) = (served.open.clone(), served.home.clone());
+                // `open` is reached only for a root `device` was granted.
+                let session = ReplicaServer::new(
+                    move |spec: ReplicaSpec| {
+                        let opening = device
+                            .serves_spec(&spec, home.as_deref())
+                            .then(|| open(spec));
+                        async move {
+                            match opening {
+                                Some(opening) => opening.await,
+                                None => Err(ReplicaError::Refused(NOT_GRANTED.to_owned())),
+                            }
+                        }
+                    },
+                    served.tuning,
+                );
+                let transport = Transport::split(tls).with_liveness(Liveness::of(&served.tuning));
+                let outcome = session.serve(transport).await;
+                events(PeerEvent::Ended {
+                    from,
+                    device: id,
+                    name,
+                    outcome,
+                });
+            });
+        }
+    }
+
+    /// The TLS handshake against the paired set as it is now, under the
+    /// deadline, holding `permit` until it is done either way.
+    async fn authenticate<S>(
+        &self,
+        stream: S,
+        permit: OwnedSemaphorePermit,
+    ) -> Result<(TlsStream<S>, PairedDevice), PeerRefusal>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let paired = self.paired.load().map_err(PeerRefusal::Store)?;
+        let pin = PeerPin::new(paired.iter().map(PairedDevice::device_id));
+        let config = server_config(&self.identity, pin.clone())
+            .map_err(|error| PeerRefusal::Handshake(io::Error::other(error)))?;
+        let accepting = TlsAcceptor::from(Arc::new(config)).accept(stream);
+        let accepted = tokio::time::timeout(self.tuning.handshake, accepting).await;
+        drop(permit);
+        let tls = match accepted {
+            Err(_) => {
+                return Err(PeerRefusal::HandshakeTimedOut {
+                    limit: self.tuning.handshake,
+                });
+            }
+            Ok(Err(error)) => return Err(self.why_refused(&pin, &paired, error)),
+            Ok(Ok(tls)) => tls,
+        };
+        let device = presented(tls.get_ref().1)
+            .and_then(|certificate| paired.get(&certificate.device_id()).cloned())
+            .ok_or_else(|| {
+                PeerRefusal::Handshake(io::Error::other("no admitted certificate after TLS"))
+            })?;
+        Ok((tls, device))
+    }
+
+    /// A failed handshake, named: what the pin refused, else this host's
+    /// own certificate if that is out of date (the peer refused it), else
+    /// the TLS error itself.
+    fn why_refused(&self, pin: &PeerPin, paired: &PairedDevices, error: io::Error) -> PeerRefusal {
+        match pin.refusal() {
+            Some(CertificateRefusal::NotPinned(_)) if paired.is_empty() => {
+                PeerRefusal::NoDevicesPaired
+            }
+            Some(refusal) => PeerRefusal::Certificate(refusal),
+            None => match self
+                .identity
+                .certificate()
+                .validity()
+                .check_at(SystemTime::now())
+            {
+                Err(breach) => PeerRefusal::OwnCertificate(breach),
+                Ok(()) => PeerRefusal::Handshake(error),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The handshake deadline under a paused clock, over an in-memory
+    //! stream (real sockets and a paused clock race: the clock can jump
+    //! before the kernel's readiness is polled). The listener around it is
+    //! `tests/peer`'s.
+
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+    use tokio::time::Instant;
+
+    use super::*;
+    use crate::local_replica::LocalReplica;
+    use crate::state_dir::StateDir;
+
+    type Open = fn(ReplicaSpec) -> std::future::Ready<Result<LocalReplica, ReplicaError>>;
+
+    fn listener(state: &StateDir) -> PeerListener<Open> {
+        let identity = DeviceIdentity::generate("desktop", SystemTime::now()).unwrap();
+        let host = HostFacts::new(dsync_domain::Platform::HOST, None, Vec::new(), "/".into());
+        let refuse: Open = |_| std::future::ready(Err(ReplicaError::Refused("unused".into())));
+        PeerListener::new(
+            refuse,
+            identity,
+            PairedDeviceStore::new(state),
+            &host,
+            Tuning::DEFAULT,
+        )
+    }
+
+    fn permit() -> OwnedSemaphorePermit {
+        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap()
+    }
+
+    fn cut(refused: Result<impl Sized, PeerRefusal>) -> Option<Duration> {
+        match refused {
+            Err(PeerRefusal::HandshakeTimedOut { limit }) => Some(limit),
+            _ => None,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_never_speaks_is_cut_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let (_client, server) = duplex(64 * 1024);
+        let started = Instant::now();
+        let refused = listener.authenticate(server, permit()).await;
+        assert_eq!(started.elapsed(), Tuning::DEFAULT.handshake);
+        assert_eq!(cut(refused), Some(Tuning::DEFAULT.handshake));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_stalls_after_its_first_flight_is_cut_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let (mut client, server) = duplex(64 * 1024);
+        let config = Arc::new(
+            rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(PeerPin::new([]))
+            .with_no_client_auth(),
+        );
+        let mut hello = Vec::new();
+        rustls::ClientConnection::new(config, crate::peer_pin::server_name())
+            .unwrap()
+            .write_tls(&mut hello)
+            .unwrap();
+        client.write_all(&hello).await.unwrap();
+
+        let started = Instant::now();
+        let (refused, answered) = tokio::join!(listener.authenticate(server, permit()), async {
+            let mut answer = [0u8; 1];
+            client.read(&mut answer).await.unwrap()
+        });
+        assert_eq!(answered, 1, "the listener answered the hello");
+        assert_eq!(started.elapsed(), Tuning::DEFAULT.handshake);
+        assert_eq!(cut(refused), Some(Tuning::DEFAULT.handshake));
+    }
+
+    /// Positive control for both: the same stream and clock, a peer that
+    /// completes nothing but closes, is refused at once - not at the
+    /// deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_hangs_up_is_refused_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let (client, server) = duplex(64 * 1024);
+        drop(client);
+        let started = Instant::now();
+        let refused = listener.authenticate(server, permit()).await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(matches!(refused, Err(PeerRefusal::Handshake(_))));
+    }
+}
