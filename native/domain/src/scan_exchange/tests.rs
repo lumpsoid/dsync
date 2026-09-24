@@ -316,7 +316,7 @@ fn an_unreadable_path_on_one_side() {
 
     let scans = exchange(a.clone(), b.clone());
     assert_eq!(scans.changed_a.skipped.len(), 1);
-    assert_eq!(scans.changed_a.skipped[0].path, path("locked.txt"));
+    assert_eq!(scans.changed_a.skipped[0].path(), Some(&path("locked.txt")));
     assert_eq!(scans.changed_a.unreadable_count(), 1);
     assert!(scans.changed_a.unreadable().covers(&path("locked.txt")));
     // Control: the exchange did carry locked.txt to the reconciler...

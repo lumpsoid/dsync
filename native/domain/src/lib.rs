@@ -13,6 +13,7 @@ mod action;
 mod advertisable_address;
 mod app_dirs;
 mod archive;
+mod case_folding;
 mod certificate_validity;
 mod changed_scan;
 mod conflict;
@@ -28,6 +29,7 @@ mod host_facts;
 pub mod host_port;
 mod jobs;
 mod location;
+mod metric_format;
 mod options_error;
 mod peer_name;
 mod plan;
@@ -43,8 +45,10 @@ mod run_flags;
 mod run_summary;
 mod scan_entry;
 mod scan_exchange;
+mod scan_probe_report;
 mod scan_result;
 mod scan_tally;
+mod scan_verdict;
 mod side;
 mod skipped_path;
 mod ssh_access;
@@ -60,6 +64,7 @@ pub use app_dirs::{
     DIR_LEAF, DirError, DirPath, DirRule, EmptyDirPath, StateDirChoice, config_dir, state_dir,
 };
 pub use archive::{Archive, ArchiveCommit};
+pub use case_folding::CaseFolding;
 pub use certificate_validity::{CertificateExpiry, CertificateOwner, CertificateValidity};
 pub use changed_scan::ChangedScan;
 pub use conflict::Conflict;
@@ -79,6 +84,7 @@ pub use location::{
     ExpandError, LocalLocation, Locality, Location, LocationError, PeerLocation, SshForm,
     SshLocation, UnixLocation,
 };
+pub use metric_format::{format_bytes, format_count, format_duration};
 pub use options_error::OptionsError;
 pub use peer_name::{PeerName, PeerNameError};
 pub use plan::Plan;
@@ -97,10 +103,12 @@ pub use scan_exchange::{
     Bucket, BucketCount, BucketCountMismatch, BucketDigests, Digested, UnchangedEntries,
     status_list,
 };
+pub use scan_probe_report::{ScanProbeLayer, ScanProbeLayerResult, ScanProbePass, ScanProbeReport};
 pub use scan_result::ScanResult;
 pub use scan_tally::ScanTally;
+pub use scan_verdict::WalkedTree;
 pub use side::Side;
-pub use skipped_path::{SkippedPath, SkippedReason, failure_count, unreadable_of};
+pub use skipped_path::{SkippedAt, SkippedPath, SkippedReason, failure_count, unreadable_of};
 pub use ssh_access::{EmptySshValue, SshAccess, SshCommand, SshOption};
 pub use sync_target::{AdHocTarget, SyncTarget};
 pub use temp_name::{TEMP_FILE_MARKER, is_temp_file_name, temp_name_for};

@@ -18,6 +18,10 @@ pub enum SkippedReason {
     /// Folds to the same key as another live or archived path on a replica
     /// whose filesystem folds case (SPEC §16).
     CaseFoldCollision,
+    /// A name on disk no [`RelPath`] can spell (a `\`, a drive-shaped
+    /// segment, not UTF-8): it cannot travel portably, so it is not synced
+    /// until renamed. Only ever at a [`SkippedAt::UnrepresentableName`].
+    UnrepresentableName,
 }
 
 impl SkippedReason {
@@ -27,21 +31,34 @@ impl SkippedReason {
     pub fn is_failure(self) -> bool {
         match self {
             SkippedReason::Symlink => false,
-            SkippedReason::Unreadable | SkippedReason::CaseFoldCollision => true,
+            SkippedReason::Unreadable
+            | SkippedReason::CaseFoldCollision
+            | SkippedReason::UnrepresentableName => true,
         }
     }
 }
 
-/// One skipped path. `reason` is what the tool does about it; `detail` is
+/// Where a skipped entry sits.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SkippedAt {
+    /// A path the replica can name.
+    Path(RelPath),
+    /// A name on disk that cannot be a [`RelPath`], in the folder `parent`
+    /// (`None`: the replica root). The scanner never reshapes a name to
+    /// fit; `name` is for the reader only (lossy where the name is not
+    /// UTF-8) and nothing resolves it.
+    UnrepresentableName {
+        parent: Option<RelPath>,
+        name: String,
+    },
+}
+
+/// One skipped entry. `reason` is what the tool does about it; `detail` is
 /// what actually happened, for the reader ("broken link", the OS's message,
 /// the path it collided with).
-///
-/// A name on disk that cannot be a [`RelPath`] (a `\`, a drive-shaped
-/// segment) is reported by its parent's path and a detail naming it; the
-/// scanner never reshapes a name to fit.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SkippedPath {
-    pub path: RelPath,
+    pub at: SkippedAt,
     pub reason: SkippedReason,
     pub detail: String,
 }
@@ -49,16 +66,42 @@ pub struct SkippedPath {
 impl SkippedPath {
     pub fn new(path: RelPath, reason: SkippedReason, detail: impl Into<String>) -> SkippedPath {
         SkippedPath {
-            path,
+            at: SkippedAt::Path(path),
             reason,
             detail: detail.into(),
+        }
+    }
+
+    /// A name in `parent` (`None`: the root) that cannot be a [`RelPath`].
+    pub fn unrepresentable_name(
+        parent: Option<RelPath>,
+        name: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> SkippedPath {
+        SkippedPath {
+            at: SkippedAt::UnrepresentableName {
+                parent,
+                name: name.into(),
+            },
+            reason: SkippedReason::UnrepresentableName,
+            detail: detail.into(),
+        }
+    }
+
+    /// The path, when the entry has one a replica can name.
+    pub fn path(&self) -> Option<&RelPath> {
+        match &self.at {
+            SkippedAt::Path(path) => Some(path),
+            SkippedAt::UnrepresentableName { .. } => None,
         }
     }
 }
 
 /// Every reason covers its path, failure or not (see [`UnreadablePaths`]).
+/// An unrepresentable name covers nothing: no archived or peer path can
+/// spell it, and its folder's other entries are read in full.
 pub fn unreadable_of<'a>(skipped: impl IntoIterator<Item = &'a SkippedPath>) -> UnreadablePaths {
-    UnreadablePaths::new(skipped.into_iter().map(|s| s.path.clone()))
+    UnreadablePaths::new(skipped.into_iter().filter_map(|s| s.path().cloned()))
 }
 
 /// How many count toward exit 1 (SPEC §11.5).
@@ -81,10 +124,24 @@ mod tests {
     }
 
     #[test]
-    fn only_unreadable_and_case_fold_are_failures() {
+    fn only_a_symlink_is_not_a_failure() {
         assert!(!SkippedReason::Symlink.is_failure());
         assert!(SkippedReason::Unreadable.is_failure());
         assert!(SkippedReason::CaseFoldCollision.is_failure());
+        assert!(SkippedReason::UnrepresentableName.is_failure());
+    }
+
+    #[test]
+    fn an_unrepresentable_name_counts_but_covers_nothing() {
+        let list = [
+            SkippedPath::unrepresentable_name(Some(RelPath::parse("dir").unwrap()), "a\\b", "x"),
+            skipped("locked", SkippedReason::Unreadable),
+        ];
+        let unreadable = unreadable_of(&list);
+        assert_eq!(unreadable.roots(), [RelPath::parse("locked").unwrap()]);
+        assert!(!unreadable.covers(&RelPath::parse("dir/other").unwrap()));
+        assert_eq!(failure_count(&list), 2);
+        assert_eq!(list[0].path(), None);
     }
 
     #[test]

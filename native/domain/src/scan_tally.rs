@@ -48,3 +48,68 @@ impl ScanTally {
             + self.untrusted
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The tally cases of `test/dsync_core/models/scan_result_test.dart`
+    //! (its `unreadableCount` cases are `skipped_path`'s `failure_count`).
+
+    use super::*;
+    use crate::content_hash::ContentHash;
+    use crate::rel_path::RelPath;
+    use crate::scan_entry::{FileMeta, FileState};
+
+    fn entry(status: Status) -> ScanEntry {
+        ScanEntry::new(RelPath::parse("p").unwrap(), status)
+    }
+
+    const FILE: FileState = FileState {
+        meta: FileMeta {
+            size: 1,
+            mtime_us: 1,
+            mode: 0o644,
+        },
+        hash: ContentHash::from_digest([0; 32]),
+    };
+
+    #[test]
+    fn counts_each_entry_by_its_branch() {
+        let entries = [
+            entry(Status::Unchanged {
+                file: FILE,
+                by: Unchanged::MetadataMatched,
+            }),
+            entry(Status::Unchanged {
+                file: FILE,
+                by: Unchanged::MetadataMatched,
+            }),
+            entry(Status::Unchanged {
+                file: FILE,
+                by: Unchanged::HashMatched,
+            }),
+            entry(Status::Modified(FILE)),
+            entry(Status::Created(FILE)),
+            entry(Status::Deleted),
+            entry(Status::Untrusted(FILE)),
+            entry(Status::UntrustedAbsent),
+        ];
+        assert_eq!(
+            ScanTally::of(&entries),
+            ScanTally {
+                metadata_matched: 2,
+                hash_matched: 1,
+                modified: 1,
+                created: 1,
+                deleted: 1,
+                untrusted: 2,
+            }
+        );
+        assert_eq!(ScanTally::of(&entries).total(), 8);
+    }
+
+    #[test]
+    fn an_empty_scan_tallies_to_zeros() {
+        assert_eq!(ScanTally::of(&[]), ScanTally::default());
+        assert_eq!(ScanTally::default().total(), 0);
+    }
+}
