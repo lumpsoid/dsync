@@ -22,6 +22,13 @@ pub struct Tuning {
     pub router_budget_bytes: usize,
     /// Chunk size a streamed body is read ahead and sent in.
     pub read_ahead_chunk_bytes: usize,
+    /// Buffer a file is read into for sending, one chunk per read (plan
+    /// D3: at least 256 KiB, the size the scanner hashes with).
+    pub read_buffer_bytes: usize,
+    /// Bytes a replica's writer pool holds received and not yet written,
+    /// across every file in flight: past it, whoever feeds a write waits
+    /// (the spike's measured 16 MiB).
+    pub writer_buffer_bytes: usize,
     /// Interval of heartbeats on network transports.
     pub heartbeat: Duration,
     /// Silence after which a network peer is taken as gone.
@@ -52,6 +59,8 @@ impl Tuning {
         request_window: 32,
         router_budget_bytes: 1024 * 1024,
         read_ahead_chunk_bytes: 64 * 1024,
+        read_buffer_bytes: 256 * 1024,
+        writer_buffer_bytes: 16 * 1024 * 1024,
         heartbeat: Duration::from_secs(5),
         silence_limit: Duration::from_secs(30),
         handshake: Duration::from_secs(10),
@@ -83,6 +92,8 @@ mod tests {
         assert_eq!(tuning.request_window, 32);
         assert_eq!(tuning.router_budget_bytes, 1 << 20);
         assert_eq!(tuning.read_ahead_chunk_bytes, 1 << 16);
+        assert_eq!(tuning.read_buffer_bytes, 1 << 18);
+        assert_eq!(tuning.writer_buffer_bytes, 1 << 24);
         assert_eq!(tuning.heartbeat, Duration::from_secs(5));
         assert_eq!(tuning.silence_limit, Duration::from_secs(30));
         assert_eq!(tuning.handshake, Duration::from_secs(10));
