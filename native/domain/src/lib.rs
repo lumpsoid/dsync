@@ -10,6 +10,8 @@
 //! home, environment, working directory, platform) are passed in.
 
 mod action;
+mod app_dirs;
+mod archive;
 mod changed_scan;
 mod conflict;
 mod content_hash;
@@ -45,11 +47,16 @@ mod side;
 mod skipped_path;
 mod ssh_access;
 mod sync_target;
+mod temp_name;
 mod tuning;
 mod unreadable_paths;
 mod write_target;
 
 pub use action::Action;
+pub use app_dirs::{
+    DIR_LEAF, DirError, DirPath, DirRule, EmptyDirPath, StateDirChoice, config_dir, state_dir,
+};
+pub use archive::{Archive, ArchiveCommit};
 pub use changed_scan::ChangedScan;
 pub use conflict::Conflict;
 pub use content_hash::{ContentHash, ContentHashError};
@@ -92,6 +99,7 @@ pub use side::Side;
 pub use skipped_path::{SkippedPath, SkippedReason, failure_count, unreadable_of};
 pub use ssh_access::{EmptySshValue, SshAccess, SshCommand, SshOption};
 pub use sync_target::{AdHocTarget, SyncTarget};
+pub use temp_name::{TEMP_FILE_MARKER, is_temp_file_name, temp_name_for};
 pub use tuning::Tuning;
 pub use unreadable_paths::UnreadablePaths;
 pub use write_target::{WriteMode, WriteTarget};

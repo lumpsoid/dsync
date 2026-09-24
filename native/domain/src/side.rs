@@ -27,6 +27,11 @@ impl Side {
             Side::B => "b",
         }
     }
+
+    /// The side a state file name spells with [`Side::key`], if any.
+    pub fn from_key(key: &str) -> Option<Side> {
+        Side::BOTH.into_iter().find(|side| side.key() == key)
+    }
 }
 
 impl fmt::Display for Side {
@@ -45,5 +50,8 @@ mod tests {
         assert_eq!(Side::B.other(), Side::A);
         assert_eq!(Side::A.to_string(), "a");
         assert_eq!(Side::B.key(), "b");
+        assert_eq!(Side::from_key("a"), Some(Side::A));
+        assert_eq!(Side::from_key("b"), Some(Side::B));
+        assert_eq!(Side::from_key("A"), None);
     }
 }
