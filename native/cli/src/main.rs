@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use dsync_core::client::{PushOptions, push};
-use dsync_core::identity::Identity;
-use dsync_core::order::Order;
-use dsync_core::peer_pin::PeerPin;
-use dsync_core::server::{ServeEvent, ServeOptions, serve};
-use dsync_core::slow_create;
+use dsync_spike::client::{PushOptions, push};
+use dsync_spike::identity::Identity;
+use dsync_spike::order::Order;
+use dsync_spike::peer_pin::PeerPin;
+use dsync_spike::server::{ServeEvent, ServeOptions, serve};
+use dsync_spike::slow_create;
 use tokio::sync::mpsc;
 
 #[derive(Parser)]

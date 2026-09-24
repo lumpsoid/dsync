@@ -7,13 +7,13 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dsync_core::client::{PushOptions, push};
-use dsync_core::identity::Identity;
-use dsync_core::order::Order;
-use dsync_core::peer_pin::PeerPin;
-use dsync_core::server::{Received, ServeEvent, ServeOptions, serve};
-use dsync_core::write_error::WriteError;
-use dsync_core::write_stats::Stage;
+use dsync_spike::client::{PushOptions, push};
+use dsync_spike::identity::Identity;
+use dsync_spike::order::Order;
+use dsync_spike::peer_pin::PeerPin;
+use dsync_spike::server::{Received, ServeEvent, ServeOptions, serve};
+use dsync_spike::write_error::WriteError;
+use dsync_spike::write_stats::Stage;
 use tokio::sync::mpsc;
 
 type Tree = Vec<(String, Vec<u8>, SystemTime)>;

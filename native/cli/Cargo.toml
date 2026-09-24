@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
-# The slow-create simulation is for local runs only (core/src/slow_create.rs,
+# The slow-create simulation is for local runs only (spike/src/slow_create.rs,
 # `serve --simulate-create-ms`); the hub, which ships, never enables it.
-dsync-core = { workspace = true, features = ["simulate-slow-create"] }
+dsync-spike = { workspace = true, features = ["simulate-slow-create"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }

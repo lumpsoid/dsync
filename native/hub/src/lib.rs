@@ -7,11 +7,11 @@ mod signals;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dsync_core::identity::Identity;
-use dsync_core::peer_pin::PeerPin;
-use dsync_core::server::{Received, ServeEvent, ServeOptions, serve};
-use dsync_core::write_error::WriteError;
-use dsync_core::write_stats::Stage;
+use dsync_spike::identity::Identity;
+use dsync_spike::peer_pin::PeerPin;
+use dsync_spike::server::{Received, ServeEvent, ServeOptions, serve};
+use dsync_spike::write_error::WriteError;
+use dsync_spike::write_stats::Stage;
 use rinf::{DartSignal, RustSignal, dart_shutdown, write_interface};
 use signals::{
     ServeFailed, ServeReady, StageTiming, StartServe, StopServe, TransferDone, TransferProgress,

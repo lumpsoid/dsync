@@ -5,22 +5,4 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anyhow.workspace = true
-rustls.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
-tokio-rustls.workspace = true
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
-ring = "0.17"
-x509-parser = "0.16"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[features]
-# A test-only knob that makes every file create sleep, one create at a time
-# per folder, as Android's FUSE storage behaves (slow_create.rs). The CLI
-# turns it on for its hidden `--simulate-create-ms`; the hub never does.
-simulate-slow-create = []
-
-[dev-dependencies]
-tempfile = "3"
+dsync-domain.workspace = true

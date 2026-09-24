@@ -9,6 +9,9 @@
 # job, because pubspec.yaml depends on `flutter` from the SDK, so that job
 # installs the same toolchain and differs only in which host runs the suite:
 # `dart`, not `flutter_tester` (see test/support/dsync_binary.dart).
+#
+# `cargo` gates native/ (the Rust workspace: dsync-domain, dsync-core,
+# dsync-cli, hub, and the quarantined dsync-spike) on the same three OSes.
 name: test
 
 on:
@@ -71,3 +74,37 @@ jobs:
       - run: dart test test/dsync_core test/cli
 
       - run: dart test --tags e2e --run-skipped test/dsync_core test/cli
+
+  cargo:
+    name: cargo (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: native
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - run: cargo build --workspace --all-targets
+
+      - run: cargo test --workspace
+
+      # dsync-domain must stay pure: no tokio, no I/O (CLAUDE.md, D1).
+      - name: dsync-domain has no tokio dependency
+        shell: bash
+        run: "! cargo tree -p dsync-domain -e normal | grep -q tokio"

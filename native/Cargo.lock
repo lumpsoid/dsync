@@ -256,12 +256,23 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "dsync-core",
+ "dsync-spike",
  "tokio",
 ]
 
 [[package]]
 name = "dsync-core"
+version = "0.1.0"
+dependencies = [
+ "dsync-domain",
+]
+
+[[package]]
+name = "dsync-domain"
+version = "0.1.0"
+
+[[package]]
+name = "dsync-spike"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -354,7 +365,7 @@ name = "hub"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dsync-core",
+ "dsync-spike",
  "rinf",
  "serde",
  "tokio",

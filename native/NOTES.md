@@ -9,6 +9,10 @@ of CPU per MiB; a standalone rustls receiver ran at the full Wi-Fi link
 (~30 MiB/s) on one connection at ~10–12 ms/MiB
 (benchmark/rust_tls_probe, commit 448a510).
 
+**Update (task rust-core-port):** the spike below now lives in `native/spike/`
+(crate `dsync-spike`); `native/core` and `native/domain` are the new crates of
+the port, being rewritten from scratch.
+
 ## Layout
 
 One Cargo workspace (`native/Cargo.toml`, `native/Cargo.lock`):

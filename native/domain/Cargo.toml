@@ -1,0 +1,11 @@
+[package]
+name = "dsync-domain"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Pure: values, rules, reconcile, planning, exchange math. Must never depend
+# on tokio or do filesystem I/O - deciding never fetches (CLAUDE.md, D1).
+# CI enforces this: `cargo tree -p dsync-domain -e normal` must not list tokio.
+
+[dependencies]
