@@ -1,5 +1,5 @@
-//! The dialer: resolution by name, the dial bound, and what a successful
-//! dial records - the cases of `socket_channel_test` and
+//! The dialer: resolution by device id, the dial bound, and what a
+//! successful dial records - the cases of `socket_channel_test` and
 //! `connect_secure_leak_test` that are not the listener's.
 
 use std::time::{Duration, Instant, SystemTime};
@@ -9,7 +9,7 @@ use dsync_domain::Tuning;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 
-use crate::support::{Host, address_of, identity, name, serve, somewhere, spec, with_deadline};
+use crate::support::{Host, address_of, identity, serve, somewhere, spec, with_deadline};
 
 #[tokio::test]
 async fn a_successful_dial_records_the_address_and_the_renewed_certificate() {
@@ -56,12 +56,13 @@ async fn a_failed_dial_records_nothing() {
 }
 
 #[tokio::test]
-async fn a_name_that_is_not_paired_is_refused_before_any_socket() {
+async fn an_id_that_is_not_paired_is_refused_before_any_socket() {
     let client = Host::new(identity("phone"));
     client.pair(&identity("desktop"), "desktop", somewhere(), &[]);
-    let dialed = with_deadline("dial", client.dial("laptop", None, "/")).await;
+    let laptop = identity("laptop").device_id();
+    let dialed = with_deadline("dial", client.dialer().dial(&laptop, None, spec("/"))).await;
     match dialed {
-        Err(PeerDialError::NotPaired(name)) => assert_eq!(name.to_string(), "laptop"),
+        Err(PeerDialError::NotPaired(id)) => assert_eq!(id, laptop),
         other => panic!("{:?}", other.map(|_| ())),
     }
 }
@@ -95,7 +96,8 @@ async fn a_silent_peer_is_abandoned_at_the_dial_bound_holding_nothing() {
     let client = Host::new(identity("phone"));
     let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let at = silent.local_addr().unwrap();
-    client.pair(&identity("desktop"), "desktop", address_of(at), &[]);
+    let desktop_identity = identity("desktop");
+    client.pair(&desktop_identity, "desktop", address_of(at), &[]);
     let bound = Duration::from_millis(300);
     let dialer = PeerDialer::new(
         client.identity.clone(),
@@ -105,7 +107,7 @@ async fn a_silent_peer_is_abandoned_at_the_dial_bound_holding_nothing() {
             ..Tuning::DEFAULT
         },
     );
-    let desktop = name("desktop");
+    let desktop = desktop_identity.device_id();
     let started = Instant::now();
     let (dialed, accepted) = with_deadline("dial", async {
         tokio::join!(dialer.dial(&desktop, None, spec("/")), silent.accept())
@@ -147,7 +149,11 @@ async fn a_dial_that_finishes_in_time_is_untouched_by_the_bound() {
     );
     let dialed = with_deadline(
         "dial",
-        dialer.dial(&name("desktop"), Some(address_of(serving.at)), spec("/")),
+        dialer.dial(
+            &server.identity.device_id(),
+            Some(address_of(serving.at)),
+            spec("/"),
+        ),
     )
     .await
     .unwrap();
@@ -169,7 +175,7 @@ async fn a_probe_proves_admission_and_leaves_nothing_behind() {
         "probe",
         client
             .dialer()
-            .probe(&name("desktop"), Some(address_of(serving.at))),
+            .probe(&server.identity.device_id(), Some(address_of(serving.at))),
     )
     .await
     .unwrap();
@@ -189,7 +195,7 @@ async fn a_probe_of_a_peer_that_does_not_admit_this_host_is_refused() {
         "probe",
         client
             .dialer()
-            .probe(&name("desktop"), Some(address_of(serving.at))),
+            .probe(&server.identity.device_id(), Some(address_of(serving.at))),
     )
     .await;
     assert!(

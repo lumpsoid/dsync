@@ -132,6 +132,8 @@ impl Host {
         PeerDialer::new(self.identity.clone(), self.store(), Tuning::DEFAULT)
     }
 
+    /// Dials the device paired here as `label`, resolving it to its id
+    /// first - as a caller who read `label` off a profile would.
     pub async fn dial(
         &self,
         label: &str,
@@ -139,7 +141,8 @@ impl Host {
         root: &str,
     ) -> Result<DialedPeer, PeerDialError> {
         let address = at.map(|at| PeerAddress::new(&at.ip().to_string(), at.port()).unwrap());
-        self.dialer().dial(&name(label), address, spec(root)).await
+        let id = self.paired(label).device_id();
+        self.dialer().dial(&id, address, spec(root)).await
     }
 }
 

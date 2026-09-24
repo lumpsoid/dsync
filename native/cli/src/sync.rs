@@ -7,8 +7,8 @@ use std::io::{self, IsTerminal, Write};
 use std::time::SystemTime;
 
 use dsync_core::{
-    BatchDecider, Connector, DeviceIdentityStore, DryRunDecider, PairedDeviceStore, PeerDialError,
-    PeerDialer, ProfileStore, Run, RunEvent, StateDir, interface_addresses,
+    BatchDecider, Connector, DeviceIdentityStore, DryRunDecider, PairedDeviceStore, PeerDialer,
+    ProfileStore, Run, RunEvent, StateDir, interface_addresses,
 };
 use dsync_domain::{
     AdHocTarget, Command, DirRule, EffectiveOptions, Flags, Location, Mode, ReplicaLocation,
@@ -198,7 +198,10 @@ fn pinned(
                     .load()
                     .map_err(Failure::error)?;
                 let device = paired.by_name(peer.device()).ok_or_else(|| {
-                    Failure::error(PeerDialError::NotPaired(peer.device().clone()))
+                    Failure::error(format!(
+                        "no device named \"{}\" is paired with this host; pair with it first",
+                        peer.device()
+                    ))
                 })?;
                 Some(device.device_id())
             }

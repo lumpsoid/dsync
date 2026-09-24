@@ -84,19 +84,13 @@ impl Hub {
             .map(|typed| PeerAddress::parse(&typed))
             .transpose()
             .map_err(text)?;
-        let paired = self.paired().load().map_err(text)?;
-        let name = paired
-            .get(&id)
-            .ok_or_else(|| PairingError::NotPaired(id).to_string())?
-            .name()
-            .clone();
         let identity = self
             .identities()
             .load_or_create(&self.device_name, SystemTime::now())
             .map_err(text)?;
         let dialer = PeerDialer::new(identity, self.paired(), self.tuning);
         Ok(ReplyResult::PeerProbed(
-            match dialer.probe(&name, address).await {
+            match dialer.probe(&id, address).await {
                 Ok(reached) => ProbeOutcome::Reachable {
                     address: reached.to_string(),
                 },

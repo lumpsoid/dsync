@@ -7,6 +7,7 @@ mod bounds;
 mod dialer;
 mod grants;
 mod listener;
+mod rename;
 mod round_trip;
 mod support;
 mod verifiers;

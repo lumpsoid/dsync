@@ -1,11 +1,14 @@
-//! The peer:// dialer (SPEC §4.4): `peer://<name>:<path>` resolved
-//! through the paired-device store, dialled over mutual TLS pinned to
-//! that device's key, and - on success - the address it answered at and
-//! the certificate it presented recorded, so the next dial starts from
-//! where it was last found and a renewal is carried forward.
+//! The peer:// dialer (SPEC §4.4): a device id - what a `peer://<name>:<path>`
+//! location resolved to when it was pinned (plan D7/OQ6) - looked up in the
+//! paired-device store, dialled over mutual TLS pinned to that device's
+//! key, and - on success - the address it answered at and the certificate
+//! it presented recorded, so the next dial starts from where it was last
+//! found and a renewal is carried forward.
 //!
 //! The store is read on every dial: a device revoked or renamed since the
-//! last one is found as it is now.
+//! last one is found as it is now. Looked up by id, not name, so a rename
+//! never breaks the dial and a different device later taking the old name
+//! is never dialled in its place.
 
 use std::io;
 use std::sync::Arc;
@@ -36,8 +39,11 @@ use crate::version_handshake::handshake;
 /// or suspect an impostor - and collapsing them would hide which.
 #[derive(Debug, thiserror::Error)]
 pub enum PeerDialError {
-    #[error("no device named \"{0}\" is paired with this host; pair with it first")]
-    NotPaired(PeerName),
+    /// The id a `ReplicaLocation::Peer` is pinned to is not this host's
+    /// paired set - never re-resolved by name, so a stranger who has since
+    /// taken the location's cosmetic name is not dialled in its place.
+    #[error("no device with id {0} is paired with this host; pair with it first")]
+    NotPaired(DeviceId),
     /// Checked before dialling: the far side would refuse it with nothing
     /// readable back.
     #[error("this host's own certificate {0}, so paired devices refuse it; run `dsync pair renew`")]
@@ -149,25 +155,33 @@ impl PeerDialer {
         }
     }
 
-    /// Connects to the device paired as `device` - at `address`, or where
-    /// it was last reached - and completes the version handshake, the
-    /// whole of it bounded by [`Tuning::handshake`]. `spec` goes out with
-    /// the replica's `hello`. The connection carries the liveness bound.
+    /// Connects to the device paired with id `device` - at `address`, or
+    /// where it was last reached - and completes the version handshake,
+    /// the whole of it bounded by [`Tuning::handshake`]. `spec` goes out
+    /// with the replica's `hello`. The connection carries the liveness
+    /// bound.
+    ///
+    /// Looked up by id, never by name: a `peer://` location's name is
+    /// cosmetic and may have been renamed, or reused by another device,
+    /// since the caller pinned it (SPEC §4.4, plan D7/OQ6). Every name in
+    /// an error or the run header comes from this lookup - the device's
+    /// current name - never from the caller.
     pub async fn dial(
         &self,
-        device: &PeerName,
+        device: &DeviceId,
         address: Option<PeerAddress>,
         spec: ReplicaSpec,
     ) -> Result<DialedPeer, PeerDialError> {
         let paired = self.paired.load()?;
         let pinned = paired
-            .by_name(device)
-            .ok_or_else(|| PeerDialError::NotPaired(device.clone()))?;
+            .get(device)
+            .ok_or(PeerDialError::NotPaired(*device))?;
         let id = pinned.device_id();
+        let name = pinned.name().clone();
         let address = address.unwrap_or_else(|| pinned.last_known_address().clone());
         let pin = PeerPin::new([id]);
         let failed = Failed {
-            device,
+            device: &name,
             address: &address,
             expected: id,
             pin: &pin,
@@ -186,7 +200,7 @@ impl PeerDialer {
         let now = SystemTime::now();
         let expiries = [
             (CertificateOwner::ThisHost, self.identity.certificate()),
-            (CertificateOwner::Peer(device.clone()), &presented),
+            (CertificateOwner::Peer(name), &presented),
         ]
         .into_iter()
         .filter_map(|(owner, certificate)| {
@@ -205,27 +219,30 @@ impl PeerDialer {
         })
     }
 
-    /// Whether the device paired as `device` answers at `address` (or
+    /// Whether the device paired with id `device` answers at `address` (or
     /// where it was last reached) and admits this host: the dial's own TLS
     /// handshake and version exchange, bounded the same, then closed -
     /// no replica is opened and nothing is recorded, so a probe leaves
     /// nothing behind for a run to trip over. The version exchange is what
     /// proves admission: under TLS 1.3 a peer that refuses this host's
     /// certificate does so only after the dialer's handshake completes.
+    ///
+    /// Looked up by id, never by name - see [`Self::dial`].
     pub async fn probe(
         &self,
-        device: &PeerName,
+        device: &DeviceId,
         address: Option<PeerAddress>,
     ) -> Result<PeerAddress, PeerDialError> {
         let paired = self.paired.load()?;
         let pinned = paired
-            .by_name(device)
-            .ok_or_else(|| PeerDialError::NotPaired(device.clone()))?;
+            .get(device)
+            .ok_or(PeerDialError::NotPaired(*device))?;
         let id = pinned.device_id();
+        let name = pinned.name().clone();
         let address = address.unwrap_or_else(|| pinned.last_known_address().clone());
         let pin = PeerPin::new([id]);
         let failed = Failed {
-            device,
+            device: &name,
             address: &address,
             expected: id,
             pin: &pin,

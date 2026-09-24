@@ -270,7 +270,7 @@ fn dialer(state: &StateDir, me: &DeviceIdentity) -> PeerDialer {
 }
 
 #[tokio::test]
-async fn an_unpaired_device_name_fails_before_any_socket_naming_the_device() {
+async fn an_unpaired_device_id_fails_before_any_socket() {
     let site = Site::new();
     let me = DeviceIdentity::generate("desktop", SystemTime::now()).unwrap();
     let phone = DeviceIdentity::generate("phone", SystemTime::now()).unwrap();
@@ -286,10 +286,10 @@ async fn an_unpaired_device_name_fails_before_any_socket_naming_the_device() {
     };
 
     assert_eq!(error.side, Side::B);
-    let ConnectFailure::Peer(PeerDialError::NotPaired(name)) = &error.failure else {
+    let ConnectFailure::Peer(PeerDialError::NotPaired(id)) = &error.failure else {
         panic!("{error:?}");
     };
-    assert_eq!(name.as_str(), "phone");
+    assert_eq!(*id, phone.device_id());
     assert!(error.to_string().contains("pair"), "{error}");
 }
 

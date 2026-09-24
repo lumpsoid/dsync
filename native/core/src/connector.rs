@@ -13,8 +13,8 @@ use std::io;
 
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
-    CertificateExpiry, DeviceId, EffectiveOptions, ExpandError, Locality, Location, ReplicaSpec,
-    Side, Tuning,
+    CertificateExpiry, DeviceId, EffectiveOptions, ExpandError, Locality, Location,
+    ReplicaLocation, ReplicaSpec, Side, Tuning,
 };
 
 use crate::any_replica::AnyReplica;
@@ -167,7 +167,8 @@ impl Connector {
         options: &EffectiveOptions,
         side: Side,
     ) -> Result<(AnyReplica, Option<PeerContact>), ConnectError> {
-        let location = options.replica(side).to_location();
+        let replica_location = options.replica(side);
+        let location = replica_location.to_location();
         let spec = ReplicaSpec {
             root: location.path().to_owned(),
             profile: options.profile_id.clone(),
@@ -175,11 +176,11 @@ impl Connector {
             jobs: options.jobs.unwrap_or(self.tuning.scan_jobs),
         };
         let local = |replica| (replica, None);
-        let connected = match (location.locality(&self.local_addresses), &location) {
-            (Locality::InProcess, _) | (_, Location::Local(_)) => {
+        let connected = match (location.locality(&self.local_addresses), replica_location) {
+            (Locality::InProcess, _) | (_, ReplicaLocation::Local(_)) => {
                 self.open_local(&location, spec).await.map(local)
             }
-            (Locality::Remote, Location::Ssh(ssh)) => {
+            (Locality::Remote, ReplicaLocation::Ssh(ssh)) => {
                 let mut launch = SshLaunch::new(options.ssh(side), ssh.user(), ssh.host());
                 if let Some(program) = &self.ssh_program {
                     launch = launch.with_program(program.clone());
@@ -189,12 +190,17 @@ impl Connector {
                     .map(|replica| local(AnyReplica::Remote(replica)))
                     .map_err(ConnectFailure::from)
             }
-            (Locality::Remote, Location::Unix(unix)) => {
+            (Locality::Remote, ReplicaLocation::Unix(unix)) => {
                 self.dial_socket(unix.socket(), spec).await.map(local)
             }
-            (Locality::Remote, Location::Peer(peer)) => match &self.peers {
+            // Dialled by the device id the location was pinned to when it
+            // was resolved (plan D7/OQ6), never by its cosmetic name: a
+            // rename since then must not break this, and a different
+            // device that has since taken the old name must never be
+            // dialled in its place.
+            (Locality::Remote, ReplicaLocation::Peer(_, device)) => match &self.peers {
                 Some(dialer) => dialer
-                    .dial(peer.device(), self.peer_address.clone(), spec)
+                    .dial(device, self.peer_address.clone(), spec)
                     .await
                     .map(|dialed| {
                         let contact = PeerContact {
