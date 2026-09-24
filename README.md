@@ -28,9 +28,43 @@ page is.
 
 | Area | State |
 |---|---|
-| `lib/dsync_core/` — agent, scan, reconcile, apply, archive, protocol, rules | implemented |
-| `lib/cli/` — args, profile, prompts, output | implemented |
+| `native/domain/` (`dsync-domain`) — pure rules and values: parsing, reconcile, plan, spread, exit policy, profiles, tuning | implemented |
+| `native/core/` (`dsync-core`) — I/O: stores, the `Replica` trait, the protocol, transports, pairing, `Run` | implemented |
+| `native/cli/` (`dsync-cli`, binary `dsync`) — sync, status, agent, pair, archive | implemented |
+| `native/hub/` — the rinf bridge the Flutter head loads | implemented |
 | `lib/app/` — Flutter head: profiles home, devices, device, this device, pair, pair show, serve, run setup, run | implemented |
+
+## Build and run
+
+Prerequisites: a Rust toolchain via [rustup](https://rustup.rs) (`native/` has no
+pinned toolchain file, so `stable` is what CI builds against too — see
+`.github/workflows/test.yml`'s `dtolnay/rust-toolchain@stable`), and Flutter
+with a Dart SDK matching `pubspec.yaml`'s pin (`environment: sdk: 3.13.3`) for
+the `app` head.
+
+Build and install the CLI:
+
+```sh
+cd native && cargo build --release -p dsync-cli   # native/target/release/dsync
+# or: cargo install --path native/cli
+```
+
+Run the app:
+
+```sh
+flutter run -d linux
+flutter build linux            # or: flutter build apk --release
+```
+
+Cargokit builds the Rust `hub` crate as part of either command; on Android it
+additionally needs the NDK, and Cargokit may run `rustup target add` itself as
+a side effect of the Gradle build — see SPEC §13 for that and the other
+build-integration gotchas.
+
+State — this device's identity, the paired-device store, archive logs — lives
+under the platform state directory (SPEC §8.3); `--state-dir` overrides it for
+the CLI. A remote host reached over `ssh://` needs a `dsync` binary on its
+PATH, or `--remote-dsync <path>` naming where it is.
 
 ## Using it
 
@@ -227,7 +261,7 @@ carries nothing, and `--json` on the run commands keeps stdout parseable
 **SIGTERM is the stop signal.** SIGINT exits 130 and SIGTERM 143 (SPEC §11.5),
 and shutdown releases the replica lock and unlinks a `--listen` socket on the
 way out. **It exits within 10 seconds of the signal, whether or not that
-shutdown finished** — `StopSequence` (`lib/cli/stop_sequence.dart`) owns that
+shutdown finished** — `StopSequence` (`native/cli/src/stop.rs`) owns that
 bound, and the paragraph above under "Pairing" says what it costs. Set a kill
 timeout above it, not below: `TimeoutStopSec=30s` on systemd, and the
 equivalent elsewhere. A SIGKILL is the one exit path that releases nothing.
@@ -278,49 +312,89 @@ Deliberately not implemented, and named so neither reads as an oversight:
 **`sd_notify` readiness**, because it is systemd-only and linking
 `libsystemd` is exactly the coupling SPEC §16 is suspicious of (`Type=simple`
 works today; if readiness is ever wanted, the protocol is one datagram to
-`$NOTIFY_SOCKET` in pure Dart, no library), and **socket activation** via a
+`$NOTIFY_SOCKET`, plain enough to send from `std::net::UdpSocket` with no
+library), and **socket activation** via a
 pre-opened descriptor, where one `--listen-fd N` would cover systemd, launchd
 and s6 at once. Both are noted in SPEC §16, waiting for somebody to ask.
 
 ## Layout
 
-A single Dart package for v0, split so the eventual move to separate packages
-is a move rather than a rewrite (SPEC §13):
+The engine and the CLI are a Rust cargo workspace under `native/`; the Flutter
+head lives at `lib/app/` and talks to the workspace through one seam (SPEC
+§13):
 
 ```
-lib/
-  dsync_core/   pure Dart: agent, scan, reconcile, apply, archive, protocol, rules
-  cli/          args parsing, TTY prompts, output formatting
-  app/          Flutter head
+native/
+  domain/   dsync-domain — pure rules and values: parsing, reconcile, plan,
+            spread, exit policy, profiles, tuning
+  core/     dsync-core — I/O: stores, the Replica trait, the protocol,
+            transports, pairing, Run
+  cli/      dsync-cli — the `dsync` binary: sync, status, agent, pair, archive
+  hub/      the rinf bridge: intent-named commands in, one reply per command
+            and three session streams out, over dsync-core
+lib/app/
+  core_link/   CoreLink (a Dart interface), RinfCoreLink, FakeCoreLink — the
+               only place rinf is imported in lib/app/
+  (everything else: pages, view state, controllers, scopes)
 ```
 
-`dsync_core/` depends on nothing head-specific and has no Flutter dependency —
-its tests run under plain `dart test`.
+`dsync-domain` depends on nothing but a few pure crates — no `tokio`, no
+filesystem I/O, no network — so its reconcile, plan and exit-code rules are
+plain functions over values, testable with no mock and no temp directory. See
+SPEC §13 for the full dependency rule between the crates and how Cargokit
+builds `native/hub` as part of a Flutter build.
 
 ## Development
 
+Rust (`native/`):
+
 ```sh
-flutter pub get
-dart format --output=none --set-exit-if-changed lib test bin
-dart analyze
-dart test test/dsync_core test/cli   # core and CLI suites, no Flutter required
-flutter test                         # everything, including test/app/
+cd native && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings \
+  && cargo build --workspace --all-targets && cargo test --workspace
 ```
 
-The core gate is scoped on purpose: a bare `dart test` compiles every file
-under `test/`, and `test/app/` imports `package:flutter`, which cannot load
-under plain `dart`. The guarantee it checks is unchanged — `dsync_core/` has
-no Flutter dependency and its whole suite runs without one. For a fast loop
-on one head file, `flutter test test/app/<file>.dart`.
+The head:
+
+```sh
+flutter pub get
+dart analyze
+flutter test
+```
+
+For a fast loop on one head file, `flutter test test/app/<file>.dart`.
+
+After editing `native/hub/src/signals.rs`, the Dart bindings under
+`lib/app/rust/bindings/` need regenerating and committing — see SPEC §13 for
+the `rinf gen` invocation.
+
+One more test crosses the seam for real and is not part of `flutter test`:
+`integration_test/head_pairs_and_syncs_with_cli_test.dart` builds the real
+`dsync-cli` binary and drives the app against it over `flutter drive`. Its
+own header has the exact invocation; in outline:
+
+```sh
+(cd native && cargo build -p dsync-cli)
+work=$(mktemp -d)
+XDG_STATE_HOME=$work/state XDG_CONFIG_HOME=$work/config \
+flutter drive --profile -d linux \
+  --driver=test_driver/integration_test.dart \
+  --target=integration_test/head_pairs_and_syncs_with_cli_test.dart \
+  --dart-define=DSYNC=$PWD/native/target/debug/dsync \
+  --dart-define=WORK=$work
+```
 
 ### Running the head against a desktop
 
-The app is a client of `dsync agent --serve` on a desktop; it cannot serve a
-replica itself. From nothing to a first sync:
+The app pairs as a client of `dsync agent --serve` on a desktop; it can also
+serve a replica of its own to another paired device, from its own **Answer
+paired devices** page (SPEC §4.4, §16) — but that page has to be open in the
+foreground for as long as the other side is connecting, since the app runs no
+always-on agent in the background. From nothing to a first sync against a
+desktop:
 
 1. On the desktop, `dsync pair show --name <app-name>`, where `<app-name>` is
    what the desktop will call the app from then on — the name you will use in
-   `dsync pair grant` below. It prints a `dsync-pair:v2:…` line and waits five
+   `dsync pair grant` below. It prints a `dsync-pair:v3:…` line and waits five
    minutes for the peer. Add `--serve-port <port>` if this desktop's
    `dsync agent --serve` runs on anything but 28771: the payload tells the app
    where to reach it from then on, so this is the number the app stores and
@@ -328,7 +402,7 @@ replica itself. From nothing to a first sync:
    before it records the pairing.
 2. In the app, open **Pair a device** and tap **Scan QR code** — pointing the
    phone at the code on the desktop's terminal — or **Paste line** for the
-   `dsync-pair:v2:…` line. Either way the app then shows which desktop the
+   `dsync-pair:v3:…` line. Either way the app then shows which desktop the
    code names and the address it will be reached at; check it, adjust the name
    the app will list the desktop under, and pair. There is no field for what
    the desktop calls the app: that is the `--name` given in step 1. The
