@@ -1,6 +1,6 @@
 //! The commit pipeline through a run: the cases of
-//! `commit_pipeline_test.dart`, with small batches and one writer so the
-//! batching is exact.
+//! `commit_pipeline_test.dart`, with small batches and one action writing
+//! at a time so the batching is exact.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +13,7 @@ use crate::support::{Call, Fault, Log, Probe, Site, path, refused, run_with, syn
 
 fn batches_of(size: usize) -> Tuning {
     Tuning {
-        writers: 1,
+        apply_in_flight: 1,
         commit_batch: size,
         ..Tuning::DEFAULT
     }
@@ -123,7 +123,7 @@ async fn every_action_is_reported_once_in_the_order_it_was_taken() {
     assert_eq!(reported.len(), approved.len());
     assert_eq!(
         reported, spread,
-        "one writer finishes in the order it took them"
+        "one action writing at a time finishes in the order it took them"
     );
 }
 

@@ -51,9 +51,9 @@ pub async fn sync(
     let (name, options, addresses) = resolve(&target, &flags, &state, host)?;
 
     let tuning = Tuning {
-        writers: flags
+        apply_in_flight: flags
             .apply_concurrency
-            .map_or(Tuning::DEFAULT.writers, usize::from),
+            .map_or(Tuning::DEFAULT.apply_in_flight, usize::from),
         ..Tuning::DEFAULT
     };
     let view = RunView::of(name, &options, &addresses, &state);

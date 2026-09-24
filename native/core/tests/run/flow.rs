@@ -936,6 +936,7 @@ async fn run_with_small_tuning_still_converges() {
     many(&site, 30);
     let tuning = Tuning {
         writers: 2,
+        apply_in_flight: 2,
         commit_batch: 3,
         mark_window: 5,
         read_ahead_streams: 3,

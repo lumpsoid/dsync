@@ -12,11 +12,18 @@ pub struct Tuning {
     /// Blocking writer threads receiving files (measured at the FUSE
     /// create floor by the spike).
     pub writers: usize,
+    /// Actions the apply keeps writing at once, each from its write's
+    /// request to its answer (SPEC §7.1). Not [`Tuning::writers`]: against
+    /// a remote replica an action holds its place for the round trip as
+    /// well as the far writer's work, so the two are sized apart.
+    pub apply_in_flight: usize,
     /// Actions per archive commit batch.
     pub commit_batch: usize,
     /// Intents marked ahead of their writes, one window per commit batch.
     pub mark_window: usize,
-    /// Outstanding requests per replica session (SPEC §4.2 window).
+    /// Outstanding requests per replica session (SPEC §4.2 window): the
+    /// read-ahead's streams, each holding a slot for its whole body on a
+    /// remote source, plus a lead of eight for marks and commits.
     pub request_window: usize,
     /// Received-but-unprocessed bytes before the router stops reading.
     pub router_budget_bytes: usize,
@@ -27,8 +34,8 @@ pub struct Tuning {
     /// open at once (SPEC §7.2).
     pub read_ahead_budget_bytes: usize,
     /// Actions the apply may have under way at once, source reads started
-    /// ahead of their writes included: the writers plus a lead of eight
-    /// (SPEC §7.2's 24 open reads).
+    /// ahead of their writes included: the actions in flight plus a lead
+    /// of eight (SPEC §7.2's 40 open reads).
     pub read_ahead_streams: usize,
     /// Buffer a file is read into for sending, one chunk per read (plan
     /// D3: at least 256 KiB, the size the scanner hashes with).
@@ -62,13 +69,14 @@ pub struct Tuning {
 impl Tuning {
     pub const DEFAULT: Tuning = Tuning {
         writers: 16,
+        apply_in_flight: 32,
         commit_batch: 64,
         mark_window: 64,
-        request_window: 32,
+        request_window: 40 + 8,
         router_budget_bytes: 1024 * 1024,
         read_ahead_chunk_bytes: 64 * 1024,
         read_ahead_budget_bytes: 1024 * 1024,
-        read_ahead_streams: 16 + 8,
+        read_ahead_streams: 32 + 8,
         read_buffer_bytes: 256 * 1024,
         writer_buffer_bytes: 16 * 1024 * 1024,
         heartbeat: Duration::from_secs(5),
@@ -97,14 +105,16 @@ mod tests {
     fn the_shipped_values_are_the_measured_ones() {
         let tuning = Tuning::default();
         assert_eq!(tuning.writers, 16);
+        assert_eq!(tuning.apply_in_flight, 32);
         assert_eq!(tuning.commit_batch, 64);
         assert_eq!(tuning.mark_window, 64);
-        assert_eq!(tuning.request_window, 32);
+        assert_eq!(tuning.request_window, 48);
         assert_eq!(tuning.router_budget_bytes, 1 << 20);
         assert_eq!(tuning.read_ahead_chunk_bytes, 1 << 16);
         assert_eq!(tuning.read_ahead_budget_bytes, 1 << 20);
-        assert_eq!(tuning.read_ahead_streams, 24);
-        assert!(tuning.read_ahead_streams >= tuning.writers);
+        assert_eq!(tuning.read_ahead_streams, 40);
+        assert!(tuning.read_ahead_streams >= tuning.apply_in_flight);
+        assert!(tuning.request_window > tuning.read_ahead_streams);
         assert!(tuning.read_ahead_chunk_bytes <= tuning.read_ahead_budget_bytes);
         assert_eq!(tuning.read_buffer_bytes, 1 << 18);
         assert_eq!(tuning.writer_buffer_bytes, 1 << 24);

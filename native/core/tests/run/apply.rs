@@ -344,11 +344,11 @@ async fn a_short_transfer_fails_the_path_instead_of_archiving_a_wrong_hash() {
     assert!(site.archive(Side::A).get(&path("f")).is_none());
 }
 
-/// Tuning for the read-ahead cases: one writer, `streams` actions under
+/// Tuning for the read-ahead cases: one action writing, `streams` under
 /// way at once.
 fn narrow(streams: usize) -> Tuning {
     Tuning {
-        writers: 1,
+        apply_in_flight: 1,
         read_ahead_streams: streams,
         ..Tuning::DEFAULT
     }

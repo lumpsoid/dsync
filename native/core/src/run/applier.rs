@@ -8,10 +8,12 @@
 //!    at once, and for a copy a reservation of up to one chunk of
 //!    [`Tuning::read_ahead_budget_bytes`].
 //! 2. **The workers**: an admitted copy starts its source read at once,
-//!    then waits for one of [`Tuning::writers`] worker slots to write it
-//!    (never more workers than the replica has writers, so a write is never
-//!    queued behind its own admission). A delete or commit-only action
-//!    takes a slot too.
+//!    then waits for one of [`Tuning::apply_in_flight`] worker slots to
+//!    write it. A slot is held from the write's request to its answer, so
+//!    against a remote replica it covers the round trip as well as the far
+//!    writer's work: sized to the replica's writers, the slots would leave
+//!    most of those writers idle. A delete or commit-only action takes a
+//!    slot too.
 //! 3. **The commit pipeline** gathers what each finished action owes the
 //!    two archives into batches of [`Tuning::commit_batch`], one batch in
 //!    flight, committed on both sides at once, and reports each action
@@ -139,7 +141,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let total = actions.len();
         let admitted = Semaphore::new(self.tuning.read_ahead_streams.max(1));
         let budget = Semaphore::new(self.tuning.read_ahead_budget_bytes);
-        let workers = Semaphore::new(self.tuning.writers.max(1));
+        let workers = Semaphore::new(self.tuning.apply_in_flight.max(1));
         let (ready, readied) = mpsc::channel(1);
         let (owed, owing) = mpsc::channel(self.tuning.commit_batch.max(1));
         let marks = Mutex::new(Marks::default());
