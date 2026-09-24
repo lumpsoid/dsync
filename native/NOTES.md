@@ -20,7 +20,7 @@ One Cargo workspace (`native/Cargo.toml`, `native/Cargo.lock`):
 | crate | path | what |
 |---|---|---|
 | `dsync-core` (lib `dsync_core`) | `core/` | identity, device ids, pinned mutual TLS, framing, server, client, metrics |
-| `dsync-cli` (bin `dsync-rs`) | `cli/` | `id`, `serve`, `push` |
+| `dsync-cli` (bin `dsync`) | `cli/` | the product CLI on `dsync-core`: `sync`, `status`, `agent` (SPEC §11); the spike's `id`/`serve`/`push` are gone (phase 12) |
 | `hub` | `hub/` | the rinf entry crate: signals and the task that runs the server |
 
 The core, in brief:
@@ -95,6 +95,8 @@ Android targets itself.
 ```sh
 # Core and CLI
 cargo build --release --manifest-path native/Cargo.toml -p dsync-cli
+# The spike commands below were removed with the spike CLI (rust-core-port
+# phase 12); `native/target/release/dsync` is now the SPEC §11 CLI.
 native/target/release/dsync-rs id [--identity DIR]      # default $XDG_CONFIG_HOME/dsync-rs
 native/target/release/dsync-rs serve --root DIR --port 47670 --allow <peer-id>|ANY [--writers 16] [--verbose]
 native/target/release/dsync-rs push DIR --host H --port 47670 --pin <server-id> [--order spread|walk]
@@ -120,7 +122,8 @@ flutter drive --profile -d linux --driver=test_driver/integration_test.dart \
   --target=integration_test/rust_spike_test.dart \
   [--dart-define=ROOT=<dir>] [--dart-define=PORT=47670] [--dart-define=ALLOW=<id>|ANY] \
   [--dart-define=WRITERS=16] [--dart-define=TRANSFERS=1]
-# each time it prints `[rust-spike] transfer k/N ready port … id <id>`:
+# each time it prints `[rust-spike] transfer k/N ready port … id <id>`
+# (its `dsync-rs push` client went with the spike CLI in phase 12):
 native/target/release/dsync-rs push <tree> --host <host> --port 47670 --pin <id> [--order walk|spread]
 # TRANSFERS=2 serves two transfers into one root, one identity: push the same
 # tree twice for a fresh pass and an overwrite pass.

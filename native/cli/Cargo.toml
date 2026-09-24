@@ -4,14 +4,27 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+# The `dsync` command line (SPEC §11): `sync`, `status` and `agent` over
+# dsync-core. Every decision is dsync-domain's; this crate parses argv,
+# reads the host's facts once, wires the core's flows and renders them.
 [[bin]]
-name = "dsync-rs"
+name = "dsync"
 path = "src/main.rs"
 
 [dependencies]
-anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
-# The slow-create simulation is for local runs only (spike/src/slow_create.rs,
-# `serve --simulate-create-ms`); the hub, which ships, never enables it.
-dsync-spike = { workspace = true, features = ["simulate-slow-create"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
+dsync-core.workspace = true
+dsync-domain.workspace = true
+gethostname = "1"
+serde_json.workspace = true
+time = { workspace = true, features = ["local-offset", "formatting", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "time", "sync", "net"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util", "process"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

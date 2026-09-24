@@ -1,164 +1,95 @@
-//! `dsync-rs`: the Rust core's CLI head (task 07876c spike). See
-//! native/NOTES.md.
+//! `dsync`: the command line (SPEC §11). `main` reads the host's facts
+//! once, parses argv, runs the command on a tokio runtime and exits with
+//! SPEC §11.5's code. See native/NOTES.md.
 
-use std::path::PathBuf;
-use std::time::Duration;
+mod agent;
+mod args;
+mod failure;
+mod host;
+mod interactive;
+mod render;
+mod stop;
+mod sync;
 
-use anyhow::Context;
-use clap::{Parser, Subcommand};
-use dsync_spike::client::{PushOptions, push};
-use dsync_spike::identity::Identity;
-use dsync_spike::order::Order;
-use dsync_spike::peer_pin::PeerPin;
-use dsync_spike::server::{ServeEvent, ServeOptions, serve};
-use dsync_spike::slow_create;
-use tokio::sync::mpsc;
+use std::io::{self, Write};
 
-#[derive(Parser)]
-#[command(
-    name = "dsync-rs",
-    about = "One-way tree transfer over pinned mutual TLS"
-)]
-struct Cli {
-    /// Directory holding this device's identity (cert.pem, key.pem);
-    /// created with a new identity if absent. Default: $XDG_CONFIG_HOME
-    /// (or ~/.config)/dsync-rs.
-    #[arg(long, global = true)]
-    identity: Option<PathBuf>,
+use clap::Parser;
+use clap::error::ErrorKind;
+use dsync_domain::Command;
 
-    #[command(subcommand)]
-    command: Command,
+use crate::args::{Cli, CliCommand};
+use crate::failure::Failure;
+use crate::host::Host;
+
+fn main() {
+    // Before the runtime starts any thread: see `Host::read`.
+    let code = match Host::read() {
+        Ok(host) => match Cli::try_parse() {
+            Ok(cli) => run(cli, &host),
+            Err(error) => parse_failure(&error),
+        },
+        Err(failure) => failure.report(&mut io::stderr()),
+    };
+    let _ = io::stdout().flush();
+    std::process::exit(i32::from(code));
 }
 
-#[derive(Subcommand)]
-enum Command {
-    /// Print this device's id, creating its identity first if need be.
-    Id,
-    /// Receive one tree into a directory, from one admitted peer.
-    Serve {
-        #[arg(long)]
-        root: PathBuf,
-        #[arg(long, default_value_t = 47670)]
-        port: u16,
-        /// The peer's device id, or ANY.
-        #[arg(long)]
-        allow: PeerPin,
-        /// Blocking file-writer threads.
-        #[arg(long, default_value_t = 16)]
-        writers: usize,
-        /// Print a line per file written.
-        #[arg(long)]
-        verbose: bool,
-        /// TEST ONLY: make every file create sleep this long, one create at
-        /// a time per folder, as Android's FUSE storage does
-        /// (core/src/slow_create.rs). 0 is off.
-        #[arg(long, default_value_t = 0, hide = true)]
-        simulate_create_ms: u64,
-    },
-    /// Send a directory's tree to a server.
-    Push {
-        dir: PathBuf,
-        #[arg(long)]
-        host: String,
-        #[arg(long, default_value_t = 47670)]
-        port: u16,
-        /// The server's device id (ANY is accepted for testing).
-        #[arg(long)]
-        pin: PeerPin,
-        /// The order files go out in: `walk` (path order) or `spread`
-        /// (consecutive files from different folders).
-        #[arg(long, default_value_t = Order::Spread)]
-        order: Order,
-    },
-}
-
-fn identity_dir(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    if let Some(dir) = explicit {
-        return Ok(dir);
-    }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .context("no --identity, and neither XDG_CONFIG_HOME nor HOME is set")?;
-    Ok(config.join("dsync-rs"))
-}
-
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let identity = Identity::load_or_create(&identity_dir(cli.identity)?)?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    match cli.command {
-        Command::Id => println!("{}", identity.device_id()),
-        Command::Serve {
-            root,
-            port,
-            allow,
-            writers,
-            verbose,
-            simulate_create_ms,
-        } => {
-            println!("id {}", identity.device_id());
-            if simulate_create_ms > 0 {
-                slow_create::set(Duration::from_millis(simulate_create_ms));
-                println!("SIMULATING slow creates: {simulate_create_ms} ms, serialised per folder");
-            }
-            let (tx, mut rx) = mpsc::unbounded_channel();
-            let printer = runtime.spawn(async move {
-                let mut progress_events = 0u64;
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        ServeEvent::Ready { port, .. } => println!("listening on port {port}"),
-                        ServeEvent::Connected { peer } => println!("peer {peer}"),
-                        ServeEvent::FileDone { path, bytes } if verbose => {
-                            println!("done {path} {bytes}")
-                        }
-                        ServeEvent::FileDone { .. } => {}
-                        ServeEvent::Progress { .. } => progress_events += 1,
-                    }
-                }
-                progress_events
-            });
-            let options = ServeOptions {
-                root,
-                port,
-                allow,
-                writers,
-            };
-            let served = runtime.block_on(serve(&identity, options, tx));
-            let progress_events = runtime.block_on(printer)?;
-            let received = served.context("serve failed")?;
-            println!(
-                "received {}  progress events {progress_events}",
-                received.metrics
-            );
-            for line in received
-                .writes
-                .report(received.metrics.wall, received.metrics.cpu)
-            {
-                println!("{line}");
-            }
+fn run(cli: Cli, host: &Host) -> u8 {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return Failure::error(format!("cannot start the runtime: {error}"))
+                .report(&mut io::stderr());
         }
-        Command::Push {
-            dir,
-            host,
-            port,
-            pin,
-            order,
-        } => {
-            println!("id {}", identity.device_id());
-            let report = runtime.block_on(push(
-                &identity,
-                PushOptions {
-                    dir,
-                    host,
-                    port,
-                    pin,
-                    order,
-                },
-            ))?;
-            println!("server {}", report.server);
-            println!("sent {}  order {order}", report.metrics);
+    };
+    let result = runtime.block_on(async {
+        match cli.command {
+            CliCommand::Sync(args) => {
+                let flags = args.run.into_flags(args.dry_run);
+                sync::sync(Command::Sync, &args.target, flags, host).await
+            }
+            CliCommand::Status(args) => {
+                let flags = args.run.into_flags(false);
+                sync::sync(Command::Status, &args.target, flags, host).await
+            }
+            CliCommand::Agent(args) => agent::agent(args, host).await,
+        }
+    });
+    // Not a graceful drop: a blocking read of stdin, or a session still
+    // winding down after a signal, is not waited for.
+    runtime.shutdown_background();
+    result.unwrap_or_else(|failure| failure.report(&mut io::stderr()))
+}
+
+/// `--help` and a bare `dsync` print usage and succeed; every other
+/// argument error is SPEC §11.5's exit 3, not clap's 2.
+fn parse_failure(error: &clap::Error) -> u8 {
+    match error.kind() {
+        ErrorKind::DisplayHelp
+        | ErrorKind::DisplayVersion
+        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+            let _ = write!(io::stdout(), "{}", error.render());
+            0
+        }
+        _ => {
+            let _ = write!(io::stderr(), "{}", error.render());
+            Failure::EXIT_CODE
         }
     }
-    Ok(())
+}
+
+#[cfg(test)]
+mod test_support {
+    use std::future::Future;
+    use std::time::Duration;
+
+    /// Runs `work` under a deadline, failing the test by name past it.
+    pub async fn with_deadline<T>(label: &str, work: impl Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(5), work)
+            .await
+            .unwrap_or_else(|_| panic!("{label} did not finish within its deadline"))
+    }
 }

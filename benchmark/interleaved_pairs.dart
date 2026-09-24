@@ -36,7 +36,8 @@
 //
 // Arms. `--arm name=command` twice, in the order the ratio is taken (second
 // over first). The command is split on spaces and must run the dsync CLI —
-// usually a binary from `dart compile exe bin/dsync.dart` at each commit.
+// usually the Rust `dsync` from `cargo build --release -p dsync-cli` (in
+// native/) at each commit.
 // Words after the binary are `sync` options, appended after `sync <profile>
 // --batch --timings`: `--arm c4='/tmp/dsync --apply-concurrency 4'`. An
 // arm that lives on the *phone* (a different APK) gets `--switch

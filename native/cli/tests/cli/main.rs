@@ -1,0 +1,24 @@
+//! The built `dsync` driven as a user drives it, with the Rust binary on
+//! both ends (plan OQ2): the Dart CLI's end-to-end scenarios - trees,
+//! signals, exit codes, the stderr wording scripts rely on, replica
+//! contents, and archives read back through the Rust store.
+
+mod support;
+
+mod agent_stdio;
+mod commands;
+mod dirs;
+#[cfg(unix)]
+mod interactive;
+mod output;
+#[cfg(unix)]
+mod real_ssh;
+#[cfg(unix)]
+mod remote;
+#[cfg(unix)]
+mod signals;
+#[cfg(unix)]
+mod stop_deadline;
+mod timings;
+#[cfg(unix)]
+mod unix_socket;
