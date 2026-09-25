@@ -1,5 +1,5 @@
 //! One connection, many operations (SPEC §4.2): replies out of order,
-//! per-path order, barriers, the receive budget, and a connection that
+//! per-path order, barriers, per-stream credit, and a connection that
 //! fails under outstanding operations - the pipelining cases of
 //! `remote_agent_test.dart` and the backpressure cases of
 //! `frame_router_test.dart`, through a real server.
@@ -210,9 +210,9 @@ async fn small_read_behind_an_unread(size: usize) -> bool {
     let unread = with_deadline("read", served.replica.read(&path("unread")))
         .await
         .unwrap();
-    // Lets the unread body fill whatever it can - the far side's queue,
-    // the transport, this side's budget - before the small read is asked,
-    // so the small read's answer is queued behind it rather than racing it.
+    // Lets the unread body fill whatever it can - its credit, the far
+    // side's queue, the transport - before the small read is asked, so
+    // the small read's answer is queued behind it rather than racing it.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let replica = served.replica.clone();
     let (done, mut finished) = mpsc::channel(1);
@@ -225,7 +225,6 @@ async fn small_read_behind_an_unread(size: usize) -> bool {
     let got_through = tokio::time::timeout(std::time::Duration::from_millis(300), finished.recv())
         .await
         .is_ok();
-    // Consuming the first body lets everything through, whichever case.
     assert_eq!(
         with_deadline("the unread body", unread.collect())
             .await
@@ -239,13 +238,8 @@ async fn small_read_behind_an_unread(size: usize) -> bool {
 }
 
 #[tokio::test]
-async fn a_body_nobody_is_taking_does_not_stall_other_exchanges_under_the_budget() {
-    assert!(small_read_behind_an_unread(512 * 1024).await);
-}
-
-#[tokio::test]
-async fn past_the_budget_the_connection_waits_for_the_stalled_consumer() {
-    // The positive control for the case above: the budget is real, and
-    // what bounds a route that fills it is its own consumer.
-    assert!(!small_read_behind_an_unread(8 * 1024 * 1024).await);
+async fn a_body_nobody_is_taking_does_not_stall_other_exchanges() {
+    // Far past the body's credit: what it holds on this side is bounded
+    // by its sender, not by the connection stopping.
+    assert!(small_read_behind_an_unread(8 * 1024 * 1024).await);
 }

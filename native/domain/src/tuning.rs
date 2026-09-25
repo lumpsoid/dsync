@@ -25,8 +25,6 @@ pub struct Tuning {
     /// read-ahead's streams, each holding a slot for its whole body on a
     /// remote source, plus a lead of eight for marks and commits.
     pub request_window: usize,
-    /// Received-but-unprocessed bytes before the router stops reading.
-    pub router_budget_bytes: usize,
     /// Chunk size a streamed body is read ahead and sent in; also what the
     /// apply's read-ahead reserves for one source read (SPEC §7.2).
     pub read_ahead_chunk_bytes: usize,
@@ -73,7 +71,6 @@ impl Tuning {
         commit_batch: 64,
         mark_window: 64,
         request_window: 40 + 8,
-        router_budget_bytes: 1024 * 1024,
         read_ahead_chunk_bytes: 64 * 1024,
         read_ahead_budget_bytes: 1024 * 1024,
         read_ahead_streams: 32 + 8,
@@ -109,7 +106,6 @@ mod tests {
         assert_eq!(tuning.commit_batch, 64);
         assert_eq!(tuning.mark_window, 64);
         assert_eq!(tuning.request_window, 48);
-        assert_eq!(tuning.router_budget_bytes, 1 << 20);
         assert_eq!(tuning.read_ahead_chunk_bytes, 1 << 16);
         assert_eq!(tuning.read_ahead_budget_bytes, 1 << 20);
         assert_eq!(tuning.read_ahead_streams, 40);

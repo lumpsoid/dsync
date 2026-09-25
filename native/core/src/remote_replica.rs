@@ -24,8 +24,9 @@ use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::oneshot;
 
 use crate::body::Body;
+use crate::credit::{self, Credits};
 use crate::frame::{Frame, FrameError, Kind};
-use crate::inbound::{Budget, Inbound, Piece};
+use crate::inbound::{Inbound, Piece};
 use crate::link_error::LinkError;
 use crate::replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Replica};
 use crate::replica_error::ReplicaError;
@@ -51,11 +52,11 @@ pub struct RemoteReplica {
     served_stats: Mutex<Option<Box<WriteStats>>>,
 }
 
-/// The connection's shared state: the outbox, and the exchanges waiting
-/// on the reader.
+/// The connection's shared state: the outbox, the credit of the write
+/// bodies being sent, and the exchanges waiting on the reader.
 struct Link {
     outbox: Outbox,
-    budget: Arc<Budget>,
+    credits: Arc<Credits>,
     routes: Mutex<Routes>,
 }
 
@@ -115,7 +116,7 @@ impl RemoteReplica {
         );
         let link = Arc::new(Link {
             outbox,
-            budget: Budget::new(tuning.router_budget_bytes),
+            credits: Credits::new(),
             routes: Mutex::new(Routes {
                 next_id: 1,
                 open: HashMap::new(),
@@ -199,7 +200,7 @@ impl RemoteReplica {
 
     /// One exchange: `request` out, its answer back.
     async fn call(&self, request: Request) -> Result<Reply, ReplicaError> {
-        let (id, answer) = self.link.open(Route::Reply)?;
+        let (id, answer, ()) = self.link.open(|_, reply| (Route::Reply(reply), ()))?;
         self.link
             .send(Frame::new(Kind::Request, id, wire::encode(&request)))
             .await?;
@@ -212,11 +213,12 @@ impl Link {
         self.routes.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Opens an exchange: its id, and where its answer will arrive.
-    fn open(
+    /// Opens an exchange: its id, where its answer will arrive, and
+    /// whatever else `route` made with the id.
+    fn open<T>(
         &self,
-        route: impl FnOnce(oneshot::Sender<Answer>) -> Route,
-    ) -> Result<(u32, oneshot::Receiver<Answer>), LinkError> {
+        route: impl FnOnce(u32, oneshot::Sender<Answer>) -> (Route, T),
+    ) -> Result<(u32, oneshot::Receiver<Answer>, T), LinkError> {
         let (answer, answered) = oneshot::channel();
         let mut routes = self.routes();
         if let Some(ended) = &routes.ended {
@@ -226,8 +228,9 @@ impl Link {
         // Ids are never reused within a connection's life, except after
         // four billion exchanges; 0 belongs to no request.
         routes.next_id = routes.next_id.checked_add(1).unwrap_or(1);
-        routes.open.insert(id, route(answer));
-        Ok((id, answered))
+        let (route, made) = route(id, answer);
+        routes.open.insert(id, route);
+        Ok((id, answered, made))
     }
 
     async fn send(&self, frame: Frame) -> Result<(), LinkError> {
@@ -252,8 +255,8 @@ impl Link {
     }
 
     /// Ends the link with `why`, failing every exchange still open: their
-    /// answers never come, and a body still arriving is cut short. The
-    /// first reason wins.
+    /// answers never come, a body still arriving is cut short, and a body
+    /// still being sent stops. The first reason wins.
     fn end(&self, why: LinkError) {
         let open = {
             let mut routes = self.routes();
@@ -261,12 +264,17 @@ impl Link {
             std::mem::take(&mut routes.open)
         };
         drop(open);
+        self.credits.close();
     }
 
     /// Hands `frame` to the exchange it belongs to.
     fn route(&self, frame: Frame) -> Result<(), LinkError> {
         match frame.kind {
             Kind::Heartbeat => Ok(()),
+            Kind::Credit => {
+                self.credits.grant(frame.id, credit::granted(&frame)?);
+                Ok(())
+            }
             Kind::Reply => {
                 let answer: Answer = wire::decode(&frame.payload).map_err(|error| {
                     LinkError::Protocol(format!("an undecodable reply: {error}"))
@@ -302,10 +310,13 @@ impl Link {
                     })?),
                 };
                 let mut routes = self.routes();
-                if let Some(Route::Read { body, .. }) = routes.open.get(&frame.id)
-                    && body.push(piece)
-                {
-                    routes.open.remove(&frame.id);
+                if let Some(Route::Read { body, .. }) = routes.open.get(&frame.id) {
+                    let over = body
+                        .push(piece)
+                        .map_err(|_| LinkError::Protocol("a body frame past its credit".into()))?;
+                    if over {
+                        routes.open.remove(&frame.id);
+                    }
                 }
                 Ok(())
             }
@@ -317,16 +328,14 @@ impl Link {
     }
 }
 
-/// The reader: every frame off the transport to its exchange, pausing
-/// while the bodies being routed hold more than the budget. Ends the link
-/// with whatever stopped it.
+/// The reader: every frame off the transport to its exchange, never
+/// waiting on any of them. Ends the link with whatever stopped it.
 async fn read_replies<R: AsyncRead + Unpin>(
     mut reader: BufReader<SilenceLimit<R>>,
     link: Arc<Link>,
     liveness: Option<Liveness>,
 ) {
     let why = loop {
-        link.budget.within().await;
         match Frame::read_from(&mut reader).await {
             Ok(Some(frame)) => {
                 if let Err(error) = link.route(frame) {
@@ -448,10 +457,13 @@ impl Replica for RemoteReplica {
         // Held by the body's route until the body is over, so a read costs
         // its place in the window for as long as its bytes are arriving.
         let slot = self.window.enter([path.clone()]).await;
-        let (inbound, body) = Inbound::open(self.link.budget.clone(), slot);
-        let (id, answer) = self.link.open(|reply| Route::Read {
-            reply: Some(reply),
-            body: inbound,
+        let (id, answer, body) = self.link.open(|id, reply| {
+            let (inbound, body) = Inbound::open(self.link.outbox.clone(), id, slot);
+            let route = Route::Read {
+                reply: Some(reply),
+                body: inbound,
+            };
+            (route, body)
         })?;
         self.link
             .send(Frame::new(
@@ -473,7 +485,8 @@ impl Replica for RemoteReplica {
         meta: FileMeta,
     ) -> Result<FileMeta, ReplicaError> {
         let _slot = self.window.enter([path.clone()]).await;
-        let (id, mut answer) = self.link.open(Route::Reply)?;
+        let (id, mut answer, ()) = self.link.open(|_, reply| (Route::Reply(reply), ()))?;
+        let credit = self.link.credits.open(id);
         let request = Request::Write {
             path: path.clone(),
             meta,
@@ -483,23 +496,29 @@ impl Replica for RemoteReplica {
             .await?;
         // The body goes out while the answer is awaited: a far side that
         // fails the write early (its folder cannot be made) answers before
-        // the body is done, and the rest of the body is not worth sending.
+        // the body is done, and the rest of the body is not worth sending -
+        // nor waiting for credit for.
         let outbox = &self.link.outbox;
         let sent = loop {
-            tokio::select! {
+            let next = tokio::select! {
                 answered = &mut answer => break Sent::Answered(answered),
-                next = body.next() => {
-                    let sent = match next {
-                        Ok(Some(bytes)) => outbox.send_chunk(id, bytes).await.map(|()| false),
-                        Ok(None) => outbox.end(id).await.map(|()| true),
-                        Err(error) => outbox.fail(id, &error.into()).await.map(|()| true),
-                    };
-                    match sent {
-                        Ok(false) => {}
-                        Ok(true) => break Sent::Whole,
-                        Err(OutboxClosed) => break Sent::LinkDown,
-                    }
+                next = body.next() => next,
+            };
+            let sending = async {
+                match next {
+                    Ok(Some(bytes)) => outbox.send_chunk(id, bytes, &credit).await.map(|()| false),
+                    Ok(None) => outbox.end(id).await.map(|()| true),
+                    Err(error) => outbox.fail(id, &error.into()).await.map(|()| true),
                 }
+            };
+            let sent = tokio::select! {
+                answered = &mut answer => break Sent::Answered(answered),
+                sent = sending => sent,
+            };
+            match sent {
+                Ok(false) => {}
+                Ok(true) => break Sent::Whole,
+                Err(OutboxClosed) => break Sent::LinkDown,
             }
         };
         let answered = match sent {
@@ -733,6 +752,73 @@ mod tests {
             "{said:?}"
         );
         // The link is over: a later call fails the same way, at once.
+        assert!(matches!(
+            within(REAL, client.lock()).await,
+            Err(ReplicaError::Link(LinkError::Protocol(_)))
+        ));
+    }
+
+    /// Body bytes the peer receives until nothing more comes for a while.
+    async fn body_bytes_until_quiet(peer: &mut Peer) -> usize {
+        let mut bytes = 0;
+        while let Ok(frame) = tokio::time::timeout(Duration::from_millis(100), peer.next()).await {
+            assert_eq!(frame.kind, Kind::Chunk);
+            bytes += frame.payload.len();
+        }
+        bytes
+    }
+
+    #[tokio::test]
+    async fn a_write_body_stops_at_its_credit_and_goes_on_as_it_is_granted() {
+        let (client, mut peer) = connected(None).await;
+        let meta = FileMeta {
+            size: 0,
+            mtime_us: 0,
+            mode: 0o644,
+        };
+        let body = Body::from_bytes(vec![1; 3 * credit::STREAM_CREDIT_BYTES]);
+        let f = RelPath::parse("f").unwrap();
+        let far_side = async {
+            let request = peer.next_request().await;
+            assert_eq!(
+                body_bytes_until_quiet(&mut peer).await,
+                credit::STREAM_CREDIT_BYTES
+            );
+            peer.send(credit::grant_frame(request.id, 1000)).await;
+            assert_eq!(body_bytes_until_quiet(&mut peer).await, 1000);
+            let answer: Answer = Err(WireError::Refused("enough".into()));
+            peer.send(Frame::new(Kind::Reply, request.id, wire::encode(&answer)))
+                .await;
+            request.id
+        };
+        let (wrote, id) = within(REAL, async {
+            tokio::join!(client.write(&f, body, meta), far_side)
+        })
+        .await;
+        assert!(matches!(wrote, Err(ReplicaError::Refused(_))), "{wrote:?}");
+        // Answered early, the write ends its body on the wire as failed.
+        let frame = within(REAL, peer.next_request()).await;
+        assert_eq!((frame.kind, frame.id), (Kind::Fail, id));
+    }
+
+    #[tokio::test]
+    async fn a_read_body_past_its_credit_ends_the_link_as_a_protocol_error() {
+        let (client, mut peer) = connected(None).await;
+        let f = RelPath::parse("f").unwrap();
+        let far_side = async {
+            let request = peer.next_request().await;
+            let opened: Answer = Ok(Reply::Opened);
+            peer.send(Frame::new(Kind::Reply, request.id, wire::encode(&opened)))
+                .await;
+            peer.send(Frame::new(
+                Kind::Chunk,
+                request.id,
+                vec![0; credit::STREAM_CREDIT_BYTES + 1],
+            ))
+            .await;
+        };
+        let (read, ()) = within(REAL, async { tokio::join!(client.read(&f), far_side) }).await;
+        assert!(within(REAL, read.unwrap().collect()).await.is_err());
         assert!(matches!(
             within(REAL, client.lock()).await,
             Err(ReplicaError::Link(LinkError::Protocol(_)))

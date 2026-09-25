@@ -44,10 +44,13 @@ pub(crate) enum Kind {
     Fail,
     /// A liveness tick: empty, never answered, dropped by every reader.
     Heartbeat,
+    /// Room the receiver of a body has made for more of it: a big-endian
+    /// u32 of bytes (SPEC §4.2, [`crate::credit`]).
+    Credit,
 }
 
 impl Kind {
-    const ALL: [Kind; 7] = [
+    const ALL: [Kind; 8] = [
         Kind::Version,
         Kind::Request,
         Kind::Reply,
@@ -55,6 +58,7 @@ impl Kind {
         Kind::End,
         Kind::Fail,
         Kind::Heartbeat,
+        Kind::Credit,
     ];
 
     fn byte(self) -> u8 {
@@ -66,6 +70,7 @@ impl Kind {
             Kind::End => 0x05,
             Kind::Fail => 0x06,
             Kind::Heartbeat => 0x07,
+            Kind::Credit => 0x08,
         }
     }
 

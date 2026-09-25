@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::support::{PROFILE, Site, with_deadline};
 
-/// The duplex buffer: small next to the receive budget, so backpressure
+/// The duplex buffer: small next to a body's credit, so backpressure
 /// reaches the far side's writer as it would over a socket.
 const DUPLEX_BYTES: usize = 64 * 1024;
 

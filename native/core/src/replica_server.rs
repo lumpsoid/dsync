@@ -19,8 +19,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use crate::body::Body;
+use crate::credit::{self, Credits};
 use crate::frame::{Frame, FrameError, Kind};
-use crate::inbound::{Budget, Inbound, Piece};
+use crate::inbound::{Inbound, Piece};
 use crate::link_error::LinkError;
 use crate::remote_replica::silent_if_timed_out;
 use crate::replica::{BucketTicket, DigestTicket, Replica};
@@ -85,9 +86,15 @@ where
         // Bounded by the client's window in practice; the bound here only
         // keeps a flooding client from queueing without limit.
         let (arrived, incoming) = mpsc::channel(self.tuning.request_window.max(1));
-        let budget = Budget::new(self.tuning.router_budget_bytes);
-        let mut reading = Task::spawn(read_requests(reader, arrived, budget, liveness));
-        self.session(incoming, &outbox).await;
+        let credits = Credits::new();
+        let mut reading = Task::spawn(read_requests(
+            reader,
+            arrived,
+            outbox.clone(),
+            credits.clone(),
+            liveness,
+        ));
+        self.session(incoming, &outbox, &credits).await;
         // A session the prologue refused stops reading here; one the client
         // closed has stopped already.
         reading.abort();
@@ -100,7 +107,12 @@ where
     }
 
     /// The prologue, then every request until the connection ends.
-    async fn session(&self, mut incoming: mpsc::Receiver<Incoming>, outbox: &Outbox) {
+    async fn session(
+        &self,
+        mut incoming: mpsc::Receiver<Incoming>,
+        outbox: &Outbox,
+        credits: &Arc<Credits>,
+    ) {
         let Some(first) = incoming.recv().await else {
             return;
         };
@@ -129,6 +141,7 @@ where
             replica,
             scan: Mutex::new(ServedScan::Closed),
             outbox: outbox.clone(),
+            credits: credits.clone(),
         });
         let hello = served.replica.hello().await.map(Reply::Hello);
         reply(outbox, first.id, hello.map_err(WireError::from)).await;
@@ -156,11 +169,13 @@ impl<F> ReplicaServer<F> {
     }
 }
 
-/// A session's replica, and where its scan exchange stands.
+/// A session's replica, where its scan exchange stands, and the credit
+/// of the read bodies it is sending.
 struct Served<R> {
     replica: R,
     scan: Mutex<ServedScan>,
     outbox: Outbox,
+    credits: Arc<Credits>,
 }
 
 /// The tickets the replica issued, held for the client between its scan
@@ -252,10 +267,13 @@ impl<R: Replica> Served<R> {
             }
             Request::Read(path) => match replica.read(&path).await {
                 Ok(body) => {
+                    // Open before the reply, so no grant can arrive ahead
+                    // of it.
+                    let credit = self.credits.open(id);
                     reply(&self.outbox, id, Ok(Reply::Opened)).await;
                     // Forwarded as it is read: a local read holds a blocking
                     // thread until its body is consumed.
-                    let _ = self.outbox.send_body(id, body).await;
+                    let _ = self.outbox.send_body(id, body, credit).await;
                     return;
                 }
                 Err(error) => Err(error),
@@ -295,17 +313,30 @@ fn undecodable(error: &postcard::Error) -> WireError {
 }
 
 /// The reader: requests to the session, a write's body frames to its
-/// body, pausing while the bodies hold more than the budget. Returns
-/// `Ok` when the client closes its end.
+/// body, grants to the read bodies being sent. Returns `Ok` when the
+/// client closes its end; either way every read body still being sent
+/// stops.
 async fn read_requests<R: AsyncRead + Unpin>(
+    reader: BufReader<SilenceLimit<R>>,
+    arrived: mpsc::Sender<Incoming>,
+    outbox: Outbox,
+    credits: Arc<Credits>,
+    liveness: Option<Liveness>,
+) -> Result<(), LinkError> {
+    let read = route_requests(reader, arrived, outbox, &credits, liveness).await;
+    credits.close();
+    read
+}
+
+async fn route_requests<R: AsyncRead + Unpin>(
     mut reader: BufReader<SilenceLimit<R>>,
     arrived: mpsc::Sender<Incoming>,
-    budget: Arc<Budget>,
+    outbox: Outbox,
+    credits: &Credits,
     liveness: Option<Liveness>,
 ) -> Result<(), LinkError> {
     let mut bodies: std::collections::HashMap<u32, Inbound> = std::collections::HashMap::new();
     loop {
-        budget.within().await;
         let frame = match Frame::read_from(&mut reader).await {
             Ok(Some(frame)) => frame,
             Ok(None) => return Ok(()),
@@ -318,12 +349,16 @@ async fn read_requests<R: AsyncRead + Unpin>(
         };
         let piece = match frame.kind {
             Kind::Heartbeat => continue,
+            Kind::Credit => {
+                credits.grant(frame.id, credit::granted(&frame)?);
+                continue;
+            }
             Kind::Request => {
                 let request = wire::decode::<Request>(&frame.payload);
                 // The body's route opens before the next frame is read, so
                 // none of the body can arrive ahead of it.
                 let body = matches!(request, Ok(Request::Write { .. })).then(|| {
-                    let (inbound, body) = Inbound::open(budget.clone(), ());
+                    let (inbound, body) = Inbound::open(outbox.clone(), frame.id, ());
                     bodies.insert(frame.id, inbound);
                     body
                 });
@@ -356,10 +391,13 @@ async fn read_requests<R: AsyncRead + Unpin>(
         };
         // A body frame for no open route belongs to a write already
         // answered: drained here.
-        if let Some(body) = bodies.get(&frame.id)
-            && body.push(piece)
-        {
-            bodies.remove(&frame.id);
+        if let Some(body) = bodies.get(&frame.id) {
+            let over = body
+                .push(piece)
+                .map_err(|_| LinkError::Protocol("a body frame past its credit".into()))?;
+            if over {
+                bodies.remove(&frame.id);
+            }
         }
     }
 }

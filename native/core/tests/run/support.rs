@@ -528,7 +528,7 @@ where
     tokio::spawn(async move { server.serve(Transport::split(stream)).await })
 }
 
-/// The duplex buffer: small next to the receive budget, so backpressure
+/// The duplex buffer: small next to a body's credit, so backpressure
 /// reaches the far side's writer as it would over a socket.
 const DUPLEX_BYTES: usize = 64 * 1024;
 

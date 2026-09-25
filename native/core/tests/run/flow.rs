@@ -959,8 +959,7 @@ async fn run_with_small_tuning_still_converges() {
 
 /// Four 4 MiB files copied from A to B, with `served` a replica served
 /// over a connection and the other one local, both ends and the served
-/// replica under `tuning`. With a worker slot or a writer fewer than the
-/// bodies under way, a body arrives that nobody is taking (task ed9018).
+/// replica under `tuning`.
 async fn copy_large_files(served: Side, tuning: Tuning) {
     let site = Site::new();
     let content = vec![7u8; 4 * 1024 * 1024];
@@ -999,79 +998,35 @@ async fn copy_large_files(served: Side, tuning: Tuning) {
     assert_eq!(site.tree(Side::A), site.tree(Side::B));
 }
 
-/// One worker slot, and a second copy's source read admitted ahead of it.
-const READ_AHEAD_PAST_THE_WORKERS: Tuning = Tuning {
-    apply_in_flight: 1,
-    read_ahead_streams: 2,
-    router_budget_bytes: 256 * 1024,
-    ..Tuning::DEFAULT
-};
-
-/// Two writes in flight against one writer on the destination.
-const WRITES_PAST_THE_WRITERS: Tuning = Tuning {
-    writers: 1,
-    apply_in_flight: 2,
-    read_ahead_streams: 2,
-    router_budget_bytes: 256 * 1024,
-    ..Tuning::DEFAULT
-};
-
 #[tokio::test]
-async fn a_served_source_with_no_read_ahead_past_the_workers_copies_large_files() {
-    // A control for the case below: one knob back, every admitted body
-    // taken by a worker as it arrives.
-    copy_large_files(
-        Side::A,
-        Tuning {
-            read_ahead_streams: 1,
-            ..READ_AHEAD_PAST_THE_WORKERS
-        },
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn a_served_source_read_ahead_past_the_workers_copies_large_files_within_a_budget_that_holds_them()
- {
-    // The other control: the same read-ahead, with a budget that holds
-    // every file whole.
-    copy_large_files(
-        Side::A,
-        Tuning {
-            router_budget_bytes: 64 * 1024 * 1024,
-            ..READ_AHEAD_PAST_THE_WORKERS
-        },
-    )
-    .await;
-}
-
-#[tokio::test]
-#[ignore = "task ed9018: reproduces the initiator deadlock; the run hangs until the deadline"]
 async fn a_served_source_read_ahead_past_the_workers_does_not_stall_the_connection() {
-    // The second admitted copy's body fills the router budget while the
-    // one worker still waits on its own file's frames behind it.
-    copy_large_files(Side::A, READ_AHEAD_PAST_THE_WORKERS).await;
+    // One worker slot and a second copy's read admitted ahead of it: its
+    // body arrives with nobody taking it while the worker waits on its
+    // own file's frames (task ed9018).
+    copy_large_files(
+        Side::A,
+        Tuning {
+            apply_in_flight: 1,
+            read_ahead_streams: 2,
+            ..Tuning::DEFAULT
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
-async fn a_served_destination_with_a_writer_per_write_copies_large_files() {
-    // A control for the case below: one knob back, every write's body
-    // taken by a writer as it arrives.
+async fn a_served_destination_with_writes_past_its_writers_does_not_stall_the_connection() {
+    // Two writes in flight against one writer: the queued write's body
+    // arrives with nobody taking it while the writer waits on its own
+    // file's frames (task ed9018).
     copy_large_files(
         Side::B,
         Tuning {
-            writers: 2,
-            ..WRITES_PAST_THE_WRITERS
+            writers: 1,
+            apply_in_flight: 2,
+            read_ahead_streams: 2,
+            ..Tuning::DEFAULT
         },
     )
     .await;
-}
-
-#[tokio::test]
-#[ignore = "task ed9018: reproduces the served-side deadlock; the run hangs until the deadline"]
-async fn a_served_destination_with_writes_past_its_writers_does_not_stall_the_connection() {
-    // The second write's body, queued for a writer, fills the server's
-    // router budget while the one writer waits on its own file's frames
-    // behind it.
-    copy_large_files(Side::B, WRITES_PAST_THE_WRITERS).await;
 }

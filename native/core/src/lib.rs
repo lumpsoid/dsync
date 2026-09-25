@@ -14,6 +14,7 @@ mod case_folding;
 mod certificate;
 mod connector;
 mod cpu;
+mod credit;
 mod device_identity;
 mod device_identity_store;
 mod enrolment_dialer;

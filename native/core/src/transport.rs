@@ -18,6 +18,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, Sleep};
 
 use crate::body::Body;
+use crate::credit::Credit;
 use crate::frame::{Frame, Kind};
 use crate::wire::WireIo;
 
@@ -127,14 +128,25 @@ impl Outbox {
         let _ = self.frames.send(Out::Close).await;
     }
 
-    /// Sends `bytes` as body frames of the exchange `id`.
-    pub async fn send_chunk(&self, id: u32, bytes: Vec<u8>) -> Result<(), OutboxClosed> {
-        if bytes.len() <= self.chunk_bytes {
-            return self.send(Frame::new(Kind::Chunk, id, bytes)).await;
-        }
-        for piece in bytes.chunks(self.chunk_bytes) {
-            self.send(Frame::new(Kind::Chunk, id, piece.to_vec()))
-                .await?;
+    /// Sends `bytes` as body frames of the exchange `id`, as `credit`
+    /// allows.
+    pub async fn send_chunk(
+        &self,
+        id: u32,
+        mut bytes: Vec<u8>,
+        credit: &Credit,
+    ) -> Result<(), OutboxClosed> {
+        let mut sent = 0;
+        while sent < bytes.len() {
+            let most = (bytes.len() - sent).min(self.chunk_bytes);
+            let allowed = credit.take(most).await.ok_or(OutboxClosed)?;
+            let piece = if allowed == bytes.len() {
+                std::mem::take(&mut bytes)
+            } else {
+                bytes[sent..sent + allowed].to_vec()
+            };
+            self.send(Frame::new(Kind::Chunk, id, piece)).await?;
+            sent += allowed;
         }
         Ok(())
     }
@@ -150,12 +162,17 @@ impl Outbox {
             .await
     }
 
-    /// Streams `body` as exchange `id`'s frames, ending it or failing it as
-    /// the body does.
-    pub async fn send_body(&self, id: u32, mut body: Body) -> Result<(), OutboxClosed> {
+    /// Streams `body` as exchange `id`'s frames, as `credit` allows,
+    /// ending it or failing it as the body does.
+    pub async fn send_body(
+        &self,
+        id: u32,
+        mut body: Body,
+        credit: Credit,
+    ) -> Result<(), OutboxClosed> {
         loop {
             match body.next().await {
-                Ok(Some(bytes)) => self.send_chunk(id, bytes).await?,
+                Ok(Some(bytes)) => self.send_chunk(id, bytes, &credit).await?,
                 Ok(None) => return self.end(id).await,
                 Err(error) => return self.fail(id, &error.into()).await,
             }
@@ -245,8 +262,8 @@ impl<T> Drop for Task<T> {
 /// `limit` for bytes without any arriving.
 ///
 /// Armed only while someone is reading: the time between one read
-/// returning and the next starting - this side busy, or its receive budget
-/// full - is this side's, and counting it would reap a healthy peer for
+/// returning and the next starting - this side busy handing a request
+/// on - is this side's, and counting it would reap a healthy peer for
 /// this side's own work.
 pub(crate) struct SilenceLimit<R> {
     inner: R,
