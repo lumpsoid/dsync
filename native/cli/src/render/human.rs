@@ -119,7 +119,7 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
                     plan.conflicts.len(),
                     plan.bytes_to_transfer()
                 );
-                for action in &plan.actions {
+                for action in plan.actions.iter().map(|p| &p.action) {
                     let _ = writeln!(self.out, "  {}  {}", words::action(action), action.path());
                 }
                 if let (true, Some(limit)) = (*exceeds_warn_size, self.view.warn_size_bytes) {

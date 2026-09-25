@@ -3,7 +3,7 @@ use dsync_domain::{Action, Plan, Side, Status};
 use tokio::sync::watch;
 
 use super::InteractiveDecider;
-use crate::render::fixtures::{conflict, created, path};
+use crate::render::fixtures::{conflict, created, path, proposed};
 use crate::test_support::with_deadline;
 
 fn copy(at: &str, from: Side, bytes: u64) -> Action {
@@ -26,7 +26,7 @@ async fn review(plan: &Plan, script: &str) -> (Vec<Action>, String) {
 
 fn actions(actions: Vec<Action>) -> Plan {
     Plan {
-        actions,
+        actions: proposed(actions),
         conflicts: vec![],
     }
 }
@@ -143,7 +143,7 @@ async fn a_one_sided_conflict_offers_only_its_one_direction() {
 #[tokio::test]
 async fn conflicts_are_asked_before_actions_and_accept_all_resolves_none() {
     let plan = Plan {
-        actions: vec![copy("f", Side::A, 1)],
+        actions: proposed(vec![copy("f", Side::A, 1)]),
         conflicts: vec![
             conflict("c", Some(created(3)), Some(created(7))),
             conflict("d", Some(created(3)), Some(created(7))),
@@ -182,11 +182,11 @@ async fn the_legend_comes_before_the_first_prompt_and_an_empty_plan_asks_nothing
 #[tokio::test]
 async fn batch_keeps_every_action_and_resolves_no_conflict() {
     let plan = Plan {
-        actions: vec![copy("f", Side::A, 1)],
+        actions: proposed(vec![copy("f", Side::A, 1)]),
         conflicts: vec![conflict("c", Some(created(3)), Some(created(7)))],
     };
     let batch = with_deadline("batch", BatchDecider.decide(&plan)).await;
-    assert_eq!(batch, plan.actions);
+    assert_eq!(batch, [copy("f", Side::A, 1)]);
     assert!(
         with_deadline("dry run", DryRunDecider.decide(&plan))
             .await

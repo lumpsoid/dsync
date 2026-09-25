@@ -57,7 +57,7 @@ impl<'v, O: Write> JsonRenderer<'v, O> {
             RunEvent::Conflict(conflict) => typed("conflict", conflict_fields(conflict)),
             RunEvent::Plan { plan, .. } => json!({
                 "type": "plan",
-                "actions": plan.actions.iter().map(|a| Value::Object(action_fields(a))).collect::<Vec<_>>(),
+                "actions": plan.actions.iter().map(|p| Value::Object(action_fields(&p.action))).collect::<Vec<_>>(),
                 "conflicts": plan.conflicts.iter().map(|c| Value::Object(conflict_fields(c))).collect::<Vec<_>>(),
             }),
             RunEvent::Action(action) => typed("action", action_fields(action)),

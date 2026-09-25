@@ -4,6 +4,7 @@
 //! [`RunUpdateBody`]s, the per-action ones batched to at most one update
 //! per [`BATCH_INTERVAL`].
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use dsync_core::{
@@ -236,16 +237,29 @@ impl Decider for HeadDecider {
 
 impl RunDecision {
     /// The kept actions and the chosen resolutions, read against `plan`:
-    /// an index the plan does not have names nothing.
+    /// an index the plan does not have names nothing, and only the first
+    /// answer per index counts. A plan holds one action per path, so
+    /// taking one answer per index keeps two in-flight actions from ever
+    /// sharing a path (SPEC §7.1).
     pub fn actions(&self, plan: &Plan) -> Vec<Action> {
+        let mut kept_indices = HashSet::new();
         let kept = self
             .keep
             .iter()
-            .filter_map(|&index| plan.actions.get(usize::try_from(index).ok()?).cloned());
-        let resolved = self.resolve.iter().filter_map(|choice| {
-            let conflict = plan.conflicts.get(usize::try_from(choice.conflict).ok()?)?;
-            Some(conflict.resolve(Side::from(choice.keep)))
-        });
+            .filter(|&&index| kept_indices.insert(index))
+            .filter_map(|&index| {
+                let proposal = plan.actions.get(usize::try_from(index).ok()?)?;
+                Some(proposal.action.clone())
+            });
+        let mut resolved_indices = HashSet::new();
+        let resolved = self
+            .resolve
+            .iter()
+            .filter(|choice| resolved_indices.insert(choice.conflict))
+            .filter_map(|choice| {
+                let conflict = plan.conflicts.get(usize::try_from(choice.conflict).ok()?)?;
+                Some(conflict.resolve(Side::from(choice.keep)))
+            });
         kept.chain(resolved).collect()
     }
 }
@@ -353,7 +367,11 @@ fn route(event: RunEvent, batch: &mut Batch, awaiting_decision: bool) -> Option<
             plan,
             exceeds_warn_size,
         } => RunUpdateBody::Plan {
-            actions: plan.actions.iter().map(ActionView::from).collect(),
+            actions: plan
+                .actions
+                .iter()
+                .map(|p| ActionView::from(&p.action))
+                .collect(),
             conflicts: plan.conflicts.iter().map(ConflictView::from).collect(),
             bytes_to_transfer: plan.bytes_to_transfer(),
             exceeds_warn_size,
@@ -367,7 +385,10 @@ fn route(event: RunEvent, batch: &mut Batch, awaiting_decision: bool) -> Option<
 #[cfg(test)]
 mod tests {
     use dsync_core::RunEvent;
-    use dsync_domain::{Action, Conflict, Plan, RelPath, RunSummary, Side};
+    use dsync_domain::{
+        Action, Conflict, ContentHash, FileMeta, FileState, Plan, Proposal, RelPath, RunSummary,
+        Side, Status,
+    };
     use tokio::sync::mpsc;
 
     use super::forward;
@@ -384,6 +405,13 @@ mod tests {
             path: path(text),
             from: Side::A,
             bytes: 1,
+        }
+    }
+
+    fn proposed(action: Action) -> Proposal {
+        Proposal {
+            action,
+            reverse_bytes: None,
         }
     }
 
@@ -484,7 +512,7 @@ mod tests {
             b: None,
         };
         let plan = Plan {
-            actions: vec![copy("a"), copy("b")],
+            actions: vec![proposed(copy("a")), proposed(copy("b"))],
             conflicts: vec![conflict.clone()],
         };
         let decision = RunDecision {
@@ -515,5 +543,49 @@ mod tests {
             ActionView::from(&copy("b")),
             ActionView::Copy { ref path, .. } if path == "b"
         ));
+    }
+
+    #[test]
+    fn a_decision_takes_the_first_answer_per_index() {
+        let conflict = Conflict {
+            path: path("both"),
+            a: None,
+            b: Some(Status::Created(FileState {
+                meta: FileMeta {
+                    size: 2,
+                    mtime_us: 1,
+                    mode: 0o644,
+                },
+                hash: ContentHash::from_digest([2; 32]),
+            })),
+        };
+        let plan = Plan {
+            actions: vec![proposed(copy("a")), proposed(copy("b"))],
+            conflicts: vec![conflict.clone()],
+        };
+        let decision = RunDecision {
+            keep: vec![1, 0, 1, 9, 0],
+            resolve: vec![
+                ConflictChoice {
+                    conflict: 0,
+                    keep: SideView::B,
+                },
+                ConflictChoice {
+                    conflict: 0,
+                    keep: SideView::A,
+                },
+                ConflictChoice {
+                    conflict: 3,
+                    keep: SideView::A,
+                },
+            ],
+        };
+        // The two answers for conflict 0 differ, so which one survived is
+        // visible: B's file copied over, not A's absence deleting it.
+        assert_ne!(conflict.resolve(Side::A), conflict.resolve(Side::B));
+        assert_eq!(
+            decision.actions(&plan),
+            [copy("b"), copy("a"), conflict.resolve(Side::B)],
+        );
     }
 }

@@ -102,7 +102,7 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
                 Answer::Accept => kept.push(conflict.resolve(only_side(conflict))),
             }
         }
-        for action in &plan.actions {
+        for action in plan.actions.iter().map(|p| &p.action) {
             if accept_all {
                 kept.push(action.clone());
                 continue;

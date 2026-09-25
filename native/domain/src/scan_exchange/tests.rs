@@ -133,7 +133,7 @@ fn plan_matching_full_exchange(a: ScanResult, b: ScanResult) -> Plan {
 fn actions(plan: &Plan) -> Vec<(&str, &Action)> {
     plan.actions
         .iter()
-        .map(|a| (a.path().as_str(), a))
+        .map(|a| (a.action.path().as_str(), &a.action))
         .collect()
 }
 
@@ -264,7 +264,7 @@ fn a_fresh_replica_against_an_established_one() {
     assert!(
         plan.actions
             .iter()
-            .all(|a| matches!(a, Action::Copy { from: Side::B, .. }))
+            .all(|a| matches!(a.action, Action::Copy { from: Side::B, .. }))
     );
 }
 
@@ -292,7 +292,10 @@ fn a_deletion_that_has_already_finished_on_both_sides() {
         scan(vec![unchanged("kept.txt", "aa")]),
     );
     assert_eq!(
-        plan.actions,
+        plan.actions
+            .iter()
+            .map(|p| p.action.clone())
+            .collect::<Vec<_>>(),
         [Action::CommitOnly {
             path: path("gone.txt")
         }]
@@ -339,7 +342,10 @@ fn two_sides_that_changed_a_file_to_identical_content() {
         ]),
     );
     assert_eq!(
-        plan.actions,
+        plan.actions
+            .iter()
+            .map(|p| p.action.clone())
+            .collect::<Vec<_>>(),
         [Action::CommitOnly {
             path: path("both.txt")
         }]
@@ -379,7 +385,10 @@ fn a_path_unchanged_on_one_side_and_deleted_on_the_other_still_deletes() {
         scan(vec![deleted("gone.txt")]),
     );
     assert_eq!(
-        plan.actions,
+        plan.actions
+            .iter()
+            .map(|p| p.action.clone())
+            .collect::<Vec<_>>(),
         [Action::Delete {
             path: path("gone.txt"),
             on: Side::A

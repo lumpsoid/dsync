@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use crate::action::Action;
 use crate::conflict::Conflict;
 use crate::plan::Plan;
+use crate::proposal::Proposal;
 use crate::rel_path::RelPath;
 use crate::scan_entry::{FileState, ScanEntry, Status, Unchanged};
 use crate::side::Side;
@@ -56,20 +57,24 @@ pub fn reconcile(a: Vec<ScanEntry>, b: Vec<ScanEntry>, unreadable: &UnreadablePa
             plan.conflicts.push(conflict());
             continue;
         }
-        match resolve(seen(on_a), seen(on_b)) {
-            Verdict::Nothing => {}
-            Verdict::Conflict => plan.conflicts.push(conflict()),
-            Verdict::CommitOnly => plan.actions.push(Action::CommitOnly { path: path.clone() }),
-            Verdict::DeleteOn(on) => plan.actions.push(Action::Delete {
+        let action = match resolve(seen(on_a), seen(on_b)) {
+            Verdict::Nothing => continue,
+            Verdict::Conflict => {
+                plan.conflicts.push(conflict());
+                continue;
+            }
+            Verdict::CommitOnly => Action::CommitOnly { path: path.clone() },
+            Verdict::DeleteOn(on) => Action::Delete {
                 path: path.clone(),
                 on,
-            }),
-            Verdict::CopyFrom(from, source) => plan.actions.push(Action::Copy {
+            },
+            Verdict::CopyFrom(from, source) => Action::Copy {
                 path: path.clone(),
                 from,
                 bytes: source.meta.size,
-            }),
-        }
+            },
+        };
+        plan.actions.push(Proposal::of(action, on_a, on_b));
     }
     plan
 }

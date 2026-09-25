@@ -87,7 +87,7 @@ fn committed(tree: &Tree) -> Archive {
 fn actions(plan: &Plan) -> Vec<(&str, &Action)> {
     plan.actions
         .iter()
-        .map(|a| (a.path().as_str(), a))
+        .map(|a| (a.action.path().as_str(), &a.action))
         .collect()
 }
 
@@ -191,7 +191,7 @@ fn a_fresh_replica_against_an_established_one_fetches_the_dirty_buckets() {
     assert!(
         plan.actions
             .iter()
-            .all(|a| matches!(a, Action::Copy { from: Side::B, .. }))
+            .all(|a| matches!(a.action, Action::Copy { from: Side::B, .. }))
     );
 }
 

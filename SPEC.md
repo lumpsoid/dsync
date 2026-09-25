@@ -203,7 +203,19 @@ Additional rules:
 - **Conflicts are never auto-resolved.** They are presented to the user, who picks a direction or skips.
 - **Deletions are actions.** A propagated deletion appears in the plan like any other action and can be vetoed per item in interactive mode.
 
-The output of reconciliation is a **plan**: an ordered list of actions (`copy A→B`, `copy B→A`, `delete on A`, `delete on B`, `commit-only`) plus a list of conflicts.
+The output of reconciliation is a **plan**: an ordered list of actions (`copy A→B`, `copy B→A`, `delete on A`, `delete on B`, `commit-only`) plus a list of conflicts. The plan holds at most one action per path.
+
+**A proposal may carry a reversal.** Each action is proposed with what the reconciler would have planned had the user said "the other side is right": the conflict resolution (§11.3) that keeps the side the action would overwrite or delete on. It is offered **only when that resolution is a copy** — the other side holds a file — so an offered reversal is always a copy of the same path from the other side, carrying that side's size:
+
+| Proposed | Reversal | Offered |
+|---|---|---|
+| copy A→B, B holds a file (any status with one) | copy B→A | yes |
+| copy A→B, B silent or untrusted with no file (a mirror) | delete on A | **no** |
+| delete on B (A deleted, B unchanged) | copy B→A (restore) | yes |
+| delete on A | copy A→B (restore) | yes |
+| commit-only | — | no |
+
+(and symmetrically for B→A.) The case it serves is "another app made a wrong change; put the stale version back", which is always a copy. Reversing a copy from a `modified` side **overwrites that side's edit** with the other side's version: that destruction is the point of the choice. An offered reversal therefore always leaves a file at the path on both sides. A reversal that would delete a new file is not offered, because skipping the action already covers "don't send this".
 
 ### 6.1 Exchanging the two status lists
 

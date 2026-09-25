@@ -1,19 +1,20 @@
 //! The result of reconciling two status lists (SPEC §6).
 
-use crate::action::Action;
 use crate::conflict::Conflict;
+use crate::proposal::Proposal;
 
-/// What to do, and what needs a human. Both lists are sorted by path.
+/// What to do, and what needs a human. Both lists are sorted by path, and
+/// hold at most one entry per path.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Plan {
-    pub actions: Vec<Action>,
+    pub actions: Vec<Proposal>,
     pub conflicts: Vec<Conflict>,
 }
 
 impl Plan {
     /// Total bytes the plan moves (SPEC §10).
     pub fn bytes_to_transfer(&self) -> u64 {
-        self.actions.iter().map(Action::bytes).sum()
+        self.actions.iter().map(|p| p.action.bytes()).sum()
     }
 
     /// Whether the plan moves more than the profile's `warn_size_bytes`: a

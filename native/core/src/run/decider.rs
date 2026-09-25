@@ -26,7 +26,7 @@ pub struct DryRunDecider;
 
 impl Decider for BatchDecider {
     async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
-        plan.actions.clone()
+        plan.actions.iter().map(|p| p.action.clone()).collect()
     }
 }
 

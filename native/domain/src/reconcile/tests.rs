@@ -96,8 +96,12 @@ fn act(action: &Action) -> Act {
 fn action_for(plan: &Plan, p: &str) -> Option<Act> {
     plan.actions
         .iter()
-        .find(|a| a.path().as_str() == p)
-        .map(act)
+        .find(|a| a.action.path().as_str() == p)
+        .map(|a| act(&a.action))
+}
+
+fn actions(plan: &Plan) -> Vec<Action> {
+    plan.actions.iter().map(|p| p.action.clone()).collect()
 }
 
 fn is_conflict(plan: &Plan, p: &str) -> bool {
@@ -354,7 +358,7 @@ fn a_whole_fresh_replica_mirrors_rather_than_conflicting() {
     );
     assert!(plan.conflicts.is_empty());
     assert_eq!(plan.actions.len(), 3);
-    assert!(plan.actions.iter().all(|a| act(a) == Act::CopyBtoA));
+    assert!(plan.actions.iter().all(|a| act(&a.action) == Act::CopyBtoA));
 }
 
 // -- type mismatch --
@@ -416,7 +420,7 @@ fn a_copy_carries_the_source_size_either_direction() {
         vec![sized("f", Kind::Modified, "b", 4096)],
     );
     assert_eq!(
-        a_to_b.actions[..],
+        actions(&a_to_b)[..],
         [Action::Copy {
             path: path("f"),
             from: Side::A,
@@ -424,7 +428,7 @@ fn a_copy_carries_the_source_size_either_direction() {
         }]
     );
     assert_eq!(
-        b_to_a.actions[..],
+        actions(&b_to_a)[..],
         [Action::Copy {
             path: path("f"),
             from: Side::B,
@@ -437,7 +441,7 @@ fn a_copy_carries_the_source_size_either_direction() {
 fn a_path_new_to_one_side_carries_the_other_sides_size() {
     let plan = run(vec![], vec![sized("f", Kind::Created, "h", 900)]);
     assert_eq!(plan.actions.len(), 1);
-    assert_eq!(plan.actions[0].bytes(), 900);
+    assert_eq!(plan.actions[0].action.bytes(), 900);
 }
 
 #[test]
@@ -451,10 +455,10 @@ fn deletions_and_commit_only_move_nothing() {
         vec![sized("f", Kind::Modified, "same", 4096)],
     );
     assert_eq!(deletion.actions.len(), 1);
-    assert_eq!(deletion.actions[0].bytes(), 0);
+    assert_eq!(deletion.actions[0].action.bytes(), 0);
     assert_eq!(same_content.actions.len(), 1);
-    assert_eq!(act(&same_content.actions[0]), Act::CommitOnly);
-    assert_eq!(same_content.actions[0].bytes(), 0);
+    assert_eq!(act(&same_content.actions[0].action), Act::CommitOnly);
+    assert_eq!(same_content.actions[0].action.bytes(), 0);
 }
 
 #[test]
@@ -489,7 +493,11 @@ fn actions_and_conflicts_are_sorted_by_path() {
             hashed("b.txt", Kind::Modified, "b"),
         ],
     );
-    let actions: Vec<_> = plan.actions.iter().map(|a| a.path().as_str()).collect();
+    let actions: Vec<_> = plan
+        .actions
+        .iter()
+        .map(|a| a.action.path().as_str())
+        .collect();
     let conflicts: Vec<_> = plan.conflicts.iter().map(|c| c.path.as_str()).collect();
     assert_eq!(actions, ["a.txt", "z.txt"]);
     assert_eq!(conflicts, ["b.txt", "y.txt"]);
@@ -537,7 +545,11 @@ fn a_sibling_whose_name_merely_starts_with_an_unreadable_path_is_reconciled() {
         vec![sized("submarine.txt", Kind::Created, "b", 4)],
         &unreadable(&["sub"]),
     );
-    let paths: Vec<_> = plan.actions.iter().map(|a| a.path().as_str()).collect();
+    let paths: Vec<_> = plan
+        .actions
+        .iter()
+        .map(|a| a.action.path().as_str())
+        .collect();
     assert_eq!(paths, ["submarine.txt"]);
 }
 
@@ -601,7 +613,7 @@ fn untrusted_is_mirrored_onto_when_absent() {
         vec![sized("f", Kind::Created, "h", 7)],
     );
     assert_eq!(
-        mirrored.actions[..],
+        actions(&mirrored)[..],
         [Action::Copy {
             path: path("f"),
             from: Side::B,
@@ -713,6 +725,100 @@ fn a_path_beneath_a_file_on_either_side_is_left_to_that_conflict() {
     );
     let conflicts: Vec<_> = plan.conflicts.iter().map(|c| c.path.as_str()).collect();
     assert_eq!(conflicts, ["d"]);
-    let actions: Vec<_> = plan.actions.iter().map(|a| a.path().as_str()).collect();
+    let actions: Vec<_> = plan
+        .actions
+        .iter()
+        .map(|a| a.action.path().as_str())
+        .collect();
     assert_eq!(actions, ["x"]);
+}
+
+// -- reversals (SPEC §6: "a proposal may carry a reversal") --
+
+fn only(plan: &Plan) -> &Proposal {
+    assert_eq!(plan.actions.len(), 1, "{plan:?}");
+    &plan.actions[0]
+}
+
+#[test]
+fn a_copy_over_a_file_reverses_to_the_opposite_copy_with_the_other_sides_size() {
+    let plan = run(
+        vec![sized("f", Kind::Modified, "a", 4096)],
+        vec![sized("f", Kind::Unchanged, "b", 17)],
+    );
+    let proposal = only(&plan);
+    assert_eq!(act(&proposal.action), Act::CopyAtoB);
+    assert_eq!(proposal.reverse_bytes, Some(17));
+    assert_eq!(
+        proposal.reversed(),
+        Some(Action::Copy {
+            path: path("f"),
+            from: Side::B,
+            bytes: 17
+        })
+    );
+}
+
+#[test]
+fn a_mirror_onto_a_silent_or_untrusted_absent_side_offers_no_reversal() {
+    let silent = run(vec![sized("f", Kind::Created, "a", 4096)], vec![]);
+    assert_eq!(act(&only(&silent).action), Act::CopyAtoB);
+    assert_eq!(only(&silent).reverse_bytes, None);
+    assert_eq!(only(&silent).reversed(), None);
+
+    let absent = run(
+        vec![sized("f", Kind::Unchanged, "a", 4096)],
+        vec![untrusted_absent("f")],
+    );
+    assert_eq!(act(&only(&absent).action), Act::CopyAtoB);
+    assert_eq!(only(&absent).reversed(), None);
+
+    // Control: the same copy onto a side holding a file is offered one.
+    let over_a_file = run(
+        vec![sized("f", Kind::Modified, "a", 4096)],
+        vec![sized("f", Kind::Unchanged, "b", 3)],
+    );
+    assert_eq!(act(&only(&over_a_file).action), Act::CopyAtoB);
+    assert_eq!(only(&over_a_file).reverse_bytes, Some(3));
+}
+
+#[test]
+fn a_delete_reverses_to_restoring_the_deleted_sides_file_from_its_holder() {
+    let on_b = run(
+        vec![entry("f", Kind::Deleted)],
+        vec![sized("f", Kind::Unchanged, "b", 9)],
+    );
+    assert_eq!(act(&only(&on_b).action), Act::DeleteOnB);
+    assert_eq!(
+        only(&on_b).reversed(),
+        Some(Action::Copy {
+            path: path("f"),
+            from: Side::B,
+            bytes: 9
+        })
+    );
+    let on_a = run(
+        vec![sized("f", Kind::Unchanged, "a", 5)],
+        vec![entry("f", Kind::Deleted)],
+    );
+    assert_eq!(act(&only(&on_a).action), Act::DeleteOnA);
+    assert_eq!(
+        only(&on_a).reversed(),
+        Some(Action::Copy {
+            path: path("f"),
+            from: Side::A,
+            bytes: 5
+        })
+    );
+}
+
+#[test]
+fn commit_only_offers_no_reversal() {
+    let plan = run(
+        vec![sized("f", Kind::Modified, "same", 4096)],
+        vec![sized("f", Kind::Created, "same", 4096)],
+    );
+    assert_eq!(act(&only(&plan).action), Act::CommitOnly);
+    assert_eq!(only(&plan).reverse_bytes, None);
+    assert_eq!(only(&plan).reversed(), None);
 }

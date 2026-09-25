@@ -231,6 +231,11 @@ impl Exchanged {
             .find(|entry| entry.path.as_str() == relative)
             .map(|entry| entry.status)
     }
+
+    /// The plan's actions, without their reversals.
+    pub fn actions(&self) -> Vec<Action> {
+        self.plan.actions.iter().map(|p| p.action.clone()).collect()
+    }
 }
 
 /// Scans both replicas and exchanges the scans the way a run does.
@@ -351,7 +356,7 @@ pub async fn copy(
 /// tests produce - copies and commit-only records - then makes both
 /// archives durable.
 pub async fn apply(a: &impl Replica, b: &impl Replica, exchanged: &Exchanged) {
-    for action in &exchanged.plan.actions {
+    for action in exchanged.actions().iter() {
         let relative = action.path().as_str();
         let file_on = |side| {
             *exchanged

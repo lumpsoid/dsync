@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::JsonRenderer;
 use crate::render::RunView;
-use crate::render::fixtures::{self, PROFILE_ID, conflict, created, path, unchanged};
+use crate::render::fixtures::{self, PROFILE_ID, conflict, created, path, proposed, unchanged};
 
 fn lines(view: &RunView, events: &[RunEvent]) -> Vec<Value> {
     let mut out = Vec::new();
@@ -114,7 +114,7 @@ fn a_unix_side_reports_a_socket_never_a_host() {
 fn plan_actions_and_conflicts_are_shaped_like_their_own_lines() {
     let line = one(RunEvent::Plan {
         plan: Plan {
-            actions: vec![copy("f")],
+            actions: proposed(vec![copy("f")]),
             conflicts: vec![conflict("c", Some(created(1)), None)],
         },
         exceeds_warn_size: false,

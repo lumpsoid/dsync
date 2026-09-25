@@ -192,14 +192,25 @@ pub(crate) mod fixtures {
     use std::time::{Duration, SystemTime};
 
     use dsync_domain::{
-        Conflict, ContentHash, FileMeta, FileState, Glob, Locality, Location, Platform, ProfileId,
-        ProfileName, RelPath, ReplicaLocation, RuleSet, Status, Unchanged,
+        Action, Conflict, ContentHash, FileMeta, FileState, Glob, Locality, Location, Platform,
+        ProfileId, ProfileName, Proposal, RelPath, ReplicaLocation, RuleSet, Status, Unchanged,
     };
     use time::UtcOffset;
 
     use super::{ReplicaView, RunName, RunView, Wallclock};
 
     pub const PROFILE_ID: &str = "0123456789abcdef0123456789abcdef";
+
+    /// `actions` as a plan proposes them, none offering a reversal.
+    pub fn proposed(actions: Vec<Action>) -> Vec<Proposal> {
+        actions
+            .into_iter()
+            .map(|action| Proposal {
+                action,
+                reverse_bytes: None,
+            })
+            .collect()
+    }
 
     pub fn path(text: &str) -> RelPath {
         RelPath::parse(text).unwrap()

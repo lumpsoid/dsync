@@ -9,7 +9,9 @@ use dsync_domain::{
 };
 
 use super::HumanRenderer;
-use crate::render::fixtures::{self, PROFILE_ID, clock, conflict, created, path, unchanged};
+use crate::render::fixtures::{
+    self, PROFILE_ID, clock, conflict, created, path, proposed, unchanged,
+};
 use crate::render::{RunName, RunView};
 
 /// What one renderer printed: stdout, then stderr.
@@ -40,7 +42,7 @@ fn copy(at: &str, from: Side) -> Action {
 fn plan_event(actions: Vec<Action>, exceeds_warn_size: bool) -> RunEvent {
     RunEvent::Plan {
         plan: Plan {
-            actions,
+            actions: proposed(actions),
             conflicts: vec![],
         },
         exceeds_warn_size,

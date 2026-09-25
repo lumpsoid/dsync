@@ -59,7 +59,7 @@ where
     let b = site.replica(Side::B);
     let exchanged = exchange(&a, &b).await;
     assert_eq!(
-        exchanged.plan.actions,
+        exchanged.actions(),
         [Action::Copy {
             path: path("f"),
             from: Side::A,
@@ -106,7 +106,7 @@ async fn expect_converges(site: &Site) {
             .plan
             .actions
             .iter()
-            .any(|action| matches!(action, Action::Copy { from: Side::B, .. })),
+            .any(|proposal| matches!(proposal.action, Action::Copy { from: Side::B, .. })),
         "nothing on B is ever copied back over A"
     );
     apply(&a, &b, &recovery).await;

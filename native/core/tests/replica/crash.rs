@@ -30,7 +30,7 @@ async fn a_crash_between_the_two_commits_converges_without_moving_bytes_again() 
         with_deadline("crashing run", async {
             let exchanged = exchange(&a, &b).await;
             assert_eq!(
-                exchanged.plan.actions,
+                exchanged.actions(),
                 [Action::Copy {
                     path: path("f"),
                     from: Side::A,
@@ -71,7 +71,7 @@ async fn a_crash_between_the_two_commits_converges_without_moving_bytes_again() 
         ));
         assert!(exchanged.plan.conflicts.is_empty());
         assert_eq!(
-            exchanged.plan.actions,
+            exchanged.actions(),
             [Action::CommitOnly { path: path("f") }]
         );
         apply(&a, &b, &exchanged).await;

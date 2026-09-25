@@ -39,7 +39,7 @@ impl RunSummary {
             skipped: plan
                 .actions
                 .iter()
-                .filter(|action| !kept.contains(action.path()))
+                .filter(|proposal| !kept.contains(proposal.action.path()))
                 .count(),
             conflicts: plan
                 .conflicts
@@ -56,6 +56,7 @@ impl RunSummary {
 mod tests {
     use super::*;
     use crate::conflict::Conflict;
+    use crate::proposal::Proposal;
     use crate::side::Side;
 
     fn path(text: &str) -> RelPath {
@@ -63,18 +64,25 @@ mod tests {
     }
 
     fn plan() -> Plan {
+        let proposed = |action| Proposal {
+            action,
+            reverse_bytes: None,
+        };
         Plan {
             actions: vec![
-                Action::CommitOnly { path: path("a") },
-                Action::Delete {
-                    path: path("b"),
-                    on: Side::A,
+                proposed(Action::CommitOnly { path: path("a") }),
+                Proposal {
+                    action: Action::Delete {
+                        path: path("b"),
+                        on: Side::A,
+                    },
+                    reverse_bytes: Some(2),
                 },
-                Action::Copy {
+                proposed(Action::Copy {
                     path: path("c"),
                     from: Side::B,
                     bytes: 1,
-                },
+                }),
             ],
             conflicts: vec![Conflict {
                 path: path("x"),
@@ -84,10 +92,18 @@ mod tests {
         }
     }
 
+    /// Every proposed action, as a decider keeping all of them returns it.
+    fn all(plan: &Plan) -> Vec<Action> {
+        plan.actions.iter().map(|p| p.action.clone()).collect()
+    }
+
     #[test]
     fn what_the_decider_dropped_is_skipped() {
         let plan = plan();
-        let kept = [plan.actions[0].clone(), plan.actions[2].clone()];
+        let kept = [
+            plan.actions[0].action.clone(),
+            plan.actions[2].action.clone(),
+        ];
         assert_eq!(
             RunSummary::of(&plan, &kept, 1, 1, 2),
             RunSummary {
@@ -110,7 +126,7 @@ mod tests {
     #[test]
     fn a_resolved_conflict_is_kept_not_skipped() {
         let plan = plan();
-        let mut kept = plan.actions.clone();
+        let mut kept = all(&plan);
         kept.push(Action::Copy {
             path: path("x"),
             from: Side::A,
@@ -129,12 +145,27 @@ mod tests {
             a: None,
             b: None,
         });
-        let mut kept = plan.actions.clone();
+        let mut kept = all(&plan);
         kept.push(Action::Delete {
             path: path("y"),
             on: Side::B,
         });
         assert_eq!(RunSummary::of(&plan, &kept, 4, 0, 0).conflicts, 1);
-        assert_eq!(RunSummary::of(&plan, &plan.actions, 3, 0, 0).conflicts, 2);
+        assert_eq!(RunSummary::of(&plan, &all(&plan), 3, 0, 0).conflicts, 2);
+    }
+
+    #[test]
+    fn a_reversed_action_is_applied_not_skipped() {
+        let plan = plan();
+        let reversed = plan.actions[1]
+            .reversed()
+            .unwrap_or_else(|| panic!("the delete offers a reversal"));
+        assert_ne!(reversed, plan.actions[1].action);
+        let kept = [reversed];
+        let summary = RunSummary::of(&plan, &kept, 1, 0, 0);
+        assert_eq!(summary.applied, 1);
+        assert_eq!(summary.skipped, 2, "only the two actions not kept");
+        // Positive control: not keeping it skips it.
+        assert_eq!(RunSummary::of(&plan, &[], 0, 0, 0).skipped, 3);
     }
 }

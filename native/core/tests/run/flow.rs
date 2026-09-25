@@ -350,7 +350,7 @@ async fn a_conflict_resolved_by_the_decider_is_applied_and_does_not_exit_1() {
             })
             .unwrap()
     };
-    let mut kept = plan.actions.clone();
+    let mut kept: Vec<_> = plan.actions.iter().map(|p| p.action.clone()).collect();
     kept.push(plan.conflicts[0].resolve(Side::A));
 
     let finished = run(
@@ -371,6 +371,90 @@ async fn a_conflict_resolved_by_the_decider_is_applied_and_does_not_exit_1() {
         (0, 0, 2)
     );
     assert_eq!(finished.exit_code(), 0);
+}
+
+/// The plan a run proposes for the site as it stands, applying nothing.
+async fn proposed_plan(site: &Site) -> dsync_domain::Plan {
+    let mut peek = Answer {
+        actions: vec![],
+        asked: false,
+    };
+    let finished = run(
+        site,
+        site.replica(Side::A),
+        site.replica(Side::B),
+        &mut peek,
+    )
+    .await;
+    finished
+        .events
+        .into_iter()
+        .find_map(|event| match event {
+            RunEvent::Plan { plan, .. } => Some(plan),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_reversed_copy_overwrites_the_modified_side_and_settles_the_pair() {
+    let site = Site::new();
+    site.put(Side::A, "f", "base");
+    sync(&site).await;
+    let base = site.archive(Side::B).get(&path("f")).unwrap().hash;
+    site.put(Side::A, "f", "edited on a");
+
+    let plan = proposed_plan(&site).await;
+    assert_eq!(plan.conflicts, []);
+    let [proposal] = &plan.actions[..] else {
+        panic!("one action: {plan:?}");
+    };
+    assert!(matches!(
+        proposal.action,
+        dsync_domain::Action::Copy {
+            from: Side::A,
+            bytes: 11,
+            ..
+        }
+    ));
+    let reversed = proposal
+        .reversed()
+        .unwrap_or_else(|| panic!("B holds a file, so a reversal is offered"));
+    assert_eq!(
+        reversed,
+        dsync_domain::Action::Copy {
+            path: path("f"),
+            from: Side::B,
+            bytes: 4,
+        }
+    );
+
+    let finished = run(
+        &site,
+        site.replica(Side::A),
+        site.replica(Side::B),
+        &mut Answer {
+            actions: vec![reversed],
+            asked: false,
+        },
+    )
+    .await;
+
+    assert_eq!(finished.exit_code(), 0);
+    let summary = finished.report.summary.unwrap();
+    assert_eq!((summary.applied, summary.skipped), (1, 0));
+    assert_eq!(
+        site.get(Side::A, "f").unwrap(),
+        b"base",
+        "A's edit is overwritten"
+    );
+    assert_eq!(site.get(Side::B, "f").unwrap(), b"base");
+    let (a, b) = (site.archive(Side::A), site.archive(Side::B));
+    let (on_a, on_b) = (a.get(&path("f")).unwrap(), b.get(&path("f")).unwrap());
+    assert_eq!(on_a.hash, base, "A's archive holds B's version");
+    assert_eq!(on_b.hash, base);
+    let settled = proposed_plan(&site).await;
+    assert_eq!(settled, dsync_domain::Plan::default(), "nothing left for f");
 }
 
 #[tokio::test]
