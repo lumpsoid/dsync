@@ -18,6 +18,12 @@ import 'run_view_state.dart';
 /// `run_page.dart` — they are not a [SyncRunPlanGroup], and this widget
 /// does not read [SyncRunViewState.conflicts].
 ///
+/// **The review is these same rows.** While [SyncRunAwaitingDecisions],
+/// every row gets its control ([onChoose] reaches the rows); outside it the
+/// rows have none. The action groups are expanded throughout the review —
+/// they collapse only while applying — so the rows under review are the
+/// rows on screen.
+///
 /// **Keys.** `run-plan` is this whole area — present iff the plan is
 /// non-empty, same as the ungrouped list it replaces. Each group's own
 /// rows are `run-plan-<group>` (`SyncRunPlanGroup.name`); each group's own
@@ -29,15 +35,27 @@ import 'run_view_state.dart';
 /// always does) and on which groups are non-empty, so it is computed
 /// fresh on every build rather than pinned to one group.
 class RunPlanSection extends StatelessWidget {
-  const RunPlanSection(this.state, {super.key, required this.deviceName});
+  const RunPlanSection(
+    this.state, {
+    super.key,
+    required this.deviceName,
+    required this.onChoose,
+  });
 
   final SyncRunViewState state;
   final String deviceName;
+
+  /// What a row's control calls — `SyncRunController.choose`. Handed to
+  /// the rows only while the review is up.
+  final void Function(String path, SyncRunActionChoice choice) onChoose;
 
   @override
   Widget build(BuildContext context) {
     final sections = state.planSections;
     final applying = state.phase is SyncRunApplying;
+    final onChoose = state.phase is SyncRunAwaitingDecisions
+        ? this.onChoose
+        : null;
     final groups = [
       (group: SyncRunPlanGroup.toDevice, title: 'To $deviceName'),
       (group: SyncRunPlanGroup.toThisDevice, title: 'To this device'),
@@ -64,6 +82,7 @@ class RunPlanSection extends StatelessWidget {
           section: section,
           title: header,
           collapsible: collapsible,
+          onChoose: onChoose,
           disclosureKey: isFirstDisclosure
               ? const Key('run-plan-disclosure')
               : Key('run-plan-disclosure-${group.name}'),
@@ -93,6 +112,7 @@ class _PlanGroupSection extends StatefulWidget {
     required this.section,
     required this.title,
     required this.collapsible,
+    required this.onChoose,
     required this.disclosureKey,
   });
 
@@ -101,6 +121,7 @@ class _PlanGroupSection extends StatefulWidget {
   final SyncRunPlanSection section;
   final String title;
   final bool collapsible;
+  final void Function(String path, SyncRunActionChoice choice)? onChoose;
   final Key disclosureKey;
 
   @override
@@ -116,7 +137,7 @@ class _PlanGroupSectionState extends State<_PlanGroupSection> {
     final section = widget.section;
     Widget row(BuildContext context, int i) {
       final planRow = state.plan[section.indexes[i]];
-      return RunPlanRow(state: state, row: planRow);
+      return RunPlanRow(state: state, row: planRow, onChoose: widget.onChoose);
     }
 
     final listKey = Key('run-plan-${widget.group.name}');
@@ -165,66 +186,147 @@ class _PlanGroupSectionState extends State<_PlanGroupSection> {
 /// parent and a bold leaf ([PathLabel]) so the part that tells two rows
 /// apart is the part that reads loudest, the group's own direction glyph,
 /// and the row's own result icon once [SyncRunViewState.resultCell] has
-/// one for it. Follows only that cell — see the view state's class doc
-/// comment and the section above — so applying action N repaints action
-/// N's row and nothing else in the group.
+/// one for it. Follows only that cell and its own choice's
+/// ([SyncRunViewState.actionDecisionCell]) — see the view state's class
+/// doc comment and the section above — so applying action N, or a tap on
+/// row N's control, repaints row N and nothing else in the group.
 ///
-/// `trailing` is left empty on purpose: a later phase adds an inline
-/// reverse/skip control there, per path, without touching this row's
-/// leading icon or title.
+/// While the review is up ([onChoose] set) `trailing` holds the row's
+/// control: as planned, reversed where the plan offers a reverse, or
+/// skipped. The subtitle says what the current choice will do, literally:
+/// a reversed row shows the reverse's own words and size, never the
+/// planned ones, and that stays true after the review closes.
 class RunPlanRow extends StatelessWidget {
-  const RunPlanRow({super.key, required this.state, required this.row});
+  const RunPlanRow({
+    super.key,
+    required this.state,
+    required this.row,
+    required this.onChoose,
+  });
 
   final SyncRunViewState state;
   final SyncRunPlanRow row;
+
+  /// `null` outside the review: no control.
+  final void Function(String path, SyncRunActionChoice choice)? onChoose;
 
   @override
   Widget build(BuildContext context) {
     final label = PathLabel.of(row.path);
     return ValueListenableBuilder<SyncRunResultRow?>(
       valueListenable: state.resultCell(row.path),
-      builder: (context, result, _) {
-        final theme = Theme.of(context);
-        final error = result?.error;
-        return ListTile(
-          contentPadding: EdgeInsets.zero,
-          dense: true,
-          leading: _resultIcon(result, theme),
-          title: Row(
-            children: [
-              Icon(
-                _groupIcon(row.group),
-                size: 14,
-                color: theme.colorScheme.outline,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text.rich(
-                  TextSpan(
-                    children: [
-                      if (label.parent.isNotEmpty)
+      builder: (context, result, _) =>
+          ValueListenableBuilder<SyncRunActionChoice>(
+            valueListenable: state.actionDecisionCell(row.path),
+            builder: (context, choice, _) {
+              final theme = Theme.of(context);
+              final onChoose = this.onChoose;
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                leading: _resultIcon(result, theme),
+                title: Row(
+                  children: [
+                    Icon(
+                      _groupIcon(row.group),
+                      size: 14,
+                      color: theme.colorScheme.outline,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text.rich(
                         TextSpan(
-                          text: label.parent,
-                          style: TextStyle(color: theme.colorScheme.outline),
+                          children: [
+                            if (label.parent.isNotEmpty)
+                              TextSpan(
+                                text: label.parent,
+                                style: TextStyle(
+                                  color: theme.colorScheme.outline,
+                                ),
+                              ),
+                            TextSpan(
+                              text: label.leaf,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
                         ),
-                      TextSpan(
-                        text: label.leaf,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ],
-                  ),
-                  overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                subtitle: _subtitle(result, choice),
+                trailing: onChoose == null
+                    ? null
+                    : _ActionChoiceControl(
+                        key: Key('decision-${row.path}'),
+                        choice: choice,
+                        reversible: row.reversal != null,
+                        onChoose: (choice) => onChoose(row.path, choice),
+                      ),
+              );
+            },
           ),
-          subtitle: error != null
-              ? Text(error)
-              : row.bytes > 0
-              ? Text(formatBytes(row.bytes))
-              : null,
-        );
-      },
+    );
+  }
+
+  Widget? _subtitle(SyncRunResultRow? result, SyncRunActionChoice choice) {
+    if (result?.error case final error?) return Text(error);
+    return switch ((choice, row.reversal)) {
+      (SyncRunActionChoice.reversed, final reversal?) => Text(
+        reversal.bytes > 0
+            ? '${reversal.action} · ${formatBytes(reversal.bytes)}'
+            : reversal.action,
+      ),
+      (SyncRunActionChoice.skipped, _) => const Text('skipped'),
+      _ => row.bytes > 0 ? Text(formatBytes(row.bytes)) : null,
+    };
+  }
+}
+
+/// A plan row's review control: as planned, reversed — offered only when
+/// the row is [reversible] — or skipped. Icons rather than words so it fits
+/// beside the path on a phone; each segment's tooltip is its name, and the
+/// row's subtitle spells out what the chosen one does.
+class _ActionChoiceControl extends StatelessWidget {
+  const _ActionChoiceControl({
+    super.key,
+    required this.choice,
+    required this.reversible,
+    required this.onChoose,
+  });
+
+  final SyncRunActionChoice choice;
+  final bool reversible;
+  final ValueChanged<SyncRunActionChoice> onChoose;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<SyncRunActionChoice>(
+      showSelectedIcon: false,
+      style: const ButtonStyle(visualDensity: VisualDensity.compact),
+      segments: [
+        const ButtonSegment(
+          value: SyncRunActionChoice.proposed,
+          icon: Icon(Icons.check),
+          tooltip: 'As planned',
+        ),
+        if (reversible)
+          const ButtonSegment(
+            value: SyncRunActionChoice.reversed,
+            icon: Icon(Icons.swap_horiz),
+            tooltip: 'Reverse',
+          ),
+        const ButtonSegment(
+          value: SyncRunActionChoice.skipped,
+          icon: Icon(Icons.block),
+          tooltip: 'Skip',
+        ),
+      ],
+      selected: {choice},
+      onSelectionChanged: (selected) => onChoose(selected.single),
     );
   }
 }

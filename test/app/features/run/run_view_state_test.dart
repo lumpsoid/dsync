@@ -187,30 +187,35 @@ void main() {
           action: 'copy to desktop',
           bytes: 10,
           group: SyncRunPlanGroup.toDevice,
+          reversal: null,
         ),
         SyncRunPlanRow(
           path: 'to-this.txt',
           action: 'copy to this device',
           bytes: 20,
           group: SyncRunPlanGroup.toThisDevice,
+          reversal: null,
         ),
         SyncRunPlanRow(
           path: 'gone-a.txt',
           action: 'delete on this device',
           bytes: 0,
           group: SyncRunPlanGroup.deletions,
+          reversal: null,
         ),
         SyncRunPlanRow(
           path: 'gone-b.txt',
           action: 'delete on desktop',
           bytes: 0,
           group: SyncRunPlanGroup.deletions,
+          reversal: null,
         ),
         SyncRunPlanRow(
           path: 'same.txt',
           action: 'same content, record only',
           bytes: 0,
           group: SyncRunPlanGroup.recordOnly,
+          reversal: null,
         ),
       ], bytesToTransfer: 30);
 
@@ -523,6 +528,69 @@ void main() {
 
       state.recordPhase(const SyncRunApplying());
       expect(notified, 2);
+    });
+
+    test('a decision cell updates one path without notifying the state', () {
+      final state = SyncRunViewState();
+      addTearDown(state.dispose);
+      var notified = 0;
+      state
+        ..addListener(() => notified++)
+        ..phaseChanged.addListener(() => notified++)
+        ..planChanged.addListener(() => notified++);
+      final tapped = state.actionDecisionCell('a');
+      final other = state.actionDecisionCell('b');
+      final conflict = state.conflictDecisionCell('c');
+      var tappedFired = 0;
+      var otherFired = 0;
+      var conflictFired = 0;
+      var summaryFired = 0;
+      tapped.addListener(() => tappedFired++);
+      other.addListener(() => otherFired++);
+      conflict.addListener(() => conflictFired++);
+      state.decisionSummary.addListener(() => summaryFired++);
+
+      state
+        ..recordActionChoice('a', SyncRunActionChoice.reversed)
+        ..recordDecisionSummary(
+          const SyncRunDecisionSummary(
+            apply: 2,
+            reversed: 1,
+            skipped: 0,
+            resolved: 0,
+            keptBoth: 0,
+            leftOpen: 1,
+          ),
+        );
+
+      // Positive control: the tapped path's cell and the total moved.
+      expect(tapped.value, SyncRunActionChoice.reversed);
+      expect(tappedFired, 1);
+      expect(summaryFired, 1);
+      // Nothing else did.
+      expect(otherFired, 0);
+      expect(other.value, SyncRunActionChoice.proposed);
+      expect(conflictFired, 0);
+      expect(notified, 0);
+
+      state.recordConflictChoice('c', SyncRunConflictChoice.keepBoth);
+      expect(conflict.value, SyncRunConflictChoice.keepBoth);
+      expect(tappedFired, 1);
+      expect(notified, 0);
+
+      // A cell first read after the choice starts at it.
+      state.recordActionChoice('late', SyncRunActionChoice.skipped);
+      expect(
+        state.actionDecisionCell('late').value,
+        SyncRunActionChoice.skipped,
+      );
+
+      // A new attempt puts every watched cell back to its default.
+      state.recordStart(dryRun: false);
+      expect(tapped.value, SyncRunActionChoice.proposed);
+      expect(conflict.value, SyncRunConflictChoice.unresolved);
+      expect(state.decisionSummary.value, isNull);
+      expect(state.actionDecisionCell('a'), same(tapped));
     });
 
     test('a result recorded twice for one path is counted once', () {

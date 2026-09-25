@@ -13,7 +13,7 @@ import 'package:test/test.dart';
 
 import 'run_fixtures.dart';
 
-/// The conflict sheet's decision flow (SPEC §11.3): the core's plan update
+/// The review's decision flow (SPEC §11.3): the core's plan update
 /// says it awaits a decision, and the head answers with a [RunDecision] —
 /// indices of the actions kept, conflicts settled toward a side. Played by
 /// a `FakeCoreLink`, so every test here is about what the answer holds and
@@ -45,7 +45,7 @@ void main() {
   SyncRunAwaitingDecisions awaiting() =>
       controller().state.phase as SyncRunAwaitingDecisions;
 
-  /// Starts a run and delivers the plan the sheet opens over.
+  /// Starts a run and delivers the plan the review opens over.
   Future<void> present([RunPlan? shown]) async {
     await harness.start();
     await harness.emit([const RunConnected([]), shown ?? interactivePlan]);
@@ -131,68 +131,181 @@ void main() {
     test('a one-sided conflict offers only the side that has the path, and '
         'refuses the other', () async {
       await present();
-      final theirs = awaiting().conflicts[1];
-      expect(theirs.offered, [
+      expect(awaiting().conflictOffers['theirs.txt'], [
         SyncRunConflictChoice.unresolved,
         SyncRunConflictChoice.keepRemote,
       ]);
-      // Positive control: the two-sided one offers all three.
-      expect(awaiting().conflicts[0].offered, SyncRunConflictChoice.values);
+      // Positive control: the two-sided one offers all of them.
+      expect(
+        awaiting().conflictOffers['both.txt'],
+        SyncRunConflictChoice.values,
+      );
 
+      final cell = controller().state.conflictDecisionCell('theirs.txt');
       controller().resolveConflict(
         'theirs.txt',
         SyncRunConflictChoice.keepLocal,
       );
-      expect(awaiting().conflicts[1].choice, SyncRunConflictChoice.unresolved);
+      expect(cell.value, SyncRunConflictChoice.unresolved);
       controller().resolveConflict(
         'theirs.txt',
         SyncRunConflictChoice.keepRemote,
       );
-      expect(awaiting().conflicts[1].choice, SyncRunConflictChoice.keepRemote);
+      expect(cell.value, SyncRunConflictChoice.keepRemote);
       controller().confirm();
 
       expect((await decided()).single.resolve, {
         1: const KeepSide(ReplicaSide.b),
       });
     });
+
+    test('reversing an action answers it reversed; a reverse the plan does '
+        'not carry is refused and the row keeps showing as planned', () async {
+      await present(
+        plan(
+          actions: const [
+            PlanProposal(copyNew),
+            PlanProposal(
+              DeleteAction('gone.txt', on: ReplicaSide.b),
+              reverseBytes: 7,
+            ),
+          ],
+          conflicts: const [],
+          awaitingDecision: true,
+        ),
+      );
+      final state = controller().state;
+
+      controller().choose('new.txt', SyncRunActionChoice.reversed);
+      expect(
+        state.actionDecisionCell('new.txt').value,
+        SyncRunActionChoice.proposed,
+      );
+      controller().choose('gone.txt', SyncRunActionChoice.reversed);
+      expect(
+        state.actionDecisionCell('gone.txt').value,
+        SyncRunActionChoice.reversed,
+      );
+      controller().confirm();
+
+      expect((await decided()).single.keep, [
+        asPlanned(0),
+        (index: 1, reversed: true),
+      ]);
+    });
+
+    test('accept all puts every row back to what it sends', () async {
+      await present();
+      final state = controller().state;
+      final skipped = state.actionDecisionCell('new.txt');
+      final kept = state.conflictDecisionCell('both.txt');
+      controller().skip('new.txt');
+      controller().resolveConflict('both.txt', SyncRunConflictChoice.keepBoth);
+      expect(skipped.value, SyncRunActionChoice.skipped);
+      expect(kept.value, SyncRunConflictChoice.keepBoth);
+
+      controller().acceptAll();
+
+      expect(skipped.value, SyncRunActionChoice.proposed);
+      expect(kept.value, SyncRunConflictChoice.unresolved);
+      expect((await decided()).single.keep, bothAsPlanned);
+    });
   });
 
-  group('the rendered rows', () {
-    test(
-      'conflicts first with status words, then actions with labels',
-      () async {
-        await present();
-
-        final phase = awaiting();
-        expect(phase.conflicts.map((c) => c.path), ['both.txt', 'theirs.txt']);
-        expect(phase.conflicts[0].local, 'modified');
-        expect(phase.conflicts[0].remote, 'modified');
-        expect(phase.conflicts[1].local, 'no record');
-        expect(phase.conflicts[1].remote, 'created');
-        expect(phase.actions.map((a) => a.path), ['new.txt', 'gone.txt']);
-        expect(phase.actions[0].action, 'copy to desktop');
-        expect(phase.actions[0].bytes, 2048);
-        expect(phase.actions[1].action, 'delete on desktop');
-        expect(phase.actions.every((a) => a.kept), isTrue);
-      },
-    );
-
-    test('every input replaces the phase with the choice shown', () async {
-      await present();
-      final before = awaiting();
-
-      controller().skip('new.txt');
-      controller().resolveConflict(
-        'both.txt',
-        SyncRunConflictChoice.keepRemote,
+  group('the rendered review', () {
+    test('the plan rows carry their reverse, worded literally', () async {
+      await present(
+        plan(
+          actions: const [
+            PlanProposal(copyNew, reverseBytes: 3),
+            PlanProposal(
+              CopyAction('pulled.txt', from: ReplicaSide.b, bytes: 1),
+              reverseBytes: 4,
+            ),
+            PlanProposal(
+              DeleteAction('gone.txt', on: ReplicaSide.b),
+              reverseBytes: 5,
+            ),
+            PlanProposal(
+              DeleteAction('lost.txt', on: ReplicaSide.a),
+              reverseBytes: 6,
+            ),
+            PlanProposal(
+              CopyAction('mirror.txt', from: ReplicaSide.a, bytes: 1),
+            ),
+          ],
+          conflicts: const [],
+          awaitingDecision: true,
+        ),
       );
 
-      final after = awaiting();
-      expect(after, isNot(same(before)));
-      expect(after.actions[0].kept, isFalse);
-      expect(after.actions[1].kept, isTrue);
-      expect(after.conflicts[0].choice, SyncRunConflictChoice.keepRemote);
+      final rows = controller().state.plan;
+      expect(rows.map((r) => r.reversal?.action), [
+        "replace this device's version with desktop's",
+        "replace desktop's version with this device's",
+        'restore on this device from desktop',
+        'restore on desktop from this device',
+        null,
+      ]);
+      expect(rows.map((r) => r.reversal?.bytes), [3, 4, 5, 6, null]);
     });
+
+    test('every row starts at its default and the running total counts the '
+        'plan as it stands', () async {
+      await present();
+      final state = controller().state;
+
+      expect(
+        state.actionDecisionCell('new.txt').value,
+        SyncRunActionChoice.proposed,
+      );
+      expect(
+        state.conflictDecisionCell('both.txt').value,
+        SyncRunConflictChoice.unresolved,
+      );
+      final summary = state.decisionSummary.value!;
+      expect(summary.apply, 2);
+      expect(summary.leftOpen, 2);
+      expect(summary.reversed + summary.skipped, 0);
+    });
+
+    test(
+      'an input writes its path\'s cell and the total, never the phase',
+      () async {
+        await present();
+        final state = controller().state;
+        final before = awaiting();
+        var notified = 0;
+        state.addListener(() => notified++);
+        state.phaseChanged.addListener(() => notified++);
+
+        controller().skip('new.txt');
+        controller().resolveConflict(
+          'both.txt',
+          SyncRunConflictChoice.keepBoth,
+        );
+
+        expect(awaiting(), same(before));
+        expect(notified, 0);
+        expect(
+          state.actionDecisionCell('new.txt').value,
+          SyncRunActionChoice.skipped,
+        );
+        expect(
+          state.actionDecisionCell('gone.txt').value,
+          SyncRunActionChoice.proposed,
+        );
+        expect(
+          state.conflictDecisionCell('both.txt').value,
+          SyncRunConflictChoice.keepBoth,
+        );
+        final summary = state.decisionSummary.value!;
+        expect(summary.apply, 1);
+        expect(summary.skipped, 1);
+        expect(summary.keptBoth, 1);
+        expect(summary.leftOpen, 1);
+      },
+    );
 
     test('confirm moves the phase on to applying', () async {
       await present();
@@ -202,8 +315,8 @@ void main() {
     });
   });
 
-  group('no sheet', () {
-    test('a plan not awaiting a decision (a dry run) never opens the sheet '
+  group('no review', () {
+    test('a plan not awaiting a decision (a dry run) never opens the review '
         'and is not answered', () async {
       await present(plan());
 
@@ -214,24 +327,28 @@ void main() {
       expect(controller().state.phase, isA<SyncRunAwaitingDecisions>());
     });
 
-    test('nothing to decide needs no sheet, and is answered at once', () async {
-      await present(
-        plan(actions: const [], conflicts: const [], awaitingDecision: true),
-      );
+    test(
+      'nothing to decide needs no review, and is answered at once',
+      () async {
+        await present(
+          plan(actions: const [], conflicts: const [], awaitingDecision: true),
+        );
 
-      expect(controller().state.phase, isA<SyncRunApplying>());
-      final decision = (await decided()).single;
-      expect(decision.keep, isEmpty);
-      expect(decision.resolve, isEmpty);
-    });
+        expect(controller().state.phase, isA<SyncRunApplying>());
+        final decision = (await decided()).single;
+        expect(decision.keep, isEmpty);
+        expect(decision.resolve, isEmpty);
+      },
+    );
 
-    test('inputs with no sheet up are ignored', () async {
+    test('inputs with no review up are ignored', () async {
       await harness.start();
       await harness.emit([const RunConnected([])]);
 
       controller().resolveConflict('both.txt', SyncRunConflictChoice.keepLocal);
       controller().skip('new.txt');
       controller().keep('new.txt');
+      controller().choose('new.txt', SyncRunActionChoice.reversed);
       controller().acceptAll();
       controller().confirm();
 

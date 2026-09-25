@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../format_bytes.dart';
@@ -71,7 +72,7 @@ class _RunPageState extends State<RunPage> {
   late final AppLifecycleListener _lifecycle;
 
   /// What the body's plan section follows: the plan itself, and the phase
-  /// that decides whether the body shows it at all. Built once and not per
+  /// that turns its rows into the review and collapses them while applying. Built once and not per
   /// build, so a rebuild does not swap the section's listeners.
   late final Listenable _planSection = Listenable.merge([
     _controller.state.planChanged,
@@ -82,24 +83,11 @@ class _RunPageState extends State<RunPage> {
   /// conflicts) follows: the view state itself, plus `planChanged` for the
   /// one thing `recordPlan` writes silently — see the body's own doc
   /// comment. Built once for the same reason as [_planSection]: a rebuild
-  /// of this state (the sheet's extent changing, say) must not tear down
-  /// and resubscribe the block's listener.
+  /// must not tear down and resubscribe the block's listener.
   late final Listenable _topSection = Listenable.merge([
     _controller.state,
     _controller.state.planChanged,
   ]);
-
-  /// How much of the body the decision sheet covers, measured from the
-  /// sheet itself after it lays out: it sizes to its content up to a share
-  /// of the screen, so only layout knows which of the two it landed on.
-  /// The body pads its scroll view by this, so the bottom of it can still
-  /// be scrolled out from behind the sheet. Zero while the sheet is down.
-  double _sheetExtent = 0;
-
-  void _setSheetExtent(double extent) {
-    if (!mounted || _sheetExtent == extent) return;
-    setState(() => _sheetExtent = extent);
-  }
 
   @override
   void initState() {
@@ -290,29 +278,19 @@ class _RunPageState extends State<RunPage> {
           ),
         ],
       ),
-      // The conflict sheet (SPEC §11.3), as the Scaffold's persistent
-      // bottom sheet rather than a modal one: it is a rendering of the
-      // awaiting-decisions phase and leaves with it, so there is nothing to
-      // pop, no barrier over Stop, and no way to drag it away and strand a
-      // run that is waiting on an answer.
-      bottomSheet: ListenableBuilder(
-        listenable: state,
+      // The review's bar (SPEC §11.3): the running total and the two
+      // answers, under the rows being reviewed rather than over them. A
+      // plain bottom bar of fixed height, so the body needs no padding
+      // measured off it; it follows the phase to appear and disappear, and
+      // its total follows its own cell, so a tap does not rebuild it from
+      // the view state.
+      bottomNavigationBar: ListenableBuilder(
+        listenable: state.phaseChanged,
         builder: (context, _) => switch (state.phase) {
-          SyncRunAwaitingDecisions(
-            :final conflicts,
-            :final actions,
-            :final bytesToTransfer,
-          ) =>
-            _MeasuredHeight(
-              onExtent: _setSheetExtent,
-              child: _DecisionSheet(
-                conflicts: conflicts,
-                actions: actions,
-                bytesToTransfer: bytesToTransfer,
-                deviceName: widget.request.deviceName,
-                controller: _controller,
-              ),
-            ),
+          SyncRunAwaitingDecisions() => _ReviewBar(
+            summary: state.decisionSummary,
+            controller: _controller,
+          ),
           SyncRunIdle() ||
           SyncRunConnecting() ||
           SyncRunScanning() ||
@@ -346,10 +324,7 @@ class _RunPageState extends State<RunPage> {
       body: CustomScrollView(
         slivers: [
           SliverPadding(
-            // Padded by the sheet's own height while it is up: without it
-            // the last of these sections sits behind the sheet with no way
-            // to scroll it into view.
-            padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + _sheetExtent),
+            padding: const EdgeInsets.all(16),
             sliver: SliverMainAxisGroup(
               slivers: [
                 ListenableBuilder(
@@ -392,41 +367,42 @@ class _RunPageState extends State<RunPage> {
                           itemBuilder: (context, index) =>
                               Text(state.skippedSymlinks[index]),
                         ),
-                      // Hidden while the sheet is up: the sheet lists the
-                      // same conflicts, with the directions to resolve them.
-                      // Everything above stays — the header, the tally and
-                      // the two path lists are not in the sheet and are the
-                      // context someone wants while deciding.
-                      if (state.phase is! SyncRunAwaitingDecisions &&
-                          state.conflicts.isNotEmpty)
+                      // First of the plan area (Design C.5): during the
+                      // review each row carries its own control, and after
+                      // it each follows its own result.
+                      if (state.conflicts.isNotEmpty)
                         RunListSection(
                           sectionKey: const Key('run-conflicts'),
                           title: 'Conflicts (not resolved)',
                           itemCount: state.conflicts.length,
                           itemBuilder: (context, index) {
                             final row = state.conflicts[index];
-                            return _NoticeLine.error(
-                              '${row.path}: this device ${row.local}, the '
-                              'other side ${row.remote}',
+                            return _ConflictRow(
+                              row,
+                              state: state,
+                              deviceName: widget.request.deviceName,
+                              offered: switch (state.phase) {
+                                SyncRunAwaitingDecisions(
+                                  :final conflictOffers,
+                                ) =>
+                                  conflictOffers[row.path],
+                                _ => null,
+                              },
+                              onResolve: _controller.resolveConflict,
                             );
                           },
                         ),
                     ],
                   ),
                 ),
-                // Hidden while the sheet is up for the same reason as the
-                // conflicts above, and back the moment the decision is
-                // made: from then on these rows carry each action's result
-                // icon, which is what the sheet's rows do not do.
                 ListenableBuilder(
                   listenable: _planSection,
-                  builder: (context, _) =>
-                      state.plan.isEmpty ||
-                          state.phase is SyncRunAwaitingDecisions
+                  builder: (context, _) => state.plan.isEmpty
                       ? const SliverToBoxAdapter(child: SizedBox.shrink())
                       : RunPlanSection(
                           state,
                           deviceName: widget.request.deviceName,
+                          onChoose: _controller.choose,
                         ),
                 ),
               ],
@@ -935,205 +911,174 @@ class _FinishedCounts extends StatelessWidget {
   }
 }
 
-/// Reports its child's laid-out height to [onExtent], and zero once it
-/// leaves the tree. The run page pads its body by the decision sheet's real
-/// extent, and the sheet's height is its content's, bounded by a share of
-/// the screen — a number only layout has.
-class _MeasuredHeight extends StatefulWidget {
-  const _MeasuredHeight({required this.onExtent, required this.child});
+/// The review's bar under the page: the running total, then "Sync all
+/// except conflicts" (the `--batch` answer: every action as planned, no
+/// conflict resolved — whatever the rows say) and Apply (the rows' own
+/// choices). Follows [summary] alone, so a tap rebuilds this and the tapped
+/// row and nothing else. One line of total, ellipsised, so its height never
+/// depends on what was chosen.
+class _ReviewBar extends StatelessWidget {
+  const _ReviewBar({required this.summary, required this.controller});
 
-  final ValueChanged<double> onExtent;
-  final Widget child;
-
-  @override
-  State<_MeasuredHeight> createState() => _MeasuredHeightState();
-}
-
-class _MeasuredHeightState extends State<_MeasuredHeight> {
-  @override
-  void dispose() {
-    // After the frame that removes this, not during it: the listener is a
-    // rebuild of the page, and the page is mid-build right now.
-    final onExtent = widget.onExtent;
-    WidgetsBinding.instance.addPostFrameCallback((_) => onExtent(0));
-    super.dispose();
-  }
-
-  void _report() {
-    if (!mounted) return;
-    final size = context.size;
-    if (size != null) widget.onExtent(size.height);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // The first layout, and every rebuild's; the notifier below catches the
-    // resizes that no rebuild of this widget accompanies.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _report());
-    return NotificationListener<SizeChangedLayoutNotification>(
-      onNotification: (_) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _report());
-        return false;
-      },
-      child: SizeChangedLayoutNotifier(child: widget.child),
-    );
-  }
-}
-
-/// The conflict sheet (SPEC §11.3): what the plan weighs, conflicts first,
-/// each with the choices it offers, then every proposed action with a
-/// keep/skip switch, then "Accept all" (the `--batch` answer) and "Confirm".
-/// Reads the rendered rows and calls the controller's input methods; decides
-/// nothing itself.
-///
-/// The page's body hides its own plan and conflict lists while this is up,
-/// so these are the only rows for those paths on screen — and the only ones
-/// that do anything.
-class _DecisionSheet extends StatelessWidget {
-  const _DecisionSheet({
-    required this.conflicts,
-    required this.actions,
-    required this.bytesToTransfer,
-    required this.deviceName,
-    required this.controller,
-  });
-
-  final List<SyncRunConflictDecision> conflicts;
-  final List<SyncRunActionDecision> actions;
-  final int bytesToTransfer;
-  final String deviceName;
+  final ValueListenable<SyncRunDecisionSummary?> summary;
   final SyncRunController controller;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Material(
-      key: const Key('run-decisions'),
       elevation: 8,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.6,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Review before applying',
-                    style: theme.textTheme.titleMedium,
-                  ),
-                  Text(
-                    'Plan: ${actions.length} action(s), '
-                    '${formatBytes(bytesToTransfer)} to transfer',
-                    key: const Key('run-plan-summary'),
-                    style: theme.textTheme.titleSmall,
-                  ),
-                ],
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ValueListenableBuilder<SyncRunDecisionSummary?>(
+                valueListenable: summary,
+                builder: (context, summary, _) => Text(
+                  summary == null ? '' : _summaryLine(summary),
+                  key: const Key('run-review-summary'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
               ),
-            ),
-            Flexible(
-              // A builder, not a `ListView(children: [...])`: the sheet's
-              // plan is the whole run's, and every row it holds is a
-              // `SwitchListTile` with a `SegmentedButton` in the conflicts
-              // above it. `shrinkWrap: true` would defeat that by measuring
-              // every child anyway; the enclosing `ConstrainedBox` bounds
-              // this list's height, which is what the shrink-wrap was for.
-              child: ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                // Conflicts first, then actions: SPEC §11.3's order, and
-                // the order the events arrived in.
-                itemCount: conflicts.length + actions.length,
-                itemBuilder: (context, index) {
-                  if (index < conflicts.length) {
-                    return _ConflictDecision(
-                      conflicts[index],
-                      deviceName: deviceName,
-                      controller: controller,
-                    );
-                  }
-                  final row = actions[index - conflicts.length];
-                  return SwitchListTile(
-                    key: Key('decision-${row.path}'),
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    title: Text(row.path),
-                    subtitle: Text('${row.action} · ${formatBytes(row.bytes)}'),
-                    value: row.kept,
-                    onChanged: (kept) => kept
-                        ? controller.keep(row.path)
-                        : controller.skip(row.path),
-                  );
-                },
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
+              const SizedBox(height: 8),
+              Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
-                    key: const Key('run-accept-all'),
+                    key: const Key('run-sync-all-except-conflicts'),
                     onPressed: controller.acceptAll,
-                    child: const Text('Accept all, leave conflicts'),
+                    child: const Text('Sync all except conflicts'),
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
                     key: const Key('run-confirm'),
                     onPressed: controller.confirm,
-                    child: const Text('Confirm'),
+                    child: const Text('Apply'),
                   ),
                 ],
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// One conflict's row: both sides' status words and a segmented choice
-/// over exactly the directions the row offers.
-class _ConflictDecision extends StatelessWidget {
-  const _ConflictDecision(
+/// "Apply 1,198 · 2 reversed · 1 conflict kept both": the actions that
+/// will be applied, then only the parts that are not zero.
+String _summaryLine(SyncRunDecisionSummary summary) => [
+  'Apply ${formatCount(summary.apply)}',
+  if (summary.reversed > 0) '${formatCount(summary.reversed)} reversed',
+  if (summary.skipped > 0) '${formatCount(summary.skipped)} skipped',
+  if (summary.resolved > 0)
+    '${formatCount(summary.resolved)} ${_conflicts(summary.resolved)} resolved',
+  if (summary.keptBoth > 0)
+    '${formatCount(summary.keptBoth)} ${_conflicts(summary.keptBoth)} kept both',
+  if (summary.leftOpen > 0)
+    '${formatCount(summary.leftOpen)} ${_conflicts(summary.leftOpen)} left open',
+].join(' · ');
+
+String _conflicts(int count) => count == 1 ? 'conflict' : 'conflicts';
+
+/// One conflict (SPEC §6): both sides' status words, then — while the
+/// review is up ([offered] set) — a segmented choice over exactly the
+/// choices it offers, following its own cell
+/// ([SyncRunViewState.conflictDecisionCell]) so a tap rebuilds this row
+/// alone.
+///
+/// After the review it follows its own [SyncRunViewState.resultCell]. A
+/// side kept settles the conflict, and its result reads like any applied
+/// action's. "Keep both" does not: its result is the peer's copy saved
+/// aside, reported under the conflict's own path, and the conflict stays
+/// open — so it is shown as a saved copy beside a still-open conflict,
+/// never the ✓ an applied action gets.
+class _ConflictRow extends StatelessWidget {
+  const _ConflictRow(
     this.row, {
+    required this.state,
     required this.deviceName,
-    required this.controller,
+    required this.offered,
+    required this.onResolve,
   });
 
-  final SyncRunConflictDecision row;
+  final SyncRunConflictRow row;
+  final SyncRunViewState state;
   final String deviceName;
-  final SyncRunController controller;
+  final List<SyncRunConflictChoice>? offered;
+  final void Function(String path, SyncRunConflictChoice choice) onResolve;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      key: Key('decision-${row.path}'),
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(row.path, style: theme.textTheme.titleSmall),
-          _NoticeLine.error(
-            'Conflict: this device ${row.local}, $deviceName ${row.remote}',
+    final offered = this.offered;
+    return ValueListenableBuilder<SyncRunResultRow?>(
+      valueListenable: state.resultCell(row.path),
+      builder: (context, result, _) =>
+          ValueListenableBuilder<SyncRunConflictChoice>(
+            valueListenable: state.conflictDecisionCell(row.path),
+            builder: (context, choice, _) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _NoticeLine.error(
+                    '${row.path}: this device ${row.local}, the other side '
+                    '${row.remote}',
+                  ),
+                  if (offered != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: SegmentedButton<SyncRunConflictChoice>(
+                        key: Key('decision-${row.path}'),
+                        segments: [
+                          for (final offer in offered)
+                            ButtonSegment(
+                              value: offer,
+                              label: Text(_label(offer)),
+                            ),
+                        ],
+                        selected: {choice},
+                        onSelectionChanged: (selected) =>
+                            onResolve(row.path, selected.single),
+                      ),
+                    ),
+                  if (result != null) _result(context, result, choice),
+                ],
+              ),
+            ),
           ),
-          const SizedBox(height: 4),
-          SegmentedButton<SyncRunConflictChoice>(
-            segments: [
-              for (final choice in row.offered)
-                ButtonSegment(value: choice, label: Text(_label(choice))),
-            ],
-            selected: {row.choice},
-            onSelectionChanged: (selected) =>
-                controller.resolveConflict(row.path, selected.single),
+    );
+  }
+
+  Widget _result(
+    BuildContext context,
+    SyncRunResultRow result,
+    SyncRunConflictChoice choice,
+  ) {
+    if (result.error case final error?) {
+      return _NoticeLine.error('${result.action}: $error');
+    }
+    final keptOpen = choice == SyncRunConflictChoice.keepBoth;
+    return Row(
+      key: Key('run-conflict-result-${row.path}'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          keptOpen ? Icons.file_copy_outlined : Icons.check_circle_outline,
+          size: 16,
+        ),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            keptOpen ? '${result.action} — still open' : result.action,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

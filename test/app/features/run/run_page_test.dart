@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/action_result.dart';
 import 'package:dsync/app/core_link/models/conflict_resolution.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
 import 'package:dsync/app/core_link/models/plan_proposal.dart';
@@ -27,8 +28,8 @@ import 'run_fixtures.dart'
 /// the page is pumped directly. Each test writes the case it is about into
 /// the view state before pumping; the page's `initState` then calls
 /// `start`, which refuses a controller that is no longer idle, so the core
-/// is never asked. The conflict sheet is opened the way a run opens it: the
-/// page starts the run against a `FakeCoreLink` and the fake delivers a plan
+/// is never asked. The review is opened the way a run opens it: the page
+/// starts the run against a `FakeCoreLink` and the fake delivers a plan
 /// that awaits a decision. The page disposes the pinned controller when the
 /// tree is torn down, as it would its own.
 void main() {
@@ -262,7 +263,8 @@ void main() {
           ..emitRun(session, const RunConnected([]))
           ..emitRun(session, plan(awaitingDecision: true));
         await tester.pump();
-        expect(find.byKey(const Key('run-decisions')), findsOneWidget);
+        await tester.pump();
+        expect(find.byKey(const Key('run-confirm')), findsOneWidget);
       },
       'applying, before any progress': (tester) =>
           inPhase(tester, const SyncRunApplying()),
@@ -428,12 +430,14 @@ void main() {
           action: 'copy to desktop',
           bytes: 2048,
           group: SyncRunPlanGroup.toDevice,
+          reversal: null,
         ),
         SyncRunPlanRow(
           path: 'old.txt',
           action: 'delete on desktop',
           bytes: 0,
           group: SyncRunPlanGroup.deletions,
+          reversal: null,
         ),
       ], bytesToTransfer: 2048)
       ..recordResult(
@@ -562,6 +566,7 @@ void main() {
           action: 'copy to desktop',
           bytes: 1024,
           group: SyncRunPlanGroup.toDevice,
+          reversal: null,
         ),
     ];
 
@@ -602,12 +607,14 @@ void main() {
             action: 'copy to desktop',
             bytes: 2048,
             group: SyncRunPlanGroup.toDevice,
+            reversal: null,
           ),
           SyncRunPlanRow(
             path: 'old.txt',
             action: 'delete on desktop',
             bytes: 0,
             group: SyncRunPlanGroup.deletions,
+            reversal: null,
           ),
         ], bytesToTransfer: 2048);
       await pump(tester);
@@ -658,12 +665,14 @@ void main() {
         action: 'copy to desktop',
         bytes: 2048,
         group: SyncRunPlanGroup.toDevice,
+        reversal: null,
       ),
       SyncRunPlanRow(
         path: 'old.txt',
         action: 'delete on desktop',
         bytes: 0,
         group: SyncRunPlanGroup.deletions,
+        reversal: null,
       ),
     ];
 
@@ -781,12 +790,14 @@ void main() {
             action: 'copy to desktop',
             bytes: 2048,
             group: SyncRunPlanGroup.toDevice,
+            reversal: null,
           ),
           SyncRunPlanRow(
             path: 'same.txt',
             action: 'same content, record only',
             bytes: 0,
             group: SyncRunPlanGroup.recordOnly,
+            reversal: null,
           ),
         ], bytesToTransfer: 2048);
       await pump(tester);
@@ -1037,13 +1048,25 @@ void main() {
     expect(find.byKey(const Key('run-stop')), findsNothing);
   });
 
-  group('the conflict sheet', () {
+  group('the inline review', () {
+    // Two reversible actions, one that is not (a mirror row: the plan
+    // carries no reverse for it), a two-sided conflict and a one-sided one.
     final shown = plan(
       actions: const [
-        PlanProposal(CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048)),
-        PlanProposal(DeleteAction('gone.txt', on: ReplicaSide.b)),
+        PlanProposal(
+          CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
+          reverseBytes: 1024,
+        ),
+        PlanProposal(
+          DeleteAction('gone.txt', on: ReplicaSide.b),
+          reverseBytes: 512,
+        ),
+        PlanProposal(CopyAction('mirror.txt', from: ReplicaSide.a, bytes: 10)),
       ],
-      conflicts: [conflict('both.txt', a: modifiedB, b: modifiedB)],
+      conflicts: [
+        conflict('both.txt', a: modifiedB, b: modifiedB),
+        conflict('theirs.txt', b: modifiedB),
+      ],
       awaitingDecision: true,
     );
 
@@ -1051,166 +1074,215 @@ void main() {
     List<RunDecision> decided() =>
         core.decisions[core.runStarts.single.session] ?? const [];
 
-    /// Opens the sheet the way a run does: the page starts the run against
-    /// the fake, which delivers a plan awaiting a decision, so every tap
-    /// goes through the real input methods. [fill] writes what a real run's
-    /// fold would have written before the plan arrives.
-    Future<void> open(
-      WidgetTester tester, {
-      VoidCallback? fill,
-      RunPlan? awaiting,
-    }) async {
+    /// Opens the review the way a run does: the page starts the run against
+    /// the fake, which delivers each conflict and then a plan awaiting a
+    /// decision — the core's own order — so every tap goes through the
+    /// real input methods.
+    Future<void> open(WidgetTester tester, {RunPlan? awaiting}) async {
       await pump(tester);
-      fill?.call();
       final session = core.runStarts.single.session;
-      core
-        ..emitRun(session, const RunConnected([]))
-        ..emitRun(session, awaiting ?? shown);
+      final delivered = awaiting ?? shown;
+      core.emitRun(session, const RunConnected([]));
+      for (final conflict in delivered.conflicts) {
+        core.emitRun(session, RunConflict(conflict));
+      }
+      core.emitRun(session, delivered);
+      // Folded in one pump, on screen after the next.
+      await tester.pump();
       await tester.pump();
     }
 
-    testWidgets('renders conflicts first, then actions, and Stop', (
-      tester,
-    ) async {
+    Finder inRow(String path, Finder matching) => find.descendant(
+      of: find.byKey(Key('decision-$path')),
+      matching: matching,
+    );
+
+    String summary(WidgetTester tester) =>
+        tester.widget<Text>(find.byKey(const Key('run-review-summary'))).data!;
+
+    testWidgets('the plan\'s own rows under review, conflicts first, one row '
+        'per path, and the bar', (tester) async {
       await open(tester);
 
-      expect(find.byKey(const Key('run-decisions')), findsOneWidget);
       expect(find.byKey(const Key('run-awaiting')), findsOneWidget);
       expect(find.byKey(const Key('run-stop')), findsOneWidget);
-      expect(
-        find.text('Conflict: this device modified, desktop modified'),
-        findsOneWidget,
-      );
-      expect(find.text('Keep this device'), findsOneWidget);
-      expect(find.text('Keep desktop'), findsOneWidget);
-      final conflictY = tester
-          .getTopLeft(find.byKey(const Key('decision-both.txt')))
-          .dy;
-      final actionY = tester
-          .getTopLeft(find.byKey(const Key('decision-new.txt')))
-          .dy;
-      expect(conflictY, lessThan(actionY));
-      expect(find.text('copy to desktop · 2.0 KiB'), findsOneWidget);
-    });
-
-    testWidgets('the body drops the rows the sheet is already showing', (
-      tester,
-    ) async {
-      // A real run fills the body's lists before the presenter is asked, so
-      // without the phase check every path would be on screen twice.
-      await open(
-        tester,
-        fill: () => controller.state
-          ..recordHeader(
-            const SyncRunHeader(
-              localRoot: '/data/notes',
-              remoteRoot: '~/notes',
-              deviceName: 'desktop',
-              history: 'Last synced 2026-09-16 10:00 (just now).',
-              firstSyncWarning: null,
-            ),
-          )
-          ..recordConflict(
-            const SyncRunConflictRow(
-              path: 'both.txt',
-              local: 'modified',
-              remote: 'modified',
-            ),
-          )
-          ..recordPlan(const [
-            SyncRunPlanRow(
-              path: 'new.txt',
-              action: 'copy to desktop',
-              bytes: 2048,
-              group: SyncRunPlanGroup.toDevice,
-            ),
-            SyncRunPlanRow(
-              path: 'gone.txt',
-              action: 'delete on desktop',
-              bytes: 0,
-              group: SyncRunPlanGroup.deletions,
-            ),
-          ], bytesToTransfer: 2048),
-      );
-
-      expect(find.byKey(const Key('run-plan')), findsNothing);
-      expect(find.byKey(const Key('run-conflicts')), findsNothing);
-      // One row per path, the sheet's — the one that does something.
+      expect(find.byKey(const Key('run-conflicts')), findsOneWidget);
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      // The sheet is gone: one rendering of each path.
+      expect(find.byKey(const Key('run-decisions')), findsNothing);
       expect(find.text('new.txt'), findsOneWidget);
       expect(find.byKey(const Key('decision-new.txt')), findsOneWidget);
-      // What the body's plan header carried is in the sheet instead.
       expect(
-        find.text('Plan: 2 action(s), 2.0 KiB to transfer'),
-        findsOneWidget,
-      );
-      // Still there: the context for deciding, which the sheet does not have.
-      expect(find.byKey(const Key('run-header')), findsOneWidget);
-
-      await tester.tap(find.byKey(const Key('run-confirm')));
-      await tester.pump();
-
-      // Back with the decision made — the groups collapsed to their own
-      // headers while the run applies them, and marking each action off
-      // behind it.
-      expect(find.byKey(const Key('run-decisions')), findsNothing);
-      expect(find.byKey(const Key('run-plan')), findsOneWidget);
-      expect(find.text('new.txt'), findsNothing);
-      expect(find.byKey(const Key('run-plan-disclosure')), findsOneWidget);
-      expect(find.byKey(const Key('run-conflicts')), findsOneWidget);
-      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
-      await tester.pump();
-      expect(find.text('new.txt'), findsOneWidget);
-      controller.state.recordResult(
-        const SyncRunResultRow(
-          path: 'new.txt',
-          action: 'copy to desktop',
-          error: null,
+        tester.getTopLeft(find.byKey(const Key('decision-both.txt'))).dy,
+        lessThan(
+          tester.getTopLeft(find.byKey(const Key('decision-new.txt'))).dy,
         ),
       );
-      await tester.pump();
-      expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
-      expect(decided(), hasLength(1));
+      expect(summary(tester), 'Apply 3 · 2 conflicts left open');
+      expect(find.text('Sync all except conflicts'), findsOneWidget);
+      expect(find.byKey(const Key('run-confirm')), findsOneWidget);
     });
 
-    testWidgets('a direction and a skip reach the returned list on Confirm', (
-      tester,
-    ) async {
+    testWidgets('reverse is offered only where the plan carries one, keep '
+        'both only where both sides hold a file', (tester) async {
       await open(tester);
 
-      await tester.tap(find.text('Keep desktop'));
+      // Positive control first: the reversible row has the reverse.
+      expect(inRow('new.txt', find.byIcon(Icons.swap_horiz)), findsOneWidget);
+      expect(inRow('mirror.txt', find.byIcon(Icons.block)), findsOneWidget);
+      expect(inRow('mirror.txt', find.byIcon(Icons.swap_horiz)), findsNothing);
+
+      expect(inRow('both.txt', find.text('Keep both')), findsOneWidget);
+      expect(inRow('theirs.txt', find.text('Keep desktop')), findsOneWidget);
+      expect(inRow('theirs.txt', find.text('Keep both')), findsNothing);
+      expect(inRow('theirs.txt', find.text('Keep this device')), findsNothing);
+    });
+
+    testWidgets('reverse, skip and keep both reach the core exactly as shown '
+        'on Apply', (tester) async {
+      await open(tester);
+
+      await tester.tap(inRow('new.txt', find.byIcon(Icons.swap_horiz)));
       await tester.pump();
-      await tester.tap(find.byKey(const Key('decision-new.txt')));
+      await tester.tap(inRow('gone.txt', find.byIcon(Icons.block)));
       await tester.pump();
+      await tester.tap(inRow('both.txt', find.text('Keep both')));
+      await tester.pump();
+
+      // What each row will do, literally.
       expect(
-        tester
-            .widget<SwitchListTile>(find.byKey(const Key('decision-new.txt')))
-            .value,
-        isFalse,
+        find.text("replace this device's version with desktop's · 1.0 KiB"),
+        findsOneWidget,
       );
+      expect(find.text('skipped'), findsOneWidget);
+      expect(
+        summary(tester),
+        'Apply 2 · 1 reversed · 1 skipped · 1 conflict kept both · '
+        '1 conflict left open',
+      );
+
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
 
       final decision = decided().single;
-      expect(decision.keep, [(index: 1, reversed: false)]);
-      expect(decision.resolve, {0: const KeepSide(ReplicaSide.b)});
-      expect(find.byKey(const Key('run-decisions')), findsNothing);
+      expect(decision.keep, [
+        (index: 0, reversed: true),
+        (index: 2, reversed: false),
+      ]);
+      // `ConflictResolution` has no `==`; compare by shape.
+      expect(decision.resolve.keys, [0]);
+      expect(decision.resolve[0], isA<KeepBoth>());
+      // The review is over: no bar, no controls, the groups collapsed
+      // while the run applies them.
+      expect(find.byKey(const Key('run-confirm')), findsNothing);
+      expect(find.byKey(const Key('decision-both.txt')), findsNothing);
+      expect(find.byKey(const Key('run-plan-disclosure')), findsOneWidget);
     });
 
-    testWidgets('Accept all keeps the plan unchanged', (tester) async {
+    testWidgets('a tap rebuilds its own row and no other', (tester) async {
       await open(tester);
+      final mirror = tester.widget<Text>(find.text('mirror.txt'));
+      final gone = tester.widget<Text>(find.text('gone.txt'));
+      final tapped = tester.widget<Text>(find.text('new.txt'));
+      final header = tester.widget<Text>(find.textContaining('To desktop (2'));
 
-      await tester.tap(find.byKey(const Key('run-accept-all')));
+      await tester.tap(inRow('new.txt', find.byIcon(Icons.swap_horiz)));
+      await tester.pump();
+
+      // Positive control: the tapped row is a new widget.
+      expect(tester.widget<Text>(find.text('new.txt')), isNot(same(tapped)));
+      expect(tester.widget<Text>(find.text('mirror.txt')), same(mirror));
+      expect(tester.widget<Text>(find.text('gone.txt')), same(gone));
+      expect(
+        tester.widget<Text>(find.textContaining('To desktop (2')),
+        same(header),
+      );
+    });
+
+    testWidgets('Sync all except conflicts sends the plan unchanged, whatever '
+        'the rows say', (tester) async {
+      await open(tester);
+      await tester.tap(inRow('gone.txt', find.byIcon(Icons.block)));
+      await tester.tap(inRow('both.txt', find.text('Keep this device')));
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('run-sync-all-except-conflicts')));
       await tester.pump();
 
       expect(decided().single.keep, [
         (index: 0, reversed: false),
         (index: 1, reversed: false),
+        (index: 2, reversed: false),
       ]);
       expect(decided().single.resolve, isEmpty);
-      expect(find.byKey(const Key('run-decisions')), findsNothing);
+      expect(find.byKey(const Key('run-confirm')), findsNothing);
     });
 
-    testWidgets('leaving the page mid-decision stops the run', (tester) async {
+    testWidgets('a keep-both result reads as a saved copy beside a conflict '
+        'still open; a side kept reads as applied', (tester) async {
+      await open(tester);
+      await tester.tap(inRow('both.txt', find.text('Keep both')));
+      await tester.tap(inRow('theirs.txt', find.text('Keep desktop')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('run-confirm')));
+      await tester.pump();
+
+      core.emitRun(
+        core.runStarts.single.session,
+        applied(
+          results: const [
+            ActionResult(
+              action: CopyAsideAction(
+                'both.txt',
+                from: ReplicaSide.b,
+                to: 'both (desktop).txt',
+                bytes: 5,
+              ),
+              failure: null,
+            ),
+            ActionResult(
+              action: CopyAction('theirs.txt', from: ReplicaSide.b, bytes: 5),
+              failure: null,
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final aside = find.byKey(const Key('run-conflict-result-both.txt'));
+      expect(
+        find.descendant(
+          of: aside,
+          matching: find.text(
+            "saved desktop's version as both (desktop).txt — still open",
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: aside,
+          matching: find.byIcon(Icons.check_circle_outline),
+        ),
+        findsNothing,
+      );
+      // Positive control: the side kept is marked applied.
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('run-conflict-result-theirs.txt')),
+          matching: find.byIcon(Icons.check_circle_outline),
+        ),
+        findsOneWidget,
+      );
+      // And the conflict itself still reads as one.
+      expect(
+        find.text('both.txt: this device modified, the other side modified'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('leaving the page mid-review stops the run', (tester) async {
       await open(tester);
 
       await tester.pumpWidget(const SizedBox.shrink());
@@ -1220,49 +1292,8 @@ void main() {
       expect(decided(), isEmpty);
     });
 
-    testWidgets('the body is padded by the sheet while it is up', (
-      tester,
-    ) async {
-      // The body's bottom inset, from the scroll view's outer padding: the
-      // sections are inside it, so it is what decides whether the last of
-      // them can be scrolled out from behind the sheet.
-      double bottomInset() => tester
-          .widgetList<SliverPadding>(
-            find.descendant(
-              of: find.byType(CustomScrollView),
-              matching: find.byType(SliverPadding),
-            ),
-          )
-          .first
-          .padding
-          .resolve(TextDirection.ltr)
-          .bottom;
-
-      await open(tester);
-      // The extent is measured after the sheet lays out, so it reaches the
-      // body one frame later.
-      await tester.pump();
-
-      final sheetHeight = tester
-          .getSize(find.byKey(const Key('run-decisions')))
-          .height;
-      expect(sheetHeight, greaterThan(0));
-      expect(bottomInset(), 16 + sheetHeight);
-
-      await tester.tap(find.byKey(const Key('run-confirm')));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 500));
-
-      expect(find.byKey(const Key('run-decisions')), findsNothing);
-      expect(bottomInset(), 16);
-      expect(decided(), hasLength(1));
-    });
-
-    testWidgets('a plan far taller than the sheet is built on demand too', (
-      tester,
-    ) async {
-      // `shrinkWrap: true` would have measured every row of this before the
-      // sheet opened, which is the whole reason it is gone.
+    testWidgets('a plan far taller than the screen is built on demand under '
+        'review too', (tester) async {
       await open(
         tester,
         awaiting: plan(
@@ -1279,7 +1310,10 @@ void main() {
 
       expect(find.byKey(const Key('decision-file-0.txt')), findsOneWidget);
       expect(find.byKey(const Key('decision-file-49999.txt')), findsNothing);
-      expect(find.byType(SwitchListTile).evaluate().length, lessThan(100));
+      expect(
+        find.byType(SegmentedButton<SyncRunActionChoice>).evaluate().length,
+        lessThan(100),
+      );
     });
   });
 
@@ -1461,6 +1495,7 @@ void main() {
             action: 'copy to desktop',
             bytes: 8,
             group: SyncRunPlanGroup.toDevice,
+            reversal: null,
           ),
         ], bytesToTransfer: 8)
         ..recordResult(
@@ -1498,29 +1533,30 @@ void main() {
       );
     });
 
-    testWidgets("the sheet's conflict line is marked", (tester) async {
+    testWidgets('a conflict under review is marked', (tester) async {
       await pump(tester);
       final session = core.runStarts.single.session;
-      core.emitRun(
-        session,
-        plan(
-          actions: const [
-            PlanProposal(
-              CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
-            ),
-          ],
-          conflicts: [conflict('both.txt', a: modifiedB, b: modifiedB)],
-          awaitingDecision: true,
-        ),
-      );
+      final both = conflict('both.txt', a: modifiedB, b: modifiedB);
+      core
+        ..emitRun(session, RunConflict(both))
+        ..emitRun(
+          session,
+          plan(
+            actions: const [
+              PlanProposal(
+                CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
+              ),
+            ],
+            conflicts: [both],
+            awaitingDecision: true,
+          ),
+        );
+      await tester.pump();
       await tester.pump();
 
+      expect(find.byKey(const Key('decision-both.txt')), findsOneWidget);
       expect(
-        find.text('Conflict: this device modified, desktop modified'),
-        findsOneWidget,
-      );
-      expect(
-        errorIconIn(find.byKey(const Key('run-decisions'))),
+        errorIconIn(find.byKey(const Key('run-conflicts'))),
         findsOneWidget,
       );
     });

@@ -6,9 +6,9 @@ import 'run_controller.dart';
 /// Opens the Timings sheet over the Run page (SPEC §17).
 ///
 /// A modal sheet rather than a route, for the reason `RunPage`'s own doc
-/// comment gives: that page holds no `Navigator` of its own, and the
-/// decision sheet (SPEC §11.3) is already its persistent bottom sheet. This
-/// one is *modal* and stacks over it.
+/// comment gives: that page holds no `Navigator` of its own. This one is
+/// *modal* and stacks over the page, the review's bar (SPEC §11.3)
+/// included.
 Future<void> showRunTimings(
   BuildContext context,
   SyncRunController controller,

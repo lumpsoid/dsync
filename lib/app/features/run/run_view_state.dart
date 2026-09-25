@@ -56,27 +56,22 @@ final class SyncRunFinished extends SyncRunPhase {
 }
 
 /// `RunController` has handed the plan to the presenter and is suspended on
-/// its answer (SPEC §11.3): the conflict sheet is up. The rows are the
-/// user's choices so far, already rendered — the sheet reads them and calls
-/// `SyncRunController`'s input methods, never a `Plan`. They live on the
-/// phase rather than beside it because a set of decisions only exists
-/// while something is being decided; each input replaces the whole case.
-/// [conflicts] come first, then [actions]: the order SPEC §11.3 fixes and
-/// the order the events arrived in.
+/// its answer (SPEC §11.3): the page's own plan and conflict rows turn into
+/// the review, each with its control. The phase carries only what is fixed
+/// for the whole review — which choices each conflict offers, keyed by path
+/// so a row built lazily finds its own in O(1). The user's current choices
+/// are not here: each lives in its path's cell
+/// ([SyncRunViewState.actionDecisionCell],
+/// [SyncRunViewState.conflictDecisionCell]) and the running total in
+/// [SyncRunViewState.decisionSummary], so a tap rebuilds one row and the bar
+/// under the page, never the phase and every row with it.
 final class SyncRunAwaitingDecisions extends SyncRunPhase {
-  const SyncRunAwaitingDecisions({
-    required this.conflicts,
-    required this.actions,
-  });
+  const SyncRunAwaitingDecisions({required this.conflictOffers});
 
-  final List<SyncRunConflictDecision> conflicts;
-  final List<SyncRunActionDecision> actions;
-
-  /// What the proposed actions would move (SPEC §10) — the same sum as
-  /// `SyncRunViewState.bytesToTransfer`, over the same actions. The sheet
-  /// shows it while the page's plan section is hidden behind the sheet, so
-  /// the size of what is being decided is on screen with the decisions.
-  int get bytesToTransfer => actions.fold(0, (total, row) => total + row.bytes);
+  /// Each conflict's offered choices, by path — a side with no record of
+  /// the path cannot be the one kept, and keeping both needs a file on both
+  /// sides (`PlanDecisions.offeredFor`).
+  final Map<String, List<SyncRunConflictChoice>> conflictOffers;
 }
 
 /// What the user can do with one conflict (SPEC §11.3: "picks a
@@ -92,41 +87,27 @@ enum SyncRunConflictChoice { unresolved, keepLocal, keepRemote, keepBoth }
 /// offered only when the plan carries one — or leave it out.
 enum SyncRunActionChoice { proposed, reversed, skipped }
 
-/// One `Conflict` in the sheet: the same two status words as
-/// [SyncRunConflictRow], the current [choice], and which choices are
-/// [offered] — a side with no record of the path cannot be the one kept,
-/// so a one-sided conflict offers only the other direction (the CLI's
-/// prompt makes the same call).
-final class SyncRunConflictDecision {
-  const SyncRunConflictDecision({
-    required this.path,
-    required this.local,
-    required this.remote,
-    required this.choice,
-    required this.offered,
+/// The review's running total, for the bar under the page: how many of
+/// the plan's actions will be applied ([apply], reversed ones included)
+/// and how many of those are [reversed], how many are [skipped], and what
+/// the conflicts come to — settled toward one side ([resolved]), copied
+/// aside and left open ([keptBoth]), or simply left open ([leftOpen]).
+final class SyncRunDecisionSummary {
+  const SyncRunDecisionSummary({
+    required this.apply,
+    required this.reversed,
+    required this.skipped,
+    required this.resolved,
+    required this.keptBoth,
+    required this.leftOpen,
   });
 
-  final String path;
-  final String local;
-  final String remote;
-  final SyncRunConflictChoice choice;
-  final List<SyncRunConflictChoice> offered;
-}
-
-/// One proposed `PlanAction` in the sheet: [kept] is `false` once the user
-/// skipped it.
-final class SyncRunActionDecision {
-  const SyncRunActionDecision({
-    required this.path,
-    required this.action,
-    required this.bytes,
-    required this.kept,
-  });
-
-  final String path;
-  final String action;
-  final int bytes;
-  final bool kept;
+  final int apply;
+  final int reversed;
+  final int skipped;
+  final int resolved;
+  final int keptBoth;
+  final int leftOpen;
 }
 
 /// The user stopped the run. **This is not "cancelled".** Stopping means
@@ -292,19 +273,34 @@ final class SyncRunPlanSection {
 }
 
 /// One `PlanAction`, rendered: what it does, in words, how many bytes it
-/// moves, and which [SyncRunPlanGroup] it falls in.
+/// moves, which [SyncRunPlanGroup] it falls in, and its [reversal] — `null`
+/// when the plan offers none, which is also what keeps the review from
+/// offering to reverse it.
 final class SyncRunPlanRow {
   const SyncRunPlanRow({
     required this.path,
     required this.action,
     required this.bytes,
     required this.group,
+    required this.reversal,
   });
 
   final String path;
   final String action;
   final int bytes;
   final SyncRunPlanGroup group;
+  final SyncRunPlanReversal? reversal;
+}
+
+/// A planned action's reverse, rendered: what it does, literally — which
+/// side's file is replaced or restored, never a softer "undo" — and the
+/// bytes it would copy. Fixed for the plan, so it rides on the row rather
+/// than being worked out per tap.
+final class SyncRunPlanReversal {
+  const SyncRunPlanReversal({required this.action, required this.bytes});
+
+  final String action;
+  final int bytes;
 }
 
 /// One `RunResultEvent`: [error] is `null` when the action applied.
@@ -348,7 +344,9 @@ final class SyncRunProgress {
 /// loop's progress and counts are written silently too ([recordProgress],
 /// [recordResult]) and shown when the controller says so
 /// ([publishProgress]) — how often that is, is the controller's rule, not
-/// this state's.
+/// this state's. The review's choices are the same pattern for a tap: one
+/// cell per path ([actionDecisionCell], [conflictDecisionCell]) and one for
+/// the running total ([decisionSummary]).
 class SyncRunViewState extends ChangeNotifier {
   final ValueNotifier<SyncRunPhase> _phase = ValueNotifier(const SyncRunIdle());
   bool _dryRun = false;
@@ -362,6 +360,13 @@ class SyncRunViewState extends ChangeNotifier {
   int _bytesToTransfer = 0;
   final Map<String, SyncRunResultRow> _results = {};
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
+  final Map<String, SyncRunActionChoice> _actionChoices = {};
+  final Map<String, ValueNotifier<SyncRunActionChoice>> _actionCells = {};
+  final Map<String, SyncRunConflictChoice> _conflictChoices = {};
+  final Map<String, ValueNotifier<SyncRunConflictChoice>> _conflictCells = {};
+  final ValueNotifier<SyncRunDecisionSummary?> _decisionSummary = ValueNotifier(
+    null,
+  );
   int _appliedCount = 0;
   int _failedCount = 0;
   SyncRunProgress? _progress;
@@ -369,10 +374,11 @@ class SyncRunViewState extends ChangeNotifier {
 
   SyncRunPhase get phase => _phase.value;
 
-  /// Fires when [phase] does, and only then. The body hides the sections
-  /// the decision sheet already shows, and the plan section — which follows
-  /// [planChanged] so the apply loop cannot rebuild it — needs that switch
-  /// without following every progress event to get it.
+  /// Fires when [phase] does, and only then. The plan section — which
+  /// follows [planChanged] so the apply loop cannot rebuild it — turns its
+  /// rows into the review and back, and collapses its groups while
+  /// applying, on the phase; this lets it without following every progress
+  /// event to get it.
   Listenable get phaseChanged => _phase;
 
   /// SPEC §11.3 `--dry-run`: the plan is shown and nothing is applied, so
@@ -430,6 +436,35 @@ class SyncRunViewState extends ChangeNotifier {
   ValueListenable<SyncRunResultRow?> resultCell(String path) =>
       _resultCells.putIfAbsent(path, () => ValueNotifier(_results[path]));
 
+  /// The review's current choice for the proposed action at [path], as
+  /// something that row can watch — [resultCell]'s reasoning, for a tap
+  /// rather than an applied action: one choice is one row's news, so
+  /// [recordActionChoice] writes it here and on this state's listeners
+  /// never. Created on first read; [SyncRunActionChoice.proposed] until
+  /// the user picks otherwise.
+  ValueListenable<SyncRunActionChoice> actionDecisionCell(String path) =>
+      _actionCells.putIfAbsent(
+        path,
+        () =>
+            ValueNotifier(_actionChoices[path] ?? SyncRunActionChoice.proposed),
+      );
+
+  /// [actionDecisionCell], for the conflict at [path];
+  /// [SyncRunConflictChoice.unresolved] until the user picks otherwise.
+  ValueListenable<SyncRunConflictChoice> conflictDecisionCell(String path) =>
+      _conflictCells.putIfAbsent(
+        path,
+        () => ValueNotifier(
+          _conflictChoices[path] ?? SyncRunConflictChoice.unresolved,
+        ),
+      );
+
+  /// The review's running total; `null` outside a review. Its own
+  /// listenable for the same reason as the cells: the bar that shows it
+  /// is all a tap should rebuild besides the tapped row.
+  ValueListenable<SyncRunDecisionSummary?> get decisionSummary =>
+      _decisionSummary;
+
   /// How many of [results] applied, and how many failed — counted as each
   /// result is recorded, so a page showing them does not re-walk [results]
   /// on every refresh.
@@ -467,6 +502,7 @@ class SyncRunViewState extends ChangeNotifier {
     for (final cell in _resultCells.values) {
       cell.value = null;
     }
+    resetDecisions();
     _progress = null;
     _startedAt = null;
     _plan.value = const [];
@@ -551,6 +587,42 @@ class SyncRunViewState extends ChangeNotifier {
   void _uncount(SyncRunResultRow row) =>
       row.error == null ? _appliedCount-- : _failedCount--;
 
+  /// The review's choice for the proposed action at [path]: pushed to that
+  /// path's [actionDecisionCell] if a row is watching it, and on this
+  /// state's listeners never — see [actionDecisionCell].
+  void recordActionChoice(String path, SyncRunActionChoice choice) {
+    _actionChoices[path] = choice;
+    _actionCells[path]?.value = choice;
+  }
+
+  /// [recordActionChoice], for the conflict at [path].
+  void recordConflictChoice(String path, SyncRunConflictChoice choice) {
+    _conflictChoices[path] = choice;
+    _conflictCells[path]?.value = choice;
+  }
+
+  /// The review's running total, on [decisionSummary] alone.
+  void recordDecisionSummary(SyncRunDecisionSummary summary) =>
+      _decisionSummary.value = summary;
+
+  /// Every path back to its default choice and no running total: a review
+  /// opening, a new attempt ([recordStart]), or an answer that ignores the
+  /// choices made (`SyncRunController.acceptAll`) — after which a row still
+  /// showing "reversed" would claim something the core was not told. The
+  /// cells are reset rather than dropped, as [recordStart] resets
+  /// [resultCell]s: a built row may be watching one.
+  void resetDecisions() {
+    _actionChoices.clear();
+    _conflictChoices.clear();
+    for (final cell in _actionCells.values) {
+      cell.value = SyncRunActionChoice.proposed;
+    }
+    for (final cell in _conflictCells.values) {
+      cell.value = SyncRunConflictChoice.unresolved;
+    }
+    _decisionSummary.value = null;
+  }
+
   /// The apply loop's latest progress, written without waking anyone: see
   /// [publishProgress].
   void recordProgress(SyncRunProgress progress) {
@@ -571,6 +643,13 @@ class SyncRunViewState extends ChangeNotifier {
     for (final cell in _resultCells.values) {
       cell.dispose();
     }
+    for (final cell in _actionCells.values) {
+      cell.dispose();
+    }
+    for (final cell in _conflictCells.values) {
+      cell.dispose();
+    }
+    _decisionSummary.dispose();
     super.dispose();
   }
 }

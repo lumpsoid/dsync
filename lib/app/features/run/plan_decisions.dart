@@ -6,7 +6,7 @@ import '../../core_link/models/run_decision.dart';
 import '../../core_link/models/run_update.dart';
 import 'run_view_state.dart';
 
-/// The user's choices over one plan while the conflict sheet is up
+/// The user's choices over one plan while the review is up
 /// (SPEC §11.3), and the [RunDecision] they add up to.
 ///
 /// A pure rule over the plan and the choices, kept apart from
@@ -28,7 +28,7 @@ class PlanDecisions {
 
   /// Records [choice] for the conflict at [path]. A choice the conflict
   /// does not offer (see [offeredFor]) or a path that is not a conflict is
-  /// ignored: the sheet only ever presents offered choices, so either is a
+  /// ignored: the review only ever presents offered choices, so either is a
   /// stale tap, not a decision.
   void resolve(String path, SyncRunConflictChoice choice) {
     final conflict = _conflictAt(path);
@@ -73,6 +73,49 @@ class PlanDecisions {
       if (proposal.path == path) return proposal;
     }
     return null;
+  }
+
+  /// Whether [path] is one of the plan's conflicts rather than a proposed
+  /// action — which of the two cells a change to it is written to.
+  bool isConflict(String path) => _conflictAt(path) != null;
+
+  /// The running total of the choices so far. Walks only the choices made,
+  /// never the plan: a tap on a 50k-action plan costs its handful of
+  /// non-default choices, not a pass over every action.
+  SyncRunDecisionSummary summary() {
+    var reversed = 0;
+    var skipped = 0;
+    for (final choice in _actionChoices.values) {
+      switch (choice) {
+        case SyncRunActionChoice.proposed:
+          break;
+        case SyncRunActionChoice.reversed:
+          reversed++;
+        case SyncRunActionChoice.skipped:
+          skipped++;
+      }
+    }
+    var resolved = 0;
+    var keptBoth = 0;
+    for (final choice in _choices.values) {
+      switch (choice) {
+        case SyncRunConflictChoice.unresolved:
+          break;
+        case SyncRunConflictChoice.keepLocal ||
+            SyncRunConflictChoice.keepRemote:
+          resolved++;
+        case SyncRunConflictChoice.keepBoth:
+          keptBoth++;
+      }
+    }
+    return SyncRunDecisionSummary(
+      apply: plan.actions.length - skipped,
+      reversed: reversed,
+      skipped: skipped,
+      resolved: resolved,
+      keptBoth: keptBoth,
+      leftOpen: plan.conflicts.length - resolved - keptBoth,
+    );
   }
 
   SyncRunConflictChoice choiceFor(String path) =>

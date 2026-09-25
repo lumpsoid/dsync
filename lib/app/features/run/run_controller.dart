@@ -65,9 +65,10 @@ import 'run_view_state.dart';
 ///
 /// **The plan is the head's to decide.** When the core's plan update says
 /// it is awaiting a decision, this moves the phase to
-/// [SyncRunAwaitingDecisions] — the conflict sheet — whose input methods
-/// are [resolveConflict], [skip], [keep], [acceptAll] and [confirm]; the
-/// last two answer the core. The core waits on that answer holding both
+/// [SyncRunAwaitingDecisions] — the inline review — whose input methods
+/// are [resolveConflict], [choose], [skip], [keep], [acceptAll] and
+/// [confirm]; the last two answer the core. The core waits on that answer
+/// holding both
 /// replica locks, so a plan with nothing in it is answered at once, and a
 /// plan that arrives after a stop or a dispose is answered with nothing
 /// kept: nothing further starts, which is exactly the stop semantics. A
@@ -246,24 +247,31 @@ class SyncRunController {
     unawaited(wanted ? screenWake.enable() : screenWake.disable());
   }
 
-  /// Records [choice] for the conflict at [path] on the open sheet.
+  /// Records [choice] for the conflict at [path] under review.
   void resolveConflict(String path, SyncRunConflictChoice choice) =>
-      _amend((choices) => choices.resolve(path, choice));
+      _amend(path, (choices) => choices.resolve(path, choice));
+
+  /// Records [choice] for the proposed action at [path] under review: as
+  /// planned, reversed (only where the plan offers it) or skipped.
+  void choose(String path, SyncRunActionChoice choice) =>
+      _amend(path, (choices) => choices.choose(path, choice));
 
   /// Drops the proposed action at [path] (or unresolves a conflict).
-  void skip(String path) => _amend((choices) => choices.skip(path));
+  void skip(String path) => _amend(path, (choices) => choices.skip(path));
 
   /// Undoes [skip] for the proposed action at [path].
-  void keep(String path) => _amend((choices) => choices.keep(path));
+  void keep(String path) => _amend(path, (choices) => choices.keep(path));
 
-  /// `--batch`: the plan unchanged, conflicts left unresolved.
+  /// `--batch`: the plan unchanged, conflicts left unresolved — whatever
+  /// was chosen row by row, so the rows are put back to say so.
   void acceptAll() {
     final pending = _pending;
     if (pending == null) return;
+    state.resetDecisions();
     _answer(RunDecision.acceptAll(pending.choices.plan.actions.length));
   }
 
-  /// Answers the core with the sheet's choices.
+  /// Answers the core with the review's choices.
   void confirm() {
     final pending = _pending;
     if (pending == null) return;
@@ -286,39 +294,38 @@ class SyncRunController {
     }
   }
 
-  void _amend(void Function(PlanDecisions choices) change) {
+  /// Applies [change] and writes what it came to into [path]'s cell and
+  /// the running total — never the phase: a tap is one row's news and the
+  /// bar's, and re-emitting the phase would rebuild every row with it.
+  /// Read back from [PlanDecisions] rather than taken from the tap, so a
+  /// choice it refused (not offered) leaves the row showing what will
+  /// actually be sent.
+  void _amend(String path, void Function(PlanDecisions choices) change) {
     final pending = _pending;
-    if (pending == null) return;
-    change(pending.choices);
-    _renderDecisions();
+    if (pending == null || _disposed) return;
+    final choices = pending.choices;
+    change(choices);
+    if (choices.isConflict(path)) {
+      state.recordConflictChoice(path, choices.choiceFor(path));
+    } else {
+      state.recordActionChoice(path, choices.actionChoiceFor(path));
+    }
+    state.recordDecisionSummary(choices.summary());
   }
 
-  void _renderDecisions() {
-    final pending = _pending;
-    if (pending == null) return;
-    final choices = pending.choices;
-    final deviceName = pending.request.deviceName;
+  /// Opens the review over [choices]: every row back to its default, the
+  /// running total seeded, then the phase — once, with the facts that stay
+  /// fixed until it is answered.
+  void _openReview(PlanDecisions choices) {
+    state
+      ..resetDecisions()
+      ..recordDecisionSummary(choices.summary());
     _recordPhase(
       SyncRunAwaitingDecisions(
-        conflicts: [
+        conflictOffers: {
           for (final conflict in choices.plan.conflicts)
-            SyncRunConflictDecision(
-              path: conflict.path,
-              local: _status(conflict.a),
-              remote: _status(conflict.b),
-              choice: choices.choiceFor(conflict.path),
-              offered: choices.offeredFor(conflict),
-            ),
-        ],
-        actions: [
-          for (final PlanProposal(:action) in choices.plan.actions)
-            SyncRunActionDecision(
-              path: action.path,
-              action: _actionLabel(action, deviceName),
-              bytes: _bytes(action),
-              kept: choices.isKept(action.path),
-            ),
-        ],
+            conflict.path: choices.offeredFor(conflict),
+        },
       ),
     );
   }
@@ -373,17 +380,18 @@ class SyncRunController {
         );
       case RunPlan() && final plan:
         state.recordPlan([
-          for (final PlanProposal(:action) in plan.actions)
+          for (final proposal in plan.actions)
             SyncRunPlanRow(
-              path: action.path,
-              action: _actionLabel(action, request.deviceName),
-              bytes: _bytes(action),
-              group: _group(action),
+              path: proposal.path,
+              action: _actionLabel(proposal.action, request.deviceName),
+              bytes: _bytes(proposal.action),
+              group: _group(proposal.action),
+              reversal: _reversal(proposal, request.deviceName),
             ),
         ], bytesToTransfer: plan.bytesToTransfer);
         if (!plan.awaitingDecision) break;
-        // A run already stopped must not park a sheet nobody will answer,
-        // and nothing to decide needs no sheet either: the core waits on
+        // A run already stopped must not park a review nobody will answer,
+        // and nothing to decide needs no review either: the core waits on
         // the answer holding both locks, so it is given at once.
         if (_stopRequested ||
             (plan.actions.isEmpty && plan.conflicts.isEmpty)) {
@@ -391,8 +399,9 @@ class SyncRunController {
           await _decide(session, const RunDecision());
           break;
         }
-        _pending = (choices: PlanDecisions(plan), request: request);
-        _renderDecisions();
+        final choices = PlanDecisions(plan);
+        _pending = (choices: choices, request: request);
+        _openReview(choices);
       case RunApplied(:final results, :final progress):
         for (final ActionResult(:action, :failure) in results) {
           state.recordResult(
@@ -575,6 +584,29 @@ String _actionLabel(PlanAction action, String deviceName) => switch (action) {
   DeleteAction(on: ReplicaSide.b) => 'delete on $deviceName',
   CommitOnlyAction() => 'same content, record only',
 };
+
+/// What reversing [proposal] does, worded literally (Design A): the
+/// reverse of a copy overwrites the side it would have copied to, and the
+/// reverse of a delete restores the side that lost the file — so the label
+/// names whose version is replaced, or where the file comes back, never a
+/// softer "undo". `null` when the plan offers no reverse.
+SyncRunPlanReversal? _reversal(PlanProposal proposal, String deviceName) {
+  final reversed = proposal.reversed;
+  if (reversed == null) return null;
+  final action = switch (proposal.action) {
+    CopyAction(from: ReplicaSide.a) =>
+      "replace this device's version with $deviceName's",
+    CopyAction(from: ReplicaSide.b) =>
+      "replace $deviceName's version with this device's",
+    DeleteAction(on: ReplicaSide.b) =>
+      'restore on this device from $deviceName',
+    DeleteAction(on: ReplicaSide.a) =>
+      'restore on $deviceName from this device',
+    CommitOnlyAction() || CopyAsideAction() => null,
+  };
+  if (action == null) return null;
+  return SyncRunPlanReversal(action: action, bytes: _bytes(reversed));
+}
 
 /// A relative path's file name: its last segment.
 String _name(String path) => path.substring(path.lastIndexOf('/') + 1);

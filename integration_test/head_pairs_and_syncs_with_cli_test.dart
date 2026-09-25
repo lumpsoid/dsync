@@ -180,11 +180,14 @@ void main() {
     );
     await _until(
       tester,
-      () => find.byKey(const Key('run-accept-all')).evaluate().isNotEmpty,
-      'the plan sheet',
+      () => find
+          .byKey(const Key('run-sync-all-except-conflicts'))
+          .evaluate()
+          .isNotEmpty,
+      'the review bar',
       failure: () => '${run.state.phase} ${agentErr.toString()}',
     );
-    await tester.tap(find.byKey(const Key('run-accept-all')));
+    await tester.tap(find.byKey(const Key('run-sync-all-except-conflicts')));
     await _until(
       tester,
       () => run.state.phase is SyncRunFinished,
