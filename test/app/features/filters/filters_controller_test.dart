@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/filter_folder_summary.dart';
@@ -79,12 +81,40 @@ void main() {
     controller = FiltersController(fakeApp(core));
   });
 
-  // A rule change re-lists the folder without being awaited — that is the
-  // page's own path, where the listing lands in a later frame. Draining
-  // the queue before disposing is what keeps one test's in-flight listing
-  // from writing into a view state the next test has already replaced.
+  /// Waits until [done] holds — by listening, not by sampling. A rule
+  /// change re-lists the folder without being awaited (the page's own path,
+  /// where the listing lands in a later frame), so a test that reads the
+  /// re-listing waits for it by name; one that never lands fails with
+  /// [what] instead of hanging.
+  Future<void> settleUntil(bool Function() done, {required String what}) async {
+    if (done()) return;
+    final settled = Completer<void>();
+    void check() {
+      if (done() && !settled.isCompleted) settled.complete();
+    }
+
+    controller.state.addListener(check);
+    try {
+      await settled.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => fail('timed out waiting for $what'),
+      );
+    } finally {
+      controller.state.removeListener(check);
+    }
+  }
+
+  /// The re-listing a rule change or a count started has landed.
+  Future<void> relisted() => settleUntil(
+    () => controller.state.folder is! FiltersFolderLoading,
+    what: 'the folder to re-list',
+  );
+
+  // Waiting out an in-flight listing before disposing is what keeps one
+  // test's listing from writing into a view state the next test has
+  // already replaced.
   tearDown(() async {
-    await pumpEventQueue();
+    await relisted();
     controller.dispose();
   });
 
@@ -176,7 +206,7 @@ void main() {
 
       controller.removeRule('**/cache');
       // The listing is re-read, because a row's verdict is the rules'.
-      await pumpEventQueue();
+      await relisted();
 
       expect(controller.state.rules, isEmpty);
       expect(row('cache').status, isA<FilterEntrySyncs>());
@@ -285,7 +315,7 @@ void main() {
       await controller.runPreview();
       // The count re-reads the listing itself, so the numbers land on the
       // rows the user is already looking at.
-      await pumpEventQueue();
+      await relisted();
 
       expect(row('DCIM').detail, '2 files · 35 B');
     });
