@@ -504,25 +504,26 @@ pub fn serve<S>(site: &Site, stream: S) -> JoinHandle<Result<(), LinkError>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    serve_with(site, stream, Tuning::DEFAULT)
+}
+
+/// [`serve`], with `tuning` for the server and the replica it opens.
+pub fn serve_with<S>(site: &Site, stream: S, tuning: Tuning) -> JoinHandle<Result<(), LinkError>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let state = site.state();
     let server = ReplicaServer::new(
         move |spec: ReplicaSpec| {
             let state = state.clone();
             async move {
                 let opened = tokio::task::spawn_blocking(move || {
-                    LocalReplica::open(
-                        spec.root,
-                        state,
-                        spec.profile,
-                        spec.side,
-                        spec.jobs,
-                        Tuning::DEFAULT,
-                    )
+                    LocalReplica::open(spec.root, state, spec.profile, spec.side, spec.jobs, tuning)
                 });
                 Ok::<_, ReplicaError>(opened.await.unwrap()?)
             }
         },
-        Tuning::DEFAULT,
+        tuning,
     );
     tokio::spawn(async move { server.serve(Transport::split(stream)).await })
 }
@@ -534,11 +535,21 @@ const DUPLEX_BYTES: usize = 64 * 1024;
 /// `side` of `site` served by a [`ReplicaServer`] in this process, and the
 /// remote replica talking to it.
 pub async fn served(site: &Site, side: Side) -> (RemoteReplica, JoinHandle<Result<(), LinkError>>) {
+    served_with(site, side, Tuning::DEFAULT).await
+}
+
+/// [`served`], with `tuning` on both ends of the connection and for the
+/// served replica.
+pub async fn served_with(
+    site: &Site,
+    side: Side,
+    tuning: Tuning,
+) -> (RemoteReplica, JoinHandle<Result<(), LinkError>>) {
     let (near, far) = tokio::io::duplex(DUPLEX_BYTES);
-    let serving = serve(site, far);
+    let serving = serve_with(site, far, tuning);
     let replica = with_deadline(
         "connect",
-        RemoteReplica::connect(Transport::split(near), site.spec(side), &Tuning::DEFAULT),
+        RemoteReplica::connect(Transport::split(near), site.spec(side), &tuning),
     )
     .await
     .unwrap();
