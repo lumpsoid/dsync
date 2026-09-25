@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_head.dart';
+import '../../support/pump_until.dart';
 
 /// Rendering tests for the Pair page, driven the way the scope contract in
 /// `app_scope.dart` intends: the controllers are pinned with
@@ -113,17 +114,11 @@ void main() {
     await tester.pump();
   }
 
-  /// Taps [target] under real time and waits for the page to leave, which is
-  /// the only signal that the submit it started has finished. Bounded so a
-  /// regression fails rather than hangs.
+  /// Taps [target] and waits for the page to leave, which is the only
+  /// signal that the submit it started has finished.
   Future<void> tapAndLeave(WidgetTester tester, Finder target) async {
-    await tester.runAsync(() async {
-      await tester.tap(target);
-      final deadline = Stopwatch()..start();
-      while (paired == 0 && deadline.elapsed < const Duration(seconds: 20)) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      }
-    });
+    await tester.tap(target);
+    await pumpUntil(tester, () => paired > 0, what: 'the page to leave');
     await tester.pump();
   }
 

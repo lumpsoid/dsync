@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_head.dart';
+import '../../support/pump_until.dart';
 
 /// The Shared folders page as a rendering test: devices are pushed into
 /// `AppState` already rendered and the page is pumped directly, per the
@@ -80,19 +81,16 @@ void main() {
   Future<void> pumpPage(WidgetTester tester) =>
       tester.pumpWidget(const MaterialApp(home: SharedFoldersPage()));
 
-  /// Taps a widget and waits for the write behind it to land: a widget
-  /// test's own zone fakes time, so `pumpAndSettle` can return with a
-  /// `dart:io` future still outstanding. Bounded, so an action that never
-  /// lands fails an expectation rather than hanging the suite.
+  /// Taps a widget and waits for the write behind it to land, then settles
+  /// so a dialog the tap closed has finished leaving.
   Future<void> tapAndAwait(WidgetTester tester, Finder finder) async {
     await tester.tap(finder);
-    for (var i = 0; i < 200; i++) {
-      await tester.pumpAndSettle();
-      if (controller.state.outcome is! SharedFoldersIdle) return;
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-    }
+    await pumpUntil(
+      tester,
+      () => controller.state.outcome is! SharedFoldersIdle,
+      what: 'an outcome after the tap',
+    );
+    await tester.pumpAndSettle();
   }
 
   testWidgets('one row per folder, naming the devices that may reach it', (
@@ -262,19 +260,6 @@ void main() {
     expect(find.byKey(const Key('shared-folders-add-confirm')), findsOneWidget);
   });
 
-  /// Carries an action whose writes are several — one grant per device —
-  /// past the first outcome: the loop above stops at the first, and the
-  /// rest of the grants are still in flight behind it.
-  Future<void> settleWrites(WidgetTester tester) async {
-    for (var i = 0; i < 20; i++) {
-      await tester.pumpAndSettle();
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-    }
-    await tester.pumpAndSettle();
-  }
-
   testWidgets('a folder added for two devices lands on both', (tester) async {
     app.state.recordDevices([row(desktop), row(laptop)]);
     await pumpPage(tester);
@@ -295,18 +280,20 @@ void main() {
       tester,
       find.byKey(const Key('shared-folders-add-confirm')),
     );
-    await settleWrites(tester);
+    // The writes are several — one grant per device — and the outcome
+    // above lands at the first; the line naming both is the last of them.
+    final both = find.text('desktop and laptop may reach this folder.');
+    await pumpUntil(
+      tester,
+      () => both.evaluate().isNotEmpty,
+      what: 'the grant to land on both devices',
+    );
+    await tester.pumpAndSettle();
 
     // Handed to the core as typed; the core expands `~` the way
     // `dsync pair grant` does (the fake stores it as given).
-    expect(
-      find.byKey(const Key('shared-folder-~/Sync')),
-      findsOneWidget,
-    );
-    expect(
-      find.text('desktop and laptop may reach this folder.'),
-      findsOneWidget,
-    );
+    expect(find.byKey(const Key('shared-folder-~/Sync')), findsOneWidget);
+    expect(both, findsOneWidget);
   });
 
   testWidgets('a folder added for nobody is refused, with the reason', (

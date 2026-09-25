@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_head.dart';
+import '../../support/pump_until.dart';
 
 /// The Device page as a rendering test: rows are pushed into `AppState`
 /// already rendered and the page is pumped directly, per the scope
@@ -87,21 +88,17 @@ void main() {
   /// Taps an action whose work is real I/O — reading this device's
   /// identity, writing the store — and waits for the outcome it renders.
   ///
-  /// A widget test's own zone fakes time, so `pumpAndSettle` can return
-  /// with a `dart:io` future still outstanding and the page still idle;
-  /// `runAsync` is what lets the real event loop deliver it. Alternating
-  /// the two is what carries an action from tap to rendered line. Bounded,
-  /// so an action that never lands fails the expectation rather than
-  /// hanging the suite.
+  /// An outcome is Done or Failed, so leaving Idle is the whole of the
+  /// action; the callers say which. Settled after, so a confirm dialog the
+  /// tap closed has finished leaving.
   Future<void> awaitOutcome(WidgetTester tester, Key key) async {
     await tester.tap(find.byKey(key));
-    for (var i = 0; i < 200; i++) {
-      await tester.pumpAndSettle();
-      if (controller.state.outcome is! DeviceDetailIdle) return;
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-    }
+    await pumpUntil(
+      tester,
+      () => controller.state.outcome is! DeviceDetailIdle,
+      what: 'an outcome after tapping $key',
+    );
+    await tester.pumpAndSettle();
   }
 
   /// Scrolls back to the top, where the page's outcome line is: a

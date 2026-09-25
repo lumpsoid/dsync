@@ -32,6 +32,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/fake_folder_picker.dart';
 import '../support/fake_screen_wake.dart';
 import 'support/fake_head.dart';
+import 'support/pump_until.dart';
 
 /// The entrypoint's wiring: the bootstrap gate renders each `AppBootstrap`
 /// case, and a tap on Devices lands on the route this file promised. Driven
@@ -45,10 +46,11 @@ import 'support/fake_head.dart';
 /// clock.** A `Future` that completes from a real read or write — a store,
 /// a `Directory` — resumes in the fake zone's microtask queue only when
 /// something pumps, so awaiting one straight from the test body hangs the
-/// test instead of failing it. Every await of real I/O in this file is
-/// therefore inside `tester.runAsync`, and every wait for it is
-/// [runRealTimeUntil], which pumps frames *and* lets the real event loop
-/// turn. Its bound is what fails a regression rather than hanging on it.
+/// test instead of failing it. A direct await of real I/O in this file is
+/// therefore inside `tester.runAsync`, and every wait for I/O the app
+/// started is `pumpUntil`, which pumps frames *and* lets the real event
+/// loop turn. Its bound is what fails a regression rather than hanging on
+/// it.
 ///
 /// The Run feature is pinned, not driven: a fresh `SyncRunController` per
 /// `create()` whose phase is already the failed run these routes are about.
@@ -109,22 +111,6 @@ void main() {
       ),
     ),
   );
-
-  /// Pumped frames plus real time, until [condition] holds. For waits that
-  /// straddle both worlds — real file I/O the page is awaiting, and a frame
-  /// that has to be built for its result to show. Call inside
-  /// `tester.runAsync`; bounded, so a regression fails rather than hangs.
-  Future<void> runRealTimeUntil(
-    WidgetTester tester,
-    bool Function() condition,
-  ) async {
-    final deadline = Stopwatch()..start();
-    while (!condition() && deadline.elapsed < const Duration(seconds: 5)) {
-      await tester.pump(const Duration(milliseconds: 20));
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-    expect(condition(), isTrue, reason: 'the app never caught up');
-  }
 
   /// The text currently in the field under [key]. Read through the widget:
   /// the `TextEditingController`s live in the page's `State`, so this is
@@ -212,14 +198,13 @@ void main() {
     expect(find.byKey(const Key('bootstrap-failed')), findsOneWidget);
     expect(find.byType(ProfilesPage), findsNothing);
 
-    await tester.runAsync(() async {
-      // Fixed behind the app's back: the core reads it now.
-      await tester.tap(find.byKey(const Key('bootstrap-retry')));
-      await runRealTimeUntil(
-        tester,
-        () => app.state.bootstrap is AppBootstrapReady,
-      );
-    });
+    // Fixed behind the app's back: the core reads it now.
+    await tester.tap(find.byKey(const Key('bootstrap-retry')));
+    await pumpUntil(
+      tester,
+      () => app.state.bootstrap is AppBootstrapReady,
+      what: 'the retried bootstrap',
+    );
     // Not `pumpAndSettle`: the gate shows an indefinite spinner while the
     // retry is in flight, and there is a route transition to finish once
     // it is not. Frames, bounded.
@@ -285,21 +270,19 @@ void main() {
     await tester.pumpWidget(const DsyncApp());
     await tester.tap(find.byKey(const Key('profiles-open-devices')));
     await tester.pumpAndSettle();
-    // The page's `initState` calls `load` — real I/O, so the tap runs under
-    // `runAsync` and the test waits for it the way
-    // `run_setup_page_test.dart` does, rather than tearing the tree down
-    // under it.
-    await tester.runAsync(() async {
-      // The named action, not the row: a tap on the row opens the
-      // device's own page now, and Run setup is the button beside it.
-      await tester.tap(find.text('Set up run'));
-      // One frame builds the pushed route, which is what starts `load`.
-      await tester.pump();
-      await runRealTimeUntil(
-        tester,
-        () => runSetup.state.peer is! RunSetupPeerLoading,
-      );
-    });
+    // The page's `initState` calls `load` — real I/O, so the test waits for
+    // it rather than tearing the tree down under it.
+    //
+    // The named action, not the row: a tap on the row opens the device's
+    // own page now, and Run setup is the button beside it.
+    await tester.tap(find.text('Set up run'));
+    // One frame builds the pushed route, which is what starts `load`.
+    await tester.pump();
+    await pumpUntil(
+      tester,
+      () => runSetup.state.peer is! RunSetupPeerLoading,
+      what: 'Run setup to load',
+    );
     // Not `pumpAndSettle`: Run setup's spinner never settles. One frame
     // past the transition instead.
     await tester.pump(const Duration(seconds: 1));
@@ -334,19 +317,22 @@ void main() {
         remoteRoot: '~/notes',
       ),
     );
-    await tester.runAsync(() async {
-      await tester.pumpWidget(const DsyncApp());
-      await runRealTimeUntil(tester, () => app.state.profiles.isNotEmpty);
-      // The condition is the state write; the frame that renders the row
-      // needs one pump past it.
-      await tester.pump();
-      await tester.tap(find.text('weekly'));
-      await tester.pump();
-      await runRealTimeUntil(
-        tester,
-        () => runSetup.state.peer is RunSetupPeerLoaded,
-      );
-    });
+    await tester.pumpWidget(const DsyncApp());
+    await pumpUntil(
+      tester,
+      () => app.state.profiles.isNotEmpty,
+      what: 'the home to list the profiles',
+    );
+    // The condition is the state write; the frame that renders the row
+    // needs one pump past it.
+    await tester.pump();
+    await tester.tap(find.text('weekly'));
+    await tester.pump();
+    await pumpUntil(
+      tester,
+      () => runSetup.state.peer is RunSetupPeerLoaded,
+      what: 'Run setup to load the profile',
+    );
     await tester.pump(const Duration(seconds: 1));
 
     expect(find.byType(RunSetupPage), findsOneWidget);
@@ -406,54 +392,54 @@ void main() {
         );
     });
 
-    await tester.runAsync(() async {
-      // What Run setup's `load` reads.
-      core.devices.add(desktop);
-      await tester.pumpWidget(const DsyncApp());
-      await tester.tap(find.byKey(const Key('profiles-open-devices')));
-      await tester.pumpAndSettle();
-      // The named action, not the row: a tap on the row opens the
-      // device's own page now, and Run setup is the button beside it.
-      await tester.tap(find.text('Set up run'));
-      await tester.pump();
-      // `load` records the peer last and nothing of the visit is in
-      // flight past it, so this is the whole of the form being ready.
-      await runRealTimeUntil(
-        tester,
-        () => runSetup.state.peer is RunSetupPeerLoaded,
-      );
+    // What Run setup's `load` reads.
+    core.devices.add(desktop);
+    await tester.pumpWidget(const DsyncApp());
+    await tester.tap(find.byKey(const Key('profiles-open-devices')));
+    await tester.pumpAndSettle();
+    // The named action, not the row: a tap on the row opens the device's
+    // own page now, and Run setup is the button beside it.
+    await tester.tap(find.text('Set up run'));
+    await tester.pump();
+    // `load` records the peer last and nothing of the visit is in flight
+    // past it, so this is the whole of the form being ready.
+    await pumpUntil(
+      tester,
+      () => runSetup.state.peer is RunSetupPeerLoaded,
+      what: 'Run setup to load',
+    );
 
-      // The condition is the state write; the form is rendered over it a
-      // frame later, and the push animation has to land before the pick
-      // button is where a tap can reach it.
-      await tester.pump();
-      await tester.pump(const Duration(seconds: 1));
+    // The condition is the state write; the form is rendered over it a
+    // frame later, and the push animation has to land before the pick
+    // button is where a tap can reach it.
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
 
-      // A local folder, then the two fields the task is about — the folder
-      // the only way there is, through the chooser, and the text through
-      // the fields, since the text is what the page's own `State` holds.
-      runSetupPicker.onPick = () => localRoot.path;
-      await tester.tap(find.byKey(const Key('run-setup-pick-folder')));
-      await runRealTimeUntil(
-        tester,
-        () => runSetup.state.localRoot == localRoot.path,
-      );
-      await tester.pump();
-      await tester.enterText(
-        find.byKey(const Key('run-setup-remote-root')),
-        '~/notes',
-      );
-      await tester.tap(find.byKey(const Key('run-setup-options')));
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.enterText(
-        find.byKey(const Key('run-setup-address')),
-        '10.0.0.9:4242',
-      );
-      await tester.pump();
+    // A local folder, then the two fields the task is about — the folder
+    // the only way there is, through the chooser, and the text through the
+    // fields, since the text is what the page's own `State` holds.
+    runSetupPicker.onPick = () => localRoot.path;
+    await tester.tap(find.byKey(const Key('run-setup-pick-folder')));
+    await pumpUntil(
+      tester,
+      () => runSetup.state.localRoot == localRoot.path,
+      what: 'the picked folder',
+    );
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('run-setup-remote-root')),
+      '~/notes',
+    );
+    await tester.tap(find.byKey(const Key('run-setup-options')));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.enterText(
+      find.byKey(const Key('run-setup-address')),
+      '10.0.0.9:4242',
+    );
+    await tester.pump();
 
-      await tester.tap(find.byKey(const Key('run-setup-start')));
-      await runRealTimeUntil(tester, () => runs == 1);
-    });
+    await tester.tap(find.byKey(const Key('run-setup-start')));
+    await pumpUntil(tester, () => runs == 1, what: 'the first run');
     // Not `pumpAndSettle` for the route transition either: the Run page
     // carries a spinner of its own until its phase lands. A frame past it.
     await tester.pump(const Duration(seconds: 1));
@@ -480,10 +466,8 @@ void main() {
     expect(fieldText(tester, 'run-setup-address'), '10.0.0.9:4242');
 
     // And starting again from that form builds the same request.
-    await tester.runAsync(() async {
-      await tester.tap(find.byKey(const Key('run-setup-start')));
-      await runRealTimeUntil(tester, () => runs == 2);
-    });
+    await tester.tap(find.byKey(const Key('run-setup-start')));
+    await pumpUntil(tester, () => runs == 2, what: 'the second run');
     await tester.pump(const Duration(seconds: 1));
 
     expect(find.byType(RunPage), findsOneWidget);

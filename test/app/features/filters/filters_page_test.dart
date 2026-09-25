@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_head.dart';
+import '../../support/pump_until.dart';
 
 /// Rendering tests for the Filters page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controller is pinned with
@@ -91,29 +92,6 @@ void main() {
     } finally {
       controller.state.removeListener(check);
     }
-  }
-
-  /// Drives work the *page* started — a tap handler's listing — to
-  /// completion.
-  ///
-  /// `runAsync` is not enough for it: the listing was started inside the
-  /// test's fake-async zone, so the continuation after its real `dart:io`
-  /// await is queued in that zone and only runs on a pump. Real time has
-  /// to pass for the I/O *and* frames have to be pumped for its result, so
-  /// this alternates the two until [reached] holds.
-  Future<void> pumpUntil(
-    WidgetTester tester,
-    bool Function() reached, {
-    required String what,
-  }) async {
-    for (var attempt = 0; attempt < 100; attempt++) {
-      if (reached()) return;
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-      await tester.pump();
-    }
-    fail('timed out waiting for $what');
   }
 
   Future<void> listed() => settleUntil(
