@@ -334,19 +334,9 @@ class _RunPageState extends State<RunPage> {
                       SliverToBoxAdapter(child: _StageStrip(state)),
                       if (state.header case final header?)
                         SliverToBoxAdapter(child: _Header(header)),
-                      SliverToBoxAdapter(
-                        child: _CountsRow(
-                          state,
-                          deviceName: widget.request.deviceName,
-                        ),
-                      ),
+                      SliverToBoxAdapter(child: _CountsRow(state)),
                       if (state.scanTally case final tally?)
-                        SliverToBoxAdapter(
-                          child: _ScanTally(
-                            tally,
-                            deviceName: widget.request.deviceName,
-                          ),
-                        ),
+                        SliverToBoxAdapter(child: _ScanTally(tally)),
                       if (state.unreadablePaths.isNotEmpty)
                         RunListSection(
                           sectionKey: const Key('run-unreadable'),
@@ -373,14 +363,14 @@ class _RunPageState extends State<RunPage> {
                       if (state.conflicts.isNotEmpty)
                         RunListSection(
                           sectionKey: const Key('run-conflicts'),
-                          title: 'Conflicts (not resolved)',
+                          title:
+                              'Conflicts (${formatCount(state.conflicts.length)})',
                           itemCount: state.conflicts.length,
                           itemBuilder: (context, index) {
                             final row = state.conflicts[index];
                             return _ConflictRow(
                               row,
                               state: state,
-                              deviceName: widget.request.deviceName,
                               offered: switch (state.phase) {
                                 SyncRunAwaitingDecisions(
                                   :final conflictOffers,
@@ -399,11 +389,7 @@ class _RunPageState extends State<RunPage> {
                   listenable: _planSection,
                   builder: (context, _) => state.plan.isEmpty
                       ? const SliverToBoxAdapter(child: SizedBox.shrink())
-                      : RunPlanSection(
-                          state,
-                          deviceName: widget.request.deviceName,
-                          onChoose: _controller.choose,
-                        ),
+                      : RunPlanSection(state, onChoose: _controller.choose),
                 ),
               ],
             ),
@@ -647,11 +633,11 @@ class _Header extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'This device ⇄ ${header.deviceName}',
+            'This device ⇄ Remote',
             style: Theme.of(context).textTheme.titleMedium,
           ),
           Text('This device: ${elidePath(header.localRoot)}'),
-          Text('${header.deviceName}: ${elidePath(header.remoteRoot)}'),
+          Text('Remote: ${elidePath(header.remoteRoot)}'),
           const SizedBox(height: 4),
           Text(header.history),
           if (header.firstSyncWarning case final warning?)
@@ -675,10 +661,9 @@ class _Header extends StatelessWidget {
 /// `run_plan_section.dart`: it renders no run update, so a rebuild of what
 /// wraps it must not reset it.
 class _ScanTally extends StatefulWidget {
-  const _ScanTally(this.tally, {required this.deviceName});
+  const _ScanTally(this.tally);
 
   final SyncRunScanTally tally;
-  final String deviceName;
 
   @override
   State<_ScanTally> createState() => _ScanTallyState();
@@ -710,25 +695,87 @@ class _ScanTallyState extends State<_ScanTally> {
                 Icon(_expanded ? Icons.expand_less : Icons.expand_more),
               ],
             ),
-            if (_expanded) ...[
-              const SizedBox(height: 4),
-              _tallyLine('This device', tally.local),
-              _tallyLine(widget.deviceName, tally.remote),
-            ],
+            if (_expanded) ...[const SizedBox(height: 8), _ScanTable(tally)],
           ],
         ),
       ),
     );
   }
+}
 
-  /// Both unchanged counts stay separate: the fast path versus a rehash
-  /// that found nothing changed (SPEC §5.2), which is the whole point of
-  /// the tally reaching a head at all.
-  Widget _tallyLine(String side, SyncRunScanSide s) => Text(
-    '$side: ${s.total} paths — ${s.metadataMatched} unchanged by metadata, '
-    '${s.hashMatched} unchanged by hash, ${s.modified} modified, '
-    '${s.created} created, ${s.deleted} deleted',
-  );
+/// The per-side breakdown behind the scan tally's disclosure: one row per
+/// side, one column per outcome, so a glance down a column compares the
+/// sides and a glance along a row reads one side. Zeros are dimmed — the
+/// numbers that say something changed are the ones that should stand out.
+///
+/// Both unchanged counts stay reachable: the fast path versus a rehash that
+/// found nothing changed (SPEC §5.2) is the whole point of the tally
+/// reaching a head at all, so the hash share sits under the unchanged
+/// total rather than in a column of its own.
+class _ScanTable extends StatelessWidget {
+  const _ScanTable(this.tally);
+
+  final SyncRunScanTally tally;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dim = theme.colorScheme.outline;
+    final small = theme.textTheme.bodySmall;
+    Widget cell(Widget child) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
+      child: Align(alignment: Alignment.centerRight, child: child),
+    );
+    Widget header(String text) =>
+        cell(Text(text, style: small?.copyWith(color: dim)));
+    Widget count(int n) =>
+        Text(formatCount(n), style: n == 0 ? TextStyle(color: dim) : null);
+    TableRow side(String name, SyncRunScanSide s) => TableRow(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text(name, overflow: TextOverflow.ellipsis),
+        ),
+        cell(count(s.total)),
+        cell(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              count(s.metadataMatched + s.hashMatched),
+              if (s.hashMatched > 0)
+                Text(
+                  '${formatCount(s.hashMatched)} by hash',
+                  style: small?.copyWith(color: dim),
+                ),
+            ],
+          ),
+        ),
+        cell(count(s.modified)),
+        cell(count(s.created)),
+        cell(count(s.deleted)),
+      ],
+    );
+    return Table(
+      key: const Key('run-scan-table'),
+      columnWidths: const {0: FlexColumnWidth()},
+      defaultColumnWidth: const IntrinsicColumnWidth(),
+      defaultVerticalAlignment: TableCellVerticalAlignment.top,
+      children: [
+        TableRow(
+          children: [
+            const SizedBox.shrink(),
+            header('Checked'),
+            header('Unchanged'),
+            header('Modified'),
+            header('Created'),
+            header('Deleted'),
+          ],
+        ),
+        side('This device', tally.local),
+        side('Remote', tally.remote),
+      ],
+    );
+  }
 }
 
 /// The counts row (Design C.3): compact tallies of where the plan is
@@ -740,10 +787,9 @@ class _ScanTallyState extends State<_ScanTally> {
 /// after, nothing here is built for a phase with neither (idle,
 /// connecting, or scanning before the plan lands).
 class _CountsRow extends StatelessWidget {
-  const _CountsRow(this.state, {required this.deviceName});
+  const _CountsRow(this.state);
 
   final SyncRunViewState state;
-  final String deviceName;
 
   @override
   Widget build(BuildContext context) {
@@ -758,11 +804,7 @@ class _CountsRow extends StatelessWidget {
     if (state.plan.isEmpty || phase is SyncRunAwaitingDecisions) {
       return const SizedBox.shrink();
     }
-    return _PendingCounts(
-      key: const Key('run-summary'),
-      state: state,
-      deviceName: deviceName,
-    );
+    return _PendingCounts(key: const Key('run-summary'), state: state);
   }
 }
 
@@ -773,14 +815,9 @@ class _CountsRow extends StatelessWidget {
 /// live Applied/Failed pair joins them while the run applies the plan —
 /// what `_PlanTally` used to show under the plan's own disclosure.
 class _PendingCounts extends StatelessWidget {
-  const _PendingCounts({
-    super.key,
-    required this.state,
-    required this.deviceName,
-  });
+  const _PendingCounts({super.key, required this.state});
 
   final SyncRunViewState state;
-  final String deviceName;
 
   @override
   Widget build(BuildContext context) {
@@ -798,7 +835,7 @@ class _PendingCounts extends StatelessWidget {
           _CountTile(
             icon: Icons.arrow_upward,
             text:
-                'to $deviceName ${formatCount(toDevice.count)}'
+                'to the remote ${formatCount(toDevice.count)}'
                 '${toDevice.bytes > 0 ? ' (${formatBytes(toDevice.bytes)})' : ''}',
           ),
           _CountTile(
@@ -832,7 +869,11 @@ class _CountTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(
     mainAxisSize: MainAxisSize.min,
-    children: [Icon(icon, size: 16), const SizedBox(width: 4), Text(text)],
+    children: [
+      Icon(icon, size: 16),
+      const SizedBox(width: 4),
+      Flexible(child: Text(text)),
+    ],
   );
 }
 
@@ -946,21 +987,30 @@ class _ReviewBar extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    key: const Key('run-sync-all-except-conflicts'),
-                    onPressed: controller.acceptAll,
-                    child: const Text('Sync all except conflicts'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    key: const Key('run-confirm'),
-                    onPressed: controller.confirm,
-                    child: const Text('Apply'),
-                  ),
-                ],
+              // Wraps rather than overflowing on a narrow phone; its height
+              // follows the screen's width, never the choices.
+              // Full width, so the end alignment has room to push the
+              // buttons right: a bare Wrap in this start-aligned column
+              // shrinks to its buttons and sits on the left.
+              SizedBox(
+                width: double.infinity,
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    TextButton(
+                      key: const Key('run-sync-all-except-conflicts'),
+                      onPressed: controller.acceptAll,
+                      child: const Text('Sync all except conflicts'),
+                    ),
+                    FilledButton(
+                      key: const Key('run-confirm'),
+                      onPressed: controller.confirm,
+                      child: const Text('Apply'),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -986,11 +1036,18 @@ String _summaryLine(SyncRunDecisionSummary summary) => [
 
 String _conflicts(int count) => count == 1 ? 'conflict' : 'conflicts';
 
-/// One conflict (SPEC §6): both sides' status words, then — while the
-/// review is up ([offered] set) — a segmented choice over exactly the
-/// choices it offers, following its own cell
+/// One conflict (SPEC §6): the file's name, then each side's status boxed
+/// side by side — and, while the review is up ([offered] set), those two
+/// boxes are the choice. Tapping a side keeps it; tapping both keeps both;
+/// neither selected is Skip. The choice is said back in words at the top
+/// right ("Skip", "This device", "Remote", "Both"), so what a tap did is
+/// never left to the box colours alone. Follows its own cell
 /// ([SyncRunViewState.conflictDecisionCell]) so a tap rebuilds this row
 /// alone.
+///
+/// A side the conflict cannot keep (no record of the path there — see
+/// `PlanDecisions.offeredFor`) is not tappable. Selecting the second side
+/// where "Both" is not offered moves the selection to it instead.
 ///
 /// After the review it follows its own [SyncRunViewState.resultCell]. A
 /// side kept settles the conflict, and its result reads like any applied
@@ -1002,57 +1059,135 @@ class _ConflictRow extends StatelessWidget {
   const _ConflictRow(
     this.row, {
     required this.state,
-    required this.deviceName,
     required this.offered,
     required this.onResolve,
   });
 
   final SyncRunConflictRow row;
   final SyncRunViewState state;
-  final String deviceName;
   final List<SyncRunConflictChoice>? offered;
   final void Function(String path, SyncRunConflictChoice choice) onResolve;
 
   @override
   Widget build(BuildContext context) {
     final offered = this.offered;
+    final theme = Theme.of(context);
+    final label = PathLabel.stacked(row.path);
     return ValueListenableBuilder<SyncRunResultRow?>(
       valueListenable: state.resultCell(row.path),
       builder: (context, result, _) =>
           ValueListenableBuilder<SyncRunConflictChoice>(
             valueListenable: state.conflictDecisionCell(row.path),
-            builder: (context, choice, _) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _NoticeLine.error(
-                    '${row.path}: this device ${row.local}, the other side '
-                    '${row.remote}',
-                  ),
-                  if (offered != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: SegmentedButton<SyncRunConflictChoice>(
-                        key: Key('decision-${row.path}'),
-                        segments: [
-                          for (final offer in offered)
-                            ButtonSegment(
-                              value: offer,
-                              label: Text(_label(offer)),
+            builder: (context, choice, _) {
+              final (local: keepsLocal, remote: keepsRemote) = _sides(choice);
+              return Padding(
+                key: Key('run-conflict-${row.path}'),
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2, right: 6),
+                          child: Icon(
+                            Icons.error_outline,
+                            size: 16,
+                            color: theme.colorScheme.error,
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            label.leaf,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        if (offered != null)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: Text(
+                              _label(choice),
+                              key: Key('decision-${row.path}'),
+                              style: theme.textTheme.labelLarge?.copyWith(
+                                color:
+                                    choice == SyncRunConflictChoice.unresolved
+                                    ? theme.colorScheme.outline
+                                    : theme.colorScheme.primary,
+                              ),
                             ),
+                          ),
+                      ],
+                    ),
+                    if (label.parent.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 22),
+                        child: Text(
+                          label.parent,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.outline,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    // Both boxes as tall as the taller: a side with a file
+                    // carries a line more than one without.
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            child: _ConflictSide(
+                              key: Key('run-conflict-local-${row.path}'),
+                              name: 'This device',
+                              side: row.local,
+                              selected: offered != null && keepsLocal,
+                              onTap: _tapFor(
+                                offered,
+                                choice,
+                                SyncRunConflictChoice.keepLocal,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _ConflictSide(
+                              key: Key('run-conflict-remote-${row.path}'),
+                              name: 'Remote',
+                              side: row.remote,
+                              selected: offered != null && keepsRemote,
+                              onTap: _tapFor(
+                                offered,
+                                choice,
+                                SyncRunConflictChoice.keepRemote,
+                              ),
+                            ),
+                          ),
                         ],
-                        selected: {choice},
-                        onSelectionChanged: (selected) =>
-                            onResolve(row.path, selected.single),
                       ),
                     ),
-                  if (result != null) _result(context, result, choice),
-                ],
-              ),
-            ),
+                    if (result != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: _result(context, result, choice),
+                      ),
+                  ],
+                ),
+              );
+            },
           ),
     );
+  }
+
+  /// The tap on the side that [side] keeps, or `null` — not tappable —
+  /// outside the review or where that side cannot be kept.
+  VoidCallback? _tapFor(
+    List<SyncRunConflictChoice>? offered,
+    SyncRunConflictChoice current,
+    SyncRunConflictChoice side,
+  ) {
+    if (offered == null || !offered.contains(side)) return null;
+    return () => onResolve(row.path, _toggled(current, side, offered));
   }
 
   Widget _result(
@@ -1082,12 +1217,146 @@ class _ConflictRow extends StatelessWidget {
     );
   }
 
-  String _label(SyncRunConflictChoice choice) => switch (choice) {
-    SyncRunConflictChoice.unresolved => 'Leave',
-    SyncRunConflictChoice.keepLocal => 'Keep this device',
-    SyncRunConflictChoice.keepRemote => 'Keep $deviceName',
-    SyncRunConflictChoice.keepBoth => 'Keep both',
+  /// The choice said back in words, above the boxes that make it.
+  static String _label(SyncRunConflictChoice choice) => switch (choice) {
+    SyncRunConflictChoice.unresolved => 'Skip',
+    SyncRunConflictChoice.keepLocal => 'This device',
+    SyncRunConflictChoice.keepRemote => 'Remote',
+    SyncRunConflictChoice.keepBoth => 'Both',
   };
+}
+
+/// Which side boxes [choice] selects.
+({bool local, bool remote}) _sides(SyncRunConflictChoice choice) =>
+    switch (choice) {
+      SyncRunConflictChoice.unresolved => (local: false, remote: false),
+      SyncRunConflictChoice.keepLocal => (local: true, remote: false),
+      SyncRunConflictChoice.keepRemote => (local: false, remote: true),
+      SyncRunConflictChoice.keepBoth => (local: true, remote: true),
+    };
+
+/// The choice after a tap on the box that keeps [side] ([keepLocal] or
+/// [keepRemote]): the tapped box flips, and the two boxes read back as a
+/// choice — none is Skip, one is that side, both is Both. Where Both is not
+/// offered, a second side moves the selection instead of adding to it.
+SyncRunConflictChoice _toggled(
+  SyncRunConflictChoice current,
+  SyncRunConflictChoice side,
+  List<SyncRunConflictChoice> offered,
+) {
+  final (:local, :remote) = _sides(current);
+  final tappedLocal = side == SyncRunConflictChoice.keepLocal;
+  final next = switch ((
+    tappedLocal ? !local : local,
+    tappedLocal ? remote : !remote,
+  )) {
+    (false, false) => SyncRunConflictChoice.unresolved,
+    (true, false) => SyncRunConflictChoice.keepLocal,
+    (false, true) => SyncRunConflictChoice.keepRemote,
+    (true, true) => SyncRunConflictChoice.keepBoth,
+  };
+  return offered.contains(next) ? next : side;
+}
+
+/// One side of a conflict, boxed: whose side it is, then its status as an
+/// icon and a word — so the conflict reads as "modified vs deleted" at a
+/// glance rather than as a sentence to parse. While the review is up it is
+/// also the control: [onTap] set, and [selected] filled in the theme's
+/// primary container colour. The border is always drawn, transparent when
+/// unselected, so selecting never changes the box's size.
+class _ConflictSide extends StatelessWidget {
+  const _ConflictSide({
+    super.key,
+    required this.name,
+    required this.side,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String name;
+  final SyncRunConflictSide side;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final (icon, word) = switch (side.status) {
+      SyncRunSideStatus.unchanged => (Icons.check, 'unchanged'),
+      SyncRunSideStatus.created => (Icons.add, 'created'),
+      SyncRunSideStatus.modified => (Icons.edit_outlined, 'modified'),
+      SyncRunSideStatus.deleted => (Icons.delete_outline, 'deleted'),
+      SyncRunSideStatus.interrupted => (
+        Icons.warning_amber_outlined,
+        'interrupted',
+      ),
+      SyncRunSideStatus.none => (Icons.remove, 'no record'),
+    };
+    final radius = BorderRadius.circular(8);
+    final foreground = selected ? scheme.onPrimaryContainer : null;
+    final detail = textTheme.bodySmall?.copyWith(
+      color: foreground ?? scheme.outline,
+    );
+    return Semantics(
+      button: onTap != null,
+      selected: selected,
+      child: Material(
+        color: selected
+            ? scheme.primaryContainer
+            : scheme.surfaceContainerHighest,
+        shape: RoundedRectangleBorder(
+          borderRadius: radius,
+          side: BorderSide(
+            width: 2,
+            color: selected ? scheme.primary : Colors.transparent,
+          ),
+        ),
+        child: InkWell(
+          borderRadius: radius,
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.bodySmall?.copyWith(
+                    color: foreground ?? scheme.outline,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Icon(icon, size: 16, color: foreground),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(word, style: TextStyle(color: foreground)),
+                    ),
+                  ],
+                ),
+                // Two pieces that wrap between them, never mid-piece: the
+                // box is half a phone's width.
+                if (side.file case (:final modified, :final bytes))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Wrap(
+                      spacing: 6,
+                      children: [
+                        Text(modified, style: detail),
+                        Text(formatBytes(bytes), style: detail),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// A line that reports something gone wrong — a failure, a conflict, a

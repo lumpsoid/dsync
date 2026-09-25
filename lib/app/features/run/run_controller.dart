@@ -344,12 +344,7 @@ class SyncRunController {
           SyncRunHeader(
             localRoot: request.localRootPath,
             remoteRoot: request.remoteRootPath,
-            deviceName: request.deviceName,
-            history: _history(
-              lastA: a.lastCommit,
-              lastB: b.lastCommit,
-              deviceName: request.deviceName,
-            ),
+            history: _history(lastA: a.lastCommit, lastB: b.lastCommit),
             firstSyncWarning: a.lastCommit == null || b.lastCommit == null
                 ? firstSyncWarning
                 : null,
@@ -374,8 +369,8 @@ class SyncRunController {
         state.recordConflict(
           SyncRunConflictRow(
             path: conflict.path,
-            local: _status(conflict.a),
-            remote: _status(conflict.b),
+            local: _conflictSide(conflict.a),
+            remote: _conflictSide(conflict.b),
           ),
         );
       case RunPlan() && final plan:
@@ -383,10 +378,10 @@ class SyncRunController {
           for (final proposal in plan.actions)
             SyncRunPlanRow(
               path: proposal.path,
-              action: _actionLabel(proposal.action, request.deviceName),
+              action: _actionLabel(proposal.action),
               bytes: _bytes(proposal.action),
               group: _group(proposal.action),
-              reversal: _reversal(proposal, request.deviceName),
+              reversal: _reversal(proposal),
             ),
         ], bytesToTransfer: plan.bytesToTransfer);
         if (!plan.awaitingDecision) break;
@@ -407,7 +402,7 @@ class SyncRunController {
           state.recordResult(
             SyncRunResultRow(
               path: action.path,
-              action: _actionLabel(action, request.deviceName),
+              action: _actionLabel(action),
               error: failure,
             ),
           );
@@ -493,14 +488,10 @@ class SyncRunController {
       ? SyncRunPaused(completedActions: completedActions)
       : SyncRunStopped(completedActions: completedActions);
 
-  String _history({
-    required DateTime? lastA,
-    required DateTime? lastB,
-    required String deviceName,
-  }) {
+  String _history({required DateTime? lastA, required DateTime? lastB}) {
     if (lastA == null && lastB == null) return 'First sync of this pair.';
     if (lastA == null || lastB == null) {
-      final emptySide = lastA == null ? 'This device' : deviceName;
+      final emptySide = lastA == null ? 'This device' : 'Remote';
       return 'First sync of this pair: $emptySide has no archive for it '
           'yet. Either this is a new replica joining an established one, '
           "or that side's app data was wiped.";
@@ -509,7 +500,7 @@ class SyncRunController {
     final b = _formatTimestamp(lastB);
     if (a == b) return 'Last synced $a (${_relative(lastA)}).';
     return 'Last synced: this device $a (${_relative(lastA)}), '
-        '$deviceName $b (${_relative(lastB)}).';
+        'the remote $b (${_relative(lastB)}).';
   }
 
   /// [time] as this device's "HH:MM".
@@ -524,6 +515,22 @@ class SyncRunController {
     String two(int n) => n.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} '
         '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  SyncRunConflictSide _conflictSide(FileStatus? status) {
+    final file = _file(status);
+    return SyncRunConflictSide(
+      _status(status),
+      file: file == null
+          ? null
+          : (
+              modified: _shortTimestamp(
+                DateTime.fromMicrosecondsSinceEpoch(file.mtimeUs, isUtc: true),
+                app.now(),
+              ),
+              bytes: file.size,
+            ),
+    );
   }
 
   String _relative(DateTime time) {
@@ -552,7 +559,7 @@ const firstSyncWarning =
 /// folder and `b` the peer's.
 String _sideName(ReplicaSide side, RunRequest request) => switch (side) {
   ReplicaSide.a => 'this device',
-  ReplicaSide.b => request.deviceName,
+  ReplicaSide.b => 'remote',
 };
 
 SyncRunScanSide _side(ScanTally tally) => SyncRunScanSide(
@@ -563,25 +570,58 @@ SyncRunScanSide _side(ScanTally tally) => SyncRunScanSide(
   deleted: tally.deleted,
 );
 
-String _status(FileStatus? status) => switch (status) {
-  null => 'no record',
-  StatusUnchanged() => 'unchanged',
-  StatusCreated() => 'created',
-  StatusModified() => 'modified',
-  StatusDeleted() => 'deleted',
-  StatusUntrusted() ||
-  StatusUntrustedAbsent() => 'interrupted, may be incomplete',
+SyncRunSideStatus _status(FileStatus? status) => switch (status) {
+  null => SyncRunSideStatus.none,
+  StatusUnchanged() => SyncRunSideStatus.unchanged,
+  StatusCreated() => SyncRunSideStatus.created,
+  StatusModified() => SyncRunSideStatus.modified,
+  StatusDeleted() => SyncRunSideStatus.deleted,
+  StatusUntrusted() || StatusUntrustedAbsent() => SyncRunSideStatus.interrupted,
 };
 
-String _actionLabel(PlanAction action, String deviceName) => switch (action) {
-  CopyAction(from: ReplicaSide.a) => 'copy to $deviceName',
+/// The file a side's status has on disk, if any.
+FileFacts? _file(FileStatus? status) => switch (status) {
+  StatusUnchanged(:final file) ||
+  StatusCreated(:final file) ||
+  StatusModified(:final file) ||
+  StatusUntrusted(:final file) => file,
+  null || StatusDeleted() || StatusUntrustedAbsent() => null,
+};
+
+const _months = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/// [time] as this device's "25 Sep 14:03" — short, for the half-width side
+/// box it sits in; the year only when it is not [now]'s.
+String _shortTimestamp(DateTime time, DateTime now) {
+  final local = time.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  final year = local.year == now.toLocal().year ? '' : ' ${local.year}';
+  return '${local.day} ${_months[local.month - 1]}$year '
+      '${two(local.hour)}:${two(local.minute)}';
+}
+
+String _actionLabel(PlanAction action) => switch (action) {
+  CopyAction(from: ReplicaSide.a) => 'copy to the remote',
   CopyAction(from: ReplicaSide.b) => 'copy to this device',
   CopyAsideAction(from: ReplicaSide.a, :final to) =>
-    "saved this device's version on $deviceName as ${_name(to)}",
+    "saved this device's version on the remote as ${_name(to)}",
   CopyAsideAction(from: ReplicaSide.b, :final to) =>
-    "saved $deviceName's version as ${_name(to)}",
+    "saved the remote version as ${_name(to)}",
   DeleteAction(on: ReplicaSide.a) => 'delete on this device',
-  DeleteAction(on: ReplicaSide.b) => 'delete on $deviceName',
+  DeleteAction(on: ReplicaSide.b) => 'delete on the remote',
   CommitOnlyAction() => 'same content, record only',
 };
 
@@ -590,18 +630,16 @@ String _actionLabel(PlanAction action, String deviceName) => switch (action) {
 /// reverse of a delete restores the side that lost the file — so the label
 /// names whose version is replaced, or where the file comes back, never a
 /// softer "undo". `null` when the plan offers no reverse.
-SyncRunPlanReversal? _reversal(PlanProposal proposal, String deviceName) {
+SyncRunPlanReversal? _reversal(PlanProposal proposal) {
   final reversed = proposal.reversed;
   if (reversed == null) return null;
   final action = switch (proposal.action) {
     CopyAction(from: ReplicaSide.a) =>
-      "replace this device's version with $deviceName's",
+      "replace this device's version with the remote's",
     CopyAction(from: ReplicaSide.b) =>
-      "replace $deviceName's version with this device's",
-    DeleteAction(on: ReplicaSide.b) =>
-      'restore on this device from $deviceName',
-    DeleteAction(on: ReplicaSide.a) =>
-      'restore on $deviceName from this device',
+      "replace the remote's version with this device's",
+    DeleteAction(on: ReplicaSide.b) => 'restore on this device from the remote',
+    DeleteAction(on: ReplicaSide.a) => 'restore on the remote from this device',
     CommitOnlyAction() || CopyAsideAction() => null,
   };
   if (action == null) return null;

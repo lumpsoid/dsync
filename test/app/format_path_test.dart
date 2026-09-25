@@ -44,6 +44,34 @@ void main() {
   });
 
   group('PathLabel', () {
+    test('stacked: a long leaf leaves the parent its own whole budget', () {
+      const leaf =
+          'quarterly-report-final-reviewed-by-legal-and-finance-2026-09.pdf';
+      final label = PathLabel.stacked('work/clients/acme/contracts/2026/$leaf');
+      expect(label.leaf, leaf);
+      expect(label.parent, 'work/clients/acme/contracts/2026/');
+      // Positive control: the side-by-side split spends that budget on
+      // the leaf and has none left for the parent.
+      expect(
+        PathLabel.of('work/clients/acme/contracts/2026/$leaf').parent,
+        '…/',
+      );
+    });
+
+    test('stacked: a long parent is middle-elided, keeping its end', () {
+      final label = PathLabel.stacked(
+        '/storage/emulated/0/Android/data/app/files/sync/notes/a.md',
+      );
+      expect(label.leaf, 'a.md');
+      expect(label.parent.length, lessThanOrEqualTo(defaultPathLabelLength));
+      expect(label.parent, startsWith('/…/'));
+      expect(label.parent, endsWith('sync/notes/'));
+    });
+
+    test('stacked: a top-level path has no parent', () {
+      expect(PathLabel.stacked('a.md').parent, '');
+    });
+
     test('splits off the leaf and keeps the pair readable as one path', () {
       final label = PathLabel.of('/on-device/notes');
 

@@ -14,6 +14,7 @@ import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -383,6 +384,42 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
+  testWidgets('a long file name wraps whole on a phone-width row, and its '
+      'folder keeps its end', (tester) async {
+    const name =
+        'quarterly-report-final-reviewed-by-legal-and-finance-2026-09.pdf';
+    const path = 'work/clients/acme/contracts/2026/$name';
+    controller.state
+      ..recordStart(dryRun: false)
+      ..recordPhase(const SyncRunScanning())
+      ..recordPlan(const [
+        SyncRunPlanRow(
+          path: path,
+          action: 'copy to the remote',
+          bytes: 2048,
+          group: SyncRunPlanGroup.toDevice,
+          reversal: null,
+        ),
+      ], bytesToTransfer: 2048);
+    await pump(tester);
+    tester.view.physicalSize = const Size(360, 2400);
+    await tester.pump();
+
+    // The whole leaf is laid out, over more than one line, and not cut.
+    final leaf = tester.renderObject<RenderParagraph>(find.text(name));
+    expect(leaf.didExceedMaxLines, isFalse);
+    expect(tester.widget<Text>(find.text(name)).overflow, isNull);
+    expect(
+      tester.getSize(find.text(name)).height,
+      greaterThan(
+        tester.getSize(find.text('copy to the remote · 2.0 KiB')).height,
+      ),
+    );
+    // The folder is its own quiet line, never the part that pushes the
+    // name out.
+    expect(find.textContaining('2026/'), findsOneWidget);
+  });
+
   testWidgets('applying: header, warning, tally, conflicts, plan with each '
       'row marked off by its result, and progress', (tester) async {
     controller.state
@@ -392,7 +429,6 @@ void main() {
         const SyncRunHeader(
           localRoot: '/data/notes',
           remoteRoot: '~/notes',
-          deviceName: 'desktop',
           history: 'First sync of this pair.',
           firstSyncWarning: firstSyncWarning,
         ),
@@ -415,26 +451,29 @@ void main() {
           ),
         ),
       )
-      ..recordUnreadablePath('locked.txt (desktop): Permission denied')
+      ..recordUnreadablePath('locked.txt (remote): Permission denied')
       ..recordSkippedSymlink('link (this device): no follow rule matched')
       ..recordConflict(
         const SyncRunConflictRow(
           path: 'both.txt',
-          local: 'created',
-          remote: 'created',
+          local: SyncRunConflictSide(
+            SyncRunSideStatus.created,
+            file: (modified: '25 Sep 14:03', bytes: 12288),
+          ),
+          remote: SyncRunConflictSide(SyncRunSideStatus.created),
         ),
       )
       ..recordPlan(const [
         SyncRunPlanRow(
           path: 'new.txt',
-          action: 'copy to desktop',
+          action: 'copy to the remote',
           bytes: 2048,
           group: SyncRunPlanGroup.toDevice,
           reversal: null,
         ),
         SyncRunPlanRow(
           path: 'old.txt',
-          action: 'delete on desktop',
+          action: 'delete on the remote',
           bytes: 0,
           group: SyncRunPlanGroup.deletions,
           reversal: null,
@@ -443,7 +482,7 @@ void main() {
       ..recordResult(
         const SyncRunResultRow(
           path: 'new.txt',
-          action: 'copy to desktop',
+          action: 'copy to the remote',
           error: null,
         ),
       )
@@ -451,35 +490,71 @@ void main() {
     await pump(tester);
 
     expect(find.byKey(const Key('run-header')), findsOneWidget);
-    expect(find.text('This device ⇄ desktop'), findsOneWidget);
+    expect(find.text('This device ⇄ Remote'), findsOneWidget);
     expect(find.text('This device: /data/notes'), findsOneWidget);
-    expect(find.text('desktop: ~/notes'), findsOneWidget);
+    expect(find.text('Remote: ~/notes'), findsOneWidget);
     expect(find.text('First sync of this pair.'), findsOneWidget);
     expect(find.byKey(const Key('run-first-sync-warning')), findsOneWidget);
 
-    // Scan tally: one line, with today's per-side breakdown a tap away.
+    // Scan tally: one line, with the per-side table a tap away.
     expect(find.text('10 files checked · 1 changed'), findsOneWidget);
-    expect(
-      find.textContaining('7 unchanged by metadata, 2 unchanged by hash'),
-      findsNothing,
-    );
+    expect(find.byKey(const Key('run-scan-table')), findsNothing);
     await tester.tap(find.byKey(const Key('run-scan-tally')));
     await tester.pump();
-    expect(
-      find.textContaining('7 unchanged by metadata, 2 unchanged by hash'),
-      findsOneWidget,
-    );
+    final table = find.byKey(const Key('run-scan-table'));
+    expect(table, findsOneWidget);
+    Finder inTable(String text) =>
+        find.descendant(of: table, matching: find.text(text));
+    for (final header in [
+      'Checked',
+      'Unchanged',
+      'Modified',
+      'Created',
+      'Deleted',
+    ]) {
+      expect(inTable(header), findsOneWidget);
+    }
+    // This device: 10 checked, 9 unchanged of which 2 by hash, 1 created.
+    expect(inTable('This device'), findsOneWidget);
+    expect(inTable('Remote'), findsOneWidget);
+    expect(inTable('10'), findsOneWidget);
+    expect(inTable('9'), findsOneWidget);
+    expect(inTable('2 by hash'), findsOneWidget);
+    // The metadata/hash split stays reachable (SPEC §5.2), but a side
+    // whose rehash found nothing shows no hash line at all.
+    expect(find.textContaining('by hash'), findsOneWidget);
 
     expect(find.byKey(const Key('run-unreadable')), findsOneWidget);
     expect(find.byKey(const Key('run-symlinks')), findsOneWidget);
+    // A conflict is a card of its own, each side's status boxed.
+    expect(find.byKey(const Key('run-conflict-both.txt')), findsOneWidget);
+    for (final side in ['local', 'remote']) {
+      expect(
+        find.descendant(
+          of: find.byKey(Key('run-conflict-$side-both.txt')),
+          matching: find.text('created'),
+        ),
+        findsOneWidget,
+      );
+    }
+    expect(find.text('Conflicts (1)'), findsOneWidget);
+    // A side with a file says when it changed and how big it is; one
+    // without says neither. Both boxes stand as tall as the taller.
+    Finder inSide(String side, String text) => find.descendant(
+      of: find.byKey(Key('run-conflict-$side-both.txt')),
+      matching: find.text(text),
+    );
+    expect(inSide('local', '25 Sep 14:03'), findsOneWidget);
+    expect(inSide('local', '12 KiB'), findsOneWidget);
+    expect(inSide('remote', '25 Sep 14:03'), findsNothing);
     expect(
-      find.textContaining('both.txt: this device created'),
-      findsOneWidget,
+      tester.getSize(find.byKey(const Key('run-conflict-remote-both.txt'))),
+      tester.getSize(find.byKey(const Key('run-conflict-local-both.txt'))),
     );
 
     // Counts row: direction/delete/conflict tallies, plus the live
     // Applied/Failed pair while applying.
-    expect(find.text('to desktop 1 (2.0 KiB)'), findsOneWidget);
+    expect(find.text('to the remote 1 (2.0 KiB)'), findsOneWidget);
     expect(find.text('delete 1'), findsOneWidget);
     expect(find.text('conflicts 1'), findsOneWidget);
     expect(find.text('Applied: 1'), findsOneWidget);
@@ -492,7 +567,7 @@ void main() {
     expect(find.byKey(const Key('run-plan')), findsOneWidget);
     expect(find.text('new.txt'), findsNothing);
     expect(find.text('old.txt'), findsNothing);
-    expect(find.textContaining('To desktop (1, 2.0 KiB)'), findsOneWidget);
+    expect(find.textContaining('To the remote (1, 2.0 KiB)'), findsOneWidget);
     expect(find.textContaining('Deletions (1)'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('run-plan-disclosure')));
@@ -517,7 +592,6 @@ void main() {
         const SyncRunHeader(
           localRoot: '/data/notes',
           remoteRoot: '~/notes',
-          deviceName: 'desktop',
           history: 'Last synced 2026-09-16 10:00 (just now).',
           firstSyncWarning: null,
         ),
@@ -544,7 +618,6 @@ void main() {
         const SyncRunHeader(
           localRoot: longRoot,
           remoteRoot: '~/notes',
-          deviceName: 'desktop',
           history: 'Last synced 2026-09-16 10:00 (just now).',
           firstSyncWarning: null,
         ),
@@ -563,7 +636,7 @@ void main() {
       for (var i = 0; i < 50000; i++)
         SyncRunPlanRow(
           path: 'file-$i.txt',
-          action: 'copy to desktop',
+          action: 'copy to the remote',
           bytes: 1024,
           group: SyncRunPlanGroup.toDevice,
           reversal: null,
@@ -583,7 +656,7 @@ void main() {
 
       // The section is on the page, its title and its first rows with it.
       expect(find.byKey(const Key('run-plan')), findsOneWidget);
-      expect(find.textContaining('To desktop (50,000'), findsOneWidget);
+      expect(find.textContaining('To the remote (50,000'), findsOneWidget);
       expect(find.text('file-0.txt'), findsOneWidget);
       // The rest of the plan exists as data and not as widgets.
       expect(find.text('file-49999.txt'), findsNothing);
@@ -604,14 +677,14 @@ void main() {
         ..recordPlan(const [
           SyncRunPlanRow(
             path: 'new.txt',
-            action: 'copy to desktop',
+            action: 'copy to the remote',
             bytes: 2048,
             group: SyncRunPlanGroup.toDevice,
             reversal: null,
           ),
           SyncRunPlanRow(
             path: 'old.txt',
-            action: 'delete on desktop',
+            action: 'delete on the remote',
             bytes: 0,
             group: SyncRunPlanGroup.deletions,
             reversal: null,
@@ -624,7 +697,9 @@ void main() {
       await tester.pump();
 
       final other = tester.widget<Text>(find.text('old.txt'));
-      final title = tester.widget<Text>(find.textContaining('To desktop (1'));
+      final title = tester.widget<Text>(
+        find.textContaining('To the remote (1'),
+      );
 
       // Progress is the apply loop's other notification, at most once a
       // second: it repaints the line that shows it and nothing in the plan.
@@ -636,7 +711,7 @@ void main() {
       expect(find.text('Applying 1 of 2'), findsOneWidget);
       expect(tester.widget<Text>(find.text('old.txt')), same(other));
       expect(
-        tester.widget<Text>(find.textContaining('To desktop (1')),
+        tester.widget<Text>(find.textContaining('To the remote (1')),
         same(title),
       );
 
@@ -644,7 +719,7 @@ void main() {
       controller.state.recordResult(
         const SyncRunResultRow(
           path: 'new.txt',
-          action: 'copy to desktop',
+          action: 'copy to the remote',
           error: null,
         ),
       );
@@ -662,14 +737,14 @@ void main() {
     const plan = [
       SyncRunPlanRow(
         path: 'new.txt',
-        action: 'copy to desktop',
+        action: 'copy to the remote',
         bytes: 2048,
         group: SyncRunPlanGroup.toDevice,
         reversal: null,
       ),
       SyncRunPlanRow(
         path: 'old.txt',
-        action: 'delete on desktop',
+        action: 'delete on the remote',
         bytes: 0,
         group: SyncRunPlanGroup.deletions,
         reversal: null,
@@ -686,7 +761,7 @@ void main() {
         ..recordResult(
           const SyncRunResultRow(
             path: 'new.txt',
-            action: 'copy to desktop',
+            action: 'copy to the remote',
             error: 'Permission denied',
           ),
         );
@@ -697,7 +772,7 @@ void main() {
       expect(find.byKey(const Key('run-plan')), findsOneWidget);
       expect(find.text('new.txt'), findsNothing);
       expect(find.text('old.txt'), findsNothing);
-      expect(find.textContaining('To desktop (1, 2.0 KiB)'), findsOneWidget);
+      expect(find.textContaining('To the remote (1, 2.0 KiB)'), findsOneWidget);
       expect(find.textContaining('Deletions (1)'), findsOneWidget);
       expect(find.text('Applied: 0'), findsOneWidget);
 
@@ -727,7 +802,7 @@ void main() {
         ..recordResult(
           const SyncRunResultRow(
             path: 'new.txt',
-            action: 'copy to desktop',
+            action: 'copy to the remote',
             error: null,
           ),
         )
@@ -787,7 +862,7 @@ void main() {
         ..recordPlan(const [
           SyncRunPlanRow(
             path: 'new.txt',
-            action: 'copy to desktop',
+            action: 'copy to the remote',
             bytes: 2048,
             group: SyncRunPlanGroup.toDevice,
             reversal: null,
@@ -1097,6 +1172,28 @@ void main() {
       matching: matching,
     );
 
+    // A conflict's choice is its two side boxes: tapping one keeps that
+    // side, both keeps both, and the row says the choice back in words.
+    Finder side(String path, String which) =>
+        find.byKey(Key('run-conflict-$which-$path'));
+    Future<void> tapSide(WidgetTester tester, String path, String which) async {
+      await tester.tap(side(path, which));
+      await tester.pump();
+    }
+
+    String said(WidgetTester tester, String path) =>
+        tester.widget<Text>(find.byKey(Key('decision-$path'))).data!;
+    bool tappable(WidgetTester tester, String path, String which) =>
+        tester
+            .widget<InkWell>(
+              find.descendant(
+                of: side(path, which),
+                matching: find.byType(InkWell),
+              ),
+            )
+            .onTap !=
+        null;
+
     String summary(WidgetTester tester) =>
         tester.widget<Text>(find.byKey(const Key('run-review-summary'))).data!;
 
@@ -1121,6 +1218,25 @@ void main() {
       expect(summary(tester), 'Apply 3 · 2 conflicts left open');
       expect(find.text('Sync all except conflicts'), findsOneWidget);
       expect(find.byKey(const Key('run-confirm')), findsOneWidget);
+      // Apply sits at the bar's right edge (inside its 16 px padding),
+      // with Sync all except conflicts to its left.
+      final screen = tester.view.physicalSize / tester.view.devicePixelRatio;
+      final apply = tester.getRect(find.byKey(const Key('run-confirm')));
+      expect(apply.right, moreOrLessEquals(screen.width - 16));
+      expect(
+        tester
+            .getRect(find.byKey(const Key('run-sync-all-except-conflicts')))
+            .right,
+        lessThan(apply.left),
+      );
+    });
+
+    testWidgets('the review fits a phone-width screen', (tester) async {
+      await open(tester);
+      tester.view.physicalSize = const Size(360, 2400);
+      await tester.pump();
+
+      expect(find.byKey(const Key('decision-both.txt')), findsOneWidget);
     });
 
     testWidgets('reverse is offered only where the plan carries one, keep '
@@ -1132,29 +1248,57 @@ void main() {
       expect(inRow('mirror.txt', find.byIcon(Icons.block)), findsOneWidget);
       expect(inRow('mirror.txt', find.byIcon(Icons.swap_horiz)), findsNothing);
 
-      expect(inRow('both.txt', find.text('Keep both')), findsOneWidget);
-      expect(inRow('theirs.txt', find.text('Keep desktop')), findsOneWidget);
-      expect(inRow('theirs.txt', find.text('Keep both')), findsNothing);
-      expect(inRow('theirs.txt', find.text('Keep this device')), findsNothing);
+      // Nothing selected is Skip.
+      expect(said(tester, 'both.txt'), 'Skip');
+      expect(said(tester, 'theirs.txt'), 'Skip');
+
+      // Two-sided: each side, then both.
+      await tapSide(tester, 'both.txt', 'local');
+      expect(said(tester, 'both.txt'), 'This device');
+      await tapSide(tester, 'both.txt', 'remote');
+      expect(said(tester, 'both.txt'), 'Both');
+      await tapSide(tester, 'both.txt', 'local');
+      expect(said(tester, 'both.txt'), 'Remote');
+      await tapSide(tester, 'both.txt', 'remote');
+      expect(said(tester, 'both.txt'), 'Skip');
+
+      // One-sided: the side with no record cannot be kept, so there is no
+      // Both to reach — only the remote side, or Skip.
+      expect(tappable(tester, 'theirs.txt', 'remote'), isTrue);
+      expect(tappable(tester, 'theirs.txt', 'local'), isFalse);
+      await tapSide(tester, 'theirs.txt', 'remote');
+      expect(said(tester, 'theirs.txt'), 'Remote');
     });
 
     testWidgets('reverse, skip and keep both reach the core exactly as shown '
         'on Apply', (tester) async {
       await open(tester);
 
+      final rowOf = find.ancestor(
+        of: find.byKey(const Key('decision-gone.txt')),
+        matching: find.byType(ListTile),
+      );
+      final heightBefore = tester.getSize(rowOf).height;
+
       await tester.tap(inRow('new.txt', find.byIcon(Icons.swap_horiz)));
       await tester.pump();
       await tester.tap(inRow('gone.txt', find.byIcon(Icons.block)));
       await tester.pump();
-      await tester.tap(inRow('both.txt', find.text('Keep both')));
-      await tester.pump();
+      await tapSide(tester, 'both.txt', 'local');
+      await tapSide(tester, 'both.txt', 'remote');
 
       // What each row will do, literally.
       expect(
-        find.text("replace this device's version with desktop's · 1.0 KiB"),
+        find.text("replace this device's version with the remote's · 1.0 KiB"),
         findsOneWidget,
       );
-      expect(find.text('skipped'), findsOneWidget);
+      // Skipped is marked in place — the name struck through, no line
+      // added — so the row keeps its height.
+      TextDecoration? decoration(String name) =>
+          tester.widget<Text>(find.text(name)).style?.decoration;
+      expect(decoration('gone.txt'), TextDecoration.lineThrough);
+      expect(decoration('new.txt'), isNot(TextDecoration.lineThrough));
+      expect(tester.getSize(rowOf).height, heightBefore);
       expect(
         summary(tester),
         'Apply 2 · 1 reversed · 1 skipped · 1 conflict kept both · '
@@ -1184,7 +1328,9 @@ void main() {
       final mirror = tester.widget<Text>(find.text('mirror.txt'));
       final gone = tester.widget<Text>(find.text('gone.txt'));
       final tapped = tester.widget<Text>(find.text('new.txt'));
-      final header = tester.widget<Text>(find.textContaining('To desktop (2'));
+      final header = tester.widget<Text>(
+        find.textContaining('To the remote (2'),
+      );
 
       await tester.tap(inRow('new.txt', find.byIcon(Icons.swap_horiz)));
       await tester.pump();
@@ -1194,7 +1340,7 @@ void main() {
       expect(tester.widget<Text>(find.text('mirror.txt')), same(mirror));
       expect(tester.widget<Text>(find.text('gone.txt')), same(gone));
       expect(
-        tester.widget<Text>(find.textContaining('To desktop (2')),
+        tester.widget<Text>(find.textContaining('To the remote (2')),
         same(header),
       );
     });
@@ -1203,8 +1349,7 @@ void main() {
         'the rows say', (tester) async {
       await open(tester);
       await tester.tap(inRow('gone.txt', find.byIcon(Icons.block)));
-      await tester.tap(inRow('both.txt', find.text('Keep this device')));
-      await tester.pump();
+      await tapSide(tester, 'both.txt', 'local');
 
       await tester.tap(find.byKey(const Key('run-sync-all-except-conflicts')));
       await tester.pump();
@@ -1221,9 +1366,9 @@ void main() {
     testWidgets('a keep-both result reads as a saved copy beside a conflict '
         'still open; a side kept reads as applied', (tester) async {
       await open(tester);
-      await tester.tap(inRow('both.txt', find.text('Keep both')));
-      await tester.tap(inRow('theirs.txt', find.text('Keep desktop')));
-      await tester.pump();
+      await tapSide(tester, 'both.txt', 'local');
+      await tapSide(tester, 'both.txt', 'remote');
+      await tapSide(tester, 'theirs.txt', 'remote');
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
 
@@ -1255,7 +1400,7 @@ void main() {
         find.descendant(
           of: aside,
           matching: find.text(
-            "saved desktop's version as both (desktop).txt — still open",
+            "saved the remote version as both (desktop).txt — still open",
           ),
         ),
         findsOneWidget,
@@ -1276,8 +1421,12 @@ void main() {
         findsOneWidget,
       );
       // And the conflict itself still reads as one.
+      expect(find.byKey(const Key('run-conflict-both.txt')), findsOneWidget);
       expect(
-        find.text('both.txt: this device modified, the other side modified'),
+        find.descendant(
+          of: find.byKey(const Key('run-conflict-remote-both.txt')),
+          matching: find.text('modified'),
+        ),
         findsOneWidget,
       );
     });
@@ -1492,7 +1641,7 @@ void main() {
         ..recordPlan(const [
           SyncRunPlanRow(
             path: 'new.txt',
-            action: 'copy to desktop',
+            action: 'copy to the remote',
             bytes: 8,
             group: SyncRunPlanGroup.toDevice,
             reversal: null,
@@ -1501,7 +1650,7 @@ void main() {
         ..recordResult(
           const SyncRunResultRow(
             path: 'new.txt',
-            action: 'copy to desktop',
+            action: 'copy to the remote',
             error: 'Permission denied',
           ),
         );
@@ -1521,8 +1670,8 @@ void main() {
         ..recordConflict(
           const SyncRunConflictRow(
             path: 'both.txt',
-            local: 'modified',
-            remote: 'modified',
+            local: SyncRunConflictSide(SyncRunSideStatus.modified),
+            remote: SyncRunConflictSide(SyncRunSideStatus.modified),
           ),
         );
       await pump(tester);
@@ -1571,7 +1720,6 @@ void main() {
           const SyncRunHeader(
             localRoot: '/data/notes',
             remoteRoot: '~/notes',
-            deviceName: 'desktop',
             history: 'First sync of this pair.',
             firstSyncWarning: firstSyncWarning,
           ),

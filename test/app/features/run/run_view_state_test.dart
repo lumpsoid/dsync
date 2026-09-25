@@ -1,4 +1,5 @@
 import 'package:dsync/app/core_link/models/action_result.dart';
+import 'package:dsync/app/core_link/models/file_status.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/run_end.dart';
 import 'package:dsync/app/core_link/models/run_update.dart';
@@ -69,7 +70,6 @@ void main() {
       final header = get().state.header!;
       expect(header.localRoot, '/data/notes');
       expect(header.remoteRoot, '~/notes');
-      expect(header.deviceName, 'desktop');
       expect(header.history, contains('Last synced'));
       expect(header.history, contains('2 hour(s) ago'));
       expect(header.firstSyncWarning, isNull);
@@ -102,7 +102,7 @@ void main() {
         get().state.unreadablePaths.single,
         allOf(
           contains('locked.txt'),
-          contains('desktop'),
+          contains('remote'),
           contains('Permission'),
         ),
       );
@@ -126,16 +126,49 @@ void main() {
       },
     );
 
-    test('conflicts: each side as a status word, no record as words', () async {
+    test('conflicts: each side as a status, no record as none', () async {
       await render(happy);
 
       final row = get().state.conflicts.single;
       expect(row.path, 'both.txt');
-      expect(row.local, 'created');
-      expect(row.remote, 'modified');
+      expect(row.local.status, SyncRunSideStatus.created);
+      expect(row.remote.status, SyncRunSideStatus.modified);
 
       await render([RunConflict(conflict('only.txt', a: createdA))]);
-      expect(get().state.conflicts.last.remote, 'no record');
+      expect(get().state.conflicts.last.remote.status, SyncRunSideStatus.none);
+      expect(get().state.conflicts.last.remote.file, isNull);
+    });
+
+    test('conflicts: a side with a file carries when it was modified and its '
+        'size; a side without one carries neither', () async {
+      final thisYear = DateTime(2026, 9, 15, 14, 3);
+      final lastYear = DateTime(2025, 3, 2, 9, 7);
+      FileStatus modifiedAt(DateTime at, int size) =>
+          StatusModified((size: size, mtimeUs: at.microsecondsSinceEpoch));
+      await render([
+        RunConflict(
+          conflict(
+            'both.txt',
+            a: modifiedAt(thisYear, 12288),
+            b: modifiedAt(lastYear, 5),
+          ),
+        ),
+        RunConflict(
+          conflict(
+            'gone.txt',
+            a: modifiedAt(thisYear, 1),
+            b: const StatusDeleted(),
+          ),
+        ),
+      ]);
+
+      final [both, gone] = get().state.conflicts;
+      // This year's needs no year; last year's does. Local time, the
+      // clock the reader reads.
+      expect(both.local.file, (modified: '15 Sep 14:03', bytes: 12288));
+      expect(both.remote.file, (modified: '2 Mar 2025 09:07', bytes: 5));
+      expect(gone.remote.status, SyncRunSideStatus.deleted);
+      expect(gone.remote.file, isNull);
     });
 
     test('plan: rows worded from this device, bytes summed', () async {
@@ -143,7 +176,7 @@ void main() {
 
       expect(get().state.plan, hasLength(2));
       expect(get().state.plan[0].path, 'new.txt');
-      expect(get().state.plan[0].action, 'copy to desktop');
+      expect(get().state.plan[0].action, 'copy to the remote');
       expect(get().state.plan[0].bytes, 2048);
       expect(get().state.plan[0].group, SyncRunPlanGroup.toDevice);
       expect(get().state.plan[1].action, 'delete on this device');
@@ -184,7 +217,7 @@ void main() {
       state.recordPlan(const [
         SyncRunPlanRow(
           path: 'to-device.txt',
-          action: 'copy to desktop',
+          action: 'copy to the remote',
           bytes: 10,
           group: SyncRunPlanGroup.toDevice,
           reversal: null,
@@ -205,7 +238,7 @@ void main() {
         ),
         SyncRunPlanRow(
           path: 'gone-b.txt',
-          action: 'delete on desktop',
+          action: 'delete on the remote',
           bytes: 0,
           group: SyncRunPlanGroup.deletions,
           reversal: null,
@@ -295,7 +328,7 @@ void main() {
       expect(thisEmpty.firstSyncWarning, firstSyncWarning);
       expect(peerEmpty.firstSyncWarning, firstSyncWarning);
       expect(thisEmpty.history, contains('This device has no archive'));
-      expect(peerEmpty.history, contains('desktop has no archive'));
+      expect(peerEmpty.history, contains('Remote has no archive'));
       expect(thisEmpty.history, contains('wiped'));
       expect(peerEmpty.history, contains('wiped'));
     });

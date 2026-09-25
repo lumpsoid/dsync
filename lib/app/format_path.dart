@@ -109,6 +109,23 @@ class PathLabel {
     return PathLabel(parent: '$parent/', leaf: leaf);
   }
 
+  /// [path] split for a layout that stacks the two on separate lines — the
+  /// leaf on its own line, wrapping, the parent on the line under it: the
+  /// parent then has a line of its own to fill, so it is middle-elided
+  /// into the whole of [maxLength] rather than whatever the leaf left.
+  factory PathLabel.stacked(
+    String path, {
+    int maxLength = defaultPathLabelLength,
+  }) {
+    final whole = PathLabel.of(path, maxLength: path.length);
+    if (whole.parent.length <= 1) return whole;
+    final folder = whole.parent.substring(0, whole.parent.length - 1);
+    return PathLabel(
+      parent: '${elidePath(folder, maxLength: maxLength - 1)}/',
+      leaf: whole.leaf,
+    );
+  }
+
   /// Everything above [leaf], elided and ending in `/` — the part two runs
   /// on the same device usually share.
   final String parent;

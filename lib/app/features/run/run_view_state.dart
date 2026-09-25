@@ -182,14 +182,12 @@ final class SyncRunHeader {
   const SyncRunHeader({
     required this.localRoot,
     required this.remoteRoot,
-    required this.deviceName,
     required this.history,
     required this.firstSyncWarning,
   });
 
   final String localRoot;
   final String remoteRoot;
-  final String deviceName;
   final String history;
   final String? firstSyncWarning;
 }
@@ -235,8 +233,8 @@ final class SyncRunScanTally {
   int get totalChanged => local.changed + remote.changed;
 }
 
-/// One `Conflict` (SPEC §6), rendered: each side's status word, or "no
-/// record" for a side that has never seen the path.
+/// One `Conflict` (SPEC §6), rendered: each side's status, and its file
+/// where it has one.
 final class SyncRunConflictRow {
   const SyncRunConflictRow({
     required this.path,
@@ -245,8 +243,32 @@ final class SyncRunConflictRow {
   });
 
   final String path;
-  final String local;
-  final String remote;
+  final SyncRunConflictSide local;
+  final SyncRunConflictSide remote;
+}
+
+/// One side of a conflict: its [status], and — for a side with a file on
+/// disk — when that file was last modified ("25 Sep 14:03", by that side's
+/// own clock, shown in this device's time zone) and its size. A deleted
+/// side, or one with no record, has no [file].
+final class SyncRunConflictSide {
+  const SyncRunConflictSide(this.status, {this.file});
+
+  final SyncRunSideStatus status;
+  final ({String modified, int bytes})? file;
+}
+
+/// One side's status for a conflicting path (SPEC §5.2), as the page draws
+/// it: an icon and a word per side. [interrupted] is a write that never
+/// committed, with or without a file left behind (SPEC §7.6); [none] is a
+/// side with no record of the path.
+enum SyncRunSideStatus {
+  unchanged,
+  created,
+  modified,
+  deleted,
+  interrupted,
+  none,
 }
 
 /// Which direction one planned action moves in (Design C.5): the plan

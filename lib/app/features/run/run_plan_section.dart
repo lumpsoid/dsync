@@ -35,15 +35,9 @@ import 'run_view_state.dart';
 /// always does) and on which groups are non-empty, so it is computed
 /// fresh on every build rather than pinned to one group.
 class RunPlanSection extends StatelessWidget {
-  const RunPlanSection(
-    this.state, {
-    super.key,
-    required this.deviceName,
-    required this.onChoose,
-  });
+  const RunPlanSection(this.state, {super.key, required this.onChoose});
 
   final SyncRunViewState state;
-  final String deviceName;
 
   /// What a row's control calls — `SyncRunController.choose`. Handed to
   /// the rows only while the review is up.
@@ -57,7 +51,7 @@ class RunPlanSection extends StatelessWidget {
         ? this.onChoose
         : null;
     final groups = [
-      (group: SyncRunPlanGroup.toDevice, title: 'To $deviceName'),
+      (group: SyncRunPlanGroup.toDevice, title: 'To the remote'),
       (group: SyncRunPlanGroup.toThisDevice, title: 'To this device'),
       (group: SyncRunPlanGroup.deletions, title: 'Deletions'),
       (group: SyncRunPlanGroup.recordOnly, title: 'Record only'),
@@ -212,7 +206,7 @@ class RunPlanRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label = PathLabel.of(row.path);
+    final label = PathLabel.stacked(row.path);
     return ValueListenableBuilder<SyncRunResultRow?>(
       valueListenable: state.resultCell(row.path),
       builder: (context, result, _) =>
@@ -220,44 +214,52 @@ class RunPlanRow extends StatelessWidget {
             valueListenable: state.actionDecisionCell(row.path),
             builder: (context, choice, _) {
               final theme = Theme.of(context);
+              final dim = theme.colorScheme.outline;
+              final skipped = choice == SyncRunActionChoice.skipped;
               final onChoose = this.onChoose;
               return ListTile(
                 contentPadding: EdgeInsets.zero,
                 dense: true,
+                titleAlignment: ListTileTitleAlignment.top,
                 leading: _resultIcon(result, theme),
+                // The name wraps rather than ellipsising: the leaf is what
+                // tells two rows apart, so it is never the part cut. A
+                // skipped row is struck through and dimmed in place — no
+                // line appears or goes, so a tap never moves the row.
                 title: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(
-                      _groupIcon(row.group),
-                      size: 14,
-                      color: theme.colorScheme.outline,
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, right: 6),
+                      child: Icon(_groupIcon(row.group), size: 14, color: dim),
                     ),
-                    const SizedBox(width: 6),
                     Expanded(
-                      child: Text.rich(
-                        TextSpan(
-                          children: [
-                            if (label.parent.isNotEmpty)
-                              TextSpan(
-                                text: label.parent,
-                                style: TextStyle(
-                                  color: theme.colorScheme.outline,
-                                ),
-                              ),
-                            TextSpan(
-                              text: label.leaf,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+                      child: Text(
+                        label.leaf,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          decoration: skipped
+                              ? TextDecoration.lineThrough
+                              : null,
+                          color: skipped ? dim : null,
                         ),
-                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
-                subtitle: _subtitle(result, choice),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (label.parent.isNotEmpty)
+                      Text(
+                        label.parent,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: dim),
+                      ),
+                    _detail(result, choice, theme),
+                  ],
+                ),
                 trailing: onChoose == null
                     ? null
                     : _ActionChoiceControl(
@@ -272,17 +274,34 @@ class RunPlanRow extends StatelessWidget {
     );
   }
 
-  Widget? _subtitle(SyncRunResultRow? result, SyncRunActionChoice choice) {
-    if (result?.error case final error?) return Text(error);
-    return switch ((choice, row.reversal)) {
-      (SyncRunActionChoice.reversed, final reversal?) => Text(
-        reversal.bytes > 0
-            ? '${reversal.action} · ${formatBytes(reversal.bytes)}'
-            : reversal.action,
+  /// The row's one line of what it does, always present so every choice
+  /// keeps the row the same height: the planned action and its size, the
+  /// reverse's own words and size once reversed, the error once failed.
+  /// Skipped keeps the planned words, dimmed — the struck-through name and
+  /// the control say it is left out.
+  Widget _detail(
+    SyncRunResultRow? result,
+    SyncRunActionChoice choice,
+    ThemeData theme,
+  ) {
+    if (result?.error case final error?) {
+      return Text(error, style: TextStyle(color: theme.colorScheme.error));
+    }
+    final (words, bytes) = switch ((choice, row.reversal)) {
+      (SyncRunActionChoice.reversed, final reversal?) => (
+        reversal.action,
+        reversal.bytes,
       ),
-      (SyncRunActionChoice.skipped, _) => const Text('skipped'),
-      _ => row.bytes > 0 ? Text(formatBytes(row.bytes)) : null,
+      _ => (row.action, row.bytes),
     };
+    return Text(
+      bytes > 0 ? '$words · ${formatBytes(bytes)}' : words,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: choice == SyncRunActionChoice.skipped
+          ? TextStyle(color: theme.colorScheme.outline)
+          : null,
+    );
   }
 }
 

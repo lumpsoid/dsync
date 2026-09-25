@@ -241,10 +241,10 @@ void main() {
 
       final rows = controller().state.plan;
       expect(rows.map((r) => r.reversal?.action), [
-        "replace this device's version with desktop's",
-        "replace desktop's version with this device's",
-        'restore on this device from desktop',
-        'restore on desktop from this device',
+        "replace this device's version with the remote's",
+        "replace the remote's version with this device's",
+        'restore on this device from the remote',
+        'restore on the remote from this device',
         null,
       ]);
       expect(rows.map((r) => r.reversal?.bytes), [3, 4, 5, 6, null]);
