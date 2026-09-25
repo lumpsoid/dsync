@@ -1,0 +1,19 @@
+# What keeping the old version of a file costs before it is overwritten in
+# place, on the device (see src/main.rs). Not part of the build: its own
+# workspace, so the core never links SQLite and `cargo build` in native/ never
+# compiles it. Built and swept by ../run_backup_probe.sh.
+
+[package]
+name = "backup-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+libc = "0.2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[profile.release]
+debug = false
