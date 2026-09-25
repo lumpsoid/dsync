@@ -518,6 +518,26 @@ fn a_local_location_from_a_picked_folder_must_read_back_as_local() {
     ));
 }
 
+// group: Location.deviceLabel
+
+#[test]
+fn device_label_is_the_peer_name_the_host_or_the_last_folder_segment() {
+    assert_eq!(parse("/home/me/notes").device_label(), "notes");
+    assert_eq!(parse("/home/me/notes/").device_label(), "notes");
+    assert_eq!(parse("notes").device_label(), "notes");
+    assert_eq!(parse("/").device_label(), "root");
+    assert_eq!(parse("me@phone:/sdcard/notes").device_label(), "phone");
+    assert_eq!(parse("ssh://phone:/sdcard/notes").device_label(), "phone");
+    assert_eq!(
+        parse("unix:///run/d.sock:/srv/notes").device_label(),
+        "notes"
+    );
+    assert_eq!(
+        parse("peer://my phone:/sdcard/notes").device_label(),
+        "my phone"
+    );
+}
+
 #[test]
 fn a_peer_location_from_its_parts_is_the_one_parse_reads() {
     let phone = PeerName::parse("my phone").unwrap();

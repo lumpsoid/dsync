@@ -232,6 +232,36 @@ impl Location {
     pub fn consults_local_addresses(&self) -> bool {
         matches!(self, Location::Ssh(ssh) if ssh.form == SshForm::Inferred)
     }
+
+    /// A short label for where this location lives, for
+    /// [`crate::RelPath::conflict_copy`]'s sibling name: a `peer://`
+    /// location's own device name; an ssh destination's host; a local or
+    /// `unix://` location's own last path segment (its folder name).
+    pub fn device_label(&self) -> &str {
+        match self {
+            Location::Local(local) => folder_name(&local.path),
+            Location::Ssh(ssh) => &ssh.host,
+            Location::Unix(unix) => folder_name(&unix.path),
+            Location::Peer(peer) => peer.device.as_str(),
+        }
+    }
+}
+
+/// What a root-only path (`/`, `\`, or empty after trimming) labels as -
+/// there is no folder segment to name it with.
+const ROOT_LOCATION_LABEL: &str = "root";
+
+/// The last non-empty `/`- or `\`-separated segment of `path`: its folder
+/// name. A trailing separator (`a/b/`) is skipped past first, so `a/b/` and
+/// `a/b` agree; both separators are accepted since a `Local` path can be a
+/// Windows one. A root-only path has no such segment and falls back to
+/// [`ROOT_LOCATION_LABEL`].
+fn folder_name(path: &str) -> &str {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(ROOT_LOCATION_LABEL)
 }
 
 impl LocalLocation {
