@@ -6,14 +6,14 @@ part of 'signals.dart';
 class ConflictChoice {
   const ConflictChoice({
     required this.conflict,
-    required this.keep,
+    required this.resolution,
   });
 
   static ConflictChoice deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = ConflictChoice(
       conflict: deserializer.deserializeUint32(),
-      keep: SideViewExtension.deserialize(deserializer),
+      resolution: ConflictResolutionView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -29,22 +29,22 @@ class ConflictChoice {
   }
 
   final int conflict;
-  final SideView keep;
+  final ConflictResolutionView resolution;
 
   ConflictChoice copyWith({
     int? conflict,
-    SideView? keep,
+    ConflictResolutionView? resolution,
   }) {
     return ConflictChoice(
       conflict: conflict ?? this.conflict,
-      keep: keep ?? this.keep,
+      resolution: resolution ?? this.resolution,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeUint32(conflict);
-    keep.serialize(serializer);
+    resolution.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -61,13 +61,13 @@ class ConflictChoice {
 
     return other is ConflictChoice
       && conflict == other.conflict
-      && keep == other.keep;
+      && resolution == other.resolution;
   }
 
   @override
   int get hashCode => Object.hash(
         conflict,
-        keep,
+        resolution,
       );
 
   @override
@@ -77,7 +77,7 @@ class ConflictChoice {
     assert(() {
       fullString = '$runtimeType('
         'conflict: $conflict, '
-        'keep: $keep'
+        'resolution: $resolution'
         ')';
       return true;
     }());

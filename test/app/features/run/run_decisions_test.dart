@@ -1,7 +1,12 @@
+import 'package:dsync/app/core_link/models/conflict_info.dart';
+import 'package:dsync/app/core_link/models/conflict_resolution.dart';
+import 'package:dsync/app/core_link/models/file_status.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
+import 'package:dsync/app/core_link/models/plan_proposal.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/run_decision.dart';
 import 'package:dsync/app/core_link/models/run_update.dart';
+import 'package:dsync/app/features/run/plan_decisions.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:test/test.dart';
@@ -21,10 +26,14 @@ void main() {
 
   setUp(() => harness = RunHarness());
 
+  ({int index, bool reversed}) asPlanned(int index) =>
+      (index: index, reversed: false);
+  final bothAsPlanned = [asPlanned(0), asPlanned(1)];
+
   final interactivePlan = plan(
     actions: const [
-      copyNew,
-      DeleteAction('gone.txt', on: ReplicaSide.b),
+      PlanProposal(copyNew),
+      PlanProposal(DeleteAction('gone.txt', on: ReplicaSide.b)),
     ],
     conflicts: [
       conflict('both.txt', a: modifiedB, b: modifiedB),
@@ -56,8 +65,8 @@ void main() {
       controller().confirm();
 
       final decision = (await decided()).single;
-      expect(decision.resolve, {0: ReplicaSide.a});
-      expect(decision.keep, [0, 1]);
+      expect(decision.resolve, {0: const KeepSide(ReplicaSide.a)});
+      expect(decision.keep, bothAsPlanned);
     });
 
     test('keeping the peer settles it toward side b', () async {
@@ -68,7 +77,9 @@ void main() {
       );
       controller().confirm();
 
-      expect((await decided()).single.resolve, {0: ReplicaSide.b});
+      expect((await decided()).single.resolve, {
+        0: const KeepSide(ReplicaSide.b),
+      });
     });
 
     test('an unresolved conflict has no entry; resolved ones do', () async {
@@ -79,7 +90,9 @@ void main() {
       );
       controller().confirm();
 
-      expect((await decided()).single.resolve, {1: ReplicaSide.b});
+      expect((await decided()).single.resolve, {
+        1: const KeepSide(ReplicaSide.b),
+      });
     });
 
     test('putting a conflict back to unresolved drops its entry', () async {
@@ -90,7 +103,7 @@ void main() {
 
       final decision = (await decided()).single;
       expect(decision.resolve, isEmpty);
-      expect(decision.keep, [0, 1]);
+      expect(decision.keep, bothAsPlanned);
     });
 
     test('skipping a proposed action drops it, keep puts it back', () async {
@@ -100,7 +113,7 @@ void main() {
       controller().keep('gone.txt');
       controller().confirm();
 
-      expect((await decided()).single.keep, [1]);
+      expect((await decided()).single.keep, [asPlanned(1)]);
     });
 
     test('accept all is the plan unchanged, whatever was chosen', () async {
@@ -110,7 +123,7 @@ void main() {
       controller().acceptAll();
 
       final decision = (await decided()).single;
-      expect(decision.keep, [0, 1]);
+      expect(decision.keep, bothAsPlanned);
       expect(decision.resolve, isEmpty);
       expect(controller().state.phase, isA<SyncRunRunning>());
     });
@@ -138,7 +151,9 @@ void main() {
       expect(awaiting().conflicts[1].choice, SyncRunConflictChoice.keepRemote);
       controller().confirm();
 
-      expect((await decided()).single.resolve, {1: ReplicaSide.b});
+      expect((await decided()).single.resolve, {
+        1: const KeepSide(ReplicaSide.b),
+      });
     });
   });
 
@@ -232,7 +247,7 @@ void main() {
       controller().confirm();
 
       final decision = (await decided()).single;
-      expect(decision.keep, [0, 1]);
+      expect(decision.keep, bothAsPlanned);
     });
 
     test('on accept all; a following confirm does not answer again', () async {
@@ -240,7 +255,7 @@ void main() {
       controller().acceptAll();
       controller().confirm();
 
-      expect((await decided()).single.keep, [0, 1]);
+      expect((await decided()).single.keep, bothAsPlanned);
     });
 
     test(
@@ -272,6 +287,135 @@ void main() {
       await harness.emit([summarized(), ranEnd()]);
       await stopping;
       expect(controller().state.phase, isA<SyncRunStopped>());
+    });
+  });
+
+  group('the plan decisions', () {
+    const reversibleGone = PlanProposal(
+      DeleteAction('gone.txt', on: ReplicaSide.b),
+      reverseBytes: 9,
+    );
+    const facts = (size: 1, mtimeUs: 1);
+
+    PlanDecisions over({
+      List<PlanProposal> actions = const [
+        PlanProposal(copyNew),
+        reversibleGone,
+      ],
+      List<ConflictInfo> conflicts = const [],
+    }) => PlanDecisions(
+      plan(actions: actions, conflicts: conflicts, awaitingDecision: true),
+    );
+
+    test('a proposal\'s reverse copies the loser\'s version back, and there '
+        'is none without reverse bytes', () {
+      expect(
+        reversibleGone.reversed,
+        isA<CopyAction>()
+            .having((a) => a.path, 'path', 'gone.txt')
+            .having((a) => a.from, 'from', ReplicaSide.b)
+            .having((a) => a.bytes, 'bytes', 9),
+      );
+      expect(
+        const PlanProposal(copyNew, reverseBytes: 4).reversed,
+        isA<CopyAction>()
+            .having((a) => a.from, 'from', ReplicaSide.b)
+            .having((a) => a.bytes, 'bytes', 4),
+      );
+      expect(const PlanProposal(copyNew).reversed, isNull);
+      expect(
+        const PlanProposal(CommitOnlyAction('x'), reverseBytes: 4).reversed,
+        isNull,
+      );
+    });
+
+    test('reversed is offered and taken only where the plan carries a '
+        'reverse', () {
+      final choices = over();
+      expect(choices.offeredForAction(const PlanProposal(copyNew)), [
+        SyncRunActionChoice.proposed,
+        SyncRunActionChoice.skipped,
+      ]);
+      expect(
+        choices.offeredForAction(reversibleGone),
+        SyncRunActionChoice.values,
+      );
+
+      choices.choose('new.txt', SyncRunActionChoice.reversed);
+      expect(choices.actionChoiceFor('new.txt'), SyncRunActionChoice.proposed);
+      // A stale reverse tap leaves an earlier choice as it was, too.
+      choices.choose('new.txt', SyncRunActionChoice.skipped);
+      choices.choose('new.txt', SyncRunActionChoice.reversed);
+      expect(choices.actionChoiceFor('new.txt'), SyncRunActionChoice.skipped);
+      // Positive control: the reversible one takes it.
+      choices.choose('gone.txt', SyncRunActionChoice.reversed);
+      expect(choices.actionChoiceFor('gone.txt'), SyncRunActionChoice.reversed);
+    });
+
+    test('keep both is offered only when both sides hold a file', () {
+      final choices = over(
+        conflicts: [
+          conflict(
+            'mm.txt',
+            a: const StatusModified(facts),
+            b: const StatusModified(facts),
+          ),
+          conflict(
+            'uf.txt',
+            a: const StatusUntrusted(facts),
+            b: const StatusCreated(facts),
+          ),
+          conflict(
+            'fd.txt',
+            a: const StatusModified(facts),
+            b: const StatusDeleted(),
+          ),
+          conflict(
+            'ua.txt',
+            a: const StatusUntrustedAbsent(),
+            b: const StatusModified(facts),
+          ),
+          conflict('one.txt', b: const StatusCreated(facts)),
+        ],
+      );
+      final offersKeepBoth = [
+        for (final conflict in choices.plan.conflicts)
+          choices.offeredFor(conflict).contains(SyncRunConflictChoice.keepBoth),
+      ];
+      expect(offersKeepBoth, [true, true, false, false, false]);
+
+      choices.resolve('fd.txt', SyncRunConflictChoice.keepBoth);
+      expect(choices.choiceFor('fd.txt'), SyncRunConflictChoice.unresolved);
+      choices.resolve('mm.txt', SyncRunConflictChoice.keepBoth);
+      expect(choices.choiceFor('mm.txt'), SyncRunConflictChoice.keepBoth);
+    });
+
+    test('resolved() answers each action as chosen and each conflict as '
+        'settled', () {
+      final choices = over(
+        actions: const [
+          PlanProposal(copyNew),
+          reversibleGone,
+          PlanProposal(CommitOnlyAction('same.txt')),
+        ],
+        conflicts: [
+          conflict('left.txt', a: createdA, b: modifiedB),
+          conflict('both.txt', a: createdA, b: modifiedB),
+          conflict('mine.txt', a: createdA, b: modifiedB),
+        ],
+      );
+      choices
+        ..choose('gone.txt', SyncRunActionChoice.reversed)
+        ..skip('same.txt')
+        ..resolve('both.txt', SyncRunConflictChoice.keepBoth)
+        ..resolve('mine.txt', SyncRunConflictChoice.keepLocal);
+
+      final decision = choices.resolved();
+      expect(decision.keep, [asPlanned(0), (index: 1, reversed: true)]);
+      expect(decision.resolve, {
+        1: const KeepBoth(),
+        2: const KeepSide(ReplicaSide.a),
+      });
     });
   });
 }

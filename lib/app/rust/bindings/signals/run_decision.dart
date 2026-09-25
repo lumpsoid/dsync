@@ -2,8 +2,9 @@
 part of 'signals.dart';
 
 /// The head's answer to a plan: which of its actions to keep (indices into
-/// the plan's actions) and which conflicts to settle, and which way
-/// (indices into its conflicts). A conflict left out stays unresolved.
+/// the plan's actions), each as planned or reversed, and which conflicts
+/// to settle, and how (indices into its conflicts). A conflict left out
+/// stays unresolved.
 @immutable
 class RunDecision {
   const RunDecision({
@@ -14,7 +15,7 @@ class RunDecision {
   static RunDecision deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = RunDecision(
-      keep: TraitHelpers.deserializeVectorU32(deserializer),
+      keep: TraitHelpers.deserializeVectorKeptAction(deserializer),
       resolve: TraitHelpers.deserializeVectorConflictChoice(deserializer),
     );
     deserializer.decreaseContainerDepth();
@@ -30,11 +31,11 @@ class RunDecision {
     return value;
   }
 
-  final List<int> keep;
+  final List<KeptAction> keep;
   final List<ConflictChoice> resolve;
 
   RunDecision copyWith({
-    List<int>? keep,
+    List<KeptAction>? keep,
     List<ConflictChoice>? resolve,
   }) {
     return RunDecision(
@@ -45,7 +46,7 @@ class RunDecision {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    TraitHelpers.serializeVectorU32(keep, serializer);
+    TraitHelpers.serializeVectorKeptAction(keep, serializer);
     TraitHelpers.serializeVectorConflictChoice(resolve, serializer);
     serializer.decreaseContainerDepth();
   }

@@ -72,8 +72,15 @@ final class SyncRunAwaitingDecisions extends SyncRunPhase {
 /// What the user can do with one conflict (SPEC §11.3: "picks a
 /// direction"). [unresolved] is a choice too — the default, and what "skip"
 /// means for a conflict: no action is added for the path, and the summary
-/// counts it under conflicts, not skips.
-enum SyncRunConflictChoice { unresolved, keepLocal, keepRemote }
+/// counts it under conflicts, not skips. [keepBoth] saves the peer's file
+/// beside this device's and leaves the conflict open; it is offered only
+/// when both sides hold a file.
+enum SyncRunConflictChoice { unresolved, keepLocal, keepRemote, keepBoth }
+
+/// What the user can do with one proposed action: apply it as planned
+/// (the default), apply its reverse — the loser's version put back,
+/// offered only when the plan carries one — or leave it out.
+enum SyncRunActionChoice { proposed, reversed, skipped }
 
 /// One `Conflict` in the sheet: the same two status words as
 /// [SyncRunConflictRow], the current [choice], and which choices are

@@ -7,6 +7,7 @@ import '../../core_link/models/action_result.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/file_status.dart';
 import '../../core_link/models/plan_action.dart';
+import '../../core_link/models/plan_proposal.dart';
 import '../../core_link/models/replica_side.dart';
 import '../../core_link/models/run_decision.dart';
 import '../../core_link/models/run_end.dart';
@@ -303,7 +304,7 @@ class SyncRunController {
             ),
         ],
         actions: [
-          for (final action in choices.plan.actions)
+          for (final PlanProposal(:action) in choices.plan.actions)
             SyncRunActionDecision(
               path: action.path,
               action: _actionLabel(action, deviceName),
@@ -364,7 +365,7 @@ class SyncRunController {
         );
       case RunPlan() && final plan:
         state.recordPlan([
-          for (final action in plan.actions)
+          for (final PlanProposal(:action) in plan.actions)
             SyncRunPlanRow(
               path: action.path,
               action: _actionLabel(action, request.deviceName),

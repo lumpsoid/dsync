@@ -383,7 +383,7 @@ class RunUpdateBodyPlan extends RunUpdateBody {
   static RunUpdateBodyPlan load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = RunUpdateBodyPlan(
-      actions: TraitHelpers.deserializeVectorActionView(deserializer),
+      actions: TraitHelpers.deserializeVectorProposalView(deserializer),
       conflicts: TraitHelpers.deserializeVectorConflictView(deserializer),
       bytesToTransfer: deserializer.deserializeUint64(),
       exceedsWarnSize: deserializer.deserializeBool(),
@@ -393,14 +393,14 @@ class RunUpdateBodyPlan extends RunUpdateBody {
     return instance;
   }
 
-  final List<ActionView> actions;
+  final List<ProposalView> actions;
   final List<ConflictView> conflicts;
   final Uint64 bytesToTransfer;
   final bool exceedsWarnSize;
   final bool awaitingDecision;
 
   RunUpdateBodyPlan copyWith({
-    List<ActionView>? actions,
+    List<ProposalView>? actions,
     List<ConflictView>? conflicts,
     Uint64? bytesToTransfer,
     bool? exceedsWarnSize,
@@ -418,7 +418,7 @@ class RunUpdateBodyPlan extends RunUpdateBody {
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(5);
-    TraitHelpers.serializeVectorActionView(actions, serializer);
+    TraitHelpers.serializeVectorProposalView(actions, serializer);
     TraitHelpers.serializeVectorConflictView(conflicts, serializer);
     serializer.serializeUint64(bytesToTransfer);
     serializer.serializeBool(exceedsWarnSize);

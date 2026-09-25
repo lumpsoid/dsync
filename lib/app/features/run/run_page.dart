@@ -990,6 +990,7 @@ class _ConflictDecision extends StatelessWidget {
     SyncRunConflictChoice.unresolved => 'Leave',
     SyncRunConflictChoice.keepLocal => 'Keep this device',
     SyncRunConflictChoice.keepRemote => 'Keep $deviceName',
+    SyncRunConflictChoice.keepBoth => 'Keep both',
   };
 }
 

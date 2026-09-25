@@ -2,6 +2,7 @@ import '../rust/bindings/bindings.dart' as wire;
 import 'models/action_result.dart';
 import 'models/archive_info.dart';
 import 'models/conflict_info.dart';
+import 'models/conflict_resolution.dart';
 import 'models/device_identity_info.dart';
 import 'models/enrolment_outcome.dart';
 import 'models/enrolment_update.dart';
@@ -14,6 +15,7 @@ import 'models/paired_device_info.dart';
 import 'models/peer_contact.dart';
 import 'models/peer_probe_outcome.dart';
 import 'models/plan_action.dart';
+import 'models/plan_proposal.dart';
 import 'models/profile_draft.dart';
 import 'models/profile_entry.dart';
 import 'models/replica_info.dart';
@@ -162,10 +164,22 @@ wire.RunTarget wireTarget(RunTarget target) => switch (target) {
 };
 
 wire.RunDecision wireDecision(RunDecision decision) => wire.RunDecision(
-  keep: decision.keep,
+  keep: [
+    for (final (:index, :reversed) in decision.keep)
+      wire.KeptAction(index: index, reversed: reversed),
+  ],
   resolve: [
-    for (final MapEntry(key: conflict, value: keep) in decision.resolve.entries)
-      wire.ConflictChoice(conflict: conflict, keep: wireSide(keep)),
+    for (final MapEntry(key: conflict, value: resolution)
+        in decision.resolve.entries)
+      wire.ConflictChoice(
+        conflict: conflict,
+        resolution: switch (resolution) {
+          KeepSide(:final side) => wire.ConflictResolutionViewKeep(
+            value: wireSide(side),
+          ),
+          KeepBoth() => const wire.ConflictResolutionViewKeepBoth(),
+        },
+      ),
   ],
 );
 
@@ -214,7 +228,16 @@ RunUpdate runUpdate(wire.RunUpdateBody body) => switch (body) {
     :final awaitingDecision,
   ) =>
     RunPlan(
-      actions: [for (final action in actions) _action(action)],
+      actions: [
+        for (final proposal in actions)
+          PlanProposal(
+            _action(proposal.action),
+            reverseBytes: switch (proposal.reverseBytes) {
+              final bytes? => _n(bytes),
+              null => null,
+            },
+          ),
+      ],
       conflicts: [for (final conflict in conflicts) _conflict(conflict)],
       bytesToTransfer: _n(bytesToTransfer),
       exceedsWarnSize: exceedsWarnSize,

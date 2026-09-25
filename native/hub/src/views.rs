@@ -11,7 +11,7 @@ use dsync_core::{
 };
 use dsync_domain::{
     Action, CertificateExpiry, CertificateOwner, Conflict, EntryKind, FilterFolderRow,
-    FilterPreviewFolder, FilterPreviewReport, ReplicaInfo, ReplicaRoot, RunSummary,
+    FilterPreviewFolder, FilterPreviewReport, Proposal, ReplicaInfo, ReplicaRoot, RunSummary,
     ScanProbeReport, ScanTally, Side, SkippedAt, SkippedPath, SkippedReason, Status, Unchanged,
 };
 use rinf::SignalPiece;
@@ -639,6 +639,23 @@ impl From<&Action> for ActionView {
             Action::CommitOnly { path } => ActionView::CommitOnly {
                 path: path.to_string(),
             },
+        }
+    }
+}
+
+/// A planned action and, when it can be put the other way, the bytes that
+/// reversal would copy (`None`: no reverse is offered).
+#[derive(Serialize, SignalPiece)]
+pub struct ProposalView {
+    pub action: ActionView,
+    pub reverse_bytes: Option<u64>,
+}
+
+impl From<&Proposal> for ProposalView {
+    fn from(proposal: &Proposal) -> ProposalView {
+        ProposalView {
+            action: ActionView::from(&proposal.action),
+            reverse_bytes: proposal.reverse_bytes,
         }
     }
 }

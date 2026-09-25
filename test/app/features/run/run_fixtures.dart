@@ -4,6 +4,7 @@ import 'package:dsync/app/core_link/models/action_result.dart';
 import 'package:dsync/app/core_link/models/conflict_info.dart';
 import 'package:dsync/app/core_link/models/file_status.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
+import 'package:dsync/app/core_link/models/plan_proposal.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/replica_info.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
@@ -157,7 +158,10 @@ const copyNew = CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048);
 const deleteGone = DeleteAction('gone.txt', on: ReplicaSide.a);
 
 RunPlan plan({
-  List<PlanAction> actions = const [copyNew, deleteGone],
+  List<PlanProposal> actions = const [
+    PlanProposal(copyNew),
+    PlanProposal(deleteGone),
+  ],
   List<ConflictInfo>? conflicts,
   bool awaitingDecision = false,
 }) => RunPlan(
@@ -165,7 +169,10 @@ RunPlan plan({
   conflicts: conflicts ?? [conflict('both.txt', a: createdA, b: modifiedB)],
   bytesToTransfer: actions.fold(
     0,
-    (sum, action) => sum + (action is CopyAction ? action.bytes : 0),
+    (sum, proposal) => switch (proposal.action) {
+      CopyAction(:final bytes) => sum + bytes,
+      _ => sum,
+    },
   ),
   exceedsWarnSize: false,
   awaitingDecision: awaitingDecision,

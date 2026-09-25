@@ -3,8 +3,8 @@
 //! probes it and runs against it - every step a hub command.
 
 use hub::signals::{
-    CoreCommand, EnrolmentUpdateBody, ProfileDraft, ReplyResult, RunDecision, RunTarget,
-    RunUpdateBody, ServeUpdateBody,
+    CoreCommand, EnrolmentUpdateBody, KeptAction, ProfileDraft, ReplyResult, RunDecision,
+    RunTarget, RunUpdateBody, ServeUpdateBody,
 };
 use hub::views::{EnrolmentEndView, PairCodeView, ProbeOutcome, RunEndView, SideView};
 
@@ -222,7 +222,10 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
     let decide = CoreCommand::DecideRun {
         session,
         decision: RunDecision {
-            keep: vec![0],
+            keep: vec![KeptAction {
+                index: 0,
+                reversed: false,
+            }],
             resolve: Vec::new(),
         },
     };

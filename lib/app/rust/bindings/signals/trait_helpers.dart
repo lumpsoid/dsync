@@ -265,6 +265,18 @@ class TraitHelpers {
     return List.generate(length, (_) => FilterRowView.deserialize(deserializer));
   }
 
+  static void serializeVectorKeptAction(List<KeptAction> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<KeptAction> deserializeVectorKeptAction(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => KeptAction.deserialize(deserializer));
+  }
+
   static void serializeVectorPeerContactView(List<PeerContactView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -287,6 +299,18 @@ class TraitHelpers {
   static List<ProfileEntry> deserializeVectorProfileEntry(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => ProfileEntry.deserialize(deserializer));
+  }
+
+  static void serializeVectorProposalView(List<ProposalView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<ProposalView> deserializeVectorProposalView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => ProposalView.deserialize(deserializer));
   }
 
   static void serializeVectorResultView(List<ResultView> value, BinarySerializer serializer) {
@@ -347,18 +371,6 @@ class TraitHelpers {
   static List<String> deserializeVectorStr(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => deserializer.deserializeString());
-  }
-
-  static void serializeVectorU32(List<int> value, BinarySerializer serializer) {
-    serializer.serializeLength(value.length);
-    for (final item in value) {
-        serializer.serializeUint32(item);
-    }
-  }
-
-  static List<int> deserializeVectorU32(BinaryDeserializer deserializer) {
-    final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => deserializer.deserializeUint32());
   }
 
 }

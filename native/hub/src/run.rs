@@ -12,7 +12,7 @@ use dsync_core::{
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
-    Action, Command, EffectiveOptions, Flags, Mode, Plan, ProfileName, RunFlags, Side,
+    Action, Command, EffectiveOptions, Flags, Mode, Plan, ProfileName, RunFlags, Side, Status,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -20,10 +20,12 @@ use tokio::time::Instant;
 use crate::dispatch::{Handled, Hub, text};
 use crate::outbox::Outbox;
 use crate::sessions::{RunControl, Session};
-use crate::signals::{ProgressView, ReplyResult, RunDecision, RunTarget, RunUpdateBody};
+use crate::signals::{
+    ConflictResolutionView, ProgressView, ReplyResult, RunDecision, RunTarget, RunUpdateBody,
+};
 use crate::views::{
-    ActionView, ConflictView, PeerContactView, ReplicaInfoView, ResultView, RunEndView,
-    RunErrorView, RunStartedView, SkippedView, SummaryView, TallyView,
+    ActionView, ConflictView, PeerContactView, ProposalView, ReplicaInfoView, ResultView,
+    RunEndView, RunErrorView, RunStartedView, SkippedView, SummaryView, TallyView,
 };
 
 /// Events buffered between the run and the forwarder, as the CLI's.
@@ -82,6 +84,12 @@ impl Hub {
             a: options.replica(Side::A).to_string(),
             b: options.replica(Side::B).to_string(),
         };
+        // Names a keep-both copy; `options` moves into the session below.
+        let peer_label = options
+            .replica(Side::B)
+            .to_location()
+            .device_label()
+            .to_owned();
 
         let (events, received) = mpsc::channel(EVENT_BUFFER);
         let run = Run::new(events, self.state.clone(), self.tuning);
@@ -102,7 +110,15 @@ impl Hub {
         self.sessions.spawn(
             session,
             |_| Session::Run(control),
-            running.run(run, received, HeadDecider { decisions }, stopped),
+            running.run(
+                run,
+                received,
+                HeadDecider {
+                    decisions,
+                    peer_label,
+                },
+                stopped,
+            ),
         );
         Ok(ReplyResult::RunStarted(started))
     }
@@ -221,15 +237,17 @@ impl RunSession {
 }
 
 /// The head's decider (SPEC §11.3): waits for the head's `DecideRun`. A
-/// session gone before it answers keeps nothing.
+/// session gone before it answers keeps nothing. `peer_label` is side B's
+/// [`dsync_domain::Location::device_label`], naming a keep-both copy.
 pub(crate) struct HeadDecider {
     decisions: mpsc::Receiver<RunDecision>,
+    peer_label: String,
 }
 
 impl Decider for HeadDecider {
     async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
         match self.decisions.recv().await {
-            Some(decision) => decision.actions(plan),
+            Some(decision) => decision.actions(plan, &self.peer_label),
             None => Vec::new(),
         }
     }
@@ -237,19 +255,26 @@ impl Decider for HeadDecider {
 
 impl RunDecision {
     /// The kept actions and the chosen resolutions, read against `plan`:
-    /// an index the plan does not have names nothing, and only the first
-    /// answer per index counts. A plan holds one action per path, so
-    /// taking one answer per index keeps two in-flight actions from ever
-    /// sharing a path (SPEC §7.1).
-    pub fn actions(&self, plan: &Plan) -> Vec<Action> {
+    /// an index the plan does not have names nothing, a reversal the
+    /// action does not offer or a keep-both on a conflict without a file
+    /// on both sides is a stale answer and names nothing either, and only
+    /// the first answer per index counts. A plan holds one action per
+    /// path, so taking one answer per index keeps two in-flight actions
+    /// from ever sharing a path (SPEC §7.1). A keep-both copy is named
+    /// from `peer_label` (side B's) and B's file's mtime.
+    pub fn actions(&self, plan: &Plan, peer_label: &str) -> Vec<Action> {
         let mut kept_indices = HashSet::new();
         let kept = self
             .keep
             .iter()
-            .filter(|&&index| kept_indices.insert(index))
-            .filter_map(|&index| {
-                let proposal = plan.actions.get(usize::try_from(index).ok()?)?;
-                Some(proposal.action.clone())
+            .filter(|kept| kept_indices.insert(kept.index))
+            .filter_map(|kept| {
+                let proposal = plan.actions.get(usize::try_from(kept.index).ok()?)?;
+                if kept.reversed {
+                    proposal.reversed()
+                } else {
+                    Some(proposal.action.clone())
+                }
             });
         let mut resolved_indices = HashSet::new();
         let resolved = self
@@ -258,7 +283,14 @@ impl RunDecision {
             .filter(|choice| resolved_indices.insert(choice.conflict))
             .filter_map(|choice| {
                 let conflict = plan.conflicts.get(usize::try_from(choice.conflict).ok()?)?;
-                Some(conflict.resolve(Side::from(choice.keep)))
+                match choice.resolution {
+                    ConflictResolutionView::Keep(side) => Some(conflict.resolve(Side::from(side))),
+                    ConflictResolutionView::KeepBoth => {
+                        let peer = conflict.b.as_ref().and_then(Status::file)?;
+                        let to = conflict.path.conflict_copy(peer_label, peer.meta.mtime_us);
+                        conflict.keep_both(to)
+                    }
+                }
             });
         kept.chain(resolved).collect()
     }
@@ -367,11 +399,7 @@ fn route(event: RunEvent, batch: &mut Batch, awaiting_decision: bool) -> Option<
             plan,
             exceeds_warn_size,
         } => RunUpdateBody::Plan {
-            actions: plan
-                .actions
-                .iter()
-                .map(|p| ActionView::from(&p.action))
-                .collect(),
+            actions: plan.actions.iter().map(ProposalView::from).collect(),
             conflicts: plan.conflicts.iter().map(ConflictView::from).collect(),
             bytes_to_transfer: plan.bytes_to_transfer(),
             exceeds_warn_size,
@@ -393,7 +421,9 @@ mod tests {
 
     use super::forward;
     use crate::outbox::{Outbox, Outgoing};
-    use crate::signals::{ConflictChoice, RunDecision, RunUpdateBody};
+    use crate::signals::{
+        ConflictChoice, ConflictResolutionView, KeptAction, RunDecision, RunUpdateBody,
+    };
     use crate::views::{ActionView, SideView};
 
     fn path(text: &str) -> RelPath {
@@ -504,6 +534,63 @@ mod tests {
         assert_eq!(batched, 4);
     }
 
+    const PEER: &str = "Phone";
+
+    fn kept(index: u32) -> KeptAction {
+        KeptAction {
+            index,
+            reversed: false,
+        }
+    }
+
+    fn reversed(index: u32) -> KeptAction {
+        KeptAction {
+            index,
+            reversed: true,
+        }
+    }
+
+    fn keep(conflict: u32, side: SideView) -> ConflictChoice {
+        ConflictChoice {
+            conflict,
+            resolution: ConflictResolutionView::Keep(side),
+        }
+    }
+
+    fn keep_both(conflict: u32) -> ConflictChoice {
+        ConflictChoice {
+            conflict,
+            resolution: ConflictResolutionView::KeepBoth,
+        }
+    }
+
+    fn file(size: u64, mtime_us: i64) -> FileState {
+        FileState {
+            meta: FileMeta {
+                size,
+                mtime_us,
+                mode: 0o644,
+            },
+            hash: ContentHash::from_digest([u8::try_from(size).unwrap_or(0); 32]),
+        }
+    }
+
+    /// A copy from A over B's 7-byte file: reversible.
+    fn reversible(text: &str) -> Proposal {
+        Proposal {
+            action: copy(text),
+            reverse_bytes: Some(7),
+        }
+    }
+
+    fn copy_back(text: &str) -> Action {
+        Action::Copy {
+            path: path(text),
+            from: Side::B,
+            bytes: 7,
+        }
+    }
+
     #[test]
     fn a_decision_keeps_the_indexed_actions_and_resolves_the_indexed_conflicts() {
         let conflict = Conflict {
@@ -516,20 +603,11 @@ mod tests {
             conflicts: vec![conflict.clone()],
         };
         let decision = RunDecision {
-            keep: vec![1, 9],
-            resolve: vec![
-                ConflictChoice {
-                    conflict: 0,
-                    keep: SideView::B,
-                },
-                ConflictChoice {
-                    conflict: 4,
-                    keep: SideView::A,
-                },
-            ],
+            keep: vec![kept(1), kept(9)],
+            resolve: vec![keep(0, SideView::B), keep(4, SideView::A)],
         };
         assert_eq!(
-            decision.actions(&plan),
+            decision.actions(&plan, PEER),
             [copy("b"), conflict.resolve(Side::B)],
             "an index the plan does not have names nothing"
         );
@@ -537,7 +615,7 @@ mod tests {
             keep: Vec::new(),
             resolve: Vec::new(),
         };
-        assert!(nothing.actions(&plan).is_empty());
+        assert!(nothing.actions(&plan, PEER).is_empty());
         // A kept action's view names it.
         assert!(matches!(
             ActionView::from(&copy("b")),
@@ -550,42 +628,122 @@ mod tests {
         let conflict = Conflict {
             path: path("both"),
             a: None,
-            b: Some(Status::Created(FileState {
-                meta: FileMeta {
-                    size: 2,
-                    mtime_us: 1,
-                    mode: 0o644,
-                },
-                hash: ContentHash::from_digest([2; 32]),
-            })),
+            b: Some(Status::Created(file(2, 1))),
         };
         let plan = Plan {
             actions: vec![proposed(copy("a")), proposed(copy("b"))],
             conflicts: vec![conflict.clone()],
         };
         let decision = RunDecision {
-            keep: vec![1, 0, 1, 9, 0],
+            keep: vec![kept(1), kept(0), kept(1), kept(9), kept(0)],
             resolve: vec![
-                ConflictChoice {
-                    conflict: 0,
-                    keep: SideView::B,
-                },
-                ConflictChoice {
-                    conflict: 0,
-                    keep: SideView::A,
-                },
-                ConflictChoice {
-                    conflict: 3,
-                    keep: SideView::A,
-                },
+                keep(0, SideView::B),
+                keep(0, SideView::A),
+                keep(3, SideView::A),
             ],
         };
         // The two answers for conflict 0 differ, so which one survived is
         // visible: B's file copied over, not A's absence deleting it.
         assert_ne!(conflict.resolve(Side::A), conflict.resolve(Side::B));
         assert_eq!(
-            decision.actions(&plan),
+            decision.actions(&plan, PEER),
             [copy("b"), copy("a"), conflict.resolve(Side::B)],
         );
+    }
+
+    #[test]
+    fn a_reversed_index_yields_the_reverse_and_none_where_none_is_offered() {
+        let plan = Plan {
+            actions: vec![reversible("r"), proposed(copy("p")), reversible("o")],
+            conflicts: Vec::new(),
+        };
+        let decision = RunDecision {
+            keep: vec![reversed(0), reversed(1)],
+            resolve: Vec::new(),
+        };
+        // Index 1 offers no reverse: a stale answer, dropped, not applied
+        // as planned.
+        assert_eq!(decision.actions(&plan, PEER), [copy_back("r")]);
+        let mixed = RunDecision {
+            keep: vec![kept(1), reversed(0)],
+            resolve: Vec::new(),
+        };
+        // Index 2 is left out: omitted, nothing.
+        assert_eq!(mixed.actions(&plan, PEER), [copy("p"), copy_back("r")]);
+    }
+
+    #[test]
+    fn an_index_sent_as_planned_then_reversed_yields_the_first() {
+        let plan = Plan {
+            actions: vec![reversible("r")],
+            conflicts: Vec::new(),
+        };
+        let planned_first = RunDecision {
+            keep: vec![kept(0), reversed(0)],
+            resolve: Vec::new(),
+        };
+        assert_eq!(planned_first.actions(&plan, PEER), [copy("r")]);
+        let reversed_first = RunDecision {
+            keep: vec![reversed(0), kept(0)],
+            resolve: Vec::new(),
+        };
+        assert_eq!(reversed_first.actions(&plan, PEER), [copy_back("r")]);
+    }
+
+    #[test]
+    fn keep_both_saves_b_s_file_aside_named_from_its_mtime_and_the_peer_label() {
+        // 2026-09-25 14:03:00 UTC.
+        let mtime_us = 1_790_345_000_000_000;
+        let two_sided = Conflict {
+            path: path("docs/notes.md"),
+            a: Some(Status::Modified(file(3, 1))),
+            b: Some(Status::Modified(file(5, mtime_us))),
+        };
+        let one_sided = Conflict {
+            path: path("gone.md"),
+            a: None,
+            b: Some(Status::Created(file(5, mtime_us))),
+        };
+        let deleted = Conflict {
+            path: path("half.md"),
+            a: Some(Status::Modified(file(3, 1))),
+            b: Some(Status::Deleted),
+        };
+        let plan = Plan {
+            actions: Vec::new(),
+            conflicts: vec![two_sided, one_sided, deleted],
+        };
+        let decision = RunDecision {
+            keep: Vec::new(),
+            resolve: vec![keep_both(0), keep_both(1), keep_both(2)],
+        };
+        assert_eq!(
+            decision.actions(&plan, PEER),
+            [Action::CopyAside {
+                path: path("docs/notes.md"),
+                from: Side::B,
+                to: path("docs/notes.dsync-copy-from-Phone-2026-09-25-1403.md"),
+                bytes: 5,
+            }],
+            "only the two-sided conflict yields a copy aside"
+        );
+    }
+
+    #[test]
+    fn a_conflict_sent_keep_then_keep_both_yields_the_first() {
+        let conflict = Conflict {
+            path: path("n.md"),
+            a: Some(Status::Modified(file(3, 1))),
+            b: Some(Status::Modified(file(5, 60_000_000))),
+        };
+        let plan = Plan {
+            actions: Vec::new(),
+            conflicts: vec![conflict.clone()],
+        };
+        let decision = RunDecision {
+            keep: Vec::new(),
+            resolve: vec![keep(0, SideView::A), keep_both(0)],
+        };
+        assert_eq!(decision.actions(&plan, PEER), [conflict.resolve(Side::A)]);
     }
 }

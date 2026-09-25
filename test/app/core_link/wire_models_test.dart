@@ -1,3 +1,4 @@
+import 'package:dsync/app/core_link/models/conflict_resolution.dart';
 import 'package:dsync/app/core_link/models/file_status.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
@@ -13,16 +14,22 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   wire.Uint64 n(int value) => wireId(value);
 
-  test('a plan reads with its actions, conflicts and sizes', () {
+  test('a plan reads with its proposals, conflicts and sizes', () {
     final plan = runUpdate(
       wire.RunUpdateBodyPlan(
         actions: [
-          wire.ActionViewCopy(
-            path: 'a.txt',
-            from: wire.SideView.a,
-            bytes: n(5),
+          wire.ProposalView(
+            action: wire.ActionViewCopy(
+              path: 'a.txt',
+              from: wire.SideView.a,
+              bytes: n(5),
+            ),
+            reverseBytes: n(4),
           ),
-          const wire.ActionViewDelete(path: 'b.txt', on: wire.SideView.b),
+          const wire.ProposalView(
+            action: wire.ActionViewDelete(path: 'b.txt', on: wire.SideView.b),
+            reverseBytes: null,
+          ),
         ],
         conflicts: [
           wire.ConflictView(
@@ -43,12 +50,14 @@ void main() {
     final RunPlan(:actions, :conflicts, :bytesToTransfer) = plan as RunPlan;
     expect(bytesToTransfer, 5);
     expect(
-      actions.first,
+      actions.first.action,
       isA<CopyAction>()
           .having((a) => a.from, 'from', ReplicaSide.a)
           .having((a) => a.bytes, 'bytes', 5),
     );
-    expect(actions.last, isA<DeleteAction>());
+    expect(actions.first.reverseBytes, 4);
+    expect(actions.last.action, isA<DeleteAction>());
+    expect(actions.last.reverseBytes, isNull);
     expect(
       conflicts.single.a,
       isA<StatusModified>().having((s) => s.file.size, 'size', 3),
@@ -110,12 +119,29 @@ void main() {
     expect(end.stopped, StopKind.gracefully);
   });
 
-  test('a decision is written as indices and sides', () {
+  test('a decision is written as indices, reversals and resolutions', () {
     final written = wireDecision(
-      const RunDecision(keep: [0, 2], resolve: {1: ReplicaSide.b}),
+      const RunDecision(
+        keep: [(index: 0, reversed: false), (index: 2, reversed: true)],
+        resolve: {1: KeepSide(ReplicaSide.b), 3: KeepBoth()},
+      ),
     );
-    expect(written.keep, [0, 2]);
-    expect(written.resolve.single.conflict, 1);
-    expect(written.resolve.single.keep, wire.SideView.b);
+    expect(
+      [for (final kept in written.keep) (kept.index, kept.reversed)],
+      [(0, false), (2, true)],
+    );
+    expect([for (final choice in written.resolve) choice.conflict], [1, 3]);
+    expect(
+      written.resolve[0].resolution,
+      isA<wire.ConflictResolutionViewKeep>().having(
+        (keep) => keep.value,
+        'side',
+        wire.SideView.b,
+      ),
+    );
+    expect(
+      written.resolve[1].resolution,
+      isA<wire.ConflictResolutionViewKeepBoth>(),
+    );
   });
 }

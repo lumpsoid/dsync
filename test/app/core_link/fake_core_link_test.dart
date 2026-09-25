@@ -89,12 +89,15 @@ void main() {
           awaitingDecision: true,
         ),
       );
-      await link.decideRun(run.session, RunDecision.acceptAll(0));
+      await link.decideRun(run.session, RunDecision.acceptAll(2));
       link.emitRun(run.session, const RunEnded(RunStoppedConnecting()));
       final updates = await run.updates.toList();
       expect(updates, hasLength(2));
       expect(updates.last, isA<RunEnded>());
-      expect(link.decisions[run.session], hasLength(1));
+      expect(link.decisions[run.session]?.single.keep, [
+        (index: 0, reversed: false),
+        (index: 1, reversed: false),
+      ]);
     },
   );
 

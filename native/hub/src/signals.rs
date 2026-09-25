@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 use crate::views::{
     ActionView, AddressesView, ArchiveView, ConflictView, DeviceView, DirsView, EnrolmentEndView,
     FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingShownView,
-    PeerContactView, ProbeOutcome, ProfileEntry, ReplicaInfoView, ResultView, RunEndView,
-    RunErrorView, RunStartedView, ScanProbeView, ServeStartedView, SideView, SkippedView,
-    SummaryView, TallyView,
+    PeerContactView, ProbeOutcome, ProfileEntry, ProposalView, ReplicaInfoView, ResultView,
+    RunEndView, RunErrorView, RunStartedView, ScanProbeView, ServeStartedView, SideView,
+    SkippedView, SummaryView, TallyView,
 };
 
 /// Dart asks the core for one thing. Answered by one [`CoreReply`] with
@@ -217,18 +217,36 @@ pub enum RunTarget {
 }
 
 /// The head's answer to a plan: which of its actions to keep (indices into
-/// the plan's actions) and which conflicts to settle, and which way
-/// (indices into its conflicts). A conflict left out stays unresolved.
+/// the plan's actions), each as planned or reversed, and which conflicts
+/// to settle, and how (indices into its conflicts). A conflict left out
+/// stays unresolved.
 #[derive(Deserialize, SignalPiece)]
 pub struct RunDecision {
-    pub keep: Vec<u32>,
+    pub keep: Vec<KeptAction>,
     pub resolve: Vec<ConflictChoice>,
+}
+
+/// A kept action: `reversed` puts the loser's version back instead of
+/// applying the plan's direction. One flag on the index, so "reversed"
+/// can never name an index that is not kept.
+#[derive(Deserialize, SignalPiece)]
+pub struct KeptAction {
+    pub index: u32,
+    pub reversed: bool,
 }
 
 #[derive(Deserialize, SignalPiece)]
 pub struct ConflictChoice {
     pub conflict: u32,
-    pub keep: SideView,
+    pub resolution: ConflictResolutionView,
+}
+
+/// How a conflict is settled: one side's state wins, or both versions are
+/// kept - the peer's (side B's) saved beside this device's on side A.
+#[derive(Deserialize, SignalPiece)]
+pub enum ConflictResolutionView {
+    Keep(SideView),
+    KeepBoth,
 }
 
 /// The answer to the [`CoreRequest`] with the same `id`.
@@ -298,7 +316,7 @@ pub enum RunUpdateBody {
     /// The plan. `awaiting_decision`: the run now waits for a
     /// `DecideRun` (a dry run does not).
     Plan {
-        actions: Vec<ActionView>,
+        actions: Vec<ProposalView>,
         conflicts: Vec<ConflictView>,
         bytes_to_transfer: u64,
         exceeds_warn_size: bool,

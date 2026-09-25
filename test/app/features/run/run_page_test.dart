@@ -1,6 +1,8 @@
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/models/conflict_resolution.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
+import 'package:dsync/app/core_link/models/plan_proposal.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/run_decision.dart';
 import 'package:dsync/app/core_link/models/run_update.dart';
@@ -15,8 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
-import 'run_fixtures.dart'
-    show conflict, modifiedB, ranEnd, runRequest, plan;
+import 'run_fixtures.dart' show conflict, modifiedB, ranEnd, runRequest, plan;
 
 /// Rendering tests for the Run page, driven the way the scope contract in
 /// `app_scope.dart` intends: `runScope.setController(fake)` pins one
@@ -788,8 +789,8 @@ void main() {
   group('the conflict sheet', () {
     final shown = plan(
       actions: const [
-        CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
-        DeleteAction('gone.txt', on: ReplicaSide.b),
+        PlanProposal(CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048)),
+        PlanProposal(DeleteAction('gone.txt', on: ReplicaSide.b)),
       ],
       conflicts: [conflict('both.txt', a: modifiedB, b: modifiedB)],
       awaitingDecision: true,
@@ -935,8 +936,8 @@ void main() {
       await tester.pump();
 
       final decision = decided().single;
-      expect(decision.keep, [1]);
-      expect(decision.resolve, {0: ReplicaSide.b});
+      expect(decision.keep, [(index: 1, reversed: false)]);
+      expect(decision.resolve, {0: const KeepSide(ReplicaSide.b)});
       expect(find.byKey(const Key('run-decisions')), findsNothing);
     });
 
@@ -946,14 +947,15 @@ void main() {
       await tester.tap(find.byKey(const Key('run-accept-all')));
       await tester.pump();
 
-      expect(decided().single.keep, [0, 1]);
+      expect(decided().single.keep, [
+        (index: 0, reversed: false),
+        (index: 1, reversed: false),
+      ]);
       expect(decided().single.resolve, isEmpty);
       expect(find.byKey(const Key('run-decisions')), findsNothing);
     });
 
-    testWidgets('leaving the page mid-decision stops the run', (
-      tester,
-    ) async {
+    testWidgets('leaving the page mid-decision stops the run', (tester) async {
       await open(tester);
 
       await tester.pumpWidget(const SizedBox.shrink());
@@ -1011,7 +1013,9 @@ void main() {
         awaiting: plan(
           actions: [
             for (var i = 0; i < 50000; i++)
-              CopyAction('file-$i.txt', from: ReplicaSide.a, bytes: 0),
+              PlanProposal(
+                CopyAction('file-$i.txt', from: ReplicaSide.a, bytes: 0),
+              ),
           ],
           conflicts: const [],
           awaitingDecision: true,
@@ -1242,7 +1246,9 @@ void main() {
         session,
         plan(
           actions: const [
-            CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
+            PlanProposal(
+              CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
+            ),
           ],
           conflicts: [conflict('both.txt', a: modifiedB, b: modifiedB)],
           awaitingDecision: true,

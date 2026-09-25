@@ -2,6 +2,7 @@ import 'action_result.dart';
 import 'conflict_info.dart';
 import 'peer_contact.dart';
 import 'plan_action.dart';
+import 'plan_proposal.dart';
 import 'replica_info.dart';
 import 'run_end.dart';
 import 'run_error_info.dart';
@@ -63,7 +64,7 @@ final class RunPlan extends RunUpdate {
     required this.awaitingDecision,
   });
 
-  final List<PlanAction> actions;
+  final List<PlanProposal> actions;
   final List<ConflictInfo> conflicts;
   final int bytesToTransfer;
   final bool exceedsWarnSize;
