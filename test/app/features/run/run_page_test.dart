@@ -17,7 +17,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
-import 'run_fixtures.dart' show conflict, modifiedB, ranEnd, runRequest, plan;
+import 'run_fixtures.dart'
+    show applied, conflict, modifiedB, plan, ranEnd, runRequest, summarized;
 
 /// Rendering tests for the Run page, driven the way the scope contract in
 /// `app_scope.dart` intends: `runScope.setController(fake)` pins one
@@ -35,12 +36,19 @@ void main() {
   late FakeScreenWake screenWake;
   var doneTaps = 0;
 
+  /// The app's clock, which the controller's refresh rate reads.
+  var clock = DateTime(2026, 9, 16, 12);
+
   final request = runRequest();
 
   setUp(() {
     screenWake = FakeScreenWake();
     core = FakeCoreLink(devices: [pairedDevice()]);
-    controller = SyncRunController(fakeApp(core), screenWake: screenWake);
+    clock = DateTime(2026, 9, 16, 12);
+    controller = SyncRunController(
+      fakeApp(core, now: () => clock),
+      screenWake: screenWake,
+    );
     appScope.setController(controller.app);
     runScope.setController(controller);
     doneTaps = 0;
@@ -76,7 +84,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning());
+        ..recordPhase(const SyncRunScanning());
       await pump(tester);
 
       await tester.tap(find.byKey(const Key('run-diagnostics')));
@@ -121,8 +129,7 @@ void main() {
   });
 
   group('the Timings sheet (SPEC 17)', () {
-    // A live run's progress indicator animates for ever, so `pumpAndSettle`
-    // would never settle: the sheet's route animation is driven by hand.
+    // The sheet's route animation is driven by hand.
     Future<void> openTimings(WidgetTester tester) async {
       await tester.tap(find.byKey(const Key('run-timings')));
       await tester.pump();
@@ -189,68 +196,195 @@ void main() {
     });
   });
 
-  testWidgets('connecting: a spinner and Stop, no Done', (tester) async {
+  testWidgets('connecting: its line and Stop, no Done', (tester) async {
     controller.state.recordStart(dryRun: false);
     await pump(tester);
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(find.text('Connecting…'), findsOneWidget);
     expect(find.byKey(const Key('run-stop')), findsOneWidget);
     expect(find.byKey(const Key('run-done')), findsNothing);
   });
 
-  group('the indicators announce what they are waiting on', () {
-    testWidgets('connecting: the spinner is labelled', (tester) async {
-      final semantics = tester.ensureSemantics();
-      controller.state.recordStart(dryRun: false);
-      await pump(tester);
+  group('nothing on the page animates while it waits', () {
+    final indeterminateBar = find.byWidgetPredicate(
+      (widget) => widget is LinearProgressIndicator && widget.value == null,
+    );
 
-      expect(
-        tester.getSemantics(find.byType(CircularProgressIndicator)),
-        isSemantics(label: 'Connecting to the device'),
+    /// Settles with a deadline, so a page that animated for ever would fail
+    /// here in fake time rather than hang the run.
+    Future<void> settle(WidgetTester tester) => tester.pumpAndSettle(
+      const Duration(milliseconds: 100),
+      EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 5),
+    );
+
+    void expectStill(WidgetTester tester) {
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(indeterminateBar, findsNothing);
+      expect(tester.binding.hasScheduledFrame, isFalse);
+    }
+
+    testWidgets('positive control: the probes see an indicator that '
+        'animates', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Column(
+            children: [CircularProgressIndicator(), LinearProgressIndicator()],
+          ),
+        ),
       );
-      semantics.dispose();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(indeterminateBar, findsOneWidget);
+      expect(tester.binding.hasScheduledFrame, isTrue);
+      await tester.pumpWidget(const SizedBox());
     });
 
-    testWidgets('scanning: the bar names the phase it is in', (tester) async {
-      final semantics = tester.ensureSemantics();
+    Future<void> inPhase(WidgetTester tester, SyncRunPhase phase) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning());
+        ..recordPhase(phase);
       await pump(tester);
+    }
 
-      expect(
-        tester.getSemantics(find.byType(LinearProgressIndicator)),
-        isSemantics(label: 'Scanning for changes'),
-      );
-      semantics.dispose();
-    });
+    final cases = <String, Future<void> Function(WidgetTester)>{
+      'connecting': (tester) async {
+        controller.state.recordStart(dryRun: false);
+        await pump(tester);
+      },
+      'scanning': (tester) => inPhase(tester, const SyncRunScanning()),
+      'awaiting': (tester) async {
+        await pump(tester);
+        final session = core.runStarts.single.session;
+        core
+          ..emitRun(session, const RunConnected([]))
+          ..emitRun(session, plan(awaitingDecision: true));
+        await tester.pump();
+        expect(find.byKey(const Key('run-decisions')), findsOneWidget);
+      },
+      'applying, before any progress': (tester) =>
+          inPhase(tester, const SyncRunApplying()),
+      'applying': (tester) async {
+        controller.state
+          ..recordStart(dryRun: false)
+          ..recordPhase(const SyncRunApplying())
+          ..recordProgress(const SyncRunProgress(completed: 3, total: 10));
+        await pump(tester);
+        // Positive control for the bar probe: the determinate bar is there,
+        // and it is not the kind that animates.
+        expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      },
+      'finished': (tester) => inPhase(
+        tester,
+        const SyncRunFinished(
+          applied: 1,
+          skipped: 0,
+          conflicts: 0,
+          failed: 0,
+          unreadable: 0,
+        ),
+      ),
+      'stopped': (tester) =>
+          inPhase(tester, const SyncRunStopped(completedActions: 1)),
+      'paused': (tester) =>
+          inPhase(tester, const SyncRunPaused(completedActions: 1)),
+      'failed': (tester) => inPhase(tester, const SyncRunFailed('No route.')),
+      'busy': (tester) => inPhase(tester, const SyncRunReplicaBusy('In use.')),
+    };
 
-    // The value is the framework's, off `value`: the progress-bar role
-    // will not take anything but a number on 0..100.
-    testWidgets('applying: the bar names the phase and reads its percentage', (
-      tester,
-    ) async {
-      final semantics = tester.ensureSemantics();
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
-        ..recordProgress(const SyncRunProgress(completed: 3, total: 10));
+    for (final MapEntry(key: name, value: enter) in cases.entries) {
+      testWidgets('$name: no spinner, no indeterminate bar, no frame '
+          'scheduled once settled', (tester) async {
+        await enter(tester);
+        await settle(tester);
+
+        expectStill(tester);
+      });
+    }
+
+    testWidgets('the stage strip marks the current stage, and when the run '
+        'started', (tester) async {
       await pump(tester);
+      core.emitRun(core.runStarts.single.session, const RunConnected([]));
+      await tester.pump();
 
-      expect(
-        tester.getSemantics(find.byType(LinearProgressIndicator)),
-        isSemantics(label: 'Applying changes', value: '30'),
-      );
-      semantics.dispose();
+      expect(find.text('Scanning both folders…'), findsOneWidget);
+      expect(find.text('Started 12:00'), findsOneWidget);
+      // Connect behind it, Scan current, the other three ahead.
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      expect(find.byIcon(Icons.circle), findsOneWidget);
+      expect(find.byIcon(Icons.circle_outlined), findsNWidgets(3));
     });
   });
 
-  testWidgets('running: header, warning, tally, conflicts, plan with each '
+  testWidgets('applying refreshes the page at most once a second', (
+    tester,
+  ) async {
+    await pump(tester);
+    final session = core.runStarts.single.session;
+    // Nothing to decide: the run goes straight to applying.
+    core
+      ..emitRun(session, const RunConnected([]))
+      ..emitRun(
+        session,
+        plan(actions: const [], conflicts: const [], awaitingDecision: true),
+      );
+    await tester.pump();
+    expect(controller.state.phase, isA<SyncRunApplying>());
+
+    // A pump draws its frame before the stream delivers, so an update is
+    // folded in one pump and on screen after the next.
+    Future<void> deliver(RunUpdate update) async {
+      core.emitRun(session, update);
+      await tester.pump();
+      await tester.pump();
+    }
+
+    String shown() => tester
+        .widget<Text>(
+          find
+              .descendant(
+                of: find.byKey(const Key('run-progress')),
+                matching: find.byType(Text),
+              )
+              .first,
+        )
+        .data!;
+
+    // 40 updates inside one second, each one pumped: what the page shows
+    // changes once, for the first of them.
+    final seen = [shown()];
+    for (var i = 1; i <= 40; i++) {
+      clock = clock.add(const Duration(milliseconds: 20));
+      await deliver(applied(progress: (completed: i, total: 1200)));
+      if (shown() != seen.last) seen.add(shown());
+    }
+    expect(seen, ['Applying…', 'Applying 1 of 1,200']);
+    // Held back from the page, not lost.
+    expect(controller.state.progress!.completed, 40);
+
+    // A second on, the next update shows the latest.
+    clock = clock.add(const Duration(seconds: 1));
+    await deliver(applied(progress: (completed: 41, total: 1200)));
+    expect(shown(), 'Applying 41 of 1,200');
+
+    // One more held back, then the summary: a phase change shows at once.
+    core.emitRun(session, applied(progress: (completed: 42, total: 1200)));
+    await deliver(summarized(applied: 42));
+    await deliver(ranEnd());
+    expect(find.byKey(const Key('run-summary')), findsOneWidget);
+    expect(find.text('Applied: 42'), findsOneWidget);
+
+    // Nothing left ticking; `testWidgets` itself fails on a pending timer.
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('applying: header, warning, tally, conflicts, plan with each '
       'row marked off by its result, and progress', (tester) async {
     controller.state
       ..recordStart(dryRun: false)
-      ..recordPhase(const SyncRunRunning())
+      ..recordPhase(const SyncRunApplying())
       ..recordHeader(
         const SyncRunHeader(
           localRoot: '/data/notes',
@@ -317,7 +451,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('Plan: 2 action(s), 2.0 KiB'), findsOneWidget);
-    expect(find.text('Applying 1 of 2…'), findsOneWidget);
+    expect(find.text('Applying 1 of 2'), findsOneWidget);
     expect(find.byKey(const Key('run-stop')), findsOneWidget);
 
     // Applying: the rows are behind the disclosure, their tally in front of
@@ -335,13 +469,13 @@ void main() {
     expect(find.byIcon(Icons.radio_button_unchecked), findsOneWidget);
   });
 
-  testWidgets('running with no warning and no lists shows neither', (
+  testWidgets('scanning with no warning and no lists shows neither', (
     tester,
   ) async {
     // Positive control for the sections above: absent data, absent widget.
     controller.state
       ..recordStart(dryRun: true)
-      ..recordPhase(const SyncRunRunning())
+      ..recordPhase(const SyncRunScanning())
       ..recordHeader(
         const SyncRunHeader(
           localRoot: '/data/notes',
@@ -358,7 +492,7 @@ void main() {
     expect(find.byKey(const Key('run-symlinks')), findsNothing);
     expect(find.byKey(const Key('run-conflicts')), findsNothing);
     expect(find.byKey(const Key('run-plan')), findsNothing);
-    expect(find.text('Scanning (dry run)…'), findsOneWidget);
+    expect(find.text('Scanning both folders (dry run)…'), findsOneWidget);
   });
 
   group('the plan list is built on demand', () {
@@ -379,7 +513,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunApplying())
         ..recordPlan(bigPlan(), bytesToTransfer: 50000 * 1024);
       await pump(tester);
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
@@ -404,7 +538,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunApplying())
         ..recordPlan(const [
           SyncRunPlanRow(
             path: 'new.txt',
@@ -426,14 +560,14 @@ void main() {
         find.textContaining('Plan: 2 action(s)'),
       );
 
-      // Progress is the apply loop's other notification, once per action:
-      // it repaints the line that shows it and nothing in the plan.
-      controller.state.recordProgress(
-        const SyncRunProgress(completed: 1, total: 2),
-      );
+      // Progress is the apply loop's other notification, at most once a
+      // second: it repaints the line that shows it and nothing in the plan.
+      controller.state
+        ..recordProgress(const SyncRunProgress(completed: 1, total: 2))
+        ..publishProgress();
       await tester.pump();
 
-      expect(find.text('Applying 1 of 2…'), findsOneWidget);
+      expect(find.text('Applying 1 of 2'), findsOneWidget);
       expect(tester.widget<Text>(find.text('old.txt')), same(other));
       expect(
         tester.widget<Text>(find.textContaining('Plan: 2 action(s)')),
@@ -469,7 +603,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunApplying())
         ..recordPlan(plan, bytesToTransfer: 2048)
         ..recordResult(
           const SyncRunResultRow(
@@ -501,7 +635,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunApplying())
         ..recordPlan(plan, bytesToTransfer: 2048);
       await pump(tester);
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
@@ -516,7 +650,8 @@ void main() {
             error: null,
           ),
         )
-        ..recordProgress(const SyncRunProgress(completed: 1, total: 2));
+        ..recordProgress(const SyncRunProgress(completed: 1, total: 2))
+        ..publishProgress();
       await tester.pump();
 
       expect(find.text('Applied: 1'), findsOneWidget);
@@ -535,7 +670,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunApplying())
         ..recordPlan(plan, bytesToTransfer: 2048);
       await pump(tester);
       expect(find.byKey(const Key('run-plan')), findsNothing);
@@ -651,7 +786,7 @@ void main() {
     }
 
     testWidgets('backgrounding pauses the run', (tester) async {
-      spy.state.recordPhase(const SyncRunRunning());
+      spy.state.recordPhase(const SyncRunScanning());
       await pump(tester);
 
       await drive(tester, backgrounding);
@@ -661,7 +796,7 @@ void main() {
     });
 
     testWidgets('a notification is not a backgrounding', (tester) async {
-      spy.state.recordPhase(const SyncRunRunning());
+      spy.state.recordPhase(const SyncRunScanning());
       await pump(tester);
 
       // `inactive` is the shade, a permission dialog or an incoming call,
@@ -677,7 +812,7 @@ void main() {
     });
 
     testWidgets('coming back asks for the run to continue', (tester) async {
-      spy.state.recordPhase(const SyncRunRunning());
+      spy.state.recordPhase(const SyncRunScanning());
       await pump(tester);
 
       await drive(tester, backgrounding);
@@ -705,7 +840,7 @@ void main() {
     testWidgets('leaving the page stops listening to the lifecycle', (
       tester,
     ) async {
-      spy.state.recordPhase(const SyncRunRunning());
+      spy.state.recordPhase(const SyncRunScanning());
       await pump(tester);
       await tester.pumpWidget(const SizedBox());
 
@@ -1041,8 +1176,7 @@ void main() {
   });
 
   group('system back', () {
-    // Not `pumpAndSettle`: the running phase's progress bar animates for
-    // ever, so the route transition and the dialog are pumped by hand.
+    // The route transition and the dialog are pumped by hand.
     Future<void> settle(WidgetTester tester) async {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
@@ -1082,7 +1216,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning());
+        ..recordPhase(const SyncRunApplying());
       await pumpPushed(tester);
 
       await tester.tap(find.byType(BackButton));
@@ -1097,13 +1231,13 @@ void main() {
       // pop that would have disposed it never happened.
       expect(find.byKey(const Key('run-abort-dialog')), findsNothing);
       expect(find.byType(RunPage), findsOneWidget);
-      expect(controller.state.phase, isA<SyncRunRunning>());
+      expect(controller.state.phase, isA<SyncRunApplying>());
     });
 
     testWidgets('confirming leaves the page', (tester) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning());
+        ..recordPhase(const SyncRunApplying());
       await pumpPushed(tester);
 
       await tester.tap(find.byType(BackButton));
@@ -1200,7 +1334,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunApplying())
         ..recordPlan(const [
           SyncRunPlanRow(path: 'new.txt', action: 'copy to desktop', bytes: 8),
         ], bytesToTransfer: 8)
@@ -1223,7 +1357,7 @@ void main() {
     testWidgets('the unresolved conflict lines are marked', (tester) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunScanning())
         ..recordConflict(
           const SyncRunConflictRow(
             path: 'both.txt',
@@ -1271,7 +1405,7 @@ void main() {
     ) async {
       controller.state
         ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunRunning())
+        ..recordPhase(const SyncRunScanning())
         ..recordHeader(
           const SyncRunHeader(
             localRoot: '/data/notes',

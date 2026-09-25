@@ -97,6 +97,10 @@ class SyncRunController {
   bool _disposed = false;
   int _completedActions = 0;
 
+  /// When the apply loop's progress was last shown; `null` until the first
+  /// one of an apply, so that one shows the moment it arrives.
+  DateTime? _progressShownAt;
+
   ({PlanDecisions choices, RunRequest request})? _pending;
 
   /// Starts [request]'s run. One run per instance — the reason the page
@@ -122,7 +126,8 @@ class SyncRunController {
       SyncRunPaused() || SyncRunFailed() || SyncRunReplicaBusy() => true,
       SyncRunIdle() ||
       SyncRunConnecting() ||
-      SyncRunRunning() ||
+      SyncRunScanning() ||
+      SyncRunApplying() ||
       SyncRunAwaitingDecisions() ||
       SyncRunFinished() ||
       SyncRunStopped() => false,
@@ -135,6 +140,7 @@ class SyncRunController {
 
   Future<void> _begin(RunRequest request) async {
     _completedActions = 0;
+    _progressShownAt = null;
     _pending = null;
     timings.value = null;
     state.recordStart(dryRun: request.dryRun);
@@ -216,7 +222,8 @@ class SyncRunController {
 
   bool _isLive(SyncRunPhase phase) => switch (phase) {
     SyncRunConnecting() ||
-    SyncRunRunning() ||
+    SyncRunScanning() ||
+    SyncRunApplying() ||
     SyncRunAwaitingDecisions() => true,
     SyncRunIdle() ||
     SyncRunFinished() ||
@@ -265,7 +272,7 @@ class SyncRunController {
 
   void _answer(RunDecision decision) {
     _pending = null;
-    _recordPhase(const SyncRunRunning());
+    _recordPhase(const SyncRunApplying());
     final session = _session;
     if (session != null) unawaited(_decide(session, decision));
   }
@@ -323,7 +330,8 @@ class SyncRunController {
   ) async {
     switch (update) {
       case RunConnected():
-        _recordPhase(const SyncRunRunning());
+        state.recordStartedAt(_clockTime(app.now()));
+        _recordPhase(const SyncRunScanning());
       case RunReplicas(:final a, :final b):
         state.recordHeader(
           SyncRunHeader(
@@ -378,6 +386,7 @@ class SyncRunController {
         // the answer holding both locks, so it is given at once.
         if (_stopRequested ||
             (plan.actions.isEmpty && plan.conflicts.isEmpty)) {
+          _recordPhase(const SyncRunApplying());
           await _decide(session, const RunDecision());
           break;
         }
@@ -393,6 +402,13 @@ class SyncRunController {
             ),
           );
         }
+        // Every update is recorded — `_completedActions` included, which a
+        // stop reports — and at most one a second is shown (SPEC §11.4):
+        // the core batches these every 50 ms, and a count that moves 20
+        // times a second reads no better than one that moves once. Checked
+        // on arrival rather than by a timer, so an apply with nothing to
+        // report schedules nothing; the cost is that an update dropped here
+        // stays unshown until the next one, or the next phase.
         if (progress != null) {
           _completedActions = progress.completed;
           state.recordProgress(
@@ -401,6 +417,11 @@ class SyncRunController {
               total: progress.total,
             ),
           );
+        }
+        final now = app.now();
+        if (refreshDue(lastShown: _progressShownAt, now: now)) {
+          _progressShownAt = now;
+          state.publishProgress();
         }
       case RunSummarized(:final summary):
         _recordSummary(summary);
@@ -439,7 +460,10 @@ class SyncRunController {
     switch (end) {
       case RunRan(timings: final report):
         if (!_disposed) timings.value = report;
-        if (state.phase is SyncRunRunning || state.phase is SyncRunConnecting) {
+        if (state.phase
+            case SyncRunConnecting() ||
+                SyncRunScanning() ||
+                SyncRunApplying()) {
           _recordPhase(
             _stopRequested
                 ? _suspended(_completedActions)
@@ -478,6 +502,13 @@ class SyncRunController {
         '$deviceName $b (${_relative(lastB)}).';
   }
 
+  /// [time] as this device's "HH:MM".
+  String _clockTime(DateTime time) {
+    final local = time.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(local.hour)}:${two(local.minute)}';
+  }
+
   String _formatTimestamp(DateTime time) {
     final local = time.toLocal();
     String two(int n) => n.toString().padLeft(2, '0');
@@ -493,6 +524,14 @@ class SyncRunController {
     return 'just now';
   }
 }
+
+/// The Run page's refresh rate while applying: at most once a second.
+const progressRefreshInterval = Duration(seconds: 1);
+
+/// Whether an apply update arriving at [now] is shown, given the last one
+/// shown at [lastShown] (`null`: none yet this apply).
+bool refreshDue({required DateTime? lastShown, required DateTime now}) =>
+    lastShown == null || now.difference(lastShown) >= progressRefreshInterval;
 
 const firstSyncWarning =
     'First sync: with no archive, a file present on one side only is '

@@ -256,6 +256,85 @@ void main() {
     });
   });
 
+  group('scan, then apply', () {
+    test(
+      'connecting moves to scanning; answering the sheet to applying',
+      () async {
+        await harness.start();
+        await harness.emit([const RunConnected([])]);
+        expect(controller().state.phase, isA<SyncRunScanning>());
+
+        await harness.emit([sheet()]);
+        expect(controller().state.phase, isA<SyncRunAwaitingDecisions>());
+        controller().confirm();
+
+        expect(controller().state.phase, isA<SyncRunApplying>());
+      },
+    );
+
+    test(
+      'a plan with nothing to decide is answered at once, and applying',
+      () async {
+        await harness.start();
+        await harness.emit([
+          const RunConnected([]),
+          plan(actions: const [], conflicts: const [], awaitingDecision: true),
+        ]);
+
+        expect(harness.core.decisions[harness.session], hasLength(1));
+        expect(controller().state.phase, isA<SyncRunApplying>());
+      },
+    );
+
+    test('refreshDue: the first update, then one a second', () {
+      final t0 = DateTime(2026, 9, 16, 12);
+      expect(refreshDue(lastShown: null, now: t0), isTrue);
+      expect(refreshDue(lastShown: t0, now: t0), isFalse);
+      expect(
+        refreshDue(
+          lastShown: t0,
+          now: t0.add(const Duration(milliseconds: 999)),
+        ),
+        isFalse,
+      );
+      expect(
+        refreshDue(lastShown: t0, now: t0.add(const Duration(seconds: 1))),
+        isTrue,
+      );
+    });
+
+    test(
+      'an update the refresh rate held back still counts toward a stop',
+      () async {
+        var notified = 0;
+        controller().state.addListener(() => notified++);
+        await harness.start();
+        await harness.emit([
+          const RunConnected([]),
+          plan(actions: const [], conflicts: const [], awaitingDecision: true),
+        ]);
+        final before = notified;
+        // Two updates in the same instant: the first is shown, the second
+        // is not.
+        await harness.emit([
+          applied(progress: (completed: 1, total: 5)),
+          applied(progress: (completed: 4, total: 5)),
+        ]);
+        expect(notified, before + 1);
+        expect(controller().state.progress!.completed, 4);
+
+        final stopping = controller().stop();
+        await harness.emit([summarized(applied: 4), ranEnd()]);
+        await stopping;
+
+        expect(
+          (controller().state.phase as SyncRunStopped).completedActions,
+          4,
+        );
+      },
+    );
+  });
+
   test('a second start on the same instance is refused', () async {
     await harness.run([summarized()]);
     final phase = controller().state.phase;

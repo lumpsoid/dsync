@@ -18,10 +18,20 @@ final class SyncRunConnecting extends SyncRunPhase {
   const SyncRunConnecting();
 }
 
-/// Both sides are connected and `RunController.run()` is being listened
-/// to; the other fields fill in as its events arrive.
-final class SyncRunRunning extends SyncRunPhase {
-  const SyncRunRunning();
+/// Both sides are connected and the core is scanning them and reconciling
+/// the two scans (SPEC §5, §6): the header, the tally, the path lists and
+/// the plan fill in as their events arrive. A dry run stays here until its
+/// summary — it never applies.
+final class SyncRunScanning extends SyncRunPhase {
+  const SyncRunScanning();
+}
+
+/// The plan has been answered and the core is applying it (SPEC §7). Its own
+/// case rather than [SyncRunScanning] with a progress, because between the
+/// answer and the first progress the page must already say "applying" — and
+/// a plan with nothing kept in it may never report a progress at all.
+final class SyncRunApplying extends SyncRunPhase {
+  const SyncRunApplying();
 }
 
 /// The stream ended with a `RunSummaryEvent` (SPEC §11.4). The five counts
@@ -297,7 +307,11 @@ final class SyncRunProgress {
 /// per-action results each have a listenable of their own ([planChanged],
 /// [resultCell]) because the apply loop writes them once per action: a page
 /// that rendered 50k plan rows from this notifier alone would rebuild them
-/// for every action applied, to show one leading icon changing.
+/// for every action applied, to show one leading icon changing. The apply
+/// loop's progress and counts are written silently too ([recordProgress],
+/// [recordResult]) and shown when the controller says so
+/// ([publishProgress]) — how often that is, is the controller's rule, not
+/// this state's.
 class SyncRunViewState extends ChangeNotifier {
   final ValueNotifier<SyncRunPhase> _phase = ValueNotifier(const SyncRunIdle());
   bool _dryRun = false;
@@ -310,7 +324,10 @@ class SyncRunViewState extends ChangeNotifier {
   int _bytesToTransfer = 0;
   final Map<String, SyncRunResultRow> _results = {};
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
+  int _appliedCount = 0;
+  int _failedCount = 0;
   SyncRunProgress? _progress;
+  String? _startedAt;
 
   SyncRunPhase get phase => _phase.value;
 
@@ -369,7 +386,18 @@ class SyncRunViewState extends ChangeNotifier {
   ValueListenable<SyncRunResultRow?> resultCell(String path) =>
       _resultCells.putIfAbsent(path, () => ValueNotifier(_results[path]));
 
+  /// How many of [results] applied, and how many failed — counted as each
+  /// result is recorded, so a page showing them does not re-walk [results]
+  /// on every refresh.
+  int get appliedCount => _appliedCount;
+  int get failedCount => _failedCount;
+
   SyncRunProgress? get progress => _progress;
+
+  /// The wall-clock time both sides connected, as "HH:MM"; `null` before.
+  /// A fixed time, not an elapsed one: an elapsed-time line would have to
+  /// repaint every second of a scan to stay true.
+  String? get startedAt => _startedAt;
 
   /// Starts a run's rendering from nothing but its mode. `SyncRunController`
   /// only.
@@ -390,10 +418,13 @@ class SyncRunViewState extends ChangeNotifier {
     _conflicts = const [];
     _bytesToTransfer = 0;
     _results.clear();
+    _appliedCount = 0;
+    _failedCount = 0;
     for (final cell in _resultCells.values) {
       cell.value = null;
     }
     _progress = null;
+    _startedAt = null;
     _plan.value = const [];
     _phase.value = const SyncRunConnecting();
     notifyListeners();
@@ -402,6 +433,11 @@ class SyncRunViewState extends ChangeNotifier {
   /// Moves the phase. `SyncRunController` only.
   void recordPhase(SyncRunPhase phase) {
     _phase.value = phase;
+    notifyListeners();
+  }
+
+  void recordStartedAt(String time) {
+    _startedAt = time;
     notifyListeners();
   }
 
@@ -438,18 +474,29 @@ class SyncRunViewState extends ChangeNotifier {
     _plan.value = List.unmodifiable(rows);
   }
 
-  /// One action's outcome: recorded for [results], and pushed to that
-  /// path's [resultCell] if the row for it has been built. Deliberately not
-  /// on this state's listeners — see [planChanged].
+  /// One action's outcome: recorded for [results] and its counts, and
+  /// pushed to that path's [resultCell] if the row for it has been built.
+  /// Not on this state's listeners — see [planChanged]; the counts reach
+  /// them with the next [publishProgress].
   void recordResult(SyncRunResultRow row) {
+    if (_results[row.path] case final previous?) _uncount(previous);
     _results[row.path] = row;
+    row.error == null ? _appliedCount++ : _failedCount++;
     _resultCells[row.path]?.value = row;
   }
 
+  void _uncount(SyncRunResultRow row) =>
+      row.error == null ? _appliedCount-- : _failedCount--;
+
+  /// The apply loop's latest progress, written without waking anyone: see
+  /// [publishProgress].
   void recordProgress(SyncRunProgress progress) {
     _progress = progress;
-    notifyListeners();
   }
+
+  /// Shows what [recordProgress] and [recordResult] wrote since the last
+  /// time. A phase change shows it too.
+  void publishProgress() => notifyListeners();
 
   /// Disposes the notifiers this state hands out — the phase's, the plan's,
   /// and the cells built rows are watching — so a write after the page left is an

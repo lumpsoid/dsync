@@ -159,6 +159,14 @@ void main() {
       expect(get().state.results[1].error, contains('Permission denied'));
       expect(get().state.progress!.completed, 2);
       expect(get().state.progress!.total, 2);
+      expect(get().state.appliedCount, 1);
+      expect(get().state.failedCount, 1);
+    });
+
+    test('connecting stamps the start time the page shows', () async {
+      await render([const RunConnected([])]);
+
+      expect(get().state.startedAt, '12:00');
     });
 
     test('summary: five numbers, skipped and unreadable kept apart', () async {
@@ -172,14 +180,14 @@ void main() {
       expect(finished.conflicts, 0);
     });
 
-    test('the phase moves connecting → running → finished and stays '
+    test('the phase moves connecting → scanning → finished and stays '
         'there', () async {
       final phases = <SyncRunPhase>[];
       get().state.addListener(() => phases.add(get().state.phase));
       await harness.run([const RunConnected([]), happy.last]);
 
       expect(phases.first, isA<SyncRunConnecting>());
-      expect(phases, contains(isA<SyncRunRunning>()));
+      expect(phases, contains(isA<SyncRunScanning>()));
       expect(phases.last, isA<SyncRunFinished>());
     });
   });
@@ -402,11 +410,58 @@ void main() {
       expect(get().state.plan, isEmpty);
       expect(get().state.bytesToTransfer, 0);
       expect(get().state.results, isEmpty);
+      expect(get().state.appliedCount, 0);
+      expect(get().state.failedCount, 0);
       expect(get().state.progress, isNull);
+      expect(get().state.startedAt, isNull);
       // The same cell a built row is already watching, emptied rather than
       // dropped.
       expect(cell.value, isNull);
       expect(get().state.resultCell('new.txt'), same(cell));
+    });
+  });
+
+  group('what wakes the page', () {
+    // The apply loop writes silently and the controller decides when to
+    // show it: a write that notified on its own would bypass that rule.
+    test('a progress or a result does not notify; publishing does, and so '
+        'does a phase change', () {
+      final state = SyncRunViewState();
+      addTearDown(state.dispose);
+      var notified = 0;
+      state.addListener(() => notified++);
+
+      state
+        ..recordProgress(const SyncRunProgress(completed: 1, total: 2))
+        ..recordResult(
+          const SyncRunResultRow(path: 'a', action: 'copy', error: null),
+        );
+      expect(notified, 0);
+      // Recorded all the same, for the next refresh to show.
+      expect(state.progress!.completed, 1);
+      expect(state.appliedCount, 1);
+
+      state.publishProgress();
+      expect(notified, 1);
+
+      state.recordPhase(const SyncRunApplying());
+      expect(notified, 2);
+    });
+
+    test('a result recorded twice for one path is counted once', () {
+      final state = SyncRunViewState();
+      addTearDown(state.dispose);
+
+      state
+        ..recordResult(
+          const SyncRunResultRow(path: 'a', action: 'copy', error: 'no'),
+        )
+        ..recordResult(
+          const SyncRunResultRow(path: 'a', action: 'copy', error: null),
+        );
+
+      expect(state.appliedCount, 1);
+      expect(state.failedCount, 0);
     });
   });
 

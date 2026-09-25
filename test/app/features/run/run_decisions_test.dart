@@ -125,7 +125,7 @@ void main() {
       final decision = (await decided()).single;
       expect(decision.keep, bothAsPlanned);
       expect(decision.resolve, isEmpty);
-      expect(controller().state.phase, isA<SyncRunRunning>());
+      expect(controller().state.phase, isA<SyncRunApplying>());
     });
 
     test('a one-sided conflict offers only the side that has the path, and '
@@ -194,11 +194,11 @@ void main() {
       expect(after.conflicts[0].choice, SyncRunConflictChoice.keepRemote);
     });
 
-    test('confirm moves the phase back to running', () async {
+    test('confirm moves the phase on to applying', () async {
       await present();
       controller().confirm();
 
-      expect(controller().state.phase, isA<SyncRunRunning>());
+      expect(controller().state.phase, isA<SyncRunApplying>());
     });
   });
 
@@ -207,7 +207,7 @@ void main() {
         'and is not answered', () async {
       await present(plan());
 
-      expect(controller().state.phase, isA<SyncRunRunning>());
+      expect(controller().state.phase, isA<SyncRunScanning>());
       expect(await decided(), isEmpty);
       // Positive control: the same plan awaiting a decision opens it.
       await harness.emit([interactivePlan]);
@@ -219,7 +219,7 @@ void main() {
         plan(actions: const [], conflicts: const [], awaitingDecision: true),
       );
 
-      expect(controller().state.phase, isA<SyncRunRunning>());
+      expect(controller().state.phase, isA<SyncRunApplying>());
       final decision = (await decided()).single;
       expect(decision.keep, isEmpty);
       expect(decision.resolve, isEmpty);
@@ -235,7 +235,7 @@ void main() {
       controller().acceptAll();
       controller().confirm();
 
-      expect(controller().state.phase, isA<SyncRunRunning>());
+      expect(controller().state.phase, isA<SyncRunScanning>());
       expect(await decided(), isEmpty);
     });
   });

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../format_bytes.dart';
+import '../../format_count.dart';
 import '../../run_request.dart';
 import '../diagnostics/diagnostics_page.dart';
 import 'run_controller.dart';
@@ -111,7 +112,9 @@ class _RunPageState extends State<RunPage> {
   /// over, so back pops those with no prompt. Stop stays the deliberate
   /// path and is untouched: this only closes the silent one.
   bool _abortsRun(SyncRunPhase phase) => switch (phase) {
-    SyncRunRunning() || SyncRunAwaitingDecisions() => true,
+    SyncRunScanning() ||
+    SyncRunApplying() ||
+    SyncRunAwaitingDecisions() => true,
     SyncRunIdle() ||
     SyncRunConnecting() ||
     SyncRunFinished() ||
@@ -130,7 +133,8 @@ class _RunPageState extends State<RunPage> {
   Future<void> _openDiagnostics(SyncRunViewState state) {
     final running = switch (state.phase) {
       SyncRunConnecting() ||
-      SyncRunRunning() ||
+      SyncRunScanning() ||
+      SyncRunApplying() ||
       SyncRunAwaitingDecisions() => true,
       SyncRunIdle() ||
       SyncRunFinished() ||
@@ -197,7 +201,8 @@ class _RunPageState extends State<RunPage> {
             builder: (context, _) => switch (state.phase) {
               SyncRunIdle() => const SizedBox.shrink(),
               SyncRunConnecting() ||
-              SyncRunRunning() ||
+              SyncRunScanning() ||
+              SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
               SyncRunFinished() ||
               SyncRunStopped() ||
@@ -240,7 +245,8 @@ class _RunPageState extends State<RunPage> {
               ),
               SyncRunIdle() ||
               SyncRunConnecting() ||
-              SyncRunRunning() ||
+              SyncRunScanning() ||
+              SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
               SyncRunFinished() ||
               SyncRunStopped() => const SizedBox.shrink(),
@@ -251,7 +257,8 @@ class _RunPageState extends State<RunPage> {
             builder: (context, _) => switch (state.phase) {
               SyncRunIdle() ||
               SyncRunConnecting() ||
-              SyncRunRunning() ||
+              SyncRunScanning() ||
+              SyncRunApplying() ||
               SyncRunAwaitingDecisions() => TextButton(
                 key: const Key('run-stop'),
                 onPressed: _controller.stop,
@@ -295,7 +302,8 @@ class _RunPageState extends State<RunPage> {
             ),
           SyncRunIdle() ||
           SyncRunConnecting() ||
-          SyncRunRunning() ||
+          SyncRunScanning() ||
+          SyncRunApplying() ||
           SyncRunFinished() ||
           SyncRunStopped() ||
           SyncRunPaused() ||
@@ -332,7 +340,7 @@ class _RunPageState extends State<RunPage> {
                   listenable: state,
                   builder: (context, _) => SliverMainAxisGroup(
                     slivers: [
-                      SliverToBoxAdapter(child: _PhaseLine(state)),
+                      SliverToBoxAdapter(child: _StageStrip(state)),
                       if (state.header case final header?)
                         SliverToBoxAdapter(child: _Header(header)),
                       if (state.scanTally case final tally?)
@@ -446,98 +454,211 @@ class _ListSection extends StatelessWidget {
   }
 }
 
-/// The run's phase, first on the page: what is happening now, or how it
-/// ended.
-class _PhaseLine extends StatelessWidget {
-  const _PhaseLine(this.state);
+/// The stages a run passes through, in order: the strip's row.
+enum _Stage {
+  connect('Connect'),
+  scan('Scan'),
+  review('Review'),
+  apply('Apply'),
+  done('Done');
+
+  const _Stage(this.label);
+
+  final String label;
+}
+
+/// The run's phase, first on the page: the stages as a row of static marks
+/// — done, current, pending — then one line on the current one, or how the
+/// run ended, then when it started.
+///
+/// **Nothing here animates.** A scan can last minutes, and a spinner or an
+/// indeterminate bar repaints at frame rate for all of them to say only
+/// "still going", which the current-stage mark already says. The one
+/// moving part is the apply bar, which is determinate and so repaints only
+/// when its value changes — at most once a second, by the controller's
+/// rule. For the same reason the start is a fixed "Started 14:02", not an
+/// elapsed-time ticker.
+///
+/// A run that was stopped, paused, refused or failed shows no stage row:
+/// those phases do not carry the stage they interrupted, and a row that
+/// guessed would say something the run did not.
+class _StageStrip extends StatelessWidget {
+  const _StageStrip(this.state);
+
+  final SyncRunViewState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final phase = state.phase;
+    final stage = switch (phase) {
+      SyncRunConnecting() => _Stage.connect,
+      SyncRunScanning() => _Stage.scan,
+      SyncRunAwaitingDecisions() => _Stage.review,
+      SyncRunApplying() => _Stage.apply,
+      SyncRunFinished() => _Stage.done,
+      SyncRunIdle() ||
+      SyncRunStopped() ||
+      SyncRunPaused() ||
+      SyncRunReplicaBusy() ||
+      SyncRunFailed() => null,
+    };
+    final startedAt = state.startedAt;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (stage != null) ...[
+            _StageRow(stage, over: phase is SyncRunFinished),
+            const SizedBox(height: 8),
+          ],
+          _StageText(state),
+          if (startedAt != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Started $startedAt',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The five stages, each marked done, current or pending by its shape — a
+/// tick, a filled dot, a ring — so no mark depends on colour. [over]: the
+/// last stage is reached and done too, not current.
+class _StageRow extends StatelessWidget {
+  const _StageRow(this.current, {required this.over});
+
+  final _Stage current;
+  final bool over;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Wrap(
+      spacing: 12,
+      runSpacing: 4,
+      children: [
+        for (final stage in _Stage.values)
+          MergeSemantics(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (stage.index < current.index || over)
+                  Icon(
+                    Icons.check_circle,
+                    size: 16,
+                    color: scheme.primary,
+                    semanticLabel: 'done',
+                  )
+                else if (stage == current)
+                  Icon(
+                    Icons.circle,
+                    size: 16,
+                    color: scheme.primary,
+                    semanticLabel: 'current',
+                  )
+                else
+                  Icon(
+                    Icons.circle_outlined,
+                    size: 16,
+                    color: scheme.outline,
+                    semanticLabel: 'pending',
+                  ),
+                const SizedBox(width: 4),
+                Text(stage.label),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// The strip's text slot: the current stage in one line, or the run's end.
+class _StageText extends StatelessWidget {
+  const _StageText(this.state);
 
   final SyncRunViewState state;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: switch (state.phase) {
-        SyncRunIdle() => const SizedBox.shrink(),
-        SyncRunConnecting() => const Row(
+    return switch (state.phase) {
+      SyncRunIdle() => const SizedBox.shrink(),
+      SyncRunConnecting() => const Text('Connecting…'),
+      SyncRunScanning() => Text(
+        state.dryRun
+            ? 'Scanning both folders (dry run)…'
+            : 'Scanning both folders…',
+      ),
+      SyncRunAwaitingDecisions() => const Text(
+        'Waiting for your review',
+        key: Key('run-awaiting'),
+      ),
+      SyncRunApplying() => _ApplyProgress(state.progress),
+      SyncRunFinished(
+        :final applied,
+        :final skipped,
+        :final conflicts,
+        :final failed,
+        :final unreadable,
+      ) =>
+        Column(
+          key: const Key('run-summary'),
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                semanticsLabel: 'Connecting to the device',
-              ),
+            Text(
+              state.dryRun ? 'Dry run finished' : 'Finished',
+              style: theme.textTheme.titleMedium,
             ),
-            SizedBox(width: 12),
-            Text('Connecting…'),
+            if (state.dryRun) const Text('Nothing was applied.'),
+            // Five numbers, always: two of them (skipped, unreadable)
+            // answer different questions and are never summed.
+            Text('Applied: $applied'),
+            Text('Skipped: $skipped'),
+            Text('Conflicts: $conflicts'),
+            if (failed > 0)
+              _NoticeLine.error('Failed: $failed')
+            else
+              const Text('Failed: 0'),
+            if (unreadable > 0)
+              _NoticeLine.error('Unreadable: $unreadable')
+            else
+              const Text('Unreadable: 0'),
           ],
         ),
-        SyncRunRunning() => _Progress(state.progress, dryRun: state.dryRun),
-        SyncRunAwaitingDecisions() => const Text(
-          'Waiting for your decisions below.',
-          key: Key('run-awaiting'),
-        ),
-        SyncRunFinished(
-          :final applied,
-          :final skipped,
-          :final conflicts,
-          :final failed,
-          :final unreadable,
-        ) =>
-          Column(
-            key: const Key('run-summary'),
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                state.dryRun ? 'Dry run finished' : 'Finished',
-                style: theme.textTheme.titleMedium,
-              ),
-              if (state.dryRun) const Text('Nothing was applied.'),
-              // Five numbers, always: two of them (skipped, unreadable)
-              // answer different questions and are never summed.
-              Text('Applied: $applied'),
-              Text('Skipped: $skipped'),
-              Text('Conflicts: $conflicts'),
-              if (failed > 0)
-                _NoticeLine.error('Failed: $failed')
-              else
-                const Text('Failed: 0'),
-              if (unreadable > 0)
-                _NoticeLine.error('Unreadable: $unreadable')
-              else
-                const Text('Unreadable: 0'),
-            ],
-          ),
-        SyncRunStopped(:final completedActions) => Text(
-          stoppedMessage(completedActions),
-          key: const Key('run-stopped'),
-        ),
-        SyncRunPaused(:final completedActions) => Text(
-          pausedMessage(completedActions),
-          key: const Key('run-paused'),
-        ),
-        SyncRunReplicaBusy(:final message) => _NoticeLine.error(
-          message,
-          key: const Key('run-replica-busy'),
-        ),
-        SyncRunFailed(:final message) => _NoticeLine.error(
-          message,
-          key: const Key('run-failed'),
-        ),
-      },
-    );
+      SyncRunStopped(:final completedActions) => Text(
+        stoppedMessage(completedActions),
+        key: const Key('run-stopped'),
+      ),
+      SyncRunPaused(:final completedActions) => Text(
+        pausedMessage(completedActions),
+        key: const Key('run-paused'),
+      ),
+      SyncRunReplicaBusy(:final message) => _NoticeLine.error(
+        message,
+        key: const Key('run-replica-busy'),
+      ),
+      SyncRunFailed(:final message) => _NoticeLine.error(
+        message,
+        key: const Key('run-failed'),
+      ),
+    };
   }
 }
 
-/// While running: a bar once the apply phase has reported anything, an
-/// indeterminate one before that (scanning, reconciling).
-class _Progress extends StatelessWidget {
-  const _Progress(this.progress, {required this.dryRun});
+/// While applying: how far along, in words, and as a determinate bar once
+/// the loop has reported anything. Never an indeterminate bar — before the
+/// first progress the line says "Applying…" and there is no bar at all.
+class _ApplyProgress extends StatelessWidget {
+  const _ApplyProgress(this.progress);
 
   final SyncRunProgress? progress;
-  final bool dryRun;
 
   @override
   Widget build(BuildContext context) {
@@ -548,23 +669,23 @@ class _Progress extends StatelessWidget {
       children: [
         Text(
           progress == null
-              ? (dryRun ? 'Scanning (dry run)…' : 'Scanning…')
-              : 'Applying ${progress.completed} of ${progress.total}…',
+              ? 'Applying…'
+              : 'Applying ${formatCount(progress.completed)} of '
+                    '${formatCount(progress.total)}',
         ),
-        const SizedBox(height: 8),
-        // The label carries the phase, because a determinate bar takes the
-        // platform's progress-bar role and its value must be a number on
-        // 0..100 — the framework fills that in from [value], and a prose
-        // `semanticsValue` here would be rejected outright. So the phase
-        // goes where prose is allowed, and the percentage stays the value.
-        LinearProgressIndicator(
-          value: progress == null || progress.total == 0
-              ? null
-              : progress.completed / progress.total,
-          semanticsLabel: progress == null
-              ? 'Scanning for changes'
-              : 'Applying changes',
-        ),
+        if (progress != null && progress.total > 0) ...[
+          const SizedBox(height: 8),
+          // The label carries the phase, because a determinate bar takes
+          // the platform's progress-bar role and its value must be a number
+          // on 0..100 — the framework fills that in from [value], and a
+          // prose `semanticsValue` here would be rejected outright. So the
+          // phase goes where prose is allowed, and the percentage stays the
+          // value.
+          LinearProgressIndicator(
+            value: progress.completed / progress.total,
+            semanticsLabel: 'Applying changes',
+          ),
+        ],
       ],
     );
   }
@@ -639,9 +760,10 @@ class _ScanTally extends StatelessWidget {
 /// thousands of paths scrolling under the progress bar is not what someone
 /// watches — the question is how far along it is and whether anything is
 /// failing, which the progress line and this section's summary answer
-/// together. So [SyncRunRunning] collapses the rows behind a disclosure and
+/// together. So [SyncRunApplying] collapses the rows behind a disclosure and
 /// every other phase shows them: finished, stopped and failed are over, and
-/// the rows are the record of what happened.
+/// the rows are the record of what happened; a dry run's plan arrives while
+/// scanning and is the whole point of the run.
 ///
 /// Expansion is this widget's own state and not the view state's: it is a
 /// rendering of no run update, and it stays as the user left it — the outer
@@ -668,7 +790,7 @@ class _PlanSectionState extends State<_PlanSection> {
     Widget row(BuildContext context, int index) =>
         _PlanRow(state: state, row: state.plan[index]);
 
-    if (state.phase is! SyncRunRunning) {
+    if (state.phase is! SyncRunApplying) {
       return _ListSection(
         sectionKey: const Key('run-plan'),
         title: title,
@@ -719,12 +841,10 @@ class _PlanSectionState extends State<_PlanSection> {
 /// to expand is a failure, so the failed count is what has to be readable
 /// without expanding, marked as the finished summary marks it.
 ///
-/// Derived from `SyncRunViewState.results` here rather than counted into the
-/// view state: the two numbers are this section's rendering and nothing else
-/// asks for them. It follows the view state itself — which the apply loop
-/// wakes once per action with its progress — and is deliberately the only
-/// part of the section that does, so a result does not rebuild the title
-/// above it or the rows below.
+/// The view state's own counts, not a walk over its results: this follows
+/// the view state itself — which the apply loop wakes at most once a second
+/// — and is deliberately the only part of the section that does, so a
+/// refresh does not rebuild the title above it or the rows below.
 class _PlanTally extends StatelessWidget {
   const _PlanTally(this.state);
 
@@ -735,11 +855,8 @@ class _PlanTally extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
-        var applied = 0;
-        var failed = 0;
-        for (final result in state.results) {
-          result.error == null ? applied++ : failed++;
-        }
+        final applied = state.appliedCount;
+        final failed = state.failedCount;
         return Row(
           key: const Key('run-plan-tally'),
           children: [
