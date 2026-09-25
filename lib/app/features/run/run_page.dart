@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../format_bytes.dart';
 import '../../format_count.dart';
+import '../../format_path.dart';
 import '../../run_request.dart';
 import '../diagnostics/diagnostics_page.dart';
 import 'run_controller.dart';
+import 'run_plan_section.dart';
 import 'run_scope.dart';
 import 'run_timings_sheet.dart';
 import 'run_view_state.dart';
@@ -74,6 +76,17 @@ class _RunPageState extends State<RunPage> {
   late final Listenable _planSection = Listenable.merge([
     _controller.state.planChanged,
     _controller.state.phaseChanged,
+  ]);
+
+  /// What the top block (header, counts row, scan tally, path lists,
+  /// conflicts) follows: the view state itself, plus `planChanged` for the
+  /// one thing `recordPlan` writes silently — see the body's own doc
+  /// comment. Built once for the same reason as [_planSection]: a rebuild
+  /// of this state (the sheet's extent changing, say) must not tear down
+  /// and resubscribe the block's listener.
+  late final Listenable _topSection = Listenable.merge([
+    _controller.state,
+    _controller.state.planChanged,
   ]);
 
   /// How much of the body the decision sheet covers, measured from the
@@ -318,15 +331,18 @@ class _RunPageState extends State<RunPage> {
       //
       // Two listeners, not one. Everything above the plan changes as the run
       // reports — phase and progress, header, tally, the two path lists, the
-      // conflicts — and follows the view state itself. The plan deliberately
-      // does not: it arrives whole in one `RunPlanEvent`, and the apply loop
-      // then reports one result per action. So the plan section follows
-      // `planChanged` and the phase (`_planSection`) — never the progress
-      // or the path lists — and each row follows the cell for its own path
-      // (`SyncRunViewState.resultCell`), which is what keeps applying action
-      // N from rebuilding the rows above it — see the view state's class doc
-      // comment and `_PlanRow`. The one part of the section that does follow
-      // the view state is `_PlanTally`, which is a line and no rows.
+      // conflicts, the counts row — and follows the view state itself
+      // (`_topSection`), plus `planChanged` for the one field none of that
+      // touches: `recordPlan` folds the plan's group counts silently, on
+      // `planChanged` alone, so the counts row would otherwise wait on the
+      // next unrelated notification to show them. The plan rows deliberately
+      // do not follow `state`: the plan arrives whole in one `RunPlanEvent`,
+      // and the apply loop then reports one result per action. So the plan
+      // section follows `planChanged` and the phase (`_planSection`) — never
+      // the progress or the path lists — and each row follows the cell for
+      // its own path (`SyncRunViewState.resultCell`), which is what keeps
+      // applying action N from rebuilding the rows above it — see the view
+      // state's class doc comment and `RunPlanRow` (`run_plan_section.dart`).
       body: CustomScrollView(
         slivers: [
           SliverPadding(
@@ -337,12 +353,18 @@ class _RunPageState extends State<RunPage> {
             sliver: SliverMainAxisGroup(
               slivers: [
                 ListenableBuilder(
-                  listenable: state,
+                  listenable: _topSection,
                   builder: (context, _) => SliverMainAxisGroup(
                     slivers: [
                       SliverToBoxAdapter(child: _StageStrip(state)),
                       if (state.header case final header?)
                         SliverToBoxAdapter(child: _Header(header)),
+                      SliverToBoxAdapter(
+                        child: _CountsRow(
+                          state,
+                          deviceName: widget.request.deviceName,
+                        ),
+                      ),
                       if (state.scanTally case final tally?)
                         SliverToBoxAdapter(
                           child: _ScanTally(
@@ -351,7 +373,7 @@ class _RunPageState extends State<RunPage> {
                           ),
                         ),
                       if (state.unreadablePaths.isNotEmpty)
-                        _ListSection(
+                        RunListSection(
                           sectionKey: const Key('run-unreadable'),
                           title: 'Could not read',
                           itemCount: state.unreadablePaths.length,
@@ -363,7 +385,7 @@ class _RunPageState extends State<RunPage> {
                           ),
                         ),
                       if (state.skippedSymlinks.isNotEmpty)
-                        _ListSection(
+                        RunListSection(
                           sectionKey: const Key('run-symlinks'),
                           title: 'Symlinks not followed',
                           itemCount: state.skippedSymlinks.length,
@@ -377,7 +399,7 @@ class _RunPageState extends State<RunPage> {
                       // context someone wants while deciding.
                       if (state.phase is! SyncRunAwaitingDecisions &&
                           state.conflicts.isNotEmpty)
-                        _ListSection(
+                        RunListSection(
                           sectionKey: const Key('run-conflicts'),
                           title: 'Conflicts (not resolved)',
                           itemCount: state.conflicts.length,
@@ -402,51 +424,13 @@ class _RunPageState extends State<RunPage> {
                       state.plan.isEmpty ||
                           state.phase is SyncRunAwaitingDecisions
                       ? const SliverToBoxAdapter(child: SizedBox.shrink())
-                      : _PlanSection(state),
+                      : RunPlanSection(
+                          state,
+                          deviceName: widget.request.deviceName,
+                        ),
                 ),
               ],
             ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// One section of path rows: its title, then its rows, built lazily — the
-/// rows the viewport holds are the rows that exist. The title is a sliver of
-/// its own, so it is on the page whenever the section is, whatever part of
-/// the section's list the viewport holds, and [sectionKey] is on that list:
-/// "this section is shown at all" is still assertable while its rows come
-/// and go with the scroll.
-class _ListSection extends StatelessWidget {
-  const _ListSection({
-    required this.sectionKey,
-    required this.title,
-    required this.itemCount,
-    required this.itemBuilder,
-  });
-
-  final Key sectionKey;
-  final String title;
-  final int itemCount;
-  final IndexedWidgetBuilder itemBuilder;
-
-  @override
-  Widget build(BuildContext context) {
-    return SliverPadding(
-      // The section's trailing space, which was the padding of the box that
-      // used to hold the title and the rows together.
-      padding: const EdgeInsets.only(bottom: 16),
-      sliver: SliverMainAxisGroup(
-        slivers: [
-          SliverToBoxAdapter(
-            child: Text(title, style: Theme.of(context).textTheme.titleSmall),
-          ),
-          SliverList.builder(
-            key: sectionKey,
-            itemCount: itemCount,
-            itemBuilder: itemBuilder,
           ),
         ],
       ),
@@ -601,37 +585,14 @@ class _StageText extends StatelessWidget {
         key: Key('run-awaiting'),
       ),
       SyncRunApplying() => _ApplyProgress(state.progress),
-      SyncRunFinished(
-        :final applied,
-        :final skipped,
-        :final conflicts,
-        :final failed,
-        :final unreadable,
-      ) =>
-        Column(
-          key: const Key('run-summary'),
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              state.dryRun ? 'Dry run finished' : 'Finished',
-              style: theme.textTheme.titleMedium,
-            ),
-            if (state.dryRun) const Text('Nothing was applied.'),
-            // Five numbers, always: two of them (skipped, unreadable)
-            // answer different questions and are never summed.
-            Text('Applied: $applied'),
-            Text('Skipped: $skipped'),
-            Text('Conflicts: $conflicts'),
-            if (failed > 0)
-              _NoticeLine.error('Failed: $failed')
-            else
-              const Text('Failed: 0'),
-            if (unreadable > 0)
-              _NoticeLine.error('Unreadable: $unreadable')
-            else
-              const Text('Unreadable: 0'),
-          ],
-        ),
+      // A single line: the five numbers this used to carry live in the
+      // counts row now (`_CountsRow`, keyed `run-summary`), which follows
+      // `planChanged` rather than this text's own listenable and so is not
+      // built here.
+      SyncRunFinished() => Text(
+        state.dryRun ? 'Dry run finished' : 'Finished',
+        style: theme.textTheme.titleMedium,
+      ),
       SyncRunStopped(:final completedActions) => Text(
         stoppedMessage(completedActions),
         key: const Key('run-stopped'),
@@ -691,6 +652,11 @@ class _ApplyProgress extends StatelessWidget {
   }
 }
 
+/// The header card (Design C.1): `This device ⇄ <device>`, then the two
+/// roots — each middle-elided by [elidePath] rather than tail-clipped, so
+/// the leaf that tells two saved runs apart survives a long Android path
+/// — then the last-synced line and, if either side has no archive, the
+/// first-sync warning.
 class _Header extends StatelessWidget {
   const _Header(this.header);
 
@@ -704,8 +670,12 @@ class _Header extends StatelessWidget {
         key: const Key('run-header'),
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('This device: ${header.localRoot}'),
-          Text('${header.deviceName}: ${header.remoteRoot}'),
+          Text(
+            'This device ⇄ ${header.deviceName}',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          Text('This device: ${elidePath(header.localRoot)}'),
+          Text('${header.deviceName}: ${elidePath(header.remoteRoot)}'),
           const SizedBox(height: 4),
           Text(header.history),
           if (header.firstSyncWarning case final warning?)
@@ -722,24 +692,55 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _ScanTally extends StatelessWidget {
+/// The scan tally (Design C.4): one line — "N files checked · M changed" —
+/// with a disclosure to today's per-side breakdown, which is where the
+/// metadata/hash split SPEC §5.2 wants reaches the page. Expansion is this
+/// widget's own state for the same reason as [_PlanGroupSection] in
+/// `run_plan_section.dart`: it renders no run update, so a rebuild of what
+/// wraps it must not reset it.
+class _ScanTally extends StatefulWidget {
   const _ScanTally(this.tally, {required this.deviceName});
 
   final SyncRunScanTally tally;
   final String deviceName;
 
   @override
+  State<_ScanTally> createState() => _ScanTallyState();
+}
+
+class _ScanTallyState extends State<_ScanTally> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final tally = widget.tally;
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
-      child: Column(
+      child: InkWell(
         key: const Key('run-scan-tally'),
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Scanned', style: Theme.of(context).textTheme.titleSmall),
-          _tallyLine('This device', tally.local),
-          _tallyLine(deviceName, tally.remote),
-        ],
+        onTap: () => setState(() => _expanded = !_expanded),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${formatCount(tally.totalChecked)} files checked · '
+                    '${formatCount(tally.totalChanged)} changed',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                Icon(_expanded ? Icons.expand_less : Icons.expand_more),
+              ],
+            ),
+            if (_expanded) ...[
+              const SizedBox(height: 4),
+              _tallyLine('This device', tally.local),
+              _tallyLine(widget.deviceName, tally.remote),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -754,148 +755,181 @@ class _ScanTally extends StatelessWidget {
   );
 }
 
-/// The plan section: its rows, except while the run is applying them.
+/// The counts row (Design C.3): compact tallies of where the plan is
+/// headed while the run goes, the SPEC §11.4 five numbers once it is over.
+/// Both keep this row's key, `run-summary` — the finished branch is what
+/// that key used to mark alone, on `_StageText`; the pending branch is new.
 ///
-/// Once the apply loop is running there is nothing left to decide, and
-/// thousands of paths scrolling under the progress bar is not what someone
-/// watches — the question is how far along it is and whether anything is
-/// failing, which the progress line and this section's summary answer
-/// together. So [SyncRunApplying] collapses the rows behind a disclosure and
-/// every other phase shows them: finished, stopped and failed are over, and
-/// the rows are the record of what happened; a dry run's plan arrives while
-/// scanning and is the whole point of the run.
-///
-/// Expansion is this widget's own state and not the view state's: it is a
-/// rendering of no run update, and it stays as the user left it — the outer
-/// builder rebuilds this widget for the plan and the phase, which does not
-/// touch [State].
-class _PlanSection extends StatefulWidget {
-  const _PlanSection(this.state);
+/// Hidden until there is something to show: before the plan arrives and
+/// after, nothing here is built for a phase with neither (idle,
+/// connecting, or scanning before the plan lands).
+class _CountsRow extends StatelessWidget {
+  const _CountsRow(this.state, {required this.deviceName});
 
   final SyncRunViewState state;
-
-  @override
-  State<_PlanSection> createState() => _PlanSectionState();
-}
-
-class _PlanSectionState extends State<_PlanSection> {
-  bool _expanded = false;
+  final String deviceName;
 
   @override
   Widget build(BuildContext context) {
-    final state = widget.state;
-    final title =
-        'Plan: ${state.plan.length} action(s), '
-        '${formatBytes(state.bytesToTransfer)} to transfer';
-    Widget row(BuildContext context, int index) =>
-        _PlanRow(state: state, row: state.plan[index]);
-
-    if (state.phase is! SyncRunApplying) {
-      return _ListSection(
-        sectionKey: const Key('run-plan'),
-        title: title,
-        itemCount: state.plan.length,
-        itemBuilder: row,
+    final phase = state.phase;
+    if (phase is SyncRunFinished) {
+      return _FinishedCounts(
+        key: const Key('run-summary'),
+        phase: phase,
+        dryRun: state.dryRun,
       );
     }
-    return SliverPadding(
+    if (state.plan.isEmpty || phase is SyncRunAwaitingDecisions) {
+      return const SizedBox.shrink();
+    }
+    return _PendingCounts(
+      key: const Key('run-summary'),
+      state: state,
+      deviceName: deviceName,
+    );
+  }
+}
+
+/// The counts row before the run is over: how much of the plan moves in
+/// each direction (Design C.3), folded once by `recordPlan` and read from
+/// [SyncRunViewState.planSections] rather than walked here, plus the
+/// unresolved-conflict count already on [SyncRunViewState.conflicts]. The
+/// live Applied/Failed pair joins them while the run applies the plan —
+/// what `_PlanTally` used to show under the plan's own disclosure.
+class _PendingCounts extends StatelessWidget {
+  const _PendingCounts({
+    super.key,
+    required this.state,
+    required this.deviceName,
+  });
+
+  final SyncRunViewState state;
+  final String deviceName;
+
+  @override
+  Widget build(BuildContext context) {
+    final sections = state.planSections;
+    final toDevice = sections[SyncRunPlanGroup.toDevice]!;
+    final toThisDevice = sections[SyncRunPlanGroup.toThisDevice]!;
+    final deletions = sections[SyncRunPlanGroup.deletions]!;
+    return Padding(
       padding: const EdgeInsets.only(bottom: 16),
-      sliver: SliverMainAxisGroup(
-        slivers: [
-          SliverToBoxAdapter(
-            child: InkWell(
-              key: const Key('run-plan-disclosure'),
-              onTap: () => setState(() => _expanded = !_expanded),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          title,
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        _PlanTally(state),
-                      ],
-                    ),
-                  ),
-                  Icon(_expanded ? Icons.expand_less : Icons.expand_more),
-                ],
-              ),
-            ),
+      child: Wrap(
+        spacing: 16,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          _CountTile(
+            icon: Icons.arrow_upward,
+            text:
+                'to $deviceName ${formatCount(toDevice.count)}'
+                '${toDevice.bytes > 0 ? ' (${formatBytes(toDevice.bytes)})' : ''}',
           ),
-          if (_expanded)
-            SliverList.builder(
-              key: const Key('run-plan'),
-              itemCount: state.plan.length,
-              itemBuilder: row,
-            ),
+          _CountTile(
+            icon: Icons.arrow_downward,
+            text:
+                'to this device ${formatCount(toThisDevice.count)}'
+                '${toThisDevice.bytes > 0 ? ' (${formatBytes(toThisDevice.bytes)})' : ''}',
+          ),
+          _CountTile(
+            icon: Icons.delete_outline,
+            text: 'delete ${formatCount(deletions.count)}',
+          ),
+          _CountTile(
+            icon: Icons.call_split,
+            text: 'conflicts ${formatCount(state.conflicts.length)}',
+          ),
+          if (state.phase is SyncRunApplying) _ApplyTally(state),
         ],
       ),
     );
   }
 }
 
-/// What the results say so far, under the collapsed plan's title: the reason
-/// to expand is a failure, so the failed count is what has to be readable
-/// without expanding, marked as the finished summary marks it.
-///
-/// The view state's own counts, not a walk over its results: this follows
-/// the view state itself — which the apply loop wakes at most once a second
-/// — and is deliberately the only part of the section that does, so a
-/// refresh does not rebuild the title above it or the rows below.
-class _PlanTally extends StatelessWidget {
-  const _PlanTally(this.state);
+/// One "icon, then N" tile of [_PendingCounts].
+class _CountTile extends StatelessWidget {
+  const _CountTile({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [Icon(icon, size: 16), const SizedBox(width: 4), Text(text)],
+  );
+}
+
+/// Applied/failed so far, folded into the counts row while the run applies
+/// the plan — what `_PlanTally` used to show under the plan's own
+/// disclosure, at the same key (`run-plan-tally`) so the one test that
+/// named it still finds it. [SyncRunViewState]'s own counts, not a walk
+/// over its results: [_RunPageState]'s top block already follows the view
+/// state itself, which the apply loop wakes at most once a second, so this
+/// needs no listenable of its own.
+class _ApplyTally extends StatelessWidget {
+  const _ApplyTally(this.state);
 
   final SyncRunViewState state;
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: state,
-      builder: (context, _) {
-        final applied = state.appliedCount;
-        final failed = state.failedCount;
-        return Row(
-          key: const Key('run-plan-tally'),
-          children: [
-            Text('Applied: $applied'),
-            const SizedBox(width: 12),
-            if (failed > 0)
-              Flexible(child: _NoticeLine.error('Failed: $failed'))
-            else
-              const Text('Failed: 0'),
-          ],
-        );
-      },
+    final applied = state.appliedCount;
+    final failed = state.failedCount;
+    return Row(
+      key: const Key('run-plan-tally'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('Applied: $applied'),
+        const SizedBox(width: 12),
+        if (failed > 0)
+          _NoticeLine.error('Failed: $failed')
+        else
+          const Text('Failed: 0'),
+      ],
     );
   }
 }
 
-/// One plan row: what its action does, and its own result in the leading
-/// icon once it has one. Follows the cell for its own path and nothing
-/// else — which is what makes applying action N repaint action N's row
-/// rather than the plan: the section above it follows `planChanged`, and a
-/// result does not touch that.
-class _PlanRow extends StatelessWidget {
-  const _PlanRow({required this.state, required this.row});
+/// The counts row once the run is over: the SPEC §11.4 five numbers,
+/// unchanged from what `_StageText`'s finished case used to render under
+/// the same key — moved here so that case can stay the single line
+/// Inherited-from-Phase-5 asks for.
+class _FinishedCounts extends StatelessWidget {
+  const _FinishedCounts({super.key, required this.phase, required this.dryRun});
 
-  final SyncRunViewState state;
-  final SyncRunPlanRow row;
+  final SyncRunFinished phase;
+  final bool dryRun;
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<SyncRunResultRow?>(
-      valueListenable: state.resultCell(row.path),
-      builder: (context, result, _) => ListTile(
-        contentPadding: EdgeInsets.zero,
-        dense: true,
-        leading: _resultIcon(result, Theme.of(context)),
-        title: Text(row.path),
-        subtitle: Text(
-          result?.error ?? '${row.action} · ${formatBytes(row.bytes)}',
-        ),
+    final SyncRunFinished(
+      :applied,
+      :skipped,
+      :conflicts,
+      :failed,
+      :unreadable,
+    ) = phase;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (dryRun) const Text('Nothing was applied.'),
+          // Five numbers, always: two of them (skipped, unreadable) answer
+          // different questions and are never summed.
+          Text('Applied: $applied'),
+          Text('Skipped: $skipped'),
+          Text('Conflicts: $conflicts'),
+          if (failed > 0)
+            _NoticeLine.error('Failed: $failed')
+          else
+            const Text('Failed: 0'),
+          if (unreadable > 0)
+            _NoticeLine.error('Unreadable: $unreadable')
+          else
+            const Text('Unreadable: 0'),
+        ],
       ),
     );
   }
@@ -1151,13 +1185,6 @@ class _NoticeLine extends StatelessWidget {
       ],
     );
   }
-}
-
-/// The leading icon of a plan row: nothing reported yet, applied, or failed.
-Widget _resultIcon(SyncRunResultRow? result, ThemeData theme) {
-  if (result == null) return const Icon(Icons.radio_button_unchecked);
-  if (result.error == null) return const Icon(Icons.check_circle_outline);
-  return Icon(Icons.error_outline, color: theme.colorScheme.error);
 }
 
 /// The confirmation the system back gesture puts in front of a live run:

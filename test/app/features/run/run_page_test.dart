@@ -6,6 +6,7 @@ import 'package:dsync/app/core_link/models/plan_proposal.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/run_decision.dart';
 import 'package:dsync/app/core_link/models/run_update.dart';
+import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
@@ -422,8 +423,18 @@ void main() {
         ),
       )
       ..recordPlan(const [
-        SyncRunPlanRow(path: 'new.txt', action: 'copy to desktop', bytes: 2048),
-        SyncRunPlanRow(path: 'old.txt', action: 'delete on desktop', bytes: 0),
+        SyncRunPlanRow(
+          path: 'new.txt',
+          action: 'copy to desktop',
+          bytes: 2048,
+          group: SyncRunPlanGroup.toDevice,
+        ),
+        SyncRunPlanRow(
+          path: 'old.txt',
+          action: 'delete on desktop',
+          bytes: 0,
+          group: SyncRunPlanGroup.deletions,
+        ),
       ], bytesToTransfer: 2048)
       ..recordResult(
         const SyncRunResultRow(
@@ -436,31 +447,53 @@ void main() {
     await pump(tester);
 
     expect(find.byKey(const Key('run-header')), findsOneWidget);
+    expect(find.text('This device ⇄ desktop'), findsOneWidget);
     expect(find.text('This device: /data/notes'), findsOneWidget);
     expect(find.text('desktop: ~/notes'), findsOneWidget);
     expect(find.text('First sync of this pair.'), findsOneWidget);
     expect(find.byKey(const Key('run-first-sync-warning')), findsOneWidget);
+
+    // Scan tally: one line, with today's per-side breakdown a tap away.
+    expect(find.text('10 files checked · 1 changed'), findsOneWidget);
+    expect(
+      find.textContaining('7 unchanged by metadata, 2 unchanged by hash'),
+      findsNothing,
+    );
+    await tester.tap(find.byKey(const Key('run-scan-tally')));
+    await tester.pump();
     expect(
       find.textContaining('7 unchanged by metadata, 2 unchanged by hash'),
       findsOneWidget,
     );
+
     expect(find.byKey(const Key('run-unreadable')), findsOneWidget);
     expect(find.byKey(const Key('run-symlinks')), findsOneWidget);
     expect(
       find.textContaining('both.txt: this device created'),
       findsOneWidget,
     );
-    expect(find.textContaining('Plan: 2 action(s), 2.0 KiB'), findsOneWidget);
+
+    // Counts row: direction/delete/conflict tallies, plus the live
+    // Applied/Failed pair while applying.
+    expect(find.text('to desktop 1 (2.0 KiB)'), findsOneWidget);
+    expect(find.text('delete 1'), findsOneWidget);
+    expect(find.text('conflicts 1'), findsOneWidget);
+    expect(find.text('Applied: 1'), findsOneWidget);
+    expect(find.text('Failed: 0'), findsOneWidget);
     expect(find.text('Applying 1 of 2'), findsOneWidget);
     expect(find.byKey(const Key('run-stop')), findsOneWidget);
 
-    // Applying: the rows are behind the disclosure, their tally in front of
-    // it.
-    expect(find.byKey(const Key('run-plan')), findsNothing);
-    expect(find.text('Applied: 1'), findsOneWidget);
-    expect(find.text('Failed: 0'), findsOneWidget);
+    // Applying: the groups are present but their rows are behind their own
+    // disclosure.
+    expect(find.byKey(const Key('run-plan')), findsOneWidget);
+    expect(find.text('new.txt'), findsNothing);
+    expect(find.text('old.txt'), findsNothing);
+    expect(find.textContaining('To desktop (1, 2.0 KiB)'), findsOneWidget);
+    expect(find.textContaining('Deletions (1)'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('run-plan-disclosure-deletions')));
     await tester.pump();
 
     expect(find.text('new.txt'), findsOneWidget);
@@ -492,7 +525,30 @@ void main() {
     expect(find.byKey(const Key('run-symlinks')), findsNothing);
     expect(find.byKey(const Key('run-conflicts')), findsNothing);
     expect(find.byKey(const Key('run-plan')), findsNothing);
+    expect(find.byKey(const Key('run-summary')), findsNothing);
     expect(find.text('Scanning both folders (dry run)…'), findsOneWidget);
+  });
+
+  testWidgets('a long root is middle-elided, never shown raw', (tester) async {
+    const longRoot =
+        '/storage/emulated/0/Android/data/com.example.app/files/notes/'
+        'deeply/nested/folder';
+    controller.state
+      ..recordStart(dryRun: false)
+      ..recordPhase(const SyncRunScanning())
+      ..recordHeader(
+        const SyncRunHeader(
+          localRoot: longRoot,
+          remoteRoot: '~/notes',
+          deviceName: 'desktop',
+          history: 'Last synced 2026-09-16 10:00 (just now).',
+          firstSyncWarning: null,
+        ),
+      );
+    await pump(tester);
+
+    expect(find.text('This device: $longRoot'), findsNothing);
+    expect(find.text('This device: ${elidePath(longRoot)}'), findsOneWidget);
   });
 
   group('the plan list is built on demand', () {
@@ -505,6 +561,7 @@ void main() {
           path: 'file-$i.txt',
           action: 'copy to desktop',
           bytes: 1024,
+          group: SyncRunPlanGroup.toDevice,
         ),
     ];
 
@@ -521,7 +578,7 @@ void main() {
 
       // The section is on the page, its title and its first rows with it.
       expect(find.byKey(const Key('run-plan')), findsOneWidget);
-      expect(find.textContaining('Plan: 50000 action(s)'), findsOneWidget);
+      expect(find.textContaining('To desktop (50,000'), findsOneWidget);
       expect(find.text('file-0.txt'), findsOneWidget);
       // The rest of the plan exists as data and not as widgets.
       expect(find.text('file-49999.txt'), findsNothing);
@@ -544,21 +601,23 @@ void main() {
             path: 'new.txt',
             action: 'copy to desktop',
             bytes: 2048,
+            group: SyncRunPlanGroup.toDevice,
           ),
           SyncRunPlanRow(
             path: 'old.txt',
             action: 'delete on desktop',
             bytes: 0,
+            group: SyncRunPlanGroup.deletions,
           ),
         ], bytesToTransfer: 2048);
       await pump(tester);
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
       await tester.pump();
+      await tester.tap(find.byKey(const Key('run-plan-disclosure-deletions')));
+      await tester.pump();
 
       final other = tester.widget<Text>(find.text('old.txt'));
-      final title = tester.widget<Text>(
-        find.textContaining('Plan: 2 action(s)'),
-      );
+      final title = tester.widget<Text>(find.textContaining('To desktop (1'));
 
       // Progress is the apply loop's other notification, at most once a
       // second: it repaints the line that shows it and nothing in the plan.
@@ -570,7 +629,7 @@ void main() {
       expect(find.text('Applying 1 of 2'), findsOneWidget);
       expect(tester.widget<Text>(find.text('old.txt')), same(other));
       expect(
-        tester.widget<Text>(find.textContaining('Plan: 2 action(s)')),
+        tester.widget<Text>(find.textContaining('To desktop (1')),
         same(title),
       );
 
@@ -594,8 +653,18 @@ void main() {
 
   group('the plan collapses while the run applies it', () {
     const plan = [
-      SyncRunPlanRow(path: 'new.txt', action: 'copy to desktop', bytes: 2048),
-      SyncRunPlanRow(path: 'old.txt', action: 'delete on desktop', bytes: 0),
+      SyncRunPlanRow(
+        path: 'new.txt',
+        action: 'copy to desktop',
+        bytes: 2048,
+        group: SyncRunPlanGroup.toDevice,
+      ),
+      SyncRunPlanRow(
+        path: 'old.txt',
+        action: 'delete on desktop',
+        bytes: 0,
+        group: SyncRunPlanGroup.deletions,
+      ),
     ];
 
     testWidgets('collapsed by default, and a failure is readable there', (
@@ -614,12 +683,13 @@ void main() {
         );
       await pump(tester);
 
-      expect(find.byKey(const Key('run-plan')), findsNothing);
+      // The area is present — its group headers with it — but the rows are
+      // collapsed away.
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
       expect(find.text('new.txt'), findsNothing);
-      expect(
-        find.text('Plan: 2 action(s), 2.0 KiB to transfer'),
-        findsOneWidget,
-      );
+      expect(find.text('old.txt'), findsNothing);
+      expect(find.textContaining('To desktop (1, 2.0 KiB)'), findsOneWidget);
+      expect(find.textContaining('Deletions (1)'), findsOneWidget);
       expect(find.text('Applied: 0'), findsOneWidget);
 
       // The reason to expand, in the colour the finished summary uses.
@@ -640,6 +710,8 @@ void main() {
       await pump(tester);
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
       await tester.pump();
+      await tester.tap(find.byKey(const Key('run-plan-disclosure-deletions')));
+      await tester.pump();
 
       final row = tester.widget<Text>(find.text('old.txt'));
       controller.state
@@ -657,12 +729,12 @@ void main() {
       expect(find.text('Applied: 1'), findsOneWidget);
       // Expanded until the user says otherwise, and the rows the tally's
       // rebuild left alone.
-      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(find.text('old.txt'), findsOneWidget);
       expect(tester.widget<Text>(find.text('old.txt')), same(row));
 
-      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+      await tester.tap(find.byKey(const Key('run-plan-disclosure-deletions')));
       await tester.pump();
-      expect(find.byKey(const Key('run-plan')), findsNothing);
+      expect(find.text('old.txt'), findsNothing);
     });
 
     testWidgets('a finished run shows the rows with nothing to expand', (
@@ -673,7 +745,8 @@ void main() {
         ..recordPhase(const SyncRunApplying())
         ..recordPlan(plan, bytesToTransfer: 2048);
       await pump(tester);
-      expect(find.byKey(const Key('run-plan')), findsNothing);
+      expect(find.text('new.txt'), findsNothing);
+      expect(find.text('old.txt'), findsNothing);
 
       controller.state.recordPhase(
         const SyncRunFinished(
@@ -688,8 +761,51 @@ void main() {
 
       expect(find.byKey(const Key('run-plan')), findsOneWidget);
       expect(find.byKey(const Key('run-plan-disclosure')), findsNothing);
+      expect(
+        find.byKey(const Key('run-plan-disclosure-deletions')),
+        findsNothing,
+      );
       expect(find.text('new.txt'), findsOneWidget);
       expect(find.text('old.txt'), findsOneWidget);
+    });
+
+    testWidgets('record-only rows collapse by default even outside applying', (
+      tester,
+    ) async {
+      controller.state
+        ..recordStart(dryRun: false)
+        ..recordPhase(const SyncRunScanning())
+        ..recordPlan(const [
+          SyncRunPlanRow(
+            path: 'new.txt',
+            action: 'copy to desktop',
+            bytes: 2048,
+            group: SyncRunPlanGroup.toDevice,
+          ),
+          SyncRunPlanRow(
+            path: 'same.txt',
+            action: 'same content, record only',
+            bytes: 0,
+            group: SyncRunPlanGroup.recordOnly,
+          ),
+        ], bytesToTransfer: 2048);
+      await pump(tester);
+
+      // Not applying: the direction group shows its rows outright...
+      expect(find.text('new.txt'), findsOneWidget);
+      // ...but record-only collapses by default regardless of phase, and
+      // is the only disclosure up, so it is the one `run-plan-disclosure`
+      // lands on.
+      expect(find.text('same.txt'), findsNothing);
+      expect(find.byKey(const Key('run-plan-disclosure')), findsOneWidget);
+      expect(
+        find.byKey(const Key('run-plan-disclosure-recordOnly')),
+        findsNothing,
+      );
+
+      await tester.tap(find.byKey(const Key('run-plan-disclosure')));
+      await tester.pump();
+      expect(find.text('same.txt'), findsOneWidget);
     });
   });
 
@@ -1006,11 +1122,13 @@ void main() {
               path: 'new.txt',
               action: 'copy to desktop',
               bytes: 2048,
+              group: SyncRunPlanGroup.toDevice,
             ),
             SyncRunPlanRow(
               path: 'gone.txt',
               action: 'delete on desktop',
               bytes: 0,
+              group: SyncRunPlanGroup.deletions,
             ),
           ], bytesToTransfer: 2048),
       );
@@ -1031,15 +1149,17 @@ void main() {
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
 
-      // Back with the decision made — the plan collapsed to its summary
-      // while the run applies it, and marking each action off behind it.
+      // Back with the decision made — the groups collapsed to their own
+      // headers while the run applies them, and marking each action off
+      // behind it.
       expect(find.byKey(const Key('run-decisions')), findsNothing);
-      expect(find.byKey(const Key('run-plan')), findsNothing);
+      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(find.text('new.txt'), findsNothing);
       expect(find.byKey(const Key('run-plan-disclosure')), findsOneWidget);
       expect(find.byKey(const Key('run-conflicts')), findsOneWidget);
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
       await tester.pump();
-      expect(find.byKey(const Key('run-plan')), findsOneWidget);
+      expect(find.text('new.txt'), findsOneWidget);
       controller.state.recordResult(
         const SyncRunResultRow(
           path: 'new.txt',
@@ -1336,7 +1456,12 @@ void main() {
         ..recordStart(dryRun: false)
         ..recordPhase(const SyncRunApplying())
         ..recordPlan(const [
-          SyncRunPlanRow(path: 'new.txt', action: 'copy to desktop', bytes: 8),
+          SyncRunPlanRow(
+            path: 'new.txt',
+            action: 'copy to desktop',
+            bytes: 8,
+            group: SyncRunPlanGroup.toDevice,
+          ),
         ], bytesToTransfer: 8)
         ..recordResult(
           const SyncRunResultRow(

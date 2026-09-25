@@ -378,6 +378,7 @@ class SyncRunController {
               path: action.path,
               action: _actionLabel(action, request.deviceName),
               bytes: _bytes(action),
+              group: _group(action),
             ),
         ], bytesToTransfer: plan.bytesToTransfer);
         if (!plan.awaitingDecision) break;
@@ -581,6 +582,22 @@ String _name(String path) => path.substring(path.lastIndexOf('/') + 1);
 int _bytes(PlanAction action) => switch (action) {
   CopyAction(:final bytes) || CopyAsideAction(:final bytes) => bytes,
   DeleteAction() || CommitOnlyAction() => 0,
+};
+
+/// Which [SyncRunPlanGroup] [action] renders under (Design C.5): a `Copy`
+/// by which side it copies from, a `Delete` under one group for either
+/// side (its own action label already says which), a `CommitOnly` as
+/// record-only. `CopyAside` never reaches a plan (SPEC: it settles a
+/// conflict without resolving it, so it is never itself proposed) — mapped
+/// by the same from-side symmetry as `Copy` purely so this switch stays
+/// exhaustive, not because a plan is ever expected to carry one.
+SyncRunPlanGroup _group(PlanAction action) => switch (action) {
+  CopyAction(from: ReplicaSide.a) ||
+  CopyAsideAction(from: ReplicaSide.a) => SyncRunPlanGroup.toDevice,
+  CopyAction(from: ReplicaSide.b) ||
+  CopyAsideAction(from: ReplicaSide.b) => SyncRunPlanGroup.toThisDevice,
+  DeleteAction() => SyncRunPlanGroup.deletions,
+  CommitOnlyAction() => SyncRunPlanGroup.recordOnly,
 };
 
 String stoppedMessage(int completedActions) =>

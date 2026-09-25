@@ -233,6 +233,10 @@ final class SyncRunScanSide {
   final int deleted;
 
   int get total => metadataMatched + hashMatched + modified + created + deleted;
+
+  /// Paths this side's scan found to differ from the last commit — the
+  /// three reasons that are not "scanned unchanged" (SPEC §5.2).
+  int get changed => modified + created + deleted;
 }
 
 final class SyncRunScanTally {
@@ -240,6 +244,14 @@ final class SyncRunScanTally {
 
   final SyncRunScanSide local;
   final SyncRunScanSide remote;
+
+  /// Every path either side's scan touched (Design C.4's one-line summary,
+  /// ahead of the per-side breakdown it discloses).
+  int get totalChecked => local.total + remote.total;
+
+  /// How many of those paths scanned changed — the sum of both sides'
+  /// [SyncRunScanSide.changed].
+  int get totalChanged => local.changed + remote.changed;
 }
 
 /// One `Conflict` (SPEC §6), rendered: each side's status word, or "no
@@ -256,18 +268,43 @@ final class SyncRunConflictRow {
   final String remote;
 }
 
-/// One `PlanAction`, rendered: what it does, in words, and how many bytes
-/// it moves.
+/// Which direction one planned action moves in (Design C.5): the plan
+/// section it lands in, grouped so the page reads *where → what → how
+/// far* rather than one flat list. [toDevice] and [toThisDevice] are a
+/// `CopyAction` by which side it copies from (`RunController`'s
+/// `_group`); [deletions] is a `DeleteAction` on either side — one group
+/// for both, since the row's own action label already says which; and
+/// [recordOnly] is a `CommitOnlyAction`, collapsed by default because
+/// "same content, record only" is confirmation, not something to review.
+enum SyncRunPlanGroup { toDevice, toThisDevice, deletions, recordOnly }
+
+/// One [SyncRunPlanGroup]'s slice of the plan: which indexes into
+/// [SyncRunViewState.plan] belong to it, and the bytes those rows move,
+/// folded once by [SyncRunViewState.recordPlan] so a group's header count
+/// never re-walks the plan to find its own rows.
+final class SyncRunPlanSection {
+  const SyncRunPlanSection({required this.indexes, required this.bytes});
+
+  final List<int> indexes;
+  final int bytes;
+
+  int get count => indexes.length;
+}
+
+/// One `PlanAction`, rendered: what it does, in words, how many bytes it
+/// moves, and which [SyncRunPlanGroup] it falls in.
 final class SyncRunPlanRow {
   const SyncRunPlanRow({
     required this.path,
     required this.action,
     required this.bytes,
+    required this.group,
   });
 
   final String path;
   final String action;
   final int bytes;
+  final SyncRunPlanGroup group;
 }
 
 /// One `RunResultEvent`: [error] is `null` when the action applied.
@@ -321,6 +358,7 @@ class SyncRunViewState extends ChangeNotifier {
   List<String> _unreadablePaths = const [];
   List<SyncRunConflictRow> _conflicts = const [];
   final ValueNotifier<List<SyncRunPlanRow>> _plan = ValueNotifier(const []);
+  Map<SyncRunPlanGroup, SyncRunPlanSection> _planSections = _emptyPlanSections;
   int _bytesToTransfer = 0;
   final Map<String, SyncRunResultRow> _results = {};
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
@@ -369,6 +407,12 @@ class SyncRunViewState extends ChangeNotifier {
   /// once per action. [SyncRunViewState]'s own listeners cannot say that:
   /// they also fire for the phase, the progress and every path list.
   Listenable get planChanged => _plan;
+
+  /// [plan], sliced into its four [SyncRunPlanGroup]s (Design C.5) —
+  /// folded once by [recordPlan], not re-walked per build. Every group is
+  /// present, empty ones included, so a reader never null-checks a group
+  /// that has nothing in it.
+  Map<SyncRunPlanGroup, SyncRunPlanSection> get planSections => _planSections;
 
   int get bytesToTransfer => _bytesToTransfer;
 
@@ -426,6 +470,7 @@ class SyncRunViewState extends ChangeNotifier {
     _progress = null;
     _startedAt = null;
     _plan.value = const [];
+    _planSections = _emptyPlanSections;
     _phase.value = const SyncRunConnecting();
     notifyListeners();
   }
@@ -467,10 +512,28 @@ class SyncRunViewState extends ChangeNotifier {
   }
 
   /// Replaces the plan at once — one notification for one `RunPlanEvent`,
-  /// on [planChanged] alone. `bytesToTransfer` is set first, so a listener
-  /// woken by the plan reads the plan's own sum.
+  /// on [planChanged] alone. `bytesToTransfer` and [planSections] are set
+  /// first, so a listener woken by the plan reads the plan's own sum and
+  /// group counts; [planSections] is one pass over [rows], not re-walked
+  /// on every build that follows.
   void recordPlan(List<SyncRunPlanRow> rows, {required int bytesToTransfer}) {
     _bytesToTransfer = bytesToTransfer;
+    final indexes = {
+      for (final group in SyncRunPlanGroup.values) group: <int>[],
+    };
+    final bytes = {for (final group in SyncRunPlanGroup.values) group: 0};
+    for (var i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      indexes[row.group]!.add(i);
+      bytes[row.group] = bytes[row.group]! + row.bytes;
+    }
+    _planSections = {
+      for (final group in SyncRunPlanGroup.values)
+        group: SyncRunPlanSection(
+          indexes: List.unmodifiable(indexes[group]!),
+          bytes: bytes[group]!,
+        ),
+    };
     _plan.value = List.unmodifiable(rows);
   }
 
@@ -511,3 +574,10 @@ class SyncRunViewState extends ChangeNotifier {
     super.dispose();
   }
 }
+
+/// Every [SyncRunPlanGroup] with nothing in it — [recordStart]'s reset and
+/// the state a run renders before its first plan arrives.
+final Map<SyncRunPlanGroup, SyncRunPlanSection> _emptyPlanSections = {
+  for (final group in SyncRunPlanGroup.values)
+    group: const SyncRunPlanSection(indexes: [], bytes: 0),
+};

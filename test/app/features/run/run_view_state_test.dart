@@ -145,8 +145,81 @@ void main() {
       expect(get().state.plan[0].path, 'new.txt');
       expect(get().state.plan[0].action, 'copy to desktop');
       expect(get().state.plan[0].bytes, 2048);
+      expect(get().state.plan[0].group, SyncRunPlanGroup.toDevice);
       expect(get().state.plan[1].action, 'delete on this device');
+      expect(get().state.plan[1].group, SyncRunPlanGroup.deletions);
       expect(get().state.bytesToTransfer, 2048);
+    });
+
+    test('recordPlan folds each group\'s index list and bytes once, without a '
+        'build: every group present, empty ones included', () async {
+      await render(happy);
+
+      final sections = get().state.planSections;
+      expect(sections.keys, containsAll(SyncRunPlanGroup.values));
+
+      final toDevice = sections[SyncRunPlanGroup.toDevice]!;
+      expect(toDevice.indexes, [0]);
+      expect(toDevice.count, 1);
+      expect(toDevice.bytes, 2048);
+
+      final deletions = sections[SyncRunPlanGroup.deletions]!;
+      expect(deletions.indexes, [1]);
+      expect(deletions.count, 1);
+      expect(deletions.bytes, 0);
+
+      // Positive control: a group with nothing in it is still present,
+      // as an empty section rather than absent from the map.
+      final toThisDevice = sections[SyncRunPlanGroup.toThisDevice]!;
+      expect(toThisDevice.indexes, isEmpty);
+      expect(toThisDevice.count, 0);
+      final recordOnly = sections[SyncRunPlanGroup.recordOnly]!;
+      expect(recordOnly.indexes, isEmpty);
+    });
+
+    test('a plan with one row per group sorts each into its own section', () {
+      final state = SyncRunViewState();
+      addTearDown(state.dispose);
+
+      state.recordPlan(const [
+        SyncRunPlanRow(
+          path: 'to-device.txt',
+          action: 'copy to desktop',
+          bytes: 10,
+          group: SyncRunPlanGroup.toDevice,
+        ),
+        SyncRunPlanRow(
+          path: 'to-this.txt',
+          action: 'copy to this device',
+          bytes: 20,
+          group: SyncRunPlanGroup.toThisDevice,
+        ),
+        SyncRunPlanRow(
+          path: 'gone-a.txt',
+          action: 'delete on this device',
+          bytes: 0,
+          group: SyncRunPlanGroup.deletions,
+        ),
+        SyncRunPlanRow(
+          path: 'gone-b.txt',
+          action: 'delete on desktop',
+          bytes: 0,
+          group: SyncRunPlanGroup.deletions,
+        ),
+        SyncRunPlanRow(
+          path: 'same.txt',
+          action: 'same content, record only',
+          bytes: 0,
+          group: SyncRunPlanGroup.recordOnly,
+        ),
+      ], bytesToTransfer: 30);
+
+      final sections = state.planSections;
+      expect(sections[SyncRunPlanGroup.toDevice]!.indexes, [0]);
+      expect(sections[SyncRunPlanGroup.toThisDevice]!.indexes, [1]);
+      // Deletions is one group for either side: both rows land in it.
+      expect(sections[SyncRunPlanGroup.deletions]!.indexes, [2, 3]);
+      expect(sections[SyncRunPlanGroup.recordOnly]!.indexes, [4]);
     });
 
     test('results and progress, per action, in order', () async {
@@ -408,6 +481,10 @@ void main() {
       expect(get().state.skippedSymlinks, isEmpty);
       expect(get().state.unreadablePaths, isEmpty);
       expect(get().state.plan, isEmpty);
+      expect(
+        get().state.planSections[SyncRunPlanGroup.toDevice]!.indexes,
+        isEmpty,
+      );
       expect(get().state.bytesToTransfer, 0);
       expect(get().state.results, isEmpty);
       expect(get().state.appliedCount, 0);
