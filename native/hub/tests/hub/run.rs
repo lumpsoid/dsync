@@ -76,6 +76,7 @@ async fn the_head_decides_the_plan_and_the_run_applies_what_it_kept() {
     assert!(*awaiting_decision);
     let path = |action: &ActionView| match action {
         ActionView::Copy { path, .. }
+        | ActionView::CopyAside { path, .. }
         | ActionView::Delete { path, .. }
         | ActionView::CommitOnly { path } => path.clone(),
     };

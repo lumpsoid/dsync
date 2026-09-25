@@ -90,6 +90,7 @@ fn act(action: &Action) -> Act {
         Action::Delete { on: Side::A, .. } => Act::DeleteOnA,
         Action::Delete { on: Side::B, .. } => Act::DeleteOnB,
         Action::CommitOnly { .. } => Act::CommitOnly,
+        Action::CopyAside { .. } => panic!("the reconciler never proposes a copy aside"),
     }
 }
 

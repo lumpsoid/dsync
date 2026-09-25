@@ -88,6 +88,14 @@ enum Prepared {
         source: FileState,
         body: Body,
     },
+    /// A copy aside, written at `to` (its source path is not needed past
+    /// the read).
+    CopyAside {
+        from: Side,
+        to: RelPath,
+        source: FileState,
+        body: Body,
+    },
     Delete {
         path: RelPath,
         on: Side,
@@ -104,8 +112,8 @@ struct Owed {
     outcome: Result<OwedCommits, ActionFailure>,
 }
 
-/// Copies marked on the side they write onto, and every action a worker
-/// started: the marks to withdraw are the difference.
+/// Copies marked on the side and path they write, and the written path of
+/// every copy a worker started: the marks to withdraw are the difference.
 #[derive(Default)]
 struct Marks {
     marked: Vec<(Side, RelPath)>,
@@ -187,8 +195,8 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                         .marked
                         .extend(window.iter().filter_map(|action| {
                             action
-                                .writes_onto()
-                                .map(|side| (side, action.path().clone()))
+                                .written()
+                                .map(|(side, written)| (side, written.clone()))
                         }));
                 }
             }
@@ -196,7 +204,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 return;
             };
             let reserved = match action {
-                Action::Copy { bytes, .. } if marked.is_ok() => {
+                Action::Copy { bytes, .. } | Action::CopyAside { bytes, .. } if marked.is_ok() => {
                     let Some(reserved) = self
                         .until_stopped(budget.acquire_many(self.reservation(*bytes)))
                         .await
@@ -209,7 +217,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             };
             let item = Ready {
                 action: action.clone(),
-                marked: match action.writes_onto() {
+                marked: match action.written() {
                     Some(_) => marked.clone(),
                     None => Ok(()),
                 },
@@ -240,8 +248,9 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let intents = |side| {
             window
                 .iter()
-                .filter(|action| action.writes_onto() == Some(side))
-                .map(|action| ArchiveCommit::Intent(action.path().clone()))
+                .filter_map(Action::written)
+                .filter(|(on, _)| *on == side)
+                .map(|(_, written)| ArchiveCommit::Intent(written.clone()))
                 .collect()
         };
         let (a, b) = tokio::join!(
@@ -304,7 +313,11 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let Some(_worker) = worker else {
             return;
         };
-        lock(marks).started.insert(action.path().clone());
+        // Keyed on the path written, which is the one marked: a copy
+        // aside's destination, not its source.
+        if let Some((_, written)) = action.written() {
+            lock(marks).started.insert(written.clone());
+        }
         let outcome = self.perform(prepared, emptied).await;
         let _ = owed.send(Owed { action, outcome }).await;
     }
@@ -312,28 +325,47 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
     /// Starts a copy's source read.
     async fn prepare(&self, action: &Action) -> Prepared {
         match action {
-            Action::Copy { path, from, .. } => {
-                let Some(source) = self.file_on(*from, path) else {
-                    return Prepared::Failed(ActionFailure::NoSource { side: *from });
-                };
-                match self.pair.read(*from, path).await {
-                    Ok(body) => Prepared::Copy {
-                        path: path.clone(),
-                        from: *from,
-                        source,
-                        body,
-                    },
-                    Err(error) => {
-                        Prepared::Failed(ActionFailure::replica(*from, ReplicaOp::Read)(error))
-                    }
-                }
-            }
+            Action::Copy { path, from, .. } => match self.read_source(*from, path).await {
+                Ok((source, body)) => Prepared::Copy {
+                    path: path.clone(),
+                    from: *from,
+                    source,
+                    body,
+                },
+                Err(failure) => Prepared::Failed(failure),
+            },
+            Action::CopyAside { path, from, to, .. } => match self.read_source(*from, path).await {
+                Ok((source, body)) => Prepared::CopyAside {
+                    from: *from,
+                    to: to.clone(),
+                    source,
+                    body,
+                },
+                Err(failure) => Prepared::Failed(failure),
+            },
             Action::Delete { path, on } => Prepared::Delete {
                 path: path.clone(),
                 on: *on,
             },
             Action::CommitOnly { path } => Prepared::CommitOnly { path: path.clone() },
         }
+    }
+
+    /// `path`'s scanned state on `from`, and its read, opened.
+    async fn read_source(
+        &self,
+        from: Side,
+        path: &RelPath,
+    ) -> Result<(FileState, Body), ActionFailure> {
+        let source = self
+            .file_on(from, path)
+            .ok_or(ActionFailure::NoSource { side: from })?;
+        let body = self
+            .pair
+            .read(from, path)
+            .await
+            .map_err(ActionFailure::replica(from, ReplicaOp::Read))?;
+        Ok((source, body))
     }
 
     /// The action's file work (SPEC §7.2, §7.5), and what it leaves the two
@@ -357,6 +389,22 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                     .await
                     .map_err(ActionFailure::replica(onto, ReplicaOp::Write))?;
                 let owed = OwedCommits::for_copy(&path, from, source, landed)?;
+                self.pair.clock.copied(from, landed.size);
+                Ok(owed)
+            }
+            Prepared::CopyAside {
+                from,
+                to,
+                source,
+                body,
+            } => {
+                let onto = from.other();
+                let landed = self
+                    .pair
+                    .write(onto, &to, body, source.meta)
+                    .await
+                    .map_err(ActionFailure::replica(onto, ReplicaOp::Write))?;
+                let owed = OwedCommits::for_copy_aside(&to, from, source, landed)?;
                 self.pair.clock.copied(from, landed.size);
                 Ok(owed)
             }
@@ -422,13 +470,14 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         }
     }
 
-    /// Commits one batch on both sides at once. Failed actions owe nothing.
+    /// Commits one batch on both sides at once. Failed actions owe nothing,
+    /// nor does a copy aside owe its source side.
     async fn commit(&self, batch: &[Owed]) -> Result<(), ActionFailure> {
         let owed = |side| {
             batch
                 .iter()
                 .filter_map(|owed| owed.outcome.as_ref().ok())
-                .map(|commits| commits.on(side).clone())
+                .filter_map(|commits| commits.on(side).cloned())
                 .collect()
         };
         let (a, b) = tokio::join!(

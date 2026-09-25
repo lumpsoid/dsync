@@ -33,7 +33,13 @@ impl RunSummary {
         failed: usize,
         unreadable: usize,
     ) -> RunSummary {
-        let kept: HashSet<&RelPath> = kept.iter().map(Action::path).collect();
+        // A copy aside keeps both versions without settling its conflict:
+        // it is applied, and its path is still a conflict.
+        let kept: HashSet<&RelPath> = kept
+            .iter()
+            .filter(|action| !matches!(action, Action::CopyAside { .. }))
+            .map(Action::path)
+            .collect();
         RunSummary {
             applied,
             skipped: plan
@@ -152,6 +158,26 @@ mod tests {
         });
         assert_eq!(RunSummary::of(&plan, &kept, 4, 0, 0).conflicts, 1);
         assert_eq!(RunSummary::of(&plan, &all(&plan), 3, 0, 0).conflicts, 2);
+    }
+
+    #[test]
+    fn a_copy_aside_is_applied_and_its_conflict_stays_open() {
+        let plan = plan();
+        let aside = Action::CopyAside {
+            path: path("x"),
+            from: Side::B,
+            to: path("x.copy"),
+            bytes: 1,
+        };
+        let summary = RunSummary::of(&plan, &[aside], 1, 0, 0);
+        assert_eq!((summary.applied, summary.conflicts), (1, 1));
+        // Positive control: resolving the same conflict does close it.
+        let resolved = Action::Copy {
+            path: path("x"),
+            from: Side::B,
+            bytes: 1,
+        };
+        assert_eq!(RunSummary::of(&plan, &[resolved], 1, 0, 0).conflicts, 0);
     }
 
     #[test]

@@ -383,6 +383,7 @@ pub async fn apply(a: &impl Replica, b: &impl Replica, exchanged: &Exchanged) {
                 b.commit(upsert(Side::B)).await.unwrap();
             }
             Action::Delete { .. } => panic!("no test here deletes"),
+            Action::CopyAside { .. } => panic!("the reconciler never proposes a copy aside"),
         }
     }
     a.unlock().await.unwrap();

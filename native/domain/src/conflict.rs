@@ -49,13 +49,28 @@ impl Conflict {
             },
         }
     }
+
+    /// "Keep both": the action that saves the peer's (side B's) version
+    /// beside this device's, at `to` on side A, and settles nothing (SPEC
+    /// §7.2). Offered only when both sides hold a file - otherwise there is
+    /// only one version to keep - so `None` then.
+    pub fn keep_both(&self, to: RelPath) -> Option<Action> {
+        let peer = self.b.as_ref().and_then(Status::file)?;
+        self.a.as_ref().and_then(Status::file)?;
+        Some(Action::CopyAside {
+            path: self.path.clone(),
+            from: Side::B,
+            to,
+            bytes: peer.meta.size,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::content_hash::ContentHash;
-    use crate::scan_entry::{FileMeta, FileState};
+    use crate::scan_entry::{FileMeta, FileState, Unchanged};
 
     fn file(size: u64) -> FileState {
         FileState {
@@ -98,6 +113,54 @@ mod tests {
                 bytes: 5
             }
         );
+    }
+
+    fn unchanged(size: u64) -> Status {
+        Status::Unchanged {
+            file: file(size),
+            by: Unchanged::MetadataMatched,
+        }
+    }
+
+    fn aside() -> RelPath {
+        RelPath::parse("x/y.copy").unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    #[test]
+    fn keeping_both_copies_the_peers_file_aside_onto_this_device() {
+        for (a, b) in [
+            (Status::Modified(file(3)), Status::Modified(file(5))),
+            (Status::Created(file(3)), Status::Created(file(5))),
+            (unchanged(3), unchanged(5)),
+            (Status::Untrusted(file(3)), Status::Created(file(5))),
+        ] {
+            let both = conflict(Some(a), Some(b));
+            assert_eq!(
+                both.keep_both(aside()),
+                Some(Action::CopyAside {
+                    path: both.path.clone(),
+                    from: Side::B,
+                    to: aside(),
+                    bytes: 5
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn keeping_both_is_refused_unless_both_sides_hold_a_file() {
+        for (a, b) in [
+            (Some(Status::Untrusted(file(4))), None),
+            (None, Some(Status::Created(file(4)))),
+            (Some(Status::Modified(file(4))), Some(Status::Deleted)),
+            (Some(Status::Deleted), Some(Status::Modified(file(4)))),
+            (
+                Some(Status::UntrustedAbsent),
+                Some(Status::Created(file(4))),
+            ),
+        ] {
+            assert_eq!(conflict(a, b).keep_both(aside()), None);
+        }
     }
 
     #[test]

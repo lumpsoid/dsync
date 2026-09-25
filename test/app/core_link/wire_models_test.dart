@@ -56,6 +56,38 @@ void main() {
     expect(conflicts.single.b, isA<StatusDeleted>());
   });
 
+  test('a copy aside in a result reads with the path it wrote', () {
+    final applied = runUpdate(
+      wire.RunUpdateBodyApplied(
+        approved: const [],
+        results: [
+          wire.ResultView(
+            action: wire.ActionViewCopyAside(
+              path: 'd/x.txt',
+              from: wire.SideView.b,
+              to: 'd/x.dsync-copy-from-phone-2026-09-25-1200.txt',
+              bytes: n(7),
+            ),
+          ),
+        ],
+      ),
+    );
+    final RunApplied(:results) = applied as RunApplied;
+    expect(
+      results.single.action,
+      isA<CopyAsideAction>()
+          .having((a) => a.path, 'path', 'd/x.txt')
+          .having((a) => a.from, 'from', ReplicaSide.b)
+          .having(
+            (a) => a.to,
+            'to',
+            'd/x.dsync-copy-from-phone-2026-09-25-1200.txt',
+          )
+          .having((a) => a.bytes, 'bytes', 7),
+    );
+    expect(results.single.failure, isNull);
+  });
+
   test('a run that ran reads with its summary and how it stopped', () {
     final ended = runUpdate(
       wire.RunUpdateBodyEnded(

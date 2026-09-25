@@ -374,7 +374,7 @@ async fn a_conflict_resolved_by_the_decider_is_applied_and_does_not_exit_1() {
 }
 
 /// The plan a run proposes for the site as it stands, applying nothing.
-async fn proposed_plan(site: &Site) -> dsync_domain::Plan {
+pub async fn proposed_plan(site: &Site) -> dsync_domain::Plan {
     let mut peek = Answer {
         actions: vec![],
         asked: false,

@@ -596,6 +596,14 @@ pub enum ActionView {
         from: SideView,
         bytes: u64,
     },
+    /// A conflict's "keep both": `path` on `from` saved at `to` on the
+    /// other side. Its result is keyed by `path`, the conflict's own.
+    CopyAside {
+        path: String,
+        from: SideView,
+        to: String,
+        bytes: u64,
+    },
     Delete {
         path: String,
         on: SideView,
@@ -611,6 +619,17 @@ impl From<&Action> for ActionView {
             Action::Copy { path, from, bytes } => ActionView::Copy {
                 path: path.to_string(),
                 from: (*from).into(),
+                bytes: *bytes,
+            },
+            Action::CopyAside {
+                path,
+                from,
+                to,
+                bytes,
+            } => ActionView::CopyAside {
+                path: path.to_string(),
+                from: (*from).into(),
+                to: to.to_string(),
                 bytes: *bytes,
             },
             Action::Delete { path, on } => ActionView::Delete {

@@ -526,13 +526,20 @@ String _status(FileStatus? status) => switch (status) {
 String _actionLabel(PlanAction action, String deviceName) => switch (action) {
   CopyAction(from: ReplicaSide.a) => 'copy to $deviceName',
   CopyAction(from: ReplicaSide.b) => 'copy to this device',
+  CopyAsideAction(from: ReplicaSide.a, :final to) =>
+    "saved this device's version on $deviceName as ${_name(to)}",
+  CopyAsideAction(from: ReplicaSide.b, :final to) =>
+    "saved $deviceName's version as ${_name(to)}",
   DeleteAction(on: ReplicaSide.a) => 'delete on this device',
   DeleteAction(on: ReplicaSide.b) => 'delete on $deviceName',
   CommitOnlyAction() => 'same content, record only',
 };
 
+/// A relative path's file name: its last segment.
+String _name(String path) => path.substring(path.lastIndexOf('/') + 1);
+
 int _bytes(PlanAction action) => switch (action) {
-  CopyAction(:final bytes) => bytes,
+  CopyAction(:final bytes) || CopyAsideAction(:final bytes) => bytes,
   DeleteAction() || CommitOnlyAction() => 0,
 };
 

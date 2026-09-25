@@ -17,6 +17,16 @@ pub enum Action {
         from: Side,
         bytes: u64,
     },
+    /// Copy `path`'s file on `from` to the new path `to` on the other side,
+    /// leaving `path` alone on both: a conflict's "keep both" (SPEC §7.2).
+    /// It settles nothing - the conflict stays open for the user to merge.
+    /// `bytes` is the source's size, as for [`Action::Copy`].
+    CopyAside {
+        path: RelPath,
+        from: Side,
+        to: RelPath,
+        bytes: u64,
+    },
     /// Delete the file on `on`, propagating the other side's deletion.
     Delete { path: RelPath, on: Side },
     /// Both sides already agree (same content, or gone on both); only the
@@ -25,19 +35,23 @@ pub enum Action {
 }
 
 impl Action {
+    /// The path the action is about: for a copy aside, the conflict's
+    /// source path, not the one it writes.
     pub fn path(&self) -> &RelPath {
         match self {
             Action::Copy { path, .. }
+            | Action::CopyAside { path, .. }
             | Action::Delete { path, .. }
             | Action::CommitOnly { path } => path,
         }
     }
 
-    /// The side a copy writes onto: where it is marked before its bytes
-    /// land (SPEC §7.6). `None` for an action that writes no file.
-    pub fn writes_onto(&self) -> Option<Side> {
+    /// The side and path a copy writes: where it is marked before its
+    /// bytes land (SPEC §7.6). `None` for an action that writes no file.
+    pub fn written(&self) -> Option<(Side, &RelPath)> {
         match self {
-            Action::Copy { from, .. } => Some(from.other()),
+            Action::Copy { path, from, .. } => Some((from.other(), path)),
+            Action::CopyAside { from, to, .. } => Some((from.other(), to)),
             Action::Delete { .. } | Action::CommitOnly { .. } => None,
         }
     }
@@ -45,7 +59,7 @@ impl Action {
     /// Bytes this action moves: a copy's source size, zero otherwise.
     pub fn bytes(&self) -> u64 {
         match self {
-            Action::Copy { bytes, .. } => *bytes,
+            Action::Copy { bytes, .. } | Action::CopyAside { bytes, .. } => *bytes,
             Action::Delete { .. } | Action::CommitOnly { .. } => 0,
         }
     }

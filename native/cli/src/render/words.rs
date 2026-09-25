@@ -12,10 +12,14 @@ pub fn side(side: Side) -> &'static str {
     }
 }
 
-/// The run's plan-table label: `copy A→B`, `delete on B`, `commit only`.
+/// The run's plan-table label: `copy A→B`, `copy B→A aside as <to>`,
+/// `delete on B`, `commit only`.
 pub fn action(action: &Action) -> String {
     match action {
         Action::Copy { from, .. } => format!("copy {}→{}", side(*from), side(from.other())),
+        Action::CopyAside { from, to, .. } => {
+            format!("copy {}→{} aside as {to}", side(*from), side(from.other()))
+        }
         Action::Delete { on, .. } => format!("delete on {}", side(*on)),
         Action::CommitOnly { .. } => "commit only".to_owned(),
     }
@@ -26,6 +30,13 @@ pub fn action(action: &Action) -> String {
 pub fn prompt_action(action: &Action) -> String {
     match action {
         Action::Copy { from, .. } => format!("copy {} -> {}", side(*from), side(from.other())),
+        Action::CopyAside { from, to, .. } => {
+            format!(
+                "copy {} -> {} aside as {to}",
+                side(*from),
+                side(from.other())
+            )
+        }
         Action::Delete { on, .. } => format!("delete on {}", side(*on)),
         Action::CommitOnly { .. } => "commit only (same content)".to_owned(),
     }
@@ -36,6 +47,8 @@ pub fn action_type(action: &Action) -> &'static str {
     match action {
         Action::Copy { from: Side::A, .. } => "copyAtoB",
         Action::Copy { from: Side::B, .. } => "copyBtoA",
+        Action::CopyAside { from: Side::A, .. } => "copyAsideAtoB",
+        Action::CopyAside { from: Side::B, .. } => "copyAsideBtoA",
         Action::Delete { on: Side::A, .. } => "deleteOnA",
         Action::Delete { on: Side::B, .. } => "deleteOnB",
         Action::CommitOnly { .. } => "commitOnly",

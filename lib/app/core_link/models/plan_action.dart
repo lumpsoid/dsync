@@ -14,6 +14,22 @@ final class CopyAction extends PlanAction {
   final int bytes;
 }
 
+/// A conflict's "keep both": [path] on [from] saved at the new path [to]
+/// on the other side. Settles nothing - the conflict stays open (SPEC
+/// §7.2). Its result is reported under [path], the conflict's own.
+final class CopyAsideAction extends PlanAction {
+  const CopyAsideAction(
+    super.path, {
+    required this.from,
+    required this.to,
+    required this.bytes,
+  });
+
+  final ReplicaSide from;
+  final String to;
+  final int bytes;
+}
+
 final class DeleteAction extends PlanAction {
   const DeleteAction(super.path, {required this.on});
 

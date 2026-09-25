@@ -306,6 +306,8 @@ PlanAction _action(wire.ActionView view) => switch (view) {
     from: side(from),
     bytes: _n(bytes),
   ),
+  wire.ActionViewCopyAside(:final path, :final from, :final to, :final bytes) =>
+    CopyAsideAction(path, from: side(from), to: to, bytes: _n(bytes)),
   wire.ActionViewDelete(:final path, :final on) => DeleteAction(
     path,
     on: side(on),

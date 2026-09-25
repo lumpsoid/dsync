@@ -49,12 +49,13 @@ impl Proposal {
 }
 
 /// The side whose state `action` overrides: a copy's destination, a
-/// delete's side. A commit-only overrides nothing.
+/// delete's side. A commit-only overrides nothing, nor does a copy aside,
+/// which writes a new path (the reconciler never proposes one).
 fn loser(action: &Action) -> Option<Side> {
     match action {
-        Action::Copy { .. } => action.writes_onto(),
+        Action::Copy { from, .. } => Some(from.other()),
         Action::Delete { on, .. } => Some(*on),
-        Action::CommitOnly { .. } => None,
+        Action::CommitOnly { .. } | Action::CopyAside { .. } => None,
     }
 }
 
