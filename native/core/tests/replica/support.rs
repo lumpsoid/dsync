@@ -28,6 +28,8 @@ pub async fn with_deadline<T>(label: &str, work: impl Future<Output = T>) -> T {
 }
 
 pub const PROFILE: &str = "0123456789abcdef0123456789abcdef";
+/// A second profile: another pair that shares a folder with [`PROFILE`]'s.
+pub const OTHER_PROFILE: &str = "fedcba9876543210fedcba9876543210";
 
 pub fn path(text: &str) -> RelPath {
     RelPath::parse(text).unwrap()
@@ -134,10 +136,22 @@ impl Site {
     }
 
     pub fn replica_with(&self, side: Side, tuning: Tuning) -> LocalReplica {
+        self.replica_at(&self.root(side), PROFILE, side, tuning)
+    }
+
+    /// The replica at `root`, side `side` of `profile`, in this site's
+    /// state dir.
+    pub fn replica_at(
+        &self,
+        root: &Path,
+        profile: &str,
+        side: Side,
+        tuning: Tuning,
+    ) -> LocalReplica {
         LocalReplica::open(
-            self.root(side).to_str().unwrap().to_owned(),
+            root.to_str().unwrap().to_owned(),
             self.state(),
-            ProfileId::parse(PROFILE).unwrap(),
+            ProfileId::parse(profile).unwrap(),
             side,
             Jobs::DEFAULT,
             tuning,

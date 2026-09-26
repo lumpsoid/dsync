@@ -86,6 +86,10 @@ pub(crate) enum WireError {
     LockHeld {
         path: String,
     },
+    FolderInUse {
+        folder: String,
+        lock: String,
+    },
     Lock {
         path: String,
         io: WireIo,
@@ -135,6 +139,10 @@ impl From<ReplicaError> for WireError {
             ReplicaError::Lock(LockError::Held { path }) => {
                 WireError::LockHeld { path: shown(&path) }
             }
+            ReplicaError::Lock(LockError::FolderInUse { folder, lock }) => WireError::FolderInUse {
+                folder: shown(&folder),
+                lock: shown(&lock),
+            },
             ReplicaError::Lock(LockError::Io { path, source }) => WireError::Lock {
                 path: shown(&path),
                 io: WireIo::from(&source),
@@ -172,6 +180,10 @@ impl From<WireError> for ReplicaError {
         match error {
             WireError::LockHeld { path } => ReplicaError::Lock(LockError::Held {
                 path: PathBuf::from(path),
+            }),
+            WireError::FolderInUse { folder, lock } => ReplicaError::Lock(LockError::FolderInUse {
+                folder: PathBuf::from(folder),
+                lock: PathBuf::from(lock),
             }),
             WireError::Lock { path, io } => ReplicaError::Lock(LockError::Io {
                 path: PathBuf::from(path),
@@ -488,6 +500,21 @@ mod tests {
         let wire = WireError::from(ReplicaError::Changed(ChangedDuringSync));
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(matches!(back, ReplicaError::Changed(_)), "{back:?}");
+    }
+
+    #[test]
+    fn a_folder_in_use_comes_back_naming_the_folder() {
+        let wire = WireError::from(ReplicaError::Lock(LockError::FolderInUse {
+            folder: PathBuf::from("/home/me/Docs"),
+            lock: PathBuf::from("/state/folder-0123.lock"),
+        }));
+        let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
+        assert!(
+            matches!(&back, ReplicaError::Lock(LockError::FolderInUse { folder, lock })
+                if folder == &PathBuf::from("/home/me/Docs")
+                    && lock == &PathBuf::from("/state/folder-0123.lock")),
+            "{back:?}"
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@ mod archive;
 mod commands;
 mod dirs;
 #[cfg(unix)]
+mod folder_in_use;
+#[cfg(unix)]
 mod interactive;
 mod mass_delete;
 mod output;

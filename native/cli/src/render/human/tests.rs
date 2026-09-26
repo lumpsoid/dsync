@@ -443,6 +443,30 @@ fn a_held_lock_names_the_replica_the_file_and_the_remedy_even_when_quiet() {
 }
 
 #[test]
+fn a_folder_in_use_names_the_folder_and_says_to_run_again_even_when_quiet() {
+    let in_use = RunEvent::Error(RunError::Replica {
+        side: Side::B,
+        op: ReplicaOp::Lock,
+        source: Arc::new(ReplicaError::Lock(LockError::FolderInUse {
+            folder: PathBuf::from("/home/me/notes-b"),
+            lock: PathBuf::from("/state/folder-0123.lock"),
+        })),
+    });
+    for verbosity in [Verbosity::Quiet, Verbosity::Normal] {
+        let (out, err) = rendered(&fixtures::view(), verbosity, std::slice::from_ref(&in_use));
+        assert_eq!(out, "");
+        assert!(
+            err.starts_with("error: replica B (")
+                && err.ends_with(
+                    "): its folder /home/me/notes-b is in use by another dsync run (lock: \
+                     /state/folder-0123.lock).\nRun this again when that run finishes.\n"
+                ),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 fn the_scan_tally_shows_only_when_verbose() {
     assert_eq!(out(Verbosity::Quiet, &[scan_tally()]), "");
     assert_eq!(out(Verbosity::Normal, &[scan_tally()]), "");

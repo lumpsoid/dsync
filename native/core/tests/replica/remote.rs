@@ -8,11 +8,14 @@ use std::io;
 use dsync_core::{Body, FileOp, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
     ArchiveCommit, BucketCount, Glob, Precondition, ProfileId, ReplicaRoot, RuleSet, Side, Status,
+    Tuning,
 };
 
+use crate::hello_lock::assert_folder_in_use;
 use crate::served::Served;
 use crate::support::{
-    PROFILE, Site, apply, exchange, failing_body, meta, path, recorded, with_deadline,
+    OTHER_PROFILE, PROFILE, Site, apply, exchange, failing_body, meta, path, recorded,
+    with_deadline,
 };
 
 #[tokio::test]
@@ -126,6 +129,22 @@ async fn a_lock_held_on_the_far_side_comes_back_as_held() {
     assert!(
         matches!(&refused, Err(ReplicaError::Lock(LockError::Held { path })) if path == &site.state().lock(&ProfileId::parse(PROFILE).unwrap(), Side::B)),
         "{refused:?}"
+    );
+    served.close().await;
+}
+
+#[tokio::test]
+async fn a_folder_held_under_another_profile_on_the_far_side_comes_back_as_in_use() {
+    let site = Site::new();
+    let other = site.replica_at(&site.root(Side::B), OTHER_PROFILE, Side::A, Tuning::DEFAULT);
+    with_deadline("local lock", other.lock()).await.unwrap();
+    let served = Served::new(&site, Side::B).await;
+    with_deadline("hello", served.replica.hello())
+        .await
+        .unwrap();
+    assert_folder_in_use(
+        with_deadline("remote lock", served.replica.lock()).await,
+        &site.root(Side::B),
     );
     served.close().await;
 }

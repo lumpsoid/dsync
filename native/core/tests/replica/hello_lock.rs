@@ -2,10 +2,13 @@
 
 use std::fs;
 
-use dsync_core::{LockError, Replica, ReplicaError};
-use dsync_domain::{ArchiveCommit, ReplicaRoot, RuleSet, Side};
+use std::path::Path;
 
-use crate::support::{Site, path, recorded, with_deadline};
+use dsync_core::{LocalReplica, LockError, Replica, ReplicaError};
+use dsync_domain::{ArchiveCommit, ReplicaRoot, RuleSet, Side, Tuning};
+
+use crate::child::{ChildProcess, READY, wait_for_parent};
+use crate::support::{OTHER_PROFILE, PROFILE, Site, path, recorded, with_deadline};
 
 fn upsert(relative: &str) -> ArchiveCommit {
     ArchiveCommit::Upsert {
@@ -144,4 +147,107 @@ async fn lock_replays_what_another_run_committed_since_the_replica_opened() {
     // Scanned against the archive as the earlier run left it, not as it
     // was when `late` was opened: nothing changed.
     assert!(opened.changed.entries.is_empty(), "{:?}", opened.changed);
+}
+
+/// Asserts `result` is the refusal of a folder in use, naming `folder`.
+pub fn assert_folder_in_use(result: Result<(), ReplicaError>, folder: &Path) {
+    let folder = std::fs::canonicalize(folder).unwrap();
+    assert!(
+        matches!(&result, Err(ReplicaError::Lock(LockError::FolderInUse { folder: named, .. }))
+            if named == &folder),
+        "{result:?}"
+    );
+}
+
+fn under(site: &Site, root: &Path, profile: &str) -> LocalReplica {
+    site.replica_at(root, profile, Side::A, Tuning::DEFAULT)
+}
+
+#[tokio::test]
+async fn the_same_folder_under_another_profile_is_refused_until_unlocked() {
+    let site = Site::new();
+    let root = site.root(Side::A);
+    let first = under(&site, &root, PROFILE);
+    let second = under(&site, &root, OTHER_PROFILE);
+
+    with_deadline("locks", async {
+        first.lock().await.unwrap();
+        assert_folder_in_use(second.lock().await, &root);
+
+        first.unlock().await.unwrap();
+        second.lock().await.unwrap();
+        second.unlock().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn different_folders_under_different_profiles_do_not_contend() {
+    let site = Site::new();
+    let first = under(&site, &site.root(Side::A), PROFILE);
+    let second = under(&site, &site.root(Side::B), OTHER_PROFILE);
+
+    with_deadline("locks", async {
+        first.lock().await.unwrap();
+        second.lock().await.unwrap();
+        first.unlock().await.unwrap();
+        second.unlock().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_root_not_created_yet_is_locked_as_the_folder_it_becomes() {
+    let site = Site::new();
+    let fresh = site.root(Side::A).join("not/yet");
+    let first = under(&site, &fresh, PROFILE);
+
+    with_deadline("lock and create", async {
+        first.lock().await.unwrap();
+        first.create_root().await.unwrap();
+    })
+    .await;
+    assert!(fresh.is_dir());
+
+    // Keyed the same before and after it existed: another profile's run
+    // on the folder the first run created is still refused.
+    let second = under(&site, &fresh, OTHER_PROFILE);
+    with_deadline("contended lock", async {
+        assert_folder_in_use(second.lock().await, &fresh);
+        first.unlock().await.unwrap();
+        second.lock().await.unwrap();
+        second.unlock().await.unwrap();
+    })
+    .await;
+}
+
+#[test]
+fn a_killed_holder_releases_the_folder() {
+    let site = Site::new();
+    let mut holder = ChildProcess::spawn("hold-folder", site.dir());
+    holder.wait_until_ready();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let replica = site.replica(Side::A);
+    assert_folder_in_use(
+        runtime.block_on(with_deadline("contended lock", replica.lock())),
+        &site.root(Side::A),
+    );
+
+    holder.kill();
+    holder.wait();
+
+    runtime
+        .block_on(with_deadline("lock", replica.lock()))
+        .unwrap();
+}
+
+/// The child's side of [`a_killed_holder_releases_the_folder`]: side A's
+/// folder locked under [`OTHER_PROFILE`], held until killed.
+pub fn hold_folder(dir: &Path) {
+    let site = Site::at(dir);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let replica = under(&site, &site.root(Side::A), OTHER_PROFILE);
+    runtime.block_on(replica.lock()).unwrap();
+    println!("{READY}");
+    wait_for_parent();
 }

@@ -3,6 +3,7 @@
 //! recording, and a replica round trip over it all. Real TLS on loopback
 //! (`127.0.0.1:0`), real temp dirs, no mocks.
 
+mod both_ends;
 mod bounds;
 mod dialer;
 mod grants;

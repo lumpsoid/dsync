@@ -97,13 +97,17 @@ impl RunError {
         }
     }
 
-    /// SPEC §4.3: another run holds a replica's lock. Its own outcome, not
-    /// a failure of this run: the remedy is to wait for that one.
+    /// SPEC §4.3: another run holds a replica's lock, or its folder's. Its
+    /// own outcome, not a failure of this run: the remedy is to wait for
+    /// that one.
     pub fn replica_busy(&self) -> bool {
         matches!(
             self,
             RunError::Replica { source, .. }
-                if matches!(**source, ReplicaError::Lock(LockError::Held { .. }))
+                if matches!(
+                    **source,
+                    ReplicaError::Lock(LockError::Held { .. } | LockError::FolderInUse { .. })
+                )
         )
     }
 

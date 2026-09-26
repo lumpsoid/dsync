@@ -31,6 +31,7 @@ fn child_role() {
     };
     match role.as_str() {
         "tear-write" => torn::tear_write(&path),
+        "hold-folder" => hello_lock::hold_folder(&path),
         other => panic!("unknown role {other}"),
     }
 }

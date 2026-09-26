@@ -374,13 +374,13 @@ SPEC section that owns the detail.
 - **Two phones behind separate carrier NATs cannot reach each other.** One
   side needs a direct route or both need a shared overlay network such as
   WireGuard or Tailscale (SPEC §16).
-- **Only a repeat of the same run is locked out.** A second run of the same
-  pair, started from the same device while the first is still going, is
-  refused because the folder is in use; run it again when the first
-  finishes. Two devices that each start a run against the other at the
-  same moment are not stopped: each run is a different profile with its own
-  lock, so both proceed. Nothing is corrupted, but the result is whatever
-  reconciliation makes of it, so start one at a time (SPEC §4.3, §16).
+- **Nested folders are not locked out of each other.** A second run on a
+  folder another run is syncing is refused because the folder is in use,
+  whichever pair or device started it; run it again when the first
+  finishes. But a run on `~/Docs` and one on `~/Docs/Photos` lock different
+  folders, so both proceed. Nothing is corrupted: files the other run
+  changes are skipped as changed during sync and the next run settles them,
+  so start one at a time (SPEC §4.3, §16).
 
 **Storage and versions**
 

@@ -25,7 +25,7 @@ use crate::replica::{
     BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
 };
 use crate::replica_error::{FileOp, ReplicaError};
-use crate::replica_lock::ReplicaLock;
+use crate::replica_lock::RunLocks;
 use crate::scan_session::ScanSession;
 use crate::scanner::{Scanner, on_disk, on_disk_at};
 use crate::state_dir::StateDir;
@@ -49,7 +49,7 @@ struct Shared {
     jobs: Jobs,
     tuning: Tuning,
     store: Mutex<ArchiveStore>,
-    lock: Mutex<Option<ReplicaLock>>,
+    lock: Mutex<Option<RunLocks>>,
     scan: Mutex<ScanPhase>,
     destination: Arc<Destination>,
     /// Started by the first write: a replica only read from never starts
@@ -136,7 +136,7 @@ impl Shared {
         self.scan.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn held(&self) -> MutexGuard<'_, Option<ReplicaLock>> {
+    fn held(&self) -> MutexGuard<'_, Option<RunLocks>> {
         self.lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -181,7 +181,8 @@ impl Replica for LocalReplica {
 
     async fn lock(&self) -> Result<(), ReplicaError> {
         self.blocking(|shared| {
-            let lock = ReplicaLock::acquire(&shared.state.lock(&shared.profile, shared.side))?;
+            let lock =
+                RunLocks::acquire(&shared.state, &shared.profile, shared.side, &shared.root)?;
             // Replayed again under the lock: a run that held it until now
             // may have committed since this replica was opened.
             let mut store = shared.store();

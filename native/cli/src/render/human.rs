@@ -353,6 +353,17 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
             );
             return;
         }
+        if let Some((side, folder, lock)) = folder_in_use(error) {
+            let _ = writeln!(
+                self.err,
+                "error: {}: its folder {} is in use by another dsync run (lock: {}).\n\
+                 Run this again when that run finishes.",
+                replica(side),
+                folder.display(),
+                lock.display()
+            );
+            return;
+        }
         let _ = match error {
             RunError::MissingRoot(missing) => {
                 let device = self.view.replica(missing.side).device();
@@ -374,6 +385,19 @@ fn held_lock(error: &RunError) -> Option<(Side, &Path)> {
     match error {
         RunError::Replica { side, source, .. } => match &**source {
             ReplicaError::Lock(LockError::Held { path }) => Some((*side, path)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The side, folder and lock file of a folder another run has.
+fn folder_in_use(error: &RunError) -> Option<(Side, &Path, &Path)> {
+    match error {
+        RunError::Replica { side, source, .. } => match &**source {
+            ReplicaError::Lock(LockError::FolderInUse { folder, lock }) => {
+                Some((*side, folder, lock))
+            }
             _ => None,
         },
         _ => None,

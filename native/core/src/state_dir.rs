@@ -1,6 +1,6 @@
 //! The state directory and the names of the per-replica files in it
 //! (SPEC §8.3): `<profileId>-<side>.jsonl` (archive), `<profileId>-<side>.lock`
-//! and `<profileId>.run`.
+//! and `<profileId>.run`; and the per-folder `folder-<hash>.lock`.
 
 use std::path::{Path, PathBuf};
 
@@ -54,6 +54,22 @@ impl StateDir {
         self.0.join(format!("{}-{side}.lock", profile.as_str()))
     }
 
+    /// `<state>/folder-<hash>.lock`: the lock on the folder at `canonical`
+    /// (see [`crate::replica_lock::canonical_root`]), whatever profile
+    /// syncs it. The hash is the first 16 bytes of the path's SHA-256, in
+    /// hex, so any path gives a short, valid file name.
+    pub fn folder_lock(&self, canonical: &Path) -> PathBuf {
+        let digest = ring::digest::digest(
+            &ring::digest::SHA256,
+            canonical.as_os_str().as_encoded_bytes(),
+        );
+        let hash: String = digest.as_ref()[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        self.0.join(format!("folder-{hash}.lock"))
+    }
+
     /// `<state>/<profileId>.run`.
     pub fn run_marker(&self, profile: &ProfileId) -> PathBuf {
         self.0.join(format!("{}.run", profile.as_str()))
@@ -90,6 +106,21 @@ mod tests {
             state.run_marker(&profile),
             PathBuf::from(format!("/state/{ID}.run"))
         );
+    }
+
+    #[test]
+    fn names_a_folders_lock_by_its_path_alone() {
+        let state = StateDir::new("/state");
+        let lock = state.folder_lock(Path::new("/home/me/Docs"));
+        let name = lock.file_name().unwrap().to_str().unwrap();
+        assert_eq!(lock.parent(), Some(Path::new("/state")));
+        assert!(
+            name.starts_with("folder-") && name.ends_with(".lock"),
+            "{name}"
+        );
+        assert_eq!(name.len(), "folder-".len() + 32 + ".lock".len());
+        assert_eq!(state.folder_lock(Path::new("/home/me/Docs")), lock);
+        assert_ne!(state.folder_lock(Path::new("/home/me/Docs/Photos")), lock);
     }
 
     #[test]
