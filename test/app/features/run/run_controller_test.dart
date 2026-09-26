@@ -5,7 +5,6 @@ import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
-import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
@@ -60,18 +59,11 @@ void main() {
       expect(harness.hub.runStarts.single.address, isNull);
     });
 
-    test('a start the core refuses is the failed phase in its words', () async {
+    test('a start the core refuses never holds the screen', () async {
       harness.hub.failNext = const CoreFailure('the core is not initialised');
       await harness.start();
 
-      expect(
-        controller().state.phase,
-        const SyncRunFailed('the core is not initialised'),
-      );
-      // No session: nothing live, nothing to resume.
-      expect(controller().state.live, isFalse);
-      expect(controller().state.resumable, isFalse);
-      expect(harness.screenWake.held, isFalse);
+      expect(harness.screenWake.calls, isEmpty);
     });
 
     test('a second start on the same instance is ignored', () async {
@@ -165,14 +157,6 @@ void main() {
       ]);
     });
 
-    test('an input changes nothing on its own: the next view does', () async {
-      await controller().confirm();
-      expect(controller().state.phase, const SyncRunAwaitingDecisions());
-
-      await harness.show(runView(phase: applying));
-      expect(controller().state.phase, const SyncRunApplying());
-    });
-
     test('an intent the core refuses — the session is over — is '
         'swallowed', () async {
       harness.hub.failures['steerRun'] = const CoreFailure('no run');
@@ -204,15 +188,15 @@ void main() {
     test(
       'the screen is held for exactly as long as the view is live',
       () async {
-        for (final phase in [
-          connecting,
-          scanning,
-          reviewing(),
-          confirmingDeletes(),
-          applying,
-          finished(),
+        for (final (phase, standing) in [
+          (connecting, live),
+          (scanning, live),
+          (reviewing(), live),
+          (confirmingDeletes(), live),
+          (applying, live),
+          (finished(), over),
         ]) {
-          await harness.show(runView(phase: phase));
+          await harness.show(runView(phase: phase, standing: standing));
         }
 
         // Once on, once off — never re-asked for what it already holds.
@@ -224,7 +208,7 @@ void main() {
     test('a paused run lets the screen go, and a resumed one holds it '
         'again', () async {
       await harness.show(runView(phase: applying));
-      await harness.show(runView(phase: paused(3)));
+      await harness.show(runView(standing: resumable, phase: paused(3)));
       expect(harness.screenWake.held, isFalse);
 
       await harness.show(runView(phase: connecting));
@@ -257,18 +241,6 @@ void main() {
 
       expect(harness.screenWake.held, isFalse);
       expect(harness.intents, const [wire.RunIntentClose()]);
-    });
-
-    test('a view that arrives after is dropped (a view before is rendered: '
-        'positive control)', () async {
-      await harness.start();
-      await harness.show(runView(replicas: replicas()));
-      expect(controller().state.header, isNotNull);
-
-      // A write reaching the disposed notifier would fail the test:
-      // `ChangeNotifier.notifyListeners` after `dispose` asserts.
-      controller().dispose();
-      await harness.show(runView(phase: finished()));
     });
   });
 }

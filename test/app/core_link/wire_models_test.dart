@@ -37,6 +37,7 @@ void main() {
         planRow(copyTo('a.txt', bytes: 5), reverseBytes: 4),
         planRow(deleteThere('b.txt'), choice: wire.ActionChoiceView.skipped),
       ],
+      bytesToTransfer: 5,
     );
 
     final read = link.runView(view);
@@ -159,12 +160,19 @@ void main() {
     final read = link.runView(
       runView(
         phase: paused(1),
-        replicas: replicas(lastA: at),
-        tallies: tallies(b: tally(modified: 4)),
+        standing: resumable,
+        replicas: replicas(lastA: at, history: oneSided(wire.SideView.b)),
+        tallies: tallies(
+          b: tally(modified: 4, total: 14, changed: 5),
+          checked: 25,
+          changed: 7,
+        ),
         plan: [
           planRow(copyTo('up.txt', bytes: 10)),
           planRow(copyHere('down.txt', bytes: 3)),
         ],
+        bytesToA: 3,
+        bytesToB: 10,
       ),
     );
     expect(read.standing, RunStanding.resumable);
@@ -179,7 +187,7 @@ void main() {
       link
           .runView(
             runView(
-              replicas: replicas(lastA: at, lastB: at),
+              replicas: replicas(lastA: at, lastB: at, history: synced(at, at)),
             ),
           )
           .replicas!

@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
@@ -38,7 +39,7 @@ void main() {
 
   setUp(() {
     screenWake = FakeScreenWake();
-    hub = FakeHub(devices: [pairedDevice()]);
+    hub = FakeHub();
     clock = DateTime(2026, 9, 16, 12);
     controller = SyncRunController(
       fakeApp(hub, now: () => clock),
@@ -68,7 +69,7 @@ void main() {
   int session() => hub.runStarts.single.session;
 
   /// What the page told the core, in order.
-  List<wire.RunIntent> intents() => hub.runIntents[session()] ?? const [];
+  List<wire.RunIntent> intents() => intentsTo(hub, session());
 
   /// Delivers [view] as the core's latest, and lets it render: folded in
   /// one pump, on screen after the next.
@@ -116,7 +117,7 @@ void main() {
 
     testWidgets('a finished run opens it ready to measure, over that run\'s '
         'own local root', (tester) async {
-      await open(tester, runView(phase: finished()));
+      await open(tester, runView(standing: over, phase: finished()));
 
       await tester.tap(find.byKey(const Key('run-diagnostics')));
       await tester.pumpAndSettle();
@@ -176,7 +177,10 @@ void main() {
       );
 
       const report = 'phases\n  connect 12 ms\n  scan 1.2 s';
-      await open(tester, runView(phase: finished(), timings: report));
+      await open(
+        tester,
+        runView(standing: over, phase: finished(), timings: report),
+      );
       await openTimings(tester);
       expect(find.byKey(const Key('run-timings-report')), findsOneWidget);
       await tester.tap(find.byKey(const Key('run-timings-copy')));
@@ -260,12 +264,19 @@ void main() {
         expect(find.byType(LinearProgressIndicator), findsOneWidget);
       },
       'finished': (tester) =>
-          open(tester, runView(phase: finished(applied: 1))),
-      'stopped': (tester) => open(tester, runView(phase: stopped(1))),
-      'paused': (tester) => open(tester, runView(phase: paused(1))),
-      'failed': (tester) =>
-          open(tester, runView(phase: failedWith('No route.'))),
-      'busy': (tester) => open(tester, runView(phase: replicaBusy('In use.'))),
+          open(tester, runView(standing: over, phase: finished(applied: 1))),
+      'stopped': (tester) =>
+          open(tester, runView(standing: over, phase: stopped(1))),
+      'paused': (tester) =>
+          open(tester, runView(standing: resumable, phase: paused(1))),
+      'failed': (tester) => open(
+        tester,
+        runView(standing: resumable, phase: failedWith('No route.')),
+      ),
+      'busy': (tester) => open(
+        tester,
+        runView(standing: resumable, phase: replicaBusy('In use.')),
+      ),
     };
 
     for (final MapEntry(key: name, value: enter) in cases.entries) {
@@ -321,6 +332,7 @@ void main() {
     await deliver(
       tester,
       runView(
+        standing: over,
         phase: finished(applied: 42),
         progress: (completed: 42, total: 1200),
         applied: 42,
@@ -366,8 +378,17 @@ void main() {
         phase: applying,
         replicas: replicas(),
         tallies: tallies(
-          a: tally(modified: 0),
-          b: tally(metadataMatched: 0, hashMatched: 0, modified: 0, created: 0),
+          a: tally(modified: 0, total: 10, changed: 1),
+          b: tally(
+            metadataMatched: 0,
+            hashMatched: 0,
+            modified: 0,
+            created: 0,
+            total: 0,
+            changed: 0,
+          ),
+          checked: 10,
+          changed: 1,
         ),
         skipped: [
           skippedPath(
@@ -401,6 +422,7 @@ void main() {
           planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
           planRow(deleteThere('old.txt')),
         ],
+        bytesToB: 2048,
         progress: (completed: 1, total: 2),
         applied: 1,
       ),
@@ -411,6 +433,8 @@ void main() {
     expect(find.text('This device: /data/notes'), findsOneWidget);
     expect(find.text('Remote: ~/notes'), findsOneWidget);
     expect(find.text('First sync of this pair.'), findsOneWidget);
+    expect(find.text(firstSyncWarning), findsOneWidget);
+    expect(find.textContaining('wiped'), findsNothing);
     expect(find.byKey(const Key('run-first-sync-warning')), findsOneWidget);
 
     // Scan tally: one line, with the per-side table a tap away.
@@ -444,6 +468,10 @@ void main() {
     expect(find.byKey(const Key('run-unreadable')), findsOneWidget);
     expect(find.text('locked.txt (remote): Permission denied'), findsOneWidget);
     expect(find.byKey(const Key('run-symlinks')), findsOneWidget);
+    expect(
+      find.text('link (this device): no follow rule matched'),
+      findsOneWidget,
+    );
     // A conflict is a card of its own, each side's status boxed.
     expect(find.byKey(const Key('run-conflict-both.txt')), findsOneWidget);
     Finder inSide(String side, String text) => find.descendant(
@@ -496,13 +524,17 @@ void main() {
     tester,
   ) async {
     // Positive control for the sections above: absent data, absent widget.
-    final synced = DateTime(2026, 9, 16, 10);
+    final lastSync = DateTime(2026, 9, 16, 10);
     await open(
       tester,
       runView(
         dryRun: true,
         phase: scanning,
-        replicas: replicas(lastA: synced, lastB: synced),
+        replicas: replicas(
+          lastA: lastSync,
+          lastB: lastSync,
+          history: synced(lastSync, lastSync),
+        ),
       ),
     );
 
@@ -513,18 +545,306 @@ void main() {
     expect(find.byKey(const Key('run-plan')), findsNothing);
     expect(find.byKey(const Key('run-summary')), findsNothing);
     expect(find.text('Scanning both folders (dry run)…'), findsOneWidget);
+    expect(
+      find.text('Last synced 2026-09-16 10:00 (2 hour(s) ago).'),
+      findsOneWidget,
+    );
+  });
+
+  group('the core\'s view, worded', () {
+    testWidgets('one side with no archive: the first-sync warning, and a '
+        'history naming that side and the wiped-data possibility', (
+      tester,
+    ) async {
+      await open(
+        tester,
+        runView(
+          replicas: replicas(lastB: clock, history: oneSided(wire.SideView.a)),
+        ),
+      );
+
+      expect(find.text(firstSyncWarning), findsOneWidget);
+      expect(find.textContaining('This device has no archive'), findsOneWidget);
+      expect(find.textContaining('wiped'), findsOneWidget);
+      expect(find.text('First sync of this pair.'), findsNothing);
+
+      await deliver(
+        tester,
+        runView(
+          replicas: replicas(lastA: clock, history: oneSided(wire.SideView.b)),
+        ),
+      );
+
+      expect(find.text(firstSyncWarning), findsOneWidget);
+      expect(find.textContaining('Remote has no archive'), findsOneWidget);
+      expect(find.textContaining('This device has no archive'), findsNothing);
+    });
+
+    testWidgets('a case-fold collision is a failure, so it is listed as '
+        'unreadable', (tester) async {
+      await open(
+        tester,
+        runView(
+          skipped: [
+            skippedPath(
+              side: wire.SideView.a,
+              path: 'A.txt',
+              reason: wire.SkippedReasonView.caseFoldCollision,
+              detail: 'collides with a.txt',
+              isFailure: true,
+            ),
+          ],
+        ),
+      );
+
+      expect(find.byKey(const Key('run-unreadable')), findsOneWidget);
+      expect(
+        find.text('A.txt (this device): collides with a.txt'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('run-symlinks')), findsNothing);
+    });
+
+    testWidgets('a conflict side from another year carries its year; a side '
+        'with no record says so and carries no date', (tester) async {
+      final lastYear = DateTime(2025, 3, 2, 9, 7);
+      await open(
+        tester,
+        runView(
+          conflicts: [
+            conflictRow(
+              'old.txt',
+              a: wire.StatusViewModified(
+                value: wire.FileView(
+                  size: n(5),
+                  mtimeUs: lastYear.microsecondsSinceEpoch,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      Finder inSide(String side, String text) => find.descendant(
+        of: find.byKey(Key('run-conflict-$side-old.txt')),
+        matching: find.text(text),
+      );
+      expect(inSide('local', 'modified'), findsOneWidget);
+      expect(inSide('local', '2 Mar 2025 09:07'), findsOneWidget);
+      expect(inSide('local', '5 B'), findsOneWidget);
+      expect(inSide('remote', 'no record'), findsOneWidget);
+      expect(inSide('remote', '2 Mar 2025 09:07'), findsNothing);
+    });
+
+    testWidgets('a plan with one row per group: each in its own section, in '
+        'plan order, each row worded from this device', (tester) async {
+      await open(
+        tester,
+        runView(
+          plan: [
+            planRow(copyTo('to-device.txt', bytes: 10)),
+            planRow(copyHere('to-this.txt', bytes: 20)),
+            planRow(deleteHere('gone-a.txt')),
+            planRow(deleteThere('gone-b.txt')),
+            planRow(recordOnly('same.txt')),
+          ],
+          bytesToA: 20,
+          bytesToB: 10,
+        ),
+      );
+
+      expect(find.text('To the remote (1, 10 B)'), findsOneWidget);
+      expect(find.text('To this device (1, 20 B)'), findsOneWidget);
+      // Deletions is one group for either side: both rows land in it.
+      expect(find.text('Deletions (2)'), findsOneWidget);
+      expect(find.textContaining('Record only (1)'), findsOneWidget);
+      expect(find.text('copy to the remote · 10 B'), findsOneWidget);
+      expect(find.text('copy to this device · 20 B'), findsOneWidget);
+      expect(find.text('delete on this device'), findsOneWidget);
+      expect(find.text('delete on the remote'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('gone-a.txt')).dy,
+        lessThan(tester.getTopLeft(find.text('gone-b.txt')).dy),
+      );
+    });
+
+    testWidgets('a reverse the core offers is worded literally, with its '
+        'own bytes', (tester) async {
+      const reversed = wire.ActionChoiceView.reversed;
+      await open(
+        tester,
+        runView(
+          phase: reviewing(reversed: 4),
+          plan: [
+            planRow(copyTo('mine.txt'), reverseBytes: 1024, choice: reversed),
+            planRow(copyHere('theirs.txt'), reverseBytes: 64, choice: reversed),
+            planRow(
+              deleteThere('gone.txt'),
+              reverseBytes: 512,
+              choice: reversed,
+            ),
+            planRow(deleteHere('lost.txt'), reverseBytes: 8, choice: reversed),
+          ],
+        ),
+      );
+
+      expect(
+        find.text("replace this device's version with the remote's · 1.0 KiB"),
+        findsOneWidget,
+      );
+      expect(
+        find.text("replace the remote's version with this device's · 64 B"),
+        findsOneWidget,
+      );
+      expect(
+        find.text('restore on this device from the remote · 512 B'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('restore on the remote from this device · 8 B'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a run that ended without a summary says so', (tester) async {
+      await open(
+        tester,
+        runView(standing: resumable, phase: const wire.RunPhaseViewNoSummary()),
+      );
+
+      expect(
+        find.textContaining('without reporting a summary'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('run-done')), findsOneWidget);
+    });
+
+    testWidgets('the delete guard names each side, its folder and how many '
+        'of how many files', (tester) async {
+      await open(
+        tester,
+        runView(
+          phase: wire.RunPhaseViewConfirmingDeletes(
+            sides: [
+              wire.MassDeleteView(
+                side: wire.SideView.a,
+                deletes: n(12),
+                archived: n(12),
+              ),
+              wire.MassDeleteView(
+                side: wire.SideView.b,
+                deletes: n(40),
+                archived: n(50),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      expect(
+        find.text(
+          '12 of the 12 files on this device (${elidePath('/data/notes')}) '
+          'would be deleted.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          '40 of the 50 files on the remote (${elidePath('~/notes')}) '
+          'would be deleted.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the next attempt\'s view shows nothing of the last, a row\'s '
+        'result included', (tester) async {
+      final rows = [planRow(copyTo('new.txt'))];
+      await open(
+        tester,
+        runView(
+          phase: applying,
+          connectedAt: clock,
+          replicas: replicas(),
+          tallies: tallies(),
+          skipped: [
+            skippedPath(
+              side: wire.SideView.b,
+              path: 'locked.txt',
+              reason: wire.SkippedReasonView.unreadable,
+              detail: 'Permission denied',
+              isFailure: true,
+            ),
+            skippedPath(
+              side: wire.SideView.a,
+              path: 'link',
+              reason: wire.SkippedReasonView.symlink,
+              detail: 'no follow rule matched',
+              isFailure: false,
+            ),
+          ],
+          conflicts: [
+            conflictRow('both.txt', a: modifiedFile(), b: modifiedFile()),
+          ],
+          plan: [
+            planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
+          ],
+          bytesToB: 2048,
+          progress: (completed: 1, total: 1),
+          applied: 1,
+        ),
+      );
+      // Positive control: all of it is on screen.
+      for (final key in [
+        'run-header',
+        'run-scan-tally',
+        'run-unreadable',
+        'run-symlinks',
+        'run-conflicts',
+        'run-plan',
+      ]) {
+        expect(find.byKey(Key(key)), findsOneWidget, reason: key);
+      }
+      expect(find.text('Started 12:00'), findsOneWidget);
+      expect(find.text('Applied: 1'), findsOneWidget);
+
+      await deliver(tester, runView(phase: connecting));
+
+      expect(find.text('Connecting…'), findsOneWidget);
+      for (final key in [
+        'run-header',
+        'run-scan-tally',
+        'run-unreadable',
+        'run-symlinks',
+        'run-conflicts',
+        'run-plan',
+      ]) {
+        expect(find.byKey(Key(key)), findsNothing, reason: key);
+      }
+      expect(find.textContaining('Started'), findsNothing);
+      expect(find.text('Applied: 1'), findsNothing);
+
+      // The same row planned again carries no result from the last attempt.
+      await deliver(tester, runView(phase: scanning, plan: rows));
+      expect(find.text('new.txt'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_outline), findsNothing);
+    });
   });
 
   testWidgets('a long root is middle-elided, never shown raw', (tester) async {
     const longRoot =
         '/storage/emulated/0/Android/data/com.example.app/files/notes/'
         'deeply/nested/folder';
-    final synced = DateTime(2026, 9, 16, 10);
+    final lastSync = DateTime(2026, 9, 16, 10);
     await open(
       tester,
       runView(
         phase: scanning,
-        replicas: replicas(lastA: synced, lastB: synced),
+        replicas: replicas(
+          lastA: lastSync,
+          lastB: lastSync,
+          history: synced(lastSync, lastSync),
+        ),
       ),
       runs: RunRequest(
         target: request.target,
@@ -645,6 +965,7 @@ void main() {
             ),
             planRow(deleteThere('old.txt')),
           ],
+          bytesToB: 2048,
           failed: 1,
         ),
       );
@@ -707,7 +1028,10 @@ void main() {
       expect(find.text('new.txt'), findsNothing);
       expect(find.text('old.txt'), findsNothing);
 
-      await deliver(tester, runView(phase: finished(applied: 2), plan: rows));
+      await deliver(
+        tester,
+        runView(standing: over, phase: finished(applied: 2), plan: rows),
+      );
 
       expect(find.byKey(const Key('run-plan')), findsOneWidget);
       expect(find.byKey(const Key('run-plan-disclosure')), findsNothing);
@@ -754,6 +1078,7 @@ void main() {
     await open(
       tester,
       runView(
+        standing: over,
         phase: finished(applied: 4, skipped: 3, conflicts: 1, unreadable: 2),
       ),
     );
@@ -771,7 +1096,10 @@ void main() {
   });
 
   testWidgets('a finished dry run says nothing was applied', (tester) async {
-    await open(tester, runView(dryRun: true, phase: finished(skipped: 3)));
+    await open(
+      tester,
+      runView(dryRun: true, standing: over, phase: finished(skipped: 3)),
+    );
 
     expect(find.text('Dry run finished'), findsOneWidget);
     expect(find.text('Nothing was applied.'), findsOneWidget);
@@ -780,10 +1108,11 @@ void main() {
   testWidgets('stopped: says how many actions completed, never "cancelled"', (
     tester,
   ) async {
-    await open(tester, runView(phase: stopped(2)));
+    await open(tester, runView(standing: over, phase: stopped(2)));
 
     final text = tester.widget<Text>(find.byKey(const Key('run-stopped')));
     expect(text.data, contains('Stopped after 2 action(s)'));
+    expect(text.data, contains('nothing further'));
     expect(text.data!.toLowerCase(), isNot(contains('cancel')));
     expect(find.byKey(const Key('run-done')), findsOneWidget);
   });
@@ -862,7 +1191,7 @@ void main() {
     testWidgets('the Resume button asks for the run it is shown on', (
       tester,
     ) async {
-      await open(tester, runView(phase: paused(3)));
+      await open(tester, runView(standing: resumable, phase: paused(3)));
 
       await tester.tap(find.byKey(const Key('run-resume')));
       await tester.pump();
@@ -888,10 +1217,14 @@ void main() {
   group('paused', () {
     testWidgets('says how many actions completed, and offers both Resume '
         'and Done', (tester) async {
-      await open(tester, runView(phase: paused(3)));
+      await open(tester, runView(standing: resumable, phase: paused(3)));
 
       expect(find.byKey(const Key('run-paused')), findsOneWidget);
       expect(find.textContaining('Paused after 3 action(s)'), findsOneWidget);
+      expect(
+        find.textContaining('continues when you come back'),
+        findsOneWidget,
+      );
       expect(find.byKey(const Key('run-resume')), findsOneWidget);
       expect(find.byKey(const Key('run-done')), findsOneWidget);
       expect(find.byKey(const Key('run-stop')), findsNothing);
@@ -900,7 +1233,10 @@ void main() {
     testWidgets('a failed run offers Resume too', (tester) async {
       await open(
         tester,
-        runView(phase: failedWith('Could not reach "desktop".')),
+        runView(
+          standing: resumable,
+          phase: failedWith('Could not reach "desktop".'),
+        ),
       );
 
       expect(find.byKey(const Key('run-resume')), findsOneWidget);
@@ -909,11 +1245,33 @@ void main() {
   });
 
   testWidgets('failed: the message and Done', (tester) async {
-    await open(tester, runView(phase: failedWith('No pairing for "desktop".')));
+    await open(
+      tester,
+      runView(
+        standing: resumable,
+        phase: failedWith('No pairing for "desktop".'),
+      ),
+    );
 
     expect(find.byKey(const Key('run-failed')), findsOneWidget);
     expect(find.text('No pairing for "desktop".'), findsOneWidget);
+    // The core's words and nothing else: no header, no plan.
+    expect(find.byKey(const Key('run-header')), findsNothing);
+    expect(find.byKey(const Key('run-plan')), findsNothing);
     expect(find.byKey(const Key('run-done')), findsOneWidget);
+    expect(find.byKey(const Key('run-stop')), findsNothing);
+  });
+
+  testWidgets('a start the core refuses is a failure in its words, with '
+      'nothing to resume', (tester) async {
+    hub.failNext = const CoreFailure('the core is not initialised');
+    await pump(tester);
+    await tester.pump();
+
+    expect(find.byKey(const Key('run-failed')), findsOneWidget);
+    expect(find.text('the core is not initialised'), findsOneWidget);
+    expect(find.byKey(const Key('run-done')), findsOneWidget);
+    expect(find.byKey(const Key('run-resume')), findsNothing);
     expect(find.byKey(const Key('run-stop')), findsNothing);
   });
 
@@ -923,6 +1281,7 @@ void main() {
     await open(
       tester,
       runView(
+        standing: resumable,
         phase: replicaBusy(
           '"/storage/emulated/0/Documents/notes" is in use by another dsync '
           'process on this device. (Lock file: /data/state/notes-a.lock)',
@@ -967,9 +1326,18 @@ void main() {
           'both.txt',
           a: modifiedFile(),
           b: modifiedFile(),
+          offered: offersAll,
           choice: both,
         ),
-        conflictRow('theirs.txt', b: modifiedFile(), choice: theirs),
+        conflictRow(
+          'theirs.txt',
+          b: modifiedFile(),
+          offered: const [
+            wire.ConflictChoiceView.unresolved,
+            wire.ConflictChoiceView.keepB,
+          ],
+          choice: theirs,
+        ),
       ],
       plan: [
         planRow(copyTo('new.txt'), reverseBytes: 1024, choice: actions[0]),
@@ -1146,6 +1514,11 @@ void main() {
       await tester.pump();
       await tester.tap(inRow('gone.txt', find.byIcon(Icons.block)));
       await tester.pump();
+      // A tap changes nothing on its own: the rows wait for the core.
+      expect(
+        tester.widget<Text>(find.text('gone.txt')).style?.decoration,
+        isNot(TextDecoration.lineThrough),
+      );
       expect(intents(), const [
         wire.RunIntentChooseAction(
           index: 0,
@@ -1197,6 +1570,8 @@ void main() {
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
       expect(intents().last, const wire.RunIntentConfirm());
+      // Still the review until the core says otherwise.
+      expect(find.byKey(const Key('run-confirm')), findsOneWidget);
 
       // The review is over once the core says so: no bar, no controls,
       // the groups collapsed while the run applies them.
@@ -1364,6 +1739,20 @@ void main() {
     });
   });
 
+  testWidgets('a view that arrives after the page is gone is dropped', (
+    tester,
+  ) async {
+    await open(tester, runView(replicas: replicas()));
+    // Positive control: a view before is rendered.
+    expect(find.byKey(const Key('run-header')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+
+    // A write reaching the disposed notifier would fail the test:
+    // `ChangeNotifier.notifyListeners` after `dispose` asserts.
+    await deliver(tester, runView(standing: over, phase: finished()));
+    expect(find.byType(RunPage), findsNothing);
+  });
+
   testWidgets('leaving the page disposes the controller it created', (
     tester,
   ) async {
@@ -1445,7 +1834,10 @@ void main() {
     });
 
     testWidgets('a finished run pops with no prompt', (tester) async {
-      await pumpPushed(tester, runView(phase: finished(applied: 2)));
+      await pumpPushed(
+        tester,
+        runView(standing: over, phase: finished(applied: 2)),
+      );
 
       await tester.tap(find.byType(BackButton));
       await settle(tester);
@@ -1467,7 +1859,10 @@ void main() {
     ) async {
       await open(
         tester,
-        runView(phase: finished(applied: 1, failed: 2, unreadable: 3)),
+        runView(
+          standing: over,
+          phase: finished(applied: 1, failed: 2, unreadable: 3),
+        ),
       );
 
       final summary = find.byKey(const Key('run-summary'));
@@ -1483,7 +1878,7 @@ void main() {
     });
 
     testWidgets('a clean finish marks nothing', (tester) async {
-      await open(tester, runView(phase: finished(applied: 1)));
+      await open(tester, runView(standing: over, phase: finished(applied: 1)));
 
       expect(
         find.descendant(
@@ -1574,7 +1969,10 @@ void main() {
     testWidgets('the failure message is marked', (tester) async {
       await open(
         tester,
-        runView(phase: failedWith('No pairing for "desktop".')),
+        runView(
+          standing: resumable,
+          phase: failedWith('No pairing for "desktop".'),
+        ),
       );
 
       expect(errorIconIn(find.byKey(const Key('run-failed'))), findsOneWidget);
@@ -1624,7 +2022,10 @@ void main() {
 
       await deliver(
         tester,
-        runView(phase: const wire.RunPhaseViewDeletesDeclined()),
+        runView(
+          standing: resumable,
+          phase: const wire.RunPhaseViewDeletesDeclined(),
+        ),
       );
       expect(find.text(deletesDeclinedMessage), findsOneWidget);
       expect(find.byKey(const Key('run-resume')), findsOneWidget);

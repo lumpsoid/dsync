@@ -29,7 +29,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_folder_picker.dart';
 import '../support/fake_screen_wake.dart';
-import 'features/run/run_fixtures.dart' show failedWith, runView;
+import 'features/run/run_fixtures.dart' show failedWith, resumable, runView;
 import 'support/fake_head.dart';
 import 'support/fake_hub.dart';
 import 'support/pump_until.dart';
@@ -389,7 +389,10 @@ void main() {
     Future<void> failTheRun() async {
       core.emitRun(
         core.runStarts.last.session,
-        runView(phase: failedWith('Could not reach "desktop": refused.')),
+        runView(
+          standing: resumable,
+          phase: failedWith('Could not reach "desktop": refused.'),
+        ),
         last: false,
       );
       await tester.pump();

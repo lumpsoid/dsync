@@ -39,7 +39,7 @@ RunRequest runRequest({
 /// the controller told the core.
 class RunHarness {
   RunHarness({DateTime Function()? now})
-    : hub = FakeHub(devices: [pairedDevice()]),
+    : hub = FakeHub(),
       screenWake = FakeScreenWake() {
     app = fakeApp(hub, now: now);
     controller = SyncRunController(app, screenWake: screenWake);
@@ -56,7 +56,7 @@ class RunHarness {
   int get session => hub.runStarts.last.session;
 
   /// What the controller sent the session, in order.
-  List<wire.RunIntent> get intents => hub.runIntents[session] ?? const [];
+  List<wire.RunIntent> get intents => intentsTo(hub, session);
 
   /// Starts [request] and lets the controller open its session.
   Future<void> start([RunRequest? request]) async {
@@ -76,6 +76,10 @@ class RunHarness {
   }
 }
 
+/// What [hub] was told about the run in [session], in order.
+List<wire.RunIntent> intentsTo(FakeHub hub, int session) =>
+    hub.runIntents[session] ?? const [];
+
 /// Lets queued microtasks and stream deliveries run.
 Future<void> pump() async {
   for (var i = 0; i < 5; i++) {
@@ -86,20 +90,23 @@ Future<void> pump() async {
 wire.Uint64 n(int value) => wire.Uint64(BigInt.from(value));
 
 /// A view of the run as the core sends it. Every field has a plain
-/// default, so a test names only what it is about; [standing] defaults to
-/// the core's for [phase], and [bytesToTransfer] and the plan summary to
-/// what [plan]'s copies move.
+/// default, so a test names only what it is about. Nothing is worked out
+/// from anything else: a test that shows a finished run names its
+/// [standing], one whose plan moves bytes names [bytesToTransfer] and the
+/// two sides' [bytesToA] and [bytesToB], as the core would send them.
 wire.RunView runView({
   bool dryRun = false,
   wire.RunPhaseView phase = const wire.RunPhaseViewScanning(),
-  wire.RunStandingView? standing,
+  wire.RunStandingView standing = live,
   DateTime? connectedAt,
   wire.ReplicasView? replicas,
   wire.TalliesView? tallies,
   List<wire.SkippedView> skipped = const [],
   List<wire.ConflictRowView> conflicts = const [],
   List<wire.PlanRowView> plan = const [],
-  int? bytesToTransfer,
+  int bytesToTransfer = 0,
+  int bytesToA = 0,
+  int bytesToB = 0,
   ({int completed, int total})? progress,
   int applied = 0,
   int failed = 0,
@@ -107,26 +114,17 @@ wire.RunView runView({
 }) => wire.RunView(
   dryRun: dryRun,
   phase: phase,
-  standing: standing ?? standingOf(phase),
+  standing: standing,
   connectedAtMs: connectedAt?.millisecondsSinceEpoch,
   replicas: replicas,
   tally: tallies,
   skipped: skipped,
   conflicts: conflicts,
   plan: plan,
-  bytesToTransfer: n(
-    bytesToTransfer ??
-        plan.fold(
-          0,
-          (sum, row) => switch (row.proposal.action) {
-            wire.ActionViewCopy(:final bytes) => sum + bytes.toInt(),
-            _ => sum,
-          },
-        ),
-  ),
+  bytesToTransfer: n(bytesToTransfer),
   planSummary: wire.PlanSummaryView(
-    bytesToA: n(_copied(plan, from: wire.SideView.b)),
-    bytesToB: n(_copied(plan, from: wire.SideView.a)),
+    bytesToA: n(bytesToA),
+    bytesToB: n(bytesToB),
   ),
   progress: switch (progress) {
     (:final completed, :final total) => wire.ProgressView(
@@ -140,32 +138,9 @@ wire.RunView runView({
   timings: timings,
 );
 
-/// The bytes [plan]'s copies from side [from] move.
-int _copied(List<wire.PlanRowView> plan, {required wire.SideView from}) =>
-    plan.fold(
-      0,
-      (sum, row) => switch (row.proposal.action) {
-        wire.ActionViewCopy(from: final side, :final bytes) ||
-        wire.ActionViewCopyAside(
-          from: final side,
-          :final bytes,
-        ) when side == from => sum + bytes.toInt(),
-        _ => sum,
-      },
-    );
-
-/// What the core says [phase] allows: live from connecting to applying,
-/// over once finished or stopped, resumable otherwise.
-wire.RunStandingView standingOf(wire.RunPhaseView phase) => switch (phase) {
-  wire.RunPhaseViewConnecting() ||
-  wire.RunPhaseViewScanning() ||
-  wire.RunPhaseViewReviewing() ||
-  wire.RunPhaseViewConfirmingDeletes() ||
-  wire.RunPhaseViewApplying() => wire.RunStandingView.live,
-  wire.RunPhaseViewFinished() ||
-  wire.RunPhaseViewStopped() => wire.RunStandingView.over,
-  _ => wire.RunStandingView.resumable,
-};
+const live = wire.RunStandingView.live;
+const over = wire.RunStandingView.over;
+const resumable = wire.RunStandingView.resumable;
 
 const connecting = wire.RunPhaseViewConnecting();
 const scanning = wire.RunPhaseViewScanning();
@@ -236,29 +211,39 @@ wire.ReplicaInfoView replicaInfo(DateTime? lastCommit) => wire.ReplicaInfoView(
   missingRoot: null,
 );
 
-/// Both sides' `hello`, and the pair's history as the core reads it from
-/// their last commits.
-wire.ReplicasView replicas({DateTime? lastA, DateTime? lastB}) =>
-    wire.ReplicasView(
-      a: replicaInfo(lastA),
-      b: replicaInfo(lastB),
-      history: switch ((lastA, lastB)) {
-        (null, null) => const wire.HistoryViewFirstSync(),
-        (null, _?) => const wire.HistoryViewOneSided(empty: wire.SideView.a),
-        (_?, null) => const wire.HistoryViewOneSided(empty: wire.SideView.b),
-        (final a?, final b?) => wire.HistoryViewSynced(
-          lastAMs: a.millisecondsSinceEpoch,
-          lastBMs: b.millisecondsSinceEpoch,
-        ),
-      },
-    );
+/// Both sides' `hello`, and the pair's [history] as the core words it.
+wire.ReplicasView replicas({
+  DateTime? lastA,
+  DateTime? lastB,
+  wire.HistoryView history = firstSync,
+}) => wire.ReplicasView(
+  a: replicaInfo(lastA),
+  b: replicaInfo(lastB),
+  history: history,
+);
 
+const firstSync = wire.HistoryViewFirstSync();
+
+/// Both sides last committed at [a] and [b].
+wire.HistoryView synced(DateTime a, DateTime b) => wire.HistoryViewSynced(
+  lastAMs: a.millisecondsSinceEpoch,
+  lastBMs: b.millisecondsSinceEpoch,
+);
+
+/// One side has never committed: [empty] is the side with no archive.
+wire.HistoryView oneSided(wire.SideView empty) =>
+    wire.HistoryViewOneSided(empty: empty);
+
+/// A side's scan tally; [total] and [changed] are the core's, sent as
+/// they are.
 wire.TallyView tally({
   int metadataMatched = 7,
   int hashMatched = 2,
   int modified = 1,
   int created = 1,
   int deleted = 0,
+  int total = 11,
+  int changed = 2,
 }) => wire.TallyView(
   metadataMatched: n(metadataMatched),
   hashMatched: n(hashMatched),
@@ -266,19 +251,23 @@ wire.TallyView tally({
   created: n(created),
   deleted: n(deleted),
   untrusted: n(0),
-  total: n(metadataMatched + hashMatched + modified + created + deleted),
-  changed: n(modified + created + deleted),
+  total: n(total),
+  changed: n(changed),
 );
 
-wire.TalliesView tallies({wire.TallyView? a, wire.TallyView? b}) {
-  final (local, remote) = (a ?? tally(), b ?? tally());
-  return wire.TalliesView(
-    a: local,
-    b: remote,
-    checked: n(local.total.toInt() + remote.total.toInt()),
-    changed: n(local.changed.toInt() + remote.changed.toInt()),
-  );
-}
+/// Both sides' tallies; [checked] and [changed] are the core's sums, sent
+/// as they are.
+wire.TalliesView tallies({
+  wire.TallyView? a,
+  wire.TallyView? b,
+  int checked = 22,
+  int changed = 4,
+}) => wire.TalliesView(
+  a: a ?? tally(),
+  b: b ?? tally(),
+  checked: n(checked),
+  changed: n(changed),
+);
 
 wire.SkippedView skippedPath({
   required wire.SideView side,
@@ -343,25 +332,28 @@ wire.StatusView modifiedFile() =>
 wire.StatusView createdFile() =>
     wire.StatusViewCreated(value: wire.FileView(size: n(5), mtimeUs: 1));
 
-/// A conflict on [path]; [offered] defaults to what the core offers for
-/// its sides.
+/// Every choice, as the core offers them where both sides can be kept.
+const offersAll = [
+  wire.ConflictChoiceView.unresolved,
+  wire.ConflictChoiceView.keepA,
+  wire.ConflictChoiceView.keepB,
+  wire.ConflictChoiceView.keepBoth,
+];
+
+/// A conflict on [path]; [offered] is what the core offers for it, only
+/// leaving it open unless the test names more.
 wire.ConflictRowView conflictRow(
   String path, {
   wire.StatusView? a,
   wire.StatusView? b,
-  List<wire.ConflictChoiceView>? offered,
+  List<wire.ConflictChoiceView> offered = const [
+    wire.ConflictChoiceView.unresolved,
+  ],
   wire.ConflictChoiceView choice = wire.ConflictChoiceView.unresolved,
   wire.ResultView? outcome,
 }) => wire.ConflictRowView(
   conflict: wire.ConflictView(path: path, a: a, b: b, interrupted: false),
-  offered:
-      offered ??
-      [
-        wire.ConflictChoiceView.unresolved,
-        if (a != null) wire.ConflictChoiceView.keepA,
-        if (b != null) wire.ConflictChoiceView.keepB,
-        if (a != null && b != null) wire.ConflictChoiceView.keepBoth,
-      ],
+  offered: offered,
   choice: choice,
   outcome: outcome,
 );
