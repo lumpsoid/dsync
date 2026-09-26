@@ -330,11 +330,13 @@ native/
   core/     dsync-core — I/O: stores, the Replica trait, the protocol,
             transports, pairing, Run
   cli/      dsync-cli — the `dsync` binary: sync, status, agent, pair, archive
-  hub/      the rinf bridge: intent-named commands in, one reply per command
-            and three session streams out, over dsync-core
+  hub/      the rinf bridge: intent-named commands in, one reply per command,
+            and each session (run, serve, pairing window) out as whole-view
+            snapshots, over dsync-core
 lib/app/
-  core_link/   CoreLink (a Dart interface), RinfCoreLink, FakeCoreLink — the
-               only place rinf is imported in lib/app/
+  core_link/   CoreChannel (the one interface: rinf's signals) and the
+               concrete CoreLink over it — the only place rinf is imported
+               in lib/app/
   (everything else: pages, view state, controllers, scopes)
 ```
 

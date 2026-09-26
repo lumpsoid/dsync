@@ -59,7 +59,7 @@ import 'core_link/core_link.dart';
 /// - `create()` — a *fresh* instance from the factory, never cached. For a
 ///   view that must own its instance and `dispose()` it. The Run page is the
 ///   reason this exists alongside `controller`: two runs must never share a
-///   view, and a run update arriving late from a finished run must not write
+///   view, and a run's view arriving late from a finished run must not write
 ///   into a view state that a later page has already torn down. A page that
 ///   calls `create()` calls `dispose()` on what it got.
 /// - `setController(c)` — pin one instance: both `controller` and `create()`
