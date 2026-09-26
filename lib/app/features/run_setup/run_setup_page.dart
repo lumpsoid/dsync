@@ -69,6 +69,11 @@ class _RunSetupPageState extends State<RunSetupPage> {
   final _address = TextEditingController();
   final _profileName = TextEditingController();
 
+  /// Listens for the app coming back from the Settings page the refusal's
+  /// snackbar opened — and only then: armed by [_openAccessSettings],
+  /// disposed on the first resume and with the page.
+  AppLifecycleListener? _backFromSettings;
+
   @override
   void initState() {
     super.initState();
@@ -90,6 +95,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
 
   @override
   void dispose() {
+    _backFromSettings?.dispose();
     _remoteRoot.dispose();
     _address.dispose();
     _profileName.dispose();
@@ -102,6 +108,10 @@ class _RunSetupPageState extends State<RunSetupPage> {
   Future<void> _pickFolder() async {
     await _controller.pickLocalFolder();
     if (!mounted) return;
+    _showRefusal();
+  }
+
+  void _showRefusal() {
     final refusal = _controller.state.folderAccessError;
     if (refusal == null) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -110,10 +120,27 @@ class _RunSetupPageState extends State<RunSetupPage> {
         duration: const Duration(seconds: 8),
         action: SnackBarAction(
           label: 'Settings',
-          onPressed: _controller.openAccessSettings,
+          onPressed: _openAccessSettings,
         ),
       ),
     );
+  }
+
+  /// Opens Settings and, when the app comes back, has the controller check
+  /// the refused folder again: granting access there is the fix the
+  /// snackbar offered, so the user is not made to pick the folder twice.
+  Future<void> _openAccessSettings() {
+    _backFromSettings?.dispose();
+    _backFromSettings = AppLifecycleListener(onResume: _backFromSettingsPage);
+    return _controller.openAccessSettings();
+  }
+
+  Future<void> _backFromSettingsPage() async {
+    _backFromSettings?.dispose();
+    _backFromSettings = null;
+    final checked = await _controller.recheckAfterSettings();
+    if (!checked || !mounted) return;
+    _showRefusal();
   }
 
   Future<void> _start() async {

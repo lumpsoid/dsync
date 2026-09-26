@@ -165,8 +165,8 @@ class RunSetupViewState extends ChangeNotifier {
 
   /// Why the folder the user just picked cannot be used, or `null` when the
   /// last pick worked or there has not been one. Shown transiently — the
-  /// page reads it after `RunSetupController.pickLocalFolder` returns and
-  /// raises a snackbar — because it is about a folder that never made it
+  /// page reads it after `RunSetupController.pickLocalFolder`, or
+  /// `recheckAfterSettings`, returns and raises a snackbar — because it is about a folder that never made it
   /// [localRoot], so there is no field to hang it under.
   String? get folderAccessError => _folderAccessError;
 

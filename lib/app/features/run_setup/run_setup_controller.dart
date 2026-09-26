@@ -79,6 +79,11 @@ class RunSetupController {
   /// form does not drop it (the form has no field for it).
   int? _profileJobs;
 
+  /// Where the last refused pick stands — kept so the user who grants
+  /// All-files access in Settings does not have to pick the folder again.
+  /// See [recheckAfterSettings].
+  _RefusedFolder _refused = const _NothingRefused();
+
   /// Reads what the page was opened for — the device the Devices page
   /// named, or the saved profile the home list named, via [source]. A
   /// device id that matches nothing, or a profile name that names a deleted
@@ -105,6 +110,7 @@ class RunSetupController {
     _profileName = null;
     _profileJobs = null;
     _peerDeviceId = null;
+    _refused = const _NothingRefused();
 
     try {
       final String deviceId;
@@ -172,7 +178,12 @@ class RunSetupController {
   /// root. A dismissed chooser changes nothing. A folder that fails — even
   /// after the grant its failure prompts for — is not taken:
   /// `RunSetupViewState.folderAccessError` carries the reason.
+  ///
+  /// A refused folder is kept, not dropped: [openAccessSettings] and
+  /// [recheckAfterSettings] take it once the grant is given. A new pick
+  /// replaces it, whatever it turns out to be.
   Future<void> pickLocalFolder() async {
+    _refused = const _NothingRefused();
     state.recordFolderAccessError(null);
     final String? picked;
     try {
@@ -195,6 +206,7 @@ class RunSetupController {
       return;
     }
     if (refusal != null) {
+      _refused = _FolderRefused(picked);
       state.recordFolderAccessError(refusal);
       return;
     }
@@ -213,7 +225,46 @@ class RunSetupController {
 
   /// Opens the OS settings page that grants access to folders outside the
   /// app's own container — what the page's snackbar offers after a refusal.
-  Future<void> openAccessSettings() => picker.openSettings();
+  /// The refused folder then waits for [recheckAfterSettings].
+  Future<void> openAccessSettings() {
+    if (_refused case _FolderRefused(:final path)) {
+      _refused = _AwaitingGrant(path);
+    }
+    return picker.openSettings();
+  }
+
+  /// The app is back from the Settings page [openAccessSettings] opened:
+  /// the core checks the refused folder again (a running process sees a
+  /// fresh grant), and the form takes it if the check passes. A folder
+  /// still refused keeps its refusal — the core's line, in
+  /// `RunSetupViewState.folderAccessError` — and waits for the next trip
+  /// to Settings. Does nothing unless Settings was opened over a refusal,
+  /// and a pick made meanwhile wins over the answer.
+  ///
+  /// Answers whether the check's verdict was recorded — `false` when there
+  /// was nothing to check, or a newer pick overtook it and speaks for
+  /// itself.
+  Future<bool> recheckAfterSettings() async {
+    final waiting = _refused;
+    if (waiting is! _AwaitingGrant) return false;
+    state.recordFolderAccessError(null);
+    String? refusal;
+    try {
+      refusal = await app.core.checkFolder(waiting.path);
+    } on CoreFailure catch (e) {
+      refusal = e.message;
+    }
+    if (!identical(_refused, waiting)) return false;
+    if (refusal != null) {
+      _refused = _FolderRefused(waiting.path);
+      state.recordFolderAccessError(refusal);
+      return true;
+    }
+    _refused = const _NothingRefused();
+    state.recordLocalRoot(waiting.path);
+    state.recordOutcome(const RunSetupIdle());
+    return true;
+  }
 
   /// A keystroke in the remote root field: the last attempt's outcome is
   /// stale. Validation waits for [start].
@@ -365,6 +416,29 @@ class RunSetupController {
   }
 
   void dispose() => state.dispose();
+}
+
+/// The life of a folder the core refused, as [RunSetupController] keeps
+/// it: nothing refused, refused, or refused with Settings opened over it —
+/// the one case a return to the app re-checks.
+sealed class _RefusedFolder {
+  const _RefusedFolder();
+}
+
+final class _NothingRefused extends _RefusedFolder {
+  const _NothingRefused();
+}
+
+final class _FolderRefused extends _RefusedFolder {
+  const _FolderRefused(this.path);
+
+  final String path;
+}
+
+final class _AwaitingGrant extends _RefusedFolder {
+  const _AwaitingGrant(this.path);
+
+  final String path;
 }
 
 /// What [RunSetupController._validate] answers when every field holds.

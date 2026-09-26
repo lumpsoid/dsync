@@ -345,6 +345,147 @@ void main() {
     expect(picker.openSettingsCount, 1);
   });
 
+  group('back from Settings (task 65e723)', () {
+    /// The platform's own sequences, one state at a time — the way
+    /// `AppLifecycleListener` expects them, as the Run page's tests drive
+    /// it.
+    const away = [
+      AppLifecycleState.inactive,
+      AppLifecycleState.hidden,
+      AppLifecycleState.paused,
+    ];
+    const back = [
+      AppLifecycleState.hidden,
+      AppLifecycleState.inactive,
+      AppLifecycleState.resumed,
+    ];
+
+    void drive(WidgetTester tester, List<AppLifecycleState> states) {
+      for (final state in states) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+    }
+
+    int checks() => core.sent<wire.CoreCommandCheckFolder>().length;
+
+    late String refused;
+
+    /// A folder refused by the pick and, when [openSettings], its
+    /// snackbar's Settings tapped — and, when [leave], the app gone to it.
+    Future<void> refuseThenOpenSettings(
+      WidgetTester tester, {
+      bool openSettings = true,
+      bool leave = true,
+    }) async {
+      refused = '${tempDir.path}/elsewhere/sdcard';
+      picker.onPick = () => refused;
+      core.reply<wire.CoreCommandCheckFolder>(
+        wire.ReplyResultFolderChecked(refusal: 'dsync cannot use $refused.'),
+      );
+      await pumpLoaded(tester);
+      await pickFolder(
+        tester,
+        until: () => controller.state.folderAccessError != null,
+        what: 'the folder to be refused',
+      );
+      if (!openSettings) return;
+      await tester.pump(const Duration(seconds: 1));
+      await tester.tap(find.text('Settings'));
+      await tester.pump(const Duration(seconds: 1));
+      if (!leave) return;
+      drive(tester, away);
+      await tester.pump();
+    }
+
+    testWidgets('with the grant given, the refused folder is checked again '
+        'and shown as the chosen one', (tester) async {
+      await refuseThenOpenSettings(tester);
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: null),
+      );
+
+      await tester.runAsync(() async {
+        drive(tester, back);
+        await settleUntil(
+          () => controller.state.localRoot == refused,
+          what: 'the re-checked folder to become the local root',
+        );
+      });
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.text(refused), findsOneWidget);
+      expect(find.text('No folder chosen'), findsNothing);
+      expect(find.byType(SnackBar), findsNothing);
+      expect(picker.pickCount, 1);
+    });
+
+    testWidgets('still refused, the refusal is shown again with its way out', (
+      tester,
+    ) async {
+      await refuseThenOpenSettings(tester);
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: 'still not granted'),
+      );
+
+      await tester.runAsync(() async {
+        drive(tester, back);
+        await settleUntil(
+          () => controller.state.folderAccessError == 'still not granted',
+          what: 'the re-check to refuse again',
+        );
+      });
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.text('still not granted'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
+      expect(find.text('No folder chosen'), findsOneWidget);
+    });
+
+    testWidgets('coming back without having opened Settings checks nothing', (
+      tester,
+    ) async {
+      await refuseThenOpenSettings(tester, openSettings: false);
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: null),
+      );
+      final before = checks();
+
+      drive(tester, away);
+      drive(tester, back);
+      await tester.pump();
+
+      expect(checks(), before);
+      expect(find.text('No folder chosen'), findsOneWidget);
+    });
+
+    testWidgets('a folder picked after Settings was opened wins', (
+      tester,
+    ) async {
+      // Settings opened but never reached — the desktop's is inert — so
+      // the user picks another folder instead.
+      await refuseThenOpenSettings(tester, leave: false);
+      final other = '${tempDir.path}/elsewhere/camera';
+      Directory(other).createSync(recursive: true);
+      picker.onPick = () => other;
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: null),
+      );
+      await pickFolder(
+        tester,
+        until: () => controller.state.localRoot == other,
+        what: 'the other folder to become the local root',
+      );
+      final before = checks();
+
+      drive(tester, away);
+      drive(tester, back);
+      await tester.pump();
+
+      expect(checks(), before, reason: 'the refused folder was replaced');
+      expect(find.text(other), findsOneWidget);
+    });
+  });
+
   testWidgets('field errors render under their own field', (tester) async {
     await pumpLoaded(tester);
     await openDisclosure(tester, 'run-setup-options');

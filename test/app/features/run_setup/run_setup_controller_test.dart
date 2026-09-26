@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
@@ -282,6 +283,130 @@ void main() {
       await controller.openAccessSettings();
 
       expect(picker.openSettingsCount, 1);
+    });
+  });
+
+  group('recheckAfterSettings (task 65e723)', () {
+    const refused = '/storage/emulated/0/sdcard';
+
+    /// The core refuses [refused] until [grant] is called.
+    void Function() refusingUntilGranted() {
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: 'no grant yet'),
+      );
+      return () => core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: null),
+      );
+    }
+
+    Future<void> pickRefused() async {
+      picker.onPick = () => refused;
+      await controller.pickLocalFolder();
+      expect(controller.state.folderAccessError, 'no grant yet');
+    }
+
+    test('back from Settings with the grant given: the core checks the '
+        'refused folder again and the form takes it', () async {
+      await loadDesktop();
+      final grant = refusingUntilGranted();
+      await pickRefused();
+      await controller.openAccessSettings();
+      grant();
+
+      expect(await controller.recheckAfterSettings(), isTrue);
+
+      expect(controller.state.localRoot, refused);
+      expect(controller.state.folderAccessError, isNull);
+      expect(picker.pickCount, 1, reason: 'not made to pick it again');
+      expect(
+        core.sent<wire.CoreCommandCheckFolder>().last,
+        const wire.CoreCommandCheckFolder(path: refused),
+      );
+    });
+
+    test('back from Settings still refused: the core\'s line again, the '
+        'folder not taken, and nothing more until Settings is opened '
+        'again', () async {
+      await loadDesktop();
+      await pickNotes();
+      refusingUntilGranted();
+      await pickRefused();
+      await controller.openAccessSettings();
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: 'still no grant'),
+      );
+
+      expect(await controller.recheckAfterSettings(), isTrue);
+
+      expect(controller.state.folderAccessError, 'still no grant');
+      expect(controller.state.localRoot, notes());
+      final checks = core.sent<wire.CoreCommandCheckFolder>().length;
+      expect(await controller.recheckAfterSettings(), isFalse);
+      expect(core.sent<wire.CoreCommandCheckFolder>(), hasLength(checks));
+
+      await controller.openAccessSettings();
+      expect(await controller.recheckAfterSettings(), isTrue);
+      expect(core.sent<wire.CoreCommandCheckFolder>(), hasLength(checks + 1));
+    });
+
+    test('without Settings opened, a refusal is not re-checked', () async {
+      await loadDesktop();
+      final grant = refusingUntilGranted();
+      await pickRefused();
+      grant();
+      final checks = core.sent<wire.CoreCommandCheckFolder>().length;
+
+      expect(await controller.recheckAfterSettings(), isFalse);
+
+      expect(core.sent<wire.CoreCommandCheckFolder>(), hasLength(checks));
+      expect(controller.state.localRoot, isNull);
+    });
+
+    test('a folder picked after Settings was opened wins', () async {
+      await loadDesktop();
+      final grant = refusingUntilGranted();
+      await pickRefused();
+      await controller.openAccessSettings();
+      grant();
+      await pickNotes();
+
+      expect(await controller.recheckAfterSettings(), isFalse);
+
+      expect(controller.state.localRoot, notes());
+    });
+
+    test('a folder picked while the re-check is in flight wins', () async {
+      await loadDesktop();
+      refusingUntilGranted();
+      await pickRefused();
+      await controller.openAccessSettings();
+      core.answer<wire.CoreCommandCheckFolder>(
+        (_) => const wire.ReplyResultFolderChecked(refusal: null),
+      );
+      final release = Completer<void>();
+      core.hold<wire.CoreCommandCheckFolder>(release.future);
+
+      final recheck = controller.recheckAfterSettings();
+      Directory(notes()).createSync(recursive: true);
+      picker.onPick = notes;
+      final pick = controller.pickLocalFolder();
+      release.complete();
+
+      expect(await recheck, isFalse);
+      await pick;
+      expect(controller.state.localRoot, notes());
+    });
+
+    test('a new visit forgets the refused folder', () async {
+      await loadDesktop();
+      final grant = refusingUntilGranted();
+      await pickRefused();
+      await controller.openAccessSettings();
+      grant();
+      await loadDesktop();
+
+      expect(await controller.recheckAfterSettings(), isFalse);
+      expect(controller.state.localRoot, isNull);
     });
   });
 
