@@ -278,8 +278,13 @@ impl Walk<'_> {
                         self.skip(symlink(path, "no follow rule matched"));
                     }
                 }
-                // A socket, fifo or device: no run carries one.
-                Ok(_) => {}
+                // SPEC §5.1: no run carries one, and silence would read an
+                // archived path as deleted.
+                Ok(kind) => self.skip(SkippedPath::new(
+                    path,
+                    SkippedReason::SpecialFile,
+                    special_kind(kind),
+                )),
             }
         }
     }
@@ -329,6 +334,28 @@ pub(crate) fn child_path(parent: Option<&RelPath>, name: &str) -> Result<RelPath
 
 fn symlink(path: RelPath, detail: &str) -> SkippedPath {
     SkippedPath::new(path, SkippedReason::Symlink, detail)
+}
+
+/// What a special file is, for the reader.
+#[cfg(unix)]
+fn special_kind(kind: FileType) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    if kind.is_fifo() {
+        "fifo"
+    } else if kind.is_socket() {
+        "socket"
+    } else if kind.is_block_device() {
+        "block device"
+    } else if kind.is_char_device() {
+        "character device"
+    } else {
+        "neither a file, a directory nor a link"
+    }
+}
+
+#[cfg(not(unix))]
+fn special_kind(_: FileType) -> &'static str {
+    "neither a file, a directory nor a link"
 }
 
 fn unreadable(path: RelPath, error: &io::Error) -> SkippedPath {

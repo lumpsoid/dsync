@@ -9,4 +9,6 @@ mod flow;
 mod missing_root;
 mod pipeline;
 mod soak;
+#[cfg(unix)]
+mod special_files;
 mod support;

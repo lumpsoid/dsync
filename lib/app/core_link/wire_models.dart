@@ -214,6 +214,7 @@ RunUpdate runUpdate(wire.RunUpdateBody body) => switch (body) {
           SkipReason.caseFoldCollision,
         wire.SkippedReasonView.unrepresentableName =>
           SkipReason.unrepresentableName,
+        wire.SkippedReasonView.specialFile => SkipReason.specialFile,
       },
       detail: value.detail,
       isFailure: value.isFailure,

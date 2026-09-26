@@ -7,6 +7,7 @@ enum SkippedReasonView {
   unreadable,
   caseFoldCollision,
   unrepresentableName,
+  specialFile,
 }
 
 extension SkippedReasonViewExtension on SkippedReasonView {
@@ -17,6 +18,7 @@ extension SkippedReasonViewExtension on SkippedReasonView {
       case 1: return SkippedReasonView.unreadable;
       case 2: return SkippedReasonView.caseFoldCollision;
       case 3: return SkippedReasonView.unrepresentableName;
+      case 4: return SkippedReasonView.specialFile;
       default: throw Exception('Unknown variant index for SkippedReasonView: ' + index.toString());
     }
   }
@@ -27,6 +29,7 @@ extension SkippedReasonViewExtension on SkippedReasonView {
       case SkippedReasonView.unreadable: return serializer.serializeVariantIndex(1);
       case SkippedReasonView.caseFoldCollision: return serializer.serializeVariantIndex(2);
       case SkippedReasonView.unrepresentableName: return serializer.serializeVariantIndex(3);
+      case SkippedReasonView.specialFile: return serializer.serializeVariantIndex(4);
     }
   }
 

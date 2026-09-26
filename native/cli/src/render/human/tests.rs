@@ -221,6 +221,7 @@ fn a_skipped_path_says_which_side_why_and_whether_it_synced() {
             skipped(Side::B, SkippedReason::Symlink, "no follow rule"),
             skipped(Side::A, SkippedReason::Unreadable, "Permission denied"),
             skipped(Side::B, SkippedReason::CaseFoldCollision, "folds onto LINK"),
+            skipped(Side::A, SkippedReason::SpecialFile, "fifo"),
             RunEvent::Skipped {
                 side: Side::A,
                 skipped: SkippedPath::unrepresentable_name(Some(path("dir")), "a\\b", "has a \\"),
@@ -233,6 +234,7 @@ fn a_skipped_path_says_which_side_why_and_whether_it_synced() {
          symlink  B  link  (no follow rule)\n\
          unreadable  A  link  (Permission denied — not synced)\n\
          case-fold  B  link  (folds onto LINK — not synced)\n\
+         special  A  link  (fifo)\n\
          unrepresentable  A  dir/a\\b  (has a \\ — not synced)\n"
     );
 }

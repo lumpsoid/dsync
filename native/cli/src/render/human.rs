@@ -253,6 +253,7 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
         let detail = &skipped.detail;
         let _ = match skipped.reason {
             SkippedReason::Symlink => writeln!(self.out, "symlink  {side}  {at}  ({detail})"),
+            SkippedReason::SpecialFile => writeln!(self.out, "special  {side}  {at}  ({detail})"),
             SkippedReason::Unreadable => {
                 writeln!(
                     self.out,

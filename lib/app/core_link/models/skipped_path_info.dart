@@ -1,10 +1,17 @@
 import 'replica_side.dart';
 
 /// Why a scan skipped a path (SPEC §5.1).
-enum SkipReason { symlink, unreadable, caseFoldCollision, unrepresentableName }
+enum SkipReason {
+  symlink,
+  unreadable,
+  caseFoldCollision,
+  unrepresentableName,
+  specialFile,
+}
 
 /// A path a scan skipped. [isFailure] is the reason's own verdict: a
-/// symlink is the rules obeyed, the rest a side unable to vouch for it.
+/// symlink or special file is the rules obeyed, the rest a side unable to
+/// vouch for it.
 final class SkippedPathInfo {
   const SkippedPathInfo({
     required this.side,

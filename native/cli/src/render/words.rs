@@ -112,6 +112,7 @@ pub fn skipped_type(reason: SkippedReason) -> &'static str {
         SkippedReason::Unreadable => "unreadable",
         SkippedReason::CaseFoldCollision => "caseFoldCollision",
         SkippedReason::UnrepresentableName => "unrepresentableName",
+        SkippedReason::SpecialFile => "specialFile",
     }
 }
 

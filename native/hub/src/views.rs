@@ -507,6 +507,7 @@ pub enum SkippedReasonView {
     Unreadable,
     CaseFoldCollision,
     UnrepresentableName,
+    SpecialFile,
 }
 
 impl SkippedView {
@@ -525,6 +526,7 @@ impl SkippedView {
                 SkippedReason::Unreadable => SkippedReasonView::Unreadable,
                 SkippedReason::CaseFoldCollision => SkippedReasonView::CaseFoldCollision,
                 SkippedReason::UnrepresentableName => SkippedReasonView::UnrepresentableName,
+                SkippedReason::SpecialFile => SkippedReasonView::SpecialFile,
             },
             detail: skipped.detail.clone(),
             is_failure: skipped.reason.is_failure(),

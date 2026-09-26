@@ -6,6 +6,8 @@ mod filter_listing;
 mod probe;
 mod scanner;
 mod session;
+#[cfg(unix)]
+mod special_files;
 mod support;
 #[cfg(unix)]
 mod symlinks;

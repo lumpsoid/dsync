@@ -22,15 +22,19 @@ pub enum SkippedReason {
     /// segment, not UTF-8): it cannot travel portably, so it is not synced
     /// until renamed. Only ever at a [`SkippedAt::UnrepresentableName`].
     UnrepresentableName,
+    /// A fifo, socket or device file: nothing a run can copy, and reading
+    /// or writing one can block. Like a link, the rules obeyed, not a
+    /// failure; `detail` names the kind.
+    SpecialFile,
 }
 
 impl SkippedReason {
     /// Whether it counts toward exit 1 (SPEC §5.1, §11.5): the side could
     /// not stand behind a status for the path. A symlink is SPEC §9 being
-    /// obeyed, not something gone wrong.
+    /// obeyed, and a special file SPEC §5.1, not something gone wrong.
     pub fn is_failure(self) -> bool {
         match self {
-            SkippedReason::Symlink => false,
+            SkippedReason::Symlink | SkippedReason::SpecialFile => false,
             SkippedReason::Unreadable
             | SkippedReason::CaseFoldCollision
             | SkippedReason::UnrepresentableName => true,
@@ -124,8 +128,9 @@ mod tests {
     }
 
     #[test]
-    fn only_a_symlink_is_not_a_failure() {
+    fn only_a_symlink_or_a_special_file_is_not_a_failure() {
         assert!(!SkippedReason::Symlink.is_failure());
+        assert!(!SkippedReason::SpecialFile.is_failure());
         assert!(SkippedReason::Unreadable.is_failure());
         assert!(SkippedReason::CaseFoldCollision.is_failure());
         assert!(SkippedReason::UnrepresentableName.is_failure());

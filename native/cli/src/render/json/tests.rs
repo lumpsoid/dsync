@@ -152,6 +152,7 @@ fn each_skipped_reason_is_its_own_type() {
         (SkippedReason::Symlink, "symlink"),
         (SkippedReason::Unreadable, "unreadable"),
         (SkippedReason::CaseFoldCollision, "caseFoldCollision"),
+        (SkippedReason::SpecialFile, "specialFile"),
     ] {
         let line = one(RunEvent::Skipped {
             side: Side::B,
