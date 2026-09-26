@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use dsync_domain::{DIR_LEAF, HostFacts, Platform};
-use hub::signals::{CoreCommand, EnrolmentUpdateBody, ReplyResult};
-use hub::views::{RunView, ServeView};
+use hub::signals::{CoreCommand, ReplyResult};
+use hub::views::{PairingView, RunView, ServeView};
 use hub::{Core, Outbox, Outgoing};
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -150,11 +150,11 @@ impl Head {
         }
     }
 
-    pub async fn enrolment_update(&mut self, session: u64) -> EnrolmentUpdateBody {
-        let wanted = |out: &Outgoing| matches!(out, Outgoing::Enrolment(u) if u.session == session);
+    pub async fn pairing_view(&mut self, session: u64) -> PairingView {
+        let wanted = |out: &Outgoing| matches!(out, Outgoing::Pairing(s) if s.session == session);
         match self.next_matching(wanted).await {
-            Outgoing::Enrolment(update) => update.update,
-            _ => unreachable!("matched an enrolment update"),
+            Outgoing::Pairing(snapshot) => snapshot.view,
+            _ => unreachable!("matched a pairing snapshot"),
         }
     }
 }

@@ -7,11 +7,11 @@ import 'models/archive_info.dart';
 import 'models/core_dirs.dart';
 import 'models/core_failure.dart';
 import 'models/device_identity_info.dart';
-import 'models/enrolment_update.dart';
 import 'models/filter_preview.dart';
 import 'models/filter_row.dart';
 import 'models/pair_code_reading.dart';
 import 'models/paired_device_info.dart';
+import 'models/pairing_view.dart';
 import 'models/pairing_window.dart';
 import 'models/peer_probe_outcome.dart';
 import 'models/profile_draft.dart';
@@ -34,7 +34,7 @@ import 'wire_models.dart';
 /// Concrete, and the same code in the app and in its tests: each call is a
 /// `CoreRequest` handed to the [CoreChannel], answered by the `CoreReply`
 /// with its id; each session's stream is fed from its `RunSnapshot` /
-/// `ServeSnapshot` / `EnrolmentUpdate` signals. The channel is the one
+/// `ServeSnapshot` / `PairingSnapshot` signals. The channel is the one
 /// interface (`RinfCoreChannel` in the app, a fake hub in tests), so the
 /// correlation and the decoding below always run.
 ///
@@ -56,11 +56,8 @@ final class CoreLink {
       _channel.serveSnapshots.listen((snapshot) {
         _serves.deliver(snapshot.session.toInt(), serveView(snapshot.view));
       }),
-      _channel.enrolmentUpdates.listen((update) {
-        _pairings.deliver(
-          update.session.toInt(),
-          enrolmentUpdate(update.update),
-        );
+      _channel.pairingSnapshots.listen((snapshot) {
+        _pairings.deliver(snapshot.session.toInt(), pairingView(snapshot.view));
       }),
     ]);
   }
@@ -73,8 +70,8 @@ final class CoreLink {
   final _serves = SessionStreams<ServeView>(
     isTerminal: (view) => view.phase is! ServePhaseListening,
   );
-  final _pairings = SessionStreams<EnrolmentUpdate>(
-    isTerminal: (u) => u is EnrolmentEnded,
+  final _pairings = SessionStreams<PairingView>(
+    isTerminal: (view) => view is! PairingWaiting && view is! PairingConfirming,
   );
   final List<StreamSubscription<Object?>> _subscriptions = [];
 
@@ -154,7 +151,7 @@ final class CoreLink {
 
   /// Opens a pairing window; whoever redeems it is recorded as [name].
   /// [bind] is an address literal; [advertise] overrides the host the
-  /// payload names.
+  /// payload names. The payload to show is the window's first view.
   Future<PairingWindow> showPairing({
     required String name,
     required String bind,
@@ -162,7 +159,7 @@ final class CoreLink {
     required int servicePort,
   }) async {
     late int session;
-    late Stream<EnrolmentUpdate> updates;
+    late Stream<PairingView> views;
     try {
       return await _ask(
         wire.CoreCommandShowPairing(
@@ -173,18 +170,11 @@ final class CoreLink {
         ),
         opening: (id) {
           session = id;
-          updates = _pairings.open(id);
+          views = _pairings.open(id);
         },
-        (result) => switch (result) {
-          wire.ReplyResultPairingShown(:final value) => PairingWindow(
-            session: session,
-            payload: value.payload,
-            deviceId: value.deviceId,
-            endpoint: value.endpoint,
-            expiresIn: Duration(seconds: value.expiresInSeconds.toInt()),
-            updates: updates,
-          ),
-          _ => _unexpected(result),
+        (result) {
+          _done(result);
+          return PairingWindow(session: session, views: views);
         },
       );
     } on CoreFailure catch (failure) {

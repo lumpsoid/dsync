@@ -10,14 +10,14 @@ final assignRustSignal = <String, void Function(Uint8List, Uint8List)>{
     _coreReplyStreamController.add(rustSignal);
     CoreReply.latestRustSignal = rustSignal;
   },
-  'EnrolmentUpdate': (Uint8List messageBytes, Uint8List binary) {
-    final message = EnrolmentUpdate.bincodeDeserialize(messageBytes);
+  'PairingSnapshot': (Uint8List messageBytes, Uint8List binary) {
+    final message = PairingSnapshot.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(
       message,
       binary,
     );
-    _enrolmentUpdateStreamController.add(rustSignal);
-    EnrolmentUpdate.latestRustSignal = rustSignal;
+    _pairingSnapshotStreamController.add(rustSignal);
+    PairingSnapshot.latestRustSignal = rustSignal;
   },
   'RunSnapshot': (Uint8List messageBytes, Uint8List binary) {
     final message = RunSnapshot.bincodeDeserialize(messageBytes);

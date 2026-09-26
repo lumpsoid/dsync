@@ -5,19 +5,18 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
-import 'package:dsync/app/core_link/models/enrolment_outcome.dart';
-import 'package:dsync/app/core_link/models/enrolment_update.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// The Show-this-device's-code controller over a real `AppController` and
-/// a `FakeHub` whose pairing window the test drives: what the page
-/// shows at each step of the core's story, what it tells the core, and
-/// that a window it has left writes nothing. The endpoint, the token and
+/// a `FakeHub` whose pairing window the test drives with the core's views:
+/// what the page shows for each, what it tells the core, and that a window
+/// it has left writes nothing. The endpoint, the token and
 /// the exchange are the core's (native/hub/tests/hub/pairing.rs).
 void main() {
   late FakeHub core;
@@ -63,30 +62,44 @@ void main() {
         .whenComplete(() => controller.state.removeListener(listener));
   }
 
-  /// Opens a window and waits for its offer; the future of [show] itself,
-  /// which ends when the window does, is returned beside it.
-  Future<({PairShowWaiting waiting, Future<void> shown})> openWindow() async {
-    final shown = controller.show(peerName: 'peer laptop');
+  /// The window the fake opened last.
+  int session() => core.pairingStarts.last;
+
+  /// When the core says the payload stops being redeemable.
+  final expiresAt = DateTime.now().add(const Duration(minutes: 5));
+
+  /// Opens a window as [peerName], delivers the core's first view of it,
+  /// and waits for its offer; the future of [show] itself, which ends when
+  /// the window does, is returned beside it.
+  Future<({PairShowWaiting waiting, Future<void> shown})> openWindow({
+    String peerName = 'peer laptop',
+  }) async {
+    final opened = core.pairingStarts.length;
+    final shown = controller.show(peerName: peerName);
+    while (core.pairingStarts.length == opened) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    core.emitPairing(
+      session(),
+      wire.PairingViewWaiting(
+        payload: 'dsync-pair:fake',
+        deviceId: 'fake-device-id',
+        endpoint: '127.0.0.1:51234',
+        expiresAtMs: expiresAt.millisecondsSinceEpoch,
+      ),
+    );
     final waiting = await statusWhere(
       (status) => status is PairShowWaiting,
     ) as PairShowWaiting;
     return (waiting: waiting, shown: shown);
   }
 
-  /// The window the fake opened last.
-  int session() => core.pairingStarts.last;
-
-  void redeemed() => core.emitEnrolment(
+  void redeemed() => core.emitPairing(
     session(),
-    const EnrolmentAwaiting(
-      from: '127.0.0.1:40000',
-      deviceId: peerId,
-      name: 'peer laptop',
-    ),
+    const wire.PairingViewConfirming(deviceId: peerId, name: 'peer laptop'),
   );
 
-  void ended(EnrolmentOutcome outcome) =>
-      core.emitEnrolment(session(), EnrolmentEnded(outcome));
+  void ended(wire.PairingView view) => core.emitPairing(session(), view);
 
   test('asks the core for a window on the stored bind address, under the '
       'name this side chose, advertising the serving port', () async {
@@ -103,16 +116,15 @@ void main() {
   });
 
   test('offers the core\'s payload as a line, a symbol and an address, and '
-      'a deadline from the core\'s window', () async {
-    final before = DateTime.now();
+      'the core\'s deadline', () async {
     final (:waiting, shown: _) = await openWindow();
 
     expect(waiting.offer.payloadLine, 'dsync-pair:fake');
     expect(waiting.offer.symbol, isNotNull);
     expect(waiting.offer.address, '127.0.0.1:51234');
     expect(
-      waiting.offer.expiresAt.difference(before),
-      greaterThanOrEqualTo(const Duration(minutes: 5)),
+      waiting.offer.expiresAt.millisecondsSinceEpoch,
+      expiresAt.millisecondsSinceEpoch,
     );
   });
 
@@ -134,7 +146,7 @@ void main() {
     // What the core does on a confirmed device: records it, then ends.
     final device = pairedDevice(deviceId: peerId, name: 'peer laptop');
     core.devices.add(device);
-    ended(Enrolled(device));
+    ended(wire.PairingViewEnrolled(value: wireDevice(device)));
     await shown;
 
     final paired = controller.state.status as PairShowPaired;
@@ -142,23 +154,6 @@ void main() {
     // The list the page leaves onto already holds the new row.
     expect(app.state.devices.single.name, 'peer laptop');
   });
-
-  test(
-    'a stranger turned away before redeeming leaves the window open',
-    () async {
-      await openWindow();
-
-      core.emitEnrolment(
-        session(),
-        const EnrolmentRefused(from: '10.0.0.66:5555', message: 'wrong token'),
-      );
-      await Future<void>.delayed(Duration.zero);
-
-      // Still open: a stranger's failed guess must not end a window the real
-      // peer has not reached yet, and nothing is said about it.
-      expect(controller.state.status, isA<PairShowWaiting>());
-    },
-  );
 
   test('a device the operator does not recognise is declined, and nothing '
       'is listed', () async {
@@ -169,20 +164,32 @@ void main() {
     controller.answerConfirmation(confirmed: false);
     await Future<void>.delayed(Duration.zero);
     expect(core.confirmations, {session(): false});
-    ended(const EnrolmentDeclined(peerId));
+    ended(const wire.PairingViewDeclined(deviceId: peerId));
     await shown;
 
     expect(controller.state.status, isA<PairShowDeclined>());
     expect(app.state.devices, isEmpty);
   });
 
-  test('an answer with no question up is not sent', () async {
-    await openWindow();
-
+  test('an answer with no window open is not sent', () async {
     controller.answerConfirmation(confirmed: true);
     await Future<void>.delayed(Duration.zero);
 
     expect(core.confirmations, isEmpty);
+  });
+
+  test('an answer the core does not take — nothing is waiting — changes '
+      'nothing', () async {
+    await openWindow();
+    core.failures['confirmPairing'] = const CoreFailure(
+      'no device is waiting to be confirmed',
+    );
+
+    controller.answerConfirmation(confirmed: true);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(core.calls.last, 'confirmPairing');
+    expect(controller.state.status, isA<PairShowWaiting>());
   });
 
   test(
@@ -190,7 +197,9 @@ void main() {
     () async {
       final (waiting: _, :shown) = await openWindow();
 
-      ended(const EnrolmentExpired());
+      ended(
+        wire.PairingViewExpired(windowSeconds: wire.Uint64(BigInt.from(300))),
+      );
       await shown;
 
       final expired = controller.state.status as PairShowExpired;
@@ -204,7 +213,7 @@ void main() {
       final (waiting: _, :shown) = await openWindow();
       redeemed();
 
-      ended(const EnrolmentUnconfirmed(peerId));
+      ended(const wire.PairingViewUnconfirmed(deviceId: peerId));
       await shown;
 
       expect(
@@ -219,7 +228,7 @@ void main() {
     final (waiting: _, :shown) = await openWindow();
 
     ended(
-      const EnrolmentNotStored(
+      const wire.PairingViewNotStored(
         deviceId: peerId,
         message: 'a device named "peer laptop" is already paired',
       ),
@@ -234,7 +243,7 @@ void main() {
   test('a listener that fails ends the window as a failure', () async {
     final (waiting: _, :shown) = await openWindow();
 
-    ended(const EnrolmentFailed('accept: too many open files'));
+    ended(const wire.PairingViewFailed(message: 'accept: too many open files'));
     await shown;
 
     final failed = controller.state.status as PairShowFailed;
@@ -249,7 +258,7 @@ void main() {
 
     expect(core.stopped, [session()]);
     // What the core answers a cancel with, arriving after the page left.
-    ended(const EnrolmentCancelled());
+    ended(const wire.PairingViewCancelled());
     await shown;
     expect(controller.state.status, isA<PairShowWaiting>());
   });
@@ -261,7 +270,7 @@ void main() {
 
     await controller.stop();
     // A late outcome from the window the page left is dropped.
-    ended(const EnrolmentUnconfirmed(peerId));
+    ended(const wire.PairingViewUnconfirmed(deviceId: peerId));
     await shown;
 
     expect(core.stopped, [session()]);
@@ -272,11 +281,9 @@ void main() {
     await openWindow();
     final first = session();
 
-    unawaited(controller.show(peerName: 'another'));
+    unawaited(openWindow(peerName: 'another'));
     await statusWhere(
-      (status) =>
-          status is PairShowWaiting &&
-          core.calls.where((c) => c == 'showPairing').length == 2,
+      (status) => status is PairShowWaiting && core.pairingStarts.length == 2,
     );
 
     expect(core.stopped, [first]);

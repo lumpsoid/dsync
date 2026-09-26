@@ -4,15 +4,15 @@
 
 use tokio::sync::mpsc;
 
-use crate::signals::{EnrolmentUpdate, EnrolmentUpdateBody, RunSnapshot, ServeSnapshot};
-use crate::views::{RunView, ServeView};
+use crate::signals::{PairingSnapshot, RunSnapshot, ServeSnapshot};
+use crate::views::{PairingView, RunView, ServeView};
 
 /// One stream signal, in the order it was emitted.
 pub enum Outgoing {
     /// Boxed: a run's view is far larger than the other signals.
     Run(Box<RunSnapshot>),
     Serve(ServeSnapshot),
-    Enrolment(EnrolmentUpdate),
+    Pairing(PairingSnapshot),
 }
 
 /// The sending end. Unbounded: every producer is either throttled (a
@@ -40,7 +40,7 @@ impl Outbox {
         self.send(Outgoing::Serve(ServeSnapshot { session, view }));
     }
 
-    pub fn enrolment(&self, session: u64, update: EnrolmentUpdateBody) {
-        self.send(Outgoing::Enrolment(EnrolmentUpdate { session, update }));
+    pub fn pairing(&self, session: u64, view: PairingView) {
+        self.send(Outgoing::Pairing(PairingSnapshot { session, view }));
     }
 }

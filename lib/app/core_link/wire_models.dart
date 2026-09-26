@@ -7,8 +7,6 @@ import 'models/conflict_info.dart';
 import 'models/conflict_row.dart';
 import 'models/decision_summary.dart';
 import 'models/device_identity_info.dart';
-import 'models/enrolment_outcome.dart';
-import 'models/enrolment_update.dart';
 import 'models/file_status.dart';
 import 'models/filter_folder_summary.dart';
 import 'models/filter_preview.dart';
@@ -16,6 +14,7 @@ import 'models/filter_row.dart';
 import 'models/mass_delete_side.dart';
 import 'models/pair_code_reading.dart';
 import 'models/paired_device_info.dart';
+import 'models/pairing_view.dart';
 import 'models/peer_probe_outcome.dart';
 import 'models/plan_action.dart';
 import 'models/plan_proposal.dart';
@@ -85,34 +84,32 @@ PairedDeviceInfo device(wire.DeviceView view) => PairedDeviceInfo(
   expiryNote: view.expiryNote,
 );
 
-EnrolmentUpdate enrolmentUpdate(wire.EnrolmentUpdateBody body) =>
-    switch (body) {
-      wire.EnrolmentUpdateBodyRefused(:final from, :final message) =>
-        EnrolmentRefused(from: from, message: message),
-      wire.EnrolmentUpdateBodyAwaiting(
-        :final from,
-        :final deviceId,
-        :final name,
-      ) =>
-        EnrolmentAwaiting(from: from, deviceId: deviceId, name: name),
-      wire.EnrolmentUpdateBodyEnded(:final value) => EnrolmentEnded(
-        _enrolmentOutcome(value),
-      ),
-      _ => throw StateError('unknown enrolment update: $body'),
-    };
-
-EnrolmentOutcome _enrolmentOutcome(wire.EnrolmentEndView end) => switch (end) {
-  wire.EnrolmentEndViewEnrolled(:final value) => Enrolled(device(value)),
-  wire.EnrolmentEndViewDeclined(:final deviceId) => EnrolmentDeclined(deviceId),
-  wire.EnrolmentEndViewUnconfirmed(:final deviceId) => EnrolmentUnconfirmed(
-    deviceId,
+PairingView pairingView(wire.PairingView view) => switch (view) {
+  wire.PairingViewWaiting(
+    :final payload,
+    :final deviceId,
+    :final endpoint,
+    :final expiresAtMs,
+  ) =>
+    PairingWaiting(
+      payload: payload,
+      deviceId: deviceId,
+      endpoint: endpoint,
+      expiresAt: _at(expiresAtMs),
+    ),
+  wire.PairingViewConfirming(:final deviceId, :final name) =>
+    PairingConfirming(deviceId: deviceId, name: name),
+  wire.PairingViewEnrolled(:final value) => PairingEnrolled(device(value)),
+  wire.PairingViewDeclined(:final deviceId) => PairingDeclined(deviceId),
+  wire.PairingViewUnconfirmed(:final deviceId) => PairingUnconfirmed(deviceId),
+  wire.PairingViewNotStored(:final deviceId, :final message) =>
+    PairingNotStored(deviceId: deviceId, message: message),
+  wire.PairingViewExpired(:final windowSeconds) => PairingExpired(
+    Duration(seconds: _n(windowSeconds)),
   ),
-  wire.EnrolmentEndViewNotStored(:final deviceId, :final message) =>
-    EnrolmentNotStored(deviceId: deviceId, message: message),
-  wire.EnrolmentEndViewExpired() => const EnrolmentExpired(),
-  wire.EnrolmentEndViewCancelled() => const EnrolmentCancelled(),
-  wire.EnrolmentEndViewFailed(:final message) => EnrolmentFailed(message),
-  _ => throw StateError('unknown enrolment end: $end'),
+  wire.PairingViewCancelled() => const PairingCancelled(),
+  wire.PairingViewFailed(:final message) => PairingFailed(message),
+  _ => throw StateError('unknown pairing view: $view'),
 };
 
 PairCodeReading pairCode(wire.PairCodeView view) => switch (view) {

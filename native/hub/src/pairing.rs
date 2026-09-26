@@ -17,17 +17,17 @@ use tokio::sync::oneshot;
 use crate::dispatch::{Handled, Hub, text};
 use crate::outbox::Outbox;
 use crate::sessions::{PairingControl, Session};
-use crate::signals::{EnrolmentUpdateBody, ReplyResult};
-use crate::views::{DeviceView, EnrolmentEndView, PairCodeView, PairingShownView};
+use crate::signals::ReplyResult;
+use crate::views::{DeviceView, PairCodeView, PairingView, millis};
 
 /// Where the operator's answer goes while a device waits for it.
 type Answer = Arc<Mutex<Option<oneshot::Sender<bool>>>>;
 
 impl Hub {
-    /// Binds the enrolment listener and answers with the payload; the
-    /// window's story goes out as `session`'s [`EnrolmentUpdateBody`]s. It
-    /// closes when a device enrols or is refused, the token expires, or
-    /// it is cancelled.
+    /// Binds the enrolment listener and answers once it is open; the
+    /// window, whole, goes out as `session`'s [`PairingView`]s - the first
+    /// with the payload. It closes when a device enrols or is refused, the
+    /// token expires, or it is cancelled.
     pub(crate) async fn show_pairing(
         &self,
         session: u64,
@@ -56,6 +56,19 @@ impl Hub {
         let interfaces = interface_addresses().unwrap_or_default();
         let host = advertised_host(advertise.as_deref(), bind, &interfaces);
         let payload = listener.payload(&host, service_port).map_err(text)?;
+        let window = self.tuning.pairing_token;
+        let expires_at = SystemTime::now()
+            .checked_add(window)
+            .unwrap_or(SystemTime::now());
+        self.out.pairing(
+            session,
+            PairingView::Waiting {
+                endpoint: payload.address().to_string(),
+                payload: payload.encode(),
+                device_id,
+                expires_at_ms: millis(expires_at),
+            },
+        );
 
         let answer = Answer::default();
         let confirm = {
@@ -63,10 +76,9 @@ impl Hub {
             move |pending: PendingEnrolment| {
                 let (answered, awaited) = oneshot::channel();
                 *answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(answered);
-                out.enrolment(
+                out.pairing(
                     session,
-                    EnrolmentUpdateBody::Awaiting {
-                        from: pending.from.to_string(),
+                    PairingView::Confirming {
                         device_id: pending.device.to_string(),
                         name: pending.name.to_string(),
                     },
@@ -75,18 +87,10 @@ impl Hub {
                 async move { awaited.await.unwrap_or(false) }
             }
         };
-        let refused = {
-            let out = self.out.clone();
-            move |EnrolmentEvent::Refused { from, why }| {
-                out.enrolment(
-                    session,
-                    EnrolmentUpdateBody::Refused {
-                        from: from.to_string(),
-                        message: why.to_string(),
-                    },
-                );
-            }
-        };
+        // A connection turned away before it redeemed the token (a
+        // stranger's wrong guess) changes nothing the window shows: it must
+        // not close a window the legitimate peer is still walking to.
+        let refused = |EnrolmentEvent::Refused { .. }| {};
         let out = self.out.clone();
         let pending = answer.clone();
         self.sessions.spawn(
@@ -94,15 +98,10 @@ impl Hub {
             |task| Session::Pairing(PairingControl { task, pending }),
             async move {
                 let ended = listener.serve(confirm, refused).await;
-                out.enrolment(session, EnrolmentUpdateBody::Ended(ended_view(ended)));
+                out.pairing(session, ended_view(ended, window.as_secs()));
             },
         );
-        Ok(ReplyResult::PairingShown(PairingShownView {
-            endpoint: payload.address().to_string(),
-            payload: payload.encode(),
-            device_id,
-            expires_in_seconds: self.tuning.pairing_token.as_secs(),
-        }))
+        Ok(ReplyResult::Done)
     }
 
     /// The operator's answer for the device waiting in `session`.
@@ -172,33 +171,32 @@ fn cancel(out: &Outbox, live: Option<Session>, session: u64) -> Handled {
     match live {
         Some(Session::Pairing(control)) => {
             control.task.abort();
-            out.enrolment(
-                session,
-                EnrolmentUpdateBody::Ended(EnrolmentEndView::Cancelled),
-            );
+            out.pairing(session, PairingView::Cancelled);
             Ok(ReplyResult::Done)
         }
         _ => Err(format!("no pairing window is open in session {session}")),
     }
 }
 
-fn ended_view(ended: std::io::Result<EnrolmentEnd>) -> EnrolmentEndView {
+/// How the window ended, as the head shows it; `window_seconds` is how
+/// long its token was good for.
+fn ended_view(ended: std::io::Result<EnrolmentEnd>, window_seconds: u64) -> PairingView {
     match ended {
         Ok(EnrolmentEnd::Enrolled(device)) => {
-            EnrolmentEndView::Enrolled(DeviceView::of(&device, SystemTime::now()))
+            PairingView::Enrolled(DeviceView::of(&device, SystemTime::now()))
         }
-        Ok(EnrolmentEnd::Declined { device }) => EnrolmentEndView::Declined {
+        Ok(EnrolmentEnd::Declined { device }) => PairingView::Declined {
             device_id: device.to_string(),
         },
-        Ok(EnrolmentEnd::Unconfirmed { device }) => EnrolmentEndView::Unconfirmed {
+        Ok(EnrolmentEnd::Unconfirmed { device }) => PairingView::Unconfirmed {
             device_id: device.to_string(),
         },
-        Ok(EnrolmentEnd::NotStored { device, error }) => EnrolmentEndView::NotStored {
+        Ok(EnrolmentEnd::NotStored { device, error }) => PairingView::NotStored {
             device_id: device.to_string(),
             message: error.to_string(),
         },
-        Ok(EnrolmentEnd::Expired) => EnrolmentEndView::Expired,
-        Err(error) => EnrolmentEndView::Failed {
+        Ok(EnrolmentEnd::Expired) => PairingView::Expired { window_seconds },
+        Err(error) => PairingView::Failed {
             message: error.to_string(),
         },
     }

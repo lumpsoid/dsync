@@ -21,7 +21,7 @@ abstract interface class CoreChannel {
 
   Stream<wire.ServeSnapshot> get serveSnapshots;
 
-  Stream<wire.EnrolmentUpdate> get enrolmentUpdates;
+  Stream<wire.PairingSnapshot> get pairingSnapshots;
 }
 
 /// The [CoreChannel] over rinf's signals. Needs `initializeRust` to have
@@ -45,6 +45,6 @@ final class RinfCoreChannel implements CoreChannel {
       wire.ServeSnapshot.rustSignalStream.map((pack) => pack.message);
 
   @override
-  Stream<wire.EnrolmentUpdate> get enrolmentUpdates =>
-      wire.EnrolmentUpdate.rustSignalStream.map((pack) => pack.message);
+  Stream<wire.PairingSnapshot> get pairingSnapshots =>
+      wire.PairingSnapshot.rustSignalStream.map((pack) => pack.message);
 }

@@ -1,39 +1,39 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// The pairing window `session`.
+/// The pairing window `session`, whole, as it now stands.
 @immutable
-class EnrolmentUpdate {
+class PairingSnapshot {
   /// An async broadcast stream that listens for signals from Rust.
   /// It supports multiple subscriptions.
   /// Make sure to cancel the subscription when it's no longer needed,
   /// such as when a widget is disposed.
   static final rustSignalStream =
-      _enrolmentUpdateStreamController.stream.asBroadcastStream();
+      _pairingSnapshotStreamController.stream.asBroadcastStream();
         
   /// The latest signal value received from Rust.
   /// This is updated every time a new signal is received.
   /// It can be null if no signals have been received yet.
-  static RustSignalPack<EnrolmentUpdate>? latestRustSignal = null;
+  static RustSignalPack<PairingSnapshot>? latestRustSignal = null;
 
-  const EnrolmentUpdate({
+  const PairingSnapshot({
     required this.session,
-    required this.update,
+    required this.view,
   });
 
-  static EnrolmentUpdate deserialize(BinaryDeserializer deserializer) {
+  static PairingSnapshot deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = EnrolmentUpdate(
+    final instance = PairingSnapshot(
       session: deserializer.deserializeUint64(),
-      update: EnrolmentUpdateBody.deserialize(deserializer),
+      view: PairingView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
-  static EnrolmentUpdate bincodeDeserialize(Uint8List input) {
+  static PairingSnapshot bincodeDeserialize(Uint8List input) {
     final deserializer = BincodeDeserializer(input);
-    final value = EnrolmentUpdate.deserialize(deserializer);
+    final value = PairingSnapshot.deserialize(deserializer);
     if (deserializer.offset < input.length) {
       throw Exception('Some input bytes were not read');
     }
@@ -41,22 +41,22 @@ class EnrolmentUpdate {
   }
 
   final Uint64 session;
-  final EnrolmentUpdateBody update;
+  final PairingView view;
 
-  EnrolmentUpdate copyWith({
+  PairingSnapshot copyWith({
     Uint64? session,
-    EnrolmentUpdateBody? update,
+    PairingView? view,
   }) {
-    return EnrolmentUpdate(
+    return PairingSnapshot(
       session: session ?? this.session,
-      update: update ?? this.update,
+      view: view ?? this.view,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeUint64(session);
-    update.serialize(serializer);
+    view.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -71,15 +71,15 @@ class EnrolmentUpdate {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is EnrolmentUpdate
+    return other is PairingSnapshot
       && session == other.session
-      && update == other.update;
+      && view == other.view;
   }
 
   @override
   int get hashCode => Object.hash(
         session,
-        update,
+        view,
       );
 
   @override
@@ -89,14 +89,14 @@ class EnrolmentUpdate {
     assert(() {
       fullString = '$runtimeType('
         'session: $session, '
-        'update: $update'
+        'view: $view'
         ')';
       return true;
     }());
 
-    return fullString ?? 'EnrolmentUpdate';
+    return fullString ?? 'PairingSnapshot';
   }
 }
 
-final _enrolmentUpdateStreamController =
-    StreamController<RustSignalPack<EnrolmentUpdate>>();
+final _pairingSnapshotStreamController =
+    StreamController<RustSignalPack<PairingSnapshot>>();

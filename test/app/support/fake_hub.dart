@@ -5,7 +5,6 @@ import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/core_dirs.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
-import 'package:dsync/app/core_link/models/enrolment_update.dart';
 import 'package:dsync/app/core_link/models/filter_preview.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
@@ -18,8 +17,6 @@ import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/core_link/models/serve_addresses.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-
-import 'fake_hub_sessions.dart';
 
 /// The Rust hub, faked at the head's one seam: a [CoreChannel] that
 /// answers each `CoreRequest` with a generated `CoreReply` and feeds the
@@ -34,7 +31,7 @@ import 'fake_hub_sessions.dart';
 /// Canned answers ([probeOutcome], [folderRefusals], [filterPreview] ...)
 /// are fields to set. Sessions are driven by the test: a session starter
 /// is recorded and answered, and the test feeds its signals with
-/// [emitRun], [emitServe] and [emitEnrolment]. What the code under test
+/// [emitRun], [emitServe] and [emitPairing]. What the code under test
 /// told a session is recorded in [runIntents], [stopped] and
 /// [confirmations].
 ///
@@ -148,7 +145,7 @@ final class FakeHub implements CoreChannel {
   final _replies = _Signals<wire.CoreReply>();
   final _runSnapshots = _Signals<wire.RunSnapshot>();
   final _serveSnapshots = _Signals<wire.ServeSnapshot>();
-  final _enrolmentUpdates = _Signals<wire.EnrolmentUpdate>();
+  final _pairingSnapshots = _Signals<wire.PairingSnapshot>();
 
   @override
   Stream<wire.CoreReply> get replies => _replies.stream;
@@ -160,27 +157,22 @@ final class FakeHub implements CoreChannel {
   Stream<wire.ServeSnapshot> get serveSnapshots => _serveSnapshots.stream;
 
   @override
-  Stream<wire.EnrolmentUpdate> get enrolmentUpdates => _enrolmentUpdates.stream;
+  Stream<wire.PairingSnapshot> get pairingSnapshots => _pairingSnapshots.stream;
 
   /// Delivers [view] to the run in [session], as the hub's snapshot.
-  void emitRun(int session, wire.RunView view) => _runSnapshots.add(
-    wire.RunSnapshot(session: _id(session), view: view),
-  );
+  void emitRun(int session, wire.RunView view) =>
+      _runSnapshots.add(wire.RunSnapshot(session: _id(session), view: view));
 
   /// Delivers [view] to the serving in [session], as the hub's snapshot.
   void emitServe(int session, wire.ServeView view) => _serveSnapshots.add(
     wire.ServeSnapshot(session: _id(session), view: view),
   );
 
-  /// Delivers [update] to the pairing window in [session], as the hub's
-  /// signal.
-  void emitEnrolment(int session, EnrolmentUpdate update) =>
-      _enrolmentUpdates.add(
-        wire.EnrolmentUpdate(
-          session: _id(session),
-          update: wireEnrolmentUpdate(update),
-        ),
-      );
+  /// Delivers [view] to the pairing window in [session], as the hub's
+  /// snapshot.
+  void emitPairing(int session, wire.PairingView view) => _pairingSnapshots.add(
+    wire.PairingSnapshot(session: _id(session), view: view),
+  );
 
   @override
   void send(wire.CoreRequest request) => unawaited(_handle(request));
@@ -295,14 +287,7 @@ final class FakeHub implements CoreChannel {
           advertise: advertise,
           servicePort: servicePort,
         );
-        return wire.ReplyResultPairingShown(
-          value: wire.PairingShownView(
-            payload: 'dsync-pair:fake',
-            deviceId: identity.deviceId,
-            endpoint: '${advertise ?? '127.0.0.1'}:51234',
-            expiresInSeconds: _id(300),
-          ),
-        );
+        return const wire.ReplyResultDone();
       }(),
     wire.CoreCommandConfirmPairing(:final session, :final accept) => () {
       confirmations[session.toInt()] = accept;

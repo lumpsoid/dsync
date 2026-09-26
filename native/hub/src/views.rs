@@ -136,16 +136,6 @@ impl DeviceView {
     }
 }
 
-/// An open pairing window: the payload to show (as text and QR), this
-/// device's id to compare, and where the window answers.
-#[derive(Serialize, SignalPiece)]
-pub struct PairingShownView {
-    pub payload: String,
-    pub device_id: String,
-    pub endpoint: String,
-    pub expires_in_seconds: u64,
-}
-
 /// A scanned or pasted pairing code, before it is redeemed.
 #[derive(Serialize, SignalPiece)]
 pub enum PairCodeView {
@@ -872,9 +862,27 @@ pub enum ServeEventView {
     },
 }
 
-/// How a pairing window ended.
+/// A pairing window as the head shows it, whole: sent after every change.
+/// `Waiting` and `Confirming` are open; every other one is how it ended,
+/// and the last it sends.
 #[derive(Serialize, SignalPiece)]
-pub enum EnrolmentEndView {
+pub enum PairingView {
+    /// Open, nothing redeemed yet: the payload to show (as text and QR),
+    /// this device's id for the other side to compare, where the window
+    /// answers, and when the payload stops being redeemable.
+    Waiting {
+        payload: String,
+        device_id: String,
+        endpoint: String,
+        expires_at_ms: i64,
+    },
+    /// A device redeemed the payload and waits for the operator's answer
+    /// (`ConfirmPairing`): its id, to compare with the one it shows, and
+    /// the name it will be recorded as.
+    Confirming {
+        device_id: String,
+        name: String,
+    },
     /// Confirmed and recorded; grant it a root before it can reach one.
     Enrolled(DeviceView),
     Declined {
@@ -889,8 +897,11 @@ pub enum EnrolmentEndView {
         device_id: String,
         message: String,
     },
-    /// The token expired unredeemed.
-    Expired,
+    /// The token expired unredeemed; `window_seconds` is how long it was
+    /// good for.
+    Expired {
+        window_seconds: u64,
+    },
     Cancelled,
     /// The listener itself failed.
     Failed {

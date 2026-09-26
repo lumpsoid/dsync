@@ -2,11 +2,9 @@
 //! redeems it, the first confirms; then the first serves, the second
 //! probes it and runs against it - every step a hub command.
 
-use hub::signals::{
-    CoreCommand, EnrolmentUpdateBody, ProfileDraft, ReplyResult, RunIntent, RunTarget,
-};
+use hub::signals::{CoreCommand, ProfileDraft, ReplyResult, RunIntent, RunTarget};
 use hub::views::{
-    EnrolmentEndView, PairCodeView, ProbeOutcome, RunPhaseView, ServeEventView, ServePhaseView,
+    PairCodeView, PairingView, ProbeOutcome, RunPhaseView, ServeEventView, ServePhaseView,
 };
 
 use crate::support::{Head, read, write};
@@ -17,6 +15,17 @@ fn show(name: &str) -> CoreCommand {
         bind: "127.0.0.1".to_owned(),
         advertise: None,
         service_port: 28771,
+    }
+}
+
+/// The window a head just opened in `session`: its payload and this
+/// device's id, from its first view.
+async fn opened(head: &mut Head, session: u64) -> (String, String) {
+    match head.pairing_view(session).await {
+        PairingView::Waiting {
+            payload, device_id, ..
+        } => (payload, device_id),
+        _ => panic!("expected the window open"),
     }
 }
 
@@ -32,9 +41,8 @@ async fn device_id(head: &mut Head) -> String {
 /// as "phone", the phone the desktop as "desktop".
 async fn pair(desktop: &mut Head, phone: &mut Head) {
     let (session, shown) = desktop.ok(show("phone")).await;
-    let ReplyResult::PairingShown(shown) = shown else {
-        panic!("expected the payload");
-    };
+    assert!(matches!(shown, ReplyResult::Done));
+    let (payload, desktop_id) = opened(desktop, session).await;
     let phone_id = device_id(phone).await;
     let ReplyResult::PairCode(PairCodeView::Read {
         device_id: Some(read_id),
@@ -42,24 +50,22 @@ async fn pair(desktop: &mut Head, phone: &mut Head) {
         ..
     }) = phone
         .ok(CoreCommand::ReadPairCode {
-            text: format!("  {}\n", shown.payload),
+            text: format!("  {payload}\n"),
         })
         .await
         .1
     else {
         panic!("the payload should read");
     };
-    assert_eq!(read_id, shown.device_id);
+    assert_eq!(read_id, desktop_id);
     assert_eq!(address, "127.0.0.1:28771");
 
     let accept = CoreCommand::AcceptPairing {
-        code: shown.payload.clone(),
+        code: payload.clone(),
         name: "desktop".to_owned(),
     };
     let confirming = async {
-        let EnrolmentUpdateBody::Awaiting {
-            device_id, name, ..
-        } = desktop.enrolment_update(session).await
+        let PairingView::Confirming { device_id, name } = desktop.pairing_view(session).await
         else {
             panic!("expected a device to confirm");
         };
@@ -70,17 +76,17 @@ async fn pair(desktop: &mut Head, phone: &mut Head) {
             accept: true,
         };
         assert!(matches!(desktop.ok(confirm).await.1, ReplyResult::Done));
-        desktop.enrolment_update(session).await
+        desktop.pairing_view(session).await
     };
     let (accepted, ended) = tokio::join!(phone.ok(accept), confirming);
     let ReplyResult::Device(paired) = accepted.1 else {
         panic!("expected the paired device");
     };
     assert_eq!(paired.name, "desktop");
-    assert_eq!(paired.device_id, shown.device_id);
+    assert_eq!(paired.device_id, desktop_id);
     assert!(matches!(
         ended,
-        EnrolmentUpdateBody::Ended(EnrolmentEndView::Enrolled(ref device)) if device.device_id == phone_id
+        PairingView::Enrolled(ref device) if device.device_id == phone_id
     ));
 }
 
@@ -100,14 +106,23 @@ async fn a_code_that_is_not_a_payload_reads_as_unreadable() {
 }
 
 #[tokio::test]
-async fn a_pairing_window_closes_when_cancelled_and_confirming_it_then_fails() {
+async fn a_pairing_window_takes_no_answer_unasked_and_closes_when_cancelled() {
     let mut desktop = Head::new("desktop").await;
     let (session, _) = desktop.ok(show("phone")).await;
+    opened(&mut desktop, session).await;
+    // Nothing redeemed it: no answer is taken.
+    let early = desktop
+        .failure(CoreCommand::ConfirmPairing {
+            session,
+            accept: true,
+        })
+        .await;
+    assert!(early.contains("confirmed"), "{early}");
     let cancel = CoreCommand::CancelPairing { session };
     assert!(matches!(desktop.ok(cancel).await.1, ReplyResult::Done));
     assert!(matches!(
-        desktop.enrolment_update(session).await,
-        EnrolmentUpdateBody::Ended(EnrolmentEndView::Cancelled)
+        desktop.pairing_view(session).await,
+        PairingView::Cancelled
     ));
     let late = desktop
         .failure(CoreCommand::ConfirmPairing {
@@ -126,30 +141,25 @@ async fn a_pairing_window_closes_when_cancelled_and_confirming_it_then_fails() {
 async fn a_declined_device_is_not_recorded() {
     let mut desktop = Head::new("desktop").await;
     let mut phone = Head::new("phone").await;
-    let (session, shown) = desktop.ok(show("phone")).await;
-    let ReplyResult::PairingShown(shown) = shown else {
-        panic!("expected the payload");
-    };
+    let (session, _) = desktop.ok(show("phone")).await;
+    let (payload, _) = opened(&mut desktop, session).await;
     let accept = CoreCommand::AcceptPairing {
-        code: shown.payload,
+        code: payload,
         name: "desktop".to_owned(),
     };
     let declining = async {
-        let awaiting = desktop.enrolment_update(session).await;
-        assert!(matches!(awaiting, EnrolmentUpdateBody::Awaiting { .. }));
+        let awaiting = desktop.pairing_view(session).await;
+        assert!(matches!(awaiting, PairingView::Confirming { .. }));
         let decline = CoreCommand::ConfirmPairing {
             session,
             accept: false,
         };
         desktop.ok(decline).await;
-        desktop.enrolment_update(session).await
+        desktop.pairing_view(session).await
     };
     let (refused, ended) = tokio::join!(phone.ask(accept), declining);
     assert!(matches!(refused.1, ReplyResult::Failed { .. }));
-    assert!(matches!(
-        ended,
-        EnrolmentUpdateBody::Ended(EnrolmentEndView::Declined { .. })
-    ));
+    assert!(matches!(ended, PairingView::Declined { .. }));
     let ReplyResult::Devices(devices) = desktop.ok(CoreCommand::ListDevices).await.1 else {
         panic!("expected the devices");
     };

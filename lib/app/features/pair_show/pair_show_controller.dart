@@ -5,8 +5,7 @@ import '../../app_controller.dart';
 import '../../app_settings.dart';
 import '../../app_settings_store.dart';
 import '../../core_link/models/core_failure.dart';
-import '../../core_link/models/enrolment_outcome.dart';
-import '../../core_link/models/enrolment_update.dart';
+import '../../core_link/models/pairing_view.dart';
 import '../../core_link/models/pairing_window.dart';
 import 'pair_show_view_state.dart';
 import 'pairing_offer.dart';
@@ -39,12 +38,13 @@ import 'pairing_offer.dart';
 /// [answerConfirmation] is the answer; declining records nothing at all.
 /// The code is spent either way, so both answers end this window.
 ///
-/// **What the wait ends on** is the core's to decide and arrives as the
-/// window's last update: enrolled, declined, unanswered, expired,
-/// cancelled, or failed. A connection turned away before it redeemed the
-/// token (a stranger's wrong guess) does not end the window and is not
-/// shown: it must not close a window the legitimate peer is still walking
-/// across the room to use.
+/// **The core owns the window.** It sends the window whole after every
+/// change — the payload to offer, the device waiting to be confirmed, how
+/// it ended: enrolled, declined, unanswered, expired, cancelled, or
+/// failed — and this renders the latest in the page's words. A connection
+/// turned away before it redeemed the token (a stranger's wrong guess)
+/// changes nothing the core sends: it must not close a window the
+/// legitimate peer is still walking across the room to use.
 class PairShowController {
   PairShowController(this.app, {required this.bindAddress});
 
@@ -110,47 +110,40 @@ class PairShowController {
       return;
     }
     _session = window.session;
-    _record(
-      stopped,
-      PairShowWaiting(
-        PairingOffer.forPayload(
-          window.payload,
-          address: window.endpoint,
-          expiresAt: DateTime.now().add(window.expiresIn),
-        ),
-      ),
-    );
-
     try {
-      await for (final update in window.updates) {
-        switch (update) {
-          case EnrolmentRefused():
-            break;
-          case EnrolmentAwaiting(:final deviceId):
-            _record(
-              stopped,
-              PairShowConfirming(deviceId: deviceId, peerName: peerName),
-            );
-          case EnrolmentEnded(:final outcome):
-            await _ended(outcome, stopped, window: window.expiresIn);
-        }
+      await for (final view in window.views) {
+        await _show(view, stopped);
       }
     } finally {
       if (_session == window.session) _session = null;
     }
   }
 
-  Future<void> _ended(
-    EnrolmentOutcome outcome,
-    Completer<void> stopped, {
-    required Duration window,
-  }) async {
-    switch (outcome) {
-      case Enrolled(:final device):
+  /// Renders the core's [view] of the window: what to offer, the question
+  /// it asks, or how it ended, in this page's words.
+  Future<void> _show(PairingView view, Completer<void> stopped) async {
+    switch (view) {
+      case PairingWaiting(:final payload, :final endpoint, :final expiresAt):
+        _record(
+          stopped,
+          PairShowWaiting(
+            PairingOffer.forPayload(
+              payload,
+              address: endpoint,
+              expiresAt: expiresAt,
+            ),
+          ),
+        );
+      case PairingConfirming(:final deviceId, :final name):
+        _record(
+          stopped,
+          PairShowConfirming(deviceId: deviceId, peerName: name),
+        );
+      case PairingEnrolled(:final device):
         await _recordPaired(device.name, stopped);
-      case EnrolmentDeclined():
+      case PairingDeclined():
         _record(stopped, const PairShowDeclined());
-      case EnrolmentUnconfirmed():
+      case PairingUnconfirmed():
         _record(
           stopped,
           const PairShowFailed(
@@ -159,7 +152,7 @@ class PairShowController {
             'ready to confirm it.',
           ),
         );
-      case EnrolmentNotStored(:final message):
+      case PairingNotStored(:final message):
         _record(
           stopped,
           PairShowFailed(
@@ -167,11 +160,11 @@ class PairShowController {
             '$message',
           ),
         );
-      case EnrolmentExpired():
+      case PairingExpired(:final window):
         _record(stopped, PairShowExpired(window));
-      case EnrolmentCancelled():
+      case PairingCancelled():
         break;
-      case EnrolmentFailed(:final message):
+      case PairingFailed(:final message):
         _record(
           stopped,
           PairShowFailed(
@@ -183,11 +176,11 @@ class PairShowController {
   }
 
   /// The operator's answer to [PairShowConfirming]: whether the id on
-  /// screen is the id the other device shows. Ignored when nothing is
-  /// waiting for an answer.
+  /// screen is the id the other device shows. The core takes it only when
+  /// a device is waiting for one.
   void answerConfirmation({required bool confirmed}) {
     final session = _session;
-    if (session == null || state.status is! PairShowConfirming) return;
+    if (session == null) return;
     unawaited(_confirm(session, confirmed));
   }
 
@@ -195,7 +188,8 @@ class PairShowController {
     try {
       await app.core.confirmPairing(session, accept: confirmed);
     } on CoreFailure {
-      // The window already ended; its last update says how.
+      // Nothing waits for an answer, or the window already ended: its
+      // last view says how.
     }
   }
 

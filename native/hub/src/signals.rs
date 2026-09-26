@@ -13,18 +13,16 @@
 //! sends [`RunSnapshot`]s: the whole view after every change, so the head
 //! renders the latest and decides nothing; what the user does goes back as
 //! a [`RunIntent`] in [`CoreCommand::SteerRun`]. Serving sends
-//! [`ServeSnapshot`]s the same way, the last one when it stops. A pairing
-//! window sends [`EnrolmentUpdate`]s, ending with one terminal update;
-//! nothing for that session follows it.
+//! [`ServeSnapshot`]s and a pairing window [`PairingSnapshot`]s the same
+//! way, the last one when it ends.
 
 use rinf::{DartSignal, RustSignal, SignalPiece};
 use serde::{Deserialize, Serialize};
 
 use crate::views::{
     ActionChoiceView, AddressesView, ArchiveView, ConflictChoiceView, DeviceView, DirsView,
-    EnrolmentEndView, FilterPreviewView, FilterRowView, IdentityView, PairCodeView,
-    PairingShownView, ProbeOutcome, ProfileEntry, RunView, ScanProbeView, ServeStartedView,
-    ServeView,
+    FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingView, ProbeOutcome,
+    ProfileEntry, RunView, ScanProbeView, ServeStartedView, ServeView,
 };
 
 /// Dart asks the core for one thing. Answered by one [`CoreReply`] with
@@ -55,9 +53,10 @@ pub enum CoreCommand {
         common_name: Option<String>,
     },
 
-    /// Opens a pairing window: session id = request id. Whoever redeems
-    /// the payload is recorded as `name`; `bind` is an address literal;
-    /// `advertise` overrides the host the payload names.
+    /// Opens a pairing window: session id = request id, answered `Done`
+    /// once it is open; the payload is the session's first snapshot.
+    /// Whoever redeems it is recorded as `name`; `bind` is an address
+    /// literal; `advertise` overrides the host the payload names.
     ShowPairing {
         name: String,
         bind: String,
@@ -271,7 +270,6 @@ pub enum ReplyResult {
     /// `Init`'s answer: where the core keeps its state and config.
     Initialised(DirsView),
     Identity(IdentityView),
-    PairingShown(PairingShownView),
     PairCode(PairCodeView),
     Device(DeviceView),
     Devices(Vec<DeviceView>),
@@ -303,24 +301,9 @@ pub struct ServeSnapshot {
     pub view: ServeView,
 }
 
-/// The pairing window `session`.
+/// The pairing window `session`, whole, as it now stands.
 #[derive(Serialize, RustSignal)]
-pub struct EnrolmentUpdate {
+pub struct PairingSnapshot {
     pub session: u64,
-    pub update: EnrolmentUpdateBody,
-}
-
-#[derive(Serialize, SignalPiece)]
-pub enum EnrolmentUpdateBody {
-    /// A connection turned away before it redeemed the token.
-    Refused { from: String, message: String },
-    /// A device redeemed the payload; answer with `ConfirmPairing`. Its id
-    /// is what the operator compares with the one it shows.
-    Awaiting {
-        from: String,
-        device_id: String,
-        name: String,
-    },
-    /// Terminal.
-    Ended(EnrolmentEndView),
+    pub view: PairingView,
 }

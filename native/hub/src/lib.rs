@@ -49,7 +49,7 @@ async fn main() {
             match signal {
                 Outgoing::Run(snapshot) => (*snapshot).send_signal_to_dart(),
                 Outgoing::Serve(snapshot) => snapshot.send_signal_to_dart(),
-                Outgoing::Enrolment(update) => update.send_signal_to_dart(),
+                Outgoing::Pairing(snapshot) => snapshot.send_signal_to_dart(),
             }
         }
     });
