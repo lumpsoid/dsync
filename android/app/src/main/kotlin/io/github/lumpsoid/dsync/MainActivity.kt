@@ -1,4 +1,4 @@
-package com.example.dsync
+package io.github.lumpsoid.dsync
 
 import io.flutter.embedding.android.FlutterActivity
 

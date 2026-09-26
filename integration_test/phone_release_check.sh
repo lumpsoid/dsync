@@ -8,11 +8,12 @@
 #
 #   integration_test/phone_release_check.sh --dry-run   # the plan, nothing run
 #
-# IT WIPES THE APP ON THAT PHONE. It uninstalls com.example.dsync first — its
-# archives, identity, pairings and All-files grant go with it — and installs a
-# test build whose entry point is integration_test/phone_release_check_test.dart,
-# left installed at the end. Reinstall your own build afterwards. Use a test
-# device, never one holding a replica you care about. On the phone it touches
+# IT WIPES THE APP ON THAT PHONE. It uninstalls io.github.lumpsoid.dsync
+# first — its archives, identity, pairings and All-files grant go with it —
+# and installs a test build whose entry point is
+# integration_test/phone_release_check_test.dart, left installed at the end.
+# Reinstall your own build afterwards. Use a test device, never one holding a
+# replica you care about. On the phone it touches
 # only /storage/emulated/0/dsync-e2e, which it deletes and recreates.
 #
 # Nobody touches the phone. Nothing it runs opens a system screen (the
@@ -61,7 +62,7 @@
 
 set -euo pipefail
 
-pkg=com.example.dsync
+pkg=io.github.lumpsoid.dsync
 test_dir=/storage/emulated/0/dsync-e2e
 agent_port=28791
 big_files=400

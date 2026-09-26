@@ -478,8 +478,8 @@ adb devices   # the serial
 integration_test/phone_release_check.sh --device <serial> --i-understand-this-reinstalls
 ```
 
-**It wipes the app on that phone.** It uninstalls `com.example.dsync` (the
-archives, identity, pairings and All-files grant go with it), installs a test
+**It wipes the app on that phone.** It uninstalls `io.github.lumpsoid.dsync`
+(the archives, identity, pairings and All-files grant go with it), installs a test
 build and leaves it installed with All-files access granted, and deletes and
 recreates `/storage/emulated/0/dsync-e2e`. It refuses to run without both
 flags; `--dry-run` prints the plan and touches nothing. Reinstall your own
