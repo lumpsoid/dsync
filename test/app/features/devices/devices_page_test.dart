@@ -2,7 +2,6 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
@@ -12,6 +11,7 @@ import 'package:dsync/app/profile_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// Rendering tests for the Devices page, driven the way the scope contract
@@ -29,7 +29,7 @@ void main() {
   var sharedFoldersOpened = 0;
 
   setUp(() {
-    app = fakeApp(FakeCoreLink());
+    app = fakeApp(FakeHub());
     controller = DevicesController(app);
     appScope.setController(app);
     devicesScope.setController(controller);

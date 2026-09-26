@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
@@ -13,6 +12,7 @@ import 'package:dsync/app/paired_device_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
 
@@ -21,7 +21,7 @@ import '../../support/pump_until.dart';
 /// contract. What a write does to the store is
 /// `device_detail_controller_test.dart`'s.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late DeviceDetailController controller;
   final phone = pairedDevice(
@@ -35,7 +35,7 @@ void main() {
   setUp(() {
     // The check's reachable case writes the address it reached through the
     // core, so the fake holds the device the rows below stand for.
-    core = FakeCoreLink(devices: [phone]);
+    core = FakeHub(devices: [phone]);
     app = fakeApp(core);
     controller = DeviceDetailController(app, picker: _NoPicker());
     appScope.setController(app);

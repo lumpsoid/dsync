@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_page.dart';
 import 'package:dsync/app/features/pair_show/pair_show_scope.dart';
@@ -14,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// Rendering tests for the Show-this-device's-code page, driven the way the
@@ -25,7 +25,7 @@ import '../../support/fake_head.dart';
 /// is about — this file is about what the page shows for a status, not about
 /// how one is reached, which is the controller test's.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late PairShowController controller;
   var paired = 0;
@@ -34,7 +34,7 @@ void main() {
   setUp(() async {
     // A window the core never answers for, so a test's own status is the
     // only one the page ever renders.
-    core = FakeCoreLink()..holds['showPairing'] = Completer<void>().future;
+    core = FakeHub()..holds['showPairing'] = Completer<void>().future;
     app = fakeApp(core);
     controller = PairShowController(app, bindAddress: _loopbackBind);
     appScope.setController(app);

@@ -1,23 +1,23 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/features/this_device/this_device_controller.dart';
 import 'package:dsync/app/features/this_device/this_device_view_state.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// The This device controller over a real `AppController` and a
-/// `FakeCoreLink`: what it asks the core for, and what the page is left
+/// `FakeHub`: what it asks the core for, and what the page is left
 /// showing. The certificate itself is the core's (native/hub tests).
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late ThisDeviceController controller;
 
   setUp(() {
-    core = FakeCoreLink();
+    core = FakeHub();
     app = fakeApp(core);
     controller = ThisDeviceController(app);
   });
@@ -33,7 +33,7 @@ void main() {
     await app.bootstrap();
 
     expect(controller.identity, isNotNull);
-    expect(controller.identity!.deviceId, FakeCoreLink.fakeIdentity.deviceId);
+    expect(controller.identity!.deviceId, FakeHub.fakeIdentity.deviceId);
     expect(controller.identity!.name, 'this-device');
   });
 

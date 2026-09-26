@@ -17,7 +17,8 @@ import 'package:rinf/rinf.dart';
 ///
 /// The Rust core (native/hub) is started before any of that: it only loads
 /// the library and parks on its signal receivers until the bootstrap's
-/// `init` reaches it through `appScope`'s `RinfCoreLink` (plan D10).
+/// `init` reaches it through `appScope`'s `CoreLink` over the
+/// `RinfCoreChannel` (plan D10).
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeRust(assignRustSignal);

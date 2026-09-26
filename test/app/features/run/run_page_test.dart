@@ -1,5 +1,4 @@
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/action_result.dart';
 import 'package:dsync/app/core_link/models/conflict_resolution.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
@@ -18,6 +17,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 import 'run_fixtures.dart'
@@ -39,11 +39,11 @@ import 'run_fixtures.dart'
 /// the view state before pumping; the page's `initState` then calls
 /// `start`, which refuses a controller that is no longer idle, so the core
 /// is never asked. The review is opened the way a run opens it: the page
-/// starts the run against a `FakeCoreLink` and the fake delivers a plan
+/// starts the run against a `FakeHub` and the fake delivers a plan
 /// that awaits a decision. The page disposes the pinned controller when the
 /// tree is torn down, as it would its own.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late SyncRunController controller;
   late FakeScreenWake screenWake;
   var doneTaps = 0;
@@ -55,7 +55,7 @@ void main() {
 
   setUp(() {
     screenWake = FakeScreenWake();
-    core = FakeCoreLink(devices: [pairedDevice()]);
+    core = FakeHub(devices: [pairedDevice()]);
     clock = DateTime(2026, 9, 16, 12);
     controller = SyncRunController(
       fakeApp(core, now: () => clock),

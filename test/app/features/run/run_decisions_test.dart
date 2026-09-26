@@ -16,7 +16,7 @@ import 'run_fixtures.dart';
 /// The review's decision flow (SPEC §11.3): the core's plan update
 /// says it awaits a decision, and the head answers with a [RunDecision] —
 /// indices of the actions kept, conflicts settled toward a side. Played by
-/// a `FakeCoreLink`, so every test here is about what the answer holds and
+/// a `FakeHub`, so every test here is about what the answer holds and
 /// about the core being answered exactly once on every path (it waits on
 /// the answer holding both replica locks).
 void main() {

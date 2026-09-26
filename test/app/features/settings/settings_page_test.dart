@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_dirs.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
@@ -11,6 +10,7 @@ import 'package:dsync/app/features/settings/settings_view_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// The Settings page as a rendering test: the view state is written
@@ -24,7 +24,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('settings_page_test');
-    final core = FakeCoreLink()
+    final core = FakeHub()
       ..dirs = CoreDirs(
         stateDir: tempDir.path,
         profilesDir: '${tempDir.path}/profiles',

@@ -35,7 +35,9 @@ void main() {
   });
 
   test('the count is the list\'s, so the two cannot disagree', () {
-    final row = PairedDeviceRow.render(pairedDevice(grantedRoots: ['/z', '/a']));
+    final row = PairedDeviceRow.render(
+      pairedDevice(grantedRoots: ['/z', '/a']),
+    );
 
     expect(row.agreedRoots, ['/a', '/z']);
     expect(row.agreedRootCount, row.agreedRoots.length);

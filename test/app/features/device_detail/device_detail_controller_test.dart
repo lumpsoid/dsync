@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
@@ -9,22 +8,23 @@ import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
-/// The Device controller over a real `AppController` and a `FakeCoreLink`,
+/// The Device controller over a real `AppController` and a `FakeHub`,
 /// so every refusal it renders is the core's own words.
 ///
 /// The folder chooser is the other thing faked: it is a platform channel,
 /// the condition that earns an abstraction, and the interface already
 /// exists (`FolderPicker`).
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late DeviceDetailController controller;
   late _FakePicker picker;
 
   setUp(() {
-    core = FakeCoreLink();
+    core = FakeHub();
     app = fakeApp(core);
     picker = _FakePicker();
     controller = DeviceDetailController(app, picker: picker);

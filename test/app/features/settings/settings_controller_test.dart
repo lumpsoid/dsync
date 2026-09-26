@@ -1,12 +1,12 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_dirs.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// `SettingsController` against a real settings store in a temporary state
@@ -19,7 +19,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('settings_controller_test');
-    final core = FakeCoreLink()
+    final core = FakeHub()
       ..dirs = CoreDirs(
         stateDir: tempDir.path,
         profilesDir: '${tempDir.path}/profiles',

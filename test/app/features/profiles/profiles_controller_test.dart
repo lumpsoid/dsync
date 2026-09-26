@@ -1,20 +1,20 @@
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
 
 /// The profiles home controller over a real `AppController` and a
-/// [FakeCoreLink] holding the profiles and devices. The rows the page
+/// [FakeHub] holding the profiles and devices. The rows the page
 /// renders are `AppState`'s; what this controller owns is the outcome of
 /// what the page asks for.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late ProfilesController controller;
   late FakeFolderPicker picker;
@@ -23,7 +23,7 @@ void main() {
   final phone = pairedDevice(deviceId: 'phone-id', name: 'phone');
 
   setUp(() {
-    core = FakeCoreLink(devices: [phone]);
+    core = FakeHub(devices: [phone]);
     picker = FakeFolderPicker();
     app = fakeApp(core);
     controller = ProfilesController(app, picker: picker);

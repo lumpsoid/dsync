@@ -1,5 +1,8 @@
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/core_link.dart';
+
+import 'fake_hub.dart';
+
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
@@ -8,10 +11,13 @@ import 'package:dsync/app/core_link/models/replica_side.dart';
 /// The clock every head test reads unless it moves it.
 DateTime fixedNow() => DateTime.utc(2026, 6, 1, 12);
 
-/// An [AppController] over [core] on the desktop rule (no support dir),
-/// reading [now].
-AppController fakeApp(FakeCoreLink core, {DateTime Function()? now}) =>
-    AppController(core, supportDir: () async => null, now: now ?? fixedNow);
+/// An [AppController] whose [CoreLink] runs over [hub], on the desktop rule
+/// (no support dir), reading [now].
+AppController fakeApp(FakeHub hub, {DateTime Function()? now}) => AppController(
+  CoreLink(hub),
+  supportDir: () async => null,
+  now: now ?? fixedNow,
+);
 
 /// A paired device as the core lists it. Every field has a plain default,
 /// so a test names only what it is about.

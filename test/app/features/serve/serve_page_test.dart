@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_page.dart';
 import 'package:dsync/app/features/serve/serve_scope.dart';
@@ -11,6 +10,7 @@ import 'package:dsync/app/paired_device_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 
@@ -27,7 +27,7 @@ void main() {
   late _FakeServeController controller;
 
   setUp(() async {
-    app = fakeApp(FakeCoreLink());
+    app = fakeApp(FakeHub());
     appScope.setController(app);
     controller = _FakeServeController(app);
     serveScope.setController(controller);

@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/archive_row.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
@@ -9,18 +8,19 @@ import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
-/// [ArchivesController] over a [FakeCoreLink]: the controller's job is to
+/// [ArchivesController] over a [FakeHub]: the controller's job is to
 /// join what the core lists with the saved runs the home list holds, and to
 /// render the core's answer to a delete — the disk half is the core's.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late ArchivesController controller;
 
   setUp(() {
-    core = FakeCoreLink();
+    core = FakeHub();
     app = fakeApp(core);
     controller = ArchivesController(app);
   });

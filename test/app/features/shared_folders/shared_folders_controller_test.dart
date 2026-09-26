@@ -1,24 +1,24 @@
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_view_state.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// The Shared folders controller over a real `AppController` and a
-/// `FakeCoreLink`, so every refusal it renders is the core's own and every
+/// `FakeHub`, so every refusal it renders is the core's own and every
 /// grant is checked where it lands: per device, which is the only place a
 /// root is stored.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late SharedFoldersController controller;
   late _FakePicker picker;
 
   setUp(() {
-    core = FakeCoreLink();
+    core = FakeHub();
     app = fakeApp(core);
     picker = _FakePicker();
     controller = SharedFoldersController(app, picker: picker);

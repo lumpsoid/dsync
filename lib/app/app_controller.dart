@@ -22,7 +22,8 @@ import 'profile_row.dart';
 /// and [supportDir], a function rather than a path, because the real
 /// lookup is asynchronous (`path_provider`) and a scope's factory is not:
 /// the core is initialised once, on first use, by whichever step needs it
-/// first ([dirs]). A test passes a `FakeCoreLink` and `() async => null`.
+/// first ([dirs]). A test passes a `CoreLink` over a fake hub channel and
+/// `() async => null`.
 ///
 /// [now] is the clock the head's own relative dates read ("2 hours ago"),
 /// passed explicitly by the scope so a wrong clock cannot arrive by
@@ -44,6 +45,7 @@ class AppController {
   static const deviceName = 'dsync-app';
 
   final CoreLink core;
+
   /// The directory the core keeps its state under, where the head must
   /// supply one (Android, iOS); `null` on the desktop.
   final Future<String?> Function() supportDir;

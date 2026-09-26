@@ -3,7 +3,8 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_controller.dart';
-import 'core_link/rinf_core_link.dart';
+import 'core_link/core_channel.dart';
+import 'core_link/core_link.dart';
 
 /// # How the Flutter head is put together
 ///
@@ -124,7 +125,7 @@ abstract base class Scope<C> {
 /// factory reaches this for the dependencies its controller borrows from
 /// the application.
 ///
-/// The default factory is the production wiring: the [RinfCoreLink] over
+/// The default factory is the production wiring: the [CoreLink] over
 /// the Rust hub (`main` starts rinf before anything reads this), the
 /// platform's support directory where the core needs the head to supply
 /// one, and the wall clock.
@@ -132,7 +133,7 @@ final class AppScope extends Scope<AppController> {
   AppScope()
     : super(
         () => AppController(
-          RinfCoreLink(),
+          CoreLink(const RinfCoreChannel()),
           supportDir: supportDirForThisDevice,
           now: DateTime.now,
         ),

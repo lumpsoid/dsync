@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
@@ -8,18 +7,19 @@ import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// The Devices controller over a real `AppController` and a
-/// `FakeCoreLink`: every outcome it renders comes from the core's answers
+/// `FakeHub`: every outcome it renders comes from the core's answers
 /// and refusals.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late DevicesController controller;
 
   setUp(() {
-    core = FakeCoreLink(devices: [pairedDevice(name: 'phone')]);
+    core = FakeHub(devices: [pairedDevice(name: 'phone')]);
     app = fakeApp(core);
     controller = DevicesController(app);
   });

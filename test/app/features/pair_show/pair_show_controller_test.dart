@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/enrolment_outcome.dart';
 import 'package:dsync/app/core_link/models/enrolment_update.dart';
@@ -12,15 +11,16 @@ import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// The Show-this-device's-code controller over a real `AppController` and
-/// a `FakeCoreLink` whose pairing window the test drives: what the page
+/// a `FakeHub` whose pairing window the test drives: what the page
 /// shows at each step of the core's story, what it tells the core, and
 /// that a window it has left writes nothing. The endpoint, the token and
 /// the exchange are the core's (native/hub/tests/hub/pairing.rs).
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late PairShowController controller;
 
@@ -31,7 +31,7 @@ void main() {
   const peerId = 'eeee-ffff-0000-1111';
 
   setUp(() async {
-    core = FakeCoreLink();
+    core = FakeHub();
     app = fakeApp(core);
     await app.bootstrap();
     controller = PairShowController(app, bindAddress: _loopbackBind);
@@ -73,9 +73,8 @@ void main() {
     return (waiting: waiting, shown: shown);
   }
 
-  /// The window the fake opened last: its sessions count up from 1, and
-  /// nothing else in these tests opens one.
-  int session() => core.calls.where((c) => c == 'showPairing').length;
+  /// The window the fake opened last.
+  int session() => core.pairingStarts.last;
 
   void redeemed() => core.emitEnrolment(
     session(),

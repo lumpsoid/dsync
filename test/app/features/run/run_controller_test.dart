@@ -11,7 +11,7 @@ import '../../support/fake_head.dart';
 import 'run_fixtures.dart';
 
 /// `SyncRunController` driving a run through the `CoreLink` seam, with the
-/// core played by a `FakeCoreLink`: what the head asks the core for, and
+/// core played by a `FakeHub`: what the head asks the core for, and
 /// how each of the core's answers — refusals, updates, ends — lands on the
 /// page's phase, the screen wakelock and the timings. What the run itself
 /// does (dialling, scanning, locks, applying) is the core's, tested in

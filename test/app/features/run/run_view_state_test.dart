@@ -11,7 +11,7 @@ import 'package:test/test.dart';
 import 'run_fixtures.dart';
 
 /// `SyncRunViewState` folded from the core's run updates, played by a
-/// `FakeCoreLink` — no core, no sockets, no widgets. Every test here is
+/// `FakeHub` — no core, no sockets, no widgets. Every test here is
 /// about the fold.
 void main() {
   final now = DateTime(2026, 9, 16, 12, 0);

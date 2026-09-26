@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/features/this_device/this_device_controller.dart';
@@ -10,6 +9,7 @@ import 'package:dsync/app/features/this_device/this_device_view_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// The This device page as a rendering test: the identity is pushed into
@@ -21,7 +21,7 @@ void main() {
   late ThisDeviceController controller;
 
   setUp(() {
-    app = fakeApp(FakeCoreLink());
+    app = fakeApp(FakeHub());
     controller = ThisDeviceController(app);
     appScope.setController(app);
     thisDeviceScope.setController(controller);

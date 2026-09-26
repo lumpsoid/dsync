@@ -1,5 +1,4 @@
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/archive_row.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
@@ -9,6 +8,7 @@ import 'package:dsync/app/features/archives/archives_view_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// Rendering tests for the Archives page, driven the way the scope contract
@@ -21,7 +21,7 @@ void main() {
   late _RecordingArchivesController controller;
 
   setUp(() {
-    app = fakeApp(FakeCoreLink());
+    app = fakeApp(FakeHub());
     controller = _RecordingArchivesController(app);
     appScope.setController(app);
     archivesScope.setController(controller);

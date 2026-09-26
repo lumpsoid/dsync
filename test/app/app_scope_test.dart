@@ -1,7 +1,9 @@
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/core_link.dart';
 import 'package:test/test.dart';
+
+import 'support/fake_hub.dart';
 
 /// A scope over a plain class, so the contract is checked on the mechanism
 /// itself and not on whatever [AppController] happens to hold.
@@ -77,7 +79,7 @@ void main() {
       // The core and the support dir are injected so the fake never
       // reaches rinf or `path_provider`.
       final fake = AppController(
-        FakeCoreLink(),
+        CoreLink(FakeHub()),
         supportDir: () async => null,
         now: DateTime.now,
       );

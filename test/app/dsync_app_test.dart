@@ -4,7 +4,6 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/dsync_app.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
@@ -29,6 +28,7 @@ import 'package:dsync/app/run_request.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/fake_hub.dart';
 import '../support/fake_folder_picker.dart';
 import '../support/fake_screen_wake.dart';
 import 'support/fake_head.dart';
@@ -40,7 +40,7 @@ import 'support/pump_until.dart';
 /// pinned with `setController`, the Run scope's factory swapped for a fresh
 /// pinned controller per `create()`, the app pumped directly, the gate moved
 /// by writing `AppState` as `AppController.bootstrap()` would. The core is a
-/// `FakeCoreLink`; the real I/O here is Run setup's own local folder.
+/// `FakeHub`; the real I/O here is Run setup's own local folder.
 ///
 /// **Real I/O is real, and `flutter_test` runs the body against a fake
 /// clock.** A `Future` that completes from a real read or write — a store,
@@ -59,7 +59,7 @@ import 'support/pump_until.dart';
 /// the form still filled.
 void main() {
   late Directory tempDir;
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late DevicesController devices;
   late PairController pair;
@@ -69,7 +69,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('dsync_app_test');
-    core = FakeCoreLink();
+    core = FakeHub();
     app = fakeApp(core);
     devices = DevicesController(app);
     pair = PairController(app);

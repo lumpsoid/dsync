@@ -2,7 +2,6 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
@@ -12,6 +11,7 @@ import 'package:dsync/app/profile_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
 
@@ -30,7 +30,7 @@ void main() {
   var serveOpened = 0;
 
   setUp(() {
-    app = fakeApp(FakeCoreLink());
+    app = fakeApp(FakeHub());
     controller = _RecordingProfilesController(app, picker: FakeFolderPicker());
     appScope.setController(app);
     profilesScope.setController(controller);

@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_page.dart';
@@ -13,18 +12,19 @@ import 'package:dsync/app/run_request.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
 
 /// Rendering tests for the Run setup page, driven the way the scope
 /// contract in `app_scope.dart` intends: the controllers are pinned with
 /// `setController` and the page is pumped directly. The page's `initState`
-/// calls `load`, which asks the core — a [FakeCoreLink] here — so every
+/// calls `load`, which asks the core — a [FakeHub] here — so every
 /// test first waits for it under `runAsync`, then writes the case it is about into the view
 /// state as the controller would.
 void main() {
   late Directory tempDir;
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late RunSetupController controller;
   late FakeFolderPicker picker;
@@ -34,7 +34,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('run_setup_page_test');
-    core = FakeCoreLink(devices: [desktop]);
+    core = FakeHub(devices: [desktop]);
     app = fakeApp(core);
     picker = FakeFolderPicker();
     controller = RunSetupController(app, picker: picker);

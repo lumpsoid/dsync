@@ -1,6 +1,6 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
+import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/core_link/models/core_dirs.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
@@ -9,14 +9,15 @@ import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:test/test.dart';
 
+import 'support/fake_hub.dart';
 import 'support/fake_head.dart';
 
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController controller;
 
   setUp(() {
-    core = FakeCoreLink();
+    core = FakeHub();
     controller = fakeApp(core);
   });
 
@@ -26,7 +27,7 @@ void main() {
     test('is sent once, with the support dir and the device name', () async {
       var asked = 0;
       final app = AppController(
-        core,
+        CoreLink(core),
         supportDir: () async {
           asked++;
           return '/data/app/files';
@@ -76,7 +77,7 @@ void main() {
       await controller.bootstrap();
 
       final ready = controller.state.bootstrap as AppBootstrapReady;
-      expect(ready.identity.deviceId, FakeCoreLink.fakeIdentity.deviceId);
+      expect(ready.identity.deviceId, FakeHub.fakeIdentity.deviceId);
       expect(ready.identity.name, 'this-device');
       expect(ready.identity.certificateWarning, isNull);
       expect(controller.state.devices, isEmpty);
@@ -191,7 +192,7 @@ void main() {
       final row = controller.state.devices.single;
       expect(row.deviceId, 'abcd-ef01');
       expect(row.address, '10.0.0.7:28771');
-      expect(row.pairedAt, DateTime.utc(2026, 9, 15, 11, 21));
+      expect(row.pairedAt.toUtc(), DateTime.utc(2026, 9, 15, 11, 21));
       expect(row.agreedRootCount, 1);
       expect(row.certificateWarning, isNull);
     });

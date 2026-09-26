@@ -9,7 +9,7 @@ import 'run_fixtures.dart';
 
 /// SPEC §10's delete guard as the Run feature answers it: the core says
 /// the decided actions delete most of a side and waits, and the head
-/// answers yes or no exactly once — played by a `FakeCoreLink`.
+/// answers yes or no exactly once — played by a `FakeHub`.
 void main() {
   late RunHarness harness;
 

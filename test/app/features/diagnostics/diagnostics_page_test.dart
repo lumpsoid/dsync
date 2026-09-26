@@ -1,4 +1,3 @@
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/scan_probe_layer.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/features/diagnostics/diagnostics_controller.dart';
@@ -9,6 +8,7 @@ import 'package:dsync/app/features/diagnostics/scan_cost_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// Rendering tests for the Diagnostics page, driven the way the scope
@@ -20,7 +20,7 @@ void main() {
   late DiagnosticsController controller;
 
   setUp(() {
-    controller = DiagnosticsController(fakeApp(FakeCoreLink()));
+    controller = DiagnosticsController(fakeApp(FakeHub()));
     diagnosticsScope.setController(controller);
   });
 

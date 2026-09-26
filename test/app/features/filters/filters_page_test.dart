@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/filter_folder_summary.dart';
 import 'package:dsync/app/core_link/models/filter_preview.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
@@ -11,13 +10,14 @@ import 'package:dsync/app/features/filters/filters_view_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
 
 /// Rendering tests for the Filters page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controller is pinned with
 /// `setController` and the page is pumped directly. The controller is the
-/// real one over a [FakeCoreLink] listing a fixed tree (which rule covers
+/// real one over a [FakeHub] listing a fixed tree (which rule covers
 /// which path comes from a table: the grammar is the core's).
 ///
 /// The tree:
@@ -28,7 +28,7 @@ import '../../support/pump_until.dart';
 /// DCIM/one.jpg         30 B
 /// ```
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late FiltersController controller;
   final navigator = GlobalKey<NavigatorState>();
   final done = <List<String>>[];
@@ -62,7 +62,7 @@ void main() {
   ];
 
   setUp(() {
-    core = FakeCoreLink()..filterListing = listing;
+    core = FakeHub()..filterListing = listing;
     controller = FiltersController(fakeApp(core));
     filtersScope.setController(controller);
     done.clear();

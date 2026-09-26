@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
@@ -12,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
 
@@ -21,13 +21,13 @@ import '../../support/pump_until.dart';
 /// into the view state by the test standing in for the controller's own
 /// verdicts, except for the submits that go through the controller: one
 /// stops at name validation, the others run the whole path over a
-/// `FakeCoreLink` that reads every code as the desktop's and accepts.
+/// `FakeHub` that reads every code as the desktop's and accepts.
 ///
 /// The page is two steps, so most tests start by getting a code in: by
 /// camera where that is the point, and otherwise through the Paste button
 /// over a mocked clipboard.
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late PairController controller;
   const payloadText = 'dsync-pair:v2:fake-desktop-code';
@@ -38,7 +38,7 @@ void main() {
   int enrolCalls() => core.calls.where((c) => c == 'acceptPairing').length;
 
   setUp(() {
-    core = FakeCoreLink()
+    core = FakeHub()
       ..pairCodeReading = const ReadPairCode(
         desktopName: 'desktop',
         address: '192.168.1.5:28771',

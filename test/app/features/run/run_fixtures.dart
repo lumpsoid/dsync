@@ -1,5 +1,4 @@
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/action_result.dart';
 import 'package:dsync/app/core_link/models/conflict_info.dart';
 import 'package:dsync/app/core_link/models/file_status.dart';
@@ -20,6 +19,7 @@ import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 
@@ -45,17 +45,17 @@ RunRequest runRequest({
   dryRun: dryRun,
 );
 
-/// A [SyncRunController] over a [FakeCoreLink]: [start] starts the run the
+/// A [SyncRunController] over a [FakeHub]: [start] starts the run the
 /// page would, and [emit] plays the core's side of it.
 class RunHarness {
   RunHarness({DateTime Function()? now})
-    : core = FakeCoreLink(devices: [pairedDevice()]),
+    : core = FakeHub(devices: [pairedDevice()]),
       screenWake = FakeScreenWake() {
     app = fakeApp(core, now: now);
     controller = SyncRunController(app, screenWake: screenWake);
   }
 
-  final FakeCoreLink core;
+  final FakeHub core;
   final FakeScreenWake screenWake;
   late final AppController app;
   late final SyncRunController controller;

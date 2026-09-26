@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart';
@@ -13,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
 
@@ -39,7 +39,7 @@ void main() {
   setUp(() {
     // A toggle writes through `AppController` to the core — the page under
     // test is the only path to it here.
-    app = fakeApp(FakeCoreLink(devices: [desktop, laptop]));
+    app = fakeApp(FakeHub(devices: [desktop, laptop]));
     picker = _FakePicker();
     controller = SharedFoldersController(app, picker: picker);
     appScope.setController(app);

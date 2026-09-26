@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/filter_folder_summary.dart';
 import 'package:dsync/app/core_link/models/filter_preview.dart';
@@ -9,9 +8,10 @@ import 'package:dsync/app/features/filters/filters_controller.dart';
 import 'package:dsync/app/features/filters/filters_view_state.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
-/// Covers `FiltersController` over a [FakeCoreLink] that lists a fixed
+/// Covers `FiltersController` over a [FakeHub] that lists a fixed
 /// tree: the rules it derives from a tapped row, the verdicts it renders
 /// for the core's listing, and what it does to a counted preview when the
 /// rules move under it. Which rule covers which path is the core's (SPEC
@@ -26,7 +26,7 @@ import '../../support/fake_head.dart';
 /// DCIM/.thumbnails/t   5 B
 /// ```
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late FiltersController controller;
 
   /// The rules that would exclude each path, as the core would match them.
@@ -77,7 +77,7 @@ void main() {
   );
 
   setUp(() {
-    core = FakeCoreLink()..filterListing = listing;
+    core = FakeHub()..filterListing = listing;
     controller = FiltersController(fakeApp(core));
   });
 

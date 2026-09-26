@@ -27,7 +27,8 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
-import 'package:dsync/app/core_link/rinf_core_link.dart';
+import 'package:dsync/app/core_link/core_channel.dart';
+import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
@@ -68,7 +69,7 @@ void main() {
 
     await initializeRust(assignRustSignal);
     final app = AppController(
-      RinfCoreLink(),
+      CoreLink(const RinfCoreChannel()),
       supportDir: () async => null,
       now: DateTime.now,
     );

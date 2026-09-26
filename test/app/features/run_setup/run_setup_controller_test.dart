@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
@@ -10,17 +9,18 @@ import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
 
 /// The Run setup controller over a real `AppController` and a
-/// [FakeCoreLink] holding the paired devices and the saved profiles. The
-/// core's folder check answers from [FakeCoreLink.folderRefusals]; the one
+/// [FakeHub] holding the paired devices and the saved profiles. The
+/// core's folder check answers from [FakeHub.folderRefusals]; the one
 /// thing the controller does to disk itself — recreating a local root that
 /// vanished before a run — runs under a temp dir.
 void main() {
   late Directory tempDir;
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late RunSetupController controller;
   late FakeFolderPicker picker;
@@ -33,7 +33,7 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('run_setup_controller');
-    core = FakeCoreLink(devices: [desktop]);
+    core = FakeHub(devices: [desktop]);
     app = fakeApp(core);
     picker = FakeFolderPicker();
     controller = RunSetupController(app, picker: picker);

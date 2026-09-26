@@ -4,23 +4,23 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/serve_update.dart' as core_update;
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 
-/// The Serve controller over a real `AppController` and a `FakeCoreLink`
+/// The Serve controller over a real `AppController` and a `FakeHub`
 /// whose serving session the test drives: when it asks the core to serve
 /// and to stop, what it shows for the core's story, and the wakelock it
 /// holds meanwhile. What a peer connecting actually gets is the core's
 /// (native/hub/tests/hub/pairing.rs, native/cli/tests).
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late FakeScreenWake screenWake;
   late ServeController controller;
@@ -40,7 +40,7 @@ void main() {
   );
 
   setUp(() {
-    core = FakeCoreLink();
+    core = FakeHub();
     app = fakeApp(core);
     screenWake = FakeScreenWake();
     disposed = false;
@@ -54,8 +54,8 @@ void main() {
 
   int serveCalls() => core.calls.where((c) => c == 'startServe').length;
 
-  /// The session the fake opened last: nothing else here opens one.
-  int session() => serveCalls();
+  /// The session the fake opened last.
+  int session() => core.serveStarts.last;
 
   /// Lets the controller fold what the fake just emitted.
   Future<void> settle() => Future<void>.delayed(Duration.zero);

@@ -1,4 +1,3 @@
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/scan_probe_layer.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
@@ -6,6 +5,7 @@ import 'package:dsync/app/features/diagnostics/diagnostics_controller.dart';
 import 'package:dsync/app/features/diagnostics/diagnostics_view_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
 /// What the Diagnostics controller owes its page: an outcome a switch can be
@@ -13,11 +13,11 @@ import '../../support/fake_head.dart';
 /// when a root cannot be read. The probe's own correctness is the core's
 /// (native/hub/tests/hub/commands.rs).
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late DiagnosticsController controller;
 
   setUp(() {
-    core = FakeCoreLink();
+    core = FakeHub();
     controller = DiagnosticsController(fakeApp(core));
   });
 
@@ -46,7 +46,9 @@ void main() {
     expect(seen.first, isA<ScanCostMeasuring>());
     final outcome = controller.state.scanCost;
     expect(outcome, isA<ScanCostMeasured>());
-    expect((outcome as ScanCostMeasured).report, same(core.scanProbe));
+    final report = (outcome as ScanCostMeasured).report;
+    expect(report.report, 'scan probe: /tmp/notes');
+    expect(report.passes.single.single.label, layer.label);
     expect(core.calls, ['probeScan']);
   });
 

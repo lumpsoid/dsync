@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/features/pair/pair_code.dart';
@@ -9,14 +8,15 @@ import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
 import 'package:test/test.dart';
 
+import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
-/// `PairController` over a real `AppController` and a `FakeCoreLink`: what
+/// `PairController` over a real `AppController` and a `FakeHub`: what
 /// the page shows for a code, when it asks the core to redeem one, and how
 /// the core's answer lands. Reading a payload and the exchange itself are
 /// the core's (native/domain `pair_code`, native/hub `pairing`).
 void main() {
-  late FakeCoreLink core;
+  late FakeHub core;
   late AppController app;
   late PairController controller;
 
@@ -28,7 +28,7 @@ void main() {
   const payloadText = 'dsync-pair:v2:fake';
 
   setUp(() {
-    core = FakeCoreLink()..pairCodeReading = readable;
+    core = FakeHub()..pairCodeReading = readable;
     app = fakeApp(core);
     controller = PairController(app);
   });
