@@ -1,11 +1,11 @@
 import 'dart:async';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -27,8 +27,23 @@ void main() {
   );
   const payloadText = 'dsync-pair:1.0:fake';
 
+  /// The device the core records for the redeemed code, under [name].
+  wire.ReplyResult paired(String name) => wire.ReplyResultDevice(
+    value: wireDevice(
+      pairedDevice(
+        deviceId: readable.deviceId!,
+        name: name,
+        address: readable.address,
+      ),
+    ),
+  );
+
   setUp(() {
-    core = FakeHub()..pairCodeReading = readable;
+    core = FakeHub()
+      ..reply<wire.CoreCommandReadPairCode>(
+        wire.ReplyResultPairCode(value: wirePairCode(readable)),
+      )
+      ..reply<wire.CoreCommandAcceptPairing>(paired('desktop'));
     app = fakeApp(core);
     controller = PairController(app);
   });
@@ -38,7 +53,7 @@ void main() {
     app.dispose();
   });
 
-  int acceptCalls() => core.calls.where((c) => c == 'acceptPairing').length;
+  int acceptCalls() => core.sent<wire.CoreCommandAcceptPairing>().length;
 
   /// Enters the code and submits under [localName].
   Future<void> submit({String localName = 'desktop'}) async {
@@ -68,7 +83,7 @@ void main() {
       await submit(localName: '');
       expect(controller.state.localNameError, isNotNull);
 
-      core.failures['acceptPairing'] = const CoreFailure('refused');
+      core.reply<wire.CoreCommandAcceptPairing>(failed('refused'));
       await submit();
 
       expect(controller.state.localNameError, isNull);
@@ -102,7 +117,10 @@ void main() {
         'will be reached at, and keeps the line to redeem', () async {
       await controller.codeEntered(payloadText);
 
-      expect(core.calls, ['readPairCode']);
+      expect(core.sent<wire.CoreCommandReadPairCode>(), const [
+        wire.CoreCommandReadPairCode(text: payloadText),
+      ]);
+      expect(core.kinds, [wire.CoreCommandReadPairCode]);
       expect(readCode().desktopName, 'desktop');
       expect(readCode().address, '10.0.0.9:28771');
       expect(readCode().payload, payloadText);
@@ -110,8 +128,12 @@ void main() {
 
     test('an unreadable code carries the core\'s own message, and is not a '
         'failed pairing', () async {
-      core.pairCodeReading = const UnreadablePairCode(
-        'Not a dsync pairing payload',
+      core.reply<wire.CoreCommandReadPairCode>(
+        const wire.ReplyResultPairCode(
+          value: wire.PairCodeViewUnreadable(
+            message: 'Not a dsync pairing payload',
+          ),
+        ),
       );
 
       await controller.codeEntered('hello world');
@@ -127,7 +149,9 @@ void main() {
     });
 
     test('a refused reading is unreadable too', () async {
-      core.failNext = const CoreFailure('the core is not initialised');
+      core.reply<wire.CoreCommandReadPairCode>(
+        failed('the core is not initialised'),
+      );
 
       await controller.codeEntered(payloadText);
 
@@ -146,7 +170,11 @@ void main() {
     });
 
     test('an unreadable code is no code to redeem', () async {
-      core.pairCodeReading = const UnreadablePairCode('nope');
+      core.reply<wire.CoreCommandReadPairCode>(
+        const wire.ReplyResultPairCode(
+          value: wire.PairCodeViewUnreadable(message: 'nope'),
+        ),
+      );
       await controller.codeEntered('hello');
 
       await controller.submitPayload(localName: 'desktop');
@@ -192,8 +220,8 @@ void main() {
   });
 
   test('a refused exchange is shown in the core\'s own words', () async {
-    core.failures['acceptPairing'] = const CoreFailure(
-      'the other device refused this pairing: token expired at 11:21',
+    core.reply<wire.CoreCommandAcceptPairing>(
+      failed('the other device refused this pairing: token expired at 11:21'),
     );
 
     await submit();
@@ -209,10 +237,19 @@ void main() {
     test('redeems the held line under the trimmed name, then shows the new '
         'row', () async {
       expect(app.state.devices, isEmpty);
+      core
+        ..reply<wire.CoreCommandAcceptPairing>(paired('my desktop'))
+        ..reply<wire.CoreCommandListDevices>(
+          devicesReply([
+            pairedDevice(deviceId: readable.deviceId!, name: 'my desktop'),
+          ]),
+        );
 
       await submit(localName: ' my desktop ');
 
-      expect(acceptCalls(), 1);
+      expect(core.sent<wire.CoreCommandAcceptPairing>(), const [
+        wire.CoreCommandAcceptPairing(code: payloadText, name: 'my desktop'),
+      ]);
       expect(controller.state.outcome, isA<PairSucceeded>());
       expect(
         (controller.state.outcome as PairSucceeded).deviceName,
@@ -226,8 +263,8 @@ void main() {
     test(
       'a list that cannot be re-read after the add is "paired, but"',
       () async {
-        core.failures['listDevices'] = const CoreFailure(
-          'paired-devices.json is damaged',
+        core.reply<wire.CoreCommandListDevices>(
+          failed('paired-devices.json is damaged'),
         );
 
         await submit();
@@ -248,7 +285,7 @@ void main() {
         final outcome = controller.state.outcome;
         if (seen.isEmpty || seen.last != outcome) seen.add(outcome);
       });
-      core.failures['acceptPairing'] = const CoreFailure('refused');
+      core.reply<wire.CoreCommandAcceptPairing>(failed('refused'));
 
       await submit();
 
@@ -269,7 +306,7 @@ void main() {
 
     test('is recorded before the exchange, not after it', () async {
       final exchange = Completer<void>();
-      core.holds['acceptPairing'] = exchange.future;
+      core.hold<wire.CoreCommandAcceptPairing>(exchange.future);
 
       await controller.codeEntered(payloadText);
       final submitted = controller.submitPayload(localName: 'desktop');
@@ -280,22 +317,22 @@ void main() {
 
       // The far end asks its question the moment the token is redeemed, so
       // the id has to be on screen by now — not once the exchange is back.
-      expect(controller.state.ownDeviceId, core.identity.deviceId);
+      expect(controller.state.ownDeviceId, fakeIdentity.deviceId);
 
       exchange.complete();
       await submitted;
     });
 
     test('stays up after a refusal, which is when it is read out', () async {
-      core.failures['acceptPairing'] = const CoreFailure('token already used');
+      core.reply<wire.CoreCommandAcceptPairing>(failed('token already used'));
 
       await submit();
 
-      expect(controller.state.ownDeviceId, core.identity.deviceId);
+      expect(controller.state.ownDeviceId, fakeIdentity.deviceId);
     });
 
     test('is gone again on a fresh visit to the page', () async {
-      core.failures['acceptPairing'] = const CoreFailure('refused');
+      core.reply<wire.CoreCommandAcceptPairing>(failed('refused'));
       await submit();
       expect(controller.state.ownDeviceId, isNotNull);
 

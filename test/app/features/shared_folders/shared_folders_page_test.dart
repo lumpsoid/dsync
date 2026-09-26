@@ -8,6 +8,7 @@ import 'package:dsync/app/features/shared_folders/shared_folders_scope.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_view_state.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,7 @@ import '../../support/pump_until.dart';
 /// scope contract. What a toggle does to the store is
 /// `shared_folders_controller_test.dart`'s.
 void main() {
+  late FakeHub hub;
   late AppController app;
   late SharedFoldersController controller;
   late _FakePicker picker;
@@ -39,7 +41,8 @@ void main() {
   setUp(() {
     // A toggle writes through `AppController` to the core — the page under
     // test is the only path to it here.
-    app = fakeApp(FakeHub(devices: [desktop, laptop]));
+    hub = FakeHub();
+    app = fakeApp(hub);
     picker = _FakePicker();
     controller = SharedFoldersController(app, picker: picker);
     appScope.setController(app);
@@ -172,7 +175,29 @@ void main() {
     );
   });
 
+  /// The core's device list: the desktop holding [desktopRoots], the laptop
+  /// [laptopRoots].
+  wire.ReplyResult devices(
+    List<String> desktopRoots,
+    List<String> laptopRoots,
+  ) => devicesReply([
+    pairedDevice(
+      deviceId: desktop.deviceId,
+      name: 'desktop',
+      grantedRoots: desktopRoots,
+    ),
+    pairedDevice(
+      deviceId: laptop.deviceId,
+      name: 'laptop',
+      address: '10.0.0.8:28771',
+      grantedRoots: laptopRoots,
+    ),
+  ]);
+
   testWidgets('toggling a device on shares the folder with it', (tester) async {
+    hub.reply<wire.CoreCommandGrantRoot>(
+      devices(['/home/me/notes'], ['/home/me/notes']),
+    );
     app.state.recordDevices([
       row(desktop, agreedRoots: const ['/home/me/notes']),
       row(laptop),
@@ -184,6 +209,12 @@ void main() {
       find.byKey(Key('shared-folder-/home/me/notes-${laptop.deviceId}')),
     );
 
+    expect(hub.sent<wire.CoreCommandGrantRoot>(), [
+      wire.CoreCommandGrantRoot(
+        deviceId: laptop.deviceId,
+        path: '/home/me/notes',
+      ),
+    ]);
     expect(
       find.textContaining('Sharing /home/me/notes with laptop'),
       findsOneWidget,
@@ -212,6 +243,7 @@ void main() {
     await tester.tap(find.byKey(const Key('withdraw-root-cancel')));
     await tester.pumpAndSettle();
 
+    expect(hub.sent<wire.CoreCommandWithdrawGrant>(), isEmpty);
     expect(controller.state.outcome, isA<SharedFoldersIdle>());
     expect(find.text('Only desktop may reach this folder.'), findsOneWidget);
   });
@@ -219,6 +251,7 @@ void main() {
   testWidgets('the last device off takes the folder with it, and says so', (
     tester,
   ) async {
+    hub.reply<wire.CoreCommandWithdrawGrant>(devices(const [], const []));
     app.state.recordDevices([
       row(desktop, agreedRoots: const ['/home/me/notes']),
       row(laptop),
@@ -233,6 +266,12 @@ void main() {
     await tester.pumpAndSettle();
     await tapAndAwait(tester, find.byKey(const Key('withdraw-root-confirm')));
 
+    expect(hub.sent<wire.CoreCommandWithdrawGrant>(), [
+      wire.CoreCommandWithdrawGrant(
+        deviceId: desktop.deviceId,
+        root: '/home/me/notes',
+      ),
+    ]);
     expect(find.textContaining('No device may reach it now'), findsOneWidget);
     expect(find.byKey(const Key('shared-folders-empty')), findsOneWidget);
   });
@@ -261,6 +300,10 @@ void main() {
   });
 
   testWidgets('a folder added for two devices lands on both', (tester) async {
+    // The core expands `~` the way `dsync pair grant` does.
+    hub.reply<wire.CoreCommandGrantRoot>(
+      devices(['/home/me/Sync'], ['/home/me/Sync']),
+    );
     app.state.recordDevices([row(desktop), row(laptop)]);
     await pumpPage(tester);
 
@@ -290,9 +333,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Handed to the core as typed; the core expands `~` the way
-    // `dsync pair grant` does (the fake stores it as given).
-    expect(find.byKey(const Key('shared-folder-~/Sync')), findsOneWidget);
+    // Handed to the core as typed, once per device.
+    expect(hub.sent<wire.CoreCommandGrantRoot>(), [
+      wire.CoreCommandGrantRoot(deviceId: desktop.deviceId, path: '~/Sync'),
+      wire.CoreCommandGrantRoot(deviceId: laptop.deviceId, path: '~/Sync'),
+    ]);
+    expect(
+      find.byKey(const Key('shared-folder-/home/me/Sync')),
+      findsOneWidget,
+    );
     expect(both, findsOneWidget);
   });
 

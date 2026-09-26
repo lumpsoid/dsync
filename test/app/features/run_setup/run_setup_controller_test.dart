@@ -1,12 +1,12 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -14,10 +14,10 @@ import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
 
 /// The Run setup controller over a real `AppController` and a
-/// [FakeHub] holding the paired devices and the saved profiles. The
-/// core's folder check answers from [FakeHub.folderRefusals]; the one
-/// thing the controller does to disk itself — recreating a local root that
-/// vanished before a run — runs under a temp dir.
+/// [FakeHub] answering with the paired devices and saved profiles each
+/// test scripts, and recording what the controller asked it to save. The
+/// one thing the controller does to disk itself — recreating a local root
+/// that vanished before a run — runs under a temp dir.
 void main() {
   late Directory tempDir;
   late FakeHub core;
@@ -33,7 +33,8 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('run_setup_controller');
-    core = FakeHub(devices: [desktop]);
+    core = FakeHub()
+      ..reply<wire.CoreCommandListDevices>(devicesReply([desktop]));
     app = fakeApp(core);
     picker = FakeFolderPicker();
     controller = RunSetupController(app, picker: picker);
@@ -62,7 +63,17 @@ void main() {
     if (controller.state.outcome case RunSetupStarted(:final request)) request,
   ];
 
-  List<HeadProfile> saved() => core.profiles.whereType<HeadProfile>().toList();
+  /// Every save the controller asked the core for, in order.
+  List<wire.CoreCommandSaveProfile> saves() =>
+      core.sent<wire.CoreCommandSaveProfile>();
+
+  /// The core lists [profiles].
+  void listing(List<ProfileEntry> profiles) =>
+      core.reply<wire.CoreCommandListProfiles>(profilesReply(profiles));
+
+  /// The core answers a save with [profiles].
+  void savesAs(List<ProfileEntry> profiles) =>
+      core.reply<wire.CoreCommandSaveProfile>(profilesReply(profiles));
 
   /// A profile saved for [desktop] over [notes], as the core lists it.
   HeadProfile weekly({
@@ -89,7 +100,9 @@ void main() {
 
     test('an empty granted-root set says nothing about the peer: it is what '
         'this device granted, and the head grants nothing', () async {
-      core.devices[0] = pairedDevice(deviceId: 'desk-id', name: 'desktop');
+      core.reply<wire.CoreCommandListDevices>(
+        devicesReply([pairedDevice(deviceId: 'desk-id', name: 'desktop')]),
+      );
       await loadDesktop();
 
       expect(controller.state.peer, isA<RunSetupPeerLoaded>());
@@ -106,7 +119,9 @@ void main() {
     test(
       'a device list the core cannot read is missing, with its words',
       () async {
-        core.failNext = const CoreFailure('paired-devices.json is damaged');
+        core.reply<wire.CoreCommandListDevices>(
+          failed('paired-devices.json is damaged'),
+        );
 
         await loadDesktop();
 
@@ -169,7 +184,9 @@ void main() {
       expect(controller.state.folderAccessError, isNull);
       expect(controller.state.localRoot, picked);
       expect(picker.requestAccessCount, 0, reason: 'the check already passed');
-      expect(core.calls.where((call) => call == 'checkFolder'), hasLength(1));
+      expect(core.sent<wire.CoreCommandCheckFolder>(), [
+        wire.CoreCommandCheckFolder(path: picked),
+      ]);
     });
 
     test('a folder it cannot use: refused with the core\'s line, not taken, '
@@ -178,9 +195,13 @@ void main() {
       await pickNotes();
       final picked = elsewhere('no-such-tree');
       picker.onPick = () => picked;
-      core.folderRefusals[picked] =
-          'dsync cannot use $picked: no such directory. Grant dsync access '
-          'to all files, then choose it again.';
+      core.reply<wire.CoreCommandCheckFolder>(
+        wire.ReplyResultFolderChecked(
+          refusal:
+              'dsync cannot use $picked: no such directory. Grant dsync '
+              'access to all files, then choose it again.',
+        ),
+      );
 
       await controller.pickLocalFolder();
 
@@ -199,7 +220,9 @@ void main() {
       await loadDesktop();
       final picked = elsewhere('no-such-tree');
       picker.onPick = () => picked;
-      core.folderRefusals[picked] = 'refused';
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: 'refused'),
+      );
 
       await controller.pickLocalFolder();
 
@@ -213,9 +236,14 @@ void main() {
         await loadDesktop();
         final picked = elsewhere('sdcard');
         picker.onPick = () => picked;
-        core.folderRefusals[picked] = 'no grant yet';
+        core.reply<wire.CoreCommandCheckFolder>(
+          const wire.ReplyResultFolderChecked(refusal: 'no grant yet'),
+        );
         picker.onRequestAccess = () async {
-          core.folderRefusals.remove(picked);
+          // The grant given: the core's next check passes.
+          core.reply<wire.CoreCommandCheckFolder>(
+            const wire.ReplyResultFolderChecked(refusal: null),
+          );
           return true;
         };
 
@@ -223,7 +251,7 @@ void main() {
 
         expect(controller.state.folderAccessError, isNull);
         expect(picker.requestAccessCount, 1);
-        expect(core.calls.where((call) => call == 'checkFolder'), hasLength(2));
+        expect(core.sent<wire.CoreCommandCheckFolder>(), hasLength(2));
         expect(controller.state.localRoot, picked);
       },
     );
@@ -402,6 +430,7 @@ void main() {
         'home list sees it at once', () async {
       await loadDesktop();
       await pickNotes();
+      savesAs([weekly()]);
 
       await controller.start(
         remoteRoot: '~/notes',
@@ -409,11 +438,18 @@ void main() {
         profileName: 'weekly',
       );
 
-      final profile = saved().single;
-      expect(profile.name, 'weekly');
-      expect(profile.localRoot, notes());
-      expect(profile.peerDeviceId, desktop.deviceId);
-      expect(profile.remoteRoot, '~/notes');
+      expect(saves(), [
+        wire.CoreCommandSaveProfile(
+          name: 'weekly',
+          draft: wire.ProfileDraft(
+            localRoot: notes(),
+            peerDeviceId: desktop.deviceId,
+            remoteRoot: '~/notes',
+            jobs: null,
+            ignore: const [],
+          ),
+        ),
+      ]);
       expect((requests().single.target as SavedProfileTarget).name, 'weekly');
       // The write refreshed the application state: the home list (possibly
       // under this page) shows the new profile without a reload.
@@ -443,11 +479,13 @@ void main() {
       );
       // The profile saves them, so the next run of this profile filters
       // the same way without being told again.
-      expect(saved().single.ignorePatterns, ['**/.thumbnails', 'cache']);
+      expect(saves().single.draft.ignore, ['**/.thumbnails', 'cache']);
     });
 
     test('a profile opened again comes back with its rules', () async {
-      core.profiles.add(weekly(ignorePatterns: const ['**/*.tmp']));
+      listing([
+        weekly(ignorePatterns: const ['**/*.tmp']),
+      ]);
 
       await controller.load(const RunSetupFromProfile('weekly'));
 
@@ -477,7 +515,7 @@ void main() {
       );
 
       expect(requests(), hasLength(1));
-      expect(core.profiles, isEmpty);
+      expect(saves(), isEmpty);
     });
 
     test('a failed start saves nothing', () async {
@@ -490,13 +528,15 @@ void main() {
       );
 
       expect(requests(), isEmpty);
-      expect(core.profiles, isEmpty);
+      expect(saves(), isEmpty);
     });
 
     test('a save the core refuses is the outcome line, and no run', () async {
       await loadDesktop();
       await pickNotes();
-      core.failNext = const CoreFailure('"a/b" is not a file-safe name');
+      core.reply<wire.CoreCommandSaveProfile>(
+        failed('"a/b" is not a file-safe name'),
+      );
 
       await controller.start(
         remoteRoot: '~/notes',
@@ -517,7 +557,7 @@ void main() {
 
     test('opened from a profile: the form is pre-filled, its folder is the '
         'form\'s value, the per-run choices not carried over', () async {
-      core.profiles.add(weekly());
+      listing([weekly()]);
 
       await controller.load(const RunSetupFromProfile('weekly'));
 
@@ -533,18 +573,18 @@ void main() {
 
     test('opened from a profile whose last run did not finish: the prefill '
         'says so (task 99f404)', () async {
-      core.profiles.add(weekly());
+      listing([weekly()]);
       await controller.load(const RunSetupFromProfile('weekly'));
       expect(controller.state.prefill!.lastRunUnfinished, isFalse);
 
-      core.profiles[0] = weekly(lastRunUnfinished: true);
+      listing([weekly(lastRunUnfinished: true)]);
       await controller.load(const RunSetupFromProfile('weekly'));
       expect(controller.state.prefill!.lastRunUnfinished, isTrue);
     });
 
     test('a start from a profile saves over it, not beside it', () async {
       Directory(notes()).createSync(recursive: true);
-      core.profiles.add(weekly());
+      listing([weekly()]);
       await controller.load(const RunSetupFromProfile('weekly'));
 
       // The name and remote root retyped in the form: the profile the user
@@ -555,9 +595,11 @@ void main() {
         profileName: 'weekly retyped',
       );
 
-      expect(saved(), hasLength(1));
-      expect(saved().single.name, 'weekly retyped');
-      expect(saved().single.remoteRoot, '~/notes/sub');
+      expect(core.sent<wire.CoreCommandRenameProfile>(), const [
+        wire.CoreCommandRenameProfile(from: 'weekly', to: 'weekly retyped'),
+      ]);
+      expect(saves().single.name, 'weekly retyped');
+      expect(saves().single.draft.remoteRoot, '~/notes/sub');
       expect(
         (requests().single.target as SavedProfileTarget).name,
         'weekly retyped',
@@ -567,6 +609,7 @@ void main() {
     test('save persists the profile and does not start a run', () async {
       await loadDesktop();
       await pickNotes();
+      savesAs([weekly()]);
 
       await controller.save(
         remoteRoot: '~/notes',
@@ -574,10 +617,10 @@ void main() {
         profileName: 'weekly',
       );
 
-      final profile = saved().single;
-      expect(profile.name, 'weekly');
-      expect(profile.localRoot, notes());
-      expect(profile.remoteRoot, '~/notes');
+      final save = saves().single;
+      expect(save.name, 'weekly');
+      expect(save.draft.localRoot, notes());
+      expect(save.draft.remoteRoot, '~/notes');
       expect(app.state.profiles.single.name, 'weekly');
       expect(requests(), isEmpty);
       expect(controller.state.outcome, isA<RunSetupSaved>());
@@ -598,7 +641,13 @@ void main() {
         profileName: 'weekly renamed',
       );
 
-      expect([for (final p in saved()) p.name], ['weekly renamed']);
+      expect(core.sent<wire.CoreCommandRenameProfile>(), const [
+        wire.CoreCommandRenameProfile(from: 'weekly', to: 'weekly renamed'),
+      ]);
+      expect(
+        [for (final save in saves()) save.name],
+        ['weekly', 'weekly renamed'],
+      );
     });
 
     test('a save the form does not validate writes nothing and shows the '
@@ -609,7 +658,7 @@ void main() {
       await controller.save(remoteRoot: '', address: '', profileName: 'weekly');
 
       expect(controller.state.remoteRootError, isNotNull);
-      expect(core.profiles, isEmpty);
+      expect(saves(), isEmpty);
       expect(controller.state.outcome, isA<RunSetupIdle>());
     });
 
@@ -623,12 +672,12 @@ void main() {
         profileName: '   ',
       );
 
-      expect(core.profiles, isEmpty);
+      expect(saves(), isEmpty);
       expect(controller.state.outcome, isA<RunSetupFailed>());
     });
 
     test('a save from a profile saves over it, not beside it', () async {
-      core.profiles.add(weekly());
+      listing([weekly()]);
       await controller.load(const RunSetupFromProfile('weekly'));
 
       await controller.save(
@@ -637,9 +686,11 @@ void main() {
         profileName: 'weekly retyped',
       );
 
-      expect(saved(), hasLength(1));
-      expect(saved().single.name, 'weekly retyped');
-      expect(saved().single.remoteRoot, '~/notes/sub');
+      expect(core.sent<wire.CoreCommandRenameProfile>(), const [
+        wire.CoreCommandRenameProfile(from: 'weekly', to: 'weekly retyped'),
+      ]);
+      expect(saves().single.name, 'weekly retyped');
+      expect(saves().single.draft.remoteRoot, '~/notes/sub');
       expect(requests(), isEmpty);
     });
 
@@ -658,7 +709,7 @@ void main() {
     test(
       'a second load from a device clears the previous visit\'s pre-fill',
       () async {
-        core.profiles.add(weekly());
+        listing([weekly()]);
         await controller.load(const RunSetupFromProfile('weekly'));
         expect(controller.state.prefill, isNotNull);
 

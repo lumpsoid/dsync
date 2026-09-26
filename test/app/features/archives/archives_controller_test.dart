@@ -1,11 +1,12 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/archive_row.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
@@ -19,7 +20,11 @@ void main() {
   late AppController app;
   late ArchivesController controller;
 
+  /// What the core lists, as the test built it with [log].
+  late List<ArchiveInfo> listed;
+
   setUp(() {
+    listed = [];
     core = FakeHub();
     app = fakeApp(core);
     controller = ArchivesController(app);
@@ -27,11 +32,30 @@ void main() {
 
   tearDown(() => controller.dispose());
 
+  /// Adds [profileId]'s log on [side] to what the core lists.
   String log(String profileId, [ReplicaSide side = ReplicaSide.a]) {
     final info = archiveInfo(profileId: profileId, side: side);
-    core.archives.add(info);
+    listed.add(info);
+    core.reply<wire.CoreCommandListArchives>(archivesReply([...listed]));
     return info.logPath;
   }
+
+  /// The core's answer to a clear: the logs of [profileIds] still listed.
+  wire.ReplyResult left(List<String> profileIds) => archivesReply([
+    for (final info in listed)
+      if (profileIds.contains(info.profileId)) info,
+  ]);
+
+  /// Each clear's answer, by the archive id it names.
+  void answerClears(Map<String, wire.ReplyResult> byProfile) =>
+      core.answer<wire.CoreCommandClearArchive>(
+        (clear) => byProfile[clear.profileId]!,
+      );
+
+  List<String> cleared() => [
+    for (final clear in core.sent<wire.CoreCommandClearArchive>())
+      clear.profileId,
+  ];
 
   ProfileRow profile(String id, String name, {String? peerName = 'desktop'}) =>
       ProfileRow(
@@ -108,7 +132,7 @@ void main() {
   });
 
   test('a listing the core cannot read is the failure it names', () async {
-    core.failNext = const CoreFailure('state dir unreadable');
+    core.reply<wire.CoreCommandListArchives>(failed('state dir unreadable'));
 
     await controller.refresh();
 
@@ -135,10 +159,11 @@ void main() {
     final gone = log('p1');
     log('p2');
     await controller.refresh();
+    core.reply<wire.CoreCommandClearArchive>(left(['p2']));
 
     await controller.delete(gone);
 
-    expect(core.calls, contains('clearArchive'));
+    expect(cleared(), ['p1']);
     expect(titles(), ['p2']);
     expect(controller.state.error, isNull);
   });
@@ -149,9 +174,11 @@ void main() {
     log('p1', ReplicaSide.b);
     log('p2');
     await controller.refresh();
+    core.reply<wire.CoreCommandClearArchive>(left(['p2']));
 
     await controller.delete(a);
 
+    expect(cleared(), ['p1']);
     expect(titles(), ['p2']);
   });
 
@@ -162,18 +189,22 @@ void main() {
       log('p1', ReplicaSide.b);
       log('p2');
       await controller.refresh();
+      answerClears({
+        'p1': left(['p2']),
+        'p2': left([]),
+      });
 
       await controller.deleteAll();
 
+      expect(cleared(), ['p1', 'p2']);
       expect(rows(), isEmpty);
-      expect(core.archives, isEmpty);
     },
   );
 
   test('a run keeps its history from being deleted', () async {
     final held = log('p1');
     await controller.refresh();
-    core.archiveRefusals['p1'] = busy;
+    core.reply<wire.CoreCommandClearArchive>(failed(busy));
 
     await controller.delete(held);
 
@@ -185,7 +216,10 @@ void main() {
     log('p1');
     log('p2');
     await controller.refresh();
-    core.archiveRefusals['p1'] = busy;
+    answerClears({
+      'p1': failed(busy),
+      'p2': left(['p1']),
+    });
 
     await controller.deleteAll();
 
@@ -200,11 +234,16 @@ void main() {
     log('p2');
     final alsoGone = log('p3');
     await controller.refresh();
+    answerClears({
+      'p1': left(['p2', 'p3']),
+      'p3': left(['p2']),
+    });
 
     controller.toggleSelection(gone);
     controller.toggleSelection(alsoGone);
     await controller.deleteSelected();
 
+    expect(cleared(), ['p1', 'p3']);
     expect(titles(), ['p2']);
     expect(controller.state.error, isNull);
     // Everything ticked is gone, so the page is out of selection mode with
@@ -219,7 +258,12 @@ void main() {
       final other = log('p2');
       final held = log('p1');
       await controller.refresh();
-      core.archiveRefusals['p1'] = busy;
+      answerClears({
+        'p2': left(['p1']),
+        'p1': failed(busy),
+      });
+      // The listing read after the refusal: p2 went before it.
+      core.reply<wire.CoreCommandListArchives>(left(['p1']));
 
       controller.toggleSelection(held);
       controller.toggleSelection(other);
@@ -248,7 +292,7 @@ void main() {
     await controller.refresh();
     controller.toggleSelection(path);
 
-    core.archives.clear();
+    core.reply<wire.CoreCommandListArchives>(archivesReply(const []));
     await controller.refresh();
 
     expect(controller.state.selected, isEmpty);
@@ -261,7 +305,7 @@ void main() {
 
       await controller.deleteSelected();
 
-      expect(core.calls, isNot(contains('clearArchive')));
+      expect(cleared(), isEmpty);
       expect(rows(), hasLength(1));
     },
   );
@@ -273,7 +317,7 @@ void main() {
 
     // The listing was `ArchivesLoading`, so there was nothing to delete —
     // and the refresh that follows finds the log still there.
-    expect(core.calls, isNot(contains('clearArchive')));
+    expect(cleared(), isEmpty);
     expect(rows(), hasLength(1));
   });
 }

@@ -1,7 +1,9 @@
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -29,20 +31,25 @@ void main() {
     app.dispose();
   });
 
+  PairedDeviceInfo desktopWith(List<String> roots) => pairedDevice(
+    deviceId: 'desktop-id',
+    name: 'desktop',
+    grantedRoots: roots,
+  );
+  PairedDeviceInfo laptopWith(List<String> roots) =>
+      pairedDevice(deviceId: 'laptop-id', name: 'laptop', grantedRoots: roots);
+
+  /// The core's device list: the desktop holding [desktop], the laptop
+  /// [laptop].
+  wire.ReplyResult devices(List<String> desktop, List<String> laptop) =>
+      devicesReply([desktopWith(desktop), laptopWith(laptop)]);
+
   /// Two paired devices, the first holding [roots], and the head booted
   /// over them. Returns their ids in order.
   Future<(String, String)> pairTwo({
     List<String> roots = const ['/home/me/notes'],
   }) async {
-    core.devices
-      ..add(
-        pairedDevice(
-          deviceId: 'desktop-id',
-          name: 'desktop',
-          grantedRoots: roots,
-        ),
-      )
-      ..add(pairedDevice(deviceId: 'laptop-id', name: 'laptop'));
+    core.reply<wire.CoreCommandListDevices>(devices(roots, const []));
     await app.bootstrap();
     return ('desktop-id', 'laptop-id');
   }
@@ -73,40 +80,60 @@ void main() {
   group('share', () {
     test('grants an existing folder to another device', () async {
       final (_, laptop) = await pairTwo();
+      core.reply<wire.CoreCommandGrantRoot>(
+        devices(['/home/me/notes'], ['/home/me/notes']),
+      );
 
       await controller.share(laptop, '/home/me/notes');
 
+      expect(core.sent<wire.CoreCommandGrantRoot>(), const [
+        wire.CoreCommandGrantRoot(
+          deviceId: 'laptop-id',
+          path: '/home/me/notes',
+        ),
+      ]);
       expect(done(), 'Sharing /home/me/notes with laptop.');
       expect(controller.folders.single.shareCount, 2);
-      expect(
-        core.devices.firstWhere((d) => d.deviceId == laptop).grantedRoots,
-        ['/home/me/notes'],
-      );
     });
 
     test('renders the core\'s refusal for a device that is gone', () async {
       final (_, laptop) = await pairTwo();
-      core.devices.removeWhere((d) => d.deviceId == laptop);
+      core.reply<wire.CoreCommandGrantRoot>(
+        failed('no paired device with id laptop-id'),
+      );
 
       await controller.share(laptop, '/home/me/notes');
 
-      expect(failure(), contains(laptop));
+      expect(failure(), 'no paired device with id laptop-id');
     });
   });
 
   group('withdraw', () {
     test('takes the folder off one device and leaves the others', () async {
       final (desktop, laptop) = await pairTwo();
+      core.reply<wire.CoreCommandGrantRoot>(
+        devices(['/home/me/notes'], ['/home/me/notes']),
+      );
       await controller.share(laptop, '/home/me/notes');
+      core.reply<wire.CoreCommandWithdrawGrant>(
+        devices(const [], ['/home/me/notes']),
+      );
 
       await controller.withdraw(desktop, '/home/me/notes');
 
+      expect(core.sent<wire.CoreCommandWithdrawGrant>(), const [
+        wire.CoreCommandWithdrawGrant(
+          deviceId: 'desktop-id',
+          root: '/home/me/notes',
+        ),
+      ]);
       expect(done(), 'No longer sharing /home/me/notes with desktop.');
       expect(controller.folders.single.shareCount, 1);
     });
 
     test('says so when the last device leaves and the folder goes', () async {
       final (desktop, _) = await pairTwo();
+      core.reply<wire.CoreCommandWithdrawGrant>(devices(const [], const []));
 
       await controller.withdraw(desktop, '/home/me/notes');
 
@@ -121,13 +148,19 @@ void main() {
   group('shareNewFolder', () {
     test('grants the typed path, trimmed, to every device chosen', () async {
       final (desktop, laptop) = await pairTwo(roots: const []);
+      // The core expands `~` as `dsync pair grant` does; the head hands
+      // the path over as typed.
+      core.reply<wire.CoreCommandGrantRoot>(
+        devices(['/home/me/Sync'], ['/home/me/Sync']),
+      );
 
       await controller.shareNewFolder('  ~/Sync ', [desktop, laptop]);
 
-      // The core expands `~` as `dsync pair grant` does; the head hands
-      // the path over as typed.
-      expect(core.calls.where((call) => call == 'grantRoot'), hasLength(2));
-      expect(controller.folders.single.rootPath, '~/Sync');
+      expect(core.sent<wire.CoreCommandGrantRoot>(), const [
+        wire.CoreCommandGrantRoot(deviceId: 'desktop-id', path: '~/Sync'),
+        wire.CoreCommandGrantRoot(deviceId: 'laptop-id', path: '~/Sync'),
+      ]);
+      expect(controller.folders.single.rootPath, '/home/me/Sync');
       expect(controller.folders.single.shareCount, 2);
       expect(done(), 'Sharing ~/Sync with 2 devices.');
     });
@@ -140,7 +173,7 @@ void main() {
         await controller.shareNewFolder('~/Sync', const []);
 
         expect(failure(), contains('at least one device'));
-        expect(controller.folders, isEmpty);
+        expect(core.sent<wire.CoreCommandGrantRoot>(), isEmpty);
       },
     );
 
@@ -150,14 +183,18 @@ void main() {
       await controller.shareNewFolder('   ', [desktop]);
 
       expect(failure(), 'Give a folder to share.');
-      expect(controller.folders, isEmpty);
+      expect(core.sent<wire.CoreCommandGrantRoot>(), isEmpty);
     });
 
     test('does not probe the folder — a grant is authorization', () async {
       final (desktop, _) = await pairTwo(roots: const []);
+      core.reply<wire.CoreCommandGrantRoot>(
+        devices(['/not/here/yet'], const []),
+      );
 
       await controller.shareNewFolder('/not/here/yet', [desktop]);
 
+      expect(core.kinds.last, wire.CoreCommandGrantRoot);
       expect(controller.folders.single.rootPath, '/not/here/yet');
       expect(controller.state.outcome, isA<SharedFoldersDone>());
     });

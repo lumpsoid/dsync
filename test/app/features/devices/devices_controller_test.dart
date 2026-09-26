@@ -1,10 +1,10 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -19,7 +19,10 @@ void main() {
   late DevicesController controller;
 
   setUp(() {
-    core = FakeHub(devices: [pairedDevice(name: 'phone')]);
+    core = FakeHub()
+      ..reply<wire.CoreCommandListDevices>(
+        devicesReply([pairedDevice(name: 'phone')]),
+      );
     app = fakeApp(core);
     controller = DevicesController(app);
   });
@@ -31,8 +34,8 @@ void main() {
   group('refresh', () {
     test('renders a refusal as an error and keeps the rows', () async {
       await app.bootstrap();
-      core.failNext = const CoreFailure(
-        'paired-devices.json at /state is damaged',
+      core.reply<wire.CoreCommandListDevices>(
+        failed('paired-devices.json at /state is damaged'),
       );
 
       await controller.refresh();
@@ -43,11 +46,16 @@ void main() {
 
     test('a later good read clears the error and shows the rows', () async {
       await app.bootstrap();
-      core.failNext = const CoreFailure('damaged');
+      core.reply<wire.CoreCommandListDevices>(failed('damaged'));
       await controller.refresh();
       expect(controller.state.error, isNotNull);
 
-      core.devices.add(pairedDevice(deviceId: 'other', name: 'laptop'));
+      core.reply<wire.CoreCommandListDevices>(
+        devicesReply([
+          pairedDevice(name: 'phone'),
+          pairedDevice(deviceId: 'other', name: 'laptop'),
+        ]),
+      );
       await controller.refresh();
 
       expect(controller.state.error, isNull);
@@ -58,11 +66,12 @@ void main() {
       await app.bootstrap();
       var notified = 0;
       controller.state.addListener(() => notified++);
-      core.failNext = const CoreFailure('damaged');
+      core.reply<wire.CoreCommandListDevices>(failed('damaged'));
 
       await controller.refresh();
       expect(notified, 1);
 
+      core.reply<wire.CoreCommandListDevices>(devicesReply(const []));
       await controller.refresh();
       expect(notified, 2);
     });
@@ -82,12 +91,16 @@ void main() {
     });
 
     test("carries the core's line and names the This device page", () async {
-      core.identity = DeviceIdentityInfo(
-        deviceId: 'fake-device-id',
-        commonName: 'this-device',
-        issuedAt: DateTime.utc(2016),
-        expiresAt: DateTime.utc(2026, 6, 11),
-        expiryNote: 'certificate for this host expires in 10 days',
+      core.reply<wire.CoreCommandShowIdentity>(
+        identityReply(
+          DeviceIdentityInfo(
+            deviceId: 'fake-device-id',
+            commonName: 'this-device',
+            issuedAt: DateTime.utc(2016),
+            expiresAt: DateTime.utc(2026, 6, 11),
+            expiryNote: 'certificate for this host expires in 10 days',
+          ),
+        ),
       );
       await app.bootstrap();
 

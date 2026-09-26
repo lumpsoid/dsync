@@ -2,146 +2,73 @@ import 'dart:async';
 
 import 'package:dsync/app/core_link/core_channel.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
-import 'package:dsync/app/core_link/models/core_dirs.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/core_link/models/filter_preview.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
-import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
-import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
-import 'package:dsync/app/core_link/models/serve_addresses.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 
 /// The Rust hub, faked at the head's one seam: a [CoreChannel] that
-/// answers each `CoreRequest` with a generated `CoreReply` and feeds the
-/// session signals a test emits. `flutter test` cannot load the hub, and
-/// everything above the channel — `CoreLink`'s correlation and decoding,
-/// the controllers — is the code the app runs.
+/// records each `CoreCommand` it is sent and answers it with the reply the
+/// test scripted, as a generated value. `flutter test` cannot load the
+/// hub, and everything above the channel — `CoreLink`'s correlation and
+/// decoding, the controllers — is the code the app runs.
 ///
-/// It keeps plain state a test seeds and reads - the identity, paired
-/// devices, profiles, archives - and answers the listing commands from it,
-/// changing it the way the core's commands do for the few a test's
-/// follow-up read depends on (an unknown device or profile is refused).
-/// Canned answers ([probeOutcome], [folderRefusals], [filterPreview] ...)
-/// are fields to set. Sessions are driven by the test: a session starter
-/// is recorded and answered, and the test feeds its signals with
-/// [emitRun], [emitServe] and [emitPairing] — but for `StopServe`, whose
-/// last view the fake sends itself, as the hub does. What the code under test
-/// told a session is recorded in [runIntents], [stopped] and
-/// [confirmations].
+/// The fake decides nothing: it keeps no devices or profiles, sorts
+/// nothing and invents no ids, addresses or messages. A test that needs
+/// "after the rename, the list shows the new name" scripts that reply with
+/// [reply] or [answer]; a refusal is a scripted [failed] reply. A command
+/// no test scripted gets its neutral default (see [_neutral]): `Done`, an
+/// empty list, or a fixed plain value. What the rules are is the core's,
+/// tested in native/hub/tests/hub/commands.rs.
 ///
-/// [failNext], when set, is the next command's failure, and cleared.
-/// [calls] lists every command by name, in order.
+/// Sessions are driven by the test: a session starter is recorded and
+/// answered, the request's id is its session ([sessionOf]), and the test
+/// feeds its snapshots with [emitRun], [emitServe] and [emitPairing].
 final class FakeHub implements CoreChannel {
-  FakeHub({
-    DeviceIdentityInfo? identity,
-    List<PairedDeviceInfo> devices = const [],
-    List<ProfileEntry> profiles = const [],
-    List<ArchiveInfo> archives = const [],
-  }) : identity = identity ?? fakeIdentity,
-       devices = [...devices],
-       profiles = [...profiles],
-       archives = [...archives];
+  /// Every request sent, in order.
+  final List<wire.CoreRequest> requests = [];
 
-  static final fakeIdentity = DeviceIdentityInfo(
-    deviceId: 'fake-device-id',
-    commonName: 'this-device',
-    issuedAt: DateTime.utc(2026),
-    expiresAt: DateTime.utc(2036),
-    expiryNote: null,
-  );
+  /// Every command sent, in order.
+  List<wire.CoreCommand> get commands => [
+    for (final request in requests) request.command,
+  ];
 
-  DeviceIdentityInfo identity;
-  final List<PairedDeviceInfo> devices;
-  final List<ProfileEntry> profiles;
-  final List<ArchiveInfo> archives;
+  /// The kind of every command sent, in order: `[wire.CoreCommandInit,
+  /// ...]`.
+  List<Type> get kinds => [for (final c in commands) c.runtimeType];
 
-  PeerProbeOutcome probeOutcome = const PeerReachable('192.168.1.5:28771');
-  PairCodeReading pairCodeReading = const UnreadablePairCode('not a payload');
-  ServeAddresses addresses = const ServeAddresses(
-    interfaces: ['192.168.1.5'],
-    preferred: '192.168.1.5',
-  );
+  /// Every command of kind [C] sent, in order.
+  List<C> sent<C extends wire.CoreCommand>() =>
+      commands.whereType<C>().toList();
 
-  /// Local roots `CheckFolder` refuses, with the refusal.
-  final Map<String, String> folderRefusals = {};
+  /// The session the last command of kind [C] opened: its request's id.
+  int sessionOf<C extends wire.CoreCommand>() =>
+      requests.lastWhere((request) => request.command is C).id.toInt();
 
-  /// Archive ids `ClearArchive` refuses (a run holds their lock), with the
-  /// refusal.
-  final Map<String, String> archiveRefusals = {};
-  FilterPreview filterPreview = const FilterPreview(
-    folders: [],
-    excludedByRule: {},
-    unreadableFolders: [],
-  );
-  List<FilterRow> filterRows = const [];
+  final Map<Type, _Script> _scripts = {};
+  final Map<Type, Future<void>> _holds = {};
 
-  /// When set, what `ListFilterFolder` answers for a folder (`null`: the
-  /// root) under the given patterns, in place of [filterRows].
-  List<FilterRow> Function(String? folder, List<String> ignorePatterns)?
-  filterListing;
-  ScanProbeResult scanProbe = const ScanProbeResult(
-    root: '',
-    report: '',
-    passes: [],
-  );
+  /// Every later command of kind [C] is answered with [result].
+  void reply<C extends wire.CoreCommand>(wire.ReplyResult result) =>
+      _scripts[C] = _Script<C>((_) => result);
 
-  CoreFailure? failNext;
-  final List<String> calls = [];
+  /// Every later command of kind [C] is answered with what [script] makes
+  /// of it.
+  void answer<C extends wire.CoreCommand>(
+    wire.ReplyResult Function(C command) script,
+  ) => _scripts[C] = _Script<C>(script);
 
-  /// Refusals by command name: every command of that name fails with its
-  /// message (after being recorded in [calls]) until the entry is removed.
-  final Map<String, CoreFailure> failures = {};
-
-  /// Holds by command name: a command of that name is recorded, then waits
-  /// for its future before it is answered — so a test can look at what the
-  /// code under test shows while the core is still working.
-  final Map<String, Future<void>> holds = {};
-
-  /// What `Init` answers: where the core keeps its state.
-  CoreDirs dirs = const CoreDirs(
-    stateDir: '/fake/state',
-    profilesDir: '/fake/state/profiles',
-  );
-
-  /// Ignore patterns `CheckIgnorePattern` refuses, with the refusal.
-  final Map<String, String> patternRefusals = {};
-
-  /// When `VerifyDevice` records a confirmation.
-  DateTime verifiedNow = DateTime.utc(2026, 6);
-
-  /// The session of every `StartServe`, in order.
-  final List<int> serveStarts = [];
-
-  /// The session of every `ShowPairing`, in order.
-  final List<int> pairingStarts = [];
-
-  /// The last `StartServe`'s arguments, once sent.
-  ({String bind, int port})? servedOn;
-
-  /// The last `ShowPairing`'s arguments, once sent.
-  ({String name, String bind, String? advertise, int servicePort})?
-  shownPairing;
-
-  /// `Init`'s arguments, once sent.
-  ({String? supportDir, String deviceName})? initialised;
-
-  /// Every `StartRun`, in order: the session it opened and what it asked.
-  final List<({int session, RunTarget target, bool dryRun, String? address})>
-  runStarts = [];
-
-  /// Every intent a run was steered by, by session, as sent.
-  final Map<int, List<wire.RunIntent>> runIntents = {};
-
-  /// Serving and pairing sessions stopped or cancelled, in order.
-  final List<int> stopped = [];
-  final Map<int, bool> confirmations = {};
+  /// A command of kind [C] is recorded, then waits for [until] before it
+  /// is answered — so a test can look at what the code under test shows
+  /// while the core is still working.
+  void hold<C extends wire.CoreCommand>(Future<void> until) =>
+      _holds[C] = until;
 
   final _replies = _Signals<wire.CoreReply>();
   final _runSnapshots = _Signals<wire.RunSnapshot>();
@@ -169,16 +96,10 @@ final class FakeHub implements CoreChannel {
 
   /// Delivers [view] to the serving in [session], as the hub's snapshot;
   /// [last] marks the session's final one.
-  void emitServe(int session, wire.ServeView view, {required bool last}) {
-    _serveLines[session] = view.lines;
-    _serveSnapshots.add(
-      wire.ServeSnapshot(session: _id(session), view: view, last: last),
-    );
-  }
-
-  /// Each serving session's lines as last emitted, which its stopped view
-  /// keeps, as the hub's does.
-  final Map<int, List<wire.ServeLineView>> _serveLines = {};
+  void emitServe(int session, wire.ServeView view, {required bool last}) =>
+      _serveSnapshots.add(
+        wire.ServeSnapshot(session: _id(session), view: view, last: last),
+      );
 
   /// Delivers [view] to the pairing window in [session], as the hub's
   /// snapshot; [last] marks the window's final one.
@@ -191,334 +112,147 @@ final class FakeHub implements CoreChannel {
   void send(wire.CoreRequest request) => unawaited(_handle(request));
 
   Future<void> _handle(wire.CoreRequest request) async {
-    final id = request.id.toInt();
     final command = request.command;
-    final call = _name(command);
-    calls.add(call);
-    if (holds[call] case final hold?) await hold;
-    wire.ReplyResult result;
-    try {
-      if (failures[call] case final refusal?) throw refusal;
-      final failure = failNext;
-      if (failure != null) {
-        failNext = null;
-        throw failure;
-      }
-      result = _answer(id, command);
-    } on CoreFailure catch (failure) {
-      result = wire.ReplyResultFailed(message: failure.message);
-    }
-    _replies.add(wire.CoreReply(id: _id(id), result: result));
-  }
-
-  PairedDeviceInfo _device(String deviceId) => devices.firstWhere(
-    (device) => device.deviceId == deviceId,
-    orElse: () => throw CoreFailure('device $deviceId is not paired'),
-  );
-
-  wire.ReplyResult _replaceDevice(
-    String deviceId,
-    PairedDeviceInfo Function(PairedDeviceInfo device) change,
-  ) {
-    final at = devices.indexOf(_device(deviceId));
-    devices[at] = change(devices[at]);
-    return _devices();
-  }
-
-  wire.ReplyResult _devices() =>
-      wire.ReplyResultDevices(value: [for (final d in devices) wireDevice(d)]);
-
-  wire.ReplyResult _profiles() => wire.ReplyResultProfiles(
-    value: [for (final p in profiles) wireProfile(p)],
-  );
-
-  wire.ReplyResult _archives() => wire.ReplyResultArchives(
-    value: [for (final a in archives) wireArchive(a)],
-  );
-
-  static PairedDeviceInfo _with(
-    PairedDeviceInfo device, {
-    String? name,
-    List<String>? grantedRoots,
-    String? address,
-    ({DateTime? at})? verified,
-  }) => PairedDeviceInfo(
-    deviceId: device.deviceId,
-    name: name ?? device.name,
-    commonName: device.commonName,
-    grantedRoots: grantedRoots ?? device.grantedRoots,
-    address: address ?? device.address,
-    pairedAt: device.pairedAt,
-    verifiedAt: verified == null ? device.verifiedAt : verified.at,
-    issuedAt: device.issuedAt,
-    expiresAt: device.expiresAt,
-    expiryNote: device.expiryNote,
-  );
-
-  ProfileEntry _profile(String name) => profiles.firstWhere(
-    (profile) => profile.name == name,
-    orElse: () => throw CoreFailure('no profile named "$name"'),
-  );
-
-  wire.ReplyResult _answer(
-    int id,
-    wire.CoreCommand command,
-  ) => switch (command) {
-    wire.CoreCommandInit(:final supportDir, :final deviceName) => () {
-      initialised = (supportDir: supportDir, deviceName: deviceName);
-      return wire.ReplyResultInitialised(
-        value: wire.DirsView(
-          stateDir: dirs.stateDir,
-          profilesDir: dirs.profilesDir,
-        ),
-      );
-    }(),
-    wire.CoreCommandShowIdentity() => wire.ReplyResultIdentity(
-      value: wireIdentity(identity),
-    ),
-    wire.CoreCommandRenewIdentity(:final commonName) => () {
-      identity = DeviceIdentityInfo(
-        deviceId: identity.deviceId,
-        commonName: commonName ?? identity.commonName,
-        issuedAt: identity.issuedAt,
-        expiresAt: identity.expiresAt,
-        expiryNote: null,
-      );
-      return wire.ReplyResultIdentity(value: wireIdentity(identity));
-    }(),
-    wire.CoreCommandShowPairing(
-      :final name,
-      :final bind,
-      :final advertise,
-      :final servicePort,
-    ) =>
-      () {
-        pairingStarts.add(id);
-        shownPairing = (
-          name: name,
-          bind: bind,
-          advertise: advertise,
-          servicePort: servicePort,
-        );
-        return const wire.ReplyResultDone();
-      }(),
-    wire.CoreCommandConfirmPairing(:final session, :final accept) => () {
-      confirmations[session.toInt()] = accept;
-      return const wire.ReplyResultDone();
-    }(),
-    wire.CoreCommandCancelPairing(:final session) => _done(
-      () => stopped.add(session.toInt()),
-    ),
-    wire.CoreCommandReadPairCode() => wire.ReplyResultPairCode(
-      value: wirePairCode(pairCodeReading),
-    ),
-    wire.CoreCommandAcceptPairing(:final name) => () {
-      final reading = pairCodeReading;
-      final paired = PairedDeviceInfo(
-        deviceId: switch (reading) {
-          ReadPairCode(:final deviceId?) => deviceId,
-          _ => 'paired-device-${devices.length + 1}',
-        },
-        name: name,
-        commonName: null,
-        grantedRoots: const [],
-        address: switch (reading) {
-          ReadPairCode(:final address) => address,
-          UnreadablePairCode() => '192.168.1.5:28771',
-        },
-        pairedAt: DateTime.utc(2026),
-        verifiedAt: null,
-        issuedAt: DateTime.utc(2026),
-        expiresAt: DateTime.utc(2036),
-        expiryNote: null,
-      );
-      devices.add(paired);
-      return wire.ReplyResultDevice(value: wireDevice(paired));
-    }(),
-    wire.CoreCommandListDevices() => _devices(),
-    wire.CoreCommandRenameDevice(:final deviceId, :final name) =>
-      _replaceDevice(deviceId, (device) => _with(device, name: name)),
-    wire.CoreCommandRevokeDevice(:final deviceId) => () {
-      devices.remove(_device(deviceId));
-      return _devices();
-    }(),
-    wire.CoreCommandGrantRoot(:final deviceId, :final path) => _replaceDevice(
-      deviceId,
-      (device) => _with(
-        device,
-        grantedRoots: ({...device.grantedRoots, path}.toList()..sort()),
-      ),
-    ),
-    wire.CoreCommandWithdrawGrant(:final deviceId, :final root) =>
-      _replaceDevice(
-        deviceId,
-        (device) => _with(
-          device,
-          grantedRoots: [
-            for (final granted in device.grantedRoots)
-              if (granted != root) granted,
-          ],
-        ),
-      ),
-    // `host` alone gets the default port, as the core reads it.
-    wire.CoreCommandSetDeviceAddress(:final deviceId, :final address) =>
-      _replaceDevice(
-        deviceId,
-        (device) => _with(
-          device,
-          address: address.contains(':') ? address : '$address:28771',
-        ),
-      ),
-    wire.CoreCommandVerifyDevice(:final deviceId) => _replaceDevice(
-      deviceId,
-      (device) => _with(device, verified: (at: verifiedNow)),
-    ),
-    wire.CoreCommandClearVerification(:final deviceId) => _replaceDevice(
-      deviceId,
-      (device) => _with(device, verified: (at: null)),
-    ),
-    wire.CoreCommandProbePeer(:final deviceId) => () {
-      _device(deviceId);
-      return wire.ReplyResultPeerProbed(value: wireProbe(probeOutcome));
-    }(),
-    wire.CoreCommandListProfiles() => _profiles(),
-    wire.CoreCommandSaveProfile(:final name, :final draft) => () {
-      final peer = _device(draft.peerDeviceId);
-      profiles
-        ..removeWhere((profile) => profile.name == name)
-        ..add(
-          HeadProfile(
-            name: name,
-            profileId: 'profile-$name',
-            localRoot: draft.localRoot,
-            localRootExpanded: draft.localRoot,
-            localRootRefusal: folderRefusals[draft.localRoot],
-            peerDeviceId: draft.peerDeviceId,
-            peerName: peer.name,
-            remoteRoot: draft.remoteRoot,
-            jobs: draft.jobs,
-            ignorePatterns: draft.ignore,
-            lastRunUnfinished: false,
-          ),
-        )
-        ..sort((a, b) => a.name.compareTo(b.name));
-      return _profiles();
-    }(),
-    wire.CoreCommandRenameProfile(:final from, :final to) => () {
-      final at = profiles.indexOf(_profile(from));
-      profiles[at] = switch (profiles[at]) {
-        HeadProfile() && final head => HeadProfile(
-          name: to,
-          profileId: head.profileId,
-          localRoot: head.localRoot,
-          localRootExpanded: head.localRootExpanded,
-          localRootRefusal: head.localRootRefusal,
-          peerDeviceId: head.peerDeviceId,
-          peerName: head.peerName,
-          remoteRoot: head.remoteRoot,
-          jobs: head.jobs,
-          ignorePatterns: head.ignorePatterns,
-          lastRunUnfinished: head.lastRunUnfinished,
-        ),
-        OtherProfile() && final other => OtherProfile(
-          name: to,
-          profileId: other.profileId,
-          a: other.a,
-          b: other.b,
-        ),
-        UnreadableProfile() && final broken => UnreadableProfile(
-          name: to,
-          message: broken.message,
-        ),
-      };
-      profiles.sort((a, b) => a.name.compareTo(b.name));
-      return _profiles();
-    }(),
-    wire.CoreCommandDeleteProfile(:final name) => () {
-      profiles.remove(_profile(name));
-      return _profiles();
-    }(),
-    wire.CoreCommandStartRun(:final target, :final dryRun, :final address) =>
-      _done(
-        () => runStarts.add((
-          session: id,
-          target: _target(target),
-          dryRun: dryRun,
-          address: address,
-        )),
-      ),
-    wire.CoreCommandSteerRun(:final session, :final intent) => _done(
-      () => (runIntents[session.toInt()] ??= []).add(intent),
-    ),
-    wire.CoreCommandStartServe(:final bind, :final port) => () {
-      serveStarts.add(id);
-      servedOn = (bind: bind, port: port);
-      final bound = port == 0 ? 28771 : port;
-      return wire.ReplyResultServeStarted(
-        value: wire.ServeStartedView(
-          port: bound,
-          advertised: '${addresses.preferred ?? '127.0.0.1'}:$bound',
-          deviceId: identity.deviceId,
-        ),
-      );
-    }(),
-    // As the hub does, the stopped session's last view goes out before
-    // the reply.
-    wire.CoreCommandStopServe(:final session) => _done(() {
-      stopped.add(session.toInt());
-      emitServe(
-        session.toInt(),
-        wire.ServeView(
-          phase: const wire.ServePhaseViewStopped(),
-          lines: _serveLines[session.toInt()] ?? const [],
-        ),
-        last: true,
-      );
-    }),
-    wire.CoreCommandServeAddresses() => wire.ReplyResultAddresses(
-      value: wire.AddressesView(
-        interfaces: addresses.interfaces,
-        preferred: addresses.preferred,
-      ),
-    ),
-    wire.CoreCommandListArchives() => _archives(),
-    wire.CoreCommandClearArchive(:final profileId) => () {
-      if (archiveRefusals[profileId] case final refusal?) {
-        throw CoreFailure(refusal);
-      }
-      archives.removeWhere((archive) => archive.profileId == profileId);
-      return _archives();
-    }(),
-    wire.CoreCommandPreviewFilters() => wire.ReplyResultFilterPreview(
-      value: wireFilterPreview(filterPreview),
-    ),
-    wire.CoreCommandListFilterFolder(:final folder, :final ignore) =>
-      wire.ReplyResultFilterFolder(
-        value: [
-          for (final row in filterListing?.call(folder, ignore) ?? filterRows)
-            wireFilterRow(row),
-        ],
-      ),
-    wire.CoreCommandCheckIgnorePattern(:final pattern) => () {
-      if (patternRefusals[pattern] case final refusal?) {
-        throw CoreFailure(refusal);
-      }
-      return const wire.ReplyResultDone();
-    }(),
-    wire.CoreCommandCheckFolder(:final path) => wire.ReplyResultFolderChecked(
-      refusal: folderRefusals[path],
-    ),
-    wire.CoreCommandProbeScan() => wire.ReplyResultScanProbe(
-      value: wireScanProbe(scanProbe),
-    ),
-    _ => throw StateError('the fake hub has no answer for $command'),
-  };
-
-  static wire.ReplyResult _done(void Function() record) {
-    record();
-    return const wire.ReplyResultDone();
+    requests.add(request);
+    if (_holds[command.runtimeType] case final hold?) await hold;
+    final result =
+        _scripts[command.runtimeType]?.answer(command) ?? _neutral(command);
+    _replies.add(wire.CoreReply(id: request.id, result: result));
   }
 }
+
+/// A test's reply to commands of kind [C].
+final class _Script<C extends wire.CoreCommand> {
+  _Script(this._reply);
+
+  final wire.ReplyResult Function(C command) _reply;
+
+  /// The reply to [command], if it is of kind [C].
+  wire.ReplyResult? answer(wire.CoreCommand command) =>
+      command is C ? _reply(command) : null;
+}
+
+/// A refusal, as the hub words it: what a scripted command fails with.
+wire.ReplyResult failed(String message) =>
+    wire.ReplyResultFailed(message: message);
+
+const _done = wire.ReplyResultDone();
+const _noDevices = wire.ReplyResultDevices(value: []);
+const _noProfiles = wire.ReplyResultProfiles(value: []);
+const _noArchives = wire.ReplyResultArchives(value: []);
+
+/// The identity [_neutral] answers `ShowIdentity` and `RenewIdentity` with.
+final fakeIdentity = DeviceIdentityInfo(
+  deviceId: 'fake-device-id',
+  commonName: 'this-device',
+  issuedAt: DateTime.utc(2026),
+  expiresAt: DateTime.utc(2036),
+  expiryNote: null,
+);
+
+/// What a command no test scripted is answered with: nothing done, nothing
+/// listed, or a fixed plain value — never one worked out from the command.
+/// A command with no neutral answer (redeeming a pairing code, probing a
+/// peer) must be scripted.
+wire.ReplyResult _neutral(wire.CoreCommand command) => switch (command) {
+  wire.CoreCommandInit() => const wire.ReplyResultInitialised(
+    value: wire.DirsView(
+      stateDir: '/fake/state',
+      profilesDir: '/fake/state/profiles',
+    ),
+  ),
+  wire.CoreCommandShowIdentity() ||
+  wire.CoreCommandRenewIdentity() => identityReply(fakeIdentity),
+  wire.CoreCommandShowPairing() ||
+  wire.CoreCommandConfirmPairing() ||
+  wire.CoreCommandCancelPairing() ||
+  wire.CoreCommandStartRun() ||
+  wire.CoreCommandSteerRun() ||
+  wire.CoreCommandStopServe() ||
+  wire.CoreCommandCheckIgnorePattern() => _done,
+  wire.CoreCommandReadPairCode() => const wire.ReplyResultPairCode(
+    value: wire.PairCodeViewUnreadable(message: 'not a payload'),
+  ),
+  wire.CoreCommandListDevices() ||
+  wire.CoreCommandRenameDevice() ||
+  wire.CoreCommandRevokeDevice() ||
+  wire.CoreCommandGrantRoot() ||
+  wire.CoreCommandWithdrawGrant() ||
+  wire.CoreCommandSetDeviceAddress() ||
+  wire.CoreCommandVerifyDevice() ||
+  wire.CoreCommandClearVerification() => _noDevices,
+  wire.CoreCommandListProfiles() ||
+  wire.CoreCommandSaveProfile() ||
+  wire.CoreCommandRenameProfile() ||
+  wire.CoreCommandDeleteProfile() => _noProfiles,
+  wire.CoreCommandListArchives() ||
+  wire.CoreCommandClearArchive() => _noArchives,
+  wire.CoreCommandStartServe() => const wire.ReplyResultServeStarted(
+    value: wire.ServeStartedView(
+      port: 28771,
+      advertised: '192.168.1.5:28771',
+      deviceId: 'fake-device-id',
+    ),
+  ),
+  wire.CoreCommandServeAddresses() => const wire.ReplyResultAddresses(
+    value: wire.AddressesView(
+      interfaces: ['192.168.1.5'],
+      preferred: '192.168.1.5',
+    ),
+  ),
+  wire.CoreCommandPreviewFilters() => const wire.ReplyResultFilterPreview(
+    value: wire.FilterPreviewView(
+      folders: [],
+      excludedByRule: [],
+      unreadableFolders: [],
+    ),
+  ),
+  wire.CoreCommandListFilterFolder() => const wire.ReplyResultFilterFolder(
+    value: [],
+  ),
+  wire.CoreCommandCheckFolder() => const wire.ReplyResultFolderChecked(
+    refusal: null,
+  ),
+  wire.CoreCommandProbeScan() => const wire.ReplyResultScanProbe(
+    value: wire.ScanProbeView(root: '', report: '', passes: []),
+  ),
+  _ => throw StateError('script a reply for $command'),
+};
+
+/// What `Init` answers: where the core keeps its state.
+wire.ReplyResult initialised({
+  required String stateDir,
+  required String profilesDir,
+}) => wire.ReplyResultInitialised(
+  value: wire.DirsView(stateDir: stateDir, profilesDir: profilesDir),
+);
+
+/// What `ListFilterFolder` answers: [rows].
+wire.ReplyResult folderRows(List<FilterRow> rows) =>
+    wire.ReplyResultFilterFolder(
+      value: [for (final r in rows) wireFilterRow(r)],
+    );
+
+/// What `PreviewFilters` answers: [preview].
+wire.ReplyResult previewReply(FilterPreview preview) =>
+    wire.ReplyResultFilterPreview(value: wireFilterPreview(preview));
+
+/// A probe that reached the device at [address].
+wire.ReplyResult reached(String address) => wire.ReplyResultPeerProbed(
+  value: wire.ProbeOutcomeReachable(address: address),
+);
+
+wire.ReplyResult identityReply(DeviceIdentityInfo identity) =>
+    wire.ReplyResultIdentity(value: wireIdentity(identity));
+
+wire.ReplyResult devicesReply(List<PairedDeviceInfo> devices) =>
+    wire.ReplyResultDevices(value: [for (final d in devices) wireDevice(d)]);
+
+wire.ReplyResult profilesReply(List<ProfileEntry> profiles) =>
+    wire.ReplyResultProfiles(value: [for (final p in profiles) wireProfile(p)]);
+
+wire.ReplyResult archivesReply(List<ArchiveInfo> archives) =>
+    wire.ReplyResultArchives(value: [for (final a in archives) wireArchive(a)]);
 
 /// Signals of one kind, handed to each listener at once and in the zone
 /// that sends them, as rinf's own streams land in the app's: a listener
@@ -593,62 +327,9 @@ wire.Uint64 _id(int value) => wire.Uint64(BigInt.from(value));
 
 int _ms(DateTime at) => at.millisecondsSinceEpoch;
 
-/// Each command's name in [FakeHub.calls]: the `CoreLink` call that sends
-/// it.
-String _name(wire.CoreCommand command) => switch (command) {
-  wire.CoreCommandInit() => 'init',
-  wire.CoreCommandShowIdentity() => 'showIdentity',
-  wire.CoreCommandRenewIdentity() => 'renewIdentity',
-  wire.CoreCommandShowPairing() => 'showPairing',
-  wire.CoreCommandConfirmPairing() => 'confirmPairing',
-  wire.CoreCommandCancelPairing() => 'cancelPairing',
-  wire.CoreCommandReadPairCode() => 'readPairCode',
-  wire.CoreCommandAcceptPairing() => 'acceptPairing',
-  wire.CoreCommandListDevices() => 'listDevices',
-  wire.CoreCommandRenameDevice() => 'renameDevice',
-  wire.CoreCommandRevokeDevice() => 'revokeDevice',
-  wire.CoreCommandGrantRoot() => 'grantRoot',
-  wire.CoreCommandWithdrawGrant() => 'withdrawGrant',
-  wire.CoreCommandSetDeviceAddress() => 'setDeviceAddress',
-  wire.CoreCommandVerifyDevice() => 'verifyDevice',
-  wire.CoreCommandClearVerification() => 'clearVerification',
-  wire.CoreCommandProbePeer() => 'probePeer',
-  wire.CoreCommandListProfiles() => 'listProfiles',
-  wire.CoreCommandSaveProfile() => 'saveProfile',
-  wire.CoreCommandRenameProfile() => 'renameProfile',
-  wire.CoreCommandDeleteProfile() => 'deleteProfile',
-  wire.CoreCommandStartRun() => 'startRun',
-  wire.CoreCommandSteerRun() => 'steerRun',
-  wire.CoreCommandStartServe() => 'startServe',
-  wire.CoreCommandStopServe() => 'stopServe',
-  wire.CoreCommandServeAddresses() => 'serveAddresses',
-  wire.CoreCommandListArchives() => 'listArchives',
-  wire.CoreCommandClearArchive() => 'clearArchive',
-  wire.CoreCommandPreviewFilters() => 'previewFilters',
-  wire.CoreCommandListFilterFolder() => 'listFilterFolder',
-  wire.CoreCommandCheckIgnorePattern() => 'checkIgnorePattern',
-  wire.CoreCommandCheckFolder() => 'checkFolder',
-  wire.CoreCommandProbeScan() => 'probeScan',
-  _ => throw StateError('unknown command: $command'),
-};
-
 wire.SideView wireSideOf(ReplicaSide side) => switch (side) {
   ReplicaSide.a => wire.SideView.a,
   ReplicaSide.b => wire.SideView.b,
-};
-
-RunTarget _target(wire.RunTarget target) => switch (target) {
-  wire.RunTargetProfile(:final name) => SavedProfileTarget(name),
-  wire.RunTargetPair(:final draft) => DraftTarget(
-    ProfileDraft(
-      localRoot: draft.localRoot,
-      peerDeviceId: draft.peerDeviceId,
-      remoteRoot: draft.remoteRoot,
-      jobs: draft.jobs,
-      ignorePatterns: draft.ignore,
-    ),
-  ),
-  _ => throw StateError('unknown target: $target'),
 };
 
 wire.IdentityView wireIdentity(DeviceIdentityInfo identity) =>

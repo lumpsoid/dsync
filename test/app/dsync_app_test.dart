@@ -4,7 +4,6 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/dsync_app.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
@@ -24,6 +23,7 @@ import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -187,8 +187,8 @@ void main() {
     // writing its outcome: the subject *is* the second call, so a pinned
     // state would prove nothing. The first attempt meets the core's refusal
     // of a damaged device store — a condition a user can go and fix.
-    core.failNext = const CoreFailure(
-      'paired-devices.json at /state is damaged',
+    core.reply<wire.CoreCommandListDevices>(
+      failed('paired-devices.json at /state is damaged'),
     );
     await tester.runAsync(() async {
       await app.bootstrap();
@@ -199,6 +199,7 @@ void main() {
     expect(find.byType(ProfilesPage), findsNothing);
 
     // Fixed behind the app's back: the core reads it now.
+    core.reply<wire.CoreCommandListDevices>(devicesReply(const []));
     await tester.tap(find.byKey(const Key('bootstrap-retry')));
     await pumpUntil(
       tester,
@@ -308,15 +309,18 @@ void main() {
     ready();
     // The home page lists the core's profiles on mounting, and Run setup
     // reads the profile behind the row the tap names.
-    core.devices.add(desktop);
-    core.profiles.add(
-      headProfile(
-        name: 'weekly',
-        localRoot: localRoot.path,
-        peerDeviceId: desktop.deviceId,
-        remoteRoot: '~/notes',
-      ),
-    );
+    core
+      ..reply<wire.CoreCommandListDevices>(devicesReply([desktop]))
+      ..reply<wire.CoreCommandListProfiles>(
+        profilesReply([
+          headProfile(
+            name: 'weekly',
+            localRoot: localRoot.path,
+            peerDeviceId: desktop.deviceId,
+            remoteRoot: '~/notes',
+          ),
+        ]),
+      );
     await tester.pumpWidget(const DsyncApp());
     await pumpUntil(
       tester,
@@ -388,7 +392,7 @@ void main() {
     });
     Future<void> failTheRun() async {
       core.emitRun(
-        core.runStarts.last.session,
+        core.sessionOf<wire.CoreCommandStartRun>(),
         runView(
           standing: resumable,
           phase: failedWith('Could not reach "desktop": refused.'),
@@ -400,7 +404,7 @@ void main() {
     }
 
     // What Run setup's `load` reads.
-    core.devices.add(desktop);
+    core.reply<wire.CoreCommandListDevices>(devicesReply([desktop]));
     await tester.pumpWidget(const DsyncApp());
     await tester.tap(find.byKey(const Key('profiles-open-devices')));
     await tester.pumpAndSettle();

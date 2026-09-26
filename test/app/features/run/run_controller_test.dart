@@ -2,14 +2,13 @@ import 'dart:async';
 
 import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
-import '../../support/fake_head.dart';
+import '../../support/fake_hub.dart';
 import 'run_fixtures.dart';
 
 /// `SyncRunController` over the `CoreLink` it runs on, the hub played by a
@@ -33,16 +32,23 @@ void main() {
           runRequest(dryRun: true, address: '192.168.1.9:4000'),
         );
 
-        final asked = harness.hub.runStarts.single;
-        expect(asked.target, isA<DraftTarget>());
-        expect((asked.target as DraftTarget).draft.remoteRoot, '~/notes');
+        final asked = harness.hub.sent<wire.CoreCommandStartRun>().single;
+        expect(
+          (asked.target as wire.RunTargetPair).draft,
+          const wire.ProfileDraft(
+            localRoot: '/data/notes',
+            peerDeviceId: 'aaaa-bbbb-cccc-dddd',
+            remoteRoot: '~/notes',
+            jobs: null,
+            ignore: [],
+          ),
+        );
         expect(asked.dryRun, isTrue);
         expect(asked.address, '192.168.1.9:4000');
       },
     );
 
     test('a saved profile is run by its name', () async {
-      harness.hub.profiles.add(headProfile(name: 'notes'));
       await harness.start(
         const RunRequest(
           target: SavedProfileTarget('notes'),
@@ -54,13 +60,15 @@ void main() {
         ),
       );
 
-      final target = harness.hub.runStarts.single.target;
-      expect((target as SavedProfileTarget).name, 'notes');
-      expect(harness.hub.runStarts.single.address, isNull);
+      final asked = harness.hub.sent<wire.CoreCommandStartRun>().single;
+      expect(asked.target, const wire.RunTargetProfile(name: 'notes'));
+      expect(asked.address, isNull);
     });
 
     test('a start the core refuses never holds the screen', () async {
-      harness.hub.failNext = const CoreFailure('the core is not initialised');
+      harness.hub.reply<wire.CoreCommandStartRun>(
+        failed('the core is not initialised'),
+      );
       await harness.start();
 
       expect(harness.screenWake.calls, isEmpty);
@@ -70,14 +78,14 @@ void main() {
       await harness.start();
       await controller().start(runRequest(dryRun: true));
 
-      expect(harness.hub.runStarts, hasLength(1));
+      expect(harness.hub.sent<wire.CoreCommandStartRun>(), hasLength(1));
     });
 
     test('start after dispose is a no-op', () async {
       controller().dispose();
 
       await controller().start(runRequest());
-      expect(harness.hub.runStarts, isEmpty);
+      expect(harness.hub.sent<wire.CoreCommandStartRun>(), isEmpty);
     });
   });
 
@@ -159,22 +167,22 @@ void main() {
 
     test('an intent the core refuses — the session is over — is '
         'swallowed', () async {
-      harness.hub.failures['steerRun'] = const CoreFailure('no run');
+      harness.hub.reply<wire.CoreCommandSteerRun>(failed('no run'));
 
       await controller().stop();
 
-      expect(harness.hub.calls.last, 'steerRun');
+      expect(harness.hub.kinds.last, wire.CoreCommandSteerRun);
     });
   });
 
   test('an input made before the core opened the session is sent once it '
       'has', () async {
     final opening = Completer<void>();
-    harness.hub.holds['startRun'] = opening.future;
+    harness.hub.hold<wire.CoreCommandStartRun>(opening.future);
     unawaited(controller().start(runRequest()));
     final stopping = controller().stop();
     await pump();
-    expect(harness.hub.runIntents, isEmpty);
+    expect(harness.hub.sent<wire.CoreCommandSteerRun>(), isEmpty);
 
     opening.complete();
     await stopping;
@@ -220,7 +228,7 @@ void main() {
       expect(controller().timings.value, isNull);
 
       await harness.show(
-        runView(phase: finished(), timings: 'phase scan 1.2 s'),
+        runView(standing: over, phase: finished(), timings: 'phase scan 1.2 s'),
       );
       expect(controller().timings.value, 'phase scan 1.2 s');
 

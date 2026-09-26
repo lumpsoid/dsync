@@ -1,7 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
-import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_page.dart';
 import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
@@ -9,6 +7,7 @@ import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -33,9 +32,7 @@ void main() {
   var gone = 0;
 
   setUp(() {
-    // The check's reachable case writes the address it reached through the
-    // core, so the fake holds the device the rows below stand for.
-    core = FakeHub(devices: [phone]);
+    core = FakeHub();
     app = fakeApp(core);
     controller = DeviceDetailController(app, picker: _NoPicker());
     appScope.setController(app);
@@ -233,6 +230,15 @@ void main() {
   testWidgets('a confirmed withdrawal writes and reports the folder', (
     tester,
   ) async {
+    core.reply<wire.CoreCommandWithdrawGrant>(
+      devicesReply([
+        pairedDevice(
+          deviceId: phone.deviceId,
+          name: 'desktop',
+          address: '10.0.0.7:28771',
+        ),
+      ]),
+    );
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -240,6 +246,13 @@ void main() {
     await awaitOutcome(tester, const Key('withdraw-root-confirm'));
     await scrollToOutcome(tester);
 
+    expect(core.sent<wire.CoreCommandWithdrawGrant>(), [
+      wire.CoreCommandWithdrawGrant(
+        deviceId: phone.deviceId,
+        root: '/home/me/notes',
+      ),
+    ]);
+    expect(find.byKey(const Key('device-root-/home/me/notes')), findsNothing);
     expect(
       find.textContaining('No longer sharing /home/me/notes'),
       findsOneWidget,
@@ -278,6 +291,16 @@ void main() {
   testWidgets('a saved address is written through and shown back', (
     tester,
   ) async {
+    core.reply<wire.CoreCommandSetDeviceAddress>(
+      devicesReply([
+        pairedDevice(
+          deviceId: phone.deviceId,
+          name: 'desktop',
+          grantedRoots: ['/home/me/notes'],
+          address: '10.0.0.9:9100',
+        ),
+      ]),
+    );
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -288,6 +311,12 @@ void main() {
     );
     await awaitOutcome(tester, const Key('device-address-confirm'));
     await scrollToOutcome(tester);
+    expect(core.sent<wire.CoreCommandSetDeviceAddress>(), [
+      wire.CoreCommandSetDeviceAddress(
+        deviceId: phone.deviceId,
+        address: '10.0.0.9:9100',
+      ),
+    ]);
     expect(find.textContaining('reached at 10.0.0.9:9100'), findsOneWidget);
     expect(find.textContaining('10.0.0.9:9100'), findsWidgets);
   });
@@ -295,7 +324,12 @@ void main() {
   testWidgets('an address the core will not read is refused, not written', (
     tester,
   ) async {
-    core.failNext = const CoreFailure('"10.0.0.9:http" has no valid port');
+    core
+      ..reply<wire.CoreCommandSetDeviceAddress>(
+        failed('"10.0.0.9:http" has no valid port'),
+      )
+      // The refusal re-reads the list, which still holds the device.
+      ..reply<wire.CoreCommandListDevices>(devicesReply([phone]));
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -311,7 +345,9 @@ void main() {
   });
 
   testWidgets('a reachable peer reports where it was reached', (tester) async {
-    core.probeOutcome = const PeerReachable('10.0.0.7:28771');
+    core
+      ..reply<wire.CoreCommandProbePeer>(reached('10.0.0.7:28771'))
+      ..reply<wire.CoreCommandSetDeviceAddress>(devicesReply([phone]));
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -324,7 +360,11 @@ void main() {
   testWidgets('an unreachable peer says so, with the address it tried', (
     tester,
   ) async {
-    core.probeOutcome = const PeerUnreachable('Connection refused');
+    core.reply<wire.CoreCommandProbePeer>(
+      const wire.ReplyResultPeerProbed(
+        value: wire.ProbeOutcomeUnreachable(message: 'Connection refused'),
+      ),
+    );
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 
@@ -340,7 +380,11 @@ void main() {
   testWidgets('a certificate that is not the pinned one gets its own line', (
     tester,
   ) async {
-    core.probeOutcome = const PeerRefused('unknown certificate');
+    core.reply<wire.CoreCommandProbePeer>(
+      const wire.ReplyResultPeerProbed(
+        value: wire.ProbeOutcomeRefused(message: 'unknown certificate'),
+      ),
+    );
     app.state.recordDevices([row()]);
     await pumpPage(tester);
 

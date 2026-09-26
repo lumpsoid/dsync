@@ -53,7 +53,7 @@ class RunHarness {
   SyncRunViewState get state => controller.state;
 
   /// The session the core opened for the latest start.
-  int get session => hub.runStarts.last.session;
+  int get session => hub.sessionOf<wire.CoreCommandStartRun>();
 
   /// What the controller sent the session, in order.
   List<wire.RunIntent> get intents => intentsTo(hub, session);
@@ -77,8 +77,10 @@ class RunHarness {
 }
 
 /// What [hub] was told about the run in [session], in order.
-List<wire.RunIntent> intentsTo(FakeHub hub, int session) =>
-    hub.runIntents[session] ?? const [];
+List<wire.RunIntent> intentsTo(FakeHub hub, int session) => [
+  for (final steer in hub.sent<wire.CoreCommandSteerRun>())
+    if (steer.session.toInt() == session) steer.intent,
+];
 
 /// Lets queued microtasks and stream deliveries run.
 Future<void> pump() async {

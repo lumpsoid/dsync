@@ -9,6 +9,7 @@ import 'package:dsync/app/features/pair_show/pair_show_scope.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
 import 'package:dsync/app/features/pair_show/pairing_offer.dart';
 import 'package:dsync/app/features/pair_show/qr_symbol.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,7 +35,8 @@ void main() {
   setUp(() async {
     // A window the core never answers for, so a test's own status is the
     // only one the page ever renders.
-    core = FakeHub()..holds['showPairing'] = Completer<void>().future;
+    core = FakeHub()
+      ..hold<wire.CoreCommandShowPairing>(Completer<void>().future);
     app = fakeApp(core);
     controller = PairShowController(app, bindAddress: _loopbackBind);
     appScope.setController(app);
@@ -97,7 +99,7 @@ void main() {
     // Nothing is bound until a name has been given: the name is what the
     // device that redeems the code is recorded under, so it cannot be
     // decided after the fact — and an empty one is not a name.
-    expect(core.calls, isNot(contains('showPairing')));
+    expect(core.sent<wire.CoreCommandShowPairing>(), isEmpty);
     expect(
       tester
           .widget<FilledButton>(find.byKey(const Key('pair-show-start')))

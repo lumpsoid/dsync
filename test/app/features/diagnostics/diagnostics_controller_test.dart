@@ -1,8 +1,8 @@
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/scan_probe_layer.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/features/diagnostics/diagnostics_controller.dart';
 import 'package:dsync/app/features/diagnostics/diagnostics_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
@@ -31,12 +31,18 @@ void main() {
   );
 
   test('measures the given root and records the core\'s report', () async {
-    core.scanProbe = const ScanProbeResult(
-      root: '/tmp/notes',
-      report: 'scan probe: /tmp/notes',
-      passes: [
-        [layer],
-      ],
+    core.reply<wire.CoreCommandProbeScan>(
+      wire.ReplyResultScanProbe(
+        value: wireScanProbe(
+          const ScanProbeResult(
+            root: '/tmp/notes',
+            report: 'scan probe: /tmp/notes',
+            passes: [
+              [layer],
+            ],
+          ),
+        ),
+      ),
     );
     final seen = <ScanCostOutcome>[];
     controller.state.addListener(() => seen.add(controller.state.scanCost));
@@ -49,13 +55,16 @@ void main() {
     final report = (outcome as ScanCostMeasured).report;
     expect(report.report, 'scan probe: /tmp/notes');
     expect(report.passes.single.single.label, layer.label);
-    expect(core.calls, ['probeScan']);
+    expect(core.sent<wire.CoreCommandProbeScan>().single.root, '/tmp/notes');
+    expect(core.kinds, [wire.CoreCommandProbeScan]);
   });
 
   test(
     'a root the core cannot read fails with its reason and the way out',
     () async {
-      core.failNext = const CoreFailure('No such file or directory');
+      core.reply<wire.CoreCommandProbeScan>(
+        failed('No such file or directory'),
+      );
 
       await controller.measureScanCost('/tmp/gone', passes: 1);
 

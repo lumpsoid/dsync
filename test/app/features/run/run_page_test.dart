@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
@@ -66,7 +65,7 @@ void main() {
     );
   }
 
-  int session() => hub.runStarts.single.session;
+  int session() => hub.sessionOf<wire.CoreCommandStartRun>();
 
   /// What the page told the core, in order.
   List<wire.RunIntent> intents() => intentsTo(hub, session());
@@ -1264,7 +1263,7 @@ void main() {
 
   testWidgets('a start the core refuses is a failure in its words, with '
       'nothing to resume', (tester) async {
-    hub.failNext = const CoreFailure('the core is not initialised');
+    hub.reply<wire.CoreCommandStartRun>(failed('the core is not initialised'));
     await pump(tester);
     await tester.pump();
 

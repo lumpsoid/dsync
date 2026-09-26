@@ -7,6 +7,7 @@ import 'package:dsync/app/features/pair/pair_page.dart';
 import 'package:dsync/app/features/pair/pair_scope.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
 import 'package:dsync/app/features/pair/scan_code_page.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,14 +36,32 @@ void main() {
   var showOwnCodeTaps = 0;
 
   /// How many redemptions the page asked the core for.
-  int enrolCalls() => core.calls.where((c) => c == 'acceptPairing').length;
+  int enrolCalls() => core.sent<wire.CoreCommandAcceptPairing>().length;
 
   setUp(() {
     core = FakeHub()
-      ..pairCodeReading = const ReadPairCode(
-        desktopName: 'desktop',
-        address: '192.168.1.5:28771',
-        deviceId: 'dddd-eeee-ffff-0000',
+      ..reply<wire.CoreCommandReadPairCode>(
+        wire.ReplyResultPairCode(
+          value: wirePairCode(
+            const ReadPairCode(
+              desktopName: 'desktop',
+              address: '192.168.1.5:28771',
+              deviceId: 'dddd-eeee-ffff-0000',
+            ),
+          ),
+        ),
+      )
+      // What the core records for a redeemed code.
+      ..reply<wire.CoreCommandAcceptPairing>(
+        wire.ReplyResultDevice(
+          value: wireDevice(
+            pairedDevice(
+              deviceId: 'dddd-eeee-ffff-0000',
+              name: 'desktop',
+              address: '192.168.1.5:28771',
+            ),
+          ),
+        ),
       );
     app = fakeApp(core);
     controller = PairController(app);
@@ -281,8 +300,12 @@ void main() {
 
   testWidgets('a scanned code that is not a payload says so, with both ways '
       'back in', (tester) async {
-    core.pairCodeReading = const UnreadablePairCode(
-      'Not a dsync pairing payload: expected "dsync-pair:"',
+    core.reply<wire.CoreCommandReadPairCode>(
+      const wire.ReplyResultPairCode(
+        value: wire.PairCodeViewUnreadable(
+          message: 'Not a dsync pairing payload: expected "dsync-pair:"',
+        ),
+      ),
     );
     await pumpPage(tester, scanner: scanning('https://example.test/'));
 

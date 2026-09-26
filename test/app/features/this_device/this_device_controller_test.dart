@@ -1,8 +1,9 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/features/this_device/this_device_controller.dart';
 import 'package:dsync/app/features/this_device/this_device_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -33,14 +34,18 @@ void main() {
     await app.bootstrap();
 
     expect(controller.identity, isNotNull);
-    expect(controller.identity!.deviceId, FakeHub.fakeIdentity.deviceId);
+    expect(controller.identity!.deviceId, fakeIdentity.deviceId);
     expect(controller.identity!.name, 'this-device');
   });
 
   test('loadStateDirPath renders the core\'s state dir', () async {
+    core.reply<wire.CoreCommandInit>(
+      initialised(stateDir: '/data/state', profilesDir: '/data/state/profiles'),
+    );
+
     await controller.loadStateDirPath();
 
-    expect(controller.state.stateDirPath, core.dirs.stateDir);
+    expect(controller.state.stateDirPath, '/data/state');
   });
 
   test('renew asks the core to re-issue and keeps the device id', () async {
@@ -49,7 +54,9 @@ void main() {
 
     await controller.renew();
 
-    expect(core.calls, contains('renewIdentity'));
+    expect(core.sent<wire.CoreCommandRenewIdentity>(), [
+      const wire.CoreCommandRenewIdentity(commonName: null),
+    ]);
     expect(controller.identity!.deviceId, before.deviceId);
     expect(controller.state.outcome, isA<IdentitySucceeded>());
     expect(
@@ -61,10 +68,23 @@ void main() {
   test('rename re-issues under the trimmed name, in the gate', () async {
     await app.bootstrap();
     final before = controller.identity!;
+    core.reply<wire.CoreCommandRenewIdentity>(
+      identityReply(
+        DeviceIdentityInfo(
+          deviceId: fakeIdentity.deviceId,
+          commonName: 'workshop',
+          issuedAt: DateTime.utc(2026, 6),
+          expiresAt: DateTime.utc(2036, 6),
+          expiryNote: null,
+        ),
+      ),
+    );
 
     await controller.rename('  workshop  ');
 
-    expect(core.identity.commonName, 'workshop');
+    expect(core.sent<wire.CoreCommandRenewIdentity>(), [
+      const wire.CoreCommandRenewIdentity(commonName: 'workshop'),
+    ]);
     expect(controller.identity!.name, 'workshop');
     expect(controller.identity!.deviceId, before.deviceId);
     expect(
@@ -79,13 +99,15 @@ void main() {
     await controller.rename('   ');
 
     expect(controller.state.outcome, isA<IdentityFailed>());
-    expect(core.calls, isNot(contains('renewIdentity')));
-    expect(core.identity.commonName, 'this-device');
+    expect(core.sent<wire.CoreCommandRenewIdentity>(), isEmpty);
+    expect(controller.identity!.name, 'this-device');
   });
 
   test('a refused renewal is rendered, not thrown', () async {
     await app.bootstrap();
-    core.failNext = const CoreFailure('identity.key is missing');
+    core.reply<wire.CoreCommandRenewIdentity>(
+      failed('identity.key is missing'),
+    );
 
     await controller.renew();
 

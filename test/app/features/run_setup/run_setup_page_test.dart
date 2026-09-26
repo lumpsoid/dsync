@@ -9,6 +9,7 @@ import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -34,7 +35,8 @@ void main() {
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('run_setup_page_test');
-    core = FakeHub(devices: [desktop]);
+    core = FakeHub()
+      ..reply<wire.CoreCommandListDevices>(devicesReply([desktop]));
     app = fakeApp(core);
     picker = FakeFolderPicker();
     controller = RunSetupController(app, picker: picker);
@@ -235,8 +237,10 @@ void main() {
   testWidgets('an edit says which profile it is about to write back over', (
     tester,
   ) async {
-    core.profiles.add(
-      headProfile(name: 'weekly', peerDeviceId: desktop.deviceId),
+    core.reply<wire.CoreCommandListProfiles>(
+      profilesReply([
+        headProfile(name: 'weekly', peerDeviceId: desktop.deviceId),
+      ]),
     );
 
     await pumpLoaded(tester, source: const RunSetupFromProfile('weekly'));
@@ -258,12 +262,14 @@ void main() {
 
   testWidgets('a profile whose last run did not finish is warned about '
       'before it runs again (task 99f404)', (tester) async {
-    core.profiles.add(
-      headProfile(
-        name: 'weekly',
-        peerDeviceId: desktop.deviceId,
-        lastRunUnfinished: true,
-      ),
+    core.reply<wire.CoreCommandListProfiles>(
+      profilesReply([
+        headProfile(
+          name: 'weekly',
+          peerDeviceId: desktop.deviceId,
+          lastRunUnfinished: true,
+        ),
+      ]),
     );
 
     await pumpLoaded(tester, source: const RunSetupFromProfile('weekly'));
@@ -312,7 +318,9 @@ void main() {
       'it, and the form is untouched', (tester) async {
     final refused = '${tempDir.path}/elsewhere/no-such-tree';
     picker.onPick = () => refused;
-    core.folderRefusals[refused] = 'dsync cannot use $refused.';
+    core.reply<wire.CoreCommandCheckFolder>(
+      wire.ReplyResultFolderChecked(refusal: 'dsync cannot use $refused.'),
+    );
     await pumpLoaded(tester);
 
     await pickFolder(

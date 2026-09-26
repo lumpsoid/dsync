@@ -7,6 +7,7 @@ import 'package:dsync/app/features/filters/filters_controller.dart';
 import 'package:dsync/app/features/filters/filters_page.dart';
 import 'package:dsync/app/features/filters/filters_scope.dart';
 import 'package:dsync/app/features/filters/filters_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -62,7 +63,10 @@ void main() {
   ];
 
   setUp(() {
-    core = FakeHub()..filterListing = listing;
+    core = FakeHub()
+      ..answer<wire.CoreCommandListFilterFolder>(
+        (list) => folderRows(listing(list.folder, list.ignore)),
+      );
     controller = FiltersController(fakeApp(core));
     filtersScope.setController(controller);
     done.clear();
@@ -188,20 +192,24 @@ void main() {
 
   testWidgets('Preview counts what the rules keep and drop', (tester) async {
     await pumpPage(tester, rules: const ['**/*.tmp']);
-    core.filterPreview = const FilterPreview(
-      folders: [
-        FilterFolderSummary(
-          path: null,
-          depth: 0,
-          excludedBy: null,
-          includedFiles: 2,
-          includedBytes: 42,
-          excludedFiles: 1,
-          excludedBytes: 10,
+    core.reply<wire.CoreCommandPreviewFilters>(
+      previewReply(
+        const FilterPreview(
+          folders: [
+            FilterFolderSummary(
+              path: null,
+              depth: 0,
+              excludedBy: null,
+              includedFiles: 2,
+              includedBytes: 42,
+              excludedFiles: 1,
+              excludedBytes: 10,
+            ),
+          ],
+          excludedByRule: {'**/*.tmp': 1},
+          unreadableFolders: [],
         ),
-      ],
-      excludedByRule: {'**/*.tmp': 1},
-      unreadableFolders: [],
+      ),
     );
 
     await tester.runAsync(() async {
@@ -223,20 +231,24 @@ void main() {
     tester,
   ) async {
     await pumpPage(tester);
-    core.filterPreview = const FilterPreview(
-      folders: [
-        FilterFolderSummary(
-          path: null,
-          depth: 0,
-          excludedBy: null,
-          includedFiles: 3,
-          includedBytes: 52,
-          excludedFiles: 0,
-          excludedBytes: 0,
+    core.reply<wire.CoreCommandPreviewFilters>(
+      previewReply(
+        const FilterPreview(
+          folders: [
+            FilterFolderSummary(
+              path: null,
+              depth: 0,
+              excludedBy: null,
+              includedFiles: 3,
+              includedBytes: 52,
+              excludedFiles: 0,
+              excludedBytes: 0,
+            ),
+          ],
+          excludedByRule: {},
+          unreadableFolders: [],
         ),
-      ],
-      excludedByRule: {},
-      unreadableFolders: [],
+      ),
     );
     await tester.runAsync(() async {
       await tester.tap(find.byKey(const Key('filters-preview')));

@@ -1,11 +1,11 @@
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
-import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
+import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -35,17 +35,27 @@ void main() {
     app.dispose();
   });
 
+  /// The paired phone as the core lists it.
+  PairedDeviceInfo phone({
+    String name = 'phone',
+    List<String> roots = const ['/home/me/notes'],
+    String address = '10.0.0.7:28771',
+    DateTime? verifiedAt,
+  }) => pairedDevice(
+    deviceId: 'phone-id',
+    name: name,
+    grantedRoots: roots,
+    address: address,
+    verifiedAt: verifiedAt,
+  );
+
+  /// The core's answer: the device list holding [device] alone.
+  wire.ReplyResult only(PairedDeviceInfo device) => devicesReply([device]);
+
   Future<String> selectPhone({
     List<String> roots = const ['/home/me/notes'],
   }) async {
-    core.devices.add(
-      pairedDevice(
-        deviceId: 'phone-id',
-        name: 'phone',
-        grantedRoots: roots,
-        address: '10.0.0.7:28771',
-      ),
-    );
+    core.reply<wire.CoreCommandListDevices>(only(phone(roots: roots)));
     await app.bootstrap();
     controller.select('phone-id');
     return 'phone-id';
@@ -63,6 +73,7 @@ void main() {
 
     test('goes null once the device is revoked', () async {
       await selectPhone();
+      core.reply<wire.CoreCommandRevokeDevice>(devicesReply(const []));
 
       await controller.revoke();
 
@@ -82,19 +93,25 @@ void main() {
   });
 
   group('rename', () {
-    test('relabels the device and re-renders the list', () async {
+    test('sends the name trimmed, and the core\'s answer relabels the '
+        'device and the list', () async {
       await selectPhone();
+      core.reply<wire.CoreCommandRenameDevice>(only(phone(name: 'work phone')));
 
       await controller.rename('  work phone  ');
 
+      expect(
+        core.sent<wire.CoreCommandRenameDevice>().single.name,
+        'work phone',
+      );
       expect(controller.device!.name, 'work phone');
       expect(app.state.devices.single.name, 'work phone');
     });
 
     test('a name another device holds is the core\'s own refusal', () async {
       await selectPhone();
-      core.failNext = const CoreFailure(
-        'a device named "laptop" is already paired',
+      core.reply<wire.CoreCommandRenameDevice>(
+        failed('a device named "laptop" is already paired'),
       );
 
       await controller.rename('laptop');
@@ -110,18 +127,24 @@ void main() {
 
       expect(failure(), 'Give the device a name.');
       expect(controller.device!.name, 'phone');
+      expect(core.sent<wire.CoreCommandRenameDevice>(), isEmpty);
     });
   });
 
   group('grantRoot', () {
     test('hands the typed path to the core, trimmed, and records it', () async {
       await selectPhone(roots: const []);
+      // The core expands `~` the way `dsync pair grant` does.
+      core.reply<wire.CoreCommandGrantRoot>(
+        only(phone(roots: ['/home/me/photos'])),
+      );
 
-      // The core expands `~` the way `dsync pair grant` does; the fake
-      // stores it as given.
       await controller.grantRoot('  ~/photos ');
 
-      expect(controller.device!.agreedRoots, ['~/photos']);
+      expect(core.sent<wire.CoreCommandGrantRoot>(), const [
+        wire.CoreCommandGrantRoot(deviceId: 'phone-id', path: '~/photos'),
+      ]);
+      expect(controller.device!.agreedRoots, ['/home/me/photos']);
       expect(
         (controller.state.outcome as DeviceDetailDone).message,
         'Sharing ~/photos with this device.',
@@ -130,7 +153,7 @@ void main() {
 
     test('a path the core will not take is its refusal', () async {
       await selectPhone(roots: const []);
-      core.failNext = const CoreFailure('not an absolute path');
+      core.reply<wire.CoreCommandGrantRoot>(failed('not an absolute path'));
 
       await controller.grantRoot('photos');
 
@@ -138,8 +161,11 @@ void main() {
       expect(controller.device!.agreedRoots, isEmpty);
     });
 
-    test('is additive, and the list stays sorted', () async {
+    test('the rows are the core\'s list, in its order', () async {
       await selectPhone(roots: const ['/home/me/notes']);
+      core.reply<wire.CoreCommandGrantRoot>(
+        only(phone(roots: ['/home/me/archive', '/home/me/notes'])),
+      );
 
       await controller.grantRoot('/home/me/archive');
 
@@ -156,14 +182,22 @@ void main() {
 
       expect(failure(), 'Give a folder to share.');
       expect(controller.device!.agreedRoots, isEmpty);
+      expect(core.sent<wire.CoreCommandGrantRoot>(), isEmpty);
     });
 
     test('the chooser fills the path when the user picks one', () async {
       await selectPhone(roots: const []);
       picker.picked = '/media/usb/sync';
+      core.reply<wire.CoreCommandGrantRoot>(
+        only(phone(roots: ['/media/usb/sync'])),
+      );
 
       await controller.grantPickedRoot();
 
+      expect(
+        core.sent<wire.CoreCommandGrantRoot>().single.path,
+        '/media/usb/sync',
+      );
       expect(controller.device!.agreedRoots, ['/media/usb/sync']);
     });
 
@@ -173,7 +207,7 @@ void main() {
 
       await controller.grantPickedRoot();
 
-      expect(controller.device!.agreedRoots, isEmpty);
+      expect(core.sent<wire.CoreCommandGrantRoot>(), isEmpty);
       expect(controller.state.outcome, isA<DeviceDetailIdle>());
     });
 
@@ -188,11 +222,19 @@ void main() {
   });
 
   group('updateAddress', () {
-    test('records a typed host:port as where the device is reached', () async {
+    test('sends a typed host:port, trimmed, and records the core\'s '
+        'answer', () async {
       await selectPhone();
+      core.reply<wire.CoreCommandSetDeviceAddress>(
+        only(phone(address: '10.0.0.9:9100')),
+      );
 
       await controller.updateAddress(' 10.0.0.9:9100 ');
 
+      expect(
+        core.sent<wire.CoreCommandSetDeviceAddress>().single.address,
+        '10.0.0.9:9100',
+      );
       expect(controller.device!.address, '10.0.0.9:9100');
       expect(
         (controller.state.outcome as DeviceDetailDone).message,
@@ -203,14 +245,16 @@ void main() {
     test('an address the core will not read is its refusal, and nothing '
         'is written', () async {
       await selectPhone();
-      core.failNext = const CoreFailure('"10.0.0.9:http" has no valid port');
+      core.reply<wire.CoreCommandSetDeviceAddress>(
+        failed('"10.0.0.9:http" has no valid port'),
+      );
 
       await controller.updateAddress('10.0.0.9:http');
 
       expect(failure(), contains('has no valid port'));
       expect(controller.device!.address, '10.0.0.7:28771');
       // The list is re-read on the refusal path.
-      expect(core.calls.last, 'listDevices');
+      expect(core.kinds.last, wire.CoreCommandListDevices);
     });
 
     test('blank text is refused before the store', () async {
@@ -220,21 +264,30 @@ void main() {
 
       expect(failure(), 'Give an address, as host or host:port.');
       expect(controller.device!.address, '10.0.0.7:28771');
+      expect(core.sent<wire.CoreCommandSetDeviceAddress>(), isEmpty);
     });
   });
 
   group('testConnection', () {
     test('asks the core to probe this device', () async {
       await selectPhone();
+      core.reply<wire.CoreCommandProbePeer>(reached('10.0.0.7:28771'));
 
       await controller.testConnection();
 
-      expect(core.calls, contains('probePeer'));
+      expect(
+        core.sent<wire.CoreCommandProbePeer>().single.deviceId,
+        'phone-id',
+      );
     });
 
     test('a reachable peer records the address it answered at', () async {
       await selectPhone();
-      core.probeOutcome = const PeerReachable('10.0.0.9:9100');
+      core
+        ..reply<wire.CoreCommandProbePeer>(reached('10.0.0.9:9100'))
+        ..reply<wire.CoreCommandSetDeviceAddress>(
+          only(phone(address: '10.0.0.9:9100')),
+        );
 
       await controller.testConnection();
 
@@ -242,6 +295,13 @@ void main() {
         (controller.state.outcome as DeviceDetailDone).message,
         'Reached phone at 10.0.0.9:9100.',
       );
+      // Where it answered is recorded as where it is reached.
+      expect(core.sent<wire.CoreCommandSetDeviceAddress>(), const [
+        wire.CoreCommandSetDeviceAddress(
+          deviceId: 'phone-id',
+          address: '10.0.0.9:9100',
+        ),
+      ]);
       expect(controller.device!.address, '10.0.0.9:9100');
     });
 
@@ -249,7 +309,11 @@ void main() {
       'an address that does not answer names the address, not the pin',
       () async {
         await selectPhone();
-        core.probeOutcome = const PeerUnreachable('Connection refused');
+        core.reply<wire.CoreCommandProbePeer>(
+          const wire.ReplyResultPeerProbed(
+            value: wire.ProbeOutcomeUnreachable(message: 'Connection refused'),
+          ),
+        );
 
         await controller.testConnection();
 
@@ -263,7 +327,11 @@ void main() {
       'a certificate that is not the pinned one is its own answer',
       () async {
         await selectPhone();
-        core.probeOutcome = const PeerRefused('unknown certificate');
+        core.reply<wire.CoreCommandProbePeer>(
+          const wire.ReplyResultPeerProbed(
+            value: wire.ProbeOutcomeRefused(message: 'unknown certificate'),
+          ),
+        );
 
         await controller.testConnection();
 
@@ -275,7 +343,7 @@ void main() {
 
     test('a probe the core refuses outright is shown', () async {
       await selectPhone();
-      core.failNext = const CoreFailure('no identity');
+      core.reply<wire.CoreCommandProbePeer>(failed('no identity'));
 
       await controller.testConnection();
 
@@ -284,55 +352,63 @@ void main() {
   });
 
   group('verification', () {
-    test('confirming records the date and shows on the row', () async {
-      final id = await selectPhone();
+    test('confirming asks the core, and its answer shows on the row', () async {
+      await selectPhone();
+      core.reply<wire.CoreCommandVerifyDevice>(
+        only(phone(verifiedAt: DateTime.utc(2026, 6))),
+      );
 
       await controller.confirmDeviceId();
 
+      expect(core.sent<wire.CoreCommandVerifyDevice>(), const [
+        wire.CoreCommandVerifyDevice(deviceId: 'phone-id'),
+      ]);
       expect(controller.device!.verifiedAt, isNotNull);
       expect(controller.device!.isVerified, isTrue);
-      expect(
-        core.devices.singleWhere((d) => d.deviceId == id).verifiedAt,
-        isNotNull,
-      );
       expect(
         (controller.state.outcome as DeviceDetailDone).message,
         'Device id confirmed.',
       );
     });
 
-    test('clearing takes it back off without touching the pairing', () async {
-      final id = await selectPhone();
-      await controller.confirmDeviceId();
+    test('clearing asks the core, and its answer shows on the row', () async {
+      core.reply<wire.CoreCommandListDevices>(
+        only(phone(verifiedAt: DateTime.utc(2026, 6))),
+      );
+      await app.bootstrap();
+      controller.select('phone-id');
+      expect(controller.device!.isVerified, isTrue);
+      core.reply<wire.CoreCommandClearVerification>(only(phone()));
 
       await controller.clearVerification();
 
-      expect(controller.device!.verifiedAt, isNull);
-      expect(core.devices.singleWhere((d) => d.deviceId == id).grantedRoots, [
-        '/home/me/notes',
+      expect(core.sent<wire.CoreCommandClearVerification>(), const [
+        wire.CoreCommandClearVerification(deviceId: 'phone-id'),
       ]);
+      expect(controller.device!.verifiedAt, isNull);
+      expect(controller.device!.agreedRoots, ['/home/me/notes']);
     });
 
     test('a mismatch writes nothing and says what to do', () async {
-      final id = await selectPhone();
+      await selectPhone();
 
       controller.reportDeviceIdMismatch();
 
-      expect(
-        core.devices.singleWhere((d) => d.deviceId == id).verifiedAt,
-        isNull,
-      );
-      expect(core.calls, isNot(contains('verifyDevice')));
+      expect(core.sent<wire.CoreCommandVerifyDevice>(), isEmpty);
       expect(failure(), contains('revoke it below and pair again'));
     });
 
     test('a device revoked elsewhere is refused, not confirmed', () async {
-      final id = await selectPhone();
-      core.devices.removeWhere((d) => d.deviceId == id);
+      await selectPhone();
+      core
+        ..reply<wire.CoreCommandVerifyDevice>(
+          failed('no paired device with id phone-id'),
+        )
+        ..reply<wire.CoreCommandListDevices>(devicesReply(const []));
 
       await controller.confirmDeviceId();
 
-      expect(failure(), contains('not paired'));
+      expect(failure(), 'no paired device with id phone-id');
       // The stale row goes with the message.
       expect(controller.device, isNull);
     });
@@ -341,9 +417,18 @@ void main() {
   group('revokeRoot', () {
     test('withdraws one root and keeps the pairing', () async {
       await selectPhone(roots: const ['/home/me/notes', '/home/me/photos']);
+      core.reply<wire.CoreCommandWithdrawGrant>(
+        only(phone(roots: ['/home/me/photos'])),
+      );
 
       await controller.revokeRoot('/home/me/notes');
 
+      expect(core.sent<wire.CoreCommandWithdrawGrant>(), const [
+        wire.CoreCommandWithdrawGrant(
+          deviceId: 'phone-id',
+          root: '/home/me/notes',
+        ),
+      ]);
       expect(controller.device!.agreedRoots, ['/home/me/photos']);
       expect(controller.device!.name, 'phone');
     });

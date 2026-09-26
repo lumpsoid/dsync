@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
-import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -52,10 +51,16 @@ void main() {
     app.dispose();
   });
 
-  int serveCalls() => core.calls.where((c) => c == 'startServe').length;
+  int serveCalls() => core.sent<wire.CoreCommandStartServe>().length;
 
   /// The session the fake opened last.
-  int session() => core.serveStarts.last;
+  int session() => core.sessionOf<wire.CoreCommandStartServe>();
+
+  /// The sessions the page stopped, in order.
+  List<int> stopped() => [
+    for (final stop in core.sent<wire.CoreCommandStopServe>())
+      stop.session.toInt(),
+  ];
 
   /// Lets the controller render what the fake just emitted.
   Future<void> settle() => Future<void>.delayed(Duration.zero);
@@ -76,6 +81,24 @@ void main() {
     ],
   );
 
+  /// What the hub does with a stop, as the test scripts it: the session's
+  /// last view — stopped, keeping [newestFirst] — goes out before the
+  /// reply.
+  void stopsWith([List<wire.ServeEventView> newestFirst = const []]) =>
+      core.answer<wire.CoreCommandStopServe>((stop) {
+        core.emitServe(
+          stop.session.toInt(),
+          view(
+            phase: const wire.ServePhaseViewStopped(),
+            newestFirst: newestFirst,
+          ),
+          last: true,
+        );
+        return const wire.ReplyResultDone();
+      });
+
+  setUp(stopsWith);
+
   /// Starts serving and delivers the core's first view of it.
   Future<void> serve() async {
     await controller.start();
@@ -87,7 +110,9 @@ void main() {
       'default port, and shows where to dial this device', () async {
     await serve();
 
-    expect(core.servedOn, (bind: '127.0.0.1', port: defaultPeerPort));
+    expect(core.sent<wire.CoreCommandStartServe>(), const [
+      wire.CoreCommandStartServe(bind: '127.0.0.1', port: defaultPeerPort),
+    ]);
     final status = controller.state.status;
     expect(status, isA<ServeListening>());
     // What to type on the other device is the core's own advertisement.
@@ -99,7 +124,7 @@ void main() {
   test(
     'a port the core cannot bind is a refusal naming it, not a throw',
     () async {
-      core.failures['startServe'] = const CoreFailure('Address already in use');
+      core.reply<wire.CoreCommandStartServe>(failed('Address already in use'));
 
       await controller.start();
 
@@ -139,29 +164,26 @@ void main() {
 
     await controller.stop();
 
-    expect(core.stopped, [session()]);
+    expect(stopped(), [session()]);
     expect(controller.state.status, isA<ServeStopped>());
     expect(screenWake.held, isFalse);
     expect(controller.boundPort, isNull);
 
     await controller.stop();
-    expect(core.stopped, [session()]);
+    expect(stopped(), [session()]);
     expect(controller.state.status, isA<ServeStopped>());
   });
 
   test('stop keeps listening: the page shows the core\'s last view of '
       'serving, its lines included', () async {
-    await serve();
-    core.emitServe(
-      session(),
-      view(
-        newestFirst: const [
-          wire.ServeEventViewRefused(from: '10.0.0.66:1', message: 'probe'),
-        ],
-      ),
-      last: false,
+    const probe = wire.ServeEventViewRefused(
+      from: '10.0.0.66:1',
+      message: 'probe',
     );
+    await serve();
+    core.emitServe(session(), view(newestFirst: const [probe]), last: false);
     await settle();
+    stopsWith(const [probe]);
 
     final stopping = controller.stop();
     // Asked, not yet answered: still what the core last said.
@@ -178,16 +200,15 @@ void main() {
     await serve();
     final first = session();
     final stopping = Completer<void>();
-    core.holds['stopServe'] = stopping.future;
+    core.hold<wire.CoreCommandStopServe>(stopping.future);
     unawaited(controller.stop());
     await settle();
 
     await controller.start();
-    core.holds.remove('stopServe');
     stopping.complete();
     await settle();
 
-    expect(core.stopped, [first]);
+    expect(stopped(), [first]);
     expect(serveCalls(), 2);
     expect(controller.state.status, isA<ServeStarting>());
     core.emitServe(session(), view(), last: false);
@@ -206,7 +227,7 @@ void main() {
 
   test('a stop while the core is still binding stops what it bound', () async {
     final binding = Completer<void>();
-    core.holds['startServe'] = binding.future;
+    core.hold<wire.CoreCommandStartServe>(binding.future);
     final started = controller.start();
     await settle();
 
@@ -214,7 +235,7 @@ void main() {
     binding.complete();
     await started;
 
-    expect(core.stopped, [session()]);
+    expect(stopped(), [session()]);
     expect(controller.state.status, isA<ServeStopped>());
     expect(screenWake.held, isFalse);
   });
@@ -230,7 +251,7 @@ void main() {
       // synchronous), so give the event loop the turn it needs.
       await settle();
 
-      expect(core.stopped, [session()]);
+      expect(stopped(), [session()]);
       expect(screenWake.held, isFalse);
     },
   );
@@ -339,12 +360,23 @@ void main() {
 
   test('devices granted nothing are named, because their refusal says '
       'nothing (SPEC §4.4)', () async {
-    core.devices.add(pairedDevice(deviceId: 'dddd', name: 'phone-b'));
+    core.reply<wire.CoreCommandListDevices>(
+      devicesReply([pairedDevice(deviceId: 'dddd', name: 'phone-b')]),
+    );
     await app.refreshDevices();
 
     expect(controller.devicesReachingNothing, ['phone-b']);
     expect(controller.folders, isEmpty);
 
+    core.reply<wire.CoreCommandGrantRoot>(
+      devicesReply([
+        pairedDevice(
+          deviceId: 'dddd',
+          name: 'phone-b',
+          grantedRoots: ['/home/me/notes'],
+        ),
+      ]),
+    );
     await app.grantRoot('dddd', '/home/me/notes');
 
     expect(controller.devicesReachingNothing, isEmpty);
