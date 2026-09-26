@@ -1,0 +1,6 @@
+# Copy to android/key.properties (gitignored, never commit it) to sign
+# release builds with the dsync release key. See RELEASING.md. The key alias
+# is always `dsync`. Passwords: password manager entry dsync/android-release-key.
+storeFile=/home/<you>/.config/dsync/release.jks
+storePassword=
+keyPassword=
