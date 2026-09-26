@@ -5,6 +5,7 @@
 //! the head renders [`RunState::view`] and decides nothing.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use dsync_core::RunEvent;
 use dsync_domain::{
@@ -63,7 +64,8 @@ enum Suspend {
 enum Phase {
     Connecting,
     Scanning,
-    Reviewing,
+    /// The head reviews this plan, the decider waiting.
+    Reviewing(Arc<Plan>),
     ConfirmingDeletes(Vec<SideDeletes>),
     Applying,
     Finished(RunSummary),
@@ -81,7 +83,7 @@ impl Phase {
         match self {
             Phase::Connecting
             | Phase::Scanning
-            | Phase::Reviewing
+            | Phase::Reviewing(_)
             | Phase::ConfirmingDeletes(_)
             | Phase::Applying => RunStandingView::Live,
             Phase::Paused(_)
@@ -225,6 +227,26 @@ fn count(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
+/// What an attempt that failed ends as.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Failure {
+    Failed(String),
+    /// SPEC §4.3's held lock.
+    ReplicaBusy(String),
+    /// The refusal that follows the head declining the delete guard.
+    DeletesDeclined,
+}
+
+impl From<Failure> for Phase {
+    fn from(failure: Failure) -> Phase {
+        match failure {
+            Failure::Failed(message) => Phase::Failed(message),
+            Failure::ReplicaBusy(message) => Phase::ReplicaBusy(message),
+            Failure::DeletesDeclined => Phase::DeletesDeclined,
+        }
+    }
+}
+
 /// One action's reported outcome.
 struct Outcome {
     action: Action,
@@ -245,12 +267,12 @@ pub(crate) struct RunState {
     /// when it has ended, so nothing resumes an attempt still closing.
     summary: Option<RunSummary>,
     /// The failure it ends as, once reported: the last one.
-    failure: Option<Phase>,
+    failure: Option<Failure>,
     connected_at_ms: Option<i64>,
     replicas: Option<[ReplicaInfo; 2]>,
     tallies: Option<[ScanTally; 2]>,
     skipped: Vec<(Side, SkippedPath)>,
-    plan: Option<Plan>,
+    plan: Option<Arc<Plan>>,
     choices: Choices,
     /// By path: a plan's action and a conflict's own path never coincide.
     outcomes: HashMap<RelPath, Outcome>,
@@ -314,26 +336,27 @@ impl RunState {
     }
 
     /// Takes `plan` in, the first time it is seen: the decider and the
-    /// plan's event both bring it. Whether it was new.
-    fn take_plan(&mut self, plan: &Plan) -> bool {
-        if self.plan.is_some() {
-            return false;
+    /// plan's event both bring it. The plan taken, and whether it was new.
+    fn take_plan(&mut self, plan: &Plan) -> (Arc<Plan>, bool) {
+        if let Some(taken) = &self.plan {
+            return (taken.clone(), false);
         }
         self.choices = Choices::as_planned(plan);
-        self.plan = Some(plan.clone());
-        true
+        let taken = Arc::new(plan.clone());
+        self.plan = Some(taken.clone());
+        (taken, true)
     }
 
     /// The decider asks about `plan`: `Some` answers at once - a run
     /// already stopping keeps nothing, and a plan with nothing in it needs
     /// no review - and `None` opens the review, every row as planned.
     pub(crate) fn review(&mut self, plan: &Plan) -> Option<Choices> {
-        self.take_plan(plan);
+        let (taken, _) = self.take_plan(plan);
         if self.suspend.is_some() || (plan.actions.is_empty() && plan.conflicts.is_empty()) {
             self.phase = Phase::Applying;
             return Some(Choices::none());
         }
-        self.phase = Phase::Reviewing;
+        self.phase = Phase::Reviewing(taken);
         None
     }
 
@@ -379,7 +402,7 @@ impl RunState {
                 Urgency::Unseen
             }
             RunEvent::Plan { plan, .. } => {
-                if self.take_plan(&plan) {
+                if self.take_plan(&plan).1 {
                     Urgency::Now
                 } else {
                     Urgency::Unseen
@@ -402,11 +425,11 @@ impl RunState {
             RunEvent::Error(error) => {
                 let message = error.to_string();
                 self.failure = Some(if error.replica_busy() {
-                    Phase::ReplicaBusy(message)
+                    Failure::ReplicaBusy(message)
                 } else if self.declined {
-                    Phase::DeletesDeclined
+                    Failure::DeletesDeclined
                 } else {
-                    Phase::Failed(message)
+                    Failure::Failed(message)
                 });
                 Urgency::Unseen
             }
@@ -424,7 +447,7 @@ impl RunState {
                 self.timings = Some(timings);
                 let completed = self.completed();
                 self.phase = match (self.failure.take(), self.summary) {
-                    (Some(failure), _) => failure,
+                    (Some(failure), _) => failure.into(),
                     (None, summary) => self.suspended(completed).unwrap_or(match summary {
                         Some(summary) => Phase::Finished(summary),
                         None => Phase::NoSummary,
@@ -442,8 +465,8 @@ impl RunState {
     }
 
     fn reviewing(&self) -> Option<&Plan> {
-        match (&self.phase, &self.plan) {
-            (Phase::Reviewing, Some(plan)) if self.suspend.is_none() => Some(plan),
+        match &self.phase {
+            Phase::Reviewing(plan) if self.suspend.is_none() => Some(plan),
             _ => None,
         }
     }
@@ -547,11 +570,7 @@ impl RunState {
         match &self.phase {
             Phase::Connecting => RunPhaseView::Connecting,
             Phase::Scanning => RunPhaseView::Scanning,
-            // The review opens over its plan, so there is one.
-            Phase::Reviewing => RunPhaseView::Reviewing(
-                self.choices
-                    .summary(self.plan.as_ref().unwrap_or(&Plan::default())),
-            ),
+            Phase::Reviewing(plan) => RunPhaseView::Reviewing(self.choices.summary(plan)),
             Phase::ConfirmingDeletes(sides) => RunPhaseView::ConfirmingDeletes {
                 sides: sides.iter().map(MassDeleteView::from).collect(),
             },
@@ -583,7 +602,7 @@ impl RunState {
 
     /// Everything the head shows, as it now stands.
     pub(crate) fn view(&self) -> RunView {
-        let plan = self.plan.as_ref();
+        let plan = self.plan.as_deref();
         let failed = self
             .outcomes
             .values()

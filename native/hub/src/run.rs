@@ -55,8 +55,7 @@ impl Hub {
             shared: Mutex::new(Shared {
                 state: RunState::new(dry_run),
                 attempt: None,
-                decision: None,
-                deletes: None,
+                pending: None,
                 throttle: Throttle::new(),
             }),
         });
@@ -191,13 +190,17 @@ impl Attempt {
     }
 }
 
+/// Where the answer to the question the decider waits on goes.
+enum Pending {
+    Review(oneshot::Sender<Choices>),
+    Deletes(oneshot::Sender<bool>),
+}
+
 struct Shared {
     state: RunState,
     attempt: Option<Attempt>,
-    /// Where the review's answer goes, while the decider waits on one.
-    decision: Option<oneshot::Sender<Choices>>,
-    /// Where the delete guard's answer goes, while the decider waits.
-    deletes: Option<oneshot::Sender<bool>>,
+    /// The question the decider waits on, if any.
+    pending: Option<Pending>,
     throttle: Throttle,
 }
 
@@ -260,13 +263,13 @@ impl RunControl {
             Steer::Ignored => {}
             Steer::Changed => self.publish(&mut shared, Urgency::Now),
             Steer::Decide(choices) => {
-                if let Some(answer) = shared.decision.take() {
+                if let Some(Pending::Review(answer)) = shared.pending.take() {
                     let _ = answer.send(choices);
                 }
                 self.publish(&mut shared, Urgency::Now);
             }
             Steer::AnswerDeletes(proceed) => {
-                if let Some(answer) = shared.deletes.take() {
+                if let Some(Pending::Deletes(answer)) = shared.pending.take() {
                     let _ = answer.send(proceed);
                 }
                 self.publish(&mut shared, Urgency::Now);
@@ -301,8 +304,7 @@ impl RunControl {
     fn ended(self: &Arc<Self>, end: Ended) {
         let mut shared = self.lock();
         shared.attempt = None;
-        shared.decision = None;
-        shared.deletes = None;
+        shared.pending = None;
         let urgency = shared.state.ended(end);
         self.publish(&mut shared, urgency);
     }
@@ -317,7 +319,7 @@ impl RunControl {
             Some(now) => Asked::Answered(now),
             None => {
                 let (answer, answered) = oneshot::channel();
-                shared.decision = Some(answer);
+                shared.pending = Some(Pending::Review(answer));
                 Asked::Waiting(answered)
             }
         };
@@ -331,7 +333,7 @@ impl RunControl {
             Some(now) => Asked::Answered(now),
             None => {
                 let (answer, answered) = oneshot::channel();
-                shared.deletes = Some(answer);
+                shared.pending = Some(Pending::Deletes(answer));
                 Asked::Waiting(answered)
             }
         };
@@ -476,8 +478,7 @@ mod tests {
             shared: Mutex::new(Shared {
                 state: RunState::new(false),
                 attempt: None,
-                decision: None,
-                deletes: None,
+                pending: None,
                 throttle: Throttle::new(),
             }),
         });
