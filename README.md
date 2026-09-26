@@ -466,6 +466,12 @@ flutter drive --profile -d linux \
   --dart-define=WORK=$work
 ```
 
+### Releasing
+
+[RELEASING.md](RELEASING.md) is the whole procedure: the Android release key
+and its backups, `scripts/release-android.sh`, the CI release workflow, and the
+phone release check below as the gate before every release.
+
 ### Release check on a phone
 
 Before a release, run the app on an Android **test device** against this
