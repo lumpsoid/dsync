@@ -330,7 +330,7 @@ SPEC section that owns the detail.
   §5.2).
 - **A permissions-only change does not sync.** Mode bits travel with content,
   so a `chmod` alone reaches the other side the next time the file's content
-  changes. Ownership, ACLs and extended attributes are never copied (SPEC
+  changes. Ownership and extended attributes (ACLs included) are never copied (SPEC
   §7.4).
 - **A file edited while a run is applying is left alone, not synced.** It is
   reported "changed during sync" and picked up by the next run. The only
@@ -374,9 +374,13 @@ SPEC section that owns the detail.
 - **Two phones behind separate carrier NATs cannot reach each other.** One
   side needs a direct route or both need a shared overlay network such as
   WireGuard or Tailscale (SPEC §16).
-- **Two devices starting a run against each other at the same moment are not
-  stopped.** Both runs proceed and reconciliation sorts out the result;
-  nothing is corrupted, but start one at a time (SPEC §16).
+- **Only a repeat of the same run is locked out.** A second run of the same
+  pair, started from the same device while the first is still going, is
+  refused because the folder is in use; run it again when the first
+  finishes. Two devices that each start a run against the other at the
+  same moment are not stopped: each run is a different profile with its own
+  lock, so both proceed. Nothing is corrupted, but the result is whatever
+  reconciliation makes of it, so start one at a time (SPEC §4.3, §16).
 
 **Storage and versions**
 
