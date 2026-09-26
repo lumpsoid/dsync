@@ -385,6 +385,35 @@ flutter drive --profile -d linux \
   --dart-define=WORK=$work
 ```
 
+### Release check on a phone
+
+Before a release, run the app on an Android **test device** against this
+desktop's `dsync`. Everything is driven from here: one command, plus a few
+steps on the phone that the script prints and waits for (Enter).
+
+```sh
+adb devices   # the serial
+integration_test/phone_release_check.sh --device <serial> --i-understand-this-reinstalls
+```
+
+**It wipes the app on that phone.** It uninstalls `com.example.dsync` (the
+archives, identity, pairings and All-files grant go with it), installs a test
+build, and deletes and recreates `/storage/emulated/0/dsync-e2e`. It refuses
+to run without both flags; `--dry-run` prints the plan and touches nothing.
+Reinstall your own build afterwards.
+
+It checks, and ends with PASS or FAIL for each: (a) All-files access, refused
+and then granted through the access settings; (b) the folder chooser's pick
+turned into a path; (c) a sync the app starts against `dsync agent --serve`,
+and one the desktop CLI starts against the app's Serve page; (d) the app
+force-stopped mid-apply, relaunched, its unfinished-run marker seen and the
+run recovered. The steps on the phone are: pick `dsync-e2e/app-root` in the
+chooser and leave All-files access off; grant it in App info (or type
+`appops` at that prompt to have the script grant it over adb); pick the
+folder again. The phone must be unlocked and on the same Wi-Fi, and this
+desktop must accept inbound TCP on port 28791. The script's header has the
+details; the desktop's side of it lives under `~/.cache/dsync/scratch/e2e-<time>/`.
+
 ### Running the head against a desktop
 
 The app pairs as a client of `dsync agent --serve` on a desktop; it can also
