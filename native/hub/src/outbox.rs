@@ -16,8 +16,8 @@ pub enum Outgoing {
 }
 
 /// The sending end. Unbounded: every producer is either throttled (a
-/// run's snapshots) or rare (serving and pairing), and a send never waits
-/// on Dart.
+/// run's and serving's snapshots) or rare (pairing), and a send never
+/// waits on Dart.
 #[derive(Clone)]
 pub struct Outbox(mpsc::UnboundedSender<Outgoing>);
 
