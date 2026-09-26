@@ -5,10 +5,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dsync_core::{
-    ActionFailure, Certificate, DeviceIdentity, PairedDevice, PeerContact, RunError, RunReport,
-    Stopped, StoredArchive,
-};
+use dsync_core::{ActionFailure, Certificate, DeviceIdentity, PairedDevice, StoredArchive};
 use dsync_domain::{
     Action, CertificateExpiry, CertificateOwner, Conflict, EntryKind, FilterFolderRow,
     FilterPreviewFolder, FilterPreviewReport, Proposal, ReplicaInfo, ReplicaRoot, RunSummary,
@@ -208,14 +205,6 @@ pub struct ProfileView {
     pub last_run_unfinished: bool,
 }
 
-/// A run that started: its archive id and its two sides as typed.
-#[derive(Serialize, SignalPiece)]
-pub struct RunStartedView {
-    pub profile_id: String,
-    pub a: String,
-    pub b: String,
-}
-
 /// Serving: the port bound and what to type on the other device.
 #[derive(Serialize, SignalPiece)]
 pub struct ServeStartedView {
@@ -409,26 +398,6 @@ impl From<&ScanProbeReport> for ScanProbeView {
                         .collect(),
                 })
                 .collect(),
-        }
-    }
-}
-
-/// A `peer://` side as dialling found it, with the run header's notes.
-#[derive(Serialize, SignalPiece)]
-pub struct PeerContactView {
-    pub side: SideView,
-    pub device_id: String,
-    pub address: String,
-    pub notes: Vec<String>,
-}
-
-impl From<&PeerContact> for PeerContactView {
-    fn from(peer: &PeerContact) -> PeerContactView {
-        PeerContactView {
-            side: peer.side.into(),
-            device_id: peer.device.to_string(),
-            address: peer.address.to_string(),
-            notes: peer.expiries.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -658,7 +627,7 @@ impl From<&Proposal> for ProposalView {
     fn from(proposal: &Proposal) -> ProposalView {
         ProposalView {
             action: ActionView::from(&proposal.action),
-            reverse_bytes: proposal.reverse_bytes,
+            reverse_bytes: proposal.reversed().as_ref().map(Action::bytes),
         }
     }
 }
@@ -719,60 +688,144 @@ impl From<&SideDeletes> for MassDeleteView {
     }
 }
 
-/// A run failure. `replica_busy`: SPEC §4.3's held lock, its own outcome
-/// with its own remedy (wait for the other run).
+/// A run as the head shows it, whole: sent after every change, so each
+/// one stands alone and the head renders the latest without folding
+/// anything. Built by the run's own state in `run/state.rs`.
 #[derive(Serialize, SignalPiece)]
-pub struct RunErrorView {
-    pub side: Option<SideView>,
-    pub message: String,
-    pub replica_busy: bool,
+pub struct RunView {
+    /// SPEC §11.3's `--dry-run`: the plan is shown and nothing applied.
+    pub dry_run: bool,
+    pub phase: RunPhaseView,
+    /// When both sides connected; `None` before.
+    pub connected_at_ms: Option<i64>,
+    /// What each side's `hello` said, once both have.
+    pub replicas: Option<ReplicasView>,
+    /// Both scans' SPEC §5.2 counts, once both are done.
+    pub tally: Option<TalliesView>,
+    /// Paths either scan skipped or could not read, side A's first.
+    pub skipped: Vec<SkippedView>,
+    /// The conflicts, in the plan's order.
+    pub conflicts: Vec<ConflictRowView>,
+    /// The plan's actions, in its order; empty before it is made.
+    pub plan: Vec<PlanRowView>,
+    pub bytes_to_transfer: u64,
+    /// The apply's latest progress: completed of total.
+    pub progress: Option<ProgressView>,
+    /// How many of the reported outcomes landed, and how many failed.
+    pub applied: u64,
+    pub failed: u64,
+    /// The `--timings` report, once the attempt has ended.
+    pub timings: Option<String>,
 }
 
-impl From<&RunError> for RunErrorView {
-    fn from(error: &RunError) -> RunErrorView {
-        RunErrorView {
-            side: error.side().map(SideView::from),
-            message: error.to_string(),
-            replica_busy: error.replica_busy(),
-        }
-    }
-}
-
-/// How a run's session ended.
+/// Where a run stands. The live ones are `Connecting` to `Applying`;
+/// `Finished` and `Stopped` end the session; the rest wait on a resume.
 #[derive(Serialize, SignalPiece)]
-pub enum RunEndView {
-    /// The run ran (to its end, or until stopped): `timings` is the
-    /// `--timings` report.
-    Ran {
-        summary: Option<SummaryView>,
-        errored: bool,
-        stopped: Option<StoppedView>,
-        timings: String,
+pub enum RunPhaseView {
+    Connecting,
+    /// Scanning and reconciling; a dry run stays here until its summary.
+    Scanning,
+    /// The plan waits on the head's review; the running total of its
+    /// choices so far.
+    Reviewing(DecisionSummaryView),
+    /// SPEC §10's delete guard waits on the head: one entry per side it
+    /// tripped on.
+    ConfirmingDeletes {
+        sides: Vec<MassDeleteView>,
     },
-    /// A side could not be connected; nothing ran.
-    NotConnected { message: String },
-    /// Stopped while connecting; nothing ran.
-    StoppedConnecting,
+    Applying,
+    Finished(SummaryView),
+    /// Stopped by the head after `completed` actions.
+    Stopped {
+        completed: u64,
+    },
+    /// Suspended because the app went to the background, after
+    /// `completed` actions; a resume runs it again.
+    Paused {
+        completed: u64,
+    },
+    Failed {
+        message: String,
+    },
+    /// SPEC §4.3's held lock: its own outcome, with its own remedy.
+    ReplicaBusy {
+        message: String,
+    },
+    /// The head declined the deletions the guard asked about; nothing was
+    /// applied.
+    DeletesDeclined,
+    /// The run ended without a summary and nobody stopped it.
+    NoSummary,
 }
 
 #[derive(Serialize, SignalPiece)]
-pub enum StoppedView {
-    Gracefully,
-    Dropped,
+pub struct ReplicasView {
+    pub a: ReplicaInfoView,
+    pub b: ReplicaInfoView,
 }
 
-impl From<&RunReport> for RunEndView {
-    fn from(report: &RunReport) -> RunEndView {
-        RunEndView::Ran {
-            summary: report.summary.as_ref().map(SummaryView::from),
-            errored: report.errored,
-            stopped: report.stopped.map(|stopped| match stopped {
-                Stopped::Gracefully => StoppedView::Gracefully,
-                Stopped::Dropped => StoppedView::Dropped,
-            }),
-            timings: report.metrics.render(),
-        }
-    }
+#[derive(Serialize, SignalPiece)]
+pub struct TalliesView {
+    pub a: TallyView,
+    pub b: TallyView,
+}
+
+#[derive(Serialize, SignalPiece)]
+pub struct ProgressView {
+    pub completed: u64,
+    pub total: u64,
+}
+
+/// One planned action: the proposal, what the review chose for it, and its
+/// outcome once reported.
+#[derive(Serialize, SignalPiece)]
+pub struct PlanRowView {
+    pub proposal: ProposalView,
+    pub choice: ActionChoiceView,
+    pub outcome: Option<ResultView>,
+}
+
+/// One conflict: the conflict, the choices it offers (a side with no
+/// record of the path cannot be kept; keeping both needs a file on both
+/// sides), what the review chose, and the outcome of what that applied.
+#[derive(Serialize, SignalPiece)]
+pub struct ConflictRowView {
+    pub conflict: ConflictView,
+    pub offered: Vec<ConflictChoiceView>,
+    pub choice: ConflictChoiceView,
+    pub outcome: Option<ResultView>,
+}
+
+/// A planned action under review: as planned, reversed (the loser's
+/// version put back, only where the proposal offers it), or left out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, SignalPiece)]
+pub enum ActionChoiceView {
+    Proposed,
+    Reversed,
+    Skipped,
+}
+
+/// A conflict under review: left open, settled toward one side, or both
+/// versions kept - side B's saved beside side A's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, SignalPiece)]
+pub enum ConflictChoiceView {
+    Unresolved,
+    KeepA,
+    KeepB,
+    KeepBoth,
+}
+
+/// The review's running total: the plan's actions that will be applied
+/// (reversed ones included) and how many are reversed or skipped; the
+/// conflicts settled toward a side, kept both, or left open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, SignalPiece)]
+pub struct DecisionSummaryView {
+    pub apply: u64,
+    pub reversed: u64,
+    pub skipped: u64,
+    pub resolved: u64,
+    pub kept_both: u64,
+    pub left_open: u64,
 }
 
 /// How a pairing window ended.

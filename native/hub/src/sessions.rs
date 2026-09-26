@@ -6,27 +6,16 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use dsync_core::RunStop;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 
-use crate::signals::RunDecision;
+use crate::run::RunControl;
 
 /// How a command reaches a running session.
 pub enum Session {
-    Run(RunControl),
+    Run(Arc<RunControl>),
     Serve(AbortHandle),
     Pairing(PairingControl),
-}
-
-pub struct RunControl {
-    pub stop: RunStop,
-    /// Set on the first stop, for a run still connecting (the run itself
-    /// does not see its stop until it executes).
-    pub stopping: watch::Sender<bool>,
-    pub decisions: mpsc::Sender<RunDecision>,
-    /// The answer to SPEC §10's delete guard, while the run waits on one.
-    pub confirmations: mpsc::Sender<bool>,
 }
 
 pub struct PairingControl {

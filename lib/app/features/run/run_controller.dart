@@ -3,83 +3,61 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../app_controller.dart';
+import '../../core_link/models/action_choice.dart';
 import '../../core_link/models/action_result.dart';
+import '../../core_link/models/conflict_choice.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/file_status.dart';
 import '../../core_link/models/plan_action.dart';
 import '../../core_link/models/plan_proposal.dart';
 import '../../core_link/models/replica_side.dart';
-import '../../core_link/models/run_decision.dart';
-import '../../core_link/models/run_end.dart';
+import '../../core_link/models/run_intent.dart';
+import '../../core_link/models/run_phase.dart';
 import '../../core_link/models/run_session.dart';
-import '../../core_link/models/run_summary_info.dart';
-import '../../core_link/models/run_update.dart';
+import '../../core_link/models/run_view.dart';
 import '../../core_link/models/scan_tally.dart';
+import '../../core_link/models/skipped_path_info.dart';
 import '../../run_request.dart';
 import '../../screen_wake.dart';
-import 'plan_decisions.dart';
 import 'run_view_state.dart';
 
-/// Input methods of the Run page: starting a run in the core and rendering
-/// its updates (SPEC §9, §11.4).
+/// Input methods of the Run page: a run session in the core, the latest
+/// view of it rendered, and what the user does sent back (SPEC §9, §11.4).
 ///
 /// Named `SyncRunController` for the page it serves; the file keeps the
 /// `<feature>_controller.dart` name of the layout in `app_scope.dart`.
 ///
+/// **The core owns the run.** It sends the whole run after every change —
+/// the phase, the plan and the review's choices, the delete guard's
+/// question, the outcome — and this renders the latest view and decides
+/// nothing: every input method is an intent the core weighs where the run
+/// stands, and one it cannot take changes nothing. What stays here is
+/// wording and layout.
+///
 /// **Handed out by `runScope.create()`, never the cached `controller`.**
-/// Two runs must never share a view — a second `start` on a controller
-/// whose run is still reporting would fold two runs' updates into one
-/// view, which is why [start] runs once and a second attempt goes through
-/// [resume], which is reachable only from a phase whose run is provably
-/// over — and an update arriving late from a finished run must not write
-/// into a view state a later page has already torn down. So the page that
-/// took the instance calls [dispose], which marks every write path closed.
+/// One instance is one session: [start] runs once, and the page that took
+/// the instance calls [dispose], which tells the core the page left and
+/// stops listening, so a view arriving late never writes into a view state
+/// a later page has torn down.
 ///
 /// **What [stop] means.** The core's graceful stop, not a cancel: nothing
 /// further starts, the actions already in flight finish and commit (SPEC
-/// §7.3), the marks of copies that never started are withdrawn (SPEC §7.6),
-/// and the run then ends the way every run does — its summary, both locks
-/// released (SPEC §4.3). The view state records [SyncRunStopped] with the
-/// number of actions that completed, and the page says "stopped after N
-/// actions" — not "cancelled", which would claim nothing happened.
+/// §7.3), and the run ends the way every run does. The page says "stopped
+/// after N actions" — not "cancelled", which would claim nothing happened.
 ///
-/// **Backgrounding pauses a run; it does not end one.** [pause] is [stop]'s
-/// mechanism with a different name on the outcome — [SyncRunPaused] — and
-/// [resume] starts a fresh run for the same request afterwards. The page
-/// wires the two to the app's lifecycle (`run_page.dart`). The OS freezes a
-/// backgrounded app and the far end's heartbeat deadline would then fail
-/// the session mid-copy with both locks held; pausing first turns that
-/// into an ordinary suspension. What resuming continues is where the work
-/// is: every action reported before the pause is committed on both sides,
-/// so the new plan contains what is left and no more.
-///
-/// **Only a true backgrounding pauses.** The page listens for
-/// `AppLifecycleState.paused` and nothing above it: a notification shade,
-/// a permission dialog and an incoming call are `inactive`, and a run torn
-/// down for one of those would be this class making the user's day worse
-/// for no reason. Do not widen it to `inactive`.
+/// **Backgrounding pauses a run; it does not end one.** The page wires
+/// [pause] and [resumeFromBackground] to the app's lifecycle
+/// (`run_page.dart`): the OS freezes a backgrounded app and the far end's
+/// heartbeat deadline would then fail the session mid-copy with both locks
+/// held; pausing first turns that into an ordinary suspension, and coming
+/// back runs the same target again in the same session. **Only a true
+/// backgrounding pauses:** the page listens for `AppLifecycleState.paused`
+/// and nothing above it — a notification shade, a permission dialog and
+/// an incoming call are `inactive`. Do not widen it to `inactive`.
 ///
 /// **The screen is held awake while a run is live** ([ScreenWake],
 /// injected), and released the moment it stops being live — including
 /// while paused.
-///
-/// **The plan is the head's to decide.** When the core's plan update says
-/// it is awaiting a decision, this moves the phase to
-/// [SyncRunAwaitingDecisions] — the inline review — whose input methods
-/// are [resolveConflict], [choose], [skip], [keep], [acceptAll] and
-/// [confirm]; the last two answer the core. The core waits on that answer
-/// holding both
-/// replica locks, so a plan with nothing in it is answered at once, and a
-/// plan that arrives after a stop or a dispose is answered with nothing
-/// kept: nothing further starts, which is exactly the stop semantics. A
-/// dry run is never awaiting a decision. [acceptAll] is `--batch`: the plan
-/// unchanged, conflicts never resolved.
-///
-/// **So are deletions that empty a side.** When what was decided trips
-/// SPEC §10's delete guard, the core asks once more before applying it,
-/// and this moves the phase to [SyncRunConfirmingDeletes], answered by
-/// [confirmDeletes] or [declineDeletes]. Declining ends the run with
-/// nothing applied, shown as a failure the user chose — Resume asks again.
 class SyncRunController {
   SyncRunController(this.app, {required this.screenWake});
 
@@ -96,472 +74,302 @@ class SyncRunController {
   /// ended; `null` before. What the Timings sheet shows.
   final ValueNotifier<String?> timings = ValueNotifier(null);
 
-  RunSession? _session;
-  Completer<void>? _ended;
-  bool _stopRequested = false;
-  bool _pauseRequested = false;
+  /// The session, once the core opened it; `null` until then, and for
+  /// good when it would not.
+  Future<RunSession?>? _session;
+  StreamSubscription<RunView>? _views;
   bool _screenHeld = false;
   bool _disposed = false;
-  int _completedActions = 0;
 
-  /// When the apply loop's progress was last shown; `null` until the first
-  /// one of an apply, so that one shows the moment it arrives.
-  DateTime? _progressShownAt;
-
-  ({PlanDecisions choices, RunRequest request})? _pending;
-
-  /// The session whose delete guard waits on [confirmDeletes] or
-  /// [declineDeletes]; `null` when none does.
-  RunSession? _pendingDeletes;
-
-  /// Set by [declineDeletes], so the refusal that follows reads as the
-  /// user's choice rather than the core's words for it.
-  bool _deletesDeclined = false;
-
-  /// Starts [request]'s run. One run per instance — the reason the page
-  /// takes `create()`. A second call is ignored rather than thrown: the
-  /// page fires it from `initState`, where a throw would be a crash with no
-  /// one to catch it. Running the same request again is [resume].
+  /// Opens [request]'s run session. One per instance — the reason the page
+  /// takes `create()`; a second call is ignored rather than thrown, since
+  /// the page fires it from `initState`.
   Future<void> start(RunRequest request) async {
-    if (_disposed || state.phase is! SyncRunIdle) return;
-    await _begin(request);
-  }
-
-  /// [resume], but only out of [SyncRunPaused]: what the page calls when
-  /// the app comes back to the foreground.
-  Future<void> resumeFromBackground(RunRequest request) async {
-    if (state.phase is! SyncRunPaused) return;
-    await resume(request);
-  }
-
-  /// Runs [request] again after a pause, a failure or a busy replica.
-  Future<void> resume(RunRequest request) async {
-    if (_disposed) return;
-    final resumable = switch (state.phase) {
-      SyncRunPaused() || SyncRunFailed() || SyncRunReplicaBusy() => true,
-      SyncRunIdle() ||
-      SyncRunConnecting() ||
-      SyncRunScanning() ||
-      SyncRunApplying() ||
-      SyncRunAwaitingDecisions() ||
-      SyncRunConfirmingDeletes() ||
-      SyncRunFinished() ||
-      SyncRunStopped() => false,
-    };
-    if (!resumable) return;
-    _stopRequested = false;
-    _pauseRequested = false;
-    await _begin(request);
-  }
-
-  Future<void> _begin(RunRequest request) async {
-    _completedActions = 0;
-    _progressShownAt = null;
-    _pending = null;
-    _pendingDeletes = null;
-    _deletesDeclined = false;
-    timings.value = null;
-    state.recordStart(dryRun: request.dryRun);
-    _recordPhase(const SyncRunConnecting());
-    final ended = _ended = Completer<void>();
-    final RunSession session;
+    if (_disposed || _session != null) return;
+    final opened = Completer<RunSession?>();
+    _session = opened.future;
     try {
-      session = await app.core.startRun(
+      final session = await app.core.startRun(
         request.target,
         dryRun: request.dryRun,
         address: request.address,
       );
+      opened.complete(session);
+      if (_disposed) return;
+      _views = session.views.listen((view) => _show(view, request));
     } on CoreFailure catch (e) {
-      _recordPhase(SyncRunFailed(e.message));
-      ended.complete();
-      return;
-    }
-    _session = session;
-    // Stopped, or the page left, while the core was taking the request:
-    // the run exists now, so it is stopped like any other.
-    if (_stopRequested) unawaited(_stopQuietly(session));
-    try {
-      await for (final update in session.updates) {
-        if (_disposed) continue;
-        await _fold(update, request, session);
-      }
-    } on CoreFailure catch (e) {
-      _recordPhase(SyncRunFailed(e.message));
-    } finally {
-      if (_session == session) _session = null;
-      _pending = null;
-      _pendingDeletes = null;
-      if (!ended.isCompleted) ended.complete();
+      opened.complete(null);
+      _showPhase(SyncRunFailed(e.message));
     }
   }
 
   /// Stops the run gracefully; see the class doc comment.
-  Future<void> stop() => _suspend(paused: false);
+  Future<void> stop() => _steer(const StopRun());
 
-  /// Pauses a live run because the app is being backgrounded.
-  Future<void> pause() async {
-    if (!_isLive(state.phase)) return;
-    await _suspend(paused: true);
-  }
+  /// The app is being backgrounded.
+  Future<void> pause() => _steer(const PauseRun());
 
-  Future<void> _suspend({required bool paused}) async {
-    if (_stopRequested) return;
-    _stopRequested = true;
-    _pauseRequested = paused;
-    _pending = null;
-    _pendingDeletes = null;
-    final session = _session;
-    // Still waiting on the core to take the request: [_begin] stops the
-    // session the moment it exists.
-    if (session != null) await _stopQuietly(session);
-    await _ended?.future;
-  }
+  /// The app came back to the foreground.
+  Future<void> resumeFromBackground() => _steer(const ForegroundRun());
+
+  /// Runs the target again after a pause, a failure or a busy replica.
+  Future<void> resume() => _steer(const ResumeRun());
+
+  /// The choice made for the conflict at [index] under review.
+  Future<void> resolveConflict(int index, SyncRunConflictChoice choice) =>
+      _steer(ChooseConflict(index, _conflictChoice(choice)));
+
+  /// The choice made for the planned action at [index] under review.
+  Future<void> choose(int index, SyncRunActionChoice choice) => _steer(
+    ChooseAction(index, switch (choice) {
+      SyncRunActionChoice.proposed => ActionChoice.proposed,
+      SyncRunActionChoice.reversed => ActionChoice.reversed,
+      SyncRunActionChoice.skipped => ActionChoice.skipped,
+    }),
+  );
+
+  /// "Sync all except conflicts": the plan unchanged, whatever the rows
+  /// say (`--batch`).
+  Future<void> acceptAll() => _steer(const AcceptAll());
+
+  /// Apply the review's choices.
+  Future<void> confirm() => _steer(const ConfirmReview());
+
+  /// SPEC §10: apply the deletions the guard stopped for.
+  Future<void> confirmDeletes() => _steer(const AnswerDeletes(proceed: true));
+
+  /// SPEC §10: apply nothing; the run ends without touching either side.
+  Future<void> declineDeletes() => _steer(const AnswerDeletes(proceed: false));
 
   void dispose() {
     _disposed = true;
-    _stopRequested = true;
-    _pending = null;
-    _pendingDeletes = null;
-    // Stopped rather than abandoned and not awaited: the rest of the run
-    // belongs to the core, not to the page that just left, and every
-    // update folded from here on is dropped.
-    final session = _session;
-    if (session != null) unawaited(_stopQuietly(session));
+    // Not awaited: the rest of the run belongs to the core, not to the
+    // page that just left.
+    unawaited(_steer(const CloseRun()));
+    unawaited(_views?.cancel());
     // The page is gone, so there is no screen of this head's to hold on.
     _syncScreenWake(const SyncRunIdle());
     timings.dispose();
     state.dispose();
   }
 
-  Future<void> _stopQuietly(RunSession session) async {
+  Future<void> _steer(RunIntent intent) async {
+    final session = await _session;
+    if (session == null) return;
     try {
-      await app.core.stopRun(session.session);
+      await app.core.steerRun(session.session, intent);
     } on CoreFailure {
-      // Already over: its last update says how.
+      // The session is over: its last view says how.
     }
   }
 
-  bool _isLive(SyncRunPhase phase) => switch (phase) {
-    SyncRunConnecting() ||
-    SyncRunScanning() ||
-    SyncRunApplying() ||
-    SyncRunAwaitingDecisions() ||
-    SyncRunConfirmingDeletes() => true,
-    SyncRunIdle() ||
-    SyncRunFinished() ||
-    SyncRunStopped() ||
-    SyncRunPaused() ||
-    SyncRunReplicaBusy() ||
-    SyncRunFailed() => false,
-  };
+  static ConflictChoice _conflictChoice(SyncRunConflictChoice choice) =>
+      switch (choice) {
+        SyncRunConflictChoice.unresolved => ConflictChoice.unresolved,
+        SyncRunConflictChoice.keepLocal => ConflictChoice.keepA,
+        SyncRunConflictChoice.keepRemote => ConflictChoice.keepB,
+        SyncRunConflictChoice.keepBoth => ConflictChoice.keepBoth,
+      };
 
-  void _recordPhase(SyncRunPhase phase) {
+  static SyncRunConflictChoice _syncRunConflictChoice(ConflictChoice choice) =>
+      switch (choice) {
+        ConflictChoice.unresolved => SyncRunConflictChoice.unresolved,
+        ConflictChoice.keepA => SyncRunConflictChoice.keepLocal,
+        ConflictChoice.keepB => SyncRunConflictChoice.keepRemote,
+        ConflictChoice.keepBoth => SyncRunConflictChoice.keepBoth,
+      };
+
+  void _showPhase(SyncRunPhase phase) {
     if (_disposed) return;
-    state.recordPhase(phase);
+    state.show(
+      phase: phase,
+      dryRun: state.dryRun,
+      startedAt: null,
+      header: null,
+      scanTally: null,
+      skippedSymlinks: const [],
+      unreadablePaths: const [],
+      conflicts: const [],
+      plan: const [],
+      bytesToTransfer: 0,
+      results: const {},
+      actionChoices: const {},
+      conflictChoices: const {},
+      decisionSummary: null,
+      progress: null,
+      appliedCount: 0,
+      failedCount: 0,
+    );
+    _syncScreenWake(phase);
+  }
+
+  /// Renders [view] of [request]'s run: the core's values in this page's
+  /// words, nothing decided.
+  void _show(RunView view, RunRequest request) {
+    if (_disposed) return;
+    final phase = _phase(view.phase, request);
+    final results = <String, SyncRunResultRow>{};
+    final actionChoices = <String, SyncRunActionChoice>{};
+    final conflictChoices = <String, SyncRunConflictChoice>{};
+    for (final row in view.plan) {
+      final path = row.proposal.path;
+      actionChoices[path] = switch (row.choice) {
+        ActionChoice.proposed => SyncRunActionChoice.proposed,
+        ActionChoice.reversed => SyncRunActionChoice.reversed,
+        ActionChoice.skipped => SyncRunActionChoice.skipped,
+      };
+      if (row.outcome case final outcome?) results[path] = _result(outcome);
+    }
+    for (final row in view.conflicts) {
+      final path = row.conflict.path;
+      conflictChoices[path] = _syncRunConflictChoice(row.choice);
+      if (row.outcome case final outcome?) results[path] = _result(outcome);
+    }
+    final skipped = [
+      for (final skipped in view.skipped)
+        (line: _skippedLine(skipped), isFailure: skipped.isFailure),
+    ];
+    state.show(
+      phase: phase,
+      dryRun: view.dryRun,
+      startedAt: switch (view.connectedAt) {
+        final at? => _clockTime(at),
+        null => null,
+      },
+      header: switch (view.replicas) {
+        (:final a, :final b) => SyncRunHeader(
+          localRoot: request.localRootPath,
+          remoteRoot: request.remoteRootPath,
+          history: _history(lastA: a.lastCommit, lastB: b.lastCommit),
+          firstSyncWarning: a.lastCommit == null || b.lastCommit == null
+              ? firstSyncWarning
+              : null,
+        ),
+        null => null,
+      },
+      scanTally: switch (view.tallies) {
+        (:final a, :final b) => SyncRunScanTally(
+          local: _side(a),
+          remote: _side(b),
+        ),
+        null => null,
+      },
+      // `isFailure` is the reason's own verdict on which list this is
+      // (SPEC §5.1): a symlink is the tool obeying §9's rules, the others
+      // a side unable to stand behind a status.
+      skippedSymlinks: [
+        for (final (:line, :isFailure) in skipped)
+          if (!isFailure) line,
+      ],
+      unreadablePaths: [
+        for (final (:line, :isFailure) in skipped)
+          if (isFailure) line,
+      ],
+      conflicts: [
+        for (final (index, row) in view.conflicts.indexed)
+          SyncRunConflictRow(
+            index: index,
+            path: row.conflict.path,
+            local: _conflictSide(row.conflict.a),
+            remote: _conflictSide(row.conflict.b),
+            offered: [
+              for (final choice in row.offered) _syncRunConflictChoice(choice),
+            ],
+          ),
+      ],
+      plan: [
+        for (final (index, row) in view.plan.indexed)
+          SyncRunPlanRow(
+            index: index,
+            path: row.proposal.path,
+            action: _actionLabel(row.proposal.action),
+            bytes: _bytes(row.proposal.action),
+            group: _group(row.proposal.action),
+            reversal: _reversal(row.proposal),
+          ),
+      ],
+      bytesToTransfer: view.bytesToTransfer,
+      results: results,
+      actionChoices: actionChoices,
+      conflictChoices: conflictChoices,
+      decisionSummary: switch (view.phase) {
+        RunReviewing(:final summary) => SyncRunDecisionSummary(
+          apply: summary.apply,
+          reversed: summary.reversed,
+          skipped: summary.skipped,
+          resolved: summary.resolved,
+          keptBoth: summary.keptBoth,
+          leftOpen: summary.leftOpen,
+        ),
+        _ => null,
+      },
+      progress: switch (view.progress) {
+        (:final completed, :final total) => SyncRunProgress(
+          completed: completed,
+          total: total,
+        ),
+        null => null,
+      },
+      appliedCount: view.applied,
+      failedCount: view.failed,
+    );
+    timings.value = view.timings;
     _syncScreenWake(phase);
   }
 
   void _syncScreenWake(SyncRunPhase phase) {
-    final wanted = _isLive(phase);
+    final wanted = switch (phase) {
+      SyncRunConnecting() ||
+      SyncRunScanning() ||
+      SyncRunApplying() ||
+      SyncRunAwaitingDecisions() ||
+      SyncRunConfirmingDeletes() => true,
+      SyncRunIdle() ||
+      SyncRunFinished() ||
+      SyncRunStopped() ||
+      SyncRunPaused() ||
+      SyncRunReplicaBusy() ||
+      SyncRunFailed() => false,
+    };
     if (wanted == _screenHeld) return;
     _screenHeld = wanted;
     unawaited(wanted ? screenWake.enable() : screenWake.disable());
   }
 
-  /// Records [choice] for the conflict at [path] under review.
-  void resolveConflict(String path, SyncRunConflictChoice choice) =>
-      _amend(path, (choices) => choices.resolve(path, choice));
-
-  /// Records [choice] for the proposed action at [path] under review: as
-  /// planned, reversed (only where the plan offers it) or skipped.
-  void choose(String path, SyncRunActionChoice choice) =>
-      _amend(path, (choices) => choices.choose(path, choice));
-
-  /// Drops the proposed action at [path] (or unresolves a conflict).
-  void skip(String path) => _amend(path, (choices) => choices.skip(path));
-
-  /// Undoes [skip] for the proposed action at [path].
-  void keep(String path) => _amend(path, (choices) => choices.keep(path));
-
-  /// `--batch`: the plan unchanged, conflicts left unresolved — whatever
-  /// was chosen row by row, so the rows are put back to say so.
-  void acceptAll() {
-    final pending = _pending;
-    if (pending == null) return;
-    state.resetDecisions();
-    _answer(RunDecision.acceptAll(pending.choices.plan.actions.length));
-  }
-
-  /// Answers the core with the review's choices.
-  void confirm() {
-    final pending = _pending;
-    if (pending == null) return;
-    _answer(pending.choices.resolved());
-  }
-
-  void _answer(RunDecision decision) {
-    _pending = null;
-    _recordPhase(const SyncRunApplying());
-    final session = _session;
-    if (session != null) unawaited(_decide(session, decision));
-  }
-
-  Future<void> _decide(RunSession session, RunDecision decision) async {
-    try {
-      await app.core.decideRun(session.session, decision);
-    } on CoreFailure {
-      // The run ended before the answer reached it: its last update says
-      // how.
-    }
-  }
-
-  /// SPEC §10: apply the deletions the guard stopped for.
-  void confirmDeletes() => _answerDeletes(proceed: true);
-
-  /// SPEC §10: apply nothing; the run ends without touching either side.
-  void declineDeletes() => _answerDeletes(proceed: false);
-
-  void _answerDeletes({required bool proceed}) {
-    final session = _pendingDeletes;
-    if (session == null) return;
-    _pendingDeletes = null;
-    if (proceed) {
-      _recordPhase(const SyncRunApplying());
-    } else {
-      _deletesDeclined = true;
-    }
-    unawaited(_confirmDeletes(session, proceed: proceed));
-  }
-
-  Future<void> _confirmDeletes(
-    RunSession session, {
-    required bool proceed,
-  }) async {
-    try {
-      await app.core.confirmDeletes(session.session, proceed: proceed);
-    } on CoreFailure {
-      // The run ended before the answer reached it: its last update says
-      // how.
-    }
-  }
-
-  /// Applies [change] and writes what it came to into [path]'s cell and
-  /// the running total — never the phase: a tap is one row's news and the
-  /// bar's, and re-emitting the phase would rebuild every row with it.
-  /// Read back from [PlanDecisions] rather than taken from the tap, so a
-  /// choice it refused (not offered) leaves the row showing what will
-  /// actually be sent.
-  void _amend(String path, void Function(PlanDecisions choices) change) {
-    final pending = _pending;
-    if (pending == null || _disposed) return;
-    final choices = pending.choices;
-    change(choices);
-    if (choices.isConflict(path)) {
-      state.recordConflictChoice(path, choices.choiceFor(path));
-    } else {
-      state.recordActionChoice(path, choices.actionChoiceFor(path));
-    }
-    state.recordDecisionSummary(choices.summary());
-  }
-
-  /// Opens the review over [choices]: every row back to its default, the
-  /// running total seeded, then the phase — once, with the facts that stay
-  /// fixed until it is answered.
-  void _openReview(PlanDecisions choices) {
-    state
-      ..resetDecisions()
-      ..recordDecisionSummary(choices.summary());
-    _recordPhase(
-      SyncRunAwaitingDecisions(
-        conflictOffers: {
-          for (final conflict in choices.plan.conflicts)
-            conflict.path: choices.offeredFor(conflict),
-        },
-      ),
-    );
-  }
-
-  Future<void> _fold(
-    RunUpdate update,
-    RunRequest request,
-    RunSession session,
-  ) async {
-    switch (update) {
-      case RunConnected():
-        state.recordStartedAt(_clockTime(app.now()));
-        _recordPhase(const SyncRunScanning());
-      case RunReplicas(:final a, :final b):
-        state.recordHeader(
-          SyncRunHeader(
-            localRoot: request.localRootPath,
-            remoteRoot: request.remoteRootPath,
-            history: _history(lastA: a.lastCommit, lastB: b.lastCommit),
-            firstSyncWarning: a.lastCommit == null || b.lastCommit == null
-                ? firstSyncWarning
-                : null,
-          ),
-        );
-      case RunScanTally(:final a, :final b):
-        state.recordScanTally(
-          SyncRunScanTally(local: _side(a), remote: _side(b)),
-        );
-      case RunSkipped(:final skipped):
-        final side = _sideName(skipped.side, request);
-        final line = '${skipped.path} ($side): ${skipped.detail}';
-        // `isFailure` is the reason's own verdict on which list this is
-        // (SPEC §5.1): a symlink is the tool obeying §9's rules, the other
-        // two are a side unable to stand behind a status.
-        if (skipped.isFailure) {
-          state.recordUnreadablePath(line);
-        } else {
-          state.recordSkippedSymlink(line);
-        }
-      case RunConflict(:final conflict):
-        state.recordConflict(
-          SyncRunConflictRow(
-            path: conflict.path,
-            local: _conflictSide(conflict.a),
-            remote: _conflictSide(conflict.b),
-          ),
-        );
-      case RunPlan() && final plan:
-        state.recordPlan([
-          for (final proposal in plan.actions)
-            SyncRunPlanRow(
-              path: proposal.path,
-              action: _actionLabel(proposal.action),
-              bytes: _bytes(proposal.action),
-              group: _group(proposal.action),
-              reversal: _reversal(proposal),
-            ),
-        ], bytesToTransfer: plan.bytesToTransfer);
-        if (!plan.awaitingDecision) break;
-        // A run already stopped must not park a review nobody will answer,
-        // and nothing to decide needs no review either: the core waits on
-        // the answer holding both locks, so it is given at once.
-        if (_stopRequested ||
-            (plan.actions.isEmpty && plan.conflicts.isEmpty)) {
-          _recordPhase(const SyncRunApplying());
-          await _decide(session, const RunDecision());
-          break;
-        }
-        final choices = PlanDecisions(plan);
-        _pending = (choices: choices, request: request);
-        _openReview(choices);
-      case RunMassDelete(:final sides, :final awaitingConfirmation):
-        // A stop already on its way ends the wait in the core; nothing is
-        // parked for it.
-        if (!awaitingConfirmation || _stopRequested) break;
-        _pendingDeletes = session;
-        _recordPhase(
-          SyncRunConfirmingDeletes([
-            for (final side in sides)
-              SyncRunDeletesOnSide(
-                where: switch (side.side) {
-                  ReplicaSide.a => 'this device',
-                  ReplicaSide.b => 'the remote',
-                },
-                root: switch (side.side) {
-                  ReplicaSide.a => request.localRootPath,
-                  ReplicaSide.b => request.remoteRootPath,
-                },
-                deletes: side.deletes,
-                archived: side.archived,
-              ),
-          ]),
-        );
-      case RunApplied(:final results, :final progress):
-        for (final ActionResult(:action, :failure) in results) {
-          state.recordResult(
-            SyncRunResultRow(
-              path: action.path,
-              action: _actionLabel(action),
-              error: failure,
-            ),
-          );
-        }
-        // Every update is recorded — `_completedActions` included, which a
-        // stop reports — and at most one a second is shown (SPEC §11.4):
-        // the core batches these every 50 ms, and a count that moves 20
-        // times a second reads no better than one that moves once. Checked
-        // on arrival rather than by a timer, so an apply with nothing to
-        // report schedules nothing; the cost is that an update dropped here
-        // stays unshown until the next one, or the next phase.
-        if (progress != null) {
-          _completedActions = progress.completed;
-          state.recordProgress(
-            SyncRunProgress(
-              completed: progress.completed,
-              total: progress.total,
-            ),
-          );
-        }
-        final now = app.now();
-        if (refreshDue(lastShown: _progressShownAt, now: now)) {
-          _progressShownAt = now;
-          state.publishProgress();
-        }
-      case RunSummarized(:final summary):
-        _recordSummary(summary);
-      case RunFailed(:final error):
-        // SPEC §4.3: a held replica lock is its own outcome, not a failure
-        // — the core says which it is, so nothing here reads a message.
-        _recordPhase(
-          error.replicaBusy
-              ? SyncRunReplicaBusy(error.message)
-              : SyncRunFailed(
-                  _deletesDeclined ? deletesDeclinedMessage : error.message,
-                ),
-        );
-      case RunEnded(:final end):
-        _recordEnd(end);
-    }
-  }
-
-  void _recordSummary(RunSummaryInfo summary) {
-    // A stopped run still ends with a summary; what the page shows is that
-    // it was stopped, and how far it got.
-    if (_stopRequested) {
-      _recordPhase(_suspended(_completedActions));
-      return;
-    }
-    _recordPhase(
-      SyncRunFinished(
-        applied: summary.applied,
-        skipped: summary.skipped,
-        conflicts: summary.conflicts,
-        failed: summary.failed,
-        unreadable: summary.unreadable,
-      ),
-    );
-  }
-
-  void _recordEnd(RunEnd end) {
-    switch (end) {
-      case RunRan(timings: final report):
-        if (!_disposed) timings.value = report;
-        if (state.phase
-            case SyncRunConnecting() ||
-                SyncRunScanning() ||
-                SyncRunApplying()) {
-          _recordPhase(
-            _stopRequested
-                ? _suspended(_completedActions)
-                : const SyncRunFailed(
-                    'The run ended without reporting a summary.',
-                  ),
-          );
-        }
-      case RunNotConnected(:final message):
-        _recordPhase(_stopRequested ? _suspended(0) : SyncRunFailed(message));
-      case RunStoppedConnecting():
-        _recordPhase(_suspended(0));
-    }
-  }
-
-  SyncRunPhase _suspended(int completedActions) => _pauseRequested
-      ? SyncRunPaused(completedActions: completedActions)
-      : SyncRunStopped(completedActions: completedActions);
+  SyncRunPhase _phase(RunPhase phase, RunRequest request) => switch (phase) {
+    RunConnecting() => const SyncRunConnecting(),
+    RunScanning() => const SyncRunScanning(),
+    RunReviewing() => const SyncRunAwaitingDecisions(),
+    RunConfirmingDeletes(:final sides) => SyncRunConfirmingDeletes([
+      for (final side in sides)
+        SyncRunDeletesOnSide(
+          where: switch (side.side) {
+            ReplicaSide.a => 'this device',
+            ReplicaSide.b => 'the remote',
+          },
+          root: switch (side.side) {
+            ReplicaSide.a => request.localRootPath,
+            ReplicaSide.b => request.remoteRootPath,
+          },
+          deletes: side.deletes,
+          archived: side.archived,
+        ),
+    ]),
+    RunApplying() => const SyncRunApplying(),
+    RunFinished(:final summary) => SyncRunFinished(
+      applied: summary.applied,
+      skipped: summary.skipped,
+      conflicts: summary.conflicts,
+      failed: summary.failed,
+      unreadable: summary.unreadable,
+    ),
+    RunStopped(:final completed) => SyncRunStopped(completedActions: completed),
+    RunPaused(:final completed) => SyncRunPaused(completedActions: completed),
+    RunFailed(:final message) => SyncRunFailed(message),
+    RunReplicaBusy(:final message) => SyncRunReplicaBusy(message),
+    RunDeletesDeclined() => const SyncRunFailed(deletesDeclinedMessage),
+    RunNoSummary() => const SyncRunFailed(noSummaryMessage),
+  };
 
   String _history({required DateTime? lastA, required DateTime? lastB}) {
     if (lastA == null && lastB == null) return 'First sync of this pair.';
@@ -617,25 +425,26 @@ class SyncRunController {
   }
 }
 
-/// The Run page's refresh rate while applying: at most once a second.
-const progressRefreshInterval = Duration(seconds: 1);
-
-/// Whether an apply update arriving at [now] is shown, given the last one
-/// shown at [lastShown] (`null`: none yet this apply).
-bool refreshDue({required DateTime? lastShown, required DateTime now}) =>
-    lastShown == null || now.difference(lastShown) >= progressRefreshInterval;
-
 const firstSyncWarning =
     'First sync: with no archive, a file present on one side only is '
     'copied, never deleted — there is no way yet to tell a new file from a '
     'deleted one.';
 
-/// SPEC §16 fixes which side is which for this head: `a` is this device's
-/// folder and `b` the peer's.
-String _sideName(ReplicaSide side, RunRequest request) => switch (side) {
-  ReplicaSide.a => 'this device',
-  ReplicaSide.b => 'remote',
-};
+/// A skipped path's line: the path, which side (SPEC §16 fixes `a` as this
+/// device's folder and `b` as the peer's), and the scan's own reason.
+String _skippedLine(SkippedPathInfo skipped) {
+  final side = switch (skipped.side) {
+    ReplicaSide.a => 'this device',
+    ReplicaSide.b => 'remote',
+  };
+  return '${skipped.path} ($side): ${skipped.detail}';
+}
+
+SyncRunResultRow _result(ActionResult result) => SyncRunResultRow(
+  path: result.action.path,
+  action: _actionLabel(result.action),
+  error: result.failure,
+);
 
 SyncRunScanSide _side(ScanTally tally) => SyncRunScanSide(
   metadataMatched: tally.metadataMatched,
@@ -704,10 +513,10 @@ String _actionLabel(PlanAction action) => switch (action) {
 /// reverse of a copy overwrites the side it would have copied to, and the
 /// reverse of a delete restores the side that lost the file — so the label
 /// names whose version is replaced, or where the file comes back, never a
-/// softer "undo". `null` when the plan offers no reverse.
+/// softer "undo". `null` when the core offers no reverse.
 SyncRunPlanReversal? _reversal(PlanProposal proposal) {
-  final reversed = proposal.reversed;
-  if (reversed == null) return null;
+  final bytes = proposal.reverseBytes;
+  if (bytes == null) return null;
   final action = switch (proposal.action) {
     CopyAction(from: ReplicaSide.a) =>
       "replace this device's version with the remote's",
@@ -718,7 +527,7 @@ SyncRunPlanReversal? _reversal(PlanProposal proposal) {
     CommitOnlyAction() || CopyAsideAction() => null,
   };
   if (action == null) return null;
-  return SyncRunPlanReversal(action: action, bytes: _bytes(reversed));
+  return SyncRunPlanReversal(action: action, bytes: bytes);
 }
 
 /// A relative path's file name: its last segment.
@@ -748,6 +557,8 @@ SyncRunPlanGroup _group(PlanAction action) => switch (action) {
 const deletesDeclinedMessage =
     'Not applied: you chose not to delete those files. Nothing was changed '
     'on either side.';
+
+const noSummaryMessage = 'The run ended without reporting a summary.';
 
 String stoppedMessage(int completedActions) =>
     'Stopped after $completedActions action(s). Everything applied so far '

@@ -1,73 +1,69 @@
-import 'package:dsync/app/core_link/models/action_result.dart';
-import 'package:dsync/app/core_link/models/file_status.dart';
-import 'package:dsync/app/core_link/models/replica_side.dart';
-import 'package:dsync/app/core_link/models/run_end.dart';
-import 'package:dsync/app/core_link/models/run_update.dart';
-import 'package:dsync/app/core_link/models/skipped_path_info.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import 'run_fixtures.dart';
 
-/// `SyncRunViewState` folded from the core's run updates, played by a
-/// `FakeHub` — no core, no sockets, no widgets. Every test here is
-/// about the fold.
+/// `SyncRunViewState` as the core's views of a run render into it, played
+/// by a `FakeHub` — no core, no sockets, no widgets. Every test here is
+/// "given this view, the page's values are these": the wording, and which
+/// of the page's listenables a view wakes. What the run decides is the
+/// core's (native/hub).
 void main() {
   final now = DateTime(2026, 9, 16, 12, 0);
   late RunHarness harness;
 
-  SyncRunController get() => harness.controller;
+  SyncRunViewState state() => harness.state;
 
-  setUp(() => harness = RunHarness(now: () => now));
-
-  /// A whole run of [updates] on a fresh controller, as the page would
-  /// start one. The fresh controller is what lets one test render twice.
-  Future<void> render(List<RunUpdate> updates) async {
+  setUp(() async {
     harness = RunHarness(now: () => now);
-    await harness.run(updates);
-  }
+    await harness.start();
+  });
+  tearDown(() => harness.dispose());
 
-  final happy = <RunUpdate>[
-    replicas(
+  final happy = runView(
+    phase: applying,
+    connectedAt: now,
+    replicas: replicas(
       lastA: now.subtract(const Duration(hours: 2)),
       lastB: now.subtract(const Duration(hours: 2)),
     ),
-    const RunScanTally(a: tally, b: tally),
-    skipped(
-      side: ReplicaSide.a,
-      path: 'link',
-      reason: SkipReason.symlink,
-      detail: 'no follow rule matched',
-      isFailure: false,
-    ),
-    skipped(
-      side: ReplicaSide.b,
-      path: 'locked.txt',
-      reason: SkipReason.unreadable,
-      detail: 'Permission denied',
-      isFailure: true,
-    ),
-    RunConflict(conflict('both.txt', a: createdA, b: modifiedB)),
-    plan(),
-    applied(
-      results: const [ActionResult(action: copyNew, failure: null)],
-      progress: (completed: 1, total: 2),
-    ),
-    applied(
-      results: const [
-        ActionResult(action: deleteGone, failure: 'Permission denied'),
-      ],
-      progress: (completed: 2, total: 2),
-    ),
-    summarized(applied: 1, failed: 1, conflicts: 1, unreadable: 1),
-  ];
+    tallies: tallies(),
+    skipped: [
+      skippedPath(
+        side: wire.SideView.a,
+        path: 'link',
+        reason: wire.SkippedReasonView.symlink,
+        detail: 'no follow rule matched',
+        isFailure: false,
+      ),
+      skippedPath(
+        side: wire.SideView.b,
+        path: 'locked.txt',
+        reason: wire.SkippedReasonView.unreadable,
+        detail: 'Permission denied',
+        isFailure: true,
+      ),
+    ],
+    conflicts: [conflictRow('both.txt', a: createdFile(), b: modifiedFile())],
+    plan: [
+      planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
+      planRow(
+        deleteHere('gone.txt'),
+        outcome: outcome(deleteHere('gone.txt'), failure: 'Permission denied'),
+      ),
+    ],
+    progress: (completed: 2, total: 2),
+    applied: 1,
+    failed: 1,
+  );
 
-  group('the full sequence, in SPEC §11.4 order', () {
+  group('the core\'s view, rendered', () {
     test('header: both locations and the last sync', () async {
-      await render(happy);
+      await harness.show(happy);
 
-      final header = get().state.header!;
+      final header = state().header!;
       expect(header.localRoot, '/data/notes');
       expect(header.remoteRoot, '~/notes');
       expect(header.history, contains('Last synced'));
@@ -78,9 +74,9 @@ void main() {
     test(
       'scan tally: metadata-matched and hash-matched both surface',
       () async {
-        await render(happy);
+        await harness.show(happy);
 
-        final tally = get().state.scanTally!;
+        final tally = state().scanTally!;
         expect(tally.local.metadataMatched, 7);
         expect(tally.local.hashMatched, 2);
         expect(tally.remote.metadataMatched, 7);
@@ -90,16 +86,16 @@ void main() {
     );
 
     test('skipped symlinks and unreadable paths are two lists', () async {
-      await render(happy);
+      await harness.show(happy);
 
-      expect(get().state.skippedSymlinks, hasLength(1));
+      expect(state().skippedSymlinks, hasLength(1));
       expect(
-        get().state.skippedSymlinks.single,
+        state().skippedSymlinks.single,
         allOf(contains('link'), contains('this device'), contains('no follow')),
       );
-      expect(get().state.unreadablePaths, hasLength(1));
+      expect(state().unreadablePaths, hasLength(1));
       expect(
-        get().state.unreadablePaths.single,
+        state().unreadablePaths.single,
         allOf(
           contains('locked.txt'),
           contains('remote'),
@@ -111,58 +107,82 @@ void main() {
     test(
       'a case-fold collision is a failure, so it lists as unreadable',
       () async {
-        await render([
-          skipped(
-            side: ReplicaSide.a,
-            path: 'A.txt',
-            reason: SkipReason.caseFoldCollision,
-            detail: 'collides with a.txt',
-            isFailure: true,
+        await harness.show(
+          runView(
+            skipped: [
+              skippedPath(
+                side: wire.SideView.a,
+                path: 'A.txt',
+                reason: wire.SkippedReasonView.caseFoldCollision,
+                detail: 'collides with a.txt',
+                isFailure: true,
+              ),
+            ],
           ),
-        ]);
+        );
 
-        expect(get().state.unreadablePaths.single, contains('A.txt'));
-        expect(get().state.skippedSymlinks, isEmpty);
+        expect(state().unreadablePaths.single, contains('A.txt'));
+        expect(state().skippedSymlinks, isEmpty);
       },
     );
 
-    test('conflicts: each side as a status, no record as none', () async {
-      await render(happy);
+    test('conflicts: each side as a status, no record as none, and what '
+        'the core offers', () async {
+      await harness.show(happy);
 
-      final row = get().state.conflicts.single;
+      final row = state().conflicts.single;
+      expect(row.index, 0);
       expect(row.path, 'both.txt');
       expect(row.local.status, SyncRunSideStatus.created);
       expect(row.remote.status, SyncRunSideStatus.modified);
+      expect(row.offered, [
+        SyncRunConflictChoice.unresolved,
+        SyncRunConflictChoice.keepLocal,
+        SyncRunConflictChoice.keepRemote,
+        SyncRunConflictChoice.keepBoth,
+      ]);
 
-      await render([RunConflict(conflict('only.txt', a: createdA))]);
-      expect(get().state.conflicts.last.remote.status, SyncRunSideStatus.none);
-      expect(get().state.conflicts.last.remote.file, isNull);
+      await harness.show(
+        runView(conflicts: [conflictRow('only.txt', a: createdFile())]),
+      );
+      final only = state().conflicts.single;
+      expect(only.remote.status, SyncRunSideStatus.none);
+      expect(only.remote.file, isNull);
+      expect(only.offered, [
+        SyncRunConflictChoice.unresolved,
+        SyncRunConflictChoice.keepLocal,
+      ]);
     });
 
     test('conflicts: a side with a file carries when it was modified and its '
         'size; a side without one carries neither', () async {
       final thisYear = DateTime(2026, 9, 15, 14, 3);
       final lastYear = DateTime(2025, 3, 2, 9, 7);
-      FileStatus modifiedAt(DateTime at, int size) =>
-          StatusModified((size: size, mtimeUs: at.microsecondsSinceEpoch));
-      await render([
-        RunConflict(
-          conflict(
-            'both.txt',
-            a: modifiedAt(thisYear, 12288),
-            b: modifiedAt(lastYear, 5),
-          ),
+      wire.StatusView modifiedAt(DateTime at, int size) =>
+          wire.StatusViewModified(
+            value: wire.FileView(
+              size: n(size),
+              mtimeUs: at.microsecondsSinceEpoch,
+            ),
+          );
+      await harness.show(
+        runView(
+          conflicts: [
+            conflictRow(
+              'both.txt',
+              a: modifiedAt(thisYear, 12288),
+              b: modifiedAt(lastYear, 5),
+            ),
+            conflictRow(
+              'gone.txt',
+              a: modifiedAt(thisYear, 1),
+              b: const wire.StatusViewDeleted(),
+            ),
+          ],
         ),
-        RunConflict(
-          conflict(
-            'gone.txt',
-            a: modifiedAt(thisYear, 1),
-            b: const StatusDeleted(),
-          ),
-        ),
-      ]);
+      );
 
-      final [both, gone] = get().state.conflicts;
+      final [both, gone] = state().conflicts;
       // This year's needs no year; last year's does. Local time, the
       // clock the reader reads.
       expect(both.local.file, (modified: '15 Sep 14:03', bytes: 12288));
@@ -172,23 +192,26 @@ void main() {
     });
 
     test('plan: rows worded from this device, bytes summed', () async {
-      await render(happy);
+      await harness.show(happy);
 
-      expect(get().state.plan, hasLength(2));
-      expect(get().state.plan[0].path, 'new.txt');
-      expect(get().state.plan[0].action, 'copy to the remote');
-      expect(get().state.plan[0].bytes, 2048);
-      expect(get().state.plan[0].group, SyncRunPlanGroup.toDevice);
-      expect(get().state.plan[1].action, 'delete on this device');
-      expect(get().state.plan[1].group, SyncRunPlanGroup.deletions);
-      expect(get().state.bytesToTransfer, 2048);
+      final plan = state().plan;
+      expect(plan, hasLength(2));
+      expect(plan[0].index, 0);
+      expect(plan[0].path, 'new.txt');
+      expect(plan[0].action, 'copy to the remote');
+      expect(plan[0].bytes, 2048);
+      expect(plan[0].group, SyncRunPlanGroup.toDevice);
+      expect(plan[1].index, 1);
+      expect(plan[1].action, 'delete on this device');
+      expect(plan[1].group, SyncRunPlanGroup.deletions);
+      expect(state().bytesToTransfer, 2048);
     });
 
-    test('recordPlan folds each group\'s index list and bytes once, without a '
-        'build: every group present, empty ones included', () async {
-      await render(happy);
+    test('each group\'s index list and bytes are folded once: every group '
+        'present, empty ones included', () async {
+      await harness.show(happy);
 
-      final sections = get().state.planSections;
+      final sections = state().planSections;
       expect(sections.keys, containsAll(SyncRunPlanGroup.values));
 
       final toDevice = sections[SyncRunPlanGroup.toDevice]!;
@@ -210,107 +233,237 @@ void main() {
       expect(recordOnly.indexes, isEmpty);
     });
 
-    test('a plan with one row per group sorts each into its own section', () {
-      final state = SyncRunViewState();
-      addTearDown(state.dispose);
+    test(
+      'a plan with one row per group sorts each into its own section',
+      () async {
+        await harness.show(
+          runView(
+            plan: [
+              planRow(copyTo('to-device.txt', bytes: 10)),
+              planRow(copyHere('to-this.txt', bytes: 20)),
+              planRow(deleteHere('gone-a.txt')),
+              planRow(deleteThere('gone-b.txt')),
+              planRow(recordOnly('same.txt')),
+            ],
+          ),
+        );
 
-      state.recordPlan(const [
-        SyncRunPlanRow(
-          path: 'to-device.txt',
-          action: 'copy to the remote',
-          bytes: 10,
-          group: SyncRunPlanGroup.toDevice,
-          reversal: null,
-        ),
-        SyncRunPlanRow(
-          path: 'to-this.txt',
-          action: 'copy to this device',
-          bytes: 20,
-          group: SyncRunPlanGroup.toThisDevice,
-          reversal: null,
-        ),
-        SyncRunPlanRow(
-          path: 'gone-a.txt',
-          action: 'delete on this device',
-          bytes: 0,
-          group: SyncRunPlanGroup.deletions,
-          reversal: null,
-        ),
-        SyncRunPlanRow(
-          path: 'gone-b.txt',
-          action: 'delete on the remote',
-          bytes: 0,
-          group: SyncRunPlanGroup.deletions,
-          reversal: null,
-        ),
-        SyncRunPlanRow(
-          path: 'same.txt',
-          action: 'same content, record only',
-          bytes: 0,
-          group: SyncRunPlanGroup.recordOnly,
-          reversal: null,
-        ),
-      ], bytesToTransfer: 30);
+        final sections = state().planSections;
+        expect(sections[SyncRunPlanGroup.toDevice]!.indexes, [0]);
+        expect(sections[SyncRunPlanGroup.toThisDevice]!.indexes, [1]);
+        // Deletions is one group for either side: both rows land in it.
+        expect(sections[SyncRunPlanGroup.deletions]!.indexes, [2, 3]);
+        expect(sections[SyncRunPlanGroup.recordOnly]!.indexes, [4]);
+      },
+    );
 
-      final sections = state.planSections;
-      expect(sections[SyncRunPlanGroup.toDevice]!.indexes, [0]);
-      expect(sections[SyncRunPlanGroup.toThisDevice]!.indexes, [1]);
-      // Deletions is one group for either side: both rows land in it.
-      expect(sections[SyncRunPlanGroup.deletions]!.indexes, [2, 3]);
-      expect(sections[SyncRunPlanGroup.recordOnly]!.indexes, [4]);
+    test('a row the core offers a reverse for carries it, worded '
+        'literally', () async {
+      await harness.show(
+        runView(
+          plan: [
+            planRow(copyTo('mine.txt'), reverseBytes: 1024),
+            planRow(copyHere('theirs.txt'), reverseBytes: 64),
+            planRow(deleteThere('gone.txt'), reverseBytes: 512),
+            planRow(deleteHere('lost.txt'), reverseBytes: 8),
+            planRow(copyTo('mirror.txt', bytes: 10)),
+          ],
+        ),
+      );
+
+      final [mine, theirs, gone, lost, mirror] = state().plan;
+      expect(
+        mine.reversal,
+        const SyncRunPlanReversal(
+          action: "replace this device's version with the remote's",
+          bytes: 1024,
+        ),
+      );
+      expect(
+        theirs.reversal!.action,
+        "replace the remote's version with this device's",
+      );
+      expect(gone.reversal!.action, 'restore on this device from the remote');
+      expect(gone.reversal!.bytes, 512);
+      expect(lost.reversal!.action, 'restore on the remote from this device');
+      expect(mirror.reversal, isNull);
     });
 
-    test('results and progress, per action, in order', () async {
-      await render(happy);
+    test('results, counts and progress are the view\'s', () async {
+      await harness.show(happy);
 
-      expect(get().state.results, hasLength(2));
-      expect(get().state.results[0].path, 'new.txt');
-      expect(get().state.results[0].error, isNull);
-      expect(get().state.results[1].path, 'gone.txt');
-      expect(get().state.results[1].error, contains('Permission denied'));
-      expect(get().state.progress!.completed, 2);
-      expect(get().state.progress!.total, 2);
-      expect(get().state.appliedCount, 1);
-      expect(get().state.failedCount, 1);
+      expect(state().resultCell('new.txt').value?.error, isNull);
+      expect(state().resultCell('new.txt').value?.action, 'copy to the remote');
+      expect(
+        state().resultCell('gone.txt').value?.error,
+        contains('Permission denied'),
+      );
+      expect(state().progress!.completed, 2);
+      expect(state().progress!.total, 2);
+      expect(state().appliedCount, 1);
+      expect(state().failedCount, 1);
     });
+
+    test(
+      'a conflict\'s outcome is its row\'s, worded as what it did',
+      () async {
+        await harness.show(
+          runView(
+            conflicts: [
+              conflictRow(
+                'both.txt',
+                a: modifiedFile(),
+                b: modifiedFile(),
+                choice: wire.ConflictChoiceView.keepBoth,
+                outcome: outcome(
+                  copyAside('both.txt', to: 'dir/both (desktop).txt'),
+                ),
+              ),
+            ],
+          ),
+        );
+
+        expect(
+          state().resultCell('both.txt').value?.action,
+          'saved the remote version as both (desktop).txt',
+        );
+        expect(
+          state().conflictDecisionCell('both.txt').value,
+          SyncRunConflictChoice.keepBoth,
+        );
+      },
+    );
 
     test('connecting stamps the start time the page shows', () async {
-      await render([const RunConnected([])]);
+      await harness.show(runView(phase: scanning, connectedAt: now));
 
-      expect(get().state.startedAt, '12:00');
+      expect(state().startedAt, '12:00');
     });
 
     test('summary: five numbers, skipped and unreadable kept apart', () async {
-      await render([summarized(applied: 4, skipped: 3, unreadable: 2)]);
+      await harness.show(
+        runView(phase: finished(applied: 4, skipped: 3, unreadable: 2)),
+      );
 
-      final finished = get().state.phase as SyncRunFinished;
-      expect(finished.applied, 4);
-      expect(finished.skipped, 3);
-      expect(finished.unreadable, 2);
-      expect(finished.failed, 0);
-      expect(finished.conflicts, 0);
+      expect(
+        state().phase,
+        const SyncRunFinished(
+          applied: 4,
+          skipped: 3,
+          conflicts: 0,
+          failed: 0,
+          unreadable: 2,
+        ),
+      );
     });
 
-    test('the phase moves connecting → scanning → finished and stays '
-        'there', () async {
-      final phases = <SyncRunPhase>[];
-      get().state.addListener(() => phases.add(get().state.phase));
-      await harness.run([const RunConnected([]), happy.last]);
+    test('the review is the awaiting phase, its total on the bar\'s own '
+        'cell, the choices on each row\'s', () async {
+      await harness.show(
+        runView(
+          phase: reviewing(apply: 1, skipped: 1, keptBoth: 1),
+          conflicts: [
+            conflictRow(
+              'both.txt',
+              a: modifiedFile(),
+              b: modifiedFile(),
+              choice: wire.ConflictChoiceView.keepBoth,
+            ),
+          ],
+          plan: [
+            planRow(copyTo('new.txt')),
+            planRow(
+              deleteThere('gone.txt'),
+              choice: wire.ActionChoiceView.skipped,
+            ),
+          ],
+        ),
+      );
 
-      expect(phases.first, isA<SyncRunConnecting>());
-      expect(phases, contains(isA<SyncRunScanning>()));
-      expect(phases.last, isA<SyncRunFinished>());
+      expect(state().phase, const SyncRunAwaitingDecisions());
+      expect(
+        state().decisionSummary.value,
+        const SyncRunDecisionSummary(
+          apply: 1,
+          reversed: 0,
+          skipped: 1,
+          resolved: 0,
+          keptBoth: 1,
+          leftOpen: 0,
+        ),
+      );
+      expect(
+        state().actionDecisionCell('new.txt').value,
+        SyncRunActionChoice.proposed,
+      );
+      expect(
+        state().actionDecisionCell('gone.txt').value,
+        SyncRunActionChoice.skipped,
+      );
+      expect(
+        state().conflictDecisionCell('both.txt').value,
+        SyncRunConflictChoice.keepBoth,
+      );
+
+      // The review over: no total.
+      await harness.show(runView(phase: applying));
+      expect(state().decisionSummary.value, isNull);
+    });
+
+    test('the delete guard names each side, its folder and how many of how '
+        'many files', () async {
+      await harness.show(
+        runView(
+          phase: wire.RunPhaseViewConfirmingDeletes(
+            sides: [
+              wire.MassDeleteView(
+                side: wire.SideView.a,
+                deletes: n(12),
+                archived: n(12),
+              ),
+              wire.MassDeleteView(
+                side: wire.SideView.b,
+                deletes: n(40),
+                archived: n(50),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      expect(
+        state().phase,
+        const SyncRunConfirmingDeletes([
+          SyncRunDeletesOnSide(
+            where: 'this device',
+            root: '/data/notes',
+            deletes: 12,
+            archived: 12,
+          ),
+          SyncRunDeletesOnSide(
+            where: 'the remote',
+            root: '~/notes',
+            deletes: 40,
+            archived: 50,
+          ),
+        ]),
+      );
     });
   });
 
   group('first sync', () {
-    RunReplicas replicasOf({required bool aEmpty, required bool bEmpty}) =>
-        replicas(lastA: aEmpty ? null : now, lastB: bEmpty ? null : now);
+    wire.RunView replicasOf({required bool aEmpty, required bool bEmpty}) =>
+        runView(
+          replicas: replicas(
+            lastA: aEmpty ? null : now,
+            lastB: bEmpty ? null : now,
+          ),
+        );
 
     test('both empty: the warning, worded as an expected first run', () async {
-      await render([replicasOf(aEmpty: true, bEmpty: true)]);
+      await harness.show(replicasOf(aEmpty: true, bEmpty: true));
 
-      final header = get().state.header!;
+      final header = state().header!;
       expect(header.firstSyncWarning, firstSyncWarning);
       expect(header.firstSyncWarning, contains('never deleted'));
       expect(header.history, contains('First sync'));
@@ -319,11 +472,11 @@ void main() {
 
     test('one side empty: the same warning, a history that names the side '
         'and the wiped-data possibility', () async {
-      await render([replicasOf(aEmpty: true, bEmpty: false)]);
-      final thisEmpty = get().state.header!;
+      await harness.show(replicasOf(aEmpty: true, bEmpty: false));
+      final thisEmpty = state().header!;
 
-      await render([replicasOf(aEmpty: false, bEmpty: true)]);
-      final peerEmpty = get().state.header!;
+      await harness.show(replicasOf(aEmpty: false, bEmpty: true));
+      final peerEmpty = state().header!;
 
       expect(thisEmpty.firstSyncWarning, firstSyncWarning);
       expect(peerEmpty.firstSyncWarning, firstSyncWarning);
@@ -334,10 +487,10 @@ void main() {
     });
 
     test('the asymmetric wording differs from both-empty', () async {
-      await render([replicasOf(aEmpty: true, bEmpty: true)]);
-      final both = get().state.header!.history;
-      await render([replicasOf(aEmpty: true, bEmpty: false)]);
-      final one = get().state.header!.history;
+      await harness.show(replicasOf(aEmpty: true, bEmpty: true));
+      final both = state().header!.history;
+      await harness.show(replicasOf(aEmpty: true, bEmpty: false));
+      final one = state().header!.history;
 
       expect(both, isNot(one));
       // Positive controls: each contains its own distinguishing text.
@@ -347,323 +500,191 @@ void main() {
     });
 
     test('neither empty: no warning', () async {
-      await render([replicasOf(aEmpty: false, bEmpty: false)]);
+      await harness.show(replicasOf(aEmpty: false, bEmpty: false));
 
-      expect(get().state.header!.firstSyncWarning, isNull);
-      expect(get().state.header!.history, isNot(contains('First sync')));
+      expect(state().header!.firstSyncWarning, isNull);
+      expect(state().header!.history, isNot(contains('First sync')));
     });
   });
 
-  group('error', () {
-    test('a failure first: failed, and nothing else rendered', () async {
-      await render([runFailed('the scan failed')]);
-
-      expect(get().state.phase, isA<SyncRunFailed>());
-      expect(
-        (get().state.phase as SyncRunFailed).message,
-        contains('the scan failed'),
-      );
-      expect(get().state.header, isNull);
-      expect(get().state.plan, isEmpty);
-    });
-
-    test('the failed phase survives the run ending', () async {
-      // Positive control for the guard against "ended without a summary":
-      // a run that ends while still running is rendered as that failure,
-      // and one that ended on an error keeps the error.
-      await render([const RunConnected([])]);
-      expect(
-        (get().state.phase as SyncRunFailed).message,
-        contains('without reporting a summary'),
-      );
-
-      await render([runFailed('the scan failed')]);
-      expect(
-        (get().state.phase as SyncRunFailed).message,
-        contains('the scan failed'),
-      );
-    });
-
-    test('a failure is shown in the core\'s own words', () async {
+  group('how a run ends, worded', () {
+    test('a failure in the core\'s own words, and nothing else', () async {
       // The core words SPEC §4.4's root refusal; the head adds nothing that
       // could claim the path does or does not exist.
       const refusal =
           'replica b: desktop has not granted this path to this device';
-      await render([runFailed(refusal)]);
+      await harness.show(runView(phase: failedWith(refusal)));
 
-      expect((get().state.phase as SyncRunFailed).message, refusal);
+      expect(state().phase, const SyncRunFailed(refusal));
+      expect(state().header, isNull);
+      expect(state().plan, isEmpty);
     });
-
-    test(
-      'a run the core could not connect ends failed with its message',
-      () async {
-        await harness.start();
-        await harness.emit([
-          const RunEnded(RunNotConnected('Could not reach "desktop"')),
-        ]);
-        await harness.done;
-
-        expect(
-          (get().state.phase as SyncRunFailed).message,
-          'Could not reach "desktop"',
-        );
-      },
-    );
 
     test(
       'a held replica lock is its own phase, in the core\'s words',
       () async {
-        // Positive control: the same failure without the flag is a failure.
-        await render([runFailed('in use (lock file x)', replicaBusy: true)]);
-        final busy = get().state.phase as SyncRunReplicaBusy;
-        expect(busy.message, 'in use (lock file x)');
+        await harness.show(runView(phase: replicaBusy('in use (lock file x)')));
 
-        await render([runFailed('in use (lock file x)')]);
-        expect(get().state.phase, isA<SyncRunFailed>());
+        expect(state().phase, const SyncRunReplicaBusy('in use (lock file x)'));
       },
     );
-  });
 
-  group('stop', () {
-    test('lets the run end, and reports the number of actions completed, '
-        'never "cancelled"', () async {
-      await harness.start();
-      await harness.emit([
-        const RunConnected([]),
-        plan(),
-        applied(
-          results: const [ActionResult(action: copyNew, failure: null)],
-          progress: (completed: 1, total: 2),
-        ),
-      ]);
+    test('declined deletions read as the user\'s choice', () async {
+      await harness.show(
+        runView(phase: const wire.RunPhaseViewDeletesDeclined()),
+      );
 
-      final stopping = get().stop();
-      await pump();
-      // A graceful stop, sent once: the core ends the run.
-      expect(harness.core.stopped, [harness.session]);
-      // What was in flight at the stop finishes and is still counted; the
-      // run then ends with its summary as any run does.
-      await harness.emit([
-        applied(
-          results: const [ActionResult(action: deleteGone, failure: null)],
-          progress: (completed: 2, total: 2),
-        ),
-        summarized(applied: 2),
-        ranEnd(),
-      ]);
-      await stopping;
-      await harness.done;
+      expect(state().phase, const SyncRunFailed(deletesDeclinedMessage));
+    });
 
-      final stopped = get().state.phase as SyncRunStopped;
-      expect(stopped.completedActions, 2);
-      final message = stoppedMessage(stopped.completedActions);
-      expect(message, contains('after 2 action'));
-      expect(message.toLowerCase(), isNot(contains('cancel')));
-      expect(message, contains('nothing further'));
+    test('a run that ended without a summary says so', () async {
+      await harness.show(runView(phase: const wire.RunPhaseViewNoSummary()));
+
+      expect(
+        (state().phase as SyncRunFailed).message,
+        contains('without reporting a summary'),
+      );
     });
 
     test(
-      'while connecting: the core\'s stopped-connecting end, zero actions',
+      'stopped: the number of actions completed, never "cancelled"',
       () async {
-        await harness.start();
-        expect(get().state.phase, isA<SyncRunConnecting>());
+        await harness.show(runView(phase: stopped(2)));
 
-        final stopping = get().stop();
-        await harness.emit([const RunEnded(RunStoppedConnecting())]);
-        await stopping;
-
-        expect(harness.core.stopped, [harness.session]);
-        expect((get().state.phase as SyncRunStopped).completedActions, 0);
+        final phase = state().phase as SyncRunStopped;
+        expect(phase.completedActions, 2);
+        final message = stoppedMessage(phase.completedActions);
+        expect(message, contains('after 2 action'));
+        expect(message.toLowerCase(), isNot(contains('cancel')));
+        expect(message, contains('nothing further'));
       },
     );
-  });
 
-  group('pause', () {
-    test('ends the run the way stop does, under its own phase', () async {
-      await harness.start();
-      await harness.emit([
-        const RunConnected([]),
-        plan(),
-        applied(
-          results: const [ActionResult(action: copyNew, failure: null)],
-          progress: (completed: 1, total: 2),
-        ),
-      ]);
+    test('paused: the same count, under its own phase', () async {
+      await harness.show(runView(phase: paused(1)));
 
-      final pausing = get().pause();
-      await harness.emit([summarized(applied: 1), ranEnd()]);
-      await pausing;
-      await harness.done;
-
-      final paused = get().state.phase as SyncRunPaused;
-      expect(paused.completedActions, 1);
-      final message = pausedMessage(paused.completedActions);
+      final phase = state().phase as SyncRunPaused;
+      expect(phase.completedActions, 1);
+      final message = pausedMessage(phase.completedActions);
       expect(message, contains('after 1 action'));
       expect(message, contains('continues when you come back'));
     });
 
-    test('the next attempt renders from nothing, cells included', () async {
-      await render(happy);
-      final cell = get().state.resultCell('new.txt');
-      expect(get().state.plan, isNotEmpty);
+    test('the next attempt\'s view shows nothing of the last, cells '
+        'included', () async {
+      await harness.show(happy);
+      final cell = state().resultCell('new.txt');
+      expect(state().plan, isNotEmpty);
       expect(cell.value, isNotNull);
 
-      get().state.recordStart(dryRun: false);
+      await harness.show(runView(phase: connecting));
 
-      // Everything the fold wrote is gone, so a resumed run cannot show the
-      // paused attempt's plan, counts or ticked-off rows as its own.
-      expect(get().state.phase, isA<SyncRunConnecting>());
-      expect(get().state.header, isNull);
-      expect(get().state.scanTally, isNull);
-      expect(get().state.conflicts, isEmpty);
-      expect(get().state.skippedSymlinks, isEmpty);
-      expect(get().state.unreadablePaths, isEmpty);
-      expect(get().state.plan, isEmpty);
-      expect(
-        get().state.planSections[SyncRunPlanGroup.toDevice]!.indexes,
-        isEmpty,
-      );
-      expect(get().state.bytesToTransfer, 0);
-      expect(get().state.results, isEmpty);
-      expect(get().state.appliedCount, 0);
-      expect(get().state.failedCount, 0);
-      expect(get().state.progress, isNull);
-      expect(get().state.startedAt, isNull);
+      expect(state().phase, isA<SyncRunConnecting>());
+      expect(state().header, isNull);
+      expect(state().scanTally, isNull);
+      expect(state().conflicts, isEmpty);
+      expect(state().skippedSymlinks, isEmpty);
+      expect(state().unreadablePaths, isEmpty);
+      expect(state().plan, isEmpty);
+      expect(state().planSections[SyncRunPlanGroup.toDevice]!.indexes, isEmpty);
+      expect(state().bytesToTransfer, 0);
+      expect(state().appliedCount, 0);
+      expect(state().failedCount, 0);
+      expect(state().progress, isNull);
+      expect(state().startedAt, isNull);
       // The same cell a built row is already watching, emptied rather than
       // dropped.
       expect(cell.value, isNull);
-      expect(get().state.resultCell('new.txt'), same(cell));
+      expect(state().resultCell('new.txt'), same(cell));
     });
   });
 
-  group('what wakes the page', () {
-    // The apply loop writes silently and the controller decides when to
-    // show it: a write that notified on its own would bypass that rule.
-    test('a progress or a result does not notify; publishing does, and so '
-        'does a phase change', () {
-      final state = SyncRunViewState();
-      addTearDown(state.dispose);
-      var notified = 0;
-      state.addListener(() => notified++);
+  group('what a view wakes', () {
+    test('the same plan with one more result: that row\'s cell, never the '
+        'plan or the phase', () async {
+      final rows = [planRow(copyTo('a.txt')), planRow(copyTo('b.txt'))];
+      await harness.show(runView(phase: applying, plan: rows));
+      final a = state().resultCell('a.txt');
+      final b = state().resultCell('b.txt');
+      var plan = 0, phase = 0, aFired = 0, bFired = 0, notified = 0;
+      state()
+        ..addListener(() => notified++)
+        ..planChanged.addListener(() => plan++)
+        ..phaseChanged.addListener(() => phase++);
+      a.addListener(() => aFired++);
+      b.addListener(() => bFired++);
 
-      state
-        ..recordProgress(const SyncRunProgress(completed: 1, total: 2))
-        ..recordResult(
-          const SyncRunResultRow(path: 'a', action: 'copy', error: null),
-        );
-      expect(notified, 0);
-      // Recorded all the same, for the next refresh to show.
-      expect(state.progress!.completed, 1);
-      expect(state.appliedCount, 1);
+      await harness.show(
+        runView(
+          phase: applying,
+          plan: [
+            planRow(copyTo('a.txt'), outcome: outcome(copyTo('a.txt'))),
+            planRow(copyTo('b.txt')),
+          ],
+          progress: (completed: 1, total: 2),
+          applied: 1,
+        ),
+      );
 
-      state.publishProgress();
+      // Positive control: the result's own cell, and the page's values.
+      expect(aFired, 1);
       expect(notified, 1);
+      expect(state().appliedCount, 1);
+      expect((plan, phase, bFired), (0, 0, 0));
 
-      state.recordPhase(const SyncRunApplying());
-      expect(notified, 2);
+      // A new phase wakes the phase.
+      await harness.show(runView(phase: finished(applied: 1), plan: rows));
+      expect(phase, 1);
+      expect(plan, 0);
     });
 
-    test('a decision cell updates one path without notifying the state', () {
-      final state = SyncRunViewState();
-      addTearDown(state.dispose);
-      var notified = 0;
-      state
-        ..addListener(() => notified++)
-        ..phaseChanged.addListener(() => notified++)
-        ..planChanged.addListener(() => notified++);
-      final tapped = state.actionDecisionCell('a');
-      final other = state.actionDecisionCell('b');
-      final conflict = state.conflictDecisionCell('c');
-      var tappedFired = 0;
-      var otherFired = 0;
-      var conflictFired = 0;
-      var summaryFired = 0;
+    test('a choice moves its row\'s cell and the total, and nothing '
+        'else', () async {
+      final conflicts = [
+        conflictRow('c.txt', a: modifiedFile(), b: modifiedFile()),
+      ];
+      await harness.show(
+        runView(
+          phase: reviewing(apply: 2, leftOpen: 1),
+          conflicts: conflicts,
+          plan: [
+            planRow(copyTo('a.txt'), reverseBytes: 4),
+            planRow(copyTo('b.txt')),
+          ],
+        ),
+      );
+      final tapped = state().actionDecisionCell('a.txt');
+      final other = state().actionDecisionCell('b.txt');
+      final conflict = state().conflictDecisionCell('c.txt');
+      var tappedFired = 0, otherFired = 0, conflictFired = 0;
+      var summaryFired = 0, plan = 0, phase = 0;
       tapped.addListener(() => tappedFired++);
       other.addListener(() => otherFired++);
       conflict.addListener(() => conflictFired++);
-      state.decisionSummary.addListener(() => summaryFired++);
+      state().decisionSummary.addListener(() => summaryFired++);
+      state().planChanged.addListener(() => plan++);
+      state().phaseChanged.addListener(() => phase++);
 
-      state
-        ..recordActionChoice('a', SyncRunActionChoice.reversed)
-        ..recordDecisionSummary(
-          const SyncRunDecisionSummary(
-            apply: 2,
-            reversed: 1,
-            skipped: 0,
-            resolved: 0,
-            keptBoth: 0,
-            leftOpen: 1,
-          ),
-        );
-
-      // Positive control: the tapped path's cell and the total moved.
-      expect(tapped.value, SyncRunActionChoice.reversed);
-      expect(tappedFired, 1);
-      expect(summaryFired, 1);
-      // Nothing else did.
-      expect(otherFired, 0);
-      expect(other.value, SyncRunActionChoice.proposed);
-      expect(conflictFired, 0);
-      expect(notified, 0);
-
-      state.recordConflictChoice('c', SyncRunConflictChoice.keepBoth);
-      expect(conflict.value, SyncRunConflictChoice.keepBoth);
-      expect(tappedFired, 1);
-      expect(notified, 0);
-
-      // A cell first read after the choice starts at it.
-      state.recordActionChoice('late', SyncRunActionChoice.skipped);
-      expect(
-        state.actionDecisionCell('late').value,
-        SyncRunActionChoice.skipped,
+      await harness.show(
+        runView(
+          phase: reviewing(apply: 2, reversed: 1, leftOpen: 1),
+          conflicts: conflicts,
+          plan: [
+            planRow(
+              copyTo('a.txt'),
+              reverseBytes: 4,
+              choice: wire.ActionChoiceView.reversed,
+            ),
+            planRow(copyTo('b.txt')),
+          ],
+        ),
       );
 
-      // A new attempt puts every watched cell back to its default.
-      state.recordStart(dryRun: false);
-      expect(tapped.value, SyncRunActionChoice.proposed);
-      expect(conflict.value, SyncRunConflictChoice.unresolved);
-      expect(state.decisionSummary.value, isNull);
-      expect(state.actionDecisionCell('a'), same(tapped));
-    });
-
-    test('a result recorded twice for one path is counted once', () {
-      final state = SyncRunViewState();
-      addTearDown(state.dispose);
-
-      state
-        ..recordResult(
-          const SyncRunResultRow(path: 'a', action: 'copy', error: 'no'),
-        )
-        ..recordResult(
-          const SyncRunResultRow(path: 'a', action: 'copy', error: null),
-        );
-
-      expect(state.appliedCount, 1);
-      expect(state.failedCount, 0);
-    });
-  });
-
-  group('dispose', () {
-    test('an update delivered before dispose is rendered (positive '
-        'control), and one delivered after is dropped without throwing, '
-        'and the run is stopped', () async {
-      await harness.start();
-      await harness.emit([happy.first]);
-      expect(get().state.header, isNotNull);
-
-      // A write reaching the disposed notifier would fail the test:
-      // `ChangeNotifier.notifyListeners` after `dispose` asserts.
-      get().dispose();
-      await harness.emit([happy.last, ranEnd()]);
-      await harness.done;
-      expect(harness.core.stopped, [harness.session]);
-    });
-
-    test('start after dispose is a no-op', () async {
-      get().dispose();
-
-      await get().start(runRequest());
-      expect(harness.core.runStarts, isEmpty);
+      expect(tapped.value, SyncRunActionChoice.reversed);
+      expect((tappedFired, summaryFired), (1, 1));
+      expect((otherFired, conflictFired, plan, phase), (0, 0, 0, 0));
+      // A cell first read after the choice starts at it.
+      expect(state().actionDecisionCell('a.txt'), same(tapped));
     });
   });
 }

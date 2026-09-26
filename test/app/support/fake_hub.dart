@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:dsync/app/core_link/core_channel.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
-import 'package:dsync/app/core_link/models/conflict_resolution.dart';
 import 'package:dsync/app/core_link/models/core_dirs.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
@@ -15,9 +14,7 @@ import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
-import 'package:dsync/app/core_link/models/run_decision.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
-import 'package:dsync/app/core_link/models/run_update.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/core_link/models/serve_addresses.dart';
 import 'package:dsync/app/core_link/models/serve_update.dart';
@@ -39,7 +36,7 @@ import 'fake_hub_sessions.dart';
 /// are fields to set. Sessions are driven by the test: a session starter
 /// is recorded and answered, and the test feeds its signals with
 /// [emitRun], [emitServe] and [emitEnrolment]. What the code under test
-/// told a session is recorded in [decisions], [stopped] and
+/// told a session is recorded in [runIntents], [stopped] and
 /// [confirmations].
 ///
 /// [failNext], when set, is the next command's failure, and cleared.
@@ -142,15 +139,15 @@ final class FakeHub implements CoreChannel {
   final List<({int session, RunTarget target, bool dryRun, String? address})>
   runStarts = [];
 
-  final Map<int, List<RunDecision>> decisions = {};
+  /// Every intent a run was steered by, by session, as sent.
+  final Map<int, List<wire.RunIntent>> runIntents = {};
 
-  /// Every `ConfirmDeletes` answer, by session.
-  final Map<int, List<bool>> deleteConfirmations = {};
+  /// Serving and pairing sessions stopped or cancelled, in order.
   final List<int> stopped = [];
   final Map<int, bool> confirmations = {};
 
   final _replies = _Signals<wire.CoreReply>();
-  final _runUpdates = _Signals<wire.RunUpdate>();
+  final _runSnapshots = _Signals<wire.RunSnapshot>();
   final _serveUpdates = _Signals<wire.ServeUpdate>();
   final _enrolmentUpdates = _Signals<wire.EnrolmentUpdate>();
 
@@ -158,7 +155,7 @@ final class FakeHub implements CoreChannel {
   Stream<wire.CoreReply> get replies => _replies.stream;
 
   @override
-  Stream<wire.RunUpdate> get runUpdates => _runUpdates.stream;
+  Stream<wire.RunSnapshot> get runSnapshots => _runSnapshots.stream;
 
   @override
   Stream<wire.ServeUpdate> get serveUpdates => _serveUpdates.stream;
@@ -166,9 +163,9 @@ final class FakeHub implements CoreChannel {
   @override
   Stream<wire.EnrolmentUpdate> get enrolmentUpdates => _enrolmentUpdates.stream;
 
-  /// Delivers [update] to the run in [session], as the hub's signal.
-  void emitRun(int session, RunUpdate update) => _runUpdates.add(
-    wire.RunUpdate(session: _id(session), update: wireRunUpdate(update)),
+  /// Delivers [view] to the run in [session], as the hub's snapshot.
+  void emitRun(int session, wire.RunView view) => _runSnapshots.add(
+    wire.RunSnapshot(session: _id(session), view: view),
   );
 
   /// Delivers [update] to the serving in [session], as the hub's signal.
@@ -445,37 +442,16 @@ final class FakeHub implements CoreChannel {
       return _profiles();
     }(),
     wire.CoreCommandStartRun(:final target, :final dryRun, :final address) =>
-      () {
-        final model = _target(target);
-        runStarts.add((
+      _done(
+        () => runStarts.add((
           session: id,
-          target: model,
+          target: _target(target),
           dryRun: dryRun,
           address: address,
-        ));
-        return wire.ReplyResultRunStarted(
-          value: wire.RunStartedView(
-            profileId: switch (model) {
-              SavedProfileTarget(:final name) => switch (_profile(name)) {
-                HeadProfile(:final profileId) => profileId,
-                OtherProfile(:final profileId) => profileId ?? 'profile-$name',
-                UnreadableProfile(:final message) => throw CoreFailure(message),
-              },
-              DraftTarget() => 'adhoc-$id',
-            },
-            a: 'a',
-            b: 'b',
-          ),
-        );
-      }(),
-    wire.CoreCommandDecideRun(:final session, :final decision) => _done(
-      () => (decisions[session.toInt()] ??= []).add(_decision(decision)),
-    ),
-    wire.CoreCommandConfirmDeletes(:final session, :final proceed) => _done(
-      () => (deleteConfirmations[session.toInt()] ??= []).add(proceed),
-    ),
-    wire.CoreCommandStopRun(:final session) => _done(
-      () => stopped.add(session.toInt()),
+        )),
+      ),
+    wire.CoreCommandSteerRun(:final session, :final intent) => _done(
+      () => (runIntents[session.toInt()] ??= []).add(intent),
     ),
     wire.CoreCommandStartServe(:final bind, :final port) => () {
       serveStarts.add(id);
@@ -635,9 +611,7 @@ String _name(wire.CoreCommand command) => switch (command) {
   wire.CoreCommandRenameProfile() => 'renameProfile',
   wire.CoreCommandDeleteProfile() => 'deleteProfile',
   wire.CoreCommandStartRun() => 'startRun',
-  wire.CoreCommandDecideRun() => 'decideRun',
-  wire.CoreCommandConfirmDeletes() => 'confirmDeletes',
-  wire.CoreCommandStopRun() => 'stopRun',
+  wire.CoreCommandSteerRun() => 'steerRun',
   wire.CoreCommandStartServe() => 'startServe',
   wire.CoreCommandStopServe() => 'stopServe',
   wire.CoreCommandServeAddresses() => 'serveAddresses',
@@ -669,24 +643,6 @@ RunTarget _target(wire.RunTarget target) => switch (target) {
   ),
   _ => throw StateError('unknown target: $target'),
 };
-
-RunDecision _decision(wire.RunDecision decision) => RunDecision(
-  keep: [
-    for (final kept in decision.keep)
-      (index: kept.index, reversed: kept.reversed),
-  ],
-  resolve: {
-    for (final choice in decision.resolve)
-      choice.conflict: switch (choice.resolution) {
-        wire.ConflictResolutionViewKeep(value: wire.SideView.a) =>
-          const KeepSide(ReplicaSide.a),
-        wire.ConflictResolutionViewKeep(value: wire.SideView.b) =>
-          const KeepSide(ReplicaSide.b),
-        wire.ConflictResolutionViewKeepBoth() => const KeepBoth(),
-        _ => throw StateError('unknown resolution: ${choice.resolution}'),
-      },
-  },
-);
 
 wire.IdentityView wireIdentity(DeviceIdentityInfo identity) =>
     wire.IdentityView(

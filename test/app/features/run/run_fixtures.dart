@@ -1,27 +1,16 @@
+import 'dart:async';
+
 import 'package:dsync/app/app_controller.dart';
-import 'package:dsync/app/core_link/models/action_result.dart';
-import 'package:dsync/app/core_link/models/conflict_info.dart';
-import 'package:dsync/app/core_link/models/file_status.dart';
-import 'package:dsync/app/core_link/models/mass_delete_side.dart';
-import 'package:dsync/app/core_link/models/plan_action.dart';
-import 'package:dsync/app/core_link/models/plan_proposal.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
-import 'package:dsync/app/core_link/models/replica_info.dart';
-import 'package:dsync/app/core_link/models/replica_side.dart';
-import 'package:dsync/app/core_link/models/run_end.dart';
-import 'package:dsync/app/core_link/models/run_error_info.dart';
-import 'package:dsync/app/core_link/models/run_summary_info.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
-import 'package:dsync/app/core_link/models/run_update.dart';
-import 'package:dsync/app/core_link/models/scan_tally.dart';
-import 'package:dsync/app/core_link/models/skipped_path_info.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 
-import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
+import '../../support/fake_hub.dart';
 
 /// The run the Run feature's tests start: this device's `/data/notes` with
 /// `~/notes` on the paired `desktop`, one-off (a draft, not a saved
@@ -45,17 +34,18 @@ RunRequest runRequest({
   dryRun: dryRun,
 );
 
-/// A [SyncRunController] over a [FakeHub]: [start] starts the run the
-/// page would, and [emit] plays the core's side of it.
+/// A [SyncRunController] over a [FakeHub]: [start] opens the session the
+/// page would, [show] plays the core's view of it, and [intents] is what
+/// the controller told the core.
 class RunHarness {
   RunHarness({DateTime Function()? now})
-    : core = FakeHub(devices: [pairedDevice()]),
+    : hub = FakeHub(devices: [pairedDevice()]),
       screenWake = FakeScreenWake() {
-    app = fakeApp(core, now: now);
+    app = fakeApp(hub, now: now);
     controller = SyncRunController(app, screenWake: screenWake);
   }
 
-  final FakeHub core;
+  final FakeHub hub;
   final FakeScreenWake screenWake;
   late final AppController app;
   late final SyncRunController controller;
@@ -63,38 +53,21 @@ class RunHarness {
   SyncRunViewState get state => controller.state;
 
   /// The session the core opened for the latest start.
-  int get session => core.runStarts.last.session;
+  int get session => hub.runStarts.last.session;
 
-  /// What the latest [start] or [resume] returned: completes when that
-  /// run's stream ends.
-  late Future<void> done;
+  /// What the controller sent the session, in order.
+  List<wire.RunIntent> get intents => hub.runIntents[session] ?? const [];
 
-  /// Starts [request] and lets the controller reach its update loop.
+  /// Starts [request] and lets the controller open its session.
   Future<void> start([RunRequest? request]) async {
-    done = controller.start(request ?? runRequest());
+    unawaited(controller.start(request ?? runRequest()));
     await pump();
   }
 
-  /// [SyncRunController.resume], as [start] runs it.
-  Future<void> resume([RunRequest? request]) async {
-    done = controller.resume(request ?? runRequest());
+  /// Delivers [view] to the session and lets it render.
+  Future<void> show(wire.RunView view) async {
+    hub.emitRun(session, view);
     await pump();
-  }
-
-  /// Delivers [updates] to the latest session and lets them fold.
-  Future<void> emit(List<RunUpdate> updates) async {
-    for (final update in updates) {
-      core.emitRun(session, update);
-    }
-    await pump();
-  }
-
-  /// A whole run: started, [updates] delivered, then ended as the core
-  /// ends a run that ran.
-  Future<void> run(List<RunUpdate> updates, {RunRequest? request}) async {
-    await start(request);
-    await emit([...updates, ranEnd()]);
-    await done;
   }
 
   void dispose() {
@@ -109,110 +82,228 @@ Future<void> pump() async {
   }
 }
 
-RunEnded ranEnd({String timings = 'timings report'}) => RunEnded(
-  RunRan(summary: null, errored: false, stopped: null, timings: timings),
-);
+wire.Uint64 n(int value) => wire.Uint64(BigInt.from(value));
 
-const tally = ScanTally(
-  metadataMatched: 7,
-  hashMatched: 2,
-  modified: 1,
-  created: 1,
-  deleted: 0,
-  untrusted: 0,
-);
-
-const FileFacts facts = (size: 5, mtimeUs: 1);
-
-ReplicaInfo replicaInfo(DateTime? lastCommit) =>
-    ReplicaInfo(lastCommit: lastCommit, archivePath: null, missingRoot: null);
-
-RunReplicas replicas({DateTime? lastA, DateTime? lastB}) => RunReplicas(
-  a: replicaInfo(lastA),
-  b: replicaInfo(lastB),
-  lastRunUnfinished: false,
-);
-
-RunSkipped skipped({
-  required ReplicaSide side,
-  required String path,
-  required SkipReason reason,
-  required String detail,
-  required bool isFailure,
-}) => RunSkipped(
-  SkippedPathInfo(
-    side: side,
-    path: path,
-    reason: reason,
-    detail: detail,
-    isFailure: isFailure,
-  ),
-);
-
-ConflictInfo conflict(String path, {FileStatus? a, FileStatus? b}) =>
-    ConflictInfo(path: path, a: a, b: b, interrupted: false);
-
-const createdA = StatusCreated(facts);
-const modifiedB = StatusModified(facts);
-
-const copyNew = CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048);
-const deleteGone = DeleteAction('gone.txt', on: ReplicaSide.a);
-
-RunPlan plan({
-  List<PlanProposal> actions = const [
-    PlanProposal(copyNew),
-    PlanProposal(deleteGone),
-  ],
-  List<ConflictInfo>? conflicts,
-  bool awaitingDecision = false,
-}) => RunPlan(
-  actions: actions,
-  conflicts: conflicts ?? [conflict('both.txt', a: createdA, b: modifiedB)],
-  bytesToTransfer: actions.fold(
-    0,
-    (sum, proposal) => switch (proposal.action) {
-      CopyAction(:final bytes) => sum + bytes,
-      _ => sum,
-    },
-  ),
-  exceedsWarnSize: false,
-  awaitingDecision: awaitingDecision,
-);
-
-RunApplied applied({
-  List<ActionResult> results = const [],
+/// A view of the run as the core sends it. Every field has a plain
+/// default, so a test names only what it is about; [bytesToTransfer]
+/// defaults to what [plan]'s copies move.
+wire.RunView runView({
+  bool dryRun = false,
+  wire.RunPhaseView phase = const wire.RunPhaseViewScanning(),
+  DateTime? connectedAt,
+  wire.ReplicasView? replicas,
+  wire.TalliesView? tallies,
+  List<wire.SkippedView> skipped = const [],
+  List<wire.ConflictRowView> conflicts = const [],
+  List<wire.PlanRowView> plan = const [],
+  int? bytesToTransfer,
   ({int completed, int total})? progress,
-}) => RunApplied(approved: const [], results: results, progress: progress);
+  int applied = 0,
+  int failed = 0,
+  String? timings,
+}) => wire.RunView(
+  dryRun: dryRun,
+  phase: phase,
+  connectedAtMs: connectedAt?.millisecondsSinceEpoch,
+  replicas: replicas,
+  tally: tallies,
+  skipped: skipped,
+  conflicts: conflicts,
+  plan: plan,
+  bytesToTransfer: n(
+    bytesToTransfer ??
+        plan.fold(
+          0,
+          (sum, row) => switch (row.proposal.action) {
+            wire.ActionViewCopy(:final bytes) => sum + bytes.toInt(),
+            _ => sum,
+          },
+        ),
+  ),
+  progress: switch (progress) {
+    (:final completed, :final total) => wire.ProgressView(
+      completed: n(completed),
+      total: n(total),
+    ),
+    null => null,
+  },
+  applied: n(applied),
+  failed: n(failed),
+  timings: timings,
+);
 
-RunSummarized summarized({
+const connecting = wire.RunPhaseViewConnecting();
+const scanning = wire.RunPhaseViewScanning();
+const applying = wire.RunPhaseViewApplying();
+
+/// Reviewing, the running total as given.
+wire.RunPhaseView reviewing({
+  int apply = 0,
+  int reversed = 0,
+  int skipped = 0,
+  int resolved = 0,
+  int keptBoth = 0,
+  int leftOpen = 0,
+}) => wire.RunPhaseViewReviewing(
+  value: wire.DecisionSummaryView(
+    apply: n(apply),
+    reversed: n(reversed),
+    skipped: n(skipped),
+    resolved: n(resolved),
+    keptBoth: n(keptBoth),
+    leftOpen: n(leftOpen),
+  ),
+);
+
+wire.RunPhaseView finished({
   int applied = 0,
   int skipped = 0,
   int conflicts = 0,
   int failed = 0,
   int unreadable = 0,
-}) => RunSummarized(
-  RunSummaryInfo(
-    applied: applied,
-    skipped: skipped,
-    conflicts: conflicts,
-    failed: failed,
-    unreadable: unreadable,
+}) => wire.RunPhaseViewFinished(
+  value: wire.SummaryView(
+    applied: n(applied),
+    skipped: n(skipped),
+    conflicts: n(conflicts),
+    failed: n(failed),
+    unreadable: n(unreadable),
   ),
 );
 
-RunFailed runFailed(String message, {bool replicaBusy = false}) => RunFailed(
-  RunErrorInfo(side: null, message: message, replicaBusy: replicaBusy),
+wire.RunPhaseView stopped(int completed) =>
+    wire.RunPhaseViewStopped(completed: n(completed));
+
+wire.RunPhaseView paused(int completed) =>
+    wire.RunPhaseViewPaused(completed: n(completed));
+
+wire.RunPhaseView failedWith(String message) =>
+    wire.RunPhaseViewFailed(message: message);
+
+wire.RunPhaseView replicaBusy(String message) =>
+    wire.RunPhaseViewReplicaBusy(message: message);
+
+/// SPEC §10's guard over the remote: [deletes] of its [archived] files.
+wire.RunPhaseView confirmingDeletes({int deletes = 40, int archived = 50}) =>
+    wire.RunPhaseViewConfirmingDeletes(
+      sides: [
+        wire.MassDeleteView(
+          side: wire.SideView.b,
+          deletes: n(deletes),
+          archived: n(archived),
+        ),
+      ],
+    );
+
+wire.ReplicaInfoView replicaInfo(DateTime? lastCommit) => wire.ReplicaInfoView(
+  lastCommitMs: lastCommit?.millisecondsSinceEpoch,
+  archivePath: null,
+  missingRoot: null,
 );
 
-/// SPEC §10's delete guard over the remote: [deletes] of its [archived]
-/// files, awaiting the head's answer unless [awaiting] says otherwise.
-RunMassDelete massDelete({
-  int deletes = 40,
-  int archived = 50,
-  bool awaiting = true,
-}) => RunMassDelete(
-  sides: [
-    MassDeleteSide(side: ReplicaSide.b, deletes: deletes, archived: archived),
-  ],
-  awaitingConfirmation: awaiting,
+wire.ReplicasView replicas({DateTime? lastA, DateTime? lastB}) =>
+    wire.ReplicasView(a: replicaInfo(lastA), b: replicaInfo(lastB));
+
+wire.TallyView tally({
+  int metadataMatched = 7,
+  int hashMatched = 2,
+  int modified = 1,
+  int created = 1,
+  int deleted = 0,
+}) => wire.TallyView(
+  metadataMatched: n(metadataMatched),
+  hashMatched: n(hashMatched),
+  modified: n(modified),
+  created: n(created),
+  deleted: n(deleted),
+  untrusted: n(0),
+);
+
+wire.TalliesView tallies({wire.TallyView? a, wire.TallyView? b}) =>
+    wire.TalliesView(a: a ?? tally(), b: b ?? tally());
+
+wire.SkippedView skippedPath({
+  required wire.SideView side,
+  required String path,
+  required wire.SkippedReasonView reason,
+  required String detail,
+  required bool isFailure,
+}) => wire.SkippedView(
+  side: side,
+  path: path,
+  reason: reason,
+  detail: detail,
+  isFailure: isFailure,
+);
+
+wire.ActionView copyTo(String path, {int bytes = 2048}) =>
+    wire.ActionViewCopy(path: path, from: wire.SideView.a, bytes: n(bytes));
+
+wire.ActionView copyHere(String path, {int bytes = 2048}) =>
+    wire.ActionViewCopy(path: path, from: wire.SideView.b, bytes: n(bytes));
+
+wire.ActionView deleteThere(String path) =>
+    wire.ActionViewDelete(path: path, on: wire.SideView.b);
+
+wire.ActionView deleteHere(String path) =>
+    wire.ActionViewDelete(path: path, on: wire.SideView.a);
+
+wire.ActionView recordOnly(String path) =>
+    wire.ActionViewCommitOnly(path: path);
+
+wire.ActionView copyAside(String path, {required String to, int bytes = 5}) =>
+    wire.ActionViewCopyAside(
+      path: path,
+      from: wire.SideView.b,
+      to: to,
+      bytes: n(bytes),
+    );
+
+/// An outcome: [action] applied, or failed with [failure].
+wire.ResultView outcome(wire.ActionView action, {String? failure}) =>
+    wire.ResultView(action: action, failure: failure);
+
+/// A planned [action]: reversible when [reverseBytes] is set.
+wire.PlanRowView planRow(
+  wire.ActionView action, {
+  int? reverseBytes,
+  wire.ActionChoiceView choice = wire.ActionChoiceView.proposed,
+  wire.ResultView? outcome,
+}) => wire.PlanRowView(
+  proposal: wire.ProposalView(
+    action: action,
+    reverseBytes: reverseBytes == null ? null : n(reverseBytes),
+  ),
+  choice: choice,
+  outcome: outcome,
+);
+
+/// A 5-byte file modified at `mtimeUs` 1.
+wire.StatusView modifiedFile() =>
+    wire.StatusViewModified(value: wire.FileView(size: n(5), mtimeUs: 1));
+
+wire.StatusView createdFile() =>
+    wire.StatusViewCreated(value: wire.FileView(size: n(5), mtimeUs: 1));
+
+/// A conflict on [path]; [offered] defaults to what the core offers for
+/// its sides.
+wire.ConflictRowView conflictRow(
+  String path, {
+  wire.StatusView? a,
+  wire.StatusView? b,
+  List<wire.ConflictChoiceView>? offered,
+  wire.ConflictChoiceView choice = wire.ConflictChoiceView.unresolved,
+  wire.ResultView? outcome,
+}) => wire.ConflictRowView(
+  conflict: wire.ConflictView(path: path, a: a, b: b, interrupted: false),
+  offered:
+      offered ??
+      [
+        wire.ConflictChoiceView.unresolved,
+        if (a != null) wire.ConflictChoiceView.keepA,
+        if (b != null) wire.ConflictChoiceView.keepB,
+        if (a != null && b != null) wire.ConflictChoiceView.keepBoth,
+      ],
+  choice: choice,
+  outcome: outcome,
 );

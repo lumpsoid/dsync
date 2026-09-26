@@ -8,20 +8,20 @@ sealed class SyncRunPhase {
   const SyncRunPhase();
 }
 
-/// `SyncRunController.start` has not been called.
+/// No view of the run has arrived yet.
 final class SyncRunIdle extends SyncRunPhase {
   const SyncRunIdle();
 }
 
-/// The core is connecting both sides: no run update can have arrived.
+/// The core is resolving the run and connecting both sides.
 final class SyncRunConnecting extends SyncRunPhase {
   const SyncRunConnecting();
 }
 
 /// Both sides are connected and the core is scanning them and reconciling
 /// the two scans (SPEC §5, §6): the header, the tally, the path lists and
-/// the plan fill in as their events arrive. A dry run stays here until its
-/// summary — it never applies.
+/// the plan fill in as the views bring them. A dry run stays here until it
+/// ends — it never applies.
 final class SyncRunScanning extends SyncRunPhase {
   const SyncRunScanning();
 }
@@ -34,7 +34,7 @@ final class SyncRunApplying extends SyncRunPhase {
   const SyncRunApplying();
 }
 
-/// The stream ended with a `RunSummaryEvent` (SPEC §11.4). The five counts
+/// The run completed with its summary (SPEC §11.4). The five counts
 /// are carried as five numbers: [skipped] is "offered and declined" and
 /// [unreadable] is "never reached the plan at all" — two questions, so two
 /// numbers, exactly as `RunSummaryEvent.unreadableCount`'s doc comment
@@ -53,25 +53,31 @@ final class SyncRunFinished extends SyncRunPhase {
   final int conflicts;
   final int failed;
   final int unreadable;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunFinished &&
+      other.applied == applied &&
+      other.skipped == skipped &&
+      other.conflicts == conflicts &&
+      other.failed == failed &&
+      other.unreadable == unreadable;
+
+  @override
+  int get hashCode =>
+      Object.hash(applied, skipped, conflicts, failed, unreadable);
 }
 
-/// `RunController` has handed the plan to the presenter and is suspended on
-/// its answer (SPEC §11.3): the page's own plan and conflict rows turn into
-/// the review, each with its control. The phase carries only what is fixed
-/// for the whole review — which choices each conflict offers, keyed by path
-/// so a row built lazily finds its own in O(1). The user's current choices
-/// are not here: each lives in its path's cell
-/// ([SyncRunViewState.actionDecisionCell],
+/// The core has handed the plan to the review and waits on its answer
+/// (SPEC §11.3): the page's own plan and conflict rows turn into the
+/// review, each with its control. What each conflict offers rides on its
+/// row ([SyncRunConflictRow.offered]). The current choices are not here:
+/// each lives in its path's cell ([SyncRunViewState.actionDecisionCell],
 /// [SyncRunViewState.conflictDecisionCell]) and the running total in
-/// [SyncRunViewState.decisionSummary], so a tap rebuilds one row and the bar
-/// under the page, never the phase and every row with it.
+/// [SyncRunViewState.decisionSummary], so a tap rebuilds one row and the
+/// bar under the page, never the phase and every row with it.
 final class SyncRunAwaitingDecisions extends SyncRunPhase {
-  const SyncRunAwaitingDecisions({required this.conflictOffers});
-
-  /// Each conflict's offered choices, by path — a side with no record of
-  /// the path cannot be the one kept, and keeping both needs a file on both
-  /// sides (`PlanDecisions.offeredFor`).
-  final Map<String, List<SyncRunConflictChoice>> conflictOffers;
+  const SyncRunAwaitingDecisions();
 }
 
 /// SPEC §10's delete guard stopped the run between the review and the
@@ -83,6 +89,13 @@ final class SyncRunConfirmingDeletes extends SyncRunPhase {
   const SyncRunConfirmingDeletes(this.sides);
 
   final List<SyncRunDeletesOnSide> sides;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunConfirmingDeletes && listEquals(other.sides, sides);
+
+  @override
+  int get hashCode => Object.hashAll(sides);
 }
 
 /// One side of [SyncRunConfirmingDeletes]: the run deletes [deletes] of the
@@ -100,6 +113,17 @@ final class SyncRunDeletesOnSide {
   final String root;
   final int deletes;
   final int archived;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunDeletesOnSide &&
+      other.where == where &&
+      other.root == root &&
+      other.deletes == deletes &&
+      other.archived == archived;
+
+  @override
+  int get hashCode => Object.hash(where, root, deletes, archived);
 }
 
 /// What the user can do with one conflict (SPEC §11.3: "picks a
@@ -136,20 +160,39 @@ final class SyncRunDecisionSummary {
   final int resolved;
   final int keptBoth;
   final int leftOpen;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunDecisionSummary &&
+      other.apply == apply &&
+      other.reversed == reversed &&
+      other.skipped == skipped &&
+      other.resolved == resolved &&
+      other.keptBoth == keptBoth &&
+      other.leftOpen == leftOpen;
+
+  @override
+  int get hashCode =>
+      Object.hash(apply, reversed, skipped, resolved, keptBoth, leftOpen);
 }
 
-/// The user stopped the run. **This is not "cancelled".** Stopping means
-/// `SyncRunController` stopped listening to `RunController.run()`, which
-/// suspends its apply loop at an action boundary — the loop is a
-/// one-at-a-time handoff, so the action whose result was last reported is
-/// fully applied and committed on both sides (SPEC §7.3 makes it durable),
-/// and the next one never starts. [completedActions] is how many that was.
-/// The page's wording says so; "cancelled" would imply nothing happened,
-/// which is false.
+/// The user stopped the run. **This is not "cancelled".** The core's
+/// graceful stop starts nothing further, lets what is in flight finish and
+/// commit on both sides (SPEC §7.3 makes it durable), and ends the run;
+/// [completedActions] is how many actions had completed. The page's
+/// wording says so; "cancelled" would imply nothing happened, which is
+/// false.
 final class SyncRunStopped extends SyncRunPhase {
   const SyncRunStopped({required this.completedActions});
 
   final int completedActions;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunStopped && other.completedActions == completedActions;
+
+  @override
+  int get hashCode => completedActions.hashCode;
 }
 
 /// The OS backgrounded the app mid-run and the run was suspended for it —
@@ -168,15 +211,29 @@ final class SyncRunPaused extends SyncRunPhase {
   const SyncRunPaused({required this.completedActions});
 
   final int completedActions;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunPaused && other.completedActions == completedActions;
+
+  @override
+  int get hashCode => completedActions.hashCode;
 }
 
-/// The run ended without a summary: a `ReplicaConnectFailure` (SPEC §4.4)
-/// before any event, or a `RunErrorEvent` — always the stream's last event.
-/// [message] is the whole line to show.
+/// The run ended without a summary: a side could not be connected (SPEC
+/// §4.4), the core reported a failure, or the user declined the deletions
+/// SPEC §10's guard asked about. [message] is the whole line to show.
 final class SyncRunFailed extends SyncRunPhase {
   const SyncRunFailed(this.message);
 
   final String message;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunFailed && other.message == message;
+
+  @override
+  int get hashCode => message.hashCode;
 }
 
 /// The run never started because this device's replica is already locked
@@ -197,6 +254,13 @@ final class SyncRunReplicaBusy extends SyncRunPhase {
   /// the lock file that is held, so the user can see for themselves that
   /// it is the one their other run took.
   final String message;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunReplicaBusy && other.message == message;
+
+  @override
+  int get hashCode => message.hashCode;
 }
 
 /// SPEC §11.4's run header, rendered: the two locations and what the tool
@@ -262,17 +326,24 @@ final class SyncRunScanTally {
 }
 
 /// One `Conflict` (SPEC §6), rendered: each side's status, and its file
-/// where it has one.
+/// where it has one; its [index] in the plan's conflicts, which a choice
+/// names; and what the core [offered] for it — a side with no record of
+/// the path cannot be the one kept, and keeping both needs a file on both
+/// sides. The offer is the review's to use, and only the review's.
 final class SyncRunConflictRow {
   const SyncRunConflictRow({
+    required this.index,
     required this.path,
     required this.local,
     required this.remote,
+    required this.offered,
   });
 
+  final int index;
   final String path;
   final SyncRunConflictSide local;
   final SyncRunConflictSide remote;
+  final List<SyncRunConflictChoice> offered;
 }
 
 /// One side of a conflict: its [status], and — for a side with a file on
@@ -302,7 +373,7 @@ enum SyncRunSideStatus {
 /// Which direction one planned action moves in (Design C.5): the plan
 /// section it lands in, grouped so the page reads *where → what → how
 /// far* rather than one flat list. [toDevice] and [toThisDevice] are a
-/// `CopyAction` by which side it copies from (`RunController`'s
+/// `CopyAction` by which side it copies from (`SyncRunController`'s
 /// `_group`); [deletions] is a `DeleteAction` on either side — one group
 /// for both, since the row's own action label already says which; and
 /// [recordOnly] is a `CommitOnlyAction`, collapsed by default because
@@ -311,7 +382,7 @@ enum SyncRunPlanGroup { toDevice, toThisDevice, deletions, recordOnly }
 
 /// One [SyncRunPlanGroup]'s slice of the plan: which indexes into
 /// [SyncRunViewState.plan] belong to it, and the bytes those rows move,
-/// folded once by [SyncRunViewState.recordPlan] so a group's header count
+/// folded once per plan by [SyncRunViewState.show] so a group's header count
 /// never re-walks the plan to find its own rows.
 final class SyncRunPlanSection {
   const SyncRunPlanSection({required this.indexes, required this.bytes});
@@ -322,12 +393,14 @@ final class SyncRunPlanSection {
   int get count => indexes.length;
 }
 
-/// One `PlanAction`, rendered: what it does, in words, how many bytes it
-/// moves, which [SyncRunPlanGroup] it falls in, and its [reversal] — `null`
-/// when the plan offers none, which is also what keeps the review from
-/// offering to reverse it.
+/// One `PlanAction`, rendered: its [index] in the plan, which a choice
+/// names; what it does, in words; how many bytes it moves; which
+/// [SyncRunPlanGroup] it falls in; and its [reversal] — `null` when the
+/// core offers none, which is also what keeps the review from offering to
+/// reverse it.
 final class SyncRunPlanRow {
   const SyncRunPlanRow({
+    required this.index,
     required this.path,
     required this.action,
     required this.bytes,
@@ -335,11 +408,25 @@ final class SyncRunPlanRow {
     required this.reversal,
   });
 
+  final int index;
   final String path;
   final String action;
   final int bytes;
   final SyncRunPlanGroup group;
   final SyncRunPlanReversal? reversal;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunPlanRow &&
+      other.index == index &&
+      other.path == path &&
+      other.action == action &&
+      other.bytes == bytes &&
+      other.group == group &&
+      other.reversal == reversal;
+
+  @override
+  int get hashCode => Object.hash(index, path, action, bytes, group, reversal);
 }
 
 /// A planned action's reverse, rendered: what it does, literally — which
@@ -351,9 +438,18 @@ final class SyncRunPlanReversal {
 
   final String action;
   final int bytes;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunPlanReversal &&
+      other.action == action &&
+      other.bytes == bytes;
+
+  @override
+  int get hashCode => Object.hash(action, bytes);
 }
 
-/// One `RunResultEvent`: [error] is `null` when the action applied.
+/// One action's reported outcome: [error] is `null` when it applied.
 final class SyncRunResultRow {
   const SyncRunResultRow({
     required this.path,
@@ -364,9 +460,19 @@ final class SyncRunResultRow {
   final String path;
   final String action;
   final String? error;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunResultRow &&
+      other.path == path &&
+      other.action == action &&
+      other.error == error;
+
+  @override
+  int get hashCode => Object.hash(path, action, error);
 }
 
-/// `RunProgressEvent`, verbatim: [completed] of [total] kept actions.
+/// The apply's progress, verbatim: [completed] of [total] kept actions.
 final class SyncRunProgress {
   const SyncRunProgress({required this.completed, required this.total});
 
@@ -374,29 +480,23 @@ final class SyncRunProgress {
   final int total;
 }
 
-/// The rendered values of the Run page: the core's run updates as
-/// something a widget can display (SPEC §9, §11.4).
+/// The rendered values of the Run page: the latest view of the run the
+/// core sent, as something a widget can display (SPEC §9, §11.4).
 ///
 /// Holds only what the page displays — see the view-state role in
-/// `app_scope.dart`: strings, ints and sealed cases, never a run update, a
-/// plan or a conflict. `SyncRunController` folds the stream into these
-/// fields in the order SPEC §11.4 fixes — header, scan tally, skipped and
-/// unreadable paths, conflicts, plan, per-action results, summary — and
-/// each field is the rendering of the event that fills it. It is many
-/// fields because it is one view of one run; what it is not is a set of
-/// flags that must agree: the run's phase is one sealed value.
+/// `app_scope.dart`: strings, ints and sealed cases. Every field is written
+/// by [show], once per view the core sends, and every one is that view's
+/// rendering: the phase, the review and the outcome are the core's
+/// decisions, and nothing here folds one view into the next.
 ///
-/// **Not every write wakes this state's listeners.** The plan and the
-/// per-action results each have a listenable of their own ([planChanged],
-/// [resultCell]) because the apply loop writes them once per action: a page
-/// that rendered 50k plan rows from this notifier alone would rebuild them
-/// for every action applied, to show one leading icon changing. The apply
-/// loop's progress and counts are written silently too ([recordProgress],
-/// [recordResult]) and shown when the controller says so
-/// ([publishProgress]) — how often that is, is the controller's rule, not
-/// this state's. The review's choices are the same pattern for a tap: one
-/// cell per path ([actionDecisionCell], [conflictDecisionCell]) and one for
-/// the running total ([decisionSummary]).
+/// **Not every change wakes every listener.** The plan and the per-path
+/// rows each have a listenable of their own ([planChanged], [resultCell],
+/// [actionDecisionCell], [conflictDecisionCell], [decisionSummary]), set
+/// only when their value changes: a page that rendered 50k plan rows from
+/// this notifier alone would rebuild them for every view the apply loop
+/// brings, to show one leading icon changing, and a tap in the review is
+/// one row's news and the bar's. The phase has its own too
+/// ([phaseChanged]), which fires only when the phase does.
 class SyncRunViewState extends ChangeNotifier {
   final ValueNotifier<SyncRunPhase> _phase = ValueNotifier(const SyncRunIdle());
   bool _dryRun = false;
@@ -408,11 +508,11 @@ class SyncRunViewState extends ChangeNotifier {
   final ValueNotifier<List<SyncRunPlanRow>> _plan = ValueNotifier(const []);
   Map<SyncRunPlanGroup, SyncRunPlanSection> _planSections = _emptyPlanSections;
   int _bytesToTransfer = 0;
-  final Map<String, SyncRunResultRow> _results = {};
+  Map<String, SyncRunResultRow> _results = const {};
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
-  final Map<String, SyncRunActionChoice> _actionChoices = {};
+  Map<String, SyncRunActionChoice> _actionChoices = const {};
   final Map<String, ValueNotifier<SyncRunActionChoice>> _actionCells = {};
-  final Map<String, SyncRunConflictChoice> _conflictChoices = {};
+  Map<String, SyncRunConflictChoice> _conflictChoices = const {};
   final Map<String, ValueNotifier<SyncRunConflictChoice>> _conflictCells = {};
   final ValueNotifier<SyncRunDecisionSummary?> _decisionSummary = ValueNotifier(
     null,
@@ -427,16 +527,15 @@ class SyncRunViewState extends ChangeNotifier {
   /// Fires when [phase] does, and only then. The plan section — which
   /// follows [planChanged] so the apply loop cannot rebuild it — turns its
   /// rows into the review and back, and collapses its groups while
-  /// applying, on the phase; this lets it without following every progress
-  /// event to get it.
+  /// applying, on the phase; this lets it without following every view to
+  /// get it.
   Listenable get phaseChanged => _phase;
 
   /// SPEC §11.3 `--dry-run`: the plan is shown and nothing is applied, so
   /// the page labels the empty apply section as intended, not as a failure.
   bool get dryRun => _dryRun;
 
-  /// `null` until the `RunReplicasEvent` — the first event of any run that
-  /// got past `hello`.
+  /// `null` until both sides' `hello` is in.
   SyncRunHeader? get header => _header;
 
   /// `null` until both scans have completed.
@@ -453,32 +552,28 @@ class SyncRunViewState extends ChangeNotifier {
 
   List<SyncRunConflictRow> get conflicts => _conflicts;
 
-  /// The reconciled plan (SPEC §6), before the presenter decides.
+  /// The reconciled plan (SPEC §6).
   List<SyncRunPlanRow> get plan => _plan.value;
 
-  /// Fires when [plan] does, and only then. The plan arrives whole in one
-  /// `RunPlanEvent`, and the apply loop that follows it reports one result
-  /// per action — so a plan of 50k actions is fetched once, and a widget
-  /// showing the plan under this listenable builds once per run rather than
-  /// once per action. [SyncRunViewState]'s own listeners cannot say that:
-  /// they also fire for the phase, the progress and every path list.
+  /// Fires when [plan] does, and only then: the plan is fixed once made,
+  /// so a plan of 50k actions is rendered once, and a widget showing it
+  /// under this listenable builds once per attempt rather than once per
+  /// view. [SyncRunViewState]'s own listeners cannot say that: they fire
+  /// for every view.
   Listenable get planChanged => _plan;
 
   /// [plan], sliced into its four [SyncRunPlanGroup]s (Design C.5) —
-  /// folded once by [recordPlan], not re-walked per build. Every group is
+  /// folded once per plan, not re-walked per build. Every group is
   /// present, empty ones included, so a reader never null-checks a group
   /// that has nothing in it.
   Map<SyncRunPlanGroup, SyncRunPlanSection> get planSections => _planSections;
 
   int get bytesToTransfer => _bytesToTransfer;
 
-  /// Each applied action's outcome, in the order they ran.
-  List<SyncRunResultRow> get results => List.unmodifiable(_results.values);
-
   /// The result for [path], as something the row for that path can watch.
-  /// One result is one row's news: [recordResult] writes it here and on
-  /// [SyncRunViewState]'s listeners never, so the plan above the rows is not
-  /// rebuilt for it and no row re-walks the plan to find its own result.
+  /// One result is one row's news: [show] writes it here when it changes
+  /// and nowhere else, so the plan above the rows is not rebuilt for it and
+  /// no row re-walks the plan to find its own result.
   ///
   /// The cell is created on first read, and only a row that is built reads
   /// one: a path the viewport has never reached costs a map entry, not a
@@ -488,10 +583,8 @@ class SyncRunViewState extends ChangeNotifier {
 
   /// The review's current choice for the proposed action at [path], as
   /// something that row can watch — [resultCell]'s reasoning, for a tap
-  /// rather than an applied action: one choice is one row's news, so
-  /// [recordActionChoice] writes it here and on this state's listeners
-  /// never. Created on first read; [SyncRunActionChoice.proposed] until
-  /// the user picks otherwise.
+  /// rather than an applied action. Created on first read;
+  /// [SyncRunActionChoice.proposed] when the core says nothing else.
   ValueListenable<SyncRunActionChoice> actionDecisionCell(String path) =>
       _actionCells.putIfAbsent(
         path,
@@ -500,7 +593,7 @@ class SyncRunViewState extends ChangeNotifier {
       );
 
   /// [actionDecisionCell], for the conflict at [path];
-  /// [SyncRunConflictChoice.unresolved] until the user picks otherwise.
+  /// [SyncRunConflictChoice.unresolved] when the core says nothing else.
   ValueListenable<SyncRunConflictChoice> conflictDecisionCell(String path) =>
       _conflictCells.putIfAbsent(
         path,
@@ -515,9 +608,7 @@ class SyncRunViewState extends ChangeNotifier {
   ValueListenable<SyncRunDecisionSummary?> get decisionSummary =>
       _decisionSummary;
 
-  /// How many of [results] applied, and how many failed — counted as each
-  /// result is recorded, so a page showing them does not re-walk [results]
-  /// on every refresh.
+  /// How many reported outcomes applied, and how many failed.
   int get appliedCount => _appliedCount;
   int get failedCount => _failedCount;
 
@@ -528,82 +619,65 @@ class SyncRunViewState extends ChangeNotifier {
   /// repaint every second of a scan to stay true.
   String? get startedAt => _startedAt;
 
-  /// Starts a run's rendering from nothing but its mode. `SyncRunController`
-  /// only.
+  /// Renders one view of the run, whole. `SyncRunController` only.
   ///
-  /// **From nothing, literally**: every field the fold writes is cleared
-  /// first, because a resumed run (`SyncRunController.resume`) renders into
-  /// this same state and its scan, plan and results replace the paused
-  /// attempt's — they do not continue them. The result cells are emptied
-  /// rather than dropped: a row built from the previous attempt's plan may
-  /// still be watching one, and a cell that kept its old value would mark
-  /// an action the new plan has not started as already applied.
-  void recordStart({required bool dryRun}) {
+  /// Every field is replaced — a resumed attempt's view shows nothing of
+  /// the attempt before it — but a listenable is set only when its value
+  /// changed, and the cells are written rather than dropped: a built row
+  /// may be watching one.
+  void show({
+    required SyncRunPhase phase,
+    required bool dryRun,
+    required String? startedAt,
+    required SyncRunHeader? header,
+    required SyncRunScanTally? scanTally,
+    required List<String> skippedSymlinks,
+    required List<String> unreadablePaths,
+    required List<SyncRunConflictRow> conflicts,
+    required List<SyncRunPlanRow> plan,
+    required int bytesToTransfer,
+    required Map<String, SyncRunResultRow> results,
+    required Map<String, SyncRunActionChoice> actionChoices,
+    required Map<String, SyncRunConflictChoice> conflictChoices,
+    required SyncRunDecisionSummary? decisionSummary,
+    required SyncRunProgress? progress,
+    required int appliedCount,
+    required int failedCount,
+  }) {
     _dryRun = dryRun;
-    _header = null;
-    _scanTally = null;
-    _skippedSymlinks = const [];
-    _unreadablePaths = const [];
-    _conflicts = const [];
-    _bytesToTransfer = 0;
-    _results.clear();
-    _appliedCount = 0;
-    _failedCount = 0;
-    for (final cell in _resultCells.values) {
-      cell.value = null;
+    _startedAt = startedAt;
+    _header = header;
+    _scanTally = scanTally;
+    _skippedSymlinks = List.unmodifiable(skippedSymlinks);
+    _unreadablePaths = List.unmodifiable(unreadablePaths);
+    _conflicts = List.unmodifiable(conflicts);
+    _bytesToTransfer = bytesToTransfer;
+    _progress = progress;
+    _appliedCount = appliedCount;
+    _failedCount = failedCount;
+    _results = results;
+    for (final MapEntry(key: path, value: cell) in _resultCells.entries) {
+      cell.value = results[path];
     }
-    resetDecisions();
-    _progress = null;
-    _startedAt = null;
-    _plan.value = const [];
-    _planSections = _emptyPlanSections;
-    _phase.value = const SyncRunConnecting();
-    notifyListeners();
-  }
-
-  /// Moves the phase. `SyncRunController` only.
-  void recordPhase(SyncRunPhase phase) {
+    _actionChoices = actionChoices;
+    for (final MapEntry(key: path, value: cell) in _actionCells.entries) {
+      cell.value = actionChoices[path] ?? SyncRunActionChoice.proposed;
+    }
+    _conflictChoices = conflictChoices;
+    for (final MapEntry(key: path, value: cell) in _conflictCells.entries) {
+      cell.value = conflictChoices[path] ?? SyncRunConflictChoice.unresolved;
+    }
+    _decisionSummary.value = decisionSummary;
+    if (!listEquals(plan, _plan.value)) _recordPlan(plan);
     _phase.value = phase;
     notifyListeners();
   }
 
-  void recordStartedAt(String time) {
-    _startedAt = time;
-    notifyListeners();
-  }
-
-  void recordHeader(SyncRunHeader header) {
-    _header = header;
-    notifyListeners();
-  }
-
-  void recordScanTally(SyncRunScanTally tally) {
-    _scanTally = tally;
-    notifyListeners();
-  }
-
-  void recordSkippedSymlink(String line) {
-    _skippedSymlinks = List.unmodifiable([..._skippedSymlinks, line]);
-    notifyListeners();
-  }
-
-  void recordUnreadablePath(String line) {
-    _unreadablePaths = List.unmodifiable([..._unreadablePaths, line]);
-    notifyListeners();
-  }
-
-  void recordConflict(SyncRunConflictRow row) {
-    _conflicts = List.unmodifiable([..._conflicts, row]);
-    notifyListeners();
-  }
-
-  /// Replaces the plan at once — one notification for one `RunPlanEvent`,
-  /// on [planChanged] alone. `bytesToTransfer` and [planSections] are set
-  /// first, so a listener woken by the plan reads the plan's own sum and
-  /// group counts; [planSections] is one pass over [rows], not re-walked
-  /// on every build that follows.
-  void recordPlan(List<SyncRunPlanRow> rows, {required int bytesToTransfer}) {
-    _bytesToTransfer = bytesToTransfer;
+  /// Replaces the plan — one notification, on [planChanged] alone.
+  /// [planSections] is set first, so a listener woken by the plan reads
+  /// the plan's own group counts; it is one pass over [rows], not
+  /// re-walked on every build that follows.
+  void _recordPlan(List<SyncRunPlanRow> rows) {
     final indexes = {
       for (final group in SyncRunPlanGroup.values) group: <int>[],
     };
@@ -623,69 +697,9 @@ class SyncRunViewState extends ChangeNotifier {
     _plan.value = List.unmodifiable(rows);
   }
 
-  /// One action's outcome: recorded for [results] and its counts, and
-  /// pushed to that path's [resultCell] if the row for it has been built.
-  /// Not on this state's listeners — see [planChanged]; the counts reach
-  /// them with the next [publishProgress].
-  void recordResult(SyncRunResultRow row) {
-    if (_results[row.path] case final previous?) _uncount(previous);
-    _results[row.path] = row;
-    row.error == null ? _appliedCount++ : _failedCount++;
-    _resultCells[row.path]?.value = row;
-  }
-
-  void _uncount(SyncRunResultRow row) =>
-      row.error == null ? _appliedCount-- : _failedCount--;
-
-  /// The review's choice for the proposed action at [path]: pushed to that
-  /// path's [actionDecisionCell] if a row is watching it, and on this
-  /// state's listeners never — see [actionDecisionCell].
-  void recordActionChoice(String path, SyncRunActionChoice choice) {
-    _actionChoices[path] = choice;
-    _actionCells[path]?.value = choice;
-  }
-
-  /// [recordActionChoice], for the conflict at [path].
-  void recordConflictChoice(String path, SyncRunConflictChoice choice) {
-    _conflictChoices[path] = choice;
-    _conflictCells[path]?.value = choice;
-  }
-
-  /// The review's running total, on [decisionSummary] alone.
-  void recordDecisionSummary(SyncRunDecisionSummary summary) =>
-      _decisionSummary.value = summary;
-
-  /// Every path back to its default choice and no running total: a review
-  /// opening, a new attempt ([recordStart]), or an answer that ignores the
-  /// choices made (`SyncRunController.acceptAll`) — after which a row still
-  /// showing "reversed" would claim something the core was not told. The
-  /// cells are reset rather than dropped, as [recordStart] resets
-  /// [resultCell]s: a built row may be watching one.
-  void resetDecisions() {
-    _actionChoices.clear();
-    _conflictChoices.clear();
-    for (final cell in _actionCells.values) {
-      cell.value = SyncRunActionChoice.proposed;
-    }
-    for (final cell in _conflictCells.values) {
-      cell.value = SyncRunConflictChoice.unresolved;
-    }
-    _decisionSummary.value = null;
-  }
-
-  /// The apply loop's latest progress, written without waking anyone: see
-  /// [publishProgress].
-  void recordProgress(SyncRunProgress progress) {
-    _progress = progress;
-  }
-
-  /// Shows what [recordProgress] and [recordResult] wrote since the last
-  /// time. A phase change shows it too.
-  void publishProgress() => notifyListeners();
-
   /// Disposes the notifiers this state hands out — the phase's, the plan's,
-  /// and the cells built rows are watching — so a write after the page left is an
-  /// assertion failure in the page that made it, as it is for [this].
+  /// and the cells built rows are watching — so a write after the page left
+  /// is an assertion failure in the page that made it, as it is for [this].
   @override
   void dispose() {
     _phase.dispose();
@@ -704,8 +718,8 @@ class SyncRunViewState extends ChangeNotifier {
   }
 }
 
-/// Every [SyncRunPlanGroup] with nothing in it — [recordStart]'s reset and
-/// the state a run renders before its first plan arrives.
+/// Every [SyncRunPlanGroup] with nothing in it — the state a run renders
+/// before its plan is made.
 final Map<SyncRunPlanGroup, SyncRunPlanSection> _emptyPlanSections = {
   for (final group in SyncRunPlanGroup.values)
     group: const SyncRunPlanSection(indexes: [], bytes: 0),

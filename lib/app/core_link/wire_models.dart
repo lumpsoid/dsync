@@ -1,8 +1,11 @@
 import '../rust/bindings/bindings.dart' as wire;
+import 'models/action_choice.dart';
 import 'models/action_result.dart';
 import 'models/archive_info.dart';
+import 'models/conflict_choice.dart';
 import 'models/conflict_info.dart';
-import 'models/conflict_resolution.dart';
+import 'models/conflict_row.dart';
+import 'models/decision_summary.dart';
 import 'models/device_identity_info.dart';
 import 'models/enrolment_outcome.dart';
 import 'models/enrolment_update.dart';
@@ -13,20 +16,19 @@ import 'models/filter_row.dart';
 import 'models/mass_delete_side.dart';
 import 'models/pair_code_reading.dart';
 import 'models/paired_device_info.dart';
-import 'models/peer_contact.dart';
 import 'models/peer_probe_outcome.dart';
 import 'models/plan_action.dart';
 import 'models/plan_proposal.dart';
+import 'models/plan_row.dart';
 import 'models/profile_draft.dart';
 import 'models/profile_entry.dart';
 import 'models/replica_info.dart';
 import 'models/replica_side.dart';
-import 'models/run_decision.dart';
-import 'models/run_end.dart';
-import 'models/run_error_info.dart';
+import 'models/run_intent.dart';
+import 'models/run_phase.dart';
 import 'models/run_summary_info.dart';
 import 'models/run_target.dart';
-import 'models/run_update.dart';
+import 'models/run_view.dart';
 import 'models/scan_probe_layer.dart';
 import 'models/scan_probe_result.dart';
 import 'models/scan_tally.dart';
@@ -164,125 +166,152 @@ wire.RunTarget wireTarget(RunTarget target) => switch (target) {
   DraftTarget(:final draft) => wire.RunTargetPair(draft: wireDraft(draft)),
 };
 
-wire.RunDecision wireDecision(RunDecision decision) => wire.RunDecision(
-  keep: [
-    for (final (:index, :reversed) in decision.keep)
-      wire.KeptAction(index: index, reversed: reversed),
-  ],
-  resolve: [
-    for (final MapEntry(key: conflict, value: resolution)
-        in decision.resolve.entries)
-      wire.ConflictChoice(
-        conflict: conflict,
-        resolution: switch (resolution) {
-          KeepSide(:final side) => wire.ConflictResolutionViewKeep(
-            value: wireSide(side),
-          ),
-          KeepBoth() => const wire.ConflictResolutionViewKeepBoth(),
-        },
+wire.RunIntent wireIntent(RunIntent intent) => switch (intent) {
+  ChooseAction(:final index, :final choice) => wire.RunIntentChooseAction(
+    index: index,
+    choice: switch (choice) {
+      ActionChoice.proposed => wire.ActionChoiceView.proposed,
+      ActionChoice.reversed => wire.ActionChoiceView.reversed,
+      ActionChoice.skipped => wire.ActionChoiceView.skipped,
+    },
+  ),
+  ChooseConflict(:final index, :final choice) =>
+    wire.RunIntentChooseConflict(index: index, choice: _wireConflictChoice(choice)),
+  ConfirmReview() => const wire.RunIntentConfirm(),
+  AcceptAll() => const wire.RunIntentAcceptAll(),
+  AnswerDeletes(:final proceed) => wire.RunIntentAnswerDeletes(
+    proceed: proceed,
+  ),
+  StopRun() => const wire.RunIntentStop(),
+  PauseRun() => const wire.RunIntentPause(),
+  ResumeRun() => const wire.RunIntentResume(),
+  ForegroundRun() => const wire.RunIntentForeground(),
+  CloseRun() => const wire.RunIntentClose(),
+};
+
+wire.ConflictChoiceView _wireConflictChoice(ConflictChoice choice) =>
+    switch (choice) {
+      ConflictChoice.unresolved => wire.ConflictChoiceView.unresolved,
+      ConflictChoice.keepA => wire.ConflictChoiceView.keepA,
+      ConflictChoice.keepB => wire.ConflictChoiceView.keepB,
+      ConflictChoice.keepBoth => wire.ConflictChoiceView.keepBoth,
+    };
+
+ConflictChoice _conflictChoice(wire.ConflictChoiceView choice) =>
+    switch (choice) {
+      wire.ConflictChoiceView.unresolved => ConflictChoice.unresolved,
+      wire.ConflictChoiceView.keepA => ConflictChoice.keepA,
+      wire.ConflictChoiceView.keepB => ConflictChoice.keepB,
+      wire.ConflictChoiceView.keepBoth => ConflictChoice.keepBoth,
+    };
+
+RunView runView(wire.RunView view) => RunView(
+  dryRun: view.dryRun,
+  phase: _phase(view.phase),
+  connectedAt: switch (view.connectedAtMs) {
+    final ms? => _at(ms),
+    null => null,
+  },
+  replicas: switch (view.replicas) {
+    final replicas? => (a: _replica(replicas.a), b: _replica(replicas.b)),
+    null => null,
+  },
+  tallies: switch (view.tally) {
+    final tally? => (a: _tally(tally.a), b: _tally(tally.b)),
+    null => null,
+  },
+  skipped: [for (final skipped in view.skipped) _skipped(skipped)],
+  conflicts: [
+    for (final row in view.conflicts)
+      ConflictRow(
+        conflict: _conflict(row.conflict),
+        offered: [for (final choice in row.offered) _conflictChoice(choice)],
+        choice: _conflictChoice(row.choice),
+        outcome: _outcome(row.outcome),
       ),
   ],
+  plan: [
+    for (final row in view.plan)
+      PlanRow(
+        proposal: PlanProposal(
+          _action(row.proposal.action),
+          reverseBytes: switch (row.proposal.reverseBytes) {
+            final bytes? => _n(bytes),
+            null => null,
+          },
+        ),
+        choice: switch (row.choice) {
+          wire.ActionChoiceView.proposed => ActionChoice.proposed,
+          wire.ActionChoiceView.reversed => ActionChoice.reversed,
+          wire.ActionChoiceView.skipped => ActionChoice.skipped,
+        },
+        outcome: _outcome(row.outcome),
+      ),
+  ],
+  bytesToTransfer: _n(view.bytesToTransfer),
+  progress: switch (view.progress) {
+    final p? => (completed: _n(p.completed), total: _n(p.total)),
+    null => null,
+  },
+  applied: _n(view.applied),
+  failed: _n(view.failed),
+  timings: view.timings,
 );
 
-RunUpdate runUpdate(wire.RunUpdateBody body) => switch (body) {
-  wire.RunUpdateBodyConnected(:final peers) => RunConnected([
-    for (final peer in peers)
-      PeerContact(
-        side: side(peer.side),
-        deviceId: peer.deviceId,
-        address: peer.address,
-        notes: peer.notes,
+ActionResult? _outcome(wire.ResultView? result) => switch (result) {
+  final result? => ActionResult(
+    action: _action(result.action),
+    failure: result.failure,
+  ),
+  null => null,
+};
+
+RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
+  wire.RunPhaseViewConnecting() => const RunConnecting(),
+  wire.RunPhaseViewScanning() => const RunScanning(),
+  wire.RunPhaseViewReviewing(:final value) => RunReviewing(
+    DecisionSummary(
+      apply: _n(value.apply),
+      reversed: _n(value.reversed),
+      skipped: _n(value.skipped),
+      resolved: _n(value.resolved),
+      keptBoth: _n(value.keptBoth),
+      leftOpen: _n(value.leftOpen),
+    ),
+  ),
+  wire.RunPhaseViewConfirmingDeletes(:final sides) => RunConfirmingDeletes([
+    for (final s in sides)
+      MassDeleteSide(
+        side: side(s.side),
+        deletes: _n(s.deletes),
+        archived: _n(s.archived),
       ),
   ]),
-  wire.RunUpdateBodyReplicas(:final a, :final b, :final lastRunUnfinished) =>
-    RunReplicas(
-      a: _replica(a),
-      b: _replica(b),
-      lastRunUnfinished: lastRunUnfinished,
-    ),
-  wire.RunUpdateBodyScanTally(:final a, :final b) => RunScanTally(
-    a: _tally(a),
-    b: _tally(b),
-  ),
-  wire.RunUpdateBodySkipped(:final value) => RunSkipped(
-    SkippedPathInfo(
-      side: side(value.side),
-      path: value.path,
-      reason: switch (value.reason) {
-        wire.SkippedReasonView.symlink => SkipReason.symlink,
-        wire.SkippedReasonView.unreadable => SkipReason.unreadable,
-        wire.SkippedReasonView.caseFoldCollision =>
-          SkipReason.caseFoldCollision,
-        wire.SkippedReasonView.unrepresentableName =>
-          SkipReason.unrepresentableName,
-        wire.SkippedReasonView.specialFile => SkipReason.specialFile,
-      },
-      detail: value.detail,
-      isFailure: value.isFailure,
-    ),
-  ),
-  wire.RunUpdateBodyConflict(:final value) => RunConflict(_conflict(value)),
-  wire.RunUpdateBodyPlan(
-    :final actions,
-    :final conflicts,
-    :final bytesToTransfer,
-    :final exceedsWarnSize,
-    :final awaitingDecision,
-  ) =>
-    RunPlan(
-      actions: [
-        for (final proposal in actions)
-          PlanProposal(
-            _action(proposal.action),
-            reverseBytes: switch (proposal.reverseBytes) {
-              final bytes? => _n(bytes),
-              null => null,
-            },
-          ),
-      ],
-      conflicts: [for (final conflict in conflicts) _conflict(conflict)],
-      bytesToTransfer: _n(bytesToTransfer),
-      exceedsWarnSize: exceedsWarnSize,
-      awaitingDecision: awaitingDecision,
-    ),
-  wire.RunUpdateBodyMassDelete(:final sides, :final awaitingConfirmation) =>
-    RunMassDelete(
-      sides: [
-        for (final s in sides)
-          MassDeleteSide(
-            side: side(s.side),
-            deletes: _n(s.deletes),
-            archived: _n(s.archived),
-          ),
-      ],
-      awaitingConfirmation: awaitingConfirmation,
-    ),
-  wire.RunUpdateBodyApplied(:final approved, :final results, :final progress) =>
-    RunApplied(
-      approved: [for (final action in approved) _action(action)],
-      results: [
-        for (final result in results)
-          ActionResult(action: _action(result.action), failure: result.failure),
-      ],
-      progress: switch (progress) {
-        final p? => (completed: _n(p.completed), total: _n(p.total)),
-        null => null,
-      },
-    ),
-  wire.RunUpdateBodySummary(:final value) => RunSummarized(_summary(value)),
-  wire.RunUpdateBodyError(:final value) => RunFailed(
-    RunErrorInfo(
-      side: switch (value.side) {
-        final s? => side(s),
-        null => null,
-      },
-      message: value.message,
-      replicaBusy: value.replicaBusy,
-    ),
-  ),
-  wire.RunUpdateBodyEnded(:final value) => RunEnded(_end(value)),
-  _ => throw StateError('unknown run update: $body'),
+  wire.RunPhaseViewApplying() => const RunApplying(),
+  wire.RunPhaseViewFinished(:final value) => RunFinished(_summary(value)),
+  wire.RunPhaseViewStopped(:final completed) => RunStopped(_n(completed)),
+  wire.RunPhaseViewPaused(:final completed) => RunPaused(_n(completed)),
+  wire.RunPhaseViewFailed(:final message) => RunFailed(message),
+  wire.RunPhaseViewReplicaBusy(:final message) => RunReplicaBusy(message),
+  wire.RunPhaseViewDeletesDeclined() => const RunDeletesDeclined(),
+  wire.RunPhaseViewNoSummary() => const RunNoSummary(),
+  _ => throw StateError('unknown run phase: $phase'),
 };
+
+SkippedPathInfo _skipped(wire.SkippedView value) => SkippedPathInfo(
+  side: side(value.side),
+  path: value.path,
+  reason: switch (value.reason) {
+    wire.SkippedReasonView.symlink => SkipReason.symlink,
+    wire.SkippedReasonView.unreadable => SkipReason.unreadable,
+    wire.SkippedReasonView.caseFoldCollision => SkipReason.caseFoldCollision,
+    wire.SkippedReasonView.unrepresentableName =>
+      SkipReason.unrepresentableName,
+    wire.SkippedReasonView.specialFile => SkipReason.specialFile,
+  },
+  detail: value.detail,
+  isFailure: value.isFailure,
+);
 
 ReplicaInfo _replica(wire.ReplicaInfoView view) => ReplicaInfo(
   lastCommit: switch (view.lastCommitMs) {
@@ -360,31 +389,6 @@ RunSummaryInfo _summary(wire.SummaryView view) => RunSummaryInfo(
   failed: _n(view.failed),
   unreadable: _n(view.unreadable),
 );
-
-RunEnd _end(wire.RunEndView view) => switch (view) {
-  wire.RunEndViewRan(
-    :final summary,
-    :final errored,
-    :final stopped,
-    :final timings,
-  ) =>
-    RunRan(
-      summary: switch (summary) {
-        final s? => _summary(s),
-        null => null,
-      },
-      errored: errored,
-      stopped: switch (stopped) {
-        wire.StoppedView.gracefully => StopKind.gracefully,
-        wire.StoppedView.dropped => StopKind.dropped,
-        null => null,
-      },
-      timings: timings,
-    ),
-  wire.RunEndViewNotConnected(:final message) => RunNotConnected(message),
-  wire.RunEndViewStoppedConnecting() => const RunStoppedConnecting(),
-  _ => throw StateError('unknown run end: $view'),
-};
 
 ServeUpdate serveUpdate(wire.ServeUpdateBody body) => switch (body) {
   wire.ServeUpdateBodyRefused(:final from, :final message) => ServeRefused(

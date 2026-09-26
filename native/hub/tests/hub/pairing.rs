@@ -3,10 +3,10 @@
 //! probes it and runs against it - every step a hub command.
 
 use hub::signals::{
-    CoreCommand, EnrolmentUpdateBody, KeptAction, ProfileDraft, ReplyResult, RunDecision,
-    RunTarget, RunUpdateBody, ServeUpdateBody,
+    CoreCommand, EnrolmentUpdateBody, ProfileDraft, ReplyResult, RunIntent, RunTarget,
+    ServeUpdateBody,
 };
-use hub::views::{EnrolmentEndView, PairCodeView, ProbeOutcome, RunEndView, SideView};
+use hub::views::{EnrolmentEndView, PairCodeView, ProbeOutcome, RunPhaseView};
 
 use crate::support::{Head, read, write};
 
@@ -207,36 +207,29 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
         address: at.clone(),
     };
     let (session, _) = phone.ok(run).await;
-    let planned = phone
-        .run_until(session, |update| {
-            matches!(update, RunUpdateBody::Plan { .. })
+    let reviewing = phone
+        .run_until(session, |view| {
+            matches!(view.phase, RunPhaseView::Reviewing(_))
+        })
+        .await;
+    assert!(
+        reviewing
+            .iter()
+            .any(|view| matches!(view.phase, RunPhaseView::Scanning))
+    );
+    let confirm = CoreCommand::SteerRun {
+        session,
+        intent: RunIntent::Confirm,
+    };
+    phone.ok(confirm).await;
+    let finished = phone
+        .run_until(session, |view| {
+            matches!(view.phase, RunPhaseView::Finished(_))
         })
         .await;
     assert!(matches!(
-        &planned[0],
-        RunUpdateBody::Connected { peers } if peers.len() == 1
-            && matches!(peers[0].side, SideView::B)
-            && peers[0].device_id == desktop_id
-            && peers[0].notes.is_empty()
-    ));
-    let decide = CoreCommand::DecideRun {
-        session,
-        decision: RunDecision {
-            keep: vec![KeptAction {
-                index: 0,
-                reversed: false,
-            }],
-            resolve: Vec::new(),
-        },
-    };
-    phone.ok(decide).await;
-    let ended = phone
-        .run_until(session, |update| matches!(update, RunUpdateBody::Ended(_)))
-        .await;
-    assert!(matches!(
-        ended.last(),
-        Some(RunUpdateBody::Ended(RunEndView::Ran { summary: Some(summary), errored: false, .. }))
-            if summary.applied == 1
+        finished.last().map(|view| &view.phase),
+        Some(RunPhaseView::Finished(summary)) if summary.applied == 1
     ));
     assert_eq!(read(&desktop.path("shared/photo.jpg")), "jpeg");
 

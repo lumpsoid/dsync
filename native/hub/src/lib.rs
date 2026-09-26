@@ -32,7 +32,7 @@ use rinf::{DartSignal, RustSignal, dart_shutdown, write_interface};
 
 pub use dispatch::Core;
 pub use outbox::{Outbox, Outgoing};
-pub use run::BATCH_INTERVAL;
+pub use run::REFRESH_INTERVAL;
 use signals::CoreRequest;
 
 write_interface!();
@@ -47,7 +47,7 @@ async fn main() {
     tokio::spawn(async move {
         while let Some(signal) = outgoing.recv().await {
             match signal {
-                Outgoing::Run(update) => update.send_signal_to_dart(),
+                Outgoing::Run(snapshot) => (*snapshot).send_signal_to_dart(),
                 Outgoing::Serve(update) => update.send_signal_to_dart(),
                 Outgoing::Enrolment(update) => update.send_signal_to_dart(),
             }

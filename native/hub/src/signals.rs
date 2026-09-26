@@ -9,20 +9,20 @@
 //! session id: Dart can listen for the session's stream before the reply
 //! lands, so no update is lost to the race.
 //!
-//! Streams are plain Rust->Dart signals tagged with their session: a run's
-//! [`RunUpdate`]s, serving's [`ServeUpdate`]s, a pairing window's
-//! [`EnrolmentUpdate`]s. Each ends with one terminal update; nothing for
-//! that session follows it.
+//! Streams are plain Rust->Dart signals tagged with their session. A run
+//! sends [`RunSnapshot`]s: the whole view after every change, so the head
+//! renders the latest and decides nothing; what the user does goes back as
+//! a [`RunIntent`] in [`CoreCommand::SteerRun`]. Serving sends
+//! [`ServeUpdate`]s and a pairing window [`EnrolmentUpdate`]s, each ending
+//! with one terminal update; nothing for that session follows it.
 
 use rinf::{DartSignal, RustSignal, SignalPiece};
 use serde::{Deserialize, Serialize};
 
 use crate::views::{
-    ActionView, AddressesView, ArchiveView, ConflictView, DeviceView, DirsView, EnrolmentEndView,
-    FilterPreviewView, FilterRowView, IdentityView, MassDeleteView, PairCodeView, PairingShownView,
-    PeerContactView, ProbeOutcome, ProfileEntry, ProposalView, ReplicaInfoView, ResultView,
-    RunEndView, RunErrorView, RunStartedView, ScanProbeView, ServeStartedView, SideView,
-    SkippedView, SummaryView, TallyView,
+    ActionChoiceView, AddressesView, ArchiveView, ConflictChoiceView, DeviceView, DirsView,
+    EnrolmentEndView, FilterPreviewView, FilterRowView, IdentityView, PairCodeView,
+    PairingShownView, ProbeOutcome, ProfileEntry, RunView, ScanProbeView, ServeStartedView,
 };
 
 /// Dart asks the core for one thing. Answered by one [`CoreReply`] with
@@ -137,26 +137,18 @@ pub enum CoreCommand {
     },
 
     /// Starts a run: session id = request id. `address` overrides where
-    /// the peer is dialled (`host` or `host:port`).
+    /// the peer is dialled (`host` or `host:port`). Answered `Done` at
+    /// once; everything after, a target that will not resolve included,
+    /// is the session's [`RunSnapshot`]s.
     StartRun {
         target: RunTarget,
         dry_run: bool,
         address: Option<String>,
     },
-    /// The answer to the plan a run in `session` is waiting on.
-    DecideRun {
+    /// What the user did to the run in `session`.
+    SteerRun {
         session: u64,
-        decision: RunDecision,
-    },
-    /// Whether the run in `session` applies the deletions SPEC §10's
-    /// guard stopped it for (`RunUpdateBody::MassDelete`).
-    ConfirmDeletes {
-        session: u64,
-        proceed: bool,
-    },
-    /// The first stop is graceful; a second drops the run.
-    StopRun {
-        session: u64,
+        intent: RunIntent,
     },
 
     /// Serves paired devices on `bind:port`: session id = request id.
@@ -206,7 +198,7 @@ pub enum CoreCommand {
 
 /// The head's profile: this device's `local_root` synced with
 /// `remote_root` on the paired device `peer_device_id`.
-#[derive(Deserialize, SignalPiece)]
+#[derive(Clone, Deserialize, SignalPiece)]
 pub struct ProfileDraft {
     pub local_root: String,
     pub peer_device_id: String,
@@ -216,43 +208,48 @@ pub struct ProfileDraft {
 }
 
 /// What a run syncs: a saved profile, or a one-off pair.
-#[derive(Deserialize, SignalPiece)]
+#[derive(Clone, Deserialize, SignalPiece)]
 pub enum RunTarget {
     Profile { name: String },
     Pair { draft: ProfileDraft },
 }
 
-/// The head's answer to a plan: which of its actions to keep (indices into
-/// the plan's actions), each as planned or reversed, and which conflicts
-/// to settle, and how (indices into its conflicts). A conflict left out
-/// stays unresolved.
+/// What the user did to a run. The run holds the review's choices and
+/// decides what each intent means where it stands: one it cannot take -
+/// a choice the row does not offer, an answer nobody asked for, a resume
+/// of a live run - changes nothing.
 #[derive(Deserialize, SignalPiece)]
-pub struct RunDecision {
-    pub keep: Vec<KeptAction>,
-    pub resolve: Vec<ConflictChoice>,
-}
-
-/// A kept action: `reversed` puts the loser's version back instead of
-/// applying the plan's direction. One flag on the index, so "reversed"
-/// can never name an index that is not kept.
-#[derive(Deserialize, SignalPiece)]
-pub struct KeptAction {
-    pub index: u32,
-    pub reversed: bool,
-}
-
-#[derive(Deserialize, SignalPiece)]
-pub struct ConflictChoice {
-    pub conflict: u32,
-    pub resolution: ConflictResolutionView,
-}
-
-/// How a conflict is settled: one side's state wins, or both versions are
-/// kept - the peer's (side B's) saved beside this device's on side A.
-#[derive(Deserialize, SignalPiece)]
-pub enum ConflictResolutionView {
-    Keep(SideView),
-    KeepBoth,
+pub enum RunIntent {
+    /// The planned action at `index` under review.
+    ChooseAction {
+        index: u32,
+        choice: ActionChoiceView,
+    },
+    /// The conflict at `index` under review.
+    ChooseConflict {
+        index: u32,
+        choice: ConflictChoiceView,
+    },
+    /// Answers the review with the choices made.
+    Confirm,
+    /// Answers the review with the plan unchanged and every conflict left
+    /// open (`--batch`), whatever was chosen.
+    AcceptAll,
+    /// SPEC §10's delete guard: apply the deletions, or apply nothing.
+    AnswerDeletes { proceed: bool },
+    /// The user's stop: graceful - nothing further starts, what is in
+    /// flight finishes.
+    Stop,
+    /// The app went to the background: a live run is suspended as
+    /// paused.
+    Pause,
+    /// Runs the target again after a pause, a failure or a busy replica.
+    Resume,
+    /// The app came back: a paused run resumes.
+    Foreground,
+    /// The page left: a live run is stopped (dropped, when already
+    /// stopping), and the session ends.
+    Close,
 }
 
 /// The answer to the [`CoreRequest`] with the same `id`.
@@ -278,7 +275,6 @@ pub enum ReplyResult {
     Devices(Vec<DeviceView>),
     PeerProbed(ProbeOutcome),
     Profiles(Vec<ProfileEntry>),
-    RunStarted(RunStartedView),
     ServeStarted(ServeStartedView),
     Addresses(AddressesView),
     Archives(Vec<ArchiveView>),
@@ -291,66 +287,11 @@ pub enum ReplyResult {
     ScanProbe(ScanProbeView),
 }
 
-/// One step of the run in `session`.
+/// The run in `session`, whole, as it now stands.
 #[derive(Serialize, RustSignal)]
-pub struct RunUpdate {
+pub struct RunSnapshot {
     pub session: u64,
-    pub update: RunUpdateBody,
-}
-
-/// SPEC §11.4's events, as the head shows them. The per-action ones
-/// (approved actions, results, progress) arrive as [`RunUpdateBody::Applied`]
-/// batches, at most one per 50 ms; every other update flushes the batch
-/// before it, so the order is the run's.
-#[derive(Serialize, SignalPiece)]
-pub enum RunUpdateBody {
-    /// Both sides are connected; what dialling each `peer://` side learned.
-    Connected {
-        peers: Vec<PeerContactView>,
-    },
-    Replicas {
-        a: ReplicaInfoView,
-        b: ReplicaInfoView,
-        last_run_unfinished: bool,
-    },
-    ScanTally {
-        a: TallyView,
-        b: TallyView,
-    },
-    Skipped(SkippedView),
-    Conflict(ConflictView),
-    /// The plan. `awaiting_decision`: the run now waits for a
-    /// `DecideRun` (a dry run does not).
-    Plan {
-        actions: Vec<ProposalView>,
-        conflicts: Vec<ConflictView>,
-        bytes_to_transfer: u64,
-        exceeds_warn_size: bool,
-        awaiting_decision: bool,
-    },
-    /// SPEC §10's delete guard tripped on the decided actions: one entry
-    /// per side it tripped on. `awaiting_confirmation`: the run now waits
-    /// for a `ConfirmDeletes`.
-    MassDelete {
-        sides: Vec<MassDeleteView>,
-        awaiting_confirmation: bool,
-    },
-    Applied {
-        approved: Vec<ActionView>,
-        results: Vec<ResultView>,
-        /// The latest progress in the batch: completed of total.
-        progress: Option<ProgressView>,
-    },
-    Summary(SummaryView),
-    Error(RunErrorView),
-    /// Terminal.
-    Ended(RunEndView),
-}
-
-#[derive(Serialize, SignalPiece)]
-pub struct ProgressView {
-    pub completed: u64,
-    pub total: u64,
+    pub view: RunView,
 }
 
 /// One connection's story on the serving session `session`.

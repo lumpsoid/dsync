@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use dsync_domain::{DIR_LEAF, HostFacts, Platform};
-use hub::signals::{CoreCommand, EnrolmentUpdateBody, ReplyResult, RunUpdateBody, ServeUpdateBody};
+use hub::signals::{CoreCommand, EnrolmentUpdateBody, ReplyResult, ServeUpdateBody};
+use hub::views::RunView;
 use hub::{Core, Outbox, Outgoing};
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -116,25 +117,25 @@ impl Head {
         }
     }
 
-    pub async fn run_update(&mut self, session: u64) -> RunUpdateBody {
-        let wanted = |out: &Outgoing| matches!(out, Outgoing::Run(u) if u.session == session);
+    pub async fn run_view(&mut self, session: u64) -> RunView {
+        let wanted = |out: &Outgoing| matches!(out, Outgoing::Run(s) if s.session == session);
         match self.next_matching(wanted).await {
-            Outgoing::Run(update) => update.update,
-            _ => unreachable!("matched a run update"),
+            Outgoing::Run(snapshot) => snapshot.view,
+            _ => unreachable!("matched a run snapshot"),
         }
     }
 
-    /// Every run update up to and including the one `stop` accepts.
+    /// Every run snapshot up to and including the one `stop` accepts.
     pub async fn run_until(
         &mut self,
         session: u64,
-        stop: impl Fn(&RunUpdateBody) -> bool,
-    ) -> Vec<RunUpdateBody> {
+        stop: impl Fn(&RunView) -> bool,
+    ) -> Vec<RunView> {
         let mut seen = Vec::new();
         loop {
-            let update = self.run_update(session).await;
-            let done = stop(&update);
-            seen.push(update);
+            let view = self.run_view(session).await;
+            let done = stop(&view);
+            seen.push(view);
             if done {
                 return seen;
             }

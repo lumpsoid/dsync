@@ -120,7 +120,7 @@ pub(crate) struct Hub {
 }
 
 impl Hub {
-    async fn handle(&self, id: u64, command: CoreCommand) -> Handled {
+    async fn handle(self: &Arc<Self>, id: u64, command: CoreCommand) -> Handled {
         match command {
             CoreCommand::Init { .. } => Err("Init is the core's own".to_owned()),
             CoreCommand::ShowIdentity => self.show_identity(),
@@ -164,11 +164,7 @@ impl Hub {
                 dry_run,
                 address,
             } => self.start_run(id, target, dry_run, address),
-            CoreCommand::DecideRun { session, decision } => self.decide_run(session, decision),
-            CoreCommand::ConfirmDeletes { session, proceed } => {
-                self.confirm_deletes(session, proceed)
-            }
-            CoreCommand::StopRun { session } => self.stop_run(session),
+            CoreCommand::SteerRun { session, intent } => self.steer_run(session, intent),
             CoreCommand::StartServe { bind, port } => self.start_serve(id, &bind, port).await,
             CoreCommand::StopServe { session } => self.stop_serve(session),
             CoreCommand::ServeAddresses => Ok(self.serve_addresses()),

@@ -17,7 +17,7 @@ abstract interface class CoreChannel {
 
   Stream<wire.CoreReply> get replies;
 
-  Stream<wire.RunUpdate> get runUpdates;
+  Stream<wire.RunSnapshot> get runSnapshots;
 
   Stream<wire.ServeUpdate> get serveUpdates;
 
@@ -37,8 +37,8 @@ final class RinfCoreChannel implements CoreChannel {
       wire.CoreReply.rustSignalStream.map((pack) => pack.message);
 
   @override
-  Stream<wire.RunUpdate> get runUpdates =>
-      wire.RunUpdate.rustSignalStream.map((pack) => pack.message);
+  Stream<wire.RunSnapshot> get runSnapshots =>
+      wire.RunSnapshot.rustSignalStream.map((pack) => pack.message);
 
   @override
   Stream<wire.ServeUpdate> get serveUpdates =>

@@ -37,7 +37,7 @@ class TraitHelpers {
     }
   }
 
-  static void serializeOptionSideView(SideView? value, BinarySerializer serializer) {
+  static void serializeOptionReplicasView(ReplicasView? value, BinarySerializer serializer) {
     if (value == null) {
         serializer.serializeOptionTag(false);
     } else {
@@ -46,10 +46,28 @@ class TraitHelpers {
     }
   }
 
-  static SideView? deserializeOptionSideView(BinaryDeserializer deserializer) {
+  static ReplicasView? deserializeOptionReplicasView(BinaryDeserializer deserializer) {
     final tag = deserializer.deserializeOptionTag();
     if (tag) {
-        return SideViewExtension.deserialize(deserializer);
+        return ReplicasView.deserialize(deserializer);
+    } else {
+        return null;
+    }
+  }
+
+  static void serializeOptionResultView(ResultView? value, BinarySerializer serializer) {
+    if (value == null) {
+        serializer.serializeOptionTag(false);
+    } else {
+        serializer.serializeOptionTag(true);
+        value.serialize(serializer);
+    }
+  }
+
+  static ResultView? deserializeOptionResultView(BinaryDeserializer deserializer) {
+    final tag = deserializer.deserializeOptionTag();
+    if (tag) {
+        return ResultView.deserialize(deserializer);
     } else {
         return null;
     }
@@ -73,7 +91,7 @@ class TraitHelpers {
     }
   }
 
-  static void serializeOptionStoppedView(StoppedView? value, BinarySerializer serializer) {
+  static void serializeOptionTalliesView(TalliesView? value, BinarySerializer serializer) {
     if (value == null) {
         serializer.serializeOptionTag(false);
     } else {
@@ -82,28 +100,10 @@ class TraitHelpers {
     }
   }
 
-  static StoppedView? deserializeOptionStoppedView(BinaryDeserializer deserializer) {
+  static TalliesView? deserializeOptionTalliesView(BinaryDeserializer deserializer) {
     final tag = deserializer.deserializeOptionTag();
     if (tag) {
-        return StoppedViewExtension.deserialize(deserializer);
-    } else {
-        return null;
-    }
-  }
-
-  static void serializeOptionSummaryView(SummaryView? value, BinarySerializer serializer) {
-    if (value == null) {
-        serializer.serializeOptionTag(false);
-    } else {
-        serializer.serializeOptionTag(true);
-        value.serialize(serializer);
-    }
-  }
-
-  static SummaryView? deserializeOptionSummaryView(BinaryDeserializer deserializer) {
-    final tag = deserializer.deserializeOptionTag();
-    if (tag) {
-        return SummaryView.deserialize(deserializer);
+        return TalliesView.deserialize(deserializer);
     } else {
         return null;
     }
@@ -181,18 +181,6 @@ class TraitHelpers {
     }
   }
 
-  static void serializeVectorActionView(List<ActionView> value, BinarySerializer serializer) {
-    serializer.serializeLength(value.length);
-    for (final item in value) {
-        item.serialize(serializer);
-    }
-  }
-
-  static List<ActionView> deserializeVectorActionView(BinaryDeserializer deserializer) {
-    final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => ActionView.deserialize(deserializer));
-  }
-
   static void serializeVectorArchiveView(List<ArchiveView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -205,28 +193,28 @@ class TraitHelpers {
     return List.generate(length, (_) => ArchiveView.deserialize(deserializer));
   }
 
-  static void serializeVectorConflictChoice(List<ConflictChoice> value, BinarySerializer serializer) {
+  static void serializeVectorConflictChoiceView(List<ConflictChoiceView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
         item.serialize(serializer);
     }
   }
 
-  static List<ConflictChoice> deserializeVectorConflictChoice(BinaryDeserializer deserializer) {
+  static List<ConflictChoiceView> deserializeVectorConflictChoiceView(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => ConflictChoice.deserialize(deserializer));
+    return List.generate(length, (_) => ConflictChoiceViewExtension.deserialize(deserializer));
   }
 
-  static void serializeVectorConflictView(List<ConflictView> value, BinarySerializer serializer) {
+  static void serializeVectorConflictRowView(List<ConflictRowView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
         item.serialize(serializer);
     }
   }
 
-  static List<ConflictView> deserializeVectorConflictView(BinaryDeserializer deserializer) {
+  static List<ConflictRowView> deserializeVectorConflictRowView(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => ConflictView.deserialize(deserializer));
+    return List.generate(length, (_) => ConflictRowView.deserialize(deserializer));
   }
 
   static void serializeVectorDeviceView(List<DeviceView> value, BinarySerializer serializer) {
@@ -265,18 +253,6 @@ class TraitHelpers {
     return List.generate(length, (_) => FilterRowView.deserialize(deserializer));
   }
 
-  static void serializeVectorKeptAction(List<KeptAction> value, BinarySerializer serializer) {
-    serializer.serializeLength(value.length);
-    for (final item in value) {
-        item.serialize(serializer);
-    }
-  }
-
-  static List<KeptAction> deserializeVectorKeptAction(BinaryDeserializer deserializer) {
-    final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => KeptAction.deserialize(deserializer));
-  }
-
   static void serializeVectorMassDeleteView(List<MassDeleteView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -289,16 +265,16 @@ class TraitHelpers {
     return List.generate(length, (_) => MassDeleteView.deserialize(deserializer));
   }
 
-  static void serializeVectorPeerContactView(List<PeerContactView> value, BinarySerializer serializer) {
+  static void serializeVectorPlanRowView(List<PlanRowView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
         item.serialize(serializer);
     }
   }
 
-  static List<PeerContactView> deserializeVectorPeerContactView(BinaryDeserializer deserializer) {
+  static List<PlanRowView> deserializeVectorPlanRowView(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => PeerContactView.deserialize(deserializer));
+    return List.generate(length, (_) => PlanRowView.deserialize(deserializer));
   }
 
   static void serializeVectorProfileEntry(List<ProfileEntry> value, BinarySerializer serializer) {
@@ -311,30 +287,6 @@ class TraitHelpers {
   static List<ProfileEntry> deserializeVectorProfileEntry(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => ProfileEntry.deserialize(deserializer));
-  }
-
-  static void serializeVectorProposalView(List<ProposalView> value, BinarySerializer serializer) {
-    serializer.serializeLength(value.length);
-    for (final item in value) {
-        item.serialize(serializer);
-    }
-  }
-
-  static List<ProposalView> deserializeVectorProposalView(BinaryDeserializer deserializer) {
-    final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => ProposalView.deserialize(deserializer));
-  }
-
-  static void serializeVectorResultView(List<ResultView> value, BinarySerializer serializer) {
-    serializer.serializeLength(value.length);
-    for (final item in value) {
-        item.serialize(serializer);
-    }
-  }
-
-  static List<ResultView> deserializeVectorResultView(BinaryDeserializer deserializer) {
-    final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => ResultView.deserialize(deserializer));
   }
 
   static void serializeVectorRuleCountView(List<RuleCountView> value, BinarySerializer serializer) {
@@ -371,6 +323,18 @@ class TraitHelpers {
   static List<ScanPassView> deserializeVectorScanPassView(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => ScanPassView.deserialize(deserializer));
+  }
+
+  static void serializeVectorSkippedView(List<SkippedView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<SkippedView> deserializeVectorSkippedView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => SkippedView.deserialize(deserializer));
   }
 
   static void serializeVectorStr(List<String> value, BinarySerializer serializer) {

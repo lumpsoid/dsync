@@ -1,13 +1,11 @@
-//! Runs through the hub: started by command, the plan decided over
-//! signals, the run's story on its session's stream.
+//! Runs through the hub: started by command, steered by the head's
+//! intents, and seen as the session's snapshots - each one the whole view,
+//! the phase, the review and the outcome all decided here.
 
 use dsync_core::ProfileStore;
 use dsync_domain::{DIR_LEAF, Location, Platform, Profile, ProfileName, ReplicaLocation};
-use hub::signals::{
-    ConflictChoice, ConflictResolutionView, CoreCommand, KeptAction, ReplyResult, RunDecision,
-    RunTarget, RunUpdateBody,
-};
-use hub::views::{ActionView, ProposalView, RunEndView, StoppedView};
+use hub::signals::{CoreCommand, ReplyResult, RunIntent, RunTarget};
+use hub::views::{ActionChoiceView, ActionView, ConflictChoiceView, RunPhaseView, RunView};
 
 use crate::support::{Head, read, write};
 
@@ -40,12 +38,47 @@ fn start(name: &str, dry_run: bool) -> CoreCommand {
     }
 }
 
-fn is_ended(update: &RunUpdateBody) -> bool {
-    matches!(update, RunUpdateBody::Ended(_))
+fn steer(session: u64, intent: RunIntent) -> CoreCommand {
+    CoreCommand::SteerRun { session, intent }
 }
 
-fn is_plan(update: &RunUpdateBody) -> bool {
-    matches!(update, RunUpdateBody::Plan { .. })
+/// The phase's name, for asserting the order phases came in.
+fn stage(view: &RunView) -> &'static str {
+    match view.phase {
+        RunPhaseView::Connecting => "connecting",
+        RunPhaseView::Scanning => "scanning",
+        RunPhaseView::Reviewing(_) => "reviewing",
+        RunPhaseView::ConfirmingDeletes { .. } => "confirming deletes",
+        RunPhaseView::Applying => "applying",
+        RunPhaseView::Finished(_) => "finished",
+        RunPhaseView::Stopped { .. } => "stopped",
+        RunPhaseView::Paused { .. } => "paused",
+        RunPhaseView::Failed { .. } => "failed",
+        RunPhaseView::ReplicaBusy { .. } => "replica busy",
+        RunPhaseView::DeletesDeclined => "deletes declined",
+        RunPhaseView::NoSummary => "no summary",
+    }
+}
+
+/// The phases `views` went through, each once per stretch.
+fn stages(views: &[RunView]) -> Vec<&'static str> {
+    let mut stages: Vec<&'static str> = Vec::new();
+    for view in views {
+        let stage = stage(view);
+        if stages.last() != Some(&stage) {
+            stages.push(stage);
+        }
+    }
+    stages
+}
+
+fn is(wanted: &'static str) -> impl Fn(&RunView) -> bool {
+    move |view| stage(view) == wanted
+}
+
+/// The attempt is over: its timings report is in.
+fn ended(view: &RunView) -> bool {
+    view.timings.is_some()
 }
 
 fn path_of(action: &ActionView) -> &str {
@@ -57,32 +90,22 @@ fn path_of(action: &ActionView) -> &str {
     }
 }
 
-/// Runs `session` to its plan and returns the plan's proposals and
-/// conflicts' paths.
-async fn plan_of(head: &mut Head, session: u64) -> (Vec<ProposalView>, Vec<String>) {
-    let mut before = head.run_until(session, is_plan).await;
-    let Some(RunUpdateBody::Plan {
-        actions,
-        conflicts,
-        awaiting_decision: true,
-        ..
-    }) = before.pop()
-    else {
-        panic!("expected a plan awaiting a decision");
-    };
-    let conflicts = conflicts
-        .into_iter()
-        .map(|conflict| conflict.path)
-        .collect();
-    (actions, conflicts)
-}
-
 fn index(at: usize) -> u32 {
     u32::try_from(at).unwrap_or_else(|error| panic!("{error}"))
 }
 
+/// Where the plan in `view` has the action on `path`.
+fn row(view: &RunView, path: &str) -> u32 {
+    let at = view
+        .plan
+        .iter()
+        .position(|row| path_of(&row.proposal.action) == path)
+        .unwrap_or_else(|| panic!("{path} is planned"));
+    index(at)
+}
+
 #[tokio::test]
-async fn the_head_decides_the_plan_and_the_run_applies_what_it_kept() {
+async fn the_head_reviews_the_plan_and_the_run_applies_what_it_kept() {
     let mut head = Head::new("studio").await;
     write(&head.path("a/new.txt"), "hello");
     write(&head.path("a/skip.txt"), "not this one");
@@ -90,72 +113,77 @@ async fn the_head_decides_the_plan_and_the_run_applies_what_it_kept() {
     local_profile(&head, "local", "a", "b");
 
     let (session, started) = head.ok(start("local", false)).await;
-    let ReplyResult::RunStarted(started) = started else {
-        panic!("expected the run to start");
-    };
-    assert_eq!(started.profile_id.len(), 32);
+    assert!(matches!(started, ReplyResult::Done));
+    let mut views = head.run_until(session, is("reviewing")).await;
+    let review = views
+        .last()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    assert!(review.connected_at_ms.is_some());
+    assert!(review.replicas.as_ref().is_some_and(|replicas| {
+        replicas.a.last_commit_ms.is_none() && replicas.b.last_commit_ms.is_none()
+    }));
+    assert_eq!(review.plan.len(), 2);
+    let skip = row(review, "skip.txt");
 
-    let before = head.run_until(session, is_plan).await;
-    assert!(matches!(before[0], RunUpdateBody::Connected { ref peers } if peers.is_empty()));
-    assert!(before.iter().any(|update| matches!(
-        update,
-        RunUpdateBody::Replicas { a, b, .. } if a.last_commit_ms.is_none() && b.last_commit_ms.is_none()
-    )));
-    let Some(RunUpdateBody::Plan {
-        actions,
-        awaiting_decision,
-        ..
-    }) = before.last()
-    else {
-        unreachable!("stopped at the plan");
-    };
-    assert!(*awaiting_decision);
-    let keep: Vec<KeptAction> = actions
-        .iter()
-        .enumerate()
-        .filter(|(_, proposal)| path_of(&proposal.action) == "new.txt")
-        .map(|(at, _)| KeptAction {
-            index: index(at),
-            reversed: false,
-        })
-        .collect();
-    assert_eq!(keep.len(), 1);
-
-    let decide = CoreCommand::DecideRun {
+    let skipping = steer(
         session,
-        decision: RunDecision {
-            keep,
-            resolve: Vec::new(),
+        RunIntent::ChooseAction {
+            index: skip,
+            choice: ActionChoiceView::Skipped,
         },
-    };
-    assert!(matches!(head.ok(decide).await.1, ReplyResult::Done));
-    let after = head.run_until(session, is_ended).await;
-    let applied: Vec<_> = after
-        .iter()
-        .filter_map(|update| match update {
-            RunUpdateBody::Applied { results, .. } => Some(results),
-            _ => None,
+    );
+    assert!(matches!(head.ok(skipping).await.1, ReplyResult::Done));
+    let tapped = head
+        .run_until(session, |view| {
+            view.plan
+                .get(skip as usize)
+                .is_some_and(|row| row.choice == ActionChoiceView::Skipped)
         })
-        .flatten()
-        .collect();
-    assert_eq!(applied.len(), 1);
-    assert!(applied[0].failure.is_none());
-    let Some(RunUpdateBody::Ended(RunEndView::Ran {
-        summary: Some(summary),
-        errored: false,
-        stopped: None,
-        timings,
-    })) = after.last()
-    else {
+        .await
+        .pop()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    let RunPhaseView::Reviewing(total) = &tapped.phase else {
+        panic!("still reviewing");
+    };
+    assert_eq!((total.apply, total.skipped), (1, 1));
+    assert_eq!(tapped.plan[skip as usize].choice, ActionChoiceView::Skipped);
+    views.push(tapped);
+
+    head.ok(steer(session, RunIntent::Confirm)).await;
+    views.extend(head.run_until(session, ended).await);
+    assert_eq!(
+        stages(&views),
+        [
+            "connecting",
+            "scanning",
+            "reviewing",
+            "applying",
+            "finished"
+        ]
+    );
+    let last = views.last().unwrap_or_else(|| unreachable!("ended"));
+    let RunPhaseView::Finished(summary) = &last.phase else {
         panic!("expected a completed run");
     };
     assert_eq!((summary.applied, summary.skipped), (1, 1));
-    assert!(timings.contains("run:"), "{timings}");
+    assert_eq!((last.applied, last.failed), (1, 0));
+    let new = &last.plan[row(last, "new.txt") as usize];
+    assert!(
+        new.outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.failure.is_none())
+    );
+    assert!(last.plan[skip as usize].outcome.is_none());
+    assert!(
+        last.timings
+            .as_deref()
+            .is_some_and(|timings| timings.contains("run:"))
+    );
     assert_eq!(read(&head.path("b/new.txt")), "hello");
     assert!(!head.path("b/skip.txt").exists());
 
     // The session is over: nothing answers to it any more.
-    let over = head.failure(CoreCommand::StopRun { session }).await;
+    let over = head.failure(steer(session, RunIntent::Stop)).await;
     assert!(over.contains("no run"), "{over}");
 
     // The run left both sides' archives; clearing the pair removes both.
@@ -163,14 +191,13 @@ async fn the_head_decides_the_plan_and_the_run_applies_what_it_kept() {
         panic!("expected the archives");
     };
     assert_eq!(archives.len(), 2);
+    let profile_id = archives[0].profile_id.clone();
     assert!(
         archives
             .iter()
-            .all(|archive| archive.profile_id == started.profile_id)
+            .all(|archive| archive.profile_id == profile_id)
     );
-    let clear = CoreCommand::ClearArchive {
-        profile_id: started.profile_id.clone(),
-    };
+    let clear = CoreCommand::ClearArchive { profile_id };
     let ReplyResult::Archives(left) = head.ok(clear).await.1 else {
         panic!("expected the archives");
     };
@@ -187,22 +214,9 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
 
     // A first run keeps everything, so both sides share a baseline.
     let (session, _) = head.ok(start("local", false)).await;
-    let (actions, _) = plan_of(&mut head, session).await;
-    let everything = (0..actions.len())
-        .map(|at| KeptAction {
-            index: index(at),
-            reversed: false,
-        })
-        .collect();
-    let decide = CoreCommand::DecideRun {
-        session,
-        decision: RunDecision {
-            keep: everything,
-            resolve: Vec::new(),
-        },
-    };
-    head.ok(decide).await;
-    head.run_until(session, is_ended).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    head.run_until(session, ended).await;
     assert_eq!(read(&head.path("b/x.txt")), "one");
 
     // A changes x.txt; both sides change n.md.
@@ -210,53 +224,50 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
     write(&head.path("a/n.md"), "mine, edited");
     write(&head.path("b/n.md"), "theirs, edited too");
     let (session, _) = head.ok(start("local", false)).await;
-    let (actions, conflicts) = plan_of(&mut head, session).await;
-    let x = actions
-        .iter()
-        .position(|proposal| path_of(&proposal.action) == "x.txt")
-        .unwrap_or_else(|| panic!("x.txt is planned"));
-    assert!(matches!(
-        actions[x],
-        ProposalView {
-            action: ActionView::Copy { .. },
-            reverse_bytes: Some(3),
-        }
-    ));
-    assert_eq!(conflicts, ["n.md"]);
-    let decide = CoreCommand::DecideRun {
-        session,
-        decision: RunDecision {
-            keep: vec![KeptAction {
-                index: index(x),
-                reversed: true,
-            }],
-            resolve: vec![ConflictChoice {
-                conflict: 0,
-                resolution: ConflictResolutionView::KeepBoth,
-            }],
-        },
+    let review = head
+        .run_until(session, is("reviewing"))
+        .await
+        .pop()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    let x = row(&review, "x.txt");
+    let proposal = &review.plan[x as usize].proposal;
+    assert!(matches!(proposal.action, ActionView::Copy { .. }));
+    assert_eq!(proposal.reverse_bytes, Some(3));
+    let [conflict] = &review.conflicts[..] else {
+        panic!("one conflict");
     };
-    head.ok(decide).await;
-    let after = head.run_until(session, is_ended).await;
-    let results: Vec<_> = after
-        .iter()
-        .filter_map(|update| match update {
-            RunUpdateBody::Applied { results, .. } => Some(results),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-    assert_eq!(results.len(), 2);
-    assert!(results.iter().all(|result| result.failure.is_none()));
-    let Some(RunUpdateBody::Ended(RunEndView::Ran {
-        summary: Some(summary),
-        errored: false,
-        ..
-    })) = after.last()
-    else {
+    assert_eq!(conflict.conflict.path, "n.md");
+    assert!(conflict.offered.contains(&ConflictChoiceView::KeepBoth));
+
+    let reverse = RunIntent::ChooseAction {
+        index: x,
+        choice: ActionChoiceView::Reversed,
+    };
+    head.ok(steer(session, reverse)).await;
+    let keep_both = RunIntent::ChooseConflict {
+        index: 0,
+        choice: ConflictChoiceView::KeepBoth,
+    };
+    head.ok(steer(session, keep_both)).await;
+    head.ok(steer(session, RunIntent::Confirm)).await;
+    let last = head
+        .run_until(session, ended)
+        .await
+        .pop()
+        .unwrap_or_else(|| unreachable!("ended"));
+    let RunPhaseView::Finished(summary) = &last.phase else {
         panic!("expected a completed run");
     };
     assert_eq!((summary.applied, summary.conflicts), (2, 1));
+    assert_eq!((last.applied, last.failed), (2, 0));
+    // The conflict's row carries what its choice applied: the copy aside.
+    assert!(matches!(
+        last.conflicts[0]
+            .outcome
+            .as_ref()
+            .map(|outcome| &outcome.action),
+        Some(ActionView::CopyAside { .. })
+    ));
 
     // The reversal put B's version back over A's.
     assert_eq!(read(&head.path("a/x.txt")), "one");
@@ -277,30 +288,8 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
     assert_eq!(read(&head.path("b/n.md")), "theirs, edited too");
 }
 
-/// Runs `session` to its plan and keeps every action as planned.
-async fn keep_all(head: &mut Head, session: u64) {
-    let (actions, _) = plan_of(head, session).await;
-    let decide = CoreCommand::DecideRun {
-        session,
-        decision: RunDecision {
-            keep: (0..actions.len())
-                .map(|at| KeptAction {
-                    index: index(at),
-                    reversed: false,
-                })
-                .collect(),
-            resolve: Vec::new(),
-        },
-    };
-    assert!(matches!(head.ok(decide).await.1, ReplyResult::Done));
-}
-
-fn is_mass_delete(update: &RunUpdateBody) -> bool {
-    matches!(update, RunUpdateBody::MassDelete { .. })
-}
-
 #[tokio::test]
-async fn emptying_one_side_asks_the_head_before_the_other_loses_its_files() {
+async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
     let mut head = Head::new("studio").await;
     for index in 0..12 {
         write(&head.path(&format!("a/f{index:02}")), "x");
@@ -308,8 +297,9 @@ async fn emptying_one_side_asks_the_head_before_the_other_loses_its_files() {
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
     let (first, _) = head.ok(start("local", false)).await;
-    keep_all(&mut head, first).await;
-    head.run_until(first, is_ended).await;
+    head.run_until(first, is("reviewing")).await;
+    head.ok(steer(first, RunIntent::AcceptAll)).await;
+    head.run_until(first, ended).await;
     for index in 0..12 {
         std::fs::remove_file(head.path(&format!("a/f{index:02}")))
             .unwrap_or_else(|error| panic!("{error}"));
@@ -320,48 +310,43 @@ async fn emptying_one_side_asks_the_head_before_the_other_loses_its_files() {
             .count()
     };
 
-    let (declined, _) = head.ok(start("local", false)).await;
-    keep_all(&mut head, declined).await;
-    let Some(RunUpdateBody::MassDelete {
-        sides,
-        awaiting_confirmation: true,
-    }) = head.run_until(declined, is_mass_delete).await.pop()
-    else {
-        panic!("expected the delete guard to wait on the head");
+    let (session, _) = head.ok(start("local", false)).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    let asking = head
+        .run_until(session, is("confirming deletes"))
+        .await
+        .pop()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    let RunPhaseView::ConfirmingDeletes { sides } = &asking.phase else {
+        unreachable!("confirming");
     };
     assert_eq!(
         sides.iter().map(|side| side.deletes).collect::<Vec<_>>(),
         [12]
     );
-    let answer = |session, proceed| CoreCommand::ConfirmDeletes { session, proceed };
-    assert!(matches!(
-        head.ok(answer(declined, false)).await.1,
-        ReplyResult::Done
-    ));
-    let updates = head.run_until(declined, is_ended).await;
-    assert!(
-        updates
-            .iter()
-            .any(|update| matches!(update, RunUpdateBody::Error(error) if error.message.starts_with("not applied")))
+    let answer = |proceed| steer(session, RunIntent::AnswerDeletes { proceed });
+    assert!(matches!(head.ok(answer(false)).await.1, ReplyResult::Done));
+    let declined = head.run_until(session, ended).await;
+    assert_eq!(
+        stages(&declined),
+        ["confirming deletes", "deletes declined"]
     );
-    assert!(matches!(
-        updates.last(),
-        Some(RunUpdateBody::Ended(RunEndView::Ran { errored: true, .. }))
-    ));
     assert_eq!(remaining(&head), 12);
 
-    let (confirmed, _) = head.ok(start("local", false)).await;
-    keep_all(&mut head, confirmed).await;
-    head.run_until(confirmed, is_mass_delete).await;
+    // Resume runs the same target again in the same session, and asks
+    // again.
+    head.ok(steer(session, RunIntent::Resume)).await;
+    let again = head.run_until(session, is("reviewing")).await;
+    assert_eq!(stage(&again[0]), "connecting");
+    assert!(again[0].plan.is_empty(), "a new attempt shows nothing old");
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    head.run_until(session, is("confirming deletes")).await;
+    head.ok(answer(true)).await;
+    let confirmed = head.run_until(session, ended).await;
     assert!(matches!(
-        head.ok(answer(confirmed, true)).await.1,
-        ReplyResult::Done
-    ));
-    let updates = head.run_until(confirmed, is_ended).await;
-    assert!(matches!(
-        updates.last(),
-        Some(RunUpdateBody::Ended(RunEndView::Ran { errored: false, summary: Some(summary), .. }))
-            if summary.applied == 12
+        confirmed.last().map(|view| &view.phase),
+        Some(RunPhaseView::Finished(summary)) if summary.applied == 12
     ));
     assert_eq!(remaining(&head), 0);
 }
@@ -373,15 +358,14 @@ async fn a_dry_run_asks_nothing_and_applies_nothing() {
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
     let (session, _) = head.ok(start("local", true)).await;
-    let updates = head.run_until(session, is_ended).await;
-    assert!(updates.iter().any(|update| matches!(
-        update,
-        RunUpdateBody::Plan { awaiting_decision: false, actions, .. } if actions.len() == 1
-    )));
+    let views = head.run_until(session, ended).await;
+    assert_eq!(stages(&views), ["connecting", "scanning", "finished"]);
+    let last = views.last().unwrap_or_else(|| unreachable!("ended"));
+    assert!(last.dry_run);
+    assert_eq!(last.plan.len(), 1);
     assert!(matches!(
-        updates.last(),
-        Some(RunUpdateBody::Ended(RunEndView::Ran { summary: Some(summary), .. }))
-            if summary.applied == 0 && summary.skipped == 1
+        &last.phase,
+        RunPhaseView::Finished(summary) if summary.applied == 0 && summary.skipped == 1
     ));
     assert!(!head.path("b/new.txt").exists());
 }
@@ -393,32 +377,78 @@ async fn a_run_stopped_while_the_head_decides_applies_nothing_and_ends_stopped()
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
     let (session, _) = head.ok(start("local", false)).await;
-    head.run_until(session, is_plan).await;
+    head.run_until(session, is("reviewing")).await;
     assert!(matches!(
-        head.ok(CoreCommand::StopRun { session }).await.1,
+        head.ok(steer(session, RunIntent::Stop)).await.1,
         ReplyResult::Done
     ));
-    let updates = head.run_until(session, is_ended).await;
+    let views = head.run_until(session, ended).await;
     assert!(matches!(
-        updates.last(),
-        Some(RunUpdateBody::Ended(RunEndView::Ran {
-            stopped: Some(StoppedView::Gracefully),
-            ..
-        }))
+        views.last().map(|view| &view.phase),
+        Some(RunPhaseView::Stopped { completed: 0 })
     ));
     assert!(!head.path("b/new.txt").exists());
 }
 
 #[tokio::test]
-async fn a_run_that_cannot_start_is_the_reply() {
+async fn a_paused_run_resumes_when_the_app_comes_back() {
     let mut head = Head::new("studio").await;
-    let unknown = head.failure(start("nothing-here", false)).await;
-    assert!(!unknown.is_empty());
+    write(&head.path("a/new.txt"), "hello");
+    std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
+    local_profile(&head, "local", "a", "b");
+    let (session, _) = head.ok(start("local", false)).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::Pause)).await;
+    head.run_until(session, is("paused")).await;
+    assert!(!head.path("b/new.txt").exists());
+
+    head.ok(steer(session, RunIntent::Foreground)).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::Confirm)).await;
+    let views = head.run_until(session, ended).await;
+    assert_eq!(
+        stage(views.last().unwrap_or_else(|| unreachable!("ended"))),
+        "finished"
+    );
+    assert_eq!(read(&head.path("b/new.txt")), "hello");
+}
+
+#[tokio::test]
+async fn leaving_mid_review_stops_the_run_and_ends_the_session() {
+    let mut head = Head::new("studio").await;
+    write(&head.path("a/new.txt"), "hello");
+    std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
+    local_profile(&head, "local", "a", "b");
+    let (session, _) = head.ok(start("local", false)).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::Close)).await;
+    head.run_until(session, ended).await;
+    let over = head.failure(steer(session, RunIntent::Resume)).await;
+    assert!(over.contains("no run"), "{over}");
+    assert!(!head.path("b/new.txt").exists());
+}
+
+#[tokio::test]
+async fn a_target_that_does_not_resolve_is_the_session_s_failure() {
+    let mut head = Head::new("studio").await;
+    let (session, started) = head.ok(start("nothing-here", false)).await;
+    assert!(matches!(started, ReplyResult::Done));
+    let views = head.run_until(session, is("failed")).await;
+    assert_eq!(stages(&views), ["connecting", "failed"]);
+    let RunPhaseView::Failed { message } = &views[1].phase else {
+        unreachable!("failed");
+    };
+    assert!(!message.is_empty());
+    // Waiting on a resume, which resolves the target again.
+    head.ok(steer(session, RunIntent::Resume)).await;
+    let again = head.run_until(session, is("failed")).await;
+    assert_eq!(stages(&again), ["connecting", "failed"]);
+    head.ok(steer(session, RunIntent::Close)).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_run_whose_far_side_does_not_answer_ends_not_connected() {
+async fn a_run_whose_far_side_does_not_answer_fails_with_where_it_dialled() {
     let mut head = Head::new("studio").await;
     std::fs::create_dir_all(head.path("a")).unwrap_or_else(|error| panic!("{error}"));
     let parse = |raw: &str| {
@@ -436,9 +466,10 @@ async fn a_run_whose_far_side_does_not_answer_ends_not_connected() {
         )
         .unwrap_or_else(|error| panic!("{error}"));
     let (session, _) = head.ok(start("far", false)).await;
-    let updates = head.run_until(session, is_ended).await;
+    let views = head.run_until(session, is("failed")).await;
+    assert_eq!(stages(&views), ["connecting", "failed"]);
     assert!(matches!(
-        &updates[..],
-        [RunUpdateBody::Ended(RunEndView::NotConnected { message })] if message.contains("nobody.sock")
+        &views[1].phase,
+        RunPhaseView::Failed { message } if message.contains("nobody.sock")
     ));
 }

@@ -1,39 +1,39 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// One step of the run in `session`.
+/// The run in `session`, whole, as it now stands.
 @immutable
-class RunUpdate {
+class RunSnapshot {
   /// An async broadcast stream that listens for signals from Rust.
   /// It supports multiple subscriptions.
   /// Make sure to cancel the subscription when it's no longer needed,
   /// such as when a widget is disposed.
   static final rustSignalStream =
-      _runUpdateStreamController.stream.asBroadcastStream();
+      _runSnapshotStreamController.stream.asBroadcastStream();
         
   /// The latest signal value received from Rust.
   /// This is updated every time a new signal is received.
   /// It can be null if no signals have been received yet.
-  static RustSignalPack<RunUpdate>? latestRustSignal = null;
+  static RustSignalPack<RunSnapshot>? latestRustSignal = null;
 
-  const RunUpdate({
+  const RunSnapshot({
     required this.session,
-    required this.update,
+    required this.view,
   });
 
-  static RunUpdate deserialize(BinaryDeserializer deserializer) {
+  static RunSnapshot deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = RunUpdate(
+    final instance = RunSnapshot(
       session: deserializer.deserializeUint64(),
-      update: RunUpdateBody.deserialize(deserializer),
+      view: RunView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
-  static RunUpdate bincodeDeserialize(Uint8List input) {
+  static RunSnapshot bincodeDeserialize(Uint8List input) {
     final deserializer = BincodeDeserializer(input);
-    final value = RunUpdate.deserialize(deserializer);
+    final value = RunSnapshot.deserialize(deserializer);
     if (deserializer.offset < input.length) {
       throw Exception('Some input bytes were not read');
     }
@@ -41,22 +41,22 @@ class RunUpdate {
   }
 
   final Uint64 session;
-  final RunUpdateBody update;
+  final RunView view;
 
-  RunUpdate copyWith({
+  RunSnapshot copyWith({
     Uint64? session,
-    RunUpdateBody? update,
+    RunView? view,
   }) {
-    return RunUpdate(
+    return RunSnapshot(
       session: session ?? this.session,
-      update: update ?? this.update,
+      view: view ?? this.view,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeUint64(session);
-    update.serialize(serializer);
+    view.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -71,15 +71,15 @@ class RunUpdate {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is RunUpdate
+    return other is RunSnapshot
       && session == other.session
-      && update == other.update;
+      && view == other.view;
   }
 
   @override
   int get hashCode => Object.hash(
         session,
-        update,
+        view,
       );
 
   @override
@@ -89,14 +89,14 @@ class RunUpdate {
     assert(() {
       fullString = '$runtimeType('
         'session: $session, '
-        'update: $update'
+        'view: $view'
         ')';
       return true;
     }());
 
-    return fullString ?? 'RunUpdate';
+    return fullString ?? 'RunSnapshot';
   }
 }
 
-final _runUpdateStreamController =
-    StreamController<RustSignalPack<RunUpdate>>();
+final _runSnapshotStreamController =
+    StreamController<RustSignalPack<RunSnapshot>>();

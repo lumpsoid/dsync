@@ -41,7 +41,7 @@ class RunPlanSection extends StatelessWidget {
 
   /// What a row's control calls — `SyncRunController.choose`. Handed to
   /// the rows only while the review is up.
-  final void Function(String path, SyncRunActionChoice choice) onChoose;
+  final void Function(int index, SyncRunActionChoice choice) onChoose;
 
   @override
   Widget build(BuildContext context) {
@@ -115,7 +115,7 @@ class _PlanGroupSection extends StatefulWidget {
   final SyncRunPlanSection section;
   final String title;
   final bool collapsible;
-  final void Function(String path, SyncRunActionChoice choice)? onChoose;
+  final void Function(int index, SyncRunActionChoice choice)? onChoose;
   final Key disclosureKey;
 
   @override
@@ -202,7 +202,7 @@ class RunPlanRow extends StatelessWidget {
   final SyncRunPlanRow row;
 
   /// `null` outside the review: no control.
-  final void Function(String path, SyncRunActionChoice choice)? onChoose;
+  final void Function(int index, SyncRunActionChoice choice)? onChoose;
 
   @override
   Widget build(BuildContext context) {
@@ -266,7 +266,7 @@ class RunPlanRow extends StatelessWidget {
                         key: Key('decision-${row.path}'),
                         choice: choice,
                         reversible: row.reversal != null,
-                        onChoose: (choice) => onChoose(row.path, choice),
+                        onChoose: (choice) => onChoose(row.index, choice),
                       ),
               );
             },

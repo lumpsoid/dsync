@@ -1,46 +1,41 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// A run that started: its archive id and its two sides as typed.
+
 @immutable
-class RunStartedView {
-  const RunStartedView({
-    required this.profileId,
+class TalliesView {
+  const TalliesView({
     required this.a,
     required this.b,
   });
 
-  static RunStartedView deserialize(BinaryDeserializer deserializer) {
+  static TalliesView deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = RunStartedView(
-      profileId: deserializer.deserializeString(),
-      a: deserializer.deserializeString(),
-      b: deserializer.deserializeString(),
+    final instance = TalliesView(
+      a: TallyView.deserialize(deserializer),
+      b: TallyView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
-  static RunStartedView bincodeDeserialize(Uint8List input) {
+  static TalliesView bincodeDeserialize(Uint8List input) {
     final deserializer = BincodeDeserializer(input);
-    final value = RunStartedView.deserialize(deserializer);
+    final value = TalliesView.deserialize(deserializer);
     if (deserializer.offset < input.length) {
       throw Exception('Some input bytes were not read');
     }
     return value;
   }
 
-  final String profileId;
-  final String a;
-  final String b;
+  final TallyView a;
+  final TallyView b;
 
-  RunStartedView copyWith({
-    String? profileId,
-    String? a,
-    String? b,
+  TalliesView copyWith({
+    TallyView? a,
+    TallyView? b,
   }) {
-    return RunStartedView(
-      profileId: profileId ?? this.profileId,
+    return TalliesView(
       a: a ?? this.a,
       b: b ?? this.b,
     );
@@ -48,9 +43,8 @@ class RunStartedView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeString(profileId);
-    serializer.serializeString(a);
-    serializer.serializeString(b);
+    a.serialize(serializer);
+    b.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -65,15 +59,13 @@ class RunStartedView {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is RunStartedView
-      && profileId == other.profileId
+    return other is TalliesView
       && a == other.a
       && b == other.b;
   }
 
   @override
   int get hashCode => Object.hash(
-        profileId,
         a,
         b,
       );
@@ -84,13 +76,12 @@ class RunStartedView {
 
     assert(() {
       fullString = '$runtimeType('
-        'profileId: $profileId, '
         'a: $a, '
         'b: $b'
         ')';
       return true;
     }());
 
-    return fullString ?? 'RunStartedView';
+    return fullString ?? 'TalliesView';
   }
 }

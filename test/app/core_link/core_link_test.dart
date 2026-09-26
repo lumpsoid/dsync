@@ -1,14 +1,17 @@
 import 'package:dsync/app/core_link/core_link.dart';
+import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
-import 'package:dsync/app/core_link/models/run_decision.dart';
-import 'package:dsync/app/core_link/models/run_end.dart';
+import 'package:dsync/app/core_link/models/run_intent.dart';
+import 'package:dsync/app/core_link/models/run_phase.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
-import 'package:dsync/app/core_link/models/run_update.dart';
+import 'package:dsync/app/core_link/models/run_view.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter_test/flutter_test.dart';
 
+import '../features/run/run_fixtures.dart';
 import '../support/fake_hub.dart';
 
 /// The [CoreLink] the head's controller tests run on, over the fake hub:
@@ -74,40 +77,40 @@ void main() {
     },
   );
 
-  test(
-    'a run session is the test\'s to drive, and closes on its end',
-    () async {
-      final hub = FakeHub();
-      final link = CoreLink(hub);
-      final run = await link.startRun(
-        const DraftTarget(
-          ProfileDraft(localRoot: '/a', peerDeviceId: 'x', remoteRoot: '/b'),
-        ),
-        dryRun: false,
-      );
-      hub.emitRun(
-        run.session,
-        const RunPlan(
-          actions: [],
-          conflicts: [],
-          bytesToTransfer: 0,
-          exceedsWarnSize: false,
-          awaitingDecision: true,
-        ),
-      );
-      await link.decideRun(run.session, RunDecision.acceptAll(2));
-      await link.confirmDeletes(run.session, proceed: false);
-      hub.emitRun(run.session, const RunEnded(RunStoppedConnecting()));
-      final updates = await run.updates.toList();
-      expect(updates, hasLength(2));
-      expect(updates.last, isA<RunEnded>());
-      expect(hub.decisions[run.session]?.single.keep, [
-        (index: 0, reversed: false),
-        (index: 1, reversed: false),
-      ]);
-      expect(hub.deleteConfirmations[run.session], [false]);
-    },
-  );
+  test('a run session\'s views are the hub\'s snapshots, decoded, and '
+      'its intents are sent as they are', () async {
+    final hub = FakeHub();
+    final link = CoreLink(hub);
+    final run = await link.startRun(
+      const DraftTarget(
+        ProfileDraft(localRoot: '/a', peerDeviceId: 'x', remoteRoot: '/b'),
+      ),
+      dryRun: false,
+    );
+    final views = <RunView>[];
+    final listening = run.views.listen(views.add);
+    hub.emitRun(run.session, runView(phase: reviewing(apply: 2)));
+    await link.steerRun(run.session, const ChooseAction(1, ActionChoice.skipped));
+    await link.steerRun(run.session, const ConfirmReview());
+    await Future<void>.delayed(Duration.zero);
+
+    expect(views.single.phase, isA<RunReviewing>());
+    expect((views.single.phase as RunReviewing).summary.apply, 2);
+    expect(hub.runIntents[run.session], const [
+      wire.RunIntentChooseAction(
+        index: 1,
+        choice: wire.ActionChoiceView.skipped,
+      ),
+      wire.RunIntentConfirm(),
+    ]);
+
+    // Once nobody listens, the session is forgotten: what arrives for it
+    // is dropped.
+    await listening.cancel();
+    hub.emitRun(run.session, runView(phase: applying));
+    await Future<void>.delayed(Duration.zero);
+    expect(views, hasLength(1));
+  });
 
   test('failNext fails the next call only', () async {
     final hub = FakeHub()..failNext = const CoreFailure('refused');

@@ -18,7 +18,6 @@ import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
-import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
@@ -28,10 +27,11 @@ import 'package:dsync/app/run_request.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/fake_hub.dart';
 import '../support/fake_folder_picker.dart';
 import '../support/fake_screen_wake.dart';
+import 'features/run/run_fixtures.dart' show failedWith, runView;
 import 'support/fake_head.dart';
+import 'support/fake_hub.dart';
 import 'support/pump_until.dart';
 
 /// The entrypoint's wiring: the bootstrap gate renders each `AppBootstrap`
@@ -379,18 +379,21 @@ void main() {
       ),
     ]);
 
-    // One failed run per push, and nothing else: the phase is written the
-    // way `run_page_test.dart` writes it, so the page mounts on a run that
-    // has already failed and `start` refuses to begin a second one.
+    // One failed run per push, and nothing else: each run the page opens
+    // is answered with the core's view of a run that failed.
     var runs = 0;
     runScope.setFactory(() {
       runs++;
-      return SyncRunController(app, screenWake: FakeScreenWake())
-        ..state.recordStart(dryRun: true)
-        ..state.recordPhase(
-          const SyncRunFailed('Could not reach "desktop": refused.'),
-        );
+      return SyncRunController(app, screenWake: FakeScreenWake());
     });
+    Future<void> failTheRun() async {
+      core.emitRun(
+        core.runStarts.last.session,
+        runView(phase: failedWith('Could not reach "desktop": refused.')),
+      );
+      await tester.pump();
+      await tester.pump();
+    }
 
     // What Run setup's `load` reads.
     core.devices.add(desktop);
@@ -443,6 +446,7 @@ void main() {
     // Not `pumpAndSettle` for the route transition either: the Run page
     // carries a spinner of its own until its phase lands. A frame past it.
     await tester.pump(const Duration(seconds: 1));
+    await failTheRun();
 
     // Run is over Run setup, started with what was typed.
     expect(find.byType(RunPage), findsOneWidget);
@@ -469,6 +473,7 @@ void main() {
     await tester.tap(find.byKey(const Key('run-setup-start')));
     await pumpUntil(tester, () => runs == 2, what: 'the second run');
     await tester.pump(const Duration(seconds: 1));
+    await failTheRun();
 
     expect(find.byType(RunPage), findsOneWidget);
     final second = requestIn(tester);

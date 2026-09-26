@@ -1,64 +1,46 @@
 import 'package:dsync/app/app_scope.dart';
-import 'package:dsync/app/core_link/models/action_result.dart';
-import 'package:dsync/app/core_link/models/conflict_resolution.dart';
-import 'package:dsync/app/core_link/models/plan_action.dart';
-import 'package:dsync/app/core_link/models/plan_proposal.dart';
-import 'package:dsync/app/core_link/models/replica_side.dart';
-import 'package:dsync/app/core_link/models/run_decision.dart';
-import 'package:dsync/app/core_link/models/run_update.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
-import 'run_fixtures.dart'
-    show
-        applied,
-        conflict,
-        massDelete,
-        modifiedB,
-        plan,
-        ranEnd,
-        runFailed,
-        runRequest,
-        summarized;
+import '../../support/fake_hub.dart';
+import 'run_fixtures.dart' hide pump;
 
 /// Rendering tests for the Run page, driven the way the scope contract in
-/// `app_scope.dart` intends: `runScope.setController(fake)` pins one
+/// `app_scope.dart` intends: `runScope.setController(controller)` pins one
 /// instance so that `create()` — which this page calls — returns it, and
-/// the page is pumped directly. Each test writes the case it is about into
-/// the view state before pumping; the page's `initState` then calls
-/// `start`, which refuses a controller that is no longer idle, so the core
-/// is never asked. The review is opened the way a run opens it: the page
-/// starts the run against a `FakeHub` and the fake delivers a plan
-/// that awaits a decision. The page disposes the pinned controller when the
-/// tree is torn down, as it would its own.
+/// the page is pumped directly. The page opens its run against a `FakeHub`,
+/// and each test is "given this view of the run, the page shows X" —
+/// the view delivered as the core sends it — or "tapping Y sends intent
+/// Z", read off what the hub was told. The page disposes the pinned
+/// controller when the tree is torn down, as it would its own.
 void main() {
-  late FakeHub core;
+  late FakeHub hub;
   late SyncRunController controller;
   late FakeScreenWake screenWake;
   var doneTaps = 0;
 
-  /// The app's clock, which the controller's refresh rate reads.
+  /// The app's clock, which relative dates read.
   var clock = DateTime(2026, 9, 16, 12);
 
   final request = runRequest();
 
   setUp(() {
     screenWake = FakeScreenWake();
-    core = FakeHub(devices: [pairedDevice()]);
+    hub = FakeHub(devices: [pairedDevice()]);
     clock = DateTime(2026, 9, 16, 12);
     controller = SyncRunController(
-      fakeApp(core, now: () => clock),
+      fakeApp(hub, now: () => clock),
       screenWake: screenWake,
     );
     appScope.setController(controller.app);
@@ -70,21 +52,43 @@ void main() {
   tearDown(appScope.reset);
   tearDown(runScope.reset);
 
-  Future<void> pump(WidgetTester tester) async {
+  Future<void> pump(WidgetTester tester, {RunRequest? runs}) async {
     tester.view.physicalSize = const Size(800, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
-        home: RunPage(request: request, onDone: () => doneTaps++),
+        home: RunPage(request: runs ?? request, onDone: () => doneTaps++),
       ),
     );
   }
 
+  int session() => hub.runStarts.single.session;
+
+  /// What the page told the core, in order.
+  List<wire.RunIntent> intents() => hub.runIntents[session()] ?? const [];
+
+  /// Delivers [view] as the core's latest, and lets it render: folded in
+  /// one pump, on screen after the next.
+  Future<void> deliver(WidgetTester tester, wire.RunView view) async {
+    hub.emitRun(session(), view);
+    await tester.pump();
+    await tester.pump();
+  }
+
+  /// The page, showing [view].
+  Future<void> open(
+    WidgetTester tester,
+    wire.RunView view, {
+    RunRequest? runs,
+  }) async {
+    await pump(tester, runs: runs);
+    await deliver(tester, view);
+  }
+
   testWidgets('create() hands the page the pinned controller', (tester) async {
     expect(runScope.create(), same(controller));
-    controller.state.recordStart(dryRun: false);
     await pump(tester);
 
     expect(find.text('Sync with desktop'), findsOneWidget);
@@ -94,10 +98,7 @@ void main() {
     testWidgets('a live run opens it blocked, with the reason on screen', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunScanning());
-      await pump(tester);
+      await open(tester, runView(phase: scanning));
 
       await tester.tap(find.byKey(const Key('run-diagnostics')));
       await tester.pumpAndSettle();
@@ -114,18 +115,7 @@ void main() {
 
     testWidgets('a finished run opens it ready to measure, over that run\'s '
         'own local root', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(
-          const SyncRunFinished(
-            applied: 0,
-            skipped: 0,
-            conflicts: 0,
-            failed: 0,
-            unreadable: 0,
-          ),
-        );
-      await pump(tester);
+      await open(tester, runView(phase: finished()));
 
       await tester.tap(find.byKey(const Key('run-diagnostics')));
       await tester.pumpAndSettle();
@@ -148,22 +138,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
     }
 
-    /// The page starts the run against the fake, which then ends it the way
-    /// the core does, with its timings report.
-    Future<void> runToTheEnd(WidgetTester tester, String report) async {
-      await pump(tester);
-      final session = core.runStarts.single.session;
-      core
-        ..emitRun(session, const RunConnected([]))
-        ..emitRun(session, ranEnd(timings: report));
-      await tester.pump();
-    }
-
     testWidgets('a live run opens the sheet, which says the report comes at '
         'the end', (tester) async {
       // Offered while the run is still going: the core reports its timings
       // when the run ends, and the sheet says so rather than showing nothing.
-      await pump(tester);
+      await open(tester, runView(phase: connecting));
 
       await openTimings(tester);
 
@@ -196,7 +175,7 @@ void main() {
       );
 
       const report = 'phases\n  connect 12 ms\n  scan 1.2 s';
-      await runToTheEnd(tester, report);
+      await open(tester, runView(phase: finished(), timings: report));
       await openTimings(tester);
       expect(find.byKey(const Key('run-timings-report')), findsOneWidget);
       await tester.tap(find.byKey(const Key('run-timings-copy')));
@@ -209,8 +188,7 @@ void main() {
   });
 
   testWidgets('connecting: its line and Stop, no Done', (tester) async {
-    controller.state.recordStart(dryRun: false);
-    await pump(tester);
+    await open(tester, runView(phase: connecting));
 
     expect(find.text('Connecting…'), findsOneWidget);
     expect(find.byKey(const Key('run-stop')), findsOneWidget);
@@ -253,57 +231,40 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
 
-    Future<void> inPhase(WidgetTester tester, SyncRunPhase phase) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(phase);
-      await pump(tester);
-    }
-
     final cases = <String, Future<void> Function(WidgetTester)>{
-      'connecting': (tester) async {
-        controller.state.recordStart(dryRun: false);
-        await pump(tester);
-      },
-      'scanning': (tester) => inPhase(tester, const SyncRunScanning()),
+      'connecting': (tester) => open(tester, runView(phase: connecting)),
+      'scanning': (tester) => open(tester, runView(phase: scanning)),
       'awaiting': (tester) async {
-        await pump(tester);
-        final session = core.runStarts.single.session;
-        core
-          ..emitRun(session, const RunConnected([]))
-          ..emitRun(session, plan(awaitingDecision: true));
-        await tester.pump();
-        await tester.pump();
+        await open(
+          tester,
+          runView(
+            phase: reviewing(apply: 2, leftOpen: 1),
+            conflicts: [
+              conflictRow('both.txt', a: createdFile(), b: modifiedFile()),
+            ],
+            plan: [planRow(copyTo('new.txt')), planRow(deleteHere('gone.txt'))],
+          ),
+        );
         expect(find.byKey(const Key('run-confirm')), findsOneWidget);
       },
       'applying, before any progress': (tester) =>
-          inPhase(tester, const SyncRunApplying()),
+          open(tester, runView(phase: applying)),
       'applying': (tester) async {
-        controller.state
-          ..recordStart(dryRun: false)
-          ..recordPhase(const SyncRunApplying())
-          ..recordProgress(const SyncRunProgress(completed: 3, total: 10));
-        await pump(tester);
+        await open(
+          tester,
+          runView(phase: applying, progress: (completed: 3, total: 10)),
+        );
         // Positive control for the bar probe: the determinate bar is there,
         // and it is not the kind that animates.
         expect(find.byType(LinearProgressIndicator), findsOneWidget);
       },
-      'finished': (tester) => inPhase(
-        tester,
-        const SyncRunFinished(
-          applied: 1,
-          skipped: 0,
-          conflicts: 0,
-          failed: 0,
-          unreadable: 0,
-        ),
-      ),
-      'stopped': (tester) =>
-          inPhase(tester, const SyncRunStopped(completedActions: 1)),
-      'paused': (tester) =>
-          inPhase(tester, const SyncRunPaused(completedActions: 1)),
-      'failed': (tester) => inPhase(tester, const SyncRunFailed('No route.')),
-      'busy': (tester) => inPhase(tester, const SyncRunReplicaBusy('In use.')),
+      'finished': (tester) =>
+          open(tester, runView(phase: finished(applied: 1))),
+      'stopped': (tester) => open(tester, runView(phase: stopped(1))),
+      'paused': (tester) => open(tester, runView(phase: paused(1))),
+      'failed': (tester) =>
+          open(tester, runView(phase: failedWith('No route.'))),
+      'busy': (tester) => open(tester, runView(phase: replicaBusy('In use.'))),
     };
 
     for (final MapEntry(key: name, value: enter) in cases.entries) {
@@ -318,9 +279,7 @@ void main() {
 
     testWidgets('the stage strip marks the current stage, and when the run '
         'started', (tester) async {
-      await pump(tester);
-      core.emitRun(core.runStarts.single.session, const RunConnected([]));
-      await tester.pump();
+      await open(tester, runView(phase: scanning, connectedAt: clock));
 
       expect(find.text('Scanning both folders…'), findsOneWidget);
       expect(find.text('Started 12:00'), findsOneWidget);
@@ -331,28 +290,9 @@ void main() {
     });
   });
 
-  testWidgets('applying refreshes the page at most once a second', (
-    tester,
-  ) async {
-    await pump(tester);
-    final session = core.runStarts.single.session;
-    // Nothing to decide: the run goes straight to applying.
-    core
-      ..emitRun(session, const RunConnected([]))
-      ..emitRun(
-        session,
-        plan(actions: const [], conflicts: const [], awaitingDecision: true),
-      );
-    await tester.pump();
-    expect(controller.state.phase, isA<SyncRunApplying>());
-
-    // A pump draws its frame before the stream delivers, so an update is
-    // folded in one pump and on screen after the next.
-    Future<void> deliver(RunUpdate update) async {
-      core.emitRun(session, update);
-      await tester.pump();
-      await tester.pump();
-    }
+  testWidgets('applying shows each view\'s progress, and the finished view '
+      'its final numbers', (tester) async {
+    await open(tester, runView(phase: applying));
 
     String shown() => tester
         .widget<Text>(
@@ -365,27 +305,27 @@ void main() {
         )
         .data!;
 
-    // 40 updates inside one second, each one pumped: what the page shows
-    // changes once, for the first of them.
-    final seen = [shown()];
-    for (var i = 1; i <= 40; i++) {
-      clock = clock.add(const Duration(milliseconds: 20));
-      await deliver(applied(progress: (completed: i, total: 1200)));
-      if (shown() != seen.last) seen.add(shown());
-    }
-    expect(seen, ['Applying…', 'Applying 1 of 1,200']);
-    // Held back from the page, not lost.
-    expect(controller.state.progress!.completed, 40);
-
-    // A second on, the next update shows the latest.
-    clock = clock.add(const Duration(seconds: 1));
-    await deliver(applied(progress: (completed: 41, total: 1200)));
+    expect(shown(), 'Applying…');
+    await deliver(
+      tester,
+      runView(phase: applying, progress: (completed: 1, total: 1200)),
+    );
+    expect(shown(), 'Applying 1 of 1,200');
+    await deliver(
+      tester,
+      runView(phase: applying, progress: (completed: 41, total: 1200)),
+    );
     expect(shown(), 'Applying 41 of 1,200');
 
-    // One more held back, then the summary: a phase change shows at once.
-    core.emitRun(session, applied(progress: (completed: 42, total: 1200)));
-    await deliver(summarized(applied: 42));
-    await deliver(ranEnd());
+    await deliver(
+      tester,
+      runView(
+        phase: finished(applied: 42),
+        progress: (completed: 42, total: 1200),
+        applied: 42,
+        timings: 'run: 1s',
+      ),
+    );
     expect(find.byKey(const Key('run-summary')), findsOneWidget);
     expect(find.text('Applied: 42'), findsOneWidget);
 
@@ -398,19 +338,7 @@ void main() {
     const name =
         'quarterly-report-final-reviewed-by-legal-and-finance-2026-09.pdf';
     const path = 'work/clients/acme/contracts/2026/$name';
-    controller.state
-      ..recordStart(dryRun: false)
-      ..recordPhase(const SyncRunScanning())
-      ..recordPlan(const [
-        SyncRunPlanRow(
-          path: path,
-          action: 'copy to the remote',
-          bytes: 2048,
-          group: SyncRunPlanGroup.toDevice,
-          reversal: null,
-        ),
-      ], bytesToTransfer: 2048);
-    await pump(tester);
+    await open(tester, runView(phase: scanning, plan: [planRow(copyTo(path))]));
     tester.view.physicalSize = const Size(360, 2400);
     await tester.pump();
 
@@ -431,72 +359,51 @@ void main() {
 
   testWidgets('applying: header, warning, tally, conflicts, plan with each '
       'row marked off by its result, and progress', (tester) async {
-    controller.state
-      ..recordStart(dryRun: false)
-      ..recordPhase(const SyncRunApplying())
-      ..recordHeader(
-        const SyncRunHeader(
-          localRoot: '/data/notes',
-          remoteRoot: '~/notes',
-          history: 'First sync of this pair.',
-          firstSyncWarning: firstSyncWarning,
+    await open(
+      tester,
+      runView(
+        phase: applying,
+        replicas: replicas(),
+        tallies: tallies(
+          a: tally(modified: 0),
+          b: tally(metadataMatched: 0, hashMatched: 0, modified: 0, created: 0),
         ),
-      )
-      ..recordScanTally(
-        const SyncRunScanTally(
-          local: SyncRunScanSide(
-            metadataMatched: 7,
-            hashMatched: 2,
-            modified: 0,
-            created: 1,
-            deleted: 0,
+        skipped: [
+          skippedPath(
+            side: wire.SideView.b,
+            path: 'locked.txt',
+            reason: wire.SkippedReasonView.unreadable,
+            detail: 'Permission denied',
+            isFailure: true,
           ),
-          remote: SyncRunScanSide(
-            metadataMatched: 0,
-            hashMatched: 0,
-            modified: 0,
-            created: 0,
-            deleted: 0,
+          skippedPath(
+            side: wire.SideView.a,
+            path: 'link',
+            reason: wire.SkippedReasonView.symlink,
+            detail: 'no follow rule matched',
+            isFailure: false,
           ),
-        ),
-      )
-      ..recordUnreadablePath('locked.txt (remote): Permission denied')
-      ..recordSkippedSymlink('link (this device): no follow rule matched')
-      ..recordConflict(
-        const SyncRunConflictRow(
-          path: 'both.txt',
-          local: SyncRunConflictSide(
-            SyncRunSideStatus.created,
-            file: (modified: '25 Sep 14:03', bytes: 12288),
+        ],
+        conflicts: [
+          conflictRow(
+            'both.txt',
+            a: wire.StatusViewCreated(
+              value: wire.FileView(
+                size: n(12288),
+                mtimeUs: DateTime(2026, 9, 25, 14, 3).microsecondsSinceEpoch,
+              ),
+            ),
+            b: const wire.StatusViewDeleted(),
           ),
-          remote: SyncRunConflictSide(SyncRunSideStatus.created),
-        ),
-      )
-      ..recordPlan(const [
-        SyncRunPlanRow(
-          path: 'new.txt',
-          action: 'copy to the remote',
-          bytes: 2048,
-          group: SyncRunPlanGroup.toDevice,
-          reversal: null,
-        ),
-        SyncRunPlanRow(
-          path: 'old.txt',
-          action: 'delete on the remote',
-          bytes: 0,
-          group: SyncRunPlanGroup.deletions,
-          reversal: null,
-        ),
-      ], bytesToTransfer: 2048)
-      ..recordResult(
-        const SyncRunResultRow(
-          path: 'new.txt',
-          action: 'copy to the remote',
-          error: null,
-        ),
-      )
-      ..recordProgress(const SyncRunProgress(completed: 1, total: 2));
-    await pump(tester);
+        ],
+        plan: [
+          planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
+          planRow(deleteThere('old.txt')),
+        ],
+        progress: (completed: 1, total: 2),
+        applied: 1,
+      ),
+    );
 
     expect(find.byKey(const Key('run-header')), findsOneWidget);
     expect(find.text('This device ⇄ Remote'), findsOneWidget);
@@ -534,25 +441,19 @@ void main() {
     expect(find.textContaining('by hash'), findsOneWidget);
 
     expect(find.byKey(const Key('run-unreadable')), findsOneWidget);
+    expect(find.text('locked.txt (remote): Permission denied'), findsOneWidget);
     expect(find.byKey(const Key('run-symlinks')), findsOneWidget);
     // A conflict is a card of its own, each side's status boxed.
     expect(find.byKey(const Key('run-conflict-both.txt')), findsOneWidget);
-    for (final side in ['local', 'remote']) {
-      expect(
-        find.descendant(
-          of: find.byKey(Key('run-conflict-$side-both.txt')),
-          matching: find.text('created'),
-        ),
-        findsOneWidget,
-      );
-    }
-    expect(find.text('Conflicts (1)'), findsOneWidget);
-    // A side with a file says when it changed and how big it is; one
-    // without says neither. Both boxes stand as tall as the taller.
     Finder inSide(String side, String text) => find.descendant(
       of: find.byKey(Key('run-conflict-$side-both.txt')),
       matching: find.text(text),
     );
+    expect(inSide('local', 'created'), findsOneWidget);
+    expect(inSide('remote', 'deleted'), findsOneWidget);
+    expect(find.text('Conflicts (1)'), findsOneWidget);
+    // A side with a file says when it changed and how big it is; one
+    // without says neither. Both boxes stand as tall as the taller.
     expect(inSide('local', '25 Sep 14:03'), findsOneWidget);
     expect(inSide('local', '12 KiB'), findsOneWidget);
     expect(inSide('remote', '25 Sep 14:03'), findsNothing);
@@ -594,18 +495,15 @@ void main() {
     tester,
   ) async {
     // Positive control for the sections above: absent data, absent widget.
-    controller.state
-      ..recordStart(dryRun: true)
-      ..recordPhase(const SyncRunScanning())
-      ..recordHeader(
-        const SyncRunHeader(
-          localRoot: '/data/notes',
-          remoteRoot: '~/notes',
-          history: 'Last synced 2026-09-16 10:00 (just now).',
-          firstSyncWarning: null,
-        ),
-      );
-    await pump(tester);
+    final synced = DateTime(2026, 9, 16, 10);
+    await open(
+      tester,
+      runView(
+        dryRun: true,
+        phase: scanning,
+        replicas: replicas(lastA: synced, lastB: synced),
+      ),
+    );
 
     expect(find.byKey(const Key('run-first-sync-warning')), findsNothing);
     expect(find.byKey(const Key('run-unreadable')), findsNothing);
@@ -620,18 +518,22 @@ void main() {
     const longRoot =
         '/storage/emulated/0/Android/data/com.example.app/files/notes/'
         'deeply/nested/folder';
-    controller.state
-      ..recordStart(dryRun: false)
-      ..recordPhase(const SyncRunScanning())
-      ..recordHeader(
-        const SyncRunHeader(
-          localRoot: longRoot,
-          remoteRoot: '~/notes',
-          history: 'Last synced 2026-09-16 10:00 (just now).',
-          firstSyncWarning: null,
-        ),
-      );
-    await pump(tester);
+    final synced = DateTime(2026, 9, 16, 10);
+    await open(
+      tester,
+      runView(
+        phase: scanning,
+        replicas: replicas(lastA: synced, lastB: synced),
+      ),
+      runs: RunRequest(
+        target: request.target,
+        localRootPath: longRoot,
+        deviceName: request.deviceName,
+        remoteRootPath: request.remoteRootPath,
+        address: null,
+        dryRun: false,
+      ),
+    );
 
     expect(find.text('This device: $longRoot'), findsNothing);
     expect(find.text('This device: ${elidePath(longRoot)}'), findsOneWidget);
@@ -641,25 +543,15 @@ void main() {
     /// A plan the size of a photo library's: 50k actions, far more than any
     /// viewport holds. Rows are cheap objects; what the page must not do is
     /// materialise a widget for each of them.
-    List<SyncRunPlanRow> bigPlan() => [
+    List<wire.PlanRowView> bigPlan({int bytes = 1024}) => [
       for (var i = 0; i < 50000; i++)
-        SyncRunPlanRow(
-          path: 'file-$i.txt',
-          action: 'copy to the remote',
-          bytes: 1024,
-          group: SyncRunPlanGroup.toDevice,
-          reversal: null,
-        ),
+        planRow(copyTo('file-$i.txt', bytes: bytes)),
     ];
 
     testWidgets('only the rows the viewport holds are in the tree', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying())
-        ..recordPlan(bigPlan(), bytesToTransfer: 50000 * 1024);
-      await pump(tester);
+      await open(tester, runView(phase: applying, plan: bigPlan()));
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
       await tester.pump();
 
@@ -680,26 +572,11 @@ void main() {
     testWidgets('a result repaints its own row and never the plan', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying())
-        ..recordPlan(const [
-          SyncRunPlanRow(
-            path: 'new.txt',
-            action: 'copy to the remote',
-            bytes: 2048,
-            group: SyncRunPlanGroup.toDevice,
-            reversal: null,
-          ),
-          SyncRunPlanRow(
-            path: 'old.txt',
-            action: 'delete on the remote',
-            bytes: 0,
-            group: SyncRunPlanGroup.deletions,
-            reversal: null,
-          ),
-        ], bytesToTransfer: 2048);
-      await pump(tester);
+      final rows = [
+        planRow(copyTo('new.txt')),
+        planRow(deleteThere('old.txt')),
+      ];
+      await open(tester, runView(phase: applying, plan: rows));
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
       await tester.pump();
       await tester.tap(find.byKey(const Key('run-plan-disclosure-deletions')));
@@ -710,12 +587,16 @@ void main() {
         find.textContaining('To the remote (1'),
       );
 
-      // Progress is the apply loop's other notification, at most once a
-      // second: it repaints the line that shows it and nothing in the plan.
-      controller.state
-        ..recordProgress(const SyncRunProgress(completed: 1, total: 2))
-        ..publishProgress();
-      await tester.pump();
+      // A view with only new progress repaints the line that shows it and
+      // nothing in the plan.
+      await deliver(
+        tester,
+        runView(
+          phase: applying,
+          plan: rows,
+          progress: (completed: 1, total: 2),
+        ),
+      );
 
       expect(find.text('Applying 1 of 2'), findsOneWidget);
       expect(tester.widget<Text>(find.text('old.txt')), same(other));
@@ -725,14 +606,18 @@ void main() {
       );
 
       final applied = tester.widget<Text>(find.text('new.txt'));
-      controller.state.recordResult(
-        const SyncRunResultRow(
-          path: 'new.txt',
-          action: 'copy to the remote',
-          error: null,
+      await deliver(
+        tester,
+        runView(
+          phase: applying,
+          plan: [
+            planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
+            planRow(deleteThere('old.txt')),
+          ],
+          progress: (completed: 1, total: 2),
+          applied: 1,
         ),
       );
-      await tester.pump();
 
       // It repainted that row (positive control: the widget object for its
       // path is new) and left every other row alone.
@@ -743,38 +628,25 @@ void main() {
   });
 
   group('the plan collapses while the run applies it', () {
-    const plan = [
-      SyncRunPlanRow(
-        path: 'new.txt',
-        action: 'copy to the remote',
-        bytes: 2048,
-        group: SyncRunPlanGroup.toDevice,
-        reversal: null,
-      ),
-      SyncRunPlanRow(
-        path: 'old.txt',
-        action: 'delete on the remote',
-        bytes: 0,
-        group: SyncRunPlanGroup.deletions,
-        reversal: null,
-      ),
-    ];
+    final rows = [planRow(copyTo('new.txt')), planRow(deleteThere('old.txt'))];
 
     testWidgets('collapsed by default, and a failure is readable there', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying())
-        ..recordPlan(plan, bytesToTransfer: 2048)
-        ..recordResult(
-          const SyncRunResultRow(
-            path: 'new.txt',
-            action: 'copy to the remote',
-            error: 'Permission denied',
-          ),
-        );
-      await pump(tester);
+      await open(
+        tester,
+        runView(
+          phase: applying,
+          plan: [
+            planRow(
+              copyTo('new.txt'),
+              outcome: outcome(copyTo('new.txt'), failure: 'Permission denied'),
+            ),
+            planRow(deleteThere('old.txt')),
+          ],
+          failed: 1,
+        ),
+      );
 
       // The area is present — its group headers with it — but the rows are
       // collapsed away.
@@ -796,28 +668,25 @@ void main() {
     testWidgets('the tally follows the apply loop, the rows stay put', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying())
-        ..recordPlan(plan, bytesToTransfer: 2048);
-      await pump(tester);
+      await open(tester, runView(phase: applying, plan: rows));
       await tester.tap(find.byKey(const Key('run-plan-disclosure')));
       await tester.pump();
       await tester.tap(find.byKey(const Key('run-plan-disclosure-deletions')));
       await tester.pump();
 
       final row = tester.widget<Text>(find.text('old.txt'));
-      controller.state
-        ..recordResult(
-          const SyncRunResultRow(
-            path: 'new.txt',
-            action: 'copy to the remote',
-            error: null,
-          ),
-        )
-        ..recordProgress(const SyncRunProgress(completed: 1, total: 2))
-        ..publishProgress();
-      await tester.pump();
+      await deliver(
+        tester,
+        runView(
+          phase: applying,
+          plan: [
+            planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
+            planRow(deleteThere('old.txt')),
+          ],
+          progress: (completed: 1, total: 2),
+          applied: 1,
+        ),
+      );
 
       expect(find.text('Applied: 1'), findsOneWidget);
       // Expanded until the user says otherwise, and the rows the tally's
@@ -833,24 +702,11 @@ void main() {
     testWidgets('a finished run shows the rows with nothing to expand', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying())
-        ..recordPlan(plan, bytesToTransfer: 2048);
-      await pump(tester);
+      await open(tester, runView(phase: applying, plan: rows));
       expect(find.text('new.txt'), findsNothing);
       expect(find.text('old.txt'), findsNothing);
 
-      controller.state.recordPhase(
-        const SyncRunFinished(
-          applied: 2,
-          skipped: 0,
-          conflicts: 0,
-          failed: 0,
-          unreadable: 0,
-        ),
-      );
-      await tester.pump();
+      await deliver(tester, runView(phase: finished(applied: 2), plan: rows));
 
       expect(find.byKey(const Key('run-plan')), findsOneWidget);
       expect(find.byKey(const Key('run-plan-disclosure')), findsNothing);
@@ -865,26 +721,13 @@ void main() {
     testWidgets('record-only rows collapse by default even outside applying', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunScanning())
-        ..recordPlan(const [
-          SyncRunPlanRow(
-            path: 'new.txt',
-            action: 'copy to the remote',
-            bytes: 2048,
-            group: SyncRunPlanGroup.toDevice,
-            reversal: null,
-          ),
-          SyncRunPlanRow(
-            path: 'same.txt',
-            action: 'same content, record only',
-            bytes: 0,
-            group: SyncRunPlanGroup.recordOnly,
-            reversal: null,
-          ),
-        ], bytesToTransfer: 2048);
-      await pump(tester);
+      await open(
+        tester,
+        runView(
+          phase: scanning,
+          plan: [planRow(copyTo('new.txt')), planRow(recordOnly('same.txt'))],
+        ),
+      );
 
       // Not applying: the direction group shows its rows outright...
       expect(find.text('new.txt'), findsOneWidget);
@@ -907,18 +750,12 @@ void main() {
   testWidgets('finished: five counts, a Done that fires onDone, no Stop', (
     tester,
   ) async {
-    controller.state
-      ..recordStart(dryRun: false)
-      ..recordPhase(
-        const SyncRunFinished(
-          applied: 4,
-          skipped: 3,
-          conflicts: 1,
-          failed: 0,
-          unreadable: 2,
-        ),
-      );
-    await pump(tester);
+    await open(
+      tester,
+      runView(
+        phase: finished(applied: 4, skipped: 3, conflicts: 1, unreadable: 2),
+      ),
+    );
 
     expect(find.text('Finished'), findsOneWidget);
     expect(find.text('Applied: 4'), findsOneWidget);
@@ -933,18 +770,7 @@ void main() {
   });
 
   testWidgets('a finished dry run says nothing was applied', (tester) async {
-    controller.state
-      ..recordStart(dryRun: true)
-      ..recordPhase(
-        const SyncRunFinished(
-          applied: 0,
-          skipped: 3,
-          conflicts: 0,
-          failed: 0,
-          unreadable: 0,
-        ),
-      );
-    await pump(tester);
+    await open(tester, runView(dryRun: true, phase: finished(skipped: 3)));
 
     expect(find.text('Dry run finished'), findsOneWidget);
     expect(find.text('Nothing was applied.'), findsOneWidget);
@@ -953,15 +779,21 @@ void main() {
   testWidgets('stopped: says how many actions completed, never "cancelled"', (
     tester,
   ) async {
-    controller.state
-      ..recordStart(dryRun: false)
-      ..recordPhase(const SyncRunStopped(completedActions: 2));
-    await pump(tester);
+    await open(tester, runView(phase: stopped(2)));
 
     final text = tester.widget<Text>(find.byKey(const Key('run-stopped')));
     expect(text.data, contains('Stopped after 2 action(s)'));
     expect(text.data!.toLowerCase(), isNot(contains('cancel')));
     expect(find.byKey(const Key('run-done')), findsOneWidget);
+  });
+
+  testWidgets('Stop asks the core to stop', (tester) async {
+    await open(tester, runView(phase: applying));
+
+    await tester.tap(find.byKey(const Key('run-stop')));
+    await tester.pump();
+
+    expect(intents(), const [wire.RunIntentStop()]);
   });
 
   group('the app going away', () {
@@ -979,13 +811,6 @@ void main() {
       AppLifecycleState.resumed,
     ];
 
-    late _SpyController spy;
-
-    setUp(() {
-      spy = _SpyController(controller.app);
-      runScope.setController(spy);
-    });
-
     Future<void> drive(
       WidgetTester tester,
       List<AppLifecycleState> states,
@@ -996,80 +821,73 @@ void main() {
       }
     }
 
-    testWidgets('backgrounding pauses the run', (tester) async {
-      spy.state.recordPhase(const SyncRunScanning());
-      await pump(tester);
+    testWidgets('backgrounding asks the core to pause the run', (tester) async {
+      await open(tester, runView(phase: scanning));
 
       await drive(tester, backgrounding);
 
-      expect(spy.pauses, 1);
-      expect(spy.backgroundResumes, 0);
+      expect(intents(), const [wire.RunIntentPause()]);
     });
 
     testWidgets('a notification is not a backgrounding', (tester) async {
-      spy.state.recordPhase(const SyncRunScanning());
-      await pump(tester);
+      await open(tester, runView(phase: scanning));
 
       // `inactive` is the shade, a permission dialog or an incoming call,
       // and a run torn down for one of those was never in danger.
       await drive(tester, [AppLifecycleState.inactive]);
-      expect(spy.pauses, 0);
+      expect(intents(), isEmpty);
 
       // Coming back from `inactive` does fire the lifecycle's resume, and
-      // it is a no-op: `resumeFromBackground` continues a paused run and
+      // the core is told the app came back: it continues a paused run and
       // this one was never paused.
       await drive(tester, [AppLifecycleState.resumed]);
-      expect(spy.pauses, 0);
+      expect(intents(), const [wire.RunIntentForeground()]);
     });
 
-    testWidgets('coming back asks for the run to continue', (tester) async {
-      spy.state.recordPhase(const SyncRunScanning());
-      await pump(tester);
+    testWidgets('coming back tells the core the app is back', (tester) async {
+      await open(tester, runView(phase: scanning));
 
       await drive(tester, backgrounding);
       await drive(tester, foregrounding);
 
-      // The lifecycle's resume, which continues a paused run and leaves a
-      // failed one alone; the button below is the other one.
-      expect(spy.backgroundResumes, 1);
-      expect(spy.resumes, isEmpty);
+      // Not the Resume button's intent: the core continues a paused run on
+      // this one and leaves a failed one alone.
+      expect(intents(), const [
+        wire.RunIntentPause(),
+        wire.RunIntentForeground(),
+      ]);
     });
 
     testWidgets('the Resume button asks for the run it is shown on', (
       tester,
     ) async {
-      spy.state.recordPhase(const SyncRunPaused(completedActions: 3));
-      await pump(tester);
+      await open(tester, runView(phase: paused(3)));
 
       await tester.tap(find.byKey(const Key('run-resume')));
       await tester.pump();
 
-      expect(spy.resumes, [request]);
-      expect(spy.backgroundResumes, 0);
+      expect(intents(), const [wire.RunIntentResume()]);
     });
 
     testWidgets('leaving the page stops listening to the lifecycle', (
       tester,
     ) async {
-      spy.state.recordPhase(const SyncRunScanning());
-      await pump(tester);
+      await open(tester, runView(phase: scanning));
       await tester.pumpWidget(const SizedBox());
 
       await drive(tester, backgrounding);
 
       // A listener that outlived the page would pause a controller the page
-      // has already disposed.
-      expect(spy.pauses, 0);
+      // has already disposed: the core hears the page leave, and nothing
+      // after.
+      expect(intents(), const [wire.RunIntentClose()]);
     });
   });
 
   group('paused', () {
     testWidgets('says how many actions completed, and offers both Resume '
         'and Done', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunPaused(completedActions: 3));
-      await pump(tester);
+      await open(tester, runView(phase: paused(3)));
 
       expect(find.byKey(const Key('run-paused')), findsOneWidget);
       expect(find.textContaining('Paused after 3 action(s)'), findsOneWidget);
@@ -1079,10 +897,10 @@ void main() {
     });
 
     testWidgets('a failed run offers Resume too', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunFailed('Could not reach "desktop".'));
-      await pump(tester);
+      await open(
+        tester,
+        runView(phase: failedWith('Could not reach "desktop".')),
+      );
 
       expect(find.byKey(const Key('run-resume')), findsOneWidget);
       expect(find.byKey(const Key('run-done')), findsOneWidget);
@@ -1090,10 +908,7 @@ void main() {
   });
 
   testWidgets('failed: the message and Done', (tester) async {
-    controller.state
-      ..recordStart(dryRun: false)
-      ..recordPhase(const SyncRunFailed('No pairing for "desktop".'));
-    await pump(tester);
+    await open(tester, runView(phase: failedWith('No pairing for "desktop".')));
 
     expect(find.byKey(const Key('run-failed')), findsOneWidget);
     expect(find.text('No pairing for "desktop".'), findsOneWidget);
@@ -1104,15 +919,15 @@ void main() {
   testWidgets('a replica in use: its own line, plus Resume and Done', (
     tester,
   ) async {
-    controller.state
-      ..recordStart(dryRun: false)
-      ..recordPhase(
-        const SyncRunReplicaBusy(
+    await open(
+      tester,
+      runView(
+        phase: replicaBusy(
           '"/storage/emulated/0/Documents/notes" is in use by another dsync '
           'process on this device. (Lock file: /data/state/notes-a.lock)',
         ),
-      );
-    await pump(tester);
+      ),
+    );
 
     // Its own key, not `run-failed`: the page tells this apart from a run
     // that broke, and says what to do about it.
@@ -1133,48 +948,34 @@ void main() {
   });
 
   group('the inline review', () {
-    // Two reversible actions, one that is not (a mirror row: the plan
-    // carries no reverse for it), a two-sided conflict and a one-sided one.
-    final shown = plan(
-      actions: const [
-        PlanProposal(
-          CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
-          reverseBytes: 1024,
-        ),
-        PlanProposal(
-          DeleteAction('gone.txt', on: ReplicaSide.b),
-          reverseBytes: 512,
-        ),
-        PlanProposal(CopyAction('mirror.txt', from: ReplicaSide.a, bytes: 10)),
+    // Two reversible actions, one that is not (a mirror row: the core
+    // offers no reverse for it), a two-sided conflict and a one-sided one.
+    wire.RunView review({
+      List<wire.ActionChoiceView> actions = const [
+        wire.ActionChoiceView.proposed,
+        wire.ActionChoiceView.proposed,
+        wire.ActionChoiceView.proposed,
       ],
+      wire.ConflictChoiceView both = wire.ConflictChoiceView.unresolved,
+      wire.ConflictChoiceView theirs = wire.ConflictChoiceView.unresolved,
+      wire.RunPhaseView? phase,
+    }) => runView(
+      phase: phase ?? reviewing(apply: 3, leftOpen: 2),
       conflicts: [
-        conflict('both.txt', a: modifiedB, b: modifiedB),
-        conflict('theirs.txt', b: modifiedB),
+        conflictRow(
+          'both.txt',
+          a: modifiedFile(),
+          b: modifiedFile(),
+          choice: both,
+        ),
+        conflictRow('theirs.txt', b: modifiedFile(), choice: theirs),
       ],
-      awaitingDecision: true,
+      plan: [
+        planRow(copyTo('new.txt'), reverseBytes: 1024, choice: actions[0]),
+        planRow(deleteThere('gone.txt'), reverseBytes: 512, choice: actions[1]),
+        planRow(copyTo('mirror.txt', bytes: 10), choice: actions[2]),
+      ],
     );
-
-    /// What the page answered the core with, once it has.
-    List<RunDecision> decided() =>
-        core.decisions[core.runStarts.single.session] ?? const [];
-
-    /// Opens the review the way a run does: the page starts the run against
-    /// the fake, which delivers each conflict and then a plan awaiting a
-    /// decision — the core's own order — so every tap goes through the
-    /// real input methods.
-    Future<void> open(WidgetTester tester, {RunPlan? awaiting}) async {
-      await pump(tester);
-      final session = core.runStarts.single.session;
-      final delivered = awaiting ?? shown;
-      core.emitRun(session, const RunConnected([]));
-      for (final conflict in delivered.conflicts) {
-        core.emitRun(session, RunConflict(conflict));
-      }
-      core.emitRun(session, delivered);
-      // Folded in one pump, on screen after the next.
-      await tester.pump();
-      await tester.pump();
-    }
 
     Finder inRow(String path, Finder matching) => find.descendant(
       of: find.byKey(Key('decision-$path')),
@@ -1206,9 +1007,17 @@ void main() {
     String summary(WidgetTester tester) =>
         tester.widget<Text>(find.byKey(const Key('run-review-summary'))).data!;
 
+    /// The conflict choice the page sent last.
+    wire.ConflictChoiceView? sentFor(int index) => switch (intents().last) {
+      wire.RunIntentChooseConflict(index: final at, :final choice)
+          when at == index =>
+        choice,
+      _ => null,
+    };
+
     testWidgets('the plan\'s own rows under review, conflicts first, one row '
         'per path, and the bar', (tester) async {
-      await open(tester);
+      await open(tester, review());
 
       expect(find.byKey(const Key('run-awaiting')), findsOneWidget);
       expect(find.byKey(const Key('run-stop')), findsOneWidget);
@@ -1241,16 +1050,16 @@ void main() {
     });
 
     testWidgets('the review fits a phone-width screen', (tester) async {
-      await open(tester);
+      await open(tester, review());
       tester.view.physicalSize = const Size(360, 2400);
       await tester.pump();
 
       expect(find.byKey(const Key('decision-both.txt')), findsOneWidget);
     });
 
-    testWidgets('reverse is offered only where the plan carries one, keep '
-        'both only where both sides hold a file', (tester) async {
-      await open(tester);
+    testWidgets('reverse is offered only where the core offers one, a side '
+        'only where it can be kept', (tester) async {
+      await open(tester, review());
 
       // Positive control first: the reversible row has the reverse.
       expect(inRow('new.txt', find.byIcon(Icons.swap_horiz)), findsOneWidget);
@@ -1261,27 +1070,70 @@ void main() {
       expect(said(tester, 'both.txt'), 'Skip');
       expect(said(tester, 'theirs.txt'), 'Skip');
 
-      // Two-sided: each side, then both.
-      await tapSide(tester, 'both.txt', 'local');
-      expect(said(tester, 'both.txt'), 'This device');
-      await tapSide(tester, 'both.txt', 'remote');
-      expect(said(tester, 'both.txt'), 'Both');
-      await tapSide(tester, 'both.txt', 'local');
-      expect(said(tester, 'both.txt'), 'Remote');
-      await tapSide(tester, 'both.txt', 'remote');
-      expect(said(tester, 'both.txt'), 'Skip');
-
       // One-sided: the side with no record cannot be kept, so there is no
       // Both to reach — only the remote side, or Skip.
       expect(tappable(tester, 'theirs.txt', 'remote'), isTrue);
       expect(tappable(tester, 'theirs.txt', 'local'), isFalse);
       await tapSide(tester, 'theirs.txt', 'remote');
-      expect(said(tester, 'theirs.txt'), 'Remote');
+      expect(sentFor(1), wire.ConflictChoiceView.keepB);
     });
 
-    testWidgets('reverse, skip and keep both reach the core exactly as shown '
-        'on Apply', (tester) async {
-      await open(tester);
+    testWidgets('a side box toggles: each side, then both, as the core says '
+        'back', (tester) async {
+      await open(tester, review());
+
+      // Two-sided: each tap sends the choice the two boxes now read as, and
+      // the row says back what the core holds.
+      await tapSide(tester, 'both.txt', 'local');
+      expect(sentFor(0), wire.ConflictChoiceView.keepA);
+      await deliver(tester, review(both: wire.ConflictChoiceView.keepA));
+      expect(said(tester, 'both.txt'), 'This device');
+
+      await tapSide(tester, 'both.txt', 'remote');
+      expect(sentFor(0), wire.ConflictChoiceView.keepBoth);
+      await deliver(tester, review(both: wire.ConflictChoiceView.keepBoth));
+      expect(said(tester, 'both.txt'), 'Both');
+
+      await tapSide(tester, 'both.txt', 'local');
+      expect(sentFor(0), wire.ConflictChoiceView.keepB);
+      await deliver(tester, review(both: wire.ConflictChoiceView.keepB));
+      expect(said(tester, 'both.txt'), 'Remote');
+
+      await tapSide(tester, 'both.txt', 'remote');
+      expect(sentFor(0), wire.ConflictChoiceView.unresolved);
+      await deliver(tester, review());
+      expect(said(tester, 'both.txt'), 'Skip');
+    });
+
+    testWidgets('where Both is not offered, a second side moves the '
+        'selection', (tester) async {
+      await open(
+        tester,
+        runView(
+          phase: reviewing(leftOpen: 1),
+          conflicts: [
+            conflictRow(
+              'half.txt',
+              a: modifiedFile(),
+              b: const wire.StatusViewDeleted(),
+              offered: const [
+                wire.ConflictChoiceView.unresolved,
+                wire.ConflictChoiceView.keepA,
+                wire.ConflictChoiceView.keepB,
+              ],
+              choice: wire.ConflictChoiceView.keepA,
+            ),
+          ],
+        ),
+      );
+
+      await tapSide(tester, 'half.txt', 'remote');
+      expect(sentFor(0), wire.ConflictChoiceView.keepB);
+    });
+
+    testWidgets('each row\'s choice goes to the core by its index, and the '
+        'rows show what the core holds', (tester) async {
+      await open(tester, review());
 
       final rowOf = find.ancestor(
         of: find.byKey(const Key('decision-gone.txt')),
@@ -1293,8 +1145,35 @@ void main() {
       await tester.pump();
       await tester.tap(inRow('gone.txt', find.byIcon(Icons.block)));
       await tester.pump();
-      await tapSide(tester, 'both.txt', 'local');
-      await tapSide(tester, 'both.txt', 'remote');
+      expect(intents(), const [
+        wire.RunIntentChooseAction(
+          index: 0,
+          choice: wire.ActionChoiceView.reversed,
+        ),
+        wire.RunIntentChooseAction(
+          index: 1,
+          choice: wire.ActionChoiceView.skipped,
+        ),
+      ]);
+
+      await deliver(
+        tester,
+        review(
+          actions: const [
+            wire.ActionChoiceView.reversed,
+            wire.ActionChoiceView.skipped,
+            wire.ActionChoiceView.proposed,
+          ],
+          both: wire.ConflictChoiceView.keepBoth,
+          phase: reviewing(
+            apply: 2,
+            reversed: 1,
+            skipped: 1,
+            keptBoth: 1,
+            leftOpen: 1,
+          ),
+        ),
+      );
 
       // What each row will do, literally.
       expect(
@@ -1316,24 +1195,31 @@ void main() {
 
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
+      expect(intents().last, const wire.RunIntentConfirm());
 
-      final decision = decided().single;
-      expect(decision.keep, [
-        (index: 0, reversed: true),
-        (index: 2, reversed: false),
-      ]);
-      // `ConflictResolution` has no `==`; compare by shape.
-      expect(decision.resolve.keys, [0]);
-      expect(decision.resolve[0], isA<KeepBoth>());
-      // The review is over: no bar, no controls, the groups collapsed
-      // while the run applies them.
+      // The review is over once the core says so: no bar, no controls,
+      // the groups collapsed while the run applies them.
+      await deliver(
+        tester,
+        review(
+          actions: const [
+            wire.ActionChoiceView.reversed,
+            wire.ActionChoiceView.skipped,
+            wire.ActionChoiceView.proposed,
+          ],
+          both: wire.ConflictChoiceView.keepBoth,
+          phase: applying,
+        ),
+      );
       expect(find.byKey(const Key('run-confirm')), findsNothing);
       expect(find.byKey(const Key('decision-both.txt')), findsNothing);
       expect(find.byKey(const Key('run-plan-disclosure')), findsOneWidget);
     });
 
-    testWidgets('a tap rebuilds its own row and no other', (tester) async {
-      await open(tester);
+    testWidgets('a choice the core holds rebuilds its own row and no other', (
+      tester,
+    ) async {
+      await open(tester, review());
       final mirror = tester.widget<Text>(find.text('mirror.txt'));
       final gone = tester.widget<Text>(find.text('gone.txt'));
       final tapped = tester.widget<Text>(find.text('new.txt'));
@@ -1343,6 +1229,17 @@ void main() {
 
       await tester.tap(inRow('new.txt', find.byIcon(Icons.swap_horiz)));
       await tester.pump();
+      await deliver(
+        tester,
+        review(
+          actions: const [
+            wire.ActionChoiceView.reversed,
+            wire.ActionChoiceView.proposed,
+            wire.ActionChoiceView.proposed,
+          ],
+          phase: reviewing(apply: 3, reversed: 1, leftOpen: 2),
+        ),
+      );
 
       // Positive control: the tapped row is a new widget.
       expect(tester.widget<Text>(find.text('new.txt')), isNot(same(tapped)));
@@ -1354,55 +1251,50 @@ void main() {
       );
     });
 
-    testWidgets('Sync all except conflicts sends the plan unchanged, whatever '
-        'the rows say', (tester) async {
-      await open(tester);
-      await tester.tap(inRow('gone.txt', find.byIcon(Icons.block)));
-      await tapSide(tester, 'both.txt', 'local');
+    testWidgets('Sync all except conflicts is its own answer, whatever the '
+        'rows say', (tester) async {
+      await open(
+        tester,
+        review(
+          actions: const [
+            wire.ActionChoiceView.proposed,
+            wire.ActionChoiceView.skipped,
+            wire.ActionChoiceView.proposed,
+          ],
+          both: wire.ConflictChoiceView.keepA,
+        ),
+      );
 
       await tester.tap(find.byKey(const Key('run-sync-all-except-conflicts')));
       await tester.pump();
 
-      expect(decided().single.keep, [
-        (index: 0, reversed: false),
-        (index: 1, reversed: false),
-        (index: 2, reversed: false),
-      ]);
-      expect(decided().single.resolve, isEmpty);
-      expect(find.byKey(const Key('run-confirm')), findsNothing);
+      expect(intents(), const [wire.RunIntentAcceptAll()]);
     });
 
     testWidgets('a keep-both result reads as a saved copy beside a conflict '
         'still open; a side kept reads as applied', (tester) async {
-      await open(tester);
-      await tapSide(tester, 'both.txt', 'local');
-      await tapSide(tester, 'both.txt', 'remote');
-      await tapSide(tester, 'theirs.txt', 'remote');
-      await tester.tap(find.byKey(const Key('run-confirm')));
-      await tester.pump();
-
-      core.emitRun(
-        core.runStarts.single.session,
-        applied(
-          results: const [
-            ActionResult(
-              action: CopyAsideAction(
-                'both.txt',
-                from: ReplicaSide.b,
-                to: 'both (desktop).txt',
-                bytes: 5,
-              ),
-              failure: null,
+      await open(
+        tester,
+        runView(
+          phase: applying,
+          conflicts: [
+            conflictRow(
+              'both.txt',
+              a: modifiedFile(),
+              b: modifiedFile(),
+              choice: wire.ConflictChoiceView.keepBoth,
+              outcome: outcome(copyAside('both.txt', to: 'both (desktop).txt')),
             ),
-            ActionResult(
-              action: CopyAction('theirs.txt', from: ReplicaSide.b, bytes: 5),
-              failure: null,
+            conflictRow(
+              'theirs.txt',
+              b: modifiedFile(),
+              choice: wire.ConflictChoiceView.keepB,
+              outcome: outcome(copyHere('theirs.txt', bytes: 5)),
             ),
           ],
+          applied: 2,
         ),
       );
-      await tester.pump();
-      await tester.pump();
 
       final aside = find.byKey(const Key('run-conflict-result-both.txt'));
       expect(
@@ -1440,29 +1332,25 @@ void main() {
       );
     });
 
-    testWidgets('leaving the page mid-review stops the run', (tester) async {
-      await open(tester);
+    testWidgets('leaving the page mid-review tells the core', (tester) async {
+      await open(tester, review());
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
 
-      expect(core.stopped, [core.runStarts.single.session]);
-      expect(decided(), isEmpty);
+      expect(intents(), const [wire.RunIntentClose()]);
     });
 
     testWidgets('a plan far taller than the screen is built on demand under '
         'review too', (tester) async {
       await open(
         tester,
-        awaiting: plan(
-          actions: [
+        runView(
+          phase: reviewing(apply: 50000),
+          plan: [
             for (var i = 0; i < 50000; i++)
-              PlanProposal(
-                CopyAction('file-$i.txt', from: ReplicaSide.a, bytes: 0),
-              ),
+              planRow(copyTo('file-$i.txt', bytes: 0)),
           ],
-          conflicts: const [],
-          awaitingDecision: true,
         ),
       );
 
@@ -1478,7 +1366,6 @@ void main() {
   testWidgets('leaving the page disposes the controller it created', (
     tester,
   ) async {
-    controller.state.recordStart(dryRun: false);
     await pump(tester);
     await tester.pumpWidget(const SizedBox.shrink());
 
@@ -1497,7 +1384,7 @@ void main() {
     // Pushed onto a route of its own, which is what gives the page the
     // back arrow (and what makes `maybePop` — the same path the OS back
     // gesture takes — reach the page's `PopScope`).
-    Future<void> pumpPushed(WidgetTester tester) async {
+    Future<void> pumpPushed(WidgetTester tester, wire.RunView view) async {
       tester.view.physicalSize = const Size(800, 2400);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -1521,15 +1408,13 @@ void main() {
       );
       await tester.tap(find.text('open run'));
       await settle(tester);
+      await deliver(tester, view);
     }
 
     testWidgets('while running it asks, and cancelling stays on the run', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying());
-      await pumpPushed(tester);
+      await pumpPushed(tester, runView(phase: applying));
 
       await tester.tap(find.byType(BackButton));
       await settle(tester);
@@ -1547,10 +1432,7 @@ void main() {
     });
 
     testWidgets('confirming leaves the page', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying());
-      await pumpPushed(tester);
+      await pumpPushed(tester, runView(phase: applying));
 
       await tester.tap(find.byType(BackButton));
       await settle(tester);
@@ -1562,18 +1444,7 @@ void main() {
     });
 
     testWidgets('a finished run pops with no prompt', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(
-          const SyncRunFinished(
-            applied: 2,
-            skipped: 0,
-            conflicts: 0,
-            failed: 0,
-            unreadable: 0,
-          ),
-        );
-      await pumpPushed(tester);
+      await pumpPushed(tester, runView(phase: finished(applied: 2)));
 
       await tester.tap(find.byType(BackButton));
       await settle(tester);
@@ -1593,18 +1464,10 @@ void main() {
     testWidgets('the finished summary marks failed and unreadable', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(
-          const SyncRunFinished(
-            applied: 1,
-            skipped: 0,
-            conflicts: 0,
-            failed: 2,
-            unreadable: 3,
-          ),
-        );
-      await pump(tester);
+      await open(
+        tester,
+        runView(phase: finished(applied: 1, failed: 2, unreadable: 3)),
+      );
 
       final summary = find.byKey(const Key('run-summary'));
       expect(find.text('Failed: 2'), findsOneWidget);
@@ -1619,18 +1482,7 @@ void main() {
     });
 
     testWidgets('a clean finish marks nothing', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(
-          const SyncRunFinished(
-            applied: 1,
-            skipped: 0,
-            conflicts: 0,
-            failed: 0,
-            unreadable: 0,
-          ),
-        );
-      await pump(tester);
+      await open(tester, runView(phase: finished(applied: 1)));
 
       expect(
         find.descendant(
@@ -1644,26 +1496,22 @@ void main() {
     testWidgets('the collapsed plan tally marks its failed count', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunApplying())
-        ..recordPlan(const [
-          SyncRunPlanRow(
-            path: 'new.txt',
-            action: 'copy to the remote',
-            bytes: 8,
-            group: SyncRunPlanGroup.toDevice,
-            reversal: null,
-          ),
-        ], bytesToTransfer: 8)
-        ..recordResult(
-          const SyncRunResultRow(
-            path: 'new.txt',
-            action: 'copy to the remote',
-            error: 'Permission denied',
-          ),
-        );
-      await pump(tester);
+      await open(
+        tester,
+        runView(
+          phase: applying,
+          plan: [
+            planRow(
+              copyTo('new.txt', bytes: 8),
+              outcome: outcome(
+                copyTo('new.txt', bytes: 8),
+                failure: 'Permission denied',
+              ),
+            ),
+          ],
+          failed: 1,
+        ),
+      );
 
       expect(find.text('Failed: 1'), findsOneWidget);
       expect(
@@ -1673,17 +1521,15 @@ void main() {
     });
 
     testWidgets('the unresolved conflict lines are marked', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunScanning())
-        ..recordConflict(
-          const SyncRunConflictRow(
-            path: 'both.txt',
-            local: SyncRunConflictSide(SyncRunSideStatus.modified),
-            remote: SyncRunConflictSide(SyncRunSideStatus.modified),
-          ),
-        );
-      await pump(tester);
+      await open(
+        tester,
+        runView(
+          phase: scanning,
+          conflicts: [
+            conflictRow('both.txt', a: modifiedFile(), b: modifiedFile()),
+          ],
+        ),
+      );
 
       expect(
         errorIconIn(find.byKey(const Key('run-conflicts'))),
@@ -1692,25 +1538,16 @@ void main() {
     });
 
     testWidgets('a conflict under review is marked', (tester) async {
-      await pump(tester);
-      final session = core.runStarts.single.session;
-      final both = conflict('both.txt', a: modifiedB, b: modifiedB);
-      core
-        ..emitRun(session, RunConflict(both))
-        ..emitRun(
-          session,
-          plan(
-            actions: const [
-              PlanProposal(
-                CopyAction('new.txt', from: ReplicaSide.a, bytes: 2048),
-              ),
-            ],
-            conflicts: [both],
-            awaitingDecision: true,
-          ),
-        );
-      await tester.pump();
-      await tester.pump();
+      await open(
+        tester,
+        runView(
+          phase: reviewing(apply: 1, leftOpen: 1),
+          conflicts: [
+            conflictRow('both.txt', a: modifiedFile(), b: modifiedFile()),
+          ],
+          plan: [planRow(copyTo('new.txt'))],
+        ),
+      );
 
       expect(find.byKey(const Key('decision-both.txt')), findsOneWidget);
       expect(
@@ -1722,18 +1559,7 @@ void main() {
     testWidgets('the first-sync warning carries a warning icon', (
       tester,
     ) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunScanning())
-        ..recordHeader(
-          const SyncRunHeader(
-            localRoot: '/data/notes',
-            remoteRoot: '~/notes',
-            history: 'First sync of this pair.',
-            firstSyncWarning: firstSyncWarning,
-          ),
-        );
-      await pump(tester);
+      await open(tester, runView(phase: scanning, replicas: replicas()));
 
       expect(
         find.descendant(
@@ -1745,37 +1571,20 @@ void main() {
     });
 
     testWidgets('the failure message is marked', (tester) async {
-      controller.state
-        ..recordStart(dryRun: false)
-        ..recordPhase(const SyncRunFailed('No pairing for "desktop".'));
-      await pump(tester);
+      await open(
+        tester,
+        runView(phase: failedWith('No pairing for "desktop".')),
+      );
 
       expect(errorIconIn(find.byKey(const Key('run-failed'))), findsOneWidget);
     });
   });
 
   group('the delete guard (SPEC §10)', () {
-    /// Starts the run, accepts its plan the way the review bar does, and
-    /// delivers the core's delete guard.
-    Future<int> guarded(WidgetTester tester) async {
-      await pump(tester);
-      final session = core.runStarts.single.session;
-      core.emitRun(session, const RunConnected([]));
-      core.emitRun(session, plan(awaitingDecision: true));
-      await tester.pump();
-      await tester.pump();
-      await tester.tap(find.byKey(const Key('run-sync-all-except-conflicts')));
-      await tester.pump();
-      core.emitRun(session, massDelete());
-      await tester.pump();
-      await tester.pump();
-      return session;
-    }
-
     testWidgets('asks before applying, naming how many files and where', (
       tester,
     ) async {
-      await guarded(tester);
+      await open(tester, runView(phase: confirmingDeletes()));
 
       expect(find.byKey(const Key('run-confirming-deletes')), findsOneWidget);
       expect(find.byKey(const Key('run-deletes-bar')), findsOneWidget);
@@ -1791,67 +1600,42 @@ void main() {
       expect(find.byKey(const Key('run-confirm')), findsNothing);
     });
 
-    testWidgets('Delete answers yes and the page moves on to applying', (
-      tester,
-    ) async {
-      final session = await guarded(tester);
+    testWidgets('Delete answers yes, and the page moves on to applying when '
+        'the core does', (tester) async {
+      await open(tester, runView(phase: confirmingDeletes()));
 
       await tester.tap(find.byKey(const Key('run-deletes-confirm')));
       await tester.pump();
+      expect(intents(), const [wire.RunIntentAnswerDeletes(proceed: true)]);
 
-      expect(core.deleteConfirmations[session], [true]);
+      await deliver(tester, runView(phase: applying));
       expect(find.byKey(const Key('run-deletes-bar')), findsNothing);
       expect(find.byKey(const Key('run-progress')), findsOneWidget);
     });
 
     testWidgets('Don\'t delete answers no, and the run ends saying nothing '
         'was changed', (tester) async {
-      final session = await guarded(tester);
+      await open(tester, runView(phase: confirmingDeletes()));
 
       await tester.tap(find.byKey(const Key('run-deletes-decline')));
       await tester.pump();
-      expect(core.deleteConfirmations[session], [false]);
-      core
-        ..emitRun(session, runFailed('not applied'))
-        ..emitRun(session, ranEnd());
-      await tester.pump();
-      await tester.pump();
+      expect(intents(), const [wire.RunIntentAnswerDeletes(proceed: false)]);
 
+      await deliver(
+        tester,
+        runView(phase: const wire.RunPhaseViewDeletesDeclined()),
+      );
       expect(find.text(deletesDeclinedMessage), findsOneWidget);
       expect(find.byKey(const Key('run-resume')), findsOneWidget);
       expect(find.byKey(const Key('run-deletes-bar')), findsNothing);
     });
 
     testWidgets('fits a phone-width screen', (tester) async {
-      await guarded(tester);
+      await open(tester, runView(phase: confirmingDeletes()));
       tester.view.physicalSize = const Size(360, 2400);
       await tester.pump();
 
       expect(find.byKey(const Key('run-deletes-confirm')), findsOneWidget);
     });
   });
-}
-
-/// A [SyncRunController] that records the input methods the lifecycle and
-/// the Resume button call, and runs nothing.
-///
-/// The page's job here is wiring — which lifecycle transition calls which
-/// input method — and that is all this proves. What pausing and resuming
-/// actually *do* is `run_controller_test.dart`'s.
-class _SpyController extends SyncRunController {
-  _SpyController(super.app) : super(screenWake: FakeScreenWake());
-
-  int pauses = 0;
-  int backgroundResumes = 0;
-  final List<RunRequest> resumes = [];
-
-  @override
-  Future<void> pause() async => pauses++;
-
-  @override
-  Future<void> resumeFromBackground(RunRequest request) async =>
-      backgroundResumes++;
-
-  @override
-  Future<void> resume(RunRequest request) async => resumes.add(request);
 }

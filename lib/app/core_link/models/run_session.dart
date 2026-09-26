@@ -1,19 +1,11 @@
-import 'run_update.dart';
+import 'run_view.dart';
 
-/// A run that started: its archive id, its two sides as typed, and its
-/// story in [updates], which ends with a [RunEnded].
+/// A run session the core opened: its id, which every intent names, and
+/// its [views] — the whole run after every change, the latest one what to
+/// show.
 final class RunSession {
-  const RunSession({
-    required this.session,
-    required this.profileId,
-    required this.a,
-    required this.b,
-    required this.updates,
-  });
+  const RunSession({required this.session, required this.views});
 
   final int session;
-  final String profileId;
-  final String a;
-  final String b;
-  final Stream<RunUpdate> updates;
+  final Stream<RunView> views;
 }

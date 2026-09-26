@@ -15,17 +15,4 @@ final class ConflictInfo {
   final FileStatus? a;
   final FileStatus? b;
   final bool interrupted;
-
-  /// Whether both sides hold a file - two versions, so "keep both" can
-  /// save the peer's beside this device's (SPEC §7.2). A deleted or
-  /// never-written side holds none.
-  bool get bothHoldAFile => _holdsAFile(a) && _holdsAFile(b);
-
-  static bool _holdsAFile(FileStatus? status) => switch (status) {
-    StatusUnchanged() ||
-    StatusCreated() ||
-    StatusModified() ||
-    StatusUntrusted() => true,
-    StatusDeleted() || StatusUntrustedAbsent() || null => false,
-  };
 }

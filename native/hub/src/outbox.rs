@@ -5,19 +5,21 @@
 use tokio::sync::mpsc;
 
 use crate::signals::{
-    EnrolmentUpdate, EnrolmentUpdateBody, RunUpdate, RunUpdateBody, ServeUpdate, ServeUpdateBody,
+    EnrolmentUpdate, EnrolmentUpdateBody, RunSnapshot, ServeUpdate, ServeUpdateBody,
 };
+use crate::views::RunView;
 
 /// One stream signal, in the order it was emitted.
 pub enum Outgoing {
-    Run(RunUpdate),
+    /// Boxed: a run's view is far larger than the other signals.
+    Run(Box<RunSnapshot>),
     Serve(ServeUpdate),
     Enrolment(EnrolmentUpdate),
 }
 
 /// The sending end. Unbounded: every producer is either throttled (a
-/// run's per-action updates) or rare (serving and pairing), and a send
-/// never waits on Dart.
+/// run's snapshots) or rare (serving and pairing), and a send never waits
+/// on Dart.
 #[derive(Clone)]
 pub struct Outbox(mpsc::UnboundedSender<Outgoing>);
 
@@ -32,8 +34,8 @@ impl Outbox {
         let _ = self.0.send(outgoing);
     }
 
-    pub fn run(&self, session: u64, update: RunUpdateBody) {
-        self.send(Outgoing::Run(RunUpdate { session, update }));
+    pub fn run(&self, session: u64, view: RunView) {
+        self.send(Outgoing::Run(Box::new(RunSnapshot { session, view })));
     }
 
     pub fn serve(&self, session: u64, update: ServeUpdateBody) {

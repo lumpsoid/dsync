@@ -16,10 +16,10 @@ import 'models/pairing_window.dart';
 import 'models/peer_probe_outcome.dart';
 import 'models/profile_draft.dart';
 import 'models/profile_entry.dart';
-import 'models/run_decision.dart';
+import 'models/run_intent.dart';
 import 'models/run_session.dart';
 import 'models/run_target.dart';
-import 'models/run_update.dart';
+import 'models/run_view.dart';
 import 'models/scan_probe_result.dart';
 import 'models/serve_addresses.dart';
 import 'models/serve_session.dart';
@@ -32,7 +32,7 @@ import 'wire_models.dart';
 ///
 /// Concrete, and the same code in the app and in its tests: each call is a
 /// `CoreRequest` handed to the [CoreChannel], answered by the `CoreReply`
-/// with its id; each session's stream is fed from its `RunUpdate` /
+/// with its id; each session's stream is fed from its `RunSnapshot` /
 /// `ServeUpdate` / `EnrolmentUpdate` signals. The channel is the one
 /// interface (`RinfCoreChannel` in the app, a fake hub in tests), so the
 /// correlation and the decoding below always run.
@@ -49,8 +49,8 @@ final class CoreLink {
       _channel.replies.listen((reply) {
         _requests.complete(reply.id.toInt(), reply.result);
       }),
-      _channel.runUpdates.listen((update) {
-        _runs.deliver(update.session.toInt(), runUpdate(update.update));
+      _channel.runSnapshots.listen((snapshot) {
+        _runs.deliver(snapshot.session.toInt(), runView(snapshot.view));
       }),
       _channel.serveUpdates.listen((update) {
         _serves.deliver(update.session.toInt(), serveUpdate(update.update));
@@ -66,7 +66,9 @@ final class CoreLink {
 
   final CoreChannel _channel;
   final _requests = Correlator<wire.ReplyResult>();
-  final _runs = SessionStreams<RunUpdate>(isTerminal: (u) => u is RunEnded);
+  /// A run's views never end on their own: the session is over when its
+  /// controller stops listening.
+  final _runs = SessionStreams<RunView>(isTerminal: (_) => false);
   final _serves = SessionStreams<ServeUpdate>(
     isTerminal: (u) => u is ServeStopped,
   );
@@ -291,16 +293,16 @@ final class CoreLink {
   Future<List<ProfileEntry>> deleteProfile(String name) =>
       _ask(wire.CoreCommandDeleteProfile(name: name), _profiles);
 
-  /// Starts a run of [target]. [address] overrides where the peer is
-  /// dialled. When [RunPlan.awaitingDecision], the run waits for
-  /// [decideRun].
+  /// Opens a run session for [target]. [address] overrides where the peer
+  /// is dialled. The core resolves, connects and runs it; what it comes to
+  /// — a target that will not resolve included — is the session's views.
   Future<RunSession> startRun(
     RunTarget target, {
     required bool dryRun,
     String? address,
   }) async {
     late int session;
-    late Stream<RunUpdate> updates;
+    late Stream<RunView> views;
     try {
       return await _ask(
         wire.CoreCommandStartRun(
@@ -310,17 +312,11 @@ final class CoreLink {
         ),
         opening: (id) {
           session = id;
-          updates = _runs.open(id);
+          views = _runs.open(id);
         },
-        (result) => switch (result) {
-          wire.ReplyResultRunStarted(:final value) => RunSession(
-            session: session,
-            profileId: value.profileId,
-            a: value.a,
-            b: value.b,
-            updates: updates,
-          ),
-          _ => _unexpected(result),
+        (result) {
+          _done(result);
+          return RunSession(session: session, views: views);
         },
       );
     } on CoreFailure catch (failure) {
@@ -329,25 +325,15 @@ final class CoreLink {
     }
   }
 
-  Future<void> decideRun(int session, RunDecision decision) => _ask(
-    wire.CoreCommandDecideRun(
+  /// What the user did to the run in [session]; the core decides what it
+  /// means.
+  Future<void> steerRun(int session, RunIntent intent) => _ask(
+    wire.CoreCommandSteerRun(
       session: wireId(session),
-      decision: wireDecision(decision),
+      intent: wireIntent(intent),
     ),
     _done,
   );
-
-  /// The answer to SPEC §10's delete guard, when a [RunMassDelete] is
-  /// awaiting it: [proceed] applies the deletions, otherwise the run ends
-  /// with nothing applied.
-  Future<void> confirmDeletes(int session, {required bool proceed}) => _ask(
-    wire.CoreCommandConfirmDeletes(session: wireId(session), proceed: proceed),
-    _done,
-  );
-
-  /// The first stop is graceful; a second drops the run.
-  Future<void> stopRun(int session) =>
-      _ask(wire.CoreCommandStopRun(session: wireId(session)), _done);
 
   /// Serves paired devices on [bind]:[port] until [stopServe].
   Future<ServeSession> startServe({

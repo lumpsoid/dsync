@@ -12,15 +12,15 @@ import 'run_scope.dart';
 import 'run_timings_sheet.dart';
 import 'run_view_state.dart';
 
-/// The Run page: drive a run for [request] and render the core's run updates
-/// (SPEC §9, §11.4). Widgets only, per the page role in `app_scope.dart`:
-/// it switches over [SyncRunPhase] and lists the rendered rows in the order
-/// the controller folded them.
+/// The Run page: drive a run for [request] and render the core's latest
+/// view of it (SPEC §9, §11.4). Widgets only, per the page role in
+/// `app_scope.dart`: it switches over [SyncRunPhase] and lists the rendered
+/// rows in the order the core sent them.
 ///
 /// **Owns its controller.** This page takes `runScope.create()` — never the
 /// cached `controller` every other page reads — and disposes it in
 /// [State.dispose]; the scope contract in `app_scope.dart` says why:
-/// two runs must never share a loop, and an event arriving late from a
+/// two runs must never share a session, and a view arriving late from a
 /// finished run must not write into a view state a later page tore down.
 ///
 /// **The lifecycle seam lives here.** This page owns the
@@ -80,21 +80,17 @@ class _RunPageState extends State<RunPage> {
   ]);
 
   /// What the top block (header, counts row, scan tally, path lists,
-  /// conflicts) follows: the view state itself, plus `planChanged` for the
-  /// one thing `recordPlan` writes silently — see the body's own doc
-  /// comment. Built once for the same reason as [_planSection]: a rebuild
-  /// must not tear down and resubscribe the block's listener.
-  late final Listenable _topSection = Listenable.merge([
-    _controller.state,
-    _controller.state.planChanged,
-  ]);
+  /// conflicts) follows: the view state itself, which every view the core
+  /// sends wakes. The view state, not a merge: its `show` sets the plan's
+  /// group counts before it notifies.
+  Listenable get _topSection => _controller.state;
 
   @override
   void initState() {
     super.initState();
     _lifecycle = AppLifecycleListener(
       onPause: _controller.pause,
-      onResume: () => _controller.resumeFromBackground(widget.request),
+      onResume: _controller.resumeFromBackground,
     );
     _controller.start(widget.request);
   }
@@ -244,7 +240,7 @@ class _RunPageState extends State<RunPage> {
               SyncRunReplicaBusy() ||
               SyncRunFailed() => TextButton(
                 key: const Key('run-resume'),
-                onPressed: () => _controller.resume(widget.request),
+                onPressed: _controller.resume,
                 child: const Text('Resume'),
               ),
               SyncRunIdle() ||
@@ -319,17 +315,14 @@ class _RunPageState extends State<RunPage> {
       // Two listeners, not one. Everything above the plan changes as the run
       // reports — phase and progress, header, tally, the two path lists, the
       // conflicts, the counts row — and follows the view state itself
-      // (`_topSection`), plus `planChanged` for the one field none of that
-      // touches: `recordPlan` folds the plan's group counts silently, on
-      // `planChanged` alone, so the counts row would otherwise wait on the
-      // next unrelated notification to show them. The plan rows deliberately
-      // do not follow `state`: the plan arrives whole in one `RunPlanEvent`,
-      // and the apply loop then reports one result per action. So the plan
-      // section follows `planChanged` and the phase (`_planSection`) — never
-      // the progress or the path lists — and each row follows the cell for
-      // its own path (`SyncRunViewState.resultCell`), which is what keeps
-      // applying action N from rebuilding the rows above it — see the view
-      // state's class doc comment and `RunPlanRow` (`run_plan_section.dart`).
+      // (`_topSection`). The plan rows deliberately do not: the plan is
+      // fixed once made, and every view the apply brings after it carries
+      // the same rows with new results. So the plan section follows
+      // `planChanged` and the phase (`_planSection`) — never the progress
+      // or the path lists — and each row follows the cell for its own path
+      // (`SyncRunViewState.resultCell`), which is what keeps applying action
+      // N from rebuilding the rows above it — see the view state's class doc
+      // comment and `RunPlanRow` (`run_plan_section.dart`).
       body: CustomScrollView(
         slivers: [
           SliverPadding(
@@ -381,10 +374,7 @@ class _RunPageState extends State<RunPage> {
                               row,
                               state: state,
                               offered: switch (state.phase) {
-                                SyncRunAwaitingDecisions(
-                                  :final conflictOffers,
-                                ) =>
-                                  conflictOffers[row.path],
+                                SyncRunAwaitingDecisions() => row.offered,
                                 _ => null,
                               },
                               onResolve: _controller.resolveConflict,
@@ -822,7 +812,7 @@ class _CountsRow extends StatelessWidget {
 }
 
 /// The counts row before the run is over: how much of the plan moves in
-/// each direction (Design C.3), folded once by `recordPlan` and read from
+/// each direction (Design C.3), folded once per plan and read from
 /// [SyncRunViewState.planSections] rather than walked here, plus the
 /// unresolved-conflict count already on [SyncRunViewState.conflicts]. The
 /// live Applied/Failed pair joins them while the run applies the plan —
@@ -1132,8 +1122,8 @@ String _conflicts(int count) => count == 1 ? 'conflict' : 'conflicts';
 /// ([SyncRunViewState.conflictDecisionCell]) so a tap rebuilds this row
 /// alone.
 ///
-/// A side the conflict cannot keep (no record of the path there — see
-/// `PlanDecisions.offeredFor`) is not tappable. Selecting the second side
+/// A side the conflict cannot keep (no record of the path there — the
+/// core's [SyncRunConflictRow.offered]) is not tappable. Selecting the second side
 /// where "Both" is not offered moves the selection to it instead.
 ///
 /// After the review it follows its own [SyncRunViewState.resultCell]. A
@@ -1153,7 +1143,7 @@ class _ConflictRow extends StatelessWidget {
   final SyncRunConflictRow row;
   final SyncRunViewState state;
   final List<SyncRunConflictChoice>? offered;
-  final void Function(String path, SyncRunConflictChoice choice) onResolve;
+  final void Function(int index, SyncRunConflictChoice choice) onResolve;
 
   @override
   Widget build(BuildContext context) {
@@ -1274,7 +1264,7 @@ class _ConflictRow extends StatelessWidget {
     SyncRunConflictChoice side,
   ) {
     if (offered == null || !offered.contains(side)) return null;
-    return () => onResolve(row.path, _toggled(current, side, offered));
+    return () => onResolve(row.index, _toggled(current, side, offered));
   }
 
   Widget _result(

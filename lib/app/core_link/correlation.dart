@@ -36,7 +36,8 @@ final class Correlator<R> {
 /// nobody opened (or that already ended) is dropped.
 ///
 /// A session's stream buffers until it is listened to, so updates that
-/// arrive before the caller subscribes are not lost.
+/// arrive before the caller subscribes are not lost; once its listener
+/// cancels, the session is forgotten and what arrives for it is dropped.
 final class SessionStreams<U> {
   SessionStreams({required this.isTerminal});
 
@@ -48,7 +49,9 @@ final class SessionStreams<U> {
   /// The stream for session [id]. Open it before sending the command that
   /// starts the session.
   Stream<U> open(int id) {
-    final controller = _open[id] ??= StreamController<U>();
+    final controller = _open[id] ??= StreamController<U>(
+      onCancel: () => _open.remove(id),
+    );
     return controller.stream;
   }
 

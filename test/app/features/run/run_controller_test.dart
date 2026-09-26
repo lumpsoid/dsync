@@ -1,21 +1,21 @@
+import 'dart:async';
+
 import 'package:dsync/app/core_link/models/core_failure.dart';
-import 'package:dsync/app/core_link/models/run_end.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
-import 'package:dsync/app/core_link/models/run_update.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_head.dart';
 import 'run_fixtures.dart';
 
-/// `SyncRunController` driving a run through the `CoreLink` seam, with the
-/// core played by a `FakeHub`: what the head asks the core for, and
-/// how each of the core's answers — refusals, updates, ends — lands on the
-/// page's phase, the screen wakelock and the timings. What the run itself
-/// does (dialling, scanning, locks, applying) is the core's, tested in
-/// native/core and native/hub.
+/// `SyncRunController` over the `CoreLink` it runs on, the hub played by a
+/// `FakeHub`: what the core is asked to start, which intent each of the
+/// page's inputs sends, and what follows the latest view — the screen
+/// wakelock and the timings. What any of it means for the run is the
+/// core's, tested in native/hub.
 void main() {
   late RunHarness harness;
 
@@ -23,9 +23,6 @@ void main() {
 
   setUp(() => harness = RunHarness());
   tearDown(() => harness.dispose());
-
-  /// A plan the sheet opens over.
-  RunPlan sheet() => plan(awaitingDecision: true);
 
   group('what the core is asked', () {
     test(
@@ -35,17 +32,16 @@ void main() {
           runRequest(dryRun: true, address: '192.168.1.9:4000'),
         );
 
-        final asked = harness.core.runStarts.single;
+        final asked = harness.hub.runStarts.single;
         expect(asked.target, isA<DraftTarget>());
         expect((asked.target as DraftTarget).draft.remoteRoot, '~/notes');
         expect(asked.dryRun, isTrue);
         expect(asked.address, '192.168.1.9:4000');
-        expect(controller().state.dryRun, isTrue);
       },
     );
 
     test('a saved profile is run by its name', () async {
-      harness.core.profiles.add(headProfile(name: 'notes'));
+      harness.hub.profiles.add(headProfile(name: 'notes'));
       await harness.start(
         const RunRequest(
           target: SavedProfileTarget('notes'),
@@ -57,317 +53,217 @@ void main() {
         ),
       );
 
-      final target = harness.core.runStarts.single.target;
+      final target = harness.hub.runStarts.single.target;
       expect((target as SavedProfileTarget).name, 'notes');
-      expect(harness.core.runStarts.single.address, isNull);
+      expect(harness.hub.runStarts.single.address, isNull);
     });
-  });
 
-  group('a run the core refuses or cannot connect', () {
-    test('a refused start is the failed phase in the core\'s words', () async {
-      harness.core.failNext = const CoreFailure('no paired device "laptop"');
+    test('a start the core refuses is the failed phase in its words', () async {
+      harness.hub.failNext = const CoreFailure('the core is not initialised');
       await harness.start();
-      await harness.done;
 
       expect(
-        (controller().state.phase as SyncRunFailed).message,
-        'no paired device "laptop"',
+        controller().state.phase,
+        const SyncRunFailed('the core is not initialised'),
       );
       expect(harness.screenWake.held, isFalse);
     });
 
-    test('a peer that cannot be reached is the failed phase with the core\'s '
-        'message', () async {
+    test('a second start on the same instance is ignored', () async {
       await harness.start();
-      await harness.emit([
-        const RunEnded(
-          RunNotConnected('Could not reach "desktop" at 10.0.0.7:28771'),
+      await controller().start(runRequest(dryRun: true));
+
+      expect(harness.hub.runStarts, hasLength(1));
+    });
+
+    test('start after dispose is a no-op', () async {
+      controller().dispose();
+
+      await controller().start(runRequest());
+      expect(harness.hub.runStarts, isEmpty);
+    });
+  });
+
+  group('each input is sent to the core as it is', () {
+    setUp(() async {
+      await harness.start();
+      await harness.show(runView(phase: reviewing()));
+    });
+
+    test('stop, pause, coming back and resume', () async {
+      await controller().stop();
+      await controller().pause();
+      await controller().resumeFromBackground();
+      await controller().resume();
+
+      expect(harness.intents, const [
+        wire.RunIntentStop(),
+        wire.RunIntentPause(),
+        wire.RunIntentForeground(),
+        wire.RunIntentResume(),
+      ]);
+    });
+
+    test('a row\'s choice by its index, a conflict\'s by the side it '
+        'keeps', () async {
+      await controller().choose(1, SyncRunActionChoice.reversed);
+      await controller().choose(0, SyncRunActionChoice.skipped);
+      await controller().choose(0, SyncRunActionChoice.proposed);
+      await controller().resolveConflict(2, SyncRunConflictChoice.keepLocal);
+      await controller().resolveConflict(2, SyncRunConflictChoice.keepRemote);
+      await controller().resolveConflict(2, SyncRunConflictChoice.keepBoth);
+      await controller().resolveConflict(2, SyncRunConflictChoice.unresolved);
+
+      expect(harness.intents, const [
+        wire.RunIntentChooseAction(
+          index: 1,
+          choice: wire.ActionChoiceView.reversed,
+        ),
+        wire.RunIntentChooseAction(
+          index: 0,
+          choice: wire.ActionChoiceView.skipped,
+        ),
+        wire.RunIntentChooseAction(
+          index: 0,
+          choice: wire.ActionChoiceView.proposed,
+        ),
+        wire.RunIntentChooseConflict(
+          index: 2,
+          choice: wire.ConflictChoiceView.keepA,
+        ),
+        wire.RunIntentChooseConflict(
+          index: 2,
+          choice: wire.ConflictChoiceView.keepB,
+        ),
+        wire.RunIntentChooseConflict(
+          index: 2,
+          choice: wire.ConflictChoiceView.keepBoth,
+        ),
+        wire.RunIntentChooseConflict(
+          index: 2,
+          choice: wire.ConflictChoiceView.unresolved,
         ),
       ]);
-      await harness.done;
-
-      expect(
-        (controller().state.phase as SyncRunFailed).message,
-        contains('10.0.0.7:28771'),
-      );
     });
-  });
 
-  group('dry run', () {
-    test('the plan and its conflicts are reported, nothing is decided, and '
-        'the summary is the finished phase', () async {
-      await harness.run([
-        const RunConnected([]),
-        replicas(),
-        plan(),
-        RunConflict(conflict('both.txt', a: createdA, b: createdA)),
-        summarized(skipped: 2, conflicts: 1),
-      ], request: runRequest(dryRun: true));
+    test('the review\'s two answers and the delete guard\'s', () async {
+      await controller().confirm();
+      await controller().acceptAll();
+      await controller().confirmDeletes();
+      await controller().declineDeletes();
 
-      final state = controller().state;
-      expect(state.header!.firstSyncWarning, isNotNull);
-      expect(state.plan.map((r) => r.path), ['new.txt', 'gone.txt']);
-      expect(state.conflicts.single.path, 'both.txt');
-      expect(state.results, isEmpty);
-      expect(harness.core.decisions, isEmpty);
-      final finished = state.phase as SyncRunFinished;
-      expect(finished.skipped, 2);
-      expect(finished.conflicts, 1);
-    });
-  });
-
-  group('a replica already in use (SPEC §4.3)', () {
-    test('is its own phase, not a failed run, with the core\'s line', () async {
-      await harness.run([
-        runFailed('"/data/notes" is in use (lock x)', replicaBusy: true),
+      expect(harness.intents, const [
+        wire.RunIntentConfirm(),
+        wire.RunIntentAcceptAll(),
+        wire.RunIntentAnswerDeletes(proceed: true),
+        wire.RunIntentAnswerDeletes(proceed: false),
       ]);
-
-      final busy = controller().state.phase as SyncRunReplicaBusy;
-      expect(busy.message, '"/data/notes" is in use (lock x)');
     });
 
-    test('is retried by Resume once the other holder is done', () async {
-      await harness.run([runFailed('in use', replicaBusy: true)]);
-      expect(controller().state.phase, isA<SyncRunReplicaBusy>());
+    test('an input changes nothing on its own: the next view does', () async {
+      await controller().confirm();
+      expect(controller().state.phase, const SyncRunAwaitingDecisions());
 
-      await harness.resume();
-      expect(harness.core.runStarts, hasLength(2));
-      await harness.emit([summarized(applied: 1), ranEnd()]);
-      await harness.done;
+      await harness.show(runView(phase: applying));
+      expect(controller().state.phase, const SyncRunApplying());
+    });
 
-      expect(controller().state.phase, isA<SyncRunFinished>());
+    test('an intent the core refuses — the session is over — is '
+        'swallowed', () async {
+      harness.hub.failures['steerRun'] = const CoreFailure('no run');
+
+      await controller().stop();
+
+      expect(harness.hub.calls.last, 'steerRun');
     });
   });
 
-  group('backgrounding', () {
-    test('pausing stops the run, and resuming starts it again', () async {
-      await harness.start();
-      await harness.emit([const RunConnected([]), sheet()]);
-      expect(controller().state.phase, isA<SyncRunAwaitingDecisions>());
+  test('an input made before the core opened the session is sent once it '
+      'has', () async {
+    final opening = Completer<void>();
+    harness.hub.holds['startRun'] = opening.future;
+    unawaited(controller().start(runRequest()));
+    final stopping = controller().stop();
+    await pump();
+    expect(harness.hub.runIntents, isEmpty);
 
-      final pausing = controller().pause();
-      await pump();
-      expect(harness.core.stopped, [harness.session]);
-      await harness.emit([summarized(), ranEnd()]);
-      await pausing;
-      await harness.done;
+    opening.complete();
+    await stopping;
 
-      final paused = controller().state.phase as SyncRunPaused;
-      expect(paused.completedActions, 0);
-      // Suspended, not finished: the screen is no longer held for a run the
-      // app cannot see.
-      expect(harness.screenWake.held, isFalse);
+    expect(harness.intents, const [wire.RunIntentStop()]);
+  });
 
-      harness.done = controller().resumeFromBackground(runRequest());
-      await pump();
-      expect(harness.core.runStarts, hasLength(2));
-      expect(harness.screenWake.held, isTrue);
-      await harness.emit([const RunConnected([]), sheet()]);
-      controller().acceptAll();
-      await harness.emit([summarized(applied: 2), ranEnd()]);
-
-      expect(controller().state.phase, isA<SyncRunFinished>());
-      expect(harness.core.decisions[harness.session], hasLength(1));
-      expect(harness.screenWake.held, isFalse);
-    });
-
-    test('the resumed run renders from nothing, not on top of the paused '
-        'one', () async {
-      await harness.start();
-      await harness.emit([const RunConnected([]), sheet()]);
-      expect(controller().state.plan, hasLength(2));
-      final pausing = controller().pause();
-      await harness.emit([summarized(), ranEnd()]);
-      await pausing;
-
-      // The same paths are planned again by the resumed run; two rows, not
-      // four.
-      await harness.resume();
-      await harness.emit([const RunConnected([]), sheet()]);
-      expect(controller().state.plan, hasLength(2));
-    });
+  group('what follows the latest view', () {
+    setUp(() => harness.start());
 
     test(
-      'the resumed run\'s timings are its own, not the paused one\'s',
+      'the screen is held for exactly as long as the view is live',
       () async {
-        await harness.start();
-        await harness.emit([const RunConnected([])]);
-        final pausing = controller().pause();
-        await harness.emit([summarized(), ranEnd(timings: 'first attempt')]);
-        await pausing;
-        expect(controller().timings.value, 'first attempt');
+        for (final phase in [
+          connecting,
+          scanning,
+          reviewing(),
+          confirmingDeletes(),
+          applying,
+          finished(),
+        ]) {
+          await harness.show(runView(phase: phase));
+        }
 
-        await harness.resume();
-        expect(controller().timings.value, isNull);
-        await harness.emit([summarized(), ranEnd(timings: 'second attempt')]);
-        expect(controller().timings.value, 'second attempt');
+        // Once on, once off — never re-asked for what it already holds.
+        expect(harness.screenWake.calls, [true, false]);
+        expect(harness.screenWake.held, isFalse);
       },
     );
 
-    test('a run that is over is neither paused nor resumed', () async {
-      await harness.run([summarized()]);
-      final finished = controller().state.phase;
-
-      await controller().pause();
-      await controller().resume(runRequest());
-
-      expect(controller().state.phase, same(finished));
-      expect(harness.core.stopped, isEmpty);
-      expect(harness.core.runStarts, hasLength(1));
-    });
-
-    test('coming back to a run that never paused changes nothing', () async {
-      await harness.start();
-      await harness.emit([const RunConnected([]), sheet()]);
-      final phase = controller().state.phase;
-
-      // The lifecycle fires this on every return to the foreground, including
-      // the ones that never backgrounded a run (a notification, a dialog).
-      await controller().resumeFromBackground(runRequest());
-
-      expect(controller().state.phase, same(phase));
-      expect(harness.core.runStarts, hasLength(1));
-    });
-
-    test('the screen is held for exactly as long as the run is live', () async {
-      await harness.run([
-        const RunConnected([]),
-        replicas(),
-        plan(),
-        summarized(),
-      ], request: runRequest(dryRun: true));
-
-      // Once on, once off — never re-asked for what it already holds, and
-      // the dry run's phase moves several times in between.
-      expect(harness.screenWake.calls, [true, false]);
+    test('a paused run lets the screen go, and a resumed one holds it '
+        'again', () async {
+      await harness.show(runView(phase: applying));
+      await harness.show(runView(phase: paused(3)));
       expect(harness.screenWake.held, isFalse);
+
+      await harness.show(runView(phase: connecting));
+      expect(harness.screenWake.held, isTrue);
     });
 
-    test('leaving the page releases the screen and stops the run', () async {
+    test('the timings sheet\'s report is the view\'s', () async {
+      await harness.show(runView(phase: applying));
+      expect(controller().timings.value, isNull);
+
+      await harness.show(
+        runView(phase: finished(), timings: 'phase scan 1.2 s'),
+      );
+      expect(controller().timings.value, 'phase scan 1.2 s');
+
+      // A resumed attempt's own, not the last one's.
+      await harness.show(runView(phase: connecting));
+      expect(controller().timings.value, isNull);
+    });
+  });
+
+  group('leaving the page', () {
+    test('releases the screen and tells the core', () async {
       await harness.start();
-      await harness.emit([const RunConnected([]), sheet()]);
+      await harness.show(runView(phase: reviewing()));
       expect(harness.screenWake.held, isTrue);
 
       controller().dispose();
       await pump();
 
       expect(harness.screenWake.held, isFalse);
-      expect(harness.core.stopped, [harness.session]);
-    });
-  });
-
-  group('scan, then apply', () {
-    test(
-      'connecting moves to scanning; answering the sheet to applying',
-      () async {
-        await harness.start();
-        await harness.emit([const RunConnected([])]);
-        expect(controller().state.phase, isA<SyncRunScanning>());
-
-        await harness.emit([sheet()]);
-        expect(controller().state.phase, isA<SyncRunAwaitingDecisions>());
-        controller().confirm();
-
-        expect(controller().state.phase, isA<SyncRunApplying>());
-      },
-    );
-
-    test(
-      'a plan with nothing to decide is answered at once, and applying',
-      () async {
-        await harness.start();
-        await harness.emit([
-          const RunConnected([]),
-          plan(actions: const [], conflicts: const [], awaitingDecision: true),
-        ]);
-
-        expect(harness.core.decisions[harness.session], hasLength(1));
-        expect(controller().state.phase, isA<SyncRunApplying>());
-      },
-    );
-
-    test('refreshDue: the first update, then one a second', () {
-      final t0 = DateTime(2026, 9, 16, 12);
-      expect(refreshDue(lastShown: null, now: t0), isTrue);
-      expect(refreshDue(lastShown: t0, now: t0), isFalse);
-      expect(
-        refreshDue(
-          lastShown: t0,
-          now: t0.add(const Duration(milliseconds: 999)),
-        ),
-        isFalse,
-      );
-      expect(
-        refreshDue(lastShown: t0, now: t0.add(const Duration(seconds: 1))),
-        isTrue,
-      );
+      expect(harness.intents, const [wire.RunIntentClose()]);
     });
 
-    test(
-      'an update the refresh rate held back still counts toward a stop',
-      () async {
-        var notified = 0;
-        controller().state.addListener(() => notified++);
-        await harness.start();
-        await harness.emit([
-          const RunConnected([]),
-          plan(actions: const [], conflicts: const [], awaitingDecision: true),
-        ]);
-        final before = notified;
-        // Two updates in the same instant: the first is shown, the second
-        // is not.
-        await harness.emit([
-          applied(progress: (completed: 1, total: 5)),
-          applied(progress: (completed: 4, total: 5)),
-        ]);
-        expect(notified, before + 1);
-        expect(controller().state.progress!.completed, 4);
-
-        final stopping = controller().stop();
-        await harness.emit([summarized(applied: 4), ranEnd()]);
-        await stopping;
-
-        expect(
-          (controller().state.phase as SyncRunStopped).completedActions,
-          4,
-        );
-      },
-    );
-  });
-
-  test('a second start on the same instance is refused', () async {
-    await harness.run([summarized()]);
-    final phase = controller().state.phase;
-
-    await controller().start(runRequest(dryRun: true));
-
-    expect(controller().state.phase, same(phase));
-    expect(harness.core.runStarts, hasLength(1));
-  });
-
-  test('stop before the core has taken the request: the run is stopped the '
-      'moment it exists, zero actions', () async {
-    final started = controller().start(runRequest());
-    final stopping = controller().stop();
-    await pump();
-    expect(harness.core.stopped, [harness.session]);
-
-    await harness.emit([const RunEnded(RunStoppedConnecting())]);
-    await started;
-    await stopping;
-
-    final stopped = controller().state.phase as SyncRunStopped;
-    expect(stopped.completedActions, 0);
-  });
-
-  test(
-    'the timings sheet\'s report is the core\'s, once the run ends',
-    () async {
+    test('a view that arrives after is dropped (a view before is rendered: '
+        'positive control)', () async {
       await harness.start();
-      expect(controller().timings.value, isNull);
-      await harness.emit([summarized(), ranEnd(timings: 'phase scan 1.2 s')]);
+      await harness.show(runView(replicas: replicas()));
+      expect(controller().state.header, isNotNull);
 
-      expect(controller().timings.value, 'phase scan 1.2 s');
-    },
-  );
+      // A write reaching the disposed notifier would fail the test:
+      // `ChangeNotifier.notifyListeners` after `dispose` asserts.
+      controller().dispose();
+      await harness.show(runView(phase: finished()));
+    });
+  });
 }
