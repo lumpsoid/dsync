@@ -4,7 +4,7 @@ import '../../core_link/models/pair_code_reading.dart';
 import 'pair_code.dart';
 import 'pair_view_state.dart';
 
-/// Input methods of the Pair page: redeeming a `dsync-pair:v2:` payload
+/// Input methods of the Pair page: redeeming a `dsync-pair:1.0:` payload
 /// another device shows (SPEC §4.4, `dsync pair accept`).
 ///
 /// Takes the [AppController] it borrows the application — and through it
@@ -19,7 +19,7 @@ class PairController {
   /// The view state this controller renders into; owned here, disposed here.
   final PairViewState state = PairViewState();
 
-  /// Takes in a text that should be a `dsync-pair:v2:<base64>` line — read
+  /// Takes in a text that should be a `dsync-pair:1.0:<base64>` line — read
   /// off the QR by the camera, or pasted from the clipboard — and asks the
   /// core what it says.
   ///

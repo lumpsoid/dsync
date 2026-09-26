@@ -172,7 +172,7 @@ bool get _cameraPlatform =>
 
 const _noCameraHere =
     'This build has no camera access, so the QR code cannot be scanned. '
-    'Go back and paste the `dsync-pair:v2:` line instead.';
+    'Go back and paste the `dsync-pair:1.0:` line instead.';
 
 /// What to say for a camera that is there and would not start. A denied
 /// permission is the one case with a fix the user has to go and perform, so
@@ -181,10 +181,10 @@ const _noCameraHere =
 String _unavailable(MobileScannerErrorCode code) => switch (code) {
   MobileScannerErrorCode.permissionDenied =>
     'Dsync is not allowed to use the camera — $_permissionFix. Go back and '
-        'paste the `dsync-pair:v2:` line instead.',
+        'paste the `dsync-pair:1.0:` line instead.',
   _ =>
     'The camera could not be used: ${code.message} Go back and paste the '
-        '`dsync-pair:v2:` line instead.',
+        '`dsync-pair:1.0:` line instead.',
 };
 
 const _permissionFix = 'allow the camera for Dsync in this device\'s settings';

@@ -59,7 +59,7 @@ void main() {
       () async {
         final file = await settingsFile();
         await file.parent.create(recursive: true);
-        await file.writeAsString('{"schemaVersion": 1, "netw');
+        await file.writeAsString('{"version": "1.0", "netw');
 
         await controller.load();
 

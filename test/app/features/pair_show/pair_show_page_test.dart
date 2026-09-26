@@ -58,7 +58,7 @@ void main() {
         .setMockMethodCallHandler(SystemChannels.platform, null);
   });
 
-  PairingOffer offer({String line = 'dsync-pair:v2:aGVsbG8='}) =>
+  PairingOffer offer({String line = 'dsync-pair:1.0:aGVsbG8='}) =>
       PairingOffer.forPayload(
         line,
         address: '192.168.1.5:51234',
@@ -135,7 +135,7 @@ void main() {
 
     expect(find.byType(QrSymbol), findsOneWidget);
     expect(
-      find.text('dsync-pair:v2:aGVsbG8='),
+      find.text('dsync-pair:1.0:aGVsbG8='),
       findsOneWidget,
       reason: 'the line is what a terminal on the other device pastes',
     );
@@ -152,7 +152,7 @@ void main() {
     await tester.tap(find.byKey(const Key('pair-show-copy')));
     await tester.pump();
 
-    expect(copied, 'dsync-pair:v2:aGVsbG8=');
+    expect(copied, 'dsync-pair:1.0:aGVsbG8=');
     expect(find.text('Pairing code copied.'), findsOneWidget);
   });
 
@@ -163,7 +163,7 @@ void main() {
     await openWindow(tester);
 
     controller.state.recordStatus(
-      PairShowWaiting(offer(line: 'dsync-pair:v2:${'a' * 5000}')),
+      PairShowWaiting(offer(line: 'dsync-pair:1.0:${'a' * 5000}')),
     );
     await tester.pump();
 

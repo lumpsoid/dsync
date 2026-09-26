@@ -106,7 +106,7 @@ class ServeController {
       final InternetAddress address;
       try {
         address = await bindAddress();
-      } on AppSettingsStoreCorruptException catch (e) {
+      } on AppSettingsStoreException catch (e) {
         // Binding the defaults instead would be reading damaged bytes as a
         // decision the user never made — the same refusal
         // `PairShowController.show` makes over the same file.

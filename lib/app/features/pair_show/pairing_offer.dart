@@ -1,7 +1,7 @@
 import 'package:qr/qr.dart';
 
 /// What this device is offering while its pairing window is open: the
-/// `dsync-pair:v2:` line another device redeems, and the symbol that carries
+/// `dsync-pair:1.0:` line another device redeems, and the symbol that carries
 /// the same line to a camera (SPEC §4.4).
 ///
 /// The two are one value because they are one payload: a page that encoded

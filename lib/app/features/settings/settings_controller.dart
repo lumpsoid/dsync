@@ -41,7 +41,7 @@ class SettingsController {
       final settings = await (await app.settings).load();
       state.recordBindAddress(settings.bindAddress.address);
       state.recordOutcome(const SettingsIdle());
-    } on AppSettingsStoreCorruptException catch (e) {
+    } on AppSettingsStoreException catch (e) {
       state.recordOutcome(SettingsFailed(e.toString()));
     }
   }

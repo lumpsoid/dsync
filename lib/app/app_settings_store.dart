@@ -31,12 +31,15 @@ import 'atomic_write.dart';
 /// "I never changed this" and "the file that said what I changed it to
 /// cannot be trusted" are different facts, and only the user can act on
 /// the second.
+///
+/// **Versioned like the core's formats** (SPEC §8.4): the document carries
+/// `version: "major.minor"`. Another major is refused with
+/// [AppSettingsStoreForeignVersionException], naming both versions; a later
+/// minor of this major is read, and the fields this build does not know are
+/// ignored.
 class AppSettingsStore {
-  /// Bumped when the on-disk document shape changes. A document claiming a
-  /// different version is corruption, not a format this store degrades
-  /// gracefully from — there is exactly one shape this store has ever
-  /// written.
-  static const schemaVersion = 1;
+  /// The version this build writes, `major.minor`.
+  static const formatVersion = '1.0';
 
   final File _file;
 
@@ -56,6 +59,8 @@ class AppSettingsStore {
 
     try {
       return _parseDocument(raw);
+    } on AppSettingsStoreForeignVersionException {
+      rethrow;
     } catch (e) {
       // Anything a malformed document can throw while being decoded or
       // shape-checked — a JSON syntax error from a truncated write, a
@@ -71,7 +76,7 @@ class AppSettingsStore {
   /// document on disk, never two writers racing onto the same final name.
   Future<void> save(AppSettings settings) async {
     final document = {
-      'schemaVersion': schemaVersion,
+      'version': formatVersion,
       'network': {'bindAddress': settings.bindAddress.address},
     };
     await writeFileAtomically(_file, jsonEncode(document));
@@ -82,10 +87,12 @@ class AppSettingsStore {
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('top-level document is not a JSON object');
     }
-    if (decoded['schemaVersion'] != schemaVersion) {
-      throw FormatException(
-        'unsupported schema version: ${decoded['schemaVersion']}',
-      );
+    final version = decoded['version'];
+    if (version is! String) {
+      throw const FormatException('"version" is not a string');
+    }
+    if (_majorOf(version) != _majorOf(formatVersion)) {
+      throw AppSettingsStoreForeignVersionException(_file.path, version);
     }
     final network = decoded['network'];
     if (network is! Map<String, dynamic>) {
@@ -99,14 +106,29 @@ class AppSettingsStore {
     // Settings page refuses a hostname with — not a second copy of it.
     return AppSettings(bindAddress: parseBindAddress(bindAddress));
   }
+
+  /// The major of a `major.minor` version, both plain decimal digits.
+  static int _majorOf(String version) {
+    if (!RegExp(r'^\d+\.\d+$').hasMatch(version)) {
+      throw FormatException(
+        '"$version" is not a version; expected major.minor, like 1.0',
+      );
+    }
+    return int.parse(version.split('.').first);
+  }
+}
+
+/// Why [AppSettingsStore.load] could not answer the stored settings. Either
+/// way the file is not read as the defaults — see the class doc comment on
+/// absent vs. damaged.
+sealed class AppSettingsStoreException implements Exception {
+  const AppSettingsStoreException();
 }
 
 /// Thrown by [AppSettingsStore.load] when its file exists but cannot be
 /// read as this store's document: truncated, malformed JSON, or
-/// well-formed JSON of the wrong shape, schema version or bind address.
-/// Deliberately not treated as the defaults — see the class doc comment on
-/// absent vs. damaged.
-class AppSettingsStoreCorruptException implements Exception {
+/// well-formed JSON of the wrong shape, version text or bind address.
+class AppSettingsStoreCorruptException extends AppSettingsStoreException {
   final String path;
   final String detail;
 
@@ -117,4 +139,21 @@ class AppSettingsStoreCorruptException implements Exception {
       'Settings file at $path is damaged and cannot be trusted as either '
       'your settings or the defaults ($detail). Remove it to start again '
       'from the defaults, or restore it from a backup.';
+}
+
+/// Thrown by [AppSettingsStore.load] when its file is well-formed but
+/// written in another major of the format, which this build cannot read.
+class AppSettingsStoreForeignVersionException
+    extends AppSettingsStoreException {
+  final String path;
+  final String found;
+
+  const AppSettingsStoreForeignVersionException(this.path, this.found);
+
+  @override
+  String toString() =>
+      'Settings file at $path is format $found, which this build (format '
+      '${AppSettingsStore.formatVersion}) cannot read. Use a dsync that reads '
+      'format ${found.split('.').first}.x, or remove it to start again from '
+      'the defaults.';
 }

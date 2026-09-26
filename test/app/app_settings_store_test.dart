@@ -38,9 +38,10 @@ void main() {
       },
     );
 
-    test('reads back what was saved', () async {
+    test('reads back what was saved, written as version 1.0', () async {
       await store().save(AppSettings(bindAddress: InternetAddress('10.8.0.3')));
 
+      expect(storeFile().readAsStringSync(), contains('"version":"1.0"'));
       expect((await store().load()).bindAddress.address, '10.8.0.3');
     });
 
@@ -72,7 +73,7 @@ void main() {
     );
 
     test('malformed JSON is corruption, not the defaults', () async {
-      await storeFile().writeAsString('{"schemaVersion": 1, "netw');
+      await storeFile().writeAsString('{"version": "1.0", "netw');
 
       await expectLater(
         store().load(),
@@ -80,9 +81,40 @@ void main() {
       );
     });
 
-    test('another schema version is corruption', () async {
+    test('a later major is refused, naming both versions', () async {
       await storeFile().writeAsString(
-        '{"schemaVersion": 2, "network": {"bindAddress": "0.0.0.0"}}',
+        '{"version": "2.0", "network": {"bindAddress": "0.0.0.0"}}',
+      );
+
+      await expectLater(
+        store().load(),
+        throwsA(
+          isA<AppSettingsStoreForeignVersionException>().having(
+            (e) => e.toString(),
+            'message',
+            allOf(
+              contains(storeFile().path),
+              contains('format 2.0'),
+              contains('(format 1.0)'),
+              contains('reads format 2.x'),
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('a later minor is read, and its unknown fields ignored', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.7", "network": {"bindAddress": "10.8.0.3", '
+        '"port": 22000}, "theme": "dark"}',
+      );
+
+      expect((await store().load()).bindAddress.address, '10.8.0.3');
+    });
+
+    test('a version that is not major.minor is corruption', () async {
+      await storeFile().writeAsString(
+        '{"version": 1, "network": {"bindAddress": "0.0.0.0"}}',
       );
 
       await expectLater(
@@ -92,7 +124,7 @@ void main() {
     });
 
     test('a missing network section is corruption', () async {
-      await storeFile().writeAsString('{"schemaVersion": 1}');
+      await storeFile().writeAsString('{"version": "1.0"}');
 
       await expectLater(
         store().load(),
@@ -103,7 +135,7 @@ void main() {
     test('a stored hostname is corruption, by the same rule the page '
         'refuses one with', () async {
       await storeFile().writeAsString(
-        '{"schemaVersion": 1, "network": {"bindAddress": "localhost"}}',
+        '{"version": "1.0", "network": {"bindAddress": "localhost"}}',
       );
 
       await expectLater(

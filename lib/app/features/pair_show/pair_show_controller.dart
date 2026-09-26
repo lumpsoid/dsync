@@ -76,7 +76,7 @@ class PairShowController {
     final InternetAddress bindTo;
     try {
       bindTo = await bindAddress();
-    } on AppSettingsStoreCorruptException catch (e) {
+    } on AppSettingsStoreException catch (e) {
       // The settings file exists and cannot be read. Binding the defaults
       // instead would be reading damaged bytes as a decision the user never
       // made, so the window refuses and says what to do about the file.

@@ -25,7 +25,7 @@ void main() {
     address: '10.0.0.9:28771',
     deviceId: 'dddd-eeee-ffff-0000',
   );
-  const payloadText = 'dsync-pair:v2:fake';
+  const payloadText = 'dsync-pair:1.0:fake';
 
   setUp(() {
     core = FakeHub()..pairCodeReading = readable;

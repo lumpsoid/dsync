@@ -30,7 +30,7 @@ void main() {
   late FakeHub core;
   late AppController app;
   late PairController controller;
-  const payloadText = 'dsync-pair:v2:fake-desktop-code';
+  const payloadText = 'dsync-pair:1.0:fake-desktop-code';
   var paired = 0;
   var showOwnCodeTaps = 0;
 
@@ -511,7 +511,7 @@ void main() {
       // test's stand-in for `QrScanner`'s own note.
       scanner: (onScanned) => const Text(
         'This build has no camera access, so the QR code cannot be '
-        'scanned. Go back and paste the `dsync-pair:v1:` line instead.',
+        'scanned. Go back and paste the `dsync-pair:1.0:` line instead.',
       ),
     );
 

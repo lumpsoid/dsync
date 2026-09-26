@@ -32,7 +32,7 @@ final class PairShowScope extends Scope<PairShowController> {
 }
 
 /// The stored bind address, freshly read. Throws
-/// `AppSettingsStoreCorruptException` when the settings file is damaged —
+/// `AppSettingsStoreException` when the settings file cannot be read —
 /// `PairShowController.show` renders that as the window's refusal rather
 /// than binding the defaults on a file it cannot trust.
 Future<InternetAddress> storedBindAddress() async =>

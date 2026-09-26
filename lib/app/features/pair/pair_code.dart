@@ -1,4 +1,4 @@
-/// What the Pair page has to pair *with*: the `dsync-pair:v2:` payload the
+/// What the Pair page has to pair *with*: the `dsync-pair:1.0:` payload the
 /// user scanned or pasted, as the page shows it (SPEC §4.4).
 ///
 /// A sealed hierarchy rather than a nullable payload beside a nullable
