@@ -3,11 +3,11 @@
 //! the phase, the review and the outcome all decided here.
 
 use dsync_core::ProfileStore;
-use dsync_domain::{DIR_LEAF, Location, Platform, Profile, ProfileName, ReplicaLocation};
+use dsync_domain::{DIR_LEAF, Location, Platform, ProfileName, ReplicaLocation};
 use hub::signals::{CoreCommand, ReplyResult, RunIntent, RunTarget};
 use hub::views::{ActionChoiceView, ActionView, ConflictChoiceView, RunPhaseView, RunView};
 
-use crate::support::{Head, read, write};
+use crate::support::{Head, one_entry, read, write};
 
 /// Saves `name` as a local-to-local profile over `a` and `b` under the
 /// head's temp dir, as the CLI would write one.
@@ -23,7 +23,7 @@ fn local_profile(head: &Head, name: &str, a: &str, b: &str) {
     ProfileStore::new(head.path("support").join(DIR_LEAF))
         .save(
             &ProfileName::parse(name).unwrap_or_else(|error| panic!("{error}")),
-            &Profile::new(local(a), local(b)),
+            &one_entry(local(a), local(b)),
         )
         .unwrap_or_else(|error| panic!("{error}"));
 }
@@ -446,6 +446,41 @@ async fn a_target_that_does_not_resolve_is_the_session_s_failure() {
     head.ok(steer(session, RunIntent::Close)).await;
 }
 
+/// Interim, until the session runs a profile's entries in turn.
+#[tokio::test]
+async fn a_two_entry_profile_fails_to_start_for_now() {
+    let mut head = Head::new("studio").await;
+    for leaf in ["a", "b", "c", "d"] {
+        std::fs::create_dir_all(head.path(leaf)).unwrap_or_else(|error| panic!("{error}"));
+    }
+    write(&head.path("a/new.txt"), "new");
+    let entry = |a: &str, b: &str| {
+        format!(
+            "[[entries]]\na = {:?}\nb = {:?}\n",
+            head.path_text(a),
+            head.path_text(b)
+        )
+    };
+    let (first, second) = (entry("a", "b"), entry("c", "d"));
+    let profiles = head.path("support").join(DIR_LEAF).join("profiles");
+    write(&profiles.join("two.toml"), &format!("{first}{second}"));
+    let (session, _) = head.ok(start("two", false)).await;
+    let views = head.run_until(session, is("failed")).await;
+    assert!(matches!(
+        &views[1].phase,
+        RunPhaseView::Failed { message }
+            if message.contains("multi-entry profiles are not supported yet")
+    ));
+    head.ok(steer(session, RunIntent::Close)).await;
+    // Positive control: its first entry alone reaches the review.
+    write(&profiles.join("one.toml"), &first);
+    let (session, _) = head.ok(start("one", false)).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::Close)).await;
+    head.run_until(session, ended).await;
+    assert!(!head.path("b/new.txt").exists());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_run_whose_far_side_does_not_answer_fails_with_where_it_dialled() {
@@ -462,7 +497,7 @@ async fn a_run_whose_far_side_does_not_answer_fails_with_where_it_dialled() {
     ProfileStore::new(head.path("support").join(DIR_LEAF))
         .save(
             &ProfileName::parse("far").unwrap_or_else(|error| panic!("{error}")),
-            &Profile::new(parse(&head.path_text("a")), parse(&socket)),
+            &one_entry(parse(&head.path_text("a")), parse(&socket)),
         )
         .unwrap_or_else(|error| panic!("{error}"));
     let (session, _) = head.ok(start("far", false)).await;

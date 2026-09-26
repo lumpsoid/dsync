@@ -485,6 +485,8 @@ mod tests {
         fn spec(&self) -> ReplicaSpec {
             ReplicaSpec {
                 root: self.dir.path().join("root").to_str().unwrap().to_owned(),
+                kind: dsync_domain::RootKind::Folder,
+                as_path: None,
                 entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
                 side: Side::A,
                 jobs: Jobs::DEFAULT,

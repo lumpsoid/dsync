@@ -32,6 +32,8 @@ async fn a_hello_and_a_scan_round_trip_then_closing_ends_the_agent_cleanly() {
         let transport = Transport::new(child.stdout.take().unwrap(), child.stdin.take().unwrap());
         let spec = ReplicaSpec {
             root: site.arg("root"),
+            kind: dsync_domain::RootKind::Folder,
+            as_path: None,
             entry: EntryId::parse(PROFILE).unwrap(),
             side: Side::A,
             jobs: Jobs::new(2).unwrap(),

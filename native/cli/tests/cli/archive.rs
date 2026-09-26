@@ -84,7 +84,7 @@ fn clear_deletes_every_side_of_the_profile_named_by_id() {
 fn clear_finds_a_profile_by_its_name() {
     let site = Site::new();
     let (a, b) = (site.root("a"), site.root("b"));
-    site.profile("notes", &format!("[replicas]\na = \"{a}\"\nb = \"{b}\"\n"));
+    site.profile("notes", &format!("[[entries]]\na = \"{a}\"\nb = \"{b}\"\n"));
     site.write("a/one.txt", "1");
     site.run(&["sync", "notes", "--batch"]).exits(0);
     let before = crate::support::archives(&site.state_dir());

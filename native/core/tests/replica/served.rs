@@ -21,6 +21,8 @@ const DUPLEX_BYTES: usize = 64 * 1024;
 pub fn spec(site: &Site, side: Side) -> ReplicaSpec {
     ReplicaSpec {
         root: site.root(side).to_str().unwrap().to_owned(),
+        kind: dsync_domain::RootKind::Folder,
+        as_path: None,
         entry: EntryId::parse(PROFILE).unwrap(),
         side,
         jobs: Jobs::DEFAULT,

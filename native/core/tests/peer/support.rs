@@ -149,6 +149,8 @@ impl Host {
 pub fn spec(root: &str) -> ReplicaSpec {
     ReplicaSpec {
         root: root.to_owned(),
+        kind: dsync_domain::RootKind::Folder,
+        as_path: None,
         entry: EntryId::parse(PROFILE).unwrap(),
         side: Side::B,
         jobs: Jobs::DEFAULT,

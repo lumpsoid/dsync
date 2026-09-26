@@ -61,6 +61,23 @@ impl ReplicaLocation {
         }
     }
 
+    /// Whether the two are reached at one endpoint: both on this host
+    /// (local), one ssh `[user@]host` however written, one socket, or one
+    /// peer device whatever its name. Paths are not compared.
+    pub fn same_endpoint(&self, other: &ReplicaLocation) -> bool {
+        match (self, other) {
+            (ReplicaLocation::Local(_), ReplicaLocation::Local(_)) => true,
+            (ReplicaLocation::Ssh(ours), ReplicaLocation::Ssh(theirs)) => {
+                ours.user() == theirs.user() && ours.host() == theirs.host()
+            }
+            (ReplicaLocation::Unix(ours), ReplicaLocation::Unix(theirs)) => {
+                ours.socket() == theirs.socket()
+            }
+            (ReplicaLocation::Peer(_, ours), ReplicaLocation::Peer(_, theirs)) => ours == theirs,
+            _ => false,
+        }
+    }
+
     /// The pinned device id; `Some` exactly for a `peer://` side.
     pub fn peer_device(&self) -> Option<&DeviceId> {
         match self {

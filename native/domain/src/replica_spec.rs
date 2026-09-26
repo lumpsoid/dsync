@@ -3,6 +3,8 @@
 use crate::entry_id::EntryId;
 use crate::jobs::Jobs;
 use crate::location::{ExpandError, expand_home};
+use crate::rel_path::RelPath;
+use crate::root_kind::RootKind;
 use crate::side::Side;
 
 /// The replica an initiator wants served: which root, as which side of
@@ -11,9 +13,14 @@ use crate::side::Side;
 /// `root` is **unexpanded**, exactly as the location spelled it: a leading
 /// `~` or `$HOME` belongs to the far side's environment, not the
 /// initiator's, so the far side expands it before it opens anything.
+///
+/// `kind` and `as_path` say whether the root is a folder or one file, and
+/// for a file the name it syncs under (the entry's side-A file name).
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplicaSpec {
     pub root: String,
+    pub kind: RootKind,
+    pub as_path: Option<RelPath>,
     pub entry: EntryId,
     pub side: Side,
     pub jobs: Jobs,
@@ -36,6 +43,8 @@ mod tests {
     fn spec(root: &str) -> ReplicaSpec {
         ReplicaSpec {
             root: root.to_owned(),
+            kind: RootKind::Folder,
+            as_path: None,
             entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
             side: Side::B,
             jobs: Jobs::DEFAULT,

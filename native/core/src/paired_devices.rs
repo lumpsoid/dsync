@@ -200,6 +200,8 @@ mod tests {
     fn serves_a_spec_whose_expanded_root_is_granted() {
         let spec = |root: &str| ReplicaSpec {
             root: root.to_owned(),
+            kind: dsync_domain::RootKind::Folder,
+            as_path: None,
             entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
             side: Side::B,
             jobs: Jobs::DEFAULT,

@@ -11,8 +11,8 @@ use dsync_core::{
     ProfileStore, Run, RunEvent, StateDir, interface_addresses,
 };
 use dsync_domain::{
-    AdHocTarget, Command, DirRule, EffectiveOptions, Flags, Location, Mode, ReplicaLocation,
-    RunFlags, Side, StateDirChoice, SyncTarget, Tuning,
+    AdHocTarget, Command, DirRule, EffectiveOptions, Flags, Location, Mode, ProfileName,
+    ReplicaLocation, RunFlags, Side, StateDirChoice, SyncTarget, Tuning,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -156,8 +156,10 @@ fn resolve(
                 .map_err(Failure::error)?
                 .load(name, facts.platform())
                 .map_err(Failure::error)?;
-            let options = EffectiveOptions::for_profile(name, &profile, flags, facts)
+            let entries = profile
+                .options(name, flags, facts)
                 .map_err(|error| Failure::usage(error.to_string()))?;
+            let options = only_entry(name, entries)?;
             let consults = Side::BOTH.iter().any(|&side| {
                 options
                     .replica(side)
@@ -182,6 +184,20 @@ fn resolve(
                 .map_err(|error| Failure::usage(error.to_string()))?;
             Ok((RunName::AdHoc, options, addresses))
         }
+    }
+}
+
+/// A profile's one entry. Interim, until the run sequences a profile's
+/// entries: a profile of several is refused.
+pub(crate) fn only_entry(
+    name: &ProfileName,
+    mut entries: Vec<EffectiveOptions>,
+) -> Result<EffectiveOptions, Failure> {
+    match entries.len() {
+        1 => Ok(entries.remove(0)),
+        count => Err(Failure::usage(format!(
+            "profile \"{name}\" has {count} entries; multi-entry profiles are not supported yet"
+        ))),
     }
 }
 

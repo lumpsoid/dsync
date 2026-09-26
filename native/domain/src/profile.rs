@@ -7,40 +7,50 @@ use std::sync::LazyLock;
 use toml::{Table, Value};
 
 use crate::device_id::DeviceId;
-use crate::entry_id::{CanonicalSide, EntryId};
+use crate::effective_options::EffectiveOptions;
+use crate::entry::{Entry, EntryError};
+use crate::entry_id::CanonicalSide;
 use crate::format_version::FormatVersion;
 use crate::glob::Glob;
 use crate::host_facts::HostFacts;
 use crate::jobs::Jobs;
-use crate::location::{ExpandError, Location};
+use crate::location::Location;
+use crate::options_error::OptionsError;
 use crate::platform::Platform;
 use crate::replica_location::{ReplicaLocation, ReplicaLocationError};
+use crate::root_kind::RootKind;
 use crate::rule_set::RuleSet;
+use crate::run_flags::RunFlags;
 use crate::side::Side;
 use crate::ssh_access::{SshAccess, SshCommand, SshOption};
 
 #[cfg(test)]
 mod tests;
 
-/// A profile: the two replicas a run pairs, its rules and options, and
-/// how ssh reaches each side.
+/// A profile: the entries (root pairs) a run syncs, its rules and
+/// options, and how ssh reaches each side.
 ///
-/// The schema is SPEC §12's, extended for the app head (plan D7): a
-/// `peer://` replica carries the device id its name resolved to, as
-/// `[replicas] a_device_id` / `b_device_id`, so a renamed peer does not
-/// break the profile. A device id is required for a `peer://` side and
-/// refused for any other. Every table and key is optional except
-/// `[replicas] a` and `b`; an unknown one is an error - a misspelled key
-/// silently ignored is how a profile quietly stops ignoring `**/.git` -
-/// unless the profile's `version` is a later minor than
-/// [`PROFILE_FORMAT_VERSION`], whose additions this build cannot know.
+/// The schema is SPEC §12's: `[[entries]]`, each with `a`, `b` and an
+/// optional `kind` (`folder`, the default, or `file`). Every entry's side
+/// A is on one endpoint, and every entry's side B on one - a profile is "a
+/// place on this side and a place on the other", and `[ssh.a]`/`[ssh.b]`
+/// are per side. A `peer://` side's device id is `[devices] a`/`b`, so a
+/// renamed peer does not break the profile; it is required for a
+/// `peer://` side and refused for any other. Every table and key is
+/// optional except at least one entry with its `a` and `b`; an unknown
+/// one is an error - a misspelled key silently ignored is how a profile
+/// quietly stops ignoring `**/.git` - unless the profile's `version` is a
+/// later minor than [`PROFILE_FORMAT_VERSION`], whose additions this
+/// build cannot know.
+///
+/// Whether entries overlap needs the host's facts (`~`, the working
+/// directory), so it is [`Profile::options`]' refusal, not a parse error.
 ///
 /// `warn_size_bytes` and `jobs` stay `None` when unset, so a flag can be
 /// told apart from a profile default when options are merged.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Profile {
-    a: ReplicaLocation,
-    b: ReplicaLocation,
+    entries: Vec<Entry>,
     rules: RuleSet,
     warn_size_bytes: Option<u64>,
     jobs: Option<Jobs>,
@@ -69,40 +79,55 @@ pub enum ProfileError {
         found.major()
     )]
     ForeignVersion { found: FormatVersion },
-    #[error("missing replica \"{0}\" in [replicas]")]
-    MissingReplica(Side),
+    #[error("a profile needs at least one [[entries]] with an a and a b")]
+    NoEntries,
+    #[error("entries[{entry}].{side} is missing")]
+    MissingLocation { entry: usize, side: Side },
+    #[error("entries[{entry}].{side} is a peer:// location; set devices.{side} to its device id")]
+    MissingDeviceId { entry: usize, side: Side },
+    #[error("devices.{side} is set, but entries[{entry}].{side} is not a peer:// location")]
+    UnexpectedDeviceId { entry: usize, side: Side },
     #[error(
-        "replicas.{side} is a peer:// location; set replicas.{side}_device_id to its device id"
+        "entries[{entry}].{side} is not on the endpoint of entries[0].{side}; every entry's side \
+         {side} must be on the same host, socket or peer"
     )]
-    MissingDeviceId { side: Side },
-    #[error("replicas.{side}_device_id is set, but replicas.{side} is not a peer:// location")]
-    UnexpectedDeviceId { side: Side },
+    MixedEndpoints { side: Side, entry: usize },
     #[error("invalid {key}: {reason}")]
     InvalidValue { key: String, reason: String },
 }
 
-const TOP_KEYS: &[&str] = &["version", "replicas", "rules", "options", "ssh"];
-const REPLICA_KEYS: &[&str] = &["a", "b", "a_device_id", "b_device_id"];
+const TOP_KEYS: &[&str] = &["version", "devices", "entries", "rules", "options", "ssh"];
+const DEVICE_KEYS: &[&str] = &["a", "b"];
+const ENTRY_KEYS: &[&str] = &["kind", "a", "b"];
 const RULE_KEYS: &[&str] = &["ignore", "follow"];
 const OPTION_KEYS: &[&str] = &["warn_size_bytes", "jobs"];
 const SSH_SIDES: &[&str] = &["a", "b"];
 const SSH_KEYS: &[&str] = &["options", "command"];
 
 impl Profile {
-    /// A profile of `a` and `b` built from values, as the head creates one
+    /// A profile of `entries` built from values, as the head creates one
     /// (plan OQ1): no rules, no options, default ssh access until the
-    /// `with_` calls below add them. Both locations are already typed, so
-    /// nothing here can fail.
-    pub fn new(a: ReplicaLocation, b: ReplicaLocation) -> Profile {
-        Profile {
-            a,
-            b,
+    /// `with_` calls below add them. Refused without an entry, or when
+    /// entries put one side on two endpoints.
+    pub fn new(entries: Vec<Entry>) -> Result<Profile, ProfileError> {
+        let Some(first) = entries.first() else {
+            return Err(ProfileError::NoEntries);
+        };
+        for (index, entry) in entries.iter().enumerate().skip(1) {
+            for side in Side::BOTH {
+                if !entry.replica(side).same_endpoint(first.replica(side)) {
+                    return Err(ProfileError::MixedEndpoints { side, entry: index });
+                }
+            }
+        }
+        Ok(Profile {
+            entries,
             rules: RuleSet::default(),
             warn_size_bytes: None,
             jobs: None,
             ssh_a: SshAccess::default(),
             ssh_b: SshAccess::default(),
-        }
+        })
     }
 
     pub fn with_rules(self, rules: RuleSet) -> Profile {
@@ -135,10 +160,15 @@ impl Profile {
         };
         keys.check(&root, TOP_KEYS, "")?;
 
-        let replicas = table(&root, "replicas", "")?;
-        keys.check(replicas, REPLICA_KEYS, "replicas.")?;
-        let a = replica(replicas, Side::A, platform)?;
-        let b = replica(replicas, Side::B, platform)?;
+        let devices = table(&root, "devices", "")?;
+        keys.check(devices, DEVICE_KEYS, "devices.")?;
+        let devices = [device(devices, Side::A)?, device(devices, Side::B)?];
+        let entries = entry_tables(&root)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, table)| entry(index, table, &devices, platform, keys))
+            .collect::<Result<Vec<_>, _>>()?;
+        let bare = Profile::new(entries)?;
 
         let rules = table(&root, "rules", "")?;
         keys.check(rules, RULE_KEYS, "rules.")?;
@@ -160,21 +190,18 @@ impl Profile {
         keys.check(ssh, SSH_SIDES, "ssh.")?;
 
         Ok(Profile {
-            a,
-            b,
             rules,
             warn_size_bytes,
             jobs,
             ssh_a: ssh_access(ssh, Side::A, keys)?,
             ssh_b: ssh_access(ssh, Side::B, keys)?,
+            ..bare
         })
     }
 
-    pub fn replica(&self, side: Side) -> &ReplicaLocation {
-        match side {
-            Side::A => &self.a,
-            Side::B => &self.b,
-        }
+    /// The entries, in the order written; never empty.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
     }
 
     pub fn rules(&self) -> &RuleSet {
@@ -203,20 +230,34 @@ impl Profile {
     /// out, so a profile written by the store reads like one written by
     /// hand; locations are spelled as typed, nothing expanded.
     pub fn to_toml(&self) -> String {
-        let mut replicas = Table::new();
-        for side in Side::BOTH {
-            let replica = self.replica(side);
-            replicas.insert(side.key().to_owned(), replica.to_string().into());
-            if let Some(device) = replica.peer_device() {
-                replicas.insert(format!("{side}_device_id"), device.to_string().into());
-            }
-        }
         let mut root = Table::new();
         root.insert(
             "version".to_owned(),
             PROFILE_FORMAT_VERSION.to_string().into(),
         );
-        root.insert("replicas".to_owned(), replicas.into());
+        // Every entry's side is on one endpoint, so the first names the
+        // device of each.
+        let mut devices = Table::new();
+        for side in Side::BOTH {
+            if let Some(device) = self.entries[0].replica(side).peer_device() {
+                devices.insert(side.key().to_owned(), device.to_string().into());
+            }
+        }
+        insert_unless_empty(&mut root, "devices", devices);
+        let entries = self.entries.iter().map(|entry| {
+            let mut table = Table::new();
+            if entry.kind() == RootKind::File {
+                table.insert("kind".to_owned(), entry.kind().key().into());
+            }
+            for side in Side::BOTH {
+                table.insert(
+                    side.key().to_owned(),
+                    entry.replica(side).to_string().into(),
+                );
+            }
+            Value::Table(table)
+        });
+        root.insert("entries".to_owned(), Value::Array(entries.collect()));
 
         let mut rules = Table::new();
         for (key, globs) in [
@@ -265,13 +306,72 @@ impl Profile {
         root.to_string()
     }
 
-    /// The id this profile's archive and state are named by: the same one
-    /// an ad-hoc run over the same pair derives (plan OQ6).
-    pub fn id(&self, facts: &HostFacts) -> Result<EntryId, ExpandError> {
-        Ok(EntryId::for_pair(
-            &CanonicalSide::of(&self.a, facts)?,
-            &CanonicalSide::of(&self.b, facts)?,
-        ))
+    /// The options of each entry, in entry order, under this run's flags;
+    /// `name` is for messages.
+    ///
+    /// Refused when any two of the entries' 2N sides overlap once
+    /// canonicalized ([`CanonicalSide::overlaps`]): an entry's own A and B,
+    /// or any side of one entry and any side of another on the same
+    /// endpoint - entry 1's A inside entry 2's B when both sides are this
+    /// host, too. Nested roots would sync one file twice, through two
+    /// archives that each believe they own it. Also refused, for now, is
+    /// any single-file entry (the replica cannot open one yet).
+    pub fn options(
+        &self,
+        name: &ProfileName,
+        flags: &RunFlags,
+        facts: &HostFacts,
+    ) -> Result<Vec<EffectiveOptions>, OptionsError> {
+        let canonical = self
+            .entries
+            .iter()
+            .map(|entry| {
+                Ok((
+                    CanonicalSide::of(entry.replica(Side::A), facts)?,
+                    CanonicalSide::of(entry.replica(Side::B), facts)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, OptionsError>>()?;
+        let sides: Vec<(String, &CanonicalSide)> = canonical
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (a, b))| {
+                [
+                    (format!("entries[{index}].a"), a),
+                    (format!("entries[{index}].b"), b),
+                ]
+            })
+            .collect();
+        for (at, (first, first_side)) in sides.iter().enumerate() {
+            if let Some((second, second_side)) = sides[at + 1..]
+                .iter()
+                .find(|(_, other)| first_side.overlaps(other))
+            {
+                return Err(OptionsError::EntriesOverlap {
+                    profile: name.to_string(),
+                    first: first.clone(),
+                    first_path: first_side.to_string(),
+                    second: second.clone(),
+                    second_path: second_side.to_string(),
+                });
+            }
+        }
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .position(|entry| entry.kind() == RootKind::File)
+        {
+            return Err(OptionsError::FileEntryUnsupported {
+                profile: name.to_string(),
+                entry,
+            });
+        }
+        Ok(self
+            .entries
+            .iter()
+            .zip(&canonical)
+            .map(|(entry, (a, b))| EffectiveOptions::for_entry(self, entry, (a, b), flags))
+            .collect())
     }
 }
 
@@ -347,28 +447,86 @@ fn strings<'a>(table: &'a Table, prefix: &str, key: &str) -> Result<Vec<&'a str>
     }
 }
 
-/// `replicas.<side>`, with its device id when `peer://`. Missing and
-/// empty read the same: there is no replica to sync.
+/// `devices.<side>`: the device id every entry's `peer://` side `side`
+/// resolved to.
+fn device(devices: &Table, side: Side) -> Result<Option<DeviceId>, ProfileError> {
+    string(devices, "devices.", side.key())?
+        .map(|text| DeviceId::from_str(text).map_err(|e| invalid(&format!("devices.{side}"), e)))
+        .transpose()
+}
+
+/// The `[[entries]]` tables; absent and empty read the same: there is
+/// nothing to sync.
+fn entry_tables(root: &Table) -> Result<Vec<&Table>, ProfileError> {
+    let items = match root.get("entries") {
+        None => return Err(ProfileError::NoEntries),
+        Some(Value::Array(items)) if items.is_empty() => return Err(ProfileError::NoEntries),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(invalid("entries", "expected an array of tables")),
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| match item {
+            Value::Table(table) => Ok(table),
+            _ => Err(invalid(&format!("entries[{index}]"), "expected a table")),
+        })
+        .collect()
+}
+
+/// `entries[index]`: its kind and its two sides, each pinned to its
+/// side's device when `peer://`.
+fn entry(
+    index: usize,
+    table: &Table,
+    devices: &[Option<DeviceId>; 2],
+    platform: Platform,
+    keys: KnownKeys,
+) -> Result<Entry, ProfileError> {
+    let prefix = format!("entries[{index}].");
+    keys.check(table, ENTRY_KEYS, &prefix)?;
+    let kind = match string(table, &prefix, "kind")? {
+        None => RootKind::default(),
+        Some(text) => RootKind::from_key(text).ok_or_else(|| {
+            invalid(
+                &format!("{prefix}kind"),
+                format!("expected \"file\" or \"folder\", got {text:?}"),
+            )
+        })?,
+    };
+    let [a, b] = [(Side::A, devices[0]), (Side::B, devices[1])]
+        .map(|(side, device)| replica(index, table, side, device, platform));
+    Entry::new(kind, a?, b?).map_err(|e| {
+        let side = match e {
+            EntryError::PeerHome { side } | EntryError::NoFileName { side } => side,
+        };
+        invalid(&format!("{prefix}{side}"), e)
+    })
+}
+
+/// `entries[index].<side>`. Missing and empty read the same: there is no
+/// replica to sync.
 fn replica(
-    replicas: &Table,
+    index: usize,
+    table: &Table,
     side: Side,
+    device: Option<DeviceId>,
     platform: Platform,
 ) -> Result<ReplicaLocation, ProfileError> {
-    let raw = match string(replicas, "replicas.", side.key())? {
+    let prefix = format!("entries[{index}].");
+    let raw = match string(table, &prefix, side.key())? {
         Some(raw) if !raw.is_empty() => raw,
-        _ => return Err(ProfileError::MissingReplica(side)),
+        _ => return Err(ProfileError::MissingLocation { entry: index, side }),
     };
     let location =
-        Location::parse(raw, platform).map_err(|e| invalid(&format!("replicas.{side}"), e))?;
-    let device_key = format!("{side}_device_id");
-    let device = string(replicas, "replicas.", &device_key)?
-        .map(|text| {
-            DeviceId::from_str(text).map_err(|e| invalid(&format!("replicas.{device_key}"), e))
-        })
-        .transpose()?;
+        Location::parse(raw, platform).map_err(|e| invalid(&format!("{prefix}{side}"), e))?;
     ReplicaLocation::new(location, device).map_err(|e| match e {
-        ReplicaLocationError::MissingDeviceId(_) => ProfileError::MissingDeviceId { side },
-        ReplicaLocationError::UnexpectedDeviceId(_) => ProfileError::UnexpectedDeviceId { side },
+        ReplicaLocationError::MissingDeviceId(_) => {
+            ProfileError::MissingDeviceId { entry: index, side }
+        }
+        ReplicaLocationError::UnexpectedDeviceId(_) => {
+            ProfileError::UnexpectedDeviceId { entry: index, side }
+        }
     })
 }
 

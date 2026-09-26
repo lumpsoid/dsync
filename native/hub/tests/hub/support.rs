@@ -7,7 +7,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dsync_domain::{DIR_LEAF, HostFacts, Platform};
+use dsync_domain::{DIR_LEAF, Entry, HostFacts, Platform, Profile, ReplicaLocation};
 use hub::signals::{CoreCommand, PairingSnapshot, ReplyResult, ServeSnapshot};
 use hub::views::{PairingView, RunView, ServeView};
 use hub::{Core, Outbox, Outgoing};
@@ -176,4 +176,12 @@ pub fn write(path: &Path, text: &str) {
 
 pub fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|error| panic!("read {path:?}: {error}"))
+}
+
+/// A profile of one folder entry.
+pub fn one_entry(a: ReplicaLocation, b: ReplicaLocation) -> Profile {
+    Entry::folder(a, b)
+        .map_err(|error| error.to_string())
+        .and_then(|entry| Profile::new(vec![entry]).map_err(|error| error.to_string()))
+        .unwrap_or_else(|error| panic!("{error}"))
 }

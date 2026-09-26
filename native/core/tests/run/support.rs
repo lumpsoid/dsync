@@ -92,6 +92,8 @@ impl Site {
     pub fn spec(&self, side: Side) -> ReplicaSpec {
         ReplicaSpec {
             root: self.root(side).to_str().unwrap().to_owned(),
+            kind: dsync_domain::RootKind::Folder,
+            as_path: None,
             entry: self.options().entry_id,
             side,
             jobs: dsync_domain::Jobs::DEFAULT,

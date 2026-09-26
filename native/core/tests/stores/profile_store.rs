@@ -12,7 +12,7 @@ use dsync_domain::{DirPath, DirRule, HostFacts, Platform, Profile, ProfileError,
 use crate::support::names_in;
 
 const EXAMPLE: &str = r#"
-[replicas]
+[[entries]]
 a = "/home/me/notes"
 b = "me@phone:/sdcard/notes"
 
@@ -73,14 +73,11 @@ fn an_invalid_profile_is_fatal_naming_the_file_and_the_reason() {
     fs::create_dir_all(store.dir()).unwrap();
     let path = store.path(&name("broken"));
     for (text, expected) in [
-        ("[replicas\na = \"/a\"", "not valid TOML"),
+        ("[[entries]\na = \"/a\"", "not valid TOML"),
+        ("[[entries]]\na = \"/a\"\na = \"/b\"\n", "not valid TOML"),
+        ("[[entries]]\na = \"/a\"\n", "entries[0].b is missing"),
         (
-            "[replicas]\na = \"/a\"\n[replicas]\nb = \"/b\"\n",
-            "not valid TOML",
-        ),
-        ("[replicas]\na = \"/a\"\n", "missing replica"),
-        (
-            "[replicas]\na = \"/a\"\nb = \"/b\"\n[rules]\nignroe = []\n",
+            "[[entries]]\na = \"/a\"\nb = \"/b\"\n[rules]\nignroe = []\n",
             "unknown key",
         ),
     ] {
@@ -154,7 +151,7 @@ fn save_replaces_and_create_refuses_an_existing_name() {
     let config = tempfile::tempdir().unwrap();
     let store = ProfileStore::new(config.path());
     let first = profile(EXAMPLE);
-    let edited = profile("[replicas]\na = \"/x\"\nb = \"/y\"\n");
+    let edited = profile("[[entries]]\na = \"/x\"\nb = \"/y\"\n");
     store.create(&name("notes"), &first).unwrap();
 
     assert!(matches!(
@@ -201,7 +198,7 @@ fn rename_moves_the_profile_and_refuses_a_taken_or_missing_name() {
     store
         .save(
             &name("work"),
-            &profile("[replicas]\na = \"/w\"\nb = \"/v\"\n"),
+            &profile("[[entries]]\na = \"/w\"\nb = \"/v\"\n"),
         )
         .unwrap();
 
@@ -315,10 +312,16 @@ fn a_profile_error_is_the_domains() {
     let config = tempfile::tempdir().unwrap();
     let store = ProfileStore::new(config.path());
     fs::create_dir_all(store.dir()).unwrap();
-    fs::write(store.path(&name("x")), "[replicas]\nb = \"/b\"\n").unwrap();
+    fs::write(store.path(&name("x")), "[[entries]]\nb = \"/b\"\n").unwrap();
     match store.load(&name("x"), Platform::Unix) {
         Err(ProfileStoreError::Invalid { source, .. }) => {
-            assert_eq!(source, ProfileError::MissingReplica(dsync_domain::Side::A));
+            assert_eq!(
+                source,
+                ProfileError::MissingLocation {
+                    entry: 0,
+                    side: dsync_domain::Side::A
+                }
+            );
         }
         other => panic!("{other:?}"),
     }

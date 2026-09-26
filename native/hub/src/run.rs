@@ -120,9 +120,16 @@ impl Launch {
                 let name = ProfileName::parse(name).map_err(text)?;
                 let profile = hub.profiles.load(&name, facts.platform()).map_err(text)?;
                 let flags = run_flags(self.dry_run, Vec::new(), None)?;
-                let options =
-                    EffectiveOptions::for_profile(&name, &profile, &flags, facts).map_err(text)?;
-                (options, flags)
+                let mut entries = profile.options(&name, &flags, facts).map_err(text)?;
+                // Interim, until the session sequences a profile's entries.
+                if entries.len() > 1 {
+                    return Err(format!(
+                        "profile \"{name}\" has {} entries; multi-entry profiles are not \
+                         supported yet",
+                        entries.len()
+                    ));
+                }
+                (entries.remove(0), flags)
             }
             RunTarget::Pair { draft } => {
                 let (local, peer) = hub.draft_locations(draft)?;
@@ -160,7 +167,11 @@ impl Launch {
 
 /// The head's run flags: interactive (the head decides) unless a dry run,
 /// the draft's ignore patterns and jobs as `--ignore`/`--jobs` would be.
-fn run_flags(dry_run: bool, ignore: Vec<String>, jobs: Option<u32>) -> Result<RunFlags, String> {
+pub(crate) fn run_flags(
+    dry_run: bool,
+    ignore: Vec<String>,
+    jobs: Option<u32>,
+) -> Result<RunFlags, String> {
     RunFlags::validate(
         Command::Sync,
         Flags {

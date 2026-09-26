@@ -34,16 +34,33 @@ pub enum OptionsError {
     Jobs(i64),
     #[error("--apply-concurrency must be a positive integer, got \"{0}\"")]
     ApplyConcurrency(i64),
+    /// Two of a profile's 2N sides share a tree: an entry's own A and B,
+    /// or any side of one entry and any side of another on the same
+    /// endpoint. `first` and `second` name them as `entries[i].a`.
     #[error(
-        "profile \"{profile}\" has the same location for both replicas once \"~\" and \
-         environment variables are expanded: {canonical}"
+        "profile \"{profile}\": {first} ({first_path}) and {second} ({second_path}) are the \
+         same, or one lies inside the other, once \"~\" and environment variables are \
+         expanded; no path of a profile may be, contain or lie inside another"
     )]
-    ProfileSameLocation { profile: String, canonical: String },
+    EntriesOverlap {
+        profile: String,
+        first: String,
+        first_path: String,
+        second: String,
+        second_path: String,
+    },
     #[error(
-        "the two locations are the same once \"~\" and environment variables are expanded: \
-         {canonical}"
+        "the two locations are the same, or one lies inside the other, once \"~\" and \
+         environment variables are expanded: {first} and {second}"
     )]
-    AdHocSameLocation { canonical: String },
+    AdHocOverlap { first: String, second: String },
+    /// Interim, until single-file replicas land: a `kind = "file"` entry
+    /// parses and saves but does not run.
+    #[error(
+        "profile \"{profile}\": entries[{entry}] is a single-file entry; single-file entries \
+         are not supported yet"
+    )]
+    FileEntryUnsupported { profile: String, entry: usize },
     #[error(transparent)]
     Expand(#[from] ExpandError),
 }

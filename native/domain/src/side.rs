@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-/// Replica `a` or replica `b` of a pair (SPEC §12's `[replicas] a, b`).
+/// Replica `a` or replica `b` of a pair (a profile entry's `a` and `b`).
 #[derive(
     Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, serde::Serialize, serde::Deserialize,
 )]

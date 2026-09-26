@@ -9,8 +9,10 @@ use crate::device_id::DeviceId;
 use crate::hex;
 use crate::host_facts::HostFacts;
 use crate::location::{ExpandError, expand_home};
+use crate::path_nesting::{PathStyle, nests};
 use crate::platform::Platform;
 use crate::replica_location::ReplicaLocation;
+use crate::root_kind::RootKind;
 
 /// One replica's identity, independent of how it is reached or spelled.
 ///
@@ -34,6 +36,8 @@ pub struct CanonicalSide(Kind);
 enum Kind {
     Local {
         path: String,
+        /// How this host spells `path`; not part of the identity.
+        style: PathStyle,
     },
     Ssh {
         user: Option<String>,
@@ -55,6 +59,10 @@ impl CanonicalSide {
         let kind = match replica {
             ReplicaLocation::Local(local) => Kind::Local {
                 path: canonical_local_path(local.path(), facts)?,
+                style: match facts.platform() {
+                    Platform::Unix => PathStyle::Posix,
+                    Platform::Windows => PathStyle::Windows,
+                },
             },
             ReplicaLocation::Ssh(ssh) => Kind::Ssh {
                 user: ssh.user().map(str::to_owned),
@@ -73,6 +81,43 @@ impl CanonicalSide {
         Ok(CanonicalSide(kind))
     }
 
+    /// Whether the two sides share a tree: the same endpoint (this host;
+    /// one ssh `[user@]host`; one socket; one peer device) and paths where
+    /// one is, or lies inside, the other ([`nests`]). A far side's path is
+    /// compared as typed, `/`-separated and case-sensitive: its `~` and
+    /// relative paths resolve there, so `host:~/a` and `host:/home/u/a` do
+    /// not overlap here even when they are one tree.
+    pub fn overlaps(&self, other: &CanonicalSide) -> bool {
+        match (&self.0, &other.0) {
+            (Kind::Local { path, style }, Kind::Local { path: theirs, .. }) => {
+                nests(path, theirs, *style)
+            }
+            (
+                Kind::Ssh { user, host, path },
+                Kind::Ssh {
+                    user: their_user,
+                    host: their_host,
+                    path: theirs,
+                },
+            ) => user == their_user && host == their_host && nests(path, theirs, PathStyle::Posix),
+            (
+                Kind::Unix { socket, path },
+                Kind::Unix {
+                    socket: their_socket,
+                    path: theirs,
+                },
+            ) => socket == their_socket && nests(path, theirs, PathStyle::Posix),
+            (
+                Kind::Peer { device, path },
+                Kind::Peer {
+                    device: their_device,
+                    path: theirs,
+                },
+            ) => device == their_device && nests(path, theirs, PathStyle::Posix),
+            _ => false,
+        }
+    }
+
     /// An unambiguous byte encoding: a tag, then length-prefixed fields, so
     /// no field's content can shift a boundary.
     fn encode(&self) -> Vec<u8> {
@@ -82,7 +127,7 @@ impl CanonicalSide {
             out.extend_from_slice(bytes);
         };
         match &self.0 {
-            Kind::Local { path } => {
+            Kind::Local { path, .. } => {
                 field(b"local");
                 field(path.as_bytes());
             }
@@ -112,7 +157,7 @@ impl CanonicalSide {
 impl fmt::Display for CanonicalSide {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            Kind::Local { path } => f.write_str(path),
+            Kind::Local { path, .. } => f.write_str(path),
             Kind::Ssh { user, host, path } => match user {
                 Some(user) => write!(f, "{user}@{host}:{path}"),
                 None => write!(f, "{host}:{path}"),
@@ -210,6 +255,10 @@ fn expand_vars(path: &str, facts: &HostFacts) -> String {
 /// key gets a new id and a first sync; and a named profile and an ad-hoc
 /// run over the same pair share an archive - the archive records what two
 /// replicas last agreed on, and rules only filter it.
+///
+/// A single-file entry ([`EntryId::for_entry`]) also hashes the tag
+/// `file`, so declaring an entry a file where it was a folder is a new
+/// entry with a first sync, never a folder's archive read as a file's.
 #[derive(
     Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, serde::Serialize, serde::Deserialize,
 )]
@@ -223,7 +272,14 @@ pub struct EntryIdError(String);
 impl EntryId {
     const DOMAIN: &[u8] = b"dsync-profile:v1";
 
+    /// A folder pair's id: an ad-hoc run's, and a folder entry's.
     pub fn for_pair(a: &CanonicalSide, b: &CanonicalSide) -> EntryId {
+        EntryId::for_entry(RootKind::Folder, a, b)
+    }
+
+    /// An entry's id: [`EntryId::for_pair`] for a folder entry, byte for
+    /// byte; the tag `file` hashed after the pair for a file entry.
+    pub fn for_entry(kind: RootKind, a: &CanonicalSide, b: &CanonicalSide) -> EntryId {
         let (first, second) = {
             let (a, b) = (a.encode(), b.encode());
             if a <= b { (a, b) } else { (b, a) }
@@ -232,6 +288,13 @@ impl EntryId {
         hasher.update(Self::DOMAIN);
         hasher.update(&first);
         hasher.update(&second);
+        match kind {
+            RootKind::Folder => {}
+            RootKind::File => {
+                hasher.update(4u64.to_be_bytes());
+                hasher.update(b"file");
+            }
+        }
         let digest = hasher.finalize();
         EntryId(hex::encode(&digest[..16]))
     }

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::location::Location;
+use crate::run_flags::{Command, Flags, RunFlags};
 
 const HOME: &str = "/home/me";
 
@@ -65,9 +66,10 @@ fn a_renamed_peer_keeps_the_id_and_a_new_key_changes_it() {
 #[test]
 fn a_named_profile_and_an_ad_hoc_run_over_the_same_pair_agree() {
     let profile = crate::profile::Profile::parse(
-        "[replicas]\n\
+        "[devices]\n\
+         a = \"e3b0:c442:98fc:1c14:9afb:f4c8:996f:b924:27ae:41e4:649b:934c:a495:991b:7852:b855\"\n\
+         [[entries]]\n\
          a = \"peer://phone:/sdcard/notes\"\n\
-         a_device_id = \"e3b0:c442:98fc:1c14:9afb:f4c8:996f:b924:27ae:41e4:649b:934c:a495:991b:7852:b855\"\n\
          b = \"~/notes\"\n\
          [rules]\n\
          ignore = [\"*.tmp\"]\n",
@@ -80,7 +82,10 @@ fn a_named_profile_and_an_ad_hoc_run_over_the_same_pair_agree() {
         &side_with("notes", None, &facts_in(HOME)),
         &side_with("peer://phone:/sdcard/notes/", Some(device(b"")), &facts()),
     );
-    assert_eq!(profile.id(&facts()), Ok(ad_hoc));
+    let flags = RunFlags::validate(Command::Sync, Flags::default()).unwrap();
+    let name = crate::profile::ProfileName::parse("notes").unwrap();
+    let options = profile.options(&name, &flags, &facts()).unwrap();
+    assert_eq!(options[0].entry_id, ad_hoc);
 }
 
 #[test]
@@ -167,4 +172,33 @@ fn the_id_is_32_lowercase_hex_and_reads_back() {
     for bad in ["", "ABCDEF0123456789ABCDEF0123456789", "../x", "notes"] {
         assert!(EntryId::parse(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn a_folder_entrys_id_is_the_pairs_and_a_file_entrys_differs() {
+    let (a, b) = (side("/a"), side("/b"));
+    let folder = EntryId::for_entry(RootKind::Folder, &a, &b);
+    assert_eq!(folder.as_str(), "424ee6fb554b2977c1a940c91cb7c5b8");
+    let file = EntryId::for_entry(RootKind::File, &a, &b);
+    assert_ne!(file, folder);
+    // Order-independent for a file entry too.
+    assert_eq!(file, EntryId::for_entry(RootKind::File, &b, &a));
+}
+
+#[test]
+fn sides_overlap_only_on_one_endpoint() {
+    let key = device(b"phone");
+    let peer = |raw: &str, key| side_with(raw, Some(key), &facts());
+    // Same endpoint, nested paths.
+    assert!(side("/a/b").overlaps(&side("/a/b/c")));
+    assert!(side("me@h:/a").overlaps(&side("ssh://me@h:/a/b")));
+    assert!(side("unix:///s:/a").overlaps(&side("unix:///s:/a")));
+    assert!(peer("peer://p:/a", key).overlaps(&peer("peer://renamed:/a/b", key)));
+    // Positive controls: same paths, another endpoint.
+    assert!(!side("/a").overlaps(&side("h:/a")));
+    assert!(!side("me@h:/a").overlaps(&side("you@h:/a")));
+    assert!(!side("me@h:/a").overlaps(&side("me@g:/a")));
+    assert!(!side("unix:///s:/a").overlaps(&side("unix:///t:/a")));
+    assert!(!peer("peer://p:/a", key).overlaps(&peer("peer://p:/a", device(b"other"))));
+    assert!(!side("/a").overlaps(&peer("peer://p:/a", key)));
 }

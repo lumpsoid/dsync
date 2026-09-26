@@ -29,7 +29,7 @@ fn a_run_on_the_default_dirs_creates_only_dsync_under_them() {
 fn a_profile_is_read_from_dsync_under_the_config_home() {
     let site = Site::new();
     let (a, b) = (site.root("a"), site.root("b"));
-    site.profile("work", &format!("[replicas]\na = \"{a}\"\nb = \"{b}\"\n"));
+    site.profile("work", &format!("[[entries]]\na = \"{a}\"\nb = \"{b}\"\n"));
     site.run(&["sync", "work", "--batch"]).exits(0);
     assert_eq!(
         site.listing(&site.config_home()),

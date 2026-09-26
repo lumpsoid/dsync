@@ -172,6 +172,8 @@ impl Connector {
         let location = replica_location.to_location();
         let spec = ReplicaSpec {
             root: location.path().to_owned(),
+            kind: options.kind(),
+            as_path: options.as_path().cloned(),
             entry: options.entry_id.clone(),
             side,
             jobs: options.jobs.unwrap_or(self.tuning.scan_jobs),

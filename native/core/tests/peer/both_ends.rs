@@ -40,6 +40,8 @@ async fn remote(
 ) -> RemoteReplica {
     let spec = ReplicaSpec {
         root: root.to_str().unwrap().to_owned(),
+        kind: dsync_domain::RootKind::Folder,
+        as_path: None,
         entry: EntryId::parse(profile).unwrap(),
         side: Side::B,
         jobs: Jobs::DEFAULT,

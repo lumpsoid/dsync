@@ -1,9 +1,11 @@
 //! Every case of `test/cli/options/effective_options_test.dart`, plus the
-//! two "same location" cases of `sync_target_test.dart`.
+//! two "same location" cases of `sync_target_test.dart`, plus a profile's
+//! entries: one options per entry, and the overlap refusal.
 
 use super::*;
 use crate::location::Location;
 use crate::platform::Platform;
+use crate::profile::ProfileName;
 use crate::run_flags::{Command, Flags};
 use crate::ssh_access::SshCommand;
 
@@ -40,8 +42,17 @@ fn profile(text: &str) -> Profile {
     Profile::parse(text, Platform::Unix).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// The one entry's options of a single-entry profile.
+fn single(name_text: &str, profile: &Profile, run: &RunFlags) -> EffectiveOptions {
+    let mut options = profile
+        .options(&name(name_text), run, &facts())
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(options.len(), 1);
+    options.remove(0)
+}
+
 const WORK: &str = r#"
-[replicas]
+[[entries]]
 a = "/home/me/notes"
 b = "me@phone:/sdcard/notes"
 [rules]
@@ -52,13 +63,13 @@ jobs = 2
 "#;
 
 const BARE: &str = r#"
-[replicas]
+[[entries]]
 a = "/home/me/notes"
 b = "me@phone:/sdcard/notes"
 "#;
 
 fn work(run: &RunFlags) -> EffectiveOptions {
-    EffectiveOptions::for_profile(&name("work"), &profile(WORK), run, &facts()).unwrap()
+    single("work", &profile(WORK), run)
 }
 
 fn ad_hoc(first: &str, second: &str, run: &RunFlags) -> EffectiveOptions {
@@ -96,13 +107,13 @@ fn ignore_of(options: &EffectiveOptions) -> Vec<&str> {
     options.rules.ignore().iter().map(|g| g.as_str()).collect()
 }
 
-// -- for_profile --
+// -- Profile::options --
 
 #[test]
 fn each_side_keeps_its_own_ssh_and_the_flags_reach_both() {
     let two_remotes = profile(
         r#"
-[replicas]
+[[entries]]
 a = "ssh://work:/srv/notes"
 b = "ssh://phone:/sdcard/notes"
 [ssh.a]
@@ -116,8 +127,7 @@ command = "/opt/bin/dsync"
         ssh_options: vec!["-v".into()],
         ..Flags::default()
     });
-    let effective =
-        EffectiveOptions::for_profile(&name("both"), &two_remotes, &run, &facts()).unwrap();
+    let effective = single("both", &two_remotes, &run);
     assert_eq!(options_of(effective.ssh(Side::A)), ["-p", "2222", "-v"]);
     assert_eq!(
         options_of(effective.ssh(Side::B)),
@@ -134,7 +144,7 @@ command = "/opt/bin/dsync"
 fn remote_dsync_overrides_every_sides_profile_command() {
     let with_command = profile(
         r#"
-[replicas]
+[[entries]]
 a = "ssh://work:/srv/notes"
 b = "ssh://phone:/sdcard/notes"
 [ssh.b]
@@ -145,8 +155,7 @@ command = "/opt/bin/dsync"
         remote_dsync: Some("/tmp/build/dsync".into()),
         ..Flags::default()
     });
-    let effective =
-        EffectiveOptions::for_profile(&name("both"), &with_command, &run, &facts()).unwrap();
+    let effective = single("both", &with_command, &run);
     assert_eq!(
         effective.ssh(Side::A).command().as_str(),
         "/tmp/build/dsync"
@@ -198,9 +207,7 @@ fn with_no_flag_the_profile_jobs_is_kept() {
 
 #[test]
 fn with_neither_a_flag_nor_a_profile_value_the_result_is_none() {
-    let effective =
-        EffectiveOptions::for_profile(&name("bare"), &profile(BARE), &no_flags(), &facts())
-            .unwrap();
+    let effective = single("bare", &profile(BARE), &no_flags());
     assert_eq!(effective.warn_size_bytes, None);
     assert_eq!(effective.jobs, None);
 }
@@ -218,13 +225,12 @@ fn ignore_adds_to_the_profiles_ignore_list() {
 fn a_profiles_order_is_kept_even_remote_first_and_its_id_is_the_pairs() {
     let remote_first = profile(
         r#"
-[replicas]
+[[entries]]
 a = "me@phone:/sdcard/notes"
 b = "/home/me/notes"
 "#,
     );
-    let effective =
-        EffectiveOptions::for_profile(&name("rev"), &remote_first, &no_flags(), &facts()).unwrap();
+    let effective = single("rev", &remote_first, &no_flags());
     assert_eq!(host_of(&effective, Side::A).as_deref(), Some("phone"));
     assert_eq!(path_of(&effective, Side::B), "/home/me/notes");
 
@@ -242,17 +248,19 @@ b = "/home/me/notes"
 fn a_profile_whose_replicas_canonicalize_to_the_same_location_is_refused() {
     let same_place = profile(
         r#"
-[replicas]
+[[entries]]
 a = "~/notes"
 b = "$HOME/notes/"
 "#,
     );
-    let error = EffectiveOptions::for_profile(&name("dup"), &same_place, &no_flags(), &facts())
+    let error = same_place
+        .options(&name("dup"), &no_flags(), &facts())
         .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "profile \"dup\" has the same location for both replicas once \"~\" and environment \
-         variables are expanded: /home/me/notes"
+        "profile \"dup\": entries[0].a (/home/me/notes) and entries[0].b (/home/me/notes) are \
+         the same, or one lies inside the other, once \"~\" and environment variables are \
+         expanded; no path of a profile may be, contain or lie inside another"
     );
 }
 
@@ -391,8 +399,9 @@ fn the_same_canonical_location_is_refused() {
         .unwrap_err();
         assert_eq!(
             error,
-            OptionsError::AdHocSameLocation {
-                canonical: "/home/me/notes".into()
+            OptionsError::AdHocOverlap {
+                first: "/home/me/notes".into(),
+                second: "/home/me/notes".into()
             },
             "{first} vs {second}"
         );
@@ -407,6 +416,32 @@ fn the_same_canonical_location_is_refused() {
 #[test]
 fn two_merely_textually_different_locations_are_accepted() {
     ad_hoc("~/notes", "~/backup", &no_flags());
+    ad_hoc("~/notes", "~/notes2", &no_flags());
+}
+
+#[test]
+fn an_ad_hoc_pair_with_one_side_inside_the_other_is_refused() {
+    for (first, second) in [
+        ("~/notes", "~/notes/inner"),
+        ("$HOME/notes/inner/", "/home/me/notes"),
+        ("me@phone:/n", "me@phone:/n/x"),
+    ] {
+        let error = EffectiveOptions::for_ad_hoc(
+            replica(first),
+            replica(second),
+            &no_flags(),
+            &facts(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, OptionsError::AdHocOverlap { .. }),
+            "{first} vs {second}: {error:?}"
+        );
+    }
+    // Positive controls: a sibling, and the same path on two endpoints.
+    ad_hoc("~/notes", "~/notesx/inner", &no_flags());
+    ad_hoc("/n/x", "me@phone:/n", &no_flags());
 }
 
 // -- relative local paths (the working directory) --
@@ -461,4 +496,204 @@ fn a_relative_remote_path_is_left_alone_whatever_the_working_directory() {
     );
     assert_eq!(with_cwd.entry_id, other_cwd.entry_id);
     assert_eq!(path_of(&with_cwd, Side::B), "notes");
+}
+
+// -- a profile's entries --
+
+/// `Profile::options`' error, as the two sides it names.
+fn overlap(text: &str, facts: &HostFacts, platform: Platform) -> Option<(String, String)> {
+    let profile = Profile::parse(text, platform).unwrap_or_else(|e| panic!("{e}"));
+    match profile.options(&name("p"), &no_flags(), facts) {
+        Ok(_) => None,
+        Err(OptionsError::EntriesOverlap { first, second, .. }) => Some((first, second)),
+        Err(other) => panic!("{other}"),
+    }
+}
+
+fn unix_overlap(text: &str) -> Option<(String, String)> {
+    overlap(text, &facts(), Platform::Unix)
+}
+
+fn two_entries(first: (&str, &str), second: (&str, &str)) -> String {
+    format!(
+        "[[entries]]\na = \"{}\"\nb = \"{}\"\n[[entries]]\na = \"{}\"\nb = \"{}\"\n",
+        first.0, first.1, second.0, second.1
+    )
+}
+
+fn named(first: &str, second: &str) -> Option<(String, String)> {
+    Some((first.to_owned(), second.to_owned()))
+}
+
+#[test]
+fn every_entry_gets_its_options_in_entry_order() {
+    let text = two_entries(("/home/me/a", "me@phone:/a"), ("/home/me/b", "me@phone:/b"));
+    let options = profile(&text)
+        .options(&name("two"), &no_flags(), &facts())
+        .unwrap();
+    let paths: Vec<String> = options.iter().map(|o| path_of(o, Side::A)).collect();
+    assert_eq!(paths, ["/home/me/a", "/home/me/b"]);
+    assert_ne!(options[0].entry_id, options[1].entry_id);
+    // Each entry's id is its pair's, as an ad-hoc run derives it.
+    let adhoc = ad_hoc("/home/me/b", "me@phone:/b", &no_flags());
+    assert_eq!(options[1].entry_id, adhoc.entry_id);
+    assert!(options.iter().all(|o| o.kind() == RootKind::Folder));
+    assert!(options.iter().all(|o| o.as_path().is_none()));
+}
+
+#[test]
+fn entries_overlapping_on_side_a_are_refused() {
+    let b = |n| format!("me@phone:/n{n}");
+    for (first, second) in [
+        // Equal, however spelled.
+        ("/home/me/x", "~/x"),
+        // Nested, and containing.
+        ("/home/me/x", "/home/me/x/y"),
+        ("/home/me/x/y", "/home/me/x"),
+        // A trailing separator changes nothing.
+        ("/home/me/x/", "/home/me/x/y"),
+        // `~` and `$HOME` spellings.
+        ("~/x", "$HOME/x/y"),
+        ("${HOME}/x/y", "~/x"),
+    ] {
+        let text = two_entries((first, &b(1)), (second, &b(2)));
+        assert_eq!(
+            unix_overlap(&text),
+            named("entries[0].a", "entries[1].a"),
+            "{first} vs {second}"
+        );
+    }
+    // Positive controls: siblings, and a name that merely extends another.
+    for (first, second) in [("/home/me/x", "/home/me/y"), ("/a/b", "/a/bc")] {
+        let text = two_entries((first, &b(1)), (second, &b(2)));
+        assert_eq!(unix_overlap(&text), None, "{first} vs {second}");
+    }
+}
+
+#[test]
+fn entries_overlapping_on_side_b_are_refused() {
+    let text = two_entries(("/x", "me@phone:/n"), ("/y", "me@phone:/n/sub"));
+    assert_eq!(unix_overlap(&text), named("entries[0].b", "entries[1].b"));
+    // Positive control: sibling far paths.
+    let text = two_entries(("/x", "me@phone:/n"), ("/y", "me@phone:/n2"));
+    assert_eq!(unix_overlap(&text), None);
+}
+
+#[test]
+fn a_file_entry_inside_a_folder_entry_is_refused() {
+    let text = "[[entries]]\na = \"/home/me/docs\"\nb = \"me@phone:/docs\"\n\
+                [[entries]]\nkind = \"file\"\na = \"/home/me/docs/notes.md\"\n\
+                b = \"me@phone:/notes.md\"\n";
+    assert_eq!(unix_overlap(text), named("entries[0].a", "entries[1].a"));
+    let text = "[[entries]]\na = \"/home/me/docs\"\nb = \"me@phone:/docs\"\n\
+                [[entries]]\nkind = \"file\"\na = \"/home/me/notes.md\"\n\
+                b = \"me@phone:/docs/notes.md\"\n";
+    assert_eq!(unix_overlap(text), named("entries[0].b", "entries[1].b"));
+}
+
+#[test]
+fn one_entrys_a_inside_anothers_b_is_refused_when_both_sides_are_this_host() {
+    let text = two_entries(
+        ("/home/me/a", "/home/me/b"),
+        ("/home/me/c", "/home/me/a/in"),
+    );
+    assert_eq!(unix_overlap(&text), named("entries[0].a", "entries[1].b"));
+    // Positive control: all four apart.
+    let text = two_entries(("/home/me/a", "/home/me/b"), ("/home/me/c", "/home/me/d"));
+    assert_eq!(unix_overlap(&text), None);
+    // The same path on two endpoints is two trees.
+    let text = two_entries(("/n", "me@phone:/m"), ("/m", "me@phone:/n"));
+    assert_eq!(unix_overlap(&text), None);
+}
+
+#[test]
+fn an_entrys_own_a_inside_its_b_is_refused() {
+    for (a, b) in [("/home/me/x/y", "/home/me/x"), ("~/x", "/home/me/x/y/")] {
+        let text = format!("[[entries]]\na = \"{a}\"\nb = \"{b}\"\n");
+        assert_eq!(
+            unix_overlap(&text),
+            named("entries[0].a", "entries[0].b"),
+            "{a} {b}"
+        );
+    }
+    // Positive control: a sibling.
+    assert_eq!(
+        unix_overlap("[[entries]]\na = \"/home/me/x\"\nb = \"/home/me/xy\"\n"),
+        None
+    );
+}
+
+#[test]
+fn windows_paths_overlap_by_windows_rules() {
+    let windows = HostFacts::new(
+        Platform::Windows,
+        Some("C:\\Users\\Me".to_owned()),
+        [],
+        "C:\\".to_owned(),
+    );
+    let text = two_entries(
+        ("C:\\\\Users\\\\Me\\\\Docs", "me@pc:/a"),
+        ("c:/users/me/docs/Sub", "me@pc:/b"),
+    );
+    assert_eq!(
+        overlap(&text, &windows, Platform::Windows),
+        named("entries[0].a", "entries[1].a")
+    );
+    // `~/` expands to the Windows home, mixing separators.
+    let text = two_entries(
+        ("~/Docs", "me@pc:/a"),
+        ("C:\\\\USERS\\\\me\\\\docs", "me@pc:/b"),
+    );
+    assert_eq!(
+        overlap(&text, &windows, Platform::Windows),
+        named("entries[0].a", "entries[1].a")
+    );
+    // Positive control: a sibling whose name extends the other.
+    let text = two_entries(
+        ("C:\\\\Users\\\\Me\\\\Docs", "me@pc:/a"),
+        ("C:\\\\Users\\\\Me\\\\Docs2", "me@pc:/b"),
+    );
+    assert_eq!(overlap(&text, &windows, Platform::Windows), None);
+}
+
+#[test]
+fn a_single_file_entry_is_refused_for_now() {
+    let text = "[[entries]]\na = \"/home/me/docs\"\nb = \"me@phone:/docs\"\n\
+                [[entries]]\nkind = \"file\"\na = \"/home/me/notes.md\"\n\
+                b = \"me@phone:/notes.md\"\n";
+    let error = profile(text)
+        .options(&name("p"), &no_flags(), &facts())
+        .unwrap_err();
+    assert_eq!(
+        error,
+        OptionsError::FileEntryUnsupported {
+            profile: "p".into(),
+            entry: 1
+        }
+    );
+    assert!(error.to_string().contains("not supported yet"), "{error}");
+    // Positive control: the same entries as folders run.
+    let folders = text.replace("kind = \"file\"\n", "");
+    assert_eq!(
+        profile(&folders)
+            .options(&name("p"), &no_flags(), &facts())
+            .map(|o| o.len()),
+        Ok(2)
+    );
+}
+
+/// What a file entry's options will carry once the interim refusal lifts.
+#[test]
+fn a_file_entrys_options_carry_its_kind_name_and_own_id() {
+    let text = "[[entries]]\nkind = \"file\"\na = \"/home/me/notes.md\"\n\
+                b = \"me@phone:/n/renamed.md\"\n";
+    let profile = profile(text);
+    let entry = &profile.entries()[0];
+    let [a, b] = [Side::A, Side::B].map(|side| CanonicalSide::of(entry.replica(side), &facts()));
+    let (a, b) = (a.unwrap(), b.unwrap());
+    let options = EffectiveOptions::for_entry(&profile, entry, (&a, &b), &no_flags());
+    assert_eq!(options.kind(), RootKind::File);
+    assert_eq!(options.as_path().map(RelPath::as_str), Some("notes.md"));
+    assert_eq!(options.entry_id, EntryId::for_entry(RootKind::File, &a, &b));
+    assert_ne!(options.entry_id, EntryId::for_pair(&a, &b));
 }

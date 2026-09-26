@@ -9,13 +9,14 @@ use dsync_core::{
     ArchiveDeleteError, ArchiveInventory, LockError, ProfileStore, ProfileStoreError, StateDir,
     StoredArchive,
 };
-use dsync_domain::{DirRule, EntryId, ProfileName};
+use dsync_domain::{Command, DirRule, EntryId, Flags, ProfileName, RunFlags};
 use serde_json::{Value, json};
 
 use crate::args::{ArchiveClearArgs, ArchiveCommand, ClearTarget, ListArgs, StateDirArgs};
 use crate::failure::Failure;
 use crate::host::Host;
 use crate::render::rfc3339;
+use crate::sync::only_entry;
 
 /// Runs `dsync archive <command>`, returning its exit code.
 pub fn archive(command: ArchiveCommand, host: &Host) -> Result<u8, Failure> {
@@ -153,7 +154,14 @@ fn entry_id(named: &str, host: &Host) -> Result<Option<EntryId>, Failure> {
         let facts = &host.facts;
         let store = ProfileStore::resolve(&DirRule::HOST, facts).map_err(Failure::error)?;
         match store.load(&name, facts.platform()) {
-            Ok(profile) => return profile.id(facts).map(Some).map_err(Failure::error),
+            Ok(profile) => {
+                let flags =
+                    RunFlags::validate(Command::Sync, Flags::default()).map_err(Failure::error)?;
+                let entries = profile
+                    .options(&name, &flags, facts)
+                    .map_err(Failure::error)?;
+                return only_entry(&name, entries).map(|options| Some(options.entry_id));
+            }
             Err(ProfileStoreError::NotFound { .. }) => {}
             Err(error) => return Err(Failure::error(error)),
         }

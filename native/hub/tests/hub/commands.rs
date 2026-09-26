@@ -5,14 +5,12 @@ use std::time::SystemTime;
 
 use dsync_core::{DeviceIdentity, PairedDevice, PairedDeviceStore, ProfileStore, StateDir};
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{
-    DIR_LEAF, HostFacts, Location, Platform, Profile, ProfileName, ReplicaLocation,
-};
+use dsync_domain::{DIR_LEAF, HostFacts, Location, Platform, ProfileName, ReplicaLocation};
 use hub::signals::{CoreCommand, ProfileDraft, ReplyResult};
 use hub::views::{DeviceView, EntryKindView, ProfileEntry};
 use hub::{Core, Outbox};
 
-use crate::support::{Head, write};
+use crate::support::{Head, one_entry, write};
 
 /// Pairs a fresh identity as `name` straight through the store, as a
 /// finished pairing would have: returns its device id.
@@ -377,7 +375,7 @@ async fn a_profile_of_another_shape_and_an_unreadable_one_are_listed_as_such() {
     };
     let name = ProfileName::parse("pair").unwrap_or_else(|error| panic!("{error}"));
     store
-        .save(&name, &Profile::new(local("a"), local("b")))
+        .save(&name, &one_entry(local("a"), local("b")))
         .unwrap_or_else(|error| panic!("{error}"));
     write(&config.join("profiles").join("broken.toml"), "[nope");
     let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);

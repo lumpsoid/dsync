@@ -1,7 +1,7 @@
 //! Every key case of `test/cli/profile/profile_loader_test.dart`, through
-//! `Profile::parse`, plus the head's device-id keys and the range checks.
-//! The file-lookup cases (not found, config-dir resolution) belong to the
-//! profile store (phase 5).
+//! `Profile::parse` and moved to `[[entries]]`, plus the device-id keys,
+//! the entry rules and the range checks. The file-lookup cases (not found,
+//! config-dir resolution) belong to the profile store.
 
 use super::*;
 use crate::format_version::FormatVersion;
@@ -19,7 +19,7 @@ fn ok(text: &str) -> Profile {
 }
 
 fn location(profile: &Profile, side: Side) -> Location {
-    profile.replica(side).to_location()
+    profile.entries()[0].replica(side).to_location()
 }
 
 fn patterns(globs: &[Glob]) -> Vec<&str> {
@@ -44,12 +44,12 @@ fn invalid_key(text: &str) -> String {
     }
 }
 
-const MINIMAL: &str = "[replicas]\na = \"/a\"\nb = \"/b\"\n";
+const MINIMAL: &str = "[[entries]]\na = \"/a\"\nb = \"/b\"\n";
 
 #[test]
 fn loads_the_worked_example_from_spec_12() {
     let profile = ok(r#"
-[replicas]
+[[entries]]
 a = "/home/me/notes"
 b = "me@phone:/sdcard/notes"
 
@@ -104,7 +104,7 @@ fn rules_options_and_ssh_are_optional() {
 #[test]
 fn ssh_a_and_ssh_b_configure_each_side_on_its_own() {
     let profile = ok(r#"
-[replicas]
+[[entries]]
 a = "ssh://work:/srv/notes"
 b = "ssh://qq@unix/run/ssh-unix-local/socket:/tmp/notes"
 
@@ -154,7 +154,7 @@ fn an_empty_ssh_command_or_option_is_fatal_named_by_its_key() {
 
 #[test]
 fn file_order_has_no_effect_and_a_may_be_the_remote_side() {
-    let profile = ok("[replicas]\nb = \"/local/notes\"\na = \"me@phone:/sdcard/notes\"\n");
+    let profile = ok("[[entries]]\nb = \"/local/notes\"\na = \"me@phone:/sdcard/notes\"\n");
     assert!(matches!(location(&profile, Side::A), Location::Ssh(s) if s.host() == "phone"));
     assert_eq!(location(&profile, Side::B).path(), "/local/notes");
 }
@@ -162,34 +162,54 @@ fn file_order_has_no_effect_and_a_may_be_the_remote_side() {
 #[test]
 fn unparseable_toml_is_fatal() {
     assert!(matches!(
-        parse("[replicas\na = \"/a\"\n"),
+        parse("[[entries]\na = \"/a\"\n"),
         Err(ProfileError::Toml(_))
     ));
 }
 
 #[test]
 fn a_table_defined_twice_is_fatal_as_unparseable_toml() {
-    let text = format!("{MINIMAL}\n[replicas]\na = \"/c\"\nb = \"/d\"\n");
+    let text = format!("{MINIMAL}[options]\njobs = 1\n[options]\njobs = 2\n");
     assert!(matches!(parse(&text), Err(ProfileError::Toml(_))));
 }
 
 #[test]
-fn a_missing_replica_is_fatal() {
+fn a_missing_location_is_fatal_named_by_its_entry() {
+    let missing_b = ProfileError::MissingLocation {
+        entry: 0,
+        side: Side::B,
+    };
+    assert_eq!(parse("[[entries]]\na = \"/a\"\n"), Err(missing_b.clone()));
+    assert_eq!(parse("[[entries]]\na = \"/a\"\nb = \"\"\n"), Err(missing_b));
     assert_eq!(
-        parse("[replicas]\na = \"/a\"\n"),
-        Err(ProfileError::MissingReplica(Side::B))
-    );
-    assert_eq!(
-        parse("[replicas]\na = \"/a\"\nb = \"\"\n"),
-        Err(ProfileError::MissingReplica(Side::B))
+        parse(&format!("{MINIMAL}[[entries]]\nb = \"/d\"\n")),
+        Err(ProfileError::MissingLocation {
+            entry: 1,
+            side: Side::A
+        })
     );
 }
 
 #[test]
-fn an_absent_replicas_table_is_fatal_as_a_missing_replica() {
+fn a_profile_without_entries_is_fatal() {
+    assert_eq!(parse("[options]\njobs = 2\n"), Err(ProfileError::NoEntries));
+    assert_eq!(parse("entries = []\n"), Err(ProfileError::NoEntries));
+    assert_eq!(invalid_key("entries = 1\n"), "entries");
+    assert_eq!(invalid_key("entries = [1]\n"), "entries[0]");
+    assert_eq!(Profile::new(vec![]), Err(ProfileError::NoEntries));
+    // Positive control: one entry is enough.
+    assert_eq!(ok(MINIMAL).entries().len(), 1);
+}
+
+#[test]
+fn the_old_replicas_table_is_an_unknown_key() {
     assert_eq!(
-        parse("[options]\njobs = 2\n"),
-        Err(ProfileError::MissingReplica(Side::A))
+        unknown_key("[replicas]\na = \"/a\"\nb = \"/b\"\n"),
+        "replicas"
+    );
+    assert_eq!(
+        unknown_key(&format!("{MINIMAL}[replicas]\na = \"/a\"\n")),
+        "replicas"
     );
 }
 
@@ -199,7 +219,20 @@ fn unknown_tables_and_keys_are_fatal_wherever_they_are() {
         unknown_key(&format!("{MINIMAL}[replicaz]\na = \"/c\"\n")),
         "replicaz"
     );
-    assert_eq!(unknown_key(&format!("{MINIMAL}c = \"/c\"\n")), "replicas.c");
+    assert_eq!(
+        unknown_key(&format!("{MINIMAL}c = \"/c\"\n")),
+        "entries[0].c"
+    );
+    assert_eq!(
+        unknown_key(&format!(
+            "{MINIMAL}[[entries]]\na = \"/c\"\nb = \"/d\"\nc = 1\n"
+        )),
+        "entries[1].c"
+    );
+    assert_eq!(
+        unknown_key(&format!("[devices]\nc = \"x\"\n{MINIMAL}")),
+        "devices.c"
+    );
     // The case that would silently stop ignoring **/.git.
     assert_eq!(
         unknown_key(&format!("{MINIMAL}[rules]\nignroe = [\"**/.git\"]\n")),
@@ -242,7 +275,7 @@ fn a_profile_of_another_major_is_refused_naming_both_versions() {
 /// keys under this build's own minor are still typos.
 #[test]
 fn a_later_minor_reads_with_its_unknown_keys_ignored_wherever_they_are() {
-    let additions = "[replicas]\na = \"/a\"\nb = \"/b\"\nc = \"/c\"\n\
+    let additions = "[[entries]]\na = \"/a\"\nb = \"/b\"\nc = \"/c\"\n\
                      [rules]\nignore = [\"**/.git\"]\nprune = true\n\
                      [schedule]\nevery = \"1h\"\n\
                      [ssh.a]\ncommand = \"dsync\"\nport = 22\n";
@@ -258,51 +291,72 @@ fn a_later_minor_reads_with_its_unknown_keys_ignored_wherever_they_are() {
 }
 
 #[test]
-fn replicas_parse_through_location_parse() {
-    let profile = ok("[replicas]\na = \"notes\"\nb = \"host:/remote/notes\"\n");
+fn locations_parse_through_location_parse() {
+    let profile = ok("[[entries]]\na = \"notes\"\nb = \"host:/remote/notes\"\n");
     assert!(matches!(location(&profile, Side::A), Location::Local(l) if l.path() == "notes"));
     assert!(matches!(location(&profile, Side::B), Location::Ssh(s) if s.host() == "host"));
     assert_eq!(
-        invalid_key("[replicas]\na = \"/a\"\nb = \"host:\"\n"),
-        "replicas.b"
+        invalid_key("[[entries]]\na = \"/a\"\nb = \"host:\"\n"),
+        "entries[0].b"
     );
 }
 
 #[test]
-fn a_peer_replica_is_keyed_by_its_device_id() {
+fn a_peer_side_is_keyed_by_its_device_id_for_every_entry() {
     let profile = ok(&format!(
-        "[replicas]\na = \"/a\"\nb = \"peer://phone:/sdcard/notes\"\nb_device_id = \"{DEVICE}\"\n"
+        "[devices]\nb = \"{DEVICE}\"\n\
+         [[entries]]\na = \"/a\"\nb = \"peer://phone:/sdcard/notes\"\n\
+         [[entries]]\na = \"/c\"\nb = \"peer://phone:/sdcard/music\"\n"
     ));
-    assert_eq!(
-        profile
-            .replica(Side::B)
-            .peer_device()
-            .map(ToString::to_string),
-        Some(DEVICE.to_owned())
-    );
-    assert_eq!(profile.replica(Side::A).peer_device(), None);
+    for entry in profile.entries() {
+        assert_eq!(
+            entry
+                .replica(Side::B)
+                .peer_device()
+                .map(ToString::to_string),
+            Some(DEVICE.to_owned())
+        );
+        assert_eq!(entry.replica(Side::A).peer_device(), None);
+    }
 }
 
 #[test]
-fn a_peer_replica_without_a_device_id_is_fatal() {
+fn a_peer_side_without_its_device_id_is_fatal() {
     assert_eq!(
-        parse("[replicas]\na = \"/a\"\nb = \"peer://phone:/sdcard/notes\"\n"),
-        Err(ProfileError::MissingDeviceId { side: Side::B })
+        parse("[[entries]]\na = \"/a\"\nb = \"peer://phone:/sdcard/notes\"\n"),
+        Err(ProfileError::MissingDeviceId {
+            entry: 0,
+            side: Side::B
+        })
     );
+    // Positive control: with devices.b it parses.
+    ok(&format!(
+        "[devices]\nb = \"{DEVICE}\"\n[[entries]]\na = \"/a\"\nb = \"peer://phone:/sdcard/notes\"\n"
+    ));
 }
 
 #[test]
-fn a_device_id_for_a_non_peer_replica_is_fatal() {
+fn a_device_id_for_a_non_peer_side_is_fatal() {
     assert_eq!(
-        parse(&format!("{MINIMAL}a_device_id = \"{DEVICE}\"\n")),
-        Err(ProfileError::UnexpectedDeviceId { side: Side::A })
+        parse(&format!("[devices]\na = \"{DEVICE}\"\n{MINIMAL}")),
+        Err(ProfileError::UnexpectedDeviceId {
+            entry: 0,
+            side: Side::A
+        })
+    );
+    assert_eq!(
+        parse(&format!("[devices]\nb = \"{DEVICE}\"\n{MINIMAL}")),
+        Err(ProfileError::UnexpectedDeviceId {
+            entry: 0,
+            side: Side::B
+        })
     );
 }
 
 #[test]
 fn a_malformed_device_id_is_fatal() {
-    let text = "[replicas]\na = \"/a\"\nb = \"peer://p:/x\"\nb_device_id = \"abcd\"\n";
-    assert_eq!(invalid_key(text), "replicas.b_device_id");
+    let text = "[devices]\nb = \"abcd\"\n[[entries]]\na = \"/a\"\nb = \"peer://p:/x\"\n";
+    assert_eq!(invalid_key(text), "devices.b");
 }
 
 #[test]
@@ -343,13 +397,16 @@ fn values_of_the_wrong_type_are_fatal_named_by_their_key() {
         invalid_key(&format!("{MINIMAL}[rules]\nfollow = [1]\n")),
         "rules.follow"
     );
-    assert_eq!(invalid_key("[replicas]\na = 1\nb = \"/b\"\n"), "replicas.a");
+    assert_eq!(
+        invalid_key("[[entries]]\na = 1\nb = \"/b\"\n"),
+        "entries[0].a"
+    );
     assert_eq!(
         invalid_key(&format!("{MINIMAL}[rules]\nignore = [\"a[b\"]\n")),
         "rules.ignore"
     );
     assert_eq!(
-        invalid_key("rules = 1\n[replicas]\na = \"/a\"\nb = \"/b\"\n"),
+        invalid_key("rules = 1\n[[entries]]\na = \"/a\"\nb = \"/b\"\n"),
         "rules"
     );
 }
@@ -405,10 +462,12 @@ fn round_trips(text: &str) -> String {
 fn a_profile_round_trips_through_toml() {
     let full = format!(
         r#"
-[replicas]
+[devices]
+b = "{DEVICE}"
+
+[[entries]]
 a = "~/notes"
 b = "peer://phone:/sdcard/notes"
-b_device_id = "{DEVICE}"
 
 [rules]
 ignore = ["**/.git", "*.tmp"]
@@ -424,14 +483,14 @@ command = "/opt/bin/dsync"
 "#
     );
     let written = round_trips(&full);
-    assert!(written.contains("b_device_id"), "{written}");
+    assert!(written.contains("[devices]"), "{written}");
     assert!(written.contains("[ssh.a]"), "{written}");
 
     for text in [
         MINIMAL,
-        "[replicas]\na = \"ssh://me@host:/x\"\nb = \"host2:~/y\"\n",
-        "[replicas]\na = \"unix:///run/s.sock:/x\"\nb = \"C:/not/windows/on/unix\"\n",
-        "[replicas]\na = \"/a\"\nb = \"/b\"\n[ssh.b]\ncommand = \"dsync-dev\"\n",
+        "[[entries]]\na = \"ssh://me@host:/x\"\nb = \"host2:~/y\"\n",
+        "[[entries]]\na = \"unix:///run/s.sock:/x\"\nb = \"C:/not/windows/on/unix\"\n",
+        "[[entries]]\na = \"/a\"\nb = \"/b\"\n[ssh.b]\ncommand = \"dsync-dev\"\n",
     ] {
         round_trips(text);
     }
@@ -440,7 +499,7 @@ command = "/opt/bin/dsync"
 #[test]
 fn defaults_are_left_out_of_the_written_text() {
     let written = ok(MINIMAL).to_toml();
-    for absent in ["[rules]", "[options]", "[ssh", "device_id"] {
+    for absent in ["[rules]", "[options]", "[ssh", "[devices]", "kind"] {
         assert!(!written.contains(absent), "{absent} in {written}");
     }
     // Positive control: a set option is written.
@@ -464,21 +523,113 @@ fn a_profile_built_from_values_writes_what_parse_reads_back() {
     )
     .unwrap();
     let rules = RuleSet::new(vec![Glob::new("**/.git").unwrap()], vec![]);
-    let built = Profile::new(local.clone(), peer.clone())
+    let entry = Entry::folder(local.clone(), peer.clone()).unwrap();
+    let built = Profile::new(vec![entry.clone()])
+        .unwrap()
         .with_rules(rules.clone())
         .with_jobs(Jobs::new(3).unwrap());
-    assert_eq!(built.replica(Side::A), &local);
-    assert_eq!(built.replica(Side::B), &peer);
+    assert_eq!(built.entries()[0].replica(Side::A), &local);
+    assert_eq!(built.entries()[0].replica(Side::B), &peer);
     assert_eq!(built.rules(), &rules);
     assert_eq!(built.jobs(), Some(Jobs::new(3).unwrap()));
     let written = built.to_toml();
-    assert!(written.contains("b_device_id"), "{written}");
+    assert!(written.contains("[devices]"), "{written}");
     assert_eq!(ok(&written), built);
 
-    // Nothing set, nothing written beyond the replicas.
-    let bare = Profile::new(local, peer).to_toml();
+    // Nothing set, nothing written beyond the devices and entries.
+    let bare = Profile::new(vec![entry]).unwrap().to_toml();
     assert!(
         !bare.contains("[rules]") && !bare.contains("[options]"),
         "{bare}"
     );
+}
+
+const TWO_ENTRIES: &str = r#"
+[[entries]]
+a = "~/Documents"
+b = "peer://phone:/storage/emulated/0/Documents"
+
+[[entries]]
+kind = "file"
+a = "~/notes.md"
+b = "peer://phone:/storage/emulated/0/Notes/notes.md"
+"#;
+
+fn with_device(entries: &str) -> String {
+    format!("[devices]\nb = \"{DEVICE}\"\n{entries}")
+}
+
+#[test]
+fn two_entries_one_a_file_round_trip_in_order() {
+    let written = round_trips(&with_device(TWO_ENTRIES));
+    let profile = ok(&written);
+    let kinds: Vec<RootKind> = profile.entries().iter().map(Entry::kind).collect();
+    assert_eq!(kinds, [RootKind::Folder, RootKind::File]);
+    assert_eq!(location(&profile, Side::A).path(), "~/Documents");
+    assert_eq!(
+        profile.entries()[1].replica(Side::B).to_location().path(),
+        "/storage/emulated/0/Notes/notes.md"
+    );
+    // `kind` is written for the file only; the folder takes the default.
+    assert_eq!(written.matches("kind = \"file\"").count(), 1, "{written}");
+    assert!(!written.contains("folder"), "{written}");
+}
+
+#[test]
+fn kind_defaults_to_folder_and_an_unknown_kind_is_fatal() {
+    let folder = "[[entries]]\nkind = \"folder\"\na = \"/a\"\nb = \"/b\"\n";
+    assert_eq!(ok(folder), ok(MINIMAL));
+    assert_eq!(ok(MINIMAL).entries()[0].kind(), RootKind::Folder);
+    for bad in ["\"dir\"", "\"File\"", "1"] {
+        let text = format!("[[entries]]\nkind = {bad}\na = \"/a\"\nb = \"/b\"\n");
+        assert_eq!(invalid_key(&text), "entries[0].kind", "{bad}");
+    }
+    // Positive control: a file entry parses.
+    let file = ok("[[entries]]\nkind = \"file\"\na = \"/a/x.md\"\nb = \"/b/x.md\"\n");
+    assert_eq!(file.entries()[0].kind(), RootKind::File);
+}
+
+#[test]
+fn a_file_entry_without_a_file_name_is_fatal() {
+    for (a, b, key) in [
+        ("/home/me/", "/b/x.md", "entries[0].a"),
+        ("/a/x.md", "/", "entries[0].b"),
+        ("/a/x.md", "host:/srv/", "entries[0].b"),
+    ] {
+        let text = format!("[[entries]]\nkind = \"file\"\na = \"{a}\"\nb = \"{b}\"\n");
+        assert_eq!(invalid_key(&text), key, "{a} {b}");
+    }
+    // Positive control: the same paths as a folder entry parse.
+    ok("[[entries]]\na = \"/home/me/\"\nb = \"/\"\n");
+}
+
+#[test]
+fn a_peer_path_starting_with_a_tilde_is_fatal() {
+    let text = with_device("[[entries]]\na = \"~/Docs\"\nb = \"peer://phone:~/Docs\"\n");
+    assert_eq!(invalid_key(&text), "entries[0].b");
+    // Positive control: absolute on the peer, `~` on the local side.
+    ok(&with_device(
+        "[[entries]]\na = \"~/Docs\"\nb = \"peer://phone:/home/u/Docs\"\n",
+    ));
+}
+
+#[test]
+fn every_entry_keeps_each_side_on_one_endpoint() {
+    for (second, side) in [
+        ("a = \"me@host:/c\"\nb = \"me@phone:/d\"", Side::A),
+        ("a = \"/c\"\nb = \"other@phone:/d\"", Side::B),
+        ("a = \"/c\"\nb = \"/d\"", Side::B),
+        ("a = \"/c\"\nb = \"unix:///s.sock:/d\"", Side::B),
+    ] {
+        let text = format!("[[entries]]\na = \"/a\"\nb = \"me@phone:/b\"\n[[entries]]\n{second}\n");
+        assert_eq!(
+            parse(&text),
+            Err(ProfileError::MixedEndpoints { side, entry: 1 }),
+            "{second}"
+        );
+    }
+    // Positive control: one host per side, however the ssh side is spelled.
+    let same = ok("[[entries]]\na = \"/a\"\nb = \"me@phone:/b\"\n\
+                   [[entries]]\na = \"/c\"\nb = \"ssh://me@phone:/d\"\n");
+    assert_eq!(same.entries().len(), 2);
 }

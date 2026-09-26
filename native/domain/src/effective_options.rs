@@ -1,24 +1,30 @@
 //! The options a run actually uses: flags over profile over defaults.
 
+use crate::entry::Entry;
 use crate::entry_id::{CanonicalSide, EntryId};
 use crate::host_facts::HostFacts;
 use crate::jobs::Jobs;
 use crate::location::Locality;
 use crate::options_error::OptionsError;
-use crate::profile::{Profile, ProfileName};
+use crate::profile::Profile;
+use crate::rel_path::RelPath;
 use crate::replica_location::ReplicaLocation;
+use crate::root_kind::RootKind;
 use crate::rule_set::RuleSet;
 use crate::run_flags::RunFlags;
 use crate::side::Side;
 use crate::ssh_access::SshAccess;
 
-/// One run's replicas, rules and knobs, merged. `warn_size_bytes` and
+/// One run's replicas, rules and knobs, merged: an ad-hoc pair, or one
+/// entry of a profile. `warn_size_bytes` and
 /// `jobs` stay `None` when neither a flag nor the profile sets them; the
 /// caller's default (`Tuning`) applies then.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EffectiveOptions {
     a: ReplicaLocation,
     b: ReplicaLocation,
+    kind: RootKind,
+    as_path: Option<RelPath>,
     pub rules: RuleSet,
     pub warn_size_bytes: Option<u64>,
     pub jobs: Option<Jobs>,
@@ -31,41 +37,36 @@ pub struct EffectiveOptions {
 }
 
 impl EffectiveOptions {
-    /// A named profile under this run's flags. The profile's a/b order is
-    /// kept as written, even remote-first. `--ignore` and `--ssh-option`
-    /// add to the profile's; `--warn-size`, `--jobs` and `--remote-dsync`
-    /// override it. Each side keeps its own `[ssh.a]`/`[ssh.b]`.
-    pub fn for_profile(
-        name: &ProfileName,
+    /// One entry of a named profile under this run's flags, its two sides
+    /// already canonicalized and checked by [`Profile::options`]. The
+    /// entry's a/b order is kept as written, even remote-first. `--ignore`
+    /// and `--ssh-option` add to the profile's; `--warn-size`, `--jobs` and
+    /// `--remote-dsync` override it. Each side keeps its own
+    /// `[ssh.a]`/`[ssh.b]`.
+    pub(crate) fn for_entry(
         profile: &Profile,
+        entry: &Entry,
+        (canonical_a, canonical_b): (&CanonicalSide, &CanonicalSide),
         flags: &RunFlags,
-        facts: &HostFacts,
-    ) -> Result<EffectiveOptions, OptionsError> {
-        let a = profile.replica(Side::A).clone();
-        let b = profile.replica(Side::B).clone();
-        let (canonical_a, canonical_b) = canonical_pair(&a, &b, facts)?;
-        if canonical_a == canonical_b {
-            return Err(OptionsError::ProfileSameLocation {
-                profile: name.to_string(),
-                canonical: canonical_a.to_string(),
-            });
-        }
+    ) -> EffectiveOptions {
         let ssh = |side| {
             profile
                 .ssh(side)
                 .with_flags(&flags.ssh_options, flags.remote_dsync.clone())
         };
-        Ok(EffectiveOptions {
+        EffectiveOptions {
+            a: entry.replica(Side::A).clone(),
+            b: entry.replica(Side::B).clone(),
+            kind: entry.kind(),
+            as_path: entry.as_path(),
             rules: profile.rules().merged_with(&flag_rules(flags)),
             warn_size_bytes: flags.warn_size_bytes.or(profile.warn_size_bytes()),
             jobs: flags.jobs.or(profile.jobs()),
             allow_mass_delete: flags.allow_mass_delete,
-            entry_id: EntryId::for_pair(&canonical_a, &canonical_b),
+            entry_id: EntryId::for_entry(entry.kind(), canonical_a, canonical_b),
             ssh_a: ssh(Side::A),
             ssh_b: ssh(Side::B),
-            a,
-            b,
-        })
+        }
     }
 
     /// Two typed locations. Side A is the in-process one when exactly one
@@ -82,10 +83,12 @@ impl EffectiveOptions {
         facts: &HostFacts,
         local_addresses: &[String],
     ) -> Result<EffectiveOptions, OptionsError> {
-        let (canonical_first, canonical_second) = canonical_pair(&first, &second, facts)?;
-        if canonical_first == canonical_second {
-            return Err(OptionsError::AdHocSameLocation {
-                canonical: canonical_first.to_string(),
+        let canonical_first = CanonicalSide::of(&first, facts)?;
+        let canonical_second = CanonicalSide::of(&second, facts)?;
+        if canonical_first.overlaps(&canonical_second) {
+            return Err(OptionsError::AdHocOverlap {
+                first: canonical_first.to_string(),
+                second: canonical_second.to_string(),
             });
         }
         let locality_first = first.to_location().locality(local_addresses);
@@ -105,6 +108,8 @@ impl EffectiveOptions {
         Ok(EffectiveOptions {
             a,
             b,
+            kind: RootKind::Folder,
+            as_path: None,
             rules: flag_rules(flags),
             warn_size_bytes: flags.warn_size_bytes,
             jobs: flags.jobs,
@@ -122,20 +127,23 @@ impl EffectiveOptions {
         }
     }
 
+    /// Whether the entry pairs two folders or two files.
+    pub fn kind(&self) -> RootKind {
+        self.kind
+    }
+
+    /// For a file entry, the name its file syncs under; `None` for a
+    /// folder.
+    pub fn as_path(&self) -> Option<&RelPath> {
+        self.as_path.as_ref()
+    }
+
     pub fn ssh(&self, side: Side) -> &SshAccess {
         match side {
             Side::A => &self.ssh_a,
             Side::B => &self.ssh_b,
         }
     }
-}
-
-fn canonical_pair(
-    a: &ReplicaLocation,
-    b: &ReplicaLocation,
-    facts: &HostFacts,
-) -> Result<(CanonicalSide, CanonicalSide), OptionsError> {
-    Ok((CanonicalSide::of(a, facts)?, CanonicalSide::of(b, facts)?))
 }
 
 fn flag_rules(flags: &RunFlags) -> RuleSet {
