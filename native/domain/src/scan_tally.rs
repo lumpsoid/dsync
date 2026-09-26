@@ -39,6 +39,14 @@ impl ScanTally {
         tally
     }
 
+    /// The files this side's archive held going in: every entry the scan
+    /// matched to one, present or deleted. Marked paths are left out,
+    /// since a torn write's entry may be the only one it ever had (SPEC
+    /// §7.6); that only makes SPEC §10's delete guard trip sooner.
+    pub fn archived(&self) -> usize {
+        self.metadata_matched + self.hash_matched + self.modified + self.deleted
+    }
+
     pub fn total(&self) -> usize {
         self.metadata_matched
             + self.hash_matched
@@ -105,6 +113,8 @@ mod tests {
             }
         );
         assert_eq!(ScanTally::of(&entries).total(), 8);
+        // Unchanged, modified and deleted: not created, not marked.
+        assert_eq!(ScanTally::of(&entries).archived(), 5);
     }
 
     #[test]

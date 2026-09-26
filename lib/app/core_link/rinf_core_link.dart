@@ -328,6 +328,12 @@ final class RinfCoreLink implements CoreLink {
   );
 
   @override
+  Future<void> confirmDeletes(int session, {required bool proceed}) => _ask(
+    wire.CoreCommandConfirmDeletes(session: wireId(session), proceed: proceed),
+    _done,
+  );
+
+  @override
   Future<void> stopRun(int session) =>
       _ask(wire.CoreCommandStopRun(session: wireId(session)), _done);
 

@@ -74,6 +74,34 @@ final class SyncRunAwaitingDecisions extends SyncRunPhase {
   final Map<String, List<SyncRunConflictChoice>> conflictOffers;
 }
 
+/// SPEC §10's delete guard stopped the run between the review and the
+/// apply: what was decided deletes most of a side's files — a folder
+/// emptied or moved by accident, the wrong folder picked — and the core
+/// waits, holding both locks, for the user to say whether to go on. [sides]
+/// names each side it tripped on. Nothing has been applied yet.
+final class SyncRunConfirmingDeletes extends SyncRunPhase {
+  const SyncRunConfirmingDeletes(this.sides);
+
+  final List<SyncRunDeletesOnSide> sides;
+}
+
+/// One side of [SyncRunConfirmingDeletes]: the run deletes [deletes] of the
+/// [archived] files the last sync saw in [root], which is on [where] —
+/// "this device" or "the remote".
+final class SyncRunDeletesOnSide {
+  const SyncRunDeletesOnSide({
+    required this.where,
+    required this.root,
+    required this.deletes,
+    required this.archived,
+  });
+
+  final String where;
+  final String root;
+  final int deletes;
+  final int archived;
+}
+
 /// What the user can do with one conflict (SPEC §11.3: "picks a
 /// direction"). [unresolved] is a choice too — the default, and what "skip"
 /// means for a conflict: no action is added for the path, and the summary

@@ -11,6 +11,7 @@ mod commands;
 mod dirs;
 #[cfg(unix)]
 mod interactive;
+mod mass_delete;
 mod output;
 mod pair;
 #[cfg(unix)]

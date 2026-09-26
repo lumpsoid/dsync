@@ -3,6 +3,7 @@ import 'package:dsync/app/core_link/fake_core_link.dart';
 import 'package:dsync/app/core_link/models/action_result.dart';
 import 'package:dsync/app/core_link/models/conflict_info.dart';
 import 'package:dsync/app/core_link/models/file_status.dart';
+import 'package:dsync/app/core_link/models/mass_delete_side.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
 import 'package:dsync/app/core_link/models/plan_proposal.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
@@ -201,4 +202,17 @@ RunSummarized summarized({
 
 RunFailed runFailed(String message, {bool replicaBusy = false}) => RunFailed(
   RunErrorInfo(side: null, message: message, replicaBusy: replicaBusy),
+);
+
+/// SPEC §10's delete guard over the remote: [deletes] of its [archived]
+/// files, awaiting the head's answer unless [awaiting] says otherwise.
+RunMassDelete massDelete({
+  int deletes = 40,
+  int archived = 50,
+  bool awaiting = true,
+}) => RunMassDelete(
+  sides: [
+    MassDeleteSide(side: ReplicaSide.b, deletes: deletes, archived: archived),
+  ],
+  awaitingConfirmation: awaiting,
 );

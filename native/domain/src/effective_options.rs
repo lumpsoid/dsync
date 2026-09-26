@@ -22,6 +22,9 @@ pub struct EffectiveOptions {
     pub rules: RuleSet,
     pub warn_size_bytes: Option<u64>,
     pub jobs: Option<Jobs>,
+    /// `--allow-mass-delete`: SPEC §10's delete guard reports, but does not
+    /// ask. A flag only; no profile sets it.
+    pub allow_mass_delete: bool,
     pub profile_id: ProfileId,
     ssh_a: SshAccess,
     ssh_b: SshAccess,
@@ -56,6 +59,7 @@ impl EffectiveOptions {
             rules: profile.rules().merged_with(&flag_rules(flags)),
             warn_size_bytes: flags.warn_size_bytes.or(profile.warn_size_bytes()),
             jobs: flags.jobs.or(profile.jobs()),
+            allow_mass_delete: flags.allow_mass_delete,
             profile_id: ProfileId::for_pair(&canonical_a, &canonical_b),
             ssh_a: ssh(Side::A),
             ssh_b: ssh(Side::B),
@@ -104,6 +108,7 @@ impl EffectiveOptions {
             rules: flag_rules(flags),
             warn_size_bytes: flags.warn_size_bytes,
             jobs: flags.jobs,
+            allow_mass_delete: flags.allow_mass_delete,
             profile_id: ProfileId::for_pair(&canonical_first, &canonical_second),
             ssh_a: access.clone(),
             ssh_b: access,

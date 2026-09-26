@@ -3,7 +3,7 @@ use dsync_domain::{Action, Plan, Side, Status};
 use tokio::sync::watch;
 
 use super::InteractiveDecider;
-use crate::render::fixtures::{conflict, created, path, proposed};
+use crate::render::fixtures::{conflict, created, mass_delete, path, proposed};
 use crate::test_support::with_deadline;
 
 fn copy(at: &str, from: Side, bytes: u64) -> Action {
@@ -192,4 +192,56 @@ async fn batch_keeps_every_action_and_resolves_no_conflict() {
             .await
             .is_empty()
     );
+}
+
+/// The delete guard's answer to `script`, and what was printed.
+async fn confirm(script: &str) -> (bool, String) {
+    let (_shown, plan_shown) = watch::channel(true);
+    let mut output = Vec::new();
+    let mut decider = InteractiveDecider::new(script.as_bytes(), &mut output, plan_shown);
+    let verdict = mass_delete(Side::B, 12, 12);
+    let confirmed = with_deadline("the confirmation", decider.confirm_deletes(&verdict)).await;
+    drop(decider);
+    (confirmed, String::from_utf8(output).unwrap())
+}
+
+#[tokio::test]
+async fn the_delete_guard_shows_the_count_and_a_sample_per_side() {
+    let (_, printed) = confirm("n\n").await;
+    assert!(
+        printed.contains("on B: 12 of the 12 files it last synced"),
+        "{printed}"
+    );
+    assert!(printed.contains("    f00\n"), "{printed}");
+    assert!(printed.contains("    f04\n"), "{printed}");
+    assert!(!printed.contains("f05"), "{printed}");
+    assert!(printed.contains("and 7 more"), "{printed}");
+    assert!(printed.contains("[y/N]"), "{printed}");
+}
+
+#[tokio::test]
+async fn the_delete_guard_proceeds_only_on_yes() {
+    assert!(confirm("y\n").await.0);
+    assert!(confirm("YES\n").await.0);
+    assert!(!confirm("n\n").await.0);
+}
+
+#[tokio::test]
+async fn the_delete_guard_defaults_to_no() {
+    assert!(!confirm("\n").await.0, "an empty line");
+    assert!(!confirm("").await.0, "a closed input");
+}
+
+#[tokio::test]
+async fn the_delete_guard_asks_again_when_not_understood() {
+    let (confirmed, printed) = confirm("sure\ny\n").await;
+    assert!(confirmed);
+    assert!(printed.contains("Not understood: \"sure\""), "{printed}");
+}
+
+#[tokio::test]
+async fn batch_and_dry_run_never_confirm_deletions() {
+    let verdict = mass_delete(Side::A, 10, 10);
+    assert!(!with_deadline("batch", BatchDecider.confirm_deletes(&verdict)).await);
+    assert!(!with_deadline("dry run", DryRunDecider.confirm_deletes(&verdict)).await);
 }

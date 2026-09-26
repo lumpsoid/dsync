@@ -12,7 +12,8 @@ use dsync_core::{
 use dsync_domain::{
     Action, CertificateExpiry, CertificateOwner, Conflict, EntryKind, FilterFolderRow,
     FilterPreviewFolder, FilterPreviewReport, Proposal, ReplicaInfo, ReplicaRoot, RunSummary,
-    ScanProbeReport, ScanTally, Side, SkippedAt, SkippedPath, SkippedReason, Status, Unchanged,
+    ScanProbeReport, ScanTally, Side, SideDeletes, SkippedAt, SkippedPath, SkippedReason, Status,
+    Unchanged,
 };
 use rinf::SignalPiece;
 use serde::{Deserialize, Serialize};
@@ -695,6 +696,25 @@ impl From<&RunSummary> for SummaryView {
             conflicts: count(summary.conflicts),
             failed: count(summary.failed),
             unreadable: count(summary.unreadable),
+        }
+    }
+}
+
+/// One side's share of SPEC §10's delete-guard verdict: how many files
+/// the run deletes there, out of how many its archive holds.
+#[derive(Serialize, SignalPiece)]
+pub struct MassDeleteView {
+    pub side: SideView,
+    pub deletes: u64,
+    pub archived: u64,
+}
+
+impl From<&SideDeletes> for MassDeleteView {
+    fn from(deletes: &SideDeletes) -> MassDeleteView {
+        MassDeleteView {
+            side: deletes.side.into(),
+            deletes: count(deletes.deletes),
+            archived: count(deletes.archived),
         }
     }
 }

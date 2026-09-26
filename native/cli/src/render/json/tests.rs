@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 
 use super::JsonRenderer;
 use crate::render::RunView;
-use crate::render::fixtures::{self, PROFILE_ID, conflict, created, path, proposed, unchanged};
+use crate::render::fixtures::{
+    self, PROFILE_ID, conflict, created, mass_delete, path, proposed, unchanged,
+};
 
 fn lines(view: &RunView, events: &[RunEvent]) -> Vec<Value> {
     let mut out = Vec::new();
@@ -280,6 +282,39 @@ fn action_progress_result_summary_and_error_lines() {
             "type": "error",
             "message": "replica a: hello failed: no scan exchange is open at that phase on this replica",
         })
+    );
+}
+
+#[test]
+fn a_mass_delete_reports_each_side_count_share_and_sample() {
+    let line = one(RunEvent::MassDelete {
+        verdict: mass_delete(Side::A, 11, 11),
+        allowed: false,
+    });
+    assert_eq!(
+        line,
+        json!({
+            "type": "massDelete",
+            "allowed": false,
+            "a": {
+                "deletes": 11,
+                "archived": 11,
+                "paths": ["f00", "f01", "f02", "f03", "f04"],
+            },
+            "b": null,
+        })
+    );
+    let refused = one(RunEvent::Error(RunError::DeletesNotConfirmed(mass_delete(
+        Side::A,
+        11,
+        11,
+    ))));
+    assert_eq!(refused["type"], "error");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("not applied: this run would delete 11")),
+        "{refused}"
     );
 }
 

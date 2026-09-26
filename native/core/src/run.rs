@@ -1,6 +1,7 @@
 //! The one owner of SPEC's sync order (plan D8): hello A then B, lock A
 //! then B, the missing-root rule (§4.5), both scans and the three-phase
-//! exchange at once (§6.1), reconcile, the decider, the run marker, the
+//! exchange at once (§6.1), reconcile, the decider, §10's delete guard,
+//! the run marker, the
 //! apply, the marker's removal, compaction when anything was applied
 //! (§8.2), the summary - then unlock and disconnect, on every path.
 //!
@@ -26,9 +27,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use dsync_domain::{
-    Action, BucketCount, ChangedScan, EffectiveOptions, Plan, ReplicaInfo, ReplicaOp, RuleSet,
-    RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side, SkippedPath,
-    StopSignal, Tuning, failure_count, reconcile, status_list, unreadable_of,
+    Action, BucketCount, ChangedScan, EffectiveOptions, MassDeletePolicy, Plan, ReplicaInfo,
+    ReplicaOp, RuleSet, RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side,
+    SkippedPath, StopSignal, Tuning, failure_count, reconcile, status_list, unreadable_of,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -347,6 +348,9 @@ impl Run {
             .await;
 
         let kept = self.decide(&plan, decider, pair.clock).await;
+        let kept = self
+            .guard_deletes(kept, [&a.tally, &b.tally], options, decider, pair.clock)
+            .await?;
         for action in &kept {
             self.events.emit(RunEvent::Action(action.clone())).await;
         }
@@ -411,6 +415,47 @@ impl Run {
             return Vec::new();
         }
         kept
+    }
+
+    /// SPEC §10's delete guard over the approved actions: when they delete
+    /// too much of a side, the verdict is reported and - unless the run
+    /// allows it - the decider asked. Not confirmed ends the run before
+    /// anything is applied; stopped while asking applies nothing, as
+    /// [`Run::decide`].
+    async fn guard_deletes(
+        &self,
+        kept: Vec<Action>,
+        tallies: [&ScanTally; 2],
+        options: &EffectiveOptions,
+        decider: &mut impl Decider,
+        clock: &RunClock,
+    ) -> Result<Vec<Action>, RunError> {
+        let archived = tallies.map(ScanTally::archived);
+        let Some(verdict) = MassDeletePolicy::DEFAULT.judge(&kept, archived) else {
+            return Ok(kept);
+        };
+        let allowed = options.allow_mass_delete;
+        self.events
+            .emit(RunEvent::MassDelete {
+                verdict: verdict.clone(),
+                allowed,
+            })
+            .await;
+        if allowed {
+            return Ok(kept);
+        }
+        let asking = async {
+            tokio::select! {
+                biased;
+                () = self.stop.graceful.cancelled() => None,
+                confirmed = decider.confirm_deletes(&verdict) => Some(confirmed),
+            }
+        };
+        match clock.phase(RunPhase::Present, asking).await {
+            Some(true) if !self.stop.graceful.is_cancelled() => Ok(kept),
+            Some(false) => Err(RunError::DeletesNotConfirmed(verdict)),
+            Some(true) | None => Ok(Vec::new()),
+        }
     }
 }
 

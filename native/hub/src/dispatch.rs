@@ -165,6 +165,9 @@ impl Hub {
                 address,
             } => self.start_run(id, target, dry_run, address),
             CoreCommand::DecideRun { session, decision } => self.decide_run(session, decision),
+            CoreCommand::ConfirmDeletes { session, proceed } => {
+                self.confirm_deletes(session, proceed)
+            }
             CoreCommand::StopRun { session } => self.stop_run(session),
             CoreCommand::StartServe { bind, port } => self.start_serve(id, &bind, port).await,
             CoreCommand::StopServe { session } => self.stop_serve(session),

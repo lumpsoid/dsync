@@ -181,6 +181,17 @@ fn a_flag_beats_the_profile_for_jobs() {
 }
 
 #[test]
+fn allow_mass_delete_comes_from_the_flag_alone() {
+    let run = flags(Flags {
+        allow_mass_delete: true,
+        ..Flags::default()
+    });
+    assert!(work(&run).allow_mass_delete);
+    assert!(!work(&no_flags()).allow_mass_delete);
+    assert!(ad_hoc("/home/me/a", "/home/me/b", &run).allow_mass_delete);
+}
+
+#[test]
 fn with_no_flag_the_profile_jobs_is_kept() {
     assert_eq!(work(&no_flags()).jobs.map(Jobs::get), Some(2));
 }

@@ -30,6 +30,7 @@ mod host_facts;
 pub mod host_port;
 mod jobs;
 mod location;
+mod mass_delete;
 mod metric_format;
 mod on_disk;
 mod options_error;
@@ -99,6 +100,7 @@ pub use location::{
     ExpandError, LocalLocation, Locality, Location, LocationError, PeerLocation, SshForm,
     SshLocation, UnixLocation,
 };
+pub use mass_delete::{MassDelete, MassDeletePolicy, SideDeletes};
 pub use metric_format::{format_bytes, format_count, format_duration};
 pub use on_disk::OnDisk;
 pub use options_error::OptionsError;

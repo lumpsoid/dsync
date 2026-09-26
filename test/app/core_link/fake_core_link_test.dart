@@ -90,6 +90,7 @@ void main() {
         ),
       );
       await link.decideRun(run.session, RunDecision.acceptAll(2));
+      await link.confirmDeletes(run.session, proceed: false);
       link.emitRun(run.session, const RunEnded(RunStoppedConnecting()));
       final updates = await run.updates.toList();
       expect(updates, hasLength(2));
@@ -98,6 +99,7 @@ void main() {
         (index: 0, reversed: false),
         (index: 1, reversed: false),
       ]);
+      expect(link.deleteConfirmations[run.session], [false]);
     },
   );
 

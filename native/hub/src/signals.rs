@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::views::{
     ActionView, AddressesView, ArchiveView, ConflictView, DeviceView, DirsView, EnrolmentEndView,
-    FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingShownView,
+    FilterPreviewView, FilterRowView, IdentityView, MassDeleteView, PairCodeView, PairingShownView,
     PeerContactView, ProbeOutcome, ProfileEntry, ProposalView, ReplicaInfoView, ResultView,
     RunEndView, RunErrorView, RunStartedView, ScanProbeView, ServeStartedView, SideView,
     SkippedView, SummaryView, TallyView,
@@ -147,6 +147,12 @@ pub enum CoreCommand {
     DecideRun {
         session: u64,
         decision: RunDecision,
+    },
+    /// Whether the run in `session` applies the deletions SPEC §10's
+    /// guard stopped it for (`RunUpdateBody::MassDelete`).
+    ConfirmDeletes {
+        session: u64,
+        proceed: bool,
     },
     /// The first stop is graceful; a second drops the run.
     StopRun {
@@ -321,6 +327,13 @@ pub enum RunUpdateBody {
         bytes_to_transfer: u64,
         exceeds_warn_size: bool,
         awaiting_decision: bool,
+    },
+    /// SPEC §10's delete guard tripped on the decided actions: one entry
+    /// per side it tripped on. `awaiting_confirmation`: the run now waits
+    /// for a `ConfirmDeletes`.
+    MassDelete {
+        sides: Vec<MassDeleteView>,
+        awaiting_confirmation: bool,
     },
     Applied {
         approved: Vec<ActionView>,

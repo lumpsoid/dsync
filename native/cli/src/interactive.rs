@@ -3,12 +3,12 @@
 //! but never resolves a conflict (SPEC §6: conflicts are never
 //! auto-resolved); `q` leaves everything not yet decided out; a closed
 //! input is a `q`, the one answer that decides nothing on the user's
-//! behalf.
+//! behalf. SPEC §10's delete guard is asked last, and defaults to no.
 
 use std::io::Write;
 
 use dsync_core::Decider;
-use dsync_domain::{Action, Conflict, Plan, Side, Status};
+use dsync_domain::{Action, Conflict, MassDelete, Plan, Side, Status};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, Lines};
 use tokio::sync::watch;
 
@@ -156,6 +156,49 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
         self.read(ACCEPT_OR_SKIP).await
     }
 
+    /// SPEC §10: each tripped side's count and first paths, then a yes/no
+    /// whose default - an empty line, a closed input - is no.
+    async fn confirm(&mut self, verdict: &MassDelete) -> bool {
+        let _ = writeln!(
+            self.output,
+            "--- this run deletes most of a replica's files (SPEC §10):"
+        );
+        for deletes in verdict.sides() {
+            let _ = writeln!(
+                self.output,
+                "  on {}: {} of the {} files it last synced, e.g.",
+                words::side(deletes.side),
+                deletes.deletes,
+                deletes.archived
+            );
+            for path in &deletes.sample {
+                let _ = writeln!(self.output, "    {path}");
+            }
+            let more = deletes.deletes - deletes.sample.len();
+            if more > 0 {
+                let _ = writeln!(self.output, "    and {more} more");
+            }
+        }
+        let _ = write!(self.output, "  Apply these deletions? [y/N] > ");
+        let _ = self.output.flush();
+        loop {
+            let Ok(Some(line)) = self.input.next_line().await else {
+                return false;
+            };
+            match line.trim().to_lowercase().as_str() {
+                "y" | "yes" => return true,
+                "" | "n" | "no" => return false,
+                _ => {
+                    let _ = write!(
+                        self.output,
+                        "Not understood: \"{line}\". Enter y or n (default n). > "
+                    );
+                    let _ = self.output.flush();
+                }
+            }
+        }
+    }
+
     /// One line, re-asked until it is one of `valid`.
     async fn read(&mut self, valid: &[Answer]) -> Answer {
         let _ = self.output.flush();
@@ -180,6 +223,10 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
 impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> Decider for InteractiveDecider<R, W> {
     async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
         self.review(plan).await
+    }
+
+    async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {
+        self.confirm(verdict).await
     }
 }
 

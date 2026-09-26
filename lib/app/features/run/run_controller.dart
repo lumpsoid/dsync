@@ -74,6 +74,12 @@ import 'run_view_state.dart';
 /// kept: nothing further starts, which is exactly the stop semantics. A
 /// dry run is never awaiting a decision. [acceptAll] is `--batch`: the plan
 /// unchanged, conflicts never resolved.
+///
+/// **So are deletions that empty a side.** When what was decided trips
+/// SPEC §10's delete guard, the core asks once more before applying it,
+/// and this moves the phase to [SyncRunConfirmingDeletes], answered by
+/// [confirmDeletes] or [declineDeletes]. Declining ends the run with
+/// nothing applied, shown as a failure the user chose — Resume asks again.
 class SyncRunController {
   SyncRunController(this.app, {required this.screenWake});
 
@@ -104,6 +110,14 @@ class SyncRunController {
 
   ({PlanDecisions choices, RunRequest request})? _pending;
 
+  /// The session whose delete guard waits on [confirmDeletes] or
+  /// [declineDeletes]; `null` when none does.
+  RunSession? _pendingDeletes;
+
+  /// Set by [declineDeletes], so the refusal that follows reads as the
+  /// user's choice rather than the core's words for it.
+  bool _deletesDeclined = false;
+
   /// Starts [request]'s run. One run per instance — the reason the page
   /// takes `create()`. A second call is ignored rather than thrown: the
   /// page fires it from `initState`, where a throw would be a crash with no
@@ -130,6 +144,7 @@ class SyncRunController {
       SyncRunScanning() ||
       SyncRunApplying() ||
       SyncRunAwaitingDecisions() ||
+      SyncRunConfirmingDeletes() ||
       SyncRunFinished() ||
       SyncRunStopped() => false,
     };
@@ -143,6 +158,8 @@ class SyncRunController {
     _completedActions = 0;
     _progressShownAt = null;
     _pending = null;
+    _pendingDeletes = null;
+    _deletesDeclined = false;
     timings.value = null;
     state.recordStart(dryRun: request.dryRun);
     _recordPhase(const SyncRunConnecting());
@@ -173,6 +190,7 @@ class SyncRunController {
     } finally {
       if (_session == session) _session = null;
       _pending = null;
+      _pendingDeletes = null;
       if (!ended.isCompleted) ended.complete();
     }
   }
@@ -191,6 +209,7 @@ class SyncRunController {
     _stopRequested = true;
     _pauseRequested = paused;
     _pending = null;
+    _pendingDeletes = null;
     final session = _session;
     // Still waiting on the core to take the request: [_begin] stops the
     // session the moment it exists.
@@ -202,6 +221,7 @@ class SyncRunController {
     _disposed = true;
     _stopRequested = true;
     _pending = null;
+    _pendingDeletes = null;
     // Stopped rather than abandoned and not awaited: the rest of the run
     // belongs to the core, not to the page that just left, and every
     // update folded from here on is dropped.
@@ -225,7 +245,8 @@ class SyncRunController {
     SyncRunConnecting() ||
     SyncRunScanning() ||
     SyncRunApplying() ||
-    SyncRunAwaitingDecisions() => true,
+    SyncRunAwaitingDecisions() ||
+    SyncRunConfirmingDeletes() => true,
     SyncRunIdle() ||
     SyncRunFinished() ||
     SyncRunStopped() ||
@@ -288,6 +309,36 @@ class SyncRunController {
   Future<void> _decide(RunSession session, RunDecision decision) async {
     try {
       await app.core.decideRun(session.session, decision);
+    } on CoreFailure {
+      // The run ended before the answer reached it: its last update says
+      // how.
+    }
+  }
+
+  /// SPEC §10: apply the deletions the guard stopped for.
+  void confirmDeletes() => _answerDeletes(proceed: true);
+
+  /// SPEC §10: apply nothing; the run ends without touching either side.
+  void declineDeletes() => _answerDeletes(proceed: false);
+
+  void _answerDeletes({required bool proceed}) {
+    final session = _pendingDeletes;
+    if (session == null) return;
+    _pendingDeletes = null;
+    if (proceed) {
+      _recordPhase(const SyncRunApplying());
+    } else {
+      _deletesDeclined = true;
+    }
+    unawaited(_confirmDeletes(session, proceed: proceed));
+  }
+
+  Future<void> _confirmDeletes(
+    RunSession session, {
+    required bool proceed,
+  }) async {
+    try {
+      await app.core.confirmDeletes(session.session, proceed: proceed);
     } on CoreFailure {
       // The run ended before the answer reached it: its last update says
       // how.
@@ -397,6 +448,28 @@ class SyncRunController {
         final choices = PlanDecisions(plan);
         _pending = (choices: choices, request: request);
         _openReview(choices);
+      case RunMassDelete(:final sides, :final awaitingConfirmation):
+        // A stop already on its way ends the wait in the core; nothing is
+        // parked for it.
+        if (!awaitingConfirmation || _stopRequested) break;
+        _pendingDeletes = session;
+        _recordPhase(
+          SyncRunConfirmingDeletes([
+            for (final side in sides)
+              SyncRunDeletesOnSide(
+                where: switch (side.side) {
+                  ReplicaSide.a => 'this device',
+                  ReplicaSide.b => 'the remote',
+                },
+                root: switch (side.side) {
+                  ReplicaSide.a => request.localRootPath,
+                  ReplicaSide.b => request.remoteRootPath,
+                },
+                deletes: side.deletes,
+                archived: side.archived,
+              ),
+          ]),
+        );
       case RunApplied(:final results, :final progress):
         for (final ActionResult(:action, :failure) in results) {
           state.recordResult(
@@ -436,7 +509,9 @@ class SyncRunController {
         _recordPhase(
           error.replicaBusy
               ? SyncRunReplicaBusy(error.message)
-              : SyncRunFailed(error.message),
+              : SyncRunFailed(
+                  _deletesDeclined ? deletesDeclinedMessage : error.message,
+                ),
         );
       case RunEnded(:final end):
         _recordEnd(end);
@@ -669,6 +744,10 @@ SyncRunPlanGroup _group(PlanAction action) => switch (action) {
   DeleteAction() => SyncRunPlanGroup.deletions,
   CommitOnlyAction() => SyncRunPlanGroup.recordOnly,
 };
+
+const deletesDeclinedMessage =
+    'Not applied: you chose not to delete those files. Nothing was changed '
+    'on either side.';
 
 String stoppedMessage(int completedActions) =>
     'Stopped after $completedActions action(s). Everything applied so far '

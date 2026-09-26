@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dsync_domain::{
-    Action, BucketCountMismatch, Conflict, IncompleteTransfer, MissingReplicaRoot, Plan,
-    ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side, SkippedPath, UnevenCommitOnly,
+    Action, BucketCountMismatch, Conflict, IncompleteTransfer, MassDelete, MissingReplicaRoot,
+    Plan, ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side, SkippedPath, UnevenCommitOnly,
 };
 
 use crate::replica_error::ReplicaError;
@@ -35,6 +35,10 @@ pub enum RunEvent {
     /// The plan, before the decider sees it. `exceeds_warn_size` is SPEC
     /// §10's warning, under the run's `warn_size_bytes`.
     Plan { plan: Plan, exceeds_warn_size: bool },
+    /// SPEC §10's delete guard tripped on the approved actions, before any
+    /// of them is reported. `allowed`: the run's `--allow-mass-delete`
+    /// applies them without asking; otherwise the decider is asked next.
+    MassDelete { verdict: MassDelete, allowed: bool },
     /// One action the decider approved, conflict resolutions included,
     /// before the apply starts.
     Action(Action),
@@ -72,6 +76,10 @@ pub enum RunError {
     /// that did not follow the exchange.
     #[error(transparent)]
     Exchange(BucketCountMismatch),
+    /// SPEC §10's refusal: the delete guard tripped and the decider did not
+    /// confirm. Nothing was applied.
+    #[error("{}", .0.describe())]
+    DeletesNotConfirmed(MassDelete),
     #[error("the run marker {}: {source}", path.display())]
     Marker {
         path: PathBuf,
@@ -104,7 +112,9 @@ impl RunError {
         match self {
             RunError::Replica { side, .. } => Some(*side),
             RunError::MissingRoot(missing) => Some(missing.side),
-            RunError::Exchange(_) | RunError::Marker { .. } => None,
+            RunError::Exchange(_) | RunError::DeletesNotConfirmed(_) | RunError::Marker { .. } => {
+                None
+            }
         }
     }
 }

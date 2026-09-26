@@ -25,6 +25,8 @@ pub struct RunControl {
     /// does not see its stop until it executes).
     pub stopping: watch::Sender<bool>,
     pub decisions: mpsc::Sender<RunDecision>,
+    /// The answer to SPEC §10's delete guard, while the run waits on one.
+    pub confirmations: mpsc::Sender<bool>,
 }
 
 pub struct PairingControl {

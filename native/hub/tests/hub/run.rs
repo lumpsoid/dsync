@@ -277,6 +277,95 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
     assert_eq!(read(&head.path("b/n.md")), "theirs, edited too");
 }
 
+/// Runs `session` to its plan and keeps every action as planned.
+async fn keep_all(head: &mut Head, session: u64) {
+    let (actions, _) = plan_of(head, session).await;
+    let decide = CoreCommand::DecideRun {
+        session,
+        decision: RunDecision {
+            keep: (0..actions.len())
+                .map(|at| KeptAction {
+                    index: index(at),
+                    reversed: false,
+                })
+                .collect(),
+            resolve: Vec::new(),
+        },
+    };
+    assert!(matches!(head.ok(decide).await.1, ReplyResult::Done));
+}
+
+fn is_mass_delete(update: &RunUpdateBody) -> bool {
+    matches!(update, RunUpdateBody::MassDelete { .. })
+}
+
+#[tokio::test]
+async fn emptying_one_side_asks_the_head_before_the_other_loses_its_files() {
+    let mut head = Head::new("studio").await;
+    for index in 0..12 {
+        write(&head.path(&format!("a/f{index:02}")), "x");
+    }
+    std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
+    local_profile(&head, "local", "a", "b");
+    let (first, _) = head.ok(start("local", false)).await;
+    keep_all(&mut head, first).await;
+    head.run_until(first, is_ended).await;
+    for index in 0..12 {
+        std::fs::remove_file(head.path(&format!("a/f{index:02}")))
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    let remaining = |head: &Head| {
+        std::fs::read_dir(head.path("b"))
+            .unwrap_or_else(|error| panic!("{error}"))
+            .count()
+    };
+
+    let (declined, _) = head.ok(start("local", false)).await;
+    keep_all(&mut head, declined).await;
+    let Some(RunUpdateBody::MassDelete {
+        sides,
+        awaiting_confirmation: true,
+    }) = head.run_until(declined, is_mass_delete).await.pop()
+    else {
+        panic!("expected the delete guard to wait on the head");
+    };
+    assert_eq!(
+        sides.iter().map(|side| side.deletes).collect::<Vec<_>>(),
+        [12]
+    );
+    let answer = |session, proceed| CoreCommand::ConfirmDeletes { session, proceed };
+    assert!(matches!(
+        head.ok(answer(declined, false)).await.1,
+        ReplyResult::Done
+    ));
+    let updates = head.run_until(declined, is_ended).await;
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, RunUpdateBody::Error(error) if error.message.starts_with("not applied")))
+    );
+    assert!(matches!(
+        updates.last(),
+        Some(RunUpdateBody::Ended(RunEndView::Ran { errored: true, .. }))
+    ));
+    assert_eq!(remaining(&head), 12);
+
+    let (confirmed, _) = head.ok(start("local", false)).await;
+    keep_all(&mut head, confirmed).await;
+    head.run_until(confirmed, is_mass_delete).await;
+    assert!(matches!(
+        head.ok(answer(confirmed, true)).await.1,
+        ReplyResult::Done
+    ));
+    let updates = head.run_until(confirmed, is_ended).await;
+    assert!(matches!(
+        updates.last(),
+        Some(RunUpdateBody::Ended(RunEndView::Ran { errored: false, summary: Some(summary), .. }))
+            if summary.applied == 12
+    ));
+    assert_eq!(remaining(&head), 0);
+}
+
 #[tokio::test]
 async fn a_dry_run_asks_nothing_and_applies_nothing() {
     let mut head = Head::new("studio").await;

@@ -192,8 +192,9 @@ pub(crate) mod fixtures {
     use std::time::{Duration, SystemTime};
 
     use dsync_domain::{
-        Action, Conflict, ContentHash, FileMeta, FileState, Glob, Locality, Location, Platform,
-        ProfileId, ProfileName, Proposal, RelPath, ReplicaLocation, RuleSet, Status, Unchanged,
+        Action, Conflict, ContentHash, FileMeta, FileState, Glob, Locality, Location, MassDelete,
+        MassDeletePolicy, Platform, ProfileId, ProfileName, Proposal, RelPath, ReplicaLocation,
+        RuleSet, Side, Status, Unchanged,
     };
     use time::UtcOffset;
 
@@ -214,6 +215,20 @@ pub(crate) mod fixtures {
 
     pub fn path(text: &str) -> RelPath {
         RelPath::parse(text).unwrap()
+    }
+
+    /// SPEC §10's verdict on `deletes` deletions `f00`, `f01`, ... on `on`,
+    /// whose archive holds `archived` files.
+    pub fn mass_delete(on: Side, deletes: usize, archived: usize) -> MassDelete {
+        let kept: Vec<Action> = (0..deletes)
+            .map(|index| Action::Delete {
+                path: path(&format!("f{index:02}")),
+                on,
+            })
+            .collect();
+        let mut sides = [0, 0];
+        sides[usize::from(on == Side::B)] = archived;
+        MassDeletePolicy::DEFAULT.judge(&kept, sides).unwrap()
     }
 
     pub fn file(size: u64) -> FileState {

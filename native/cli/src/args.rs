@@ -233,6 +233,10 @@ pub struct RunArgs {
     /// not resolved.
     #[arg(long)]
     pub batch: bool,
+    /// Apply deletions that remove over half of a side's files (10 or more)
+    /// without asking; without it, --batch refuses such a run (SPEC §10).
+    #[arg(long)]
+    pub allow_mass_delete: bool,
     /// Machine-readable output (JSON Lines) on stdout.
     #[arg(long)]
     pub json: bool,
@@ -286,6 +290,7 @@ impl RunArgs {
             apply_concurrency: self.apply_concurrency,
             ssh_options: self.ssh_option,
             remote_dsync: self.remote_dsync,
+            allow_mass_delete: self.allow_mass_delete,
         }
     }
 }
@@ -467,6 +472,7 @@ mod tests {
             "/opt/dsync",
             "--timings",
             "--verbose",
+            "--allow-mass-delete",
         ])
         else {
             panic!("sync did not parse");
@@ -488,6 +494,7 @@ mod tests {
                 apply_concurrency: Some(4),
                 ssh_options: vec!["-p".into(), "-i".into()],
                 remote_dsync: Some("/opt/dsync".into()),
+                allow_mass_delete: true,
             }
         );
     }

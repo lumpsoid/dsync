@@ -1,13 +1,13 @@
 //! `--json` (SPEC §11.4): one object per event on stdout, each with a
 //! `type`: `replicas`, `scanTally`, `symlink` / `unreadable` /
 //! `caseFoldCollision` / `unrepresentableName`, `conflict`, `plan`,
-//! `action`, `result`, `progress`, `summary`, `error`. Facts only; the
+//! `massDelete`, `action`, `result`, `progress`, `summary`, `error`. Facts only; the
 //! human warnings are renderings of them.
 
 use std::io::Write;
 
 use dsync_core::RunEvent;
-use dsync_domain::{Action, Conflict, Location, ReplicaInfo, ScanTally, Side, Status};
+use dsync_domain::{Action, Conflict, Location, MassDelete, ReplicaInfo, ScanTally, Side, Status};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -59,6 +59,12 @@ impl<'v, O: Write> JsonRenderer<'v, O> {
                 "type": "plan",
                 "actions": plan.actions.iter().map(|p| Value::Object(action_fields(&p.action))).collect::<Vec<_>>(),
                 "conflicts": plan.conflicts.iter().map(|c| Value::Object(conflict_fields(c))).collect::<Vec<_>>(),
+            }),
+            RunEvent::MassDelete { verdict, allowed } => json!({
+                "type": "massDelete",
+                "allowed": allowed,
+                "a": side_deletes(verdict, Side::A),
+                "b": side_deletes(verdict, Side::B),
             }),
             RunEvent::Action(action) => typed("action", action_fields(action)),
             RunEvent::Result { action, outcome } => {
@@ -112,6 +118,18 @@ impl<'v, O: Write> JsonRenderer<'v, O> {
         }
         Value::Object(fields)
     }
+}
+
+/// One side's share of SPEC §10's verdict, `null` when that side did not
+/// trip it.
+fn side_deletes(verdict: &MassDelete, side: Side) -> Value {
+    verdict.side(side).map_or(Value::Null, |deletes| {
+        json!({
+            "deletes": deletes.deletes,
+            "archived": deletes.archived,
+            "paths": deletes.sample.iter().map(|path| path.as_str()).collect::<Vec<_>>(),
+        })
+    })
 }
 
 fn typed(kind: &str, fields: Map<String, Value>) -> Value {

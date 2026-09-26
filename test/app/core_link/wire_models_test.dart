@@ -119,6 +119,25 @@ void main() {
     expect(end.stopped, StopKind.gracefully);
   });
 
+  test('a mass delete reads per side, with whether it waits on the head', () {
+    final guard = runUpdate(
+      wire.RunUpdateBodyMassDelete(
+        sides: [
+          wire.MassDeleteView(
+            side: wire.SideView.b,
+            deletes: n(40),
+            archived: n(50),
+          ),
+        ],
+        awaitingConfirmation: true,
+      ),
+    );
+    final massDelete = guard as RunMassDelete;
+    expect(massDelete.awaitingConfirmation, isTrue);
+    final side = massDelete.sides.single;
+    expect((side.side, side.deletes, side.archived), (ReplicaSide.b, 40, 50));
+  });
+
   test('a decision is written as indices, reversals and resolutions', () {
     final written = wireDecision(
       const RunDecision(

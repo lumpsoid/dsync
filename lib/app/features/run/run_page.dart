@@ -115,7 +115,8 @@ class _RunPageState extends State<RunPage> {
   bool _abortsRun(SyncRunPhase phase) => switch (phase) {
     SyncRunScanning() ||
     SyncRunApplying() ||
-    SyncRunAwaitingDecisions() => true,
+    SyncRunAwaitingDecisions() ||
+    SyncRunConfirmingDeletes() => true,
     SyncRunIdle() ||
     SyncRunConnecting() ||
     SyncRunFinished() ||
@@ -136,7 +137,8 @@ class _RunPageState extends State<RunPage> {
       SyncRunConnecting() ||
       SyncRunScanning() ||
       SyncRunApplying() ||
-      SyncRunAwaitingDecisions() => true,
+      SyncRunAwaitingDecisions() ||
+      SyncRunConfirmingDeletes() => true,
       SyncRunIdle() ||
       SyncRunFinished() ||
       SyncRunStopped() ||
@@ -205,6 +207,7 @@ class _RunPageState extends State<RunPage> {
               SyncRunScanning() ||
               SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
+              SyncRunConfirmingDeletes() ||
               SyncRunFinished() ||
               SyncRunStopped() ||
               SyncRunPaused() ||
@@ -249,6 +252,7 @@ class _RunPageState extends State<RunPage> {
               SyncRunScanning() ||
               SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
+              SyncRunConfirmingDeletes() ||
               SyncRunFinished() ||
               SyncRunStopped() => const SizedBox.shrink(),
             },
@@ -260,7 +264,8 @@ class _RunPageState extends State<RunPage> {
               SyncRunConnecting() ||
               SyncRunScanning() ||
               SyncRunApplying() ||
-              SyncRunAwaitingDecisions() => TextButton(
+              SyncRunAwaitingDecisions() ||
+              SyncRunConfirmingDeletes() => TextButton(
                 key: const Key('run-stop'),
                 onPressed: _controller.stop,
                 child: const Text('Stop'),
@@ -289,6 +294,10 @@ class _RunPageState extends State<RunPage> {
         builder: (context, _) => switch (state.phase) {
           SyncRunAwaitingDecisions() => _ReviewBar(
             summary: state.decisionSummary,
+            controller: _controller,
+          ),
+          SyncRunConfirmingDeletes(:final sides) => _DeletesBar(
+            sides: sides,
             controller: _controller,
           ),
           SyncRunIdle() ||
@@ -439,7 +448,7 @@ class _StageStrip extends StatelessWidget {
     final stage = switch (phase) {
       SyncRunConnecting() => _Stage.connect,
       SyncRunScanning() => _Stage.scan,
-      SyncRunAwaitingDecisions() => _Stage.review,
+      SyncRunAwaitingDecisions() || SyncRunConfirmingDeletes() => _Stage.review,
       SyncRunApplying() => _Stage.apply,
       SyncRunFinished() => _Stage.done,
       SyncRunIdle() ||
@@ -545,6 +554,10 @@ class _StageText extends StatelessWidget {
       SyncRunAwaitingDecisions() => const Text(
         'Waiting for your review',
         key: Key('run-awaiting'),
+      ),
+      SyncRunConfirmingDeletes() => const Text(
+        'Waiting for you to confirm the deletions',
+        key: Key('run-confirming-deletes'),
       ),
       SyncRunApplying() => _ApplyProgress(state.progress),
       // A single line: the five numbers this used to carry live in the
@@ -1008,6 +1021,80 @@ class _ReviewBar extends StatelessWidget {
                       key: const Key('run-confirm'),
                       onPressed: controller.confirm,
                       child: const Text('Apply'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// SPEC §10's delete guard, in the review bar's place: what the decided
+/// actions delete — how many files, of how many, on which side and in
+/// which folder — and the two answers. Not a dialog: like the review, it
+/// is the run's own next step, and Stop stays one tap away above it.
+class _DeletesBar extends StatelessWidget {
+  const _DeletesBar({required this.sides, required this.controller});
+
+  final List<SyncRunDeletesOnSide> sides;
+  final SyncRunController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final total = sides.fold(0, (sum, side) => sum + side.deletes);
+    return Material(
+      key: const Key('run-deletes-bar'),
+      elevation: 8,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'This sync deletes most of a folder',
+                style: theme.textTheme.titleSmall,
+              ),
+              const SizedBox(height: 4),
+              for (final side in sides)
+                Text(
+                  '${formatCount(side.deletes)} of the '
+                  '${formatCount(side.archived)} files on ${side.where} '
+                  '(${elidePath(side.root)}) would be deleted.',
+                ),
+              const SizedBox(height: 4),
+              const Text(
+                'If a folder was emptied, moved or unmounted by mistake, '
+                "don't delete.",
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    TextButton(
+                      key: const Key('run-deletes-decline'),
+                      onPressed: controller.declineDeletes,
+                      child: const Text("Don't delete"),
+                    ),
+                    FilledButton(
+                      key: const Key('run-deletes-confirm'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: theme.colorScheme.error,
+                        foregroundColor: theme.colorScheme.onError,
+                      ),
+                      onPressed: controller.confirmDeletes,
+                      child: Text('Delete ${formatCount(total)} files'),
                     ),
                   ],
                 ),

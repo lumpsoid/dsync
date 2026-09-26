@@ -116,6 +116,11 @@ abstract interface class CoreLink {
 
   Future<void> decideRun(int session, RunDecision decision);
 
+  /// The answer to SPEC §10's delete guard, when a [RunMassDelete] is
+  /// awaiting it: [proceed] applies the deletions, otherwise the run ends
+  /// with nothing applied.
+  Future<void> confirmDeletes(int session, {required bool proceed});
+
   /// The first stop is graceful; a second drops the run.
   Future<void> stopRun(int session);
 

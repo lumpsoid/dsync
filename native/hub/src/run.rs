@@ -12,7 +12,8 @@ use dsync_core::{
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
-    Action, Command, EffectiveOptions, Flags, Mode, Plan, ProfileName, RunFlags, Side, Status,
+    Action, Command, EffectiveOptions, Flags, MassDelete, Mode, Plan, ProfileName, RunFlags, Side,
+    Status,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -24,8 +25,8 @@ use crate::signals::{
     ConflictResolutionView, ProgressView, ReplyResult, RunDecision, RunTarget, RunUpdateBody,
 };
 use crate::views::{
-    ActionView, ConflictView, PeerContactView, ProposalView, ReplicaInfoView, ResultView,
-    RunEndView, RunErrorView, RunStartedView, SkippedView, SummaryView, TallyView,
+    ActionView, ConflictView, MassDeleteView, PeerContactView, ProposalView, ReplicaInfoView,
+    ResultView, RunEndView, RunErrorView, RunStartedView, SkippedView, SummaryView, TallyView,
 };
 
 /// Events buffered between the run and the forwarder, as the CLI's.
@@ -94,11 +95,13 @@ impl Hub {
         let (events, received) = mpsc::channel(EVENT_BUFFER);
         let run = Run::new(events, self.state.clone(), self.tuning);
         let (decided, decisions) = mpsc::channel(1);
+        let (confirmed, confirmations) = mpsc::channel(1);
         let (stopping, stopped) = watch::channel(false);
         let control = RunControl {
             stop: run.stopper(),
             stopping,
             decisions: decided,
+            confirmations: confirmed,
         };
         let running = RunSession {
             session,
@@ -115,6 +118,7 @@ impl Hub {
                 received,
                 HeadDecider {
                     decisions,
+                    confirmations,
                     peer_label,
                 },
                 stopped,
@@ -135,6 +139,21 @@ impl Hub {
             .ok_or_else(|| format!("no run in session {session}"))?;
         sent.then_some(ReplyResult::Done)
             .ok_or_else(|| format!("the run in session {session} already has a decision"))
+    }
+
+    /// The head's answer to SPEC §10's delete guard the run in `session`
+    /// waits on.
+    pub(crate) fn confirm_deletes(&self, session: u64, proceed: bool) -> Handled {
+        let sent = self
+            .sessions
+            .with(session, |live| match live {
+                Session::Run(control) => Some(control.confirmations.try_send(proceed).is_ok()),
+                Session::Serve(_) | Session::Pairing(_) => None,
+            })
+            .flatten()
+            .ok_or_else(|| format!("no run in session {session}"))?;
+        sent.then_some(ReplyResult::Done)
+            .ok_or_else(|| format!("the run in session {session} already has an answer"))
     }
 
     /// The first stop is graceful, a second drops the run (SPEC §7.6).
@@ -236,11 +255,14 @@ impl RunSession {
     }
 }
 
-/// The head's decider (SPEC §11.3): waits for the head's `DecideRun`. A
-/// session gone before it answers keeps nothing. `peer_label` is side B's
-/// [`dsync_domain::Location::device_label`], naming a keep-both copy.
+/// The head's decider (SPEC §11.3): waits for the head's `DecideRun`, and
+/// for its `ConfirmDeletes` when SPEC §10's guard asks. A session gone
+/// before it answers keeps nothing and confirms nothing. `peer_label` is
+/// side B's [`dsync_domain::Location::device_label`], naming a keep-both
+/// copy.
 pub(crate) struct HeadDecider {
     decisions: mpsc::Receiver<RunDecision>,
+    confirmations: mpsc::Receiver<bool>,
     peer_label: String,
 }
 
@@ -250,6 +272,10 @@ impl Decider for HeadDecider {
             Some(decision) => decision.actions(plan, &self.peer_label),
             None => Vec::new(),
         }
+    }
+
+    async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
+        self.confirmations.recv().await.unwrap_or(false)
     }
 }
 
@@ -405,6 +431,10 @@ fn route(event: RunEvent, batch: &mut Batch, awaiting_decision: bool) -> Option<
             exceeds_warn_size,
             awaiting_decision,
         },
+        RunEvent::MassDelete { verdict, allowed } => RunUpdateBody::MassDelete {
+            sides: verdict.sides().iter().map(MassDeleteView::from).collect(),
+            awaiting_confirmation: awaiting_decision && !allowed,
+        },
         RunEvent::Summary(summary) => RunUpdateBody::Summary(SummaryView::from(&summary)),
         RunEvent::Error(error) => RunUpdateBody::Error(RunErrorView::from(&error)),
     })
@@ -412,14 +442,14 @@ fn route(event: RunEvent, batch: &mut Batch, awaiting_decision: bool) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use dsync_core::RunEvent;
+    use dsync_core::{Decider, RunEvent};
     use dsync_domain::{
-        Action, Conflict, ContentHash, FileMeta, FileState, Plan, Proposal, RelPath, RunSummary,
-        Side, Status,
+        Action, Conflict, ContentHash, FileMeta, FileState, MassDeletePolicy, Plan, Proposal,
+        RelPath, RunSummary, Side, Status,
     };
     use tokio::sync::mpsc;
 
-    use super::forward;
+    use super::{HeadDecider, forward};
     use crate::outbox::{Outbox, Outgoing};
     use crate::signals::{
         ConflictChoice, ConflictResolutionView, KeptAction, RunDecision, RunUpdateBody,
@@ -532,6 +562,68 @@ mod tests {
             })
             .sum();
         assert_eq!(batched, 4);
+    }
+
+    fn emptied_b(allowed: bool) -> RunEvent {
+        let kept: Vec<Action> = (0..10)
+            .map(|index| Action::Delete {
+                path: path(&format!("f{index}")),
+                on: Side::B,
+            })
+            .collect();
+        RunEvent::MassDelete {
+            verdict: MassDeletePolicy::DEFAULT
+                .judge(&kept, [0, 12])
+                .unwrap_or_else(|| panic!("10 of 12 trips the guard")),
+            allowed,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_mass_delete_goes_out_per_side_awaiting_unless_allowed() {
+        let updates = forwarded(vec![emptied_b(false), emptied_b(true)]).await;
+        let [
+            RunUpdateBody::MassDelete {
+                sides: asking,
+                awaiting_confirmation: true,
+            },
+            RunUpdateBody::MassDelete {
+                awaiting_confirmation: false,
+                ..
+            },
+        ] = &updates[..]
+        else {
+            panic!("two mass-delete updates, the first awaiting");
+        };
+        let [side] = &asking[..] else {
+            panic!("one side tripped");
+        };
+        assert!(matches!(side.side, SideView::B));
+        assert_eq!((side.deletes, side.archived), (10, 12));
+    }
+
+    #[tokio::test]
+    async fn the_head_decider_confirms_what_the_head_answers_and_nothing_once_gone() {
+        let (_decided, decisions) = mpsc::channel(1);
+        let (confirmed, confirmations) = mpsc::channel(1);
+        let mut head = HeadDecider {
+            decisions,
+            confirmations,
+            peer_label: PEER.to_owned(),
+        };
+        let RunEvent::MassDelete { verdict, .. } = emptied_b(false) else {
+            panic!("a mass delete");
+        };
+        confirmed
+            .try_send(true)
+            .unwrap_or_else(|_| panic!("room for one"));
+        assert!(head.confirm_deletes(&verdict).await);
+        confirmed
+            .try_send(false)
+            .unwrap_or_else(|_| panic!("room for one"));
+        assert!(!head.confirm_deletes(&verdict).await);
+        drop(confirmed);
+        assert!(!head.confirm_deletes(&verdict).await, "a session gone");
     }
 
     const PEER: &str = "Phone";

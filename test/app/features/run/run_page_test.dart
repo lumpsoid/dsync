@@ -21,7 +21,16 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 import 'run_fixtures.dart'
-    show applied, conflict, modifiedB, plan, ranEnd, runRequest, summarized;
+    show
+        applied,
+        conflict,
+        massDelete,
+        modifiedB,
+        plan,
+        ranEnd,
+        runFailed,
+        runRequest,
+        summarized;
 
 /// Rendering tests for the Run page, driven the way the scope contract in
 /// `app_scope.dart` intends: `runScope.setController(fake)` pins one
@@ -1742,6 +1751,83 @@ void main() {
       await pump(tester);
 
       expect(errorIconIn(find.byKey(const Key('run-failed'))), findsOneWidget);
+    });
+  });
+
+  group('the delete guard (SPEC §10)', () {
+    /// Starts the run, accepts its plan the way the review bar does, and
+    /// delivers the core's delete guard.
+    Future<int> guarded(WidgetTester tester) async {
+      await pump(tester);
+      final session = core.runStarts.single.session;
+      core.emitRun(session, const RunConnected([]));
+      core.emitRun(session, plan(awaitingDecision: true));
+      await tester.pump();
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('run-sync-all-except-conflicts')));
+      await tester.pump();
+      core.emitRun(session, massDelete());
+      await tester.pump();
+      await tester.pump();
+      return session;
+    }
+
+    testWidgets('asks before applying, naming how many files and where', (
+      tester,
+    ) async {
+      await guarded(tester);
+
+      expect(find.byKey(const Key('run-confirming-deletes')), findsOneWidget);
+      expect(find.byKey(const Key('run-deletes-bar')), findsOneWidget);
+      expect(
+        find.text(
+          '40 of the 50 files on the remote (${elidePath('~/notes')}) '
+          'would be deleted.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Delete 40 files'), findsOneWidget);
+      expect(find.byKey(const Key('run-stop')), findsOneWidget);
+      expect(find.byKey(const Key('run-confirm')), findsNothing);
+    });
+
+    testWidgets('Delete answers yes and the page moves on to applying', (
+      tester,
+    ) async {
+      final session = await guarded(tester);
+
+      await tester.tap(find.byKey(const Key('run-deletes-confirm')));
+      await tester.pump();
+
+      expect(core.deleteConfirmations[session], [true]);
+      expect(find.byKey(const Key('run-deletes-bar')), findsNothing);
+      expect(find.byKey(const Key('run-progress')), findsOneWidget);
+    });
+
+    testWidgets('Don\'t delete answers no, and the run ends saying nothing '
+        'was changed', (tester) async {
+      final session = await guarded(tester);
+
+      await tester.tap(find.byKey(const Key('run-deletes-decline')));
+      await tester.pump();
+      expect(core.deleteConfirmations[session], [false]);
+      core
+        ..emitRun(session, runFailed('not applied'))
+        ..emitRun(session, ranEnd());
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text(deletesDeclinedMessage), findsOneWidget);
+      expect(find.byKey(const Key('run-resume')), findsOneWidget);
+      expect(find.byKey(const Key('run-deletes-bar')), findsNothing);
+    });
+
+    testWidgets('fits a phone-width screen', (tester) async {
+      await guarded(tester);
+      tester.view.physicalSize = const Size(360, 2400);
+      await tester.pump();
+
+      expect(find.byKey(const Key('run-deletes-confirm')), findsOneWidget);
     });
   });
 }

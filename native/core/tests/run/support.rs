@@ -232,6 +232,7 @@ pub fn kind(event: &RunEvent) -> &'static str {
         RunEvent::Skipped { .. } => "skipped",
         RunEvent::Conflict(_) => "conflict",
         RunEvent::Plan { .. } => "plan",
+        RunEvent::MassDelete { .. } => "massDelete",
         RunEvent::Action(_) => "action",
         RunEvent::Result { .. } => "result",
         RunEvent::Progress { .. } => "progress",
@@ -298,6 +299,11 @@ impl Decider for Answer {
     async fn decide(&mut self, _: &dsync_domain::Plan) -> Vec<Action> {
         self.asked = true;
         self.actions.clone()
+    }
+
+    /// Its lists never delete enough to trip SPEC §10's guard.
+    async fn confirm_deletes(&mut self, verdict: &dsync_domain::MassDelete) -> bool {
+        panic!("an Answer was asked to confirm deletions: {verdict:?}")
     }
 }
 

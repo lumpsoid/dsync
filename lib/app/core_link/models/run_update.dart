@@ -1,5 +1,6 @@
 import 'action_result.dart';
 import 'conflict_info.dart';
+import 'mass_delete_side.dart';
 import 'peer_contact.dart';
 import 'plan_action.dart';
 import 'plan_proposal.dart';
@@ -69,6 +70,19 @@ final class RunPlan extends RunUpdate {
   final int bytesToTransfer;
   final bool exceedsWarnSize;
   final bool awaitingDecision;
+}
+
+/// SPEC §10's delete guard tripped on the decided actions: one entry per
+/// side it tripped on. [awaitingConfirmation]: the run now waits for
+/// `CoreLink.confirmDeletes`.
+final class RunMassDelete extends RunUpdate {
+  const RunMassDelete({
+    required this.sides,
+    required this.awaitingConfirmation,
+  });
+
+  final List<MassDeleteSide> sides;
+  final bool awaitingConfirmation;
 }
 
 /// Approved actions, outcomes and progress since the last batch: at most

@@ -10,6 +10,7 @@ import 'models/file_status.dart';
 import 'models/filter_folder_summary.dart';
 import 'models/filter_preview.dart';
 import 'models/filter_row.dart';
+import 'models/mass_delete_side.dart';
 import 'models/pair_code_reading.dart';
 import 'models/paired_device_info.dart';
 import 'models/peer_contact.dart';
@@ -243,6 +244,18 @@ RunUpdate runUpdate(wire.RunUpdateBody body) => switch (body) {
       bytesToTransfer: _n(bytesToTransfer),
       exceedsWarnSize: exceedsWarnSize,
       awaitingDecision: awaitingDecision,
+    ),
+  wire.RunUpdateBodyMassDelete(:final sides, :final awaitingConfirmation) =>
+    RunMassDelete(
+      sides: [
+        for (final s in sides)
+          MassDeleteSide(
+            side: side(s.side),
+            deletes: _n(s.deletes),
+            archived: _n(s.archived),
+          ),
+      ],
+      awaitingConfirmation: awaitingConfirmation,
     ),
   wire.RunUpdateBodyApplied(:final approved, :final results, :final progress) =>
     RunApplied(

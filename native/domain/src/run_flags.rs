@@ -33,6 +33,7 @@ pub struct Flags {
     pub apply_concurrency: Option<i64>,
     pub ssh_options: Vec<String>,
     pub remote_dsync: Option<String>,
+    pub allow_mass_delete: bool,
 }
 
 /// How the plan is decided.
@@ -68,6 +69,9 @@ pub struct RunFlags {
     pub apply_concurrency: Option<NonZeroUsize>,
     pub ssh_options: Vec<SshOption>,
     pub remote_dsync: Option<SshCommand>,
+    /// `--allow-mass-delete`: apply deletions SPEC §10's guard would stop
+    /// for without asking.
+    pub allow_mass_delete: bool,
 }
 
 impl RunFlags {
@@ -134,6 +138,7 @@ impl RunFlags {
             apply_concurrency,
             ssh_options,
             remote_dsync,
+            allow_mass_delete: flags.allow_mass_delete,
         })
     }
 }
@@ -160,6 +165,7 @@ mod tests {
         assert_eq!(flags.warn_size_bytes, None);
         assert_eq!(flags.jobs, None);
         assert_eq!(flags.apply_concurrency, None);
+        assert!(!flags.allow_mass_delete);
     }
 
     #[test]

@@ -35,6 +35,7 @@ part 'filter_preview_view.dart';
 part 'filter_row_view.dart';
 part 'identity_view.dart';
 part 'kept_action.dart';
+part 'mass_delete_view.dart';
 part 'missing_root_view.dart';
 part 'pair_code_view.dart';
 part 'pairing_shown_view.dart';

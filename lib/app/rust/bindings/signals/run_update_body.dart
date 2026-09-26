@@ -19,10 +19,11 @@ abstract class RunUpdateBody {
       case 3: return RunUpdateBodySkipped.load(deserializer);
       case 4: return RunUpdateBodyConflict.load(deserializer);
       case 5: return RunUpdateBodyPlan.load(deserializer);
-      case 6: return RunUpdateBodyApplied.load(deserializer);
-      case 7: return RunUpdateBodySummary.load(deserializer);
-      case 8: return RunUpdateBodyError.load(deserializer);
-      case 9: return RunUpdateBodyEnded.load(deserializer);
+      case 6: return RunUpdateBodyMassDelete.load(deserializer);
+      case 7: return RunUpdateBodyApplied.load(deserializer);
+      case 8: return RunUpdateBodySummary.load(deserializer);
+      case 9: return RunUpdateBodyError.load(deserializer);
+      case 10: return RunUpdateBodyEnded.load(deserializer);
       default: throw Exception('Unknown variant index for RunUpdateBody: ' + index.toString());
     }
   }
@@ -468,6 +469,76 @@ class RunUpdateBodyPlan extends RunUpdateBody {
 }
 
 @immutable
+class RunUpdateBodyMassDelete extends RunUpdateBody {
+  const RunUpdateBodyMassDelete({
+    required this.sides,
+    required this.awaitingConfirmation,
+  }) : super();
+
+  static RunUpdateBodyMassDelete load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = RunUpdateBodyMassDelete(
+      sides: TraitHelpers.deserializeVectorMassDeleteView(deserializer),
+      awaitingConfirmation: deserializer.deserializeBool(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final List<MassDeleteView> sides;
+  final bool awaitingConfirmation;
+
+  RunUpdateBodyMassDelete copyWith({
+    List<MassDeleteView>? sides,
+    bool? awaitingConfirmation,
+  }) {
+    return RunUpdateBodyMassDelete(
+      sides: sides ?? this.sides,
+      awaitingConfirmation: awaitingConfirmation ?? this.awaitingConfirmation,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(6);
+    TraitHelpers.serializeVectorMassDeleteView(sides, serializer);
+    serializer.serializeBool(awaitingConfirmation);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is RunUpdateBodyMassDelete
+      && listEquals(sides, other.sides)
+      && awaitingConfirmation == other.awaitingConfirmation;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        sides,
+        awaitingConfirmation,
+      );
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'sides: $sides, '
+        'awaitingConfirmation: $awaitingConfirmation'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'RunUpdateBodyMassDelete';
+  }
+}
+
+@immutable
 class RunUpdateBodyApplied extends RunUpdateBody {
   const RunUpdateBodyApplied({
     required this.approved,
@@ -504,7 +575,7 @@ class RunUpdateBodyApplied extends RunUpdateBody {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(6);
+    serializer.serializeVariantIndex(7);
     TraitHelpers.serializeVectorActionView(approved, serializer);
     TraitHelpers.serializeVectorResultView(results, serializer);
     TraitHelpers.serializeOptionProgressView(progress, serializer);
@@ -573,7 +644,7 @@ class RunUpdateBodySummary extends RunUpdateBody {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(7);
+    serializer.serializeVariantIndex(8);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -632,7 +703,7 @@ class RunUpdateBodyError extends RunUpdateBody {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(8);
+    serializer.serializeVariantIndex(9);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -691,7 +762,7 @@ class RunUpdateBodyEnded extends RunUpdateBody {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(9);
+    serializer.serializeVariantIndex(10);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }

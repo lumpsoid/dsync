@@ -277,6 +277,18 @@ class TraitHelpers {
     return List.generate(length, (_) => KeptAction.deserialize(deserializer));
   }
 
+  static void serializeVectorMassDeleteView(List<MassDeleteView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<MassDeleteView> deserializeVectorMassDeleteView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => MassDeleteView.deserialize(deserializer));
+  }
+
   static void serializeVectorPeerContactView(List<PeerContactView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

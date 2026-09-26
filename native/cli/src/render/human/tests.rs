@@ -10,7 +10,7 @@ use dsync_domain::{
 
 use super::HumanRenderer;
 use crate::render::fixtures::{
-    self, PROFILE_ID, clock, conflict, created, path, proposed, unchanged,
+    self, PROFILE_ID, clock, conflict, created, mass_delete, path, proposed, unchanged,
 };
 use crate::render::{RunName, RunView};
 
@@ -397,6 +397,34 @@ fn a_missing_root_names_the_device_it_is_on() {
     assert!(
         local.starts_with("error: The folder notes is missing."),
         "{local}"
+    );
+}
+
+#[test]
+fn an_allowed_mass_delete_is_a_warning_naming_the_replica() {
+    let event = |allowed| RunEvent::MassDelete {
+        verdict: mass_delete(Side::B, 12, 20),
+        allowed,
+    };
+    assert_eq!(
+        out(Verbosity::Normal, &[event(true)]),
+        "warning: deleting 12 of the 20 files replica B (box:notes) last synced, as \
+         --allow-mass-delete allows (SPEC §10)\n"
+    );
+    // Not allowed: the prompt or the refusal says it.
+    assert_eq!(out(Verbosity::Normal, &[event(false)]), "");
+}
+
+#[test]
+fn unconfirmed_deletions_are_refused_with_the_way_to_apply_them_even_when_quiet() {
+    let refused = RunEvent::Error(RunError::DeletesNotConfirmed(mass_delete(Side::B, 12, 20)));
+    let (out, err) = rendered(&fixtures::view(), Verbosity::Quiet, &[refused]);
+    assert_eq!(out, "");
+    assert_eq!(
+        err,
+        "error: not applied: this run would delete 12 of the 20 files replica B last synced, \
+         and that was not confirmed (SPEC §10). Nothing was changed.\nTo apply it, run \
+         interactively and answer y, or rerun with --allow-mass-delete.\n"
     );
 }
 

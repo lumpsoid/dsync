@@ -133,6 +133,9 @@ final class FakeCoreLink implements CoreLink {
   runStarts = [];
 
   final Map<int, List<RunDecision>> decisions = {};
+
+  /// Every [confirmDeletes] answer, by session.
+  final Map<int, List<bool>> deleteConfirmations = {};
   final List<int> stopped = [];
   final Map<int, bool> confirmations = {};
 
@@ -481,6 +484,12 @@ final class FakeCoreLink implements CoreLink {
   @override
   Future<void> decideRun(int session, RunDecision decision) =>
       _answer('decideRun', () => (decisions[session] ??= []).add(decision));
+
+  @override
+  Future<void> confirmDeletes(int session, {required bool proceed}) => _answer(
+    'confirmDeletes',
+    () => (deleteConfirmations[session] ??= []).add(proceed),
+  );
 
   @override
   Future<void> stopRun(int session) =>

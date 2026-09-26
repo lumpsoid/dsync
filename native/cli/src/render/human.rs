@@ -131,6 +131,23 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
                     );
                 }
             }
+            // Not allowed: the interactive prompt or the refusal that
+            // follows says it all.
+            RunEvent::MassDelete { verdict, allowed } => {
+                if *allowed {
+                    for deletes in verdict.sides() {
+                        let _ = writeln!(
+                            self.out,
+                            "warning: deleting {} of the {} files replica {} ({}) last synced, \
+                             as --allow-mass-delete allows (SPEC §10)",
+                            deletes.deletes,
+                            deletes.archived,
+                            words::side(deletes.side),
+                            self.view.replica(deletes.side).location
+                        );
+                    }
+                }
+            }
             RunEvent::Action(action) => {
                 let _ = writeln!(self.out, "> {}  {}", words::action(action), action.path());
             }
@@ -341,6 +358,12 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
                 let device = self.view.replica(missing.side).device();
                 writeln!(self.err, "error: {}", missing.describe(device.as_deref()))
             }
+            RunError::DeletesNotConfirmed(verdict) => writeln!(
+                self.err,
+                "error: {}\nTo apply it, run interactively and answer y, or rerun with \
+                 --allow-mass-delete.",
+                verdict.describe()
+            ),
             other => writeln!(self.err, "error: {other}"),
         };
     }
