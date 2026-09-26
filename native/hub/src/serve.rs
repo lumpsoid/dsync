@@ -1,11 +1,13 @@
 //! Serving paired devices (SPEC §4.4) from the head: the CLI's `agent
 //! --serve` wiring, each connection's story kept in the session's
 //! [`ServeState`] and sent whole as `session`'s snapshots until the head
-//! stops it.
+//! stops it: a phase change at once, connection lines through the
+//! session's [`Throttle`], so a port being scanned costs one snapshot per
+//! refresh interval however many connections it refuses.
 
 use std::collections::VecDeque;
 use std::future::Future;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use dsync_core::{
@@ -14,11 +16,13 @@ use dsync_core::{
 use dsync_domain::host_port::{format_host_port, parse_bind_address};
 use dsync_domain::{ReplicaSpec, Tuning, advertised_host, preferred_advertisable_address};
 use tokio::task::AbortHandle;
+use tokio::time::Instant;
 
 use crate::dispatch::{Handled, Hub, text};
 use crate::outbox::Outbox;
 use crate::sessions::Session;
 use crate::signals::ReplyResult;
+use crate::throttle::{Throttle, Urgency, Verdict};
 use crate::views::{
     AddressesView, ServeEventView, ServeLineView, ServePhaseView, ServeStartedView, ServeView,
     millis,
@@ -47,9 +51,12 @@ impl Hub {
         let control = Arc::new(ServeControl {
             session,
             out: self.out.clone(),
-            state: Mutex::new(ServeState::new(advertised.clone())),
+            shared: Mutex::new(Shared {
+                state: ServeState::new(advertised.clone()),
+                throttle: Throttle::new(),
+            }),
         });
-        control.update(|_| {});
+        control.update(|_| Urgency::Now);
         let opener = Opener {
             state: self.state.clone(),
             home: self.facts.home().map(str::to_owned),
@@ -115,19 +122,46 @@ pub(crate) struct Serving {
     pub control: Arc<ServeControl>,
 }
 
+struct Shared {
+    state: ServeState,
+    throttle: Throttle,
+}
+
 /// A serving session's state and where its snapshots go.
 pub(crate) struct ServeControl {
     session: u64,
     out: Outbox,
-    state: Mutex<ServeState>,
+    shared: Mutex<Shared>,
 }
 
 impl ServeControl {
-    /// Applies `change` and sends the session as it now stands: serving
-    /// changes rarely, so every change goes out at once.
-    fn update(&self, change: impl FnOnce(&mut ServeState)) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        change(&mut state);
+    fn lock(&self) -> MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Applies `change` and sends what it came to as soon as its urgency
+    /// says.
+    fn update(self: &Arc<Self>, change: impl FnOnce(&mut ServeState) -> Urgency) {
+        let mut shared = self.lock();
+        let urgency = change(&mut shared.state);
+        match shared.throttle.on(urgency, Instant::now()) {
+            Verdict::Send => self.send(&shared),
+            Verdict::DeferUntil(at) => {
+                let control = self.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep_until(at).await;
+                    let mut shared = control.lock();
+                    if let Verdict::Send = shared.throttle.due(Instant::now()) {
+                        control.send(&shared);
+                    }
+                });
+            }
+            Verdict::Nothing => {}
+        }
+    }
+
+    fn send(&self, shared: &Shared) {
+        let state = &shared.state;
         self.out.serve(self.session, state.view(), state.is_over());
     }
 }
@@ -160,17 +194,23 @@ impl ServeState {
     }
 
     /// `event` happened at `at_ms`; the oldest line goes once there are
-    /// [`SERVE_LINES`].
-    fn record(&mut self, at_ms: i64, event: ServeEventView) {
+    /// [`SERVE_LINES`]. A line is routine: a burst of them is one
+    /// snapshot.
+    fn record(&mut self, at_ms: i64, event: ServeEventView) -> Urgency {
         self.lines.push_front(ServeLineView { at_ms, event });
         self.lines.truncate(SERVE_LINES);
+        Urgency::Routine
     }
 
     /// Serving ended: stopped, or the listener failed with `failure`.
-    /// The first end is the one that stands.
-    fn ended(&mut self, failure: Option<String>) {
-        if let Phase::Listening(_) = self.phase {
-            self.phase = failure.map_or(Phase::Stopped, Phase::Failed);
+    /// The first end is the one that stands, and goes out at once.
+    fn ended(&mut self, failure: Option<String>) -> Urgency {
+        match self.phase {
+            Phase::Listening(_) => {
+                self.phase = failure.map_or(Phase::Stopped, Phase::Failed);
+                Urgency::Now
+            }
+            Phase::Stopped | Phase::Failed(_) => Urgency::Unseen,
         }
     }
 
@@ -222,7 +262,7 @@ impl Opener {
                 .expanded_root(home.as_deref())
                 .map_err(|error| ReplicaError::Refused(error.to_string()))?;
             control.update(|serving| {
-                serving.record(now_ms(), ServeEventView::Serving { root: root.clone() });
+                serving.record(now_ms(), ServeEventView::Serving { root: root.clone() })
             });
             let opening = tokio::task::spawn_blocking(move || {
                 LocalReplica::open(root, state, spec.profile, spec.side, spec.jobs, tuning)
@@ -267,8 +307,15 @@ fn line(event: PeerEvent) -> ServeEventView {
 
 #[cfg(test)]
 mod tests {
-    use super::{SERVE_LINES, ServeState};
-    use crate::views::{ServeEventView, ServePhaseView};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use tokio::sync::mpsc;
+
+    use super::{SERVE_LINES, ServeControl, ServeState, Shared};
+    use crate::outbox::{Outbox, Outgoing};
+    use crate::throttle::{REFRESH_INTERVAL, Throttle, Urgency};
+    use crate::views::{ServeEventView, ServePhaseView, ServeView};
 
     fn refused(n: usize) -> ServeEventView {
         ServeEventView::Refused {
@@ -306,9 +353,9 @@ mod tests {
     fn serving_ends_stopped_or_failed_and_the_first_end_stands() {
         let mut stopped = ServeState::new("x".to_owned());
         assert!(!stopped.is_over());
-        stopped.ended(None);
+        assert_eq!(stopped.ended(None), Urgency::Now);
         assert!(stopped.is_over());
-        stopped.ended(Some("aborted".to_owned()));
+        assert_eq!(stopped.ended(Some("aborted".to_owned())), Urgency::Unseen);
         assert!(matches!(stopped.view().phase, ServePhaseView::Stopped));
 
         let mut failed = ServeState::new("x".to_owned());
@@ -319,5 +366,53 @@ mod tests {
             failed.view().phase,
             ServePhaseView::Failed { ref message } if message == "accept: too many open files"
         ));
+    }
+
+    fn control() -> (Arc<ServeControl>, mpsc::UnboundedReceiver<Outgoing>) {
+        let (out, outgoing) = Outbox::channel();
+        let control = Arc::new(ServeControl {
+            session: 3,
+            out,
+            shared: Mutex::new(Shared {
+                state: ServeState::new("x".to_owned()),
+                throttle: Throttle::new(),
+            }),
+        });
+        (control, outgoing)
+    }
+
+    fn sent(outgoing: &mut mpsc::UnboundedReceiver<Outgoing>) -> Vec<(ServeView, bool)> {
+        let mut views = Vec::new();
+        while let Ok(Outgoing::Serve(snapshot)) = outgoing.try_recv() {
+            assert_eq!(snapshot.session, 3);
+            views.push((snapshot.view, snapshot.last));
+        }
+        views
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_port_scan_costs_one_snapshot_per_interval_and_the_end_goes_at_once() {
+        let (control, mut outgoing) = control();
+        control.update(|_| Urgency::Now);
+        for n in 0..1000 {
+            control.update(|state| state.record(i64::try_from(n).unwrap_or(0), refused(n)));
+        }
+        assert_eq!(sent(&mut outgoing).len(), 1, "only the first went at once");
+        tokio::time::sleep(REFRESH_INTERVAL + Duration::from_millis(1)).await;
+        let flushed = sent(&mut outgoing);
+        let [(latest, false)] = &flushed[..] else {
+            panic!("one snapshot for the whole scan, got {}", flushed.len());
+        };
+        assert_eq!(latest.lines[0].at_ms, 999);
+        control.update(|state| state.record(1000, refused(1000)));
+        control.update(|state| state.ended(None));
+        let ended = sent(&mut outgoing);
+        let [(view, true)] = &ended[..] else {
+            panic!("the end at once, and last");
+        };
+        assert!(matches!(view.phase, ServePhaseView::Stopped));
+        assert_eq!(view.lines[0].at_ms, 1000, "it carries the line held back");
+        tokio::time::sleep(REFRESH_INTERVAL * 3).await;
+        assert!(sent(&mut outgoing).is_empty(), "nothing after the last");
     }
 }

@@ -13,24 +13,13 @@ use dsync_domain::{
 };
 
 use crate::signals::RunIntent;
+use crate::throttle::Urgency;
 use crate::views::{
     ActionChoiceView, ActionView, ConflictChoiceView, ConflictRowView, ConflictView,
     DecisionSummaryView, MassDeleteView, PlanRowView, PlanSummaryView, ProgressView, ProposalView,
     ReplicasView, ResultView, RunPhaseView, RunStandingView, RunView, SkippedView, SummaryView,
     TalliesView,
 };
-
-/// How soon a change has to reach the head.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Urgency {
-    /// Nothing the head shows changed.
-    Unseen,
-    /// Progress and the scan's facts: at most one snapshot per refresh
-    /// interval.
-    Routine,
-    /// A phase, a question, or the answer to a tap: at once.
-    Now,
-}
 
 /// What an intent asks the session to carry out.
 #[derive(PartialEq, Debug)]
@@ -664,8 +653,9 @@ mod tests {
         Proposal, RelPath, ReplicaInfo, ReplicaRoot, RunSummary, ScanTally, Side, Status,
     };
 
-    use super::{Choices, Ended, RunState, Steer, Urgency};
+    use super::{Choices, Ended, RunState, Steer};
     use crate::signals::RunIntent;
+    use crate::throttle::Urgency;
     use crate::views::{
         ActionChoiceView, ConflictChoiceView, HistoryView, RunPhaseView, RunStandingView, RunView,
         SideView,

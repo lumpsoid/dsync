@@ -4,14 +4,14 @@
 //! outcome are decided - sent whole as `session`'s snapshots. What the
 //! user does arrives as intents; the state says what each one means.
 //!
-//! Snapshots go out at once on a phase change, a question or a tap, and
-//! otherwise (progress, the scan's facts) at most once per
-//! [`REFRESH_INTERVAL`], the latest state each time.
+//! Snapshots go out as the session's [`Throttle`] says: at once on a
+//! phase change, a question or a tap, and otherwise (progress, the scan's
+//! facts) at most once per refresh interval, the latest state each time.
 
 mod state;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use dsync_core::{
     BatchDecider, Connector, Decider, DryRunDecider, PeerDialer, Run, RunEvent, RunStop,
@@ -28,15 +28,13 @@ use crate::dispatch::{Handled, Hub, text};
 use crate::outbox::Outbox;
 use crate::sessions::Session;
 use crate::signals::{ReplyResult, RunIntent, RunTarget};
+use crate::throttle::{Throttle, Urgency, Verdict};
 use crate::views::millis;
 
-use state::{Choices, Ended, RunState, Steer, Urgency};
+use state::{Choices, Ended, RunState, Steer};
 
 /// Events buffered between the run and the session, as the CLI's.
 const EVENT_BUFFER: usize = 256;
-
-/// The head redraws progress no more often than this (SPEC §11.4).
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 impl Hub {
     /// Opens the run session and answers at once: resolving, connecting
@@ -59,9 +57,7 @@ impl Hub {
                 attempt: None,
                 decision: None,
                 deletes: None,
-                last_sent: None,
-                dirty: false,
-                flush_pending: false,
+                throttle: Throttle::new(),
             }),
         });
         control.update(|_| Urgency::Now);
@@ -202,11 +198,7 @@ struct Shared {
     decision: Option<oneshot::Sender<Choices>>,
     /// Where the delete guard's answer goes, while the decider waits.
     deletes: Option<oneshot::Sender<bool>>,
-    last_sent: Option<Instant>,
-    /// A routine change has not been sent yet.
-    dirty: bool,
-    /// A send is scheduled for the end of the refresh interval.
-    flush_pending: bool,
+    throttle: Throttle,
 }
 
 /// A run session: its state, the live attempt's handles, and where its
@@ -238,37 +230,27 @@ impl RunControl {
         self.publish(&mut shared, urgency);
     }
 
+    /// Carries out what the throttle says of a change of `urgency`.
     fn publish(self: &Arc<Self>, shared: &mut Shared, urgency: Urgency) {
-        let now = Instant::now();
-        match urgency {
-            Urgency::Unseen => {}
-            Urgency::Now => self.send(shared, now),
-            Urgency::Routine => match shared.last_sent {
-                Some(last) if now < last + REFRESH_INTERVAL => {
-                    shared.dirty = true;
-                    if !shared.flush_pending {
-                        shared.flush_pending = true;
-                        let control = self.clone();
-                        tokio::spawn(async move {
-                            tokio::time::sleep_until(last + REFRESH_INTERVAL).await;
-                            let mut shared = control.lock();
-                            shared.flush_pending = false;
-                            if shared.dirty {
-                                control.send(&mut shared, Instant::now());
-                            }
-                        });
+        match shared.throttle.on(urgency, Instant::now()) {
+            Verdict::Send => self.send(shared),
+            Verdict::DeferUntil(at) => {
+                let control = self.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep_until(at).await;
+                    let mut shared = control.lock();
+                    if let Verdict::Send = shared.throttle.due(Instant::now()) {
+                        control.send(&mut shared);
                     }
-                }
-                _ => self.send(shared, now),
-            },
+                });
+            }
+            Verdict::Nothing => {}
         }
     }
 
-    fn send(&self, shared: &mut Shared, now: Instant) {
+    fn send(&self, shared: &mut Shared) {
         let state = &shared.state;
         self.out.run(self.session, state.view(), state.is_over());
-        shared.last_sent = Some(now);
-        shared.dirty = false;
     }
 
     /// Carries out what `intent` means where the run stands.
@@ -479,8 +461,9 @@ mod tests {
     use dsync_domain::{Action, RelPath, RunSummary, Side};
     use tokio::sync::mpsc;
 
-    use super::{Ended, REFRESH_INTERVAL, RunControl, RunState, Shared, Urgency};
+    use super::{Ended, RunControl, RunState, Shared};
     use crate::outbox::{Outbox, Outgoing};
+    use crate::throttle::{REFRESH_INTERVAL, Throttle, Urgency};
     use crate::views::{RunPhaseView, RunView};
 
     fn control() -> (Arc<RunControl>, mpsc::UnboundedReceiver<Outgoing>) {
@@ -495,9 +478,7 @@ mod tests {
                 attempt: None,
                 decision: None,
                 deletes: None,
-                last_sent: None,
-                dirty: false,
-                flush_pending: false,
+                throttle: Throttle::new(),
             }),
         });
         (control, outgoing)

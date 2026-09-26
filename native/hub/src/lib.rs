@@ -22,6 +22,7 @@ mod run;
 mod serve;
 mod sessions;
 pub mod signals;
+mod throttle;
 pub mod views;
 
 use std::env;
@@ -32,8 +33,8 @@ use rinf::{DartSignal, RustSignal, dart_shutdown, write_interface};
 
 pub use dispatch::Core;
 pub use outbox::{Outbox, Outgoing};
-pub use run::REFRESH_INTERVAL;
 use signals::CoreRequest;
+pub use throttle::REFRESH_INTERVAL;
 
 write_interface!();
 
