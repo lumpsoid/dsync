@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dsync_core::{BatchDecider, DryRunDecider, Replica, ReplicaError, RunError, RunEvent, Stopped};
-use dsync_domain::{ArchiveCommit, ReplicaOp, Side, SkippedReason, Tuning};
+use dsync_domain::{
+    ArchiveCommit, Glob, ReplicaOp, RuleSet, Side, SkippedAt, SkippedReason, Tuning,
+};
 
 use crate::support::{
     Answer, Call, Fault, Probe, Site, kind, path, refused, run, run_with, sync, with_deadline,
@@ -113,6 +115,100 @@ async fn a_skipped_symlink_on_each_side_is_reported_before_the_plan() {
     let kinds = finished.kinds();
     assert!(kinds.iter().rposition(|k| *k == "skipped") < kinds.iter().position(|k| *k == "plan"));
     assert_eq!(finished.exit_code(), 0, "a symlink is not a failure");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_followed_folder_link_whose_target_vanishes_deletes_nothing_on_the_other_side() {
+    let site = Site::new();
+    let drive = tempfile::tempdir().unwrap();
+    let target = drive.path().join("photos");
+    fs::create_dir_all(target.join("2024")).unwrap();
+    fs::write(target.join("a.jpg"), "a").unwrap();
+    fs::write(target.join("b.jpg"), "b").unwrap();
+    fs::write(target.join("2024/c.jpg"), "c").unwrap();
+    std::os::unix::fs::symlink(&target, site.file(Side::A, "photos")).unwrap();
+    let mut options = site.options();
+    options.rules = RuleSet::new(vec![], vec![Glob::new("photos").unwrap()]);
+    let sync = async |site: &Site| {
+        run_with(
+            site,
+            site.replica(Side::A),
+            site.replica(Side::B),
+            &options,
+            &mut BatchDecider,
+            Tuning::DEFAULT,
+        )
+        .await
+    };
+    let first = sync(&site).await;
+    assert_eq!(first.exit_code(), 0);
+    let synced = site.tree(Side::B);
+    assert_eq!(
+        synced.keys().collect::<Vec<_>>(),
+        ["photos/2024/c.jpg", "photos/a.jpg", "photos/b.jpg"]
+    );
+    let archived = |side| {
+        site.archive(side)
+            .entries()
+            .map(|(path, _)| path.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let (archived_a, archived_b) = (archived(Side::A), archived(Side::B));
+    assert_eq!(
+        archived_a,
+        ["photos/2024/c.jpg", "photos/a.jpg", "photos/b.jpg"]
+    );
+    assert_eq!(archived_b, archived_a);
+
+    // The drive is unmounted: the link stays, its target is gone.
+    let unmounted = drive.path().join("unmounted");
+    fs::rename(&target, &unmounted).unwrap();
+    let vanished = sync(&site).await;
+
+    let plan = vanished
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::Plan { plan, .. } => Some(plan),
+            _ => None,
+        })
+        .unwrap();
+    assert!(plan.actions.is_empty(), "{:?}", plan.actions);
+    assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
+    assert!(vanished.results().is_empty());
+    let skipped: Vec<_> = vanished
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::Skipped { side, skipped } => Some((
+                *side,
+                skipped.at.clone(),
+                skipped.reason,
+                skipped.detail.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        skipped,
+        [(
+            Side::A,
+            SkippedAt::Path(path("photos")),
+            SkippedReason::Symlink,
+            "broken link".to_owned()
+        )]
+    );
+    assert_eq!(site.tree(Side::B), synced);
+    assert_eq!(archived(Side::A), archived_a);
+    assert_eq!(archived(Side::B), archived_b);
+
+    // Mounted again: nothing changed, so nothing moves.
+    fs::rename(&unmounted, &target).unwrap();
+    let remounted = sync(&site).await;
+    assert!(remounted.results().is_empty(), "{:?}", remounted.results());
+    assert_eq!(site.tree(Side::B), synced);
+    assert_eq!(remounted.exit_code(), 0);
 }
 
 /// Whether this process can be refused a read by permissions (not root).
