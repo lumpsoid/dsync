@@ -13,13 +13,13 @@ use std::time::Duration;
 
 use dsync_core::{
     ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan, LinkError, LocalReplica,
-    OpenedScan, RemoteReplica, Replica, ReplicaError, ReplicaServer, Run, RunEvent, RunReport,
-    StateDir, Transport,
+    OpenedScan, Reading, RemoteReplica, Replica, ReplicaError, ReplicaServer, Run, RunEvent,
+    RunReport, StateDir, Transport,
 };
 use dsync_domain::{
     Action, Archive, ArchiveCommit, Bucket, BucketCount, Command, EffectiveOptions, FileMeta,
-    Flags, HostFacts, Location, Platform, RelPath, ReplicaInfo, ReplicaLocation, ReplicaSpec,
-    RuleSet, RunFlags, ScanEntry, Side, Tuning, WriteStats,
+    Flags, HostFacts, Location, Platform, Precondition, RelPath, ReplicaInfo, ReplicaLocation,
+    ReplicaSpec, RuleSet, RunFlags, ScanEntry, Side, Tuning, WriteStats,
 };
 use tempfile::TempDir;
 use tokio::sync::{Semaphore, mpsc};
@@ -438,7 +438,7 @@ impl<R: Replica> Replica for Probe<R> {
         self.inner.scan_buckets(ticket, buckets).await
     }
 
-    async fn read(&self, path: &RelPath) -> Result<Body, ReplicaError> {
+    async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
         self.enter(Call::Read(path.as_str().to_owned())).await?;
         self.inner.read(path).await
     }
@@ -448,18 +448,19 @@ impl<R: Replica> Replica for Probe<R> {
         path: &RelPath,
         body: Body,
         meta: FileMeta,
+        expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         let reported = self.enter(Call::Write(path.as_str().to_owned())).await?;
-        let landed = self.inner.write(path, body, meta).await?;
+        let landed = self.inner.write(path, body, meta, expect).await?;
         Ok(FileMeta {
             size: reported.unwrap_or(landed.size),
             ..landed
         })
     }
 
-    async fn delete(&self, path: &RelPath) -> Result<(), ReplicaError> {
+    async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
         self.enter(Call::Delete(path.as_str().to_owned())).await?;
-        self.inner.delete(path).await
+        self.inner.delete(path, expect).await
     }
 
     async fn remove_empty_dirs(&self, path: &RelPath) -> Result<(), ReplicaError> {

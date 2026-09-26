@@ -7,7 +7,7 @@ use std::io;
 
 use dsync_core::{Body, FileOp, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
-    ArchiveCommit, BucketCount, Glob, ProfileId, ReplicaRoot, RuleSet, Side, Status,
+    ArchiveCommit, BucketCount, Glob, Precondition, ProfileId, ReplicaRoot, RuleSet, Side, Status,
 };
 
 use crate::served::Served;
@@ -194,7 +194,10 @@ async fn read_streams_the_current_bytes_and_a_missing_file_fails_as_the_local_on
     let served = Served::new(&site, Side::B).await;
     let b = served.replica.as_ref();
     with_deadline("hello", b.hello()).await.unwrap();
-    let body = with_deadline("read", b.read(&path("big"))).await.unwrap();
+    let body = with_deadline("read", b.read(&path("big")))
+        .await
+        .unwrap()
+        .body;
     assert_eq!(
         with_deadline("collect", body.collect()).await.unwrap(),
         content
@@ -228,6 +231,7 @@ async fn write_lands_through_the_wire_and_returns_what_landed() {
             &path("d/w.bin"),
             Body::from_bytes(content.clone()),
             meta(0o600),
+            Precondition::Absent,
         ),
     )
     .await
@@ -253,6 +257,7 @@ async fn a_failed_write_leaves_the_session_usable() {
             &path("file/x"),
             Body::from_bytes(vec![1; 3_000_000]),
             meta(0o644),
+            Precondition::Absent,
         ),
     )
     .await;
@@ -265,7 +270,12 @@ async fn a_failed_write_leaves_the_session_usable() {
     // A body that fails part-way fails the write, never lands as short.
     let torn = with_deadline(
         "write of a failing body",
-        b.write(&path("torn"), failing_body(b"half").await, meta(0o644)),
+        b.write(
+            &path("torn"),
+            failing_body(b"half").await,
+            meta(0o644),
+            Precondition::Absent,
+        ),
     )
     .await;
     assert!(matches!(torn, Err(ReplicaError::Write(_))), "{torn:?}");
@@ -276,7 +286,7 @@ async fn a_failed_write_leaves_the_session_usable() {
     drop(sender);
     let cut = with_deadline(
         "write of a cut body",
-        b.write(&path("cut"), body, meta(0o644)),
+        b.write(&path("cut"), body, meta(0o644), Precondition::Absent),
     )
     .await;
     assert!(matches!(cut, Err(ReplicaError::Write(_))), "{cut:?}");
@@ -284,7 +294,12 @@ async fn a_failed_write_leaves_the_session_usable() {
     // And the session carries on.
     with_deadline(
         "write after the failures",
-        b.write(&path("ok"), Body::from_bytes(b"fine".to_vec()), meta(0o644)),
+        b.write(
+            &path("ok"),
+            Body::from_bytes(b"fine".to_vec()),
+            meta(0o644),
+            Precondition::Absent,
+        ),
     )
     .await
     .unwrap();
@@ -299,7 +314,8 @@ async fn delete_and_remove_empty_dirs_reach_the_real_tree() {
     let served = Served::new(&site, Side::B).await;
     let b = served.replica.as_ref();
     with_deadline("hello", b.hello()).await.unwrap();
-    with_deadline("delete", b.delete(&path("a/b/f")))
+    let expect = site.expect(Side::B, "a/b/f");
+    with_deadline("delete", b.delete(&path("a/b/f"), expect))
         .await
         .unwrap();
     with_deadline("remove_empty_dirs", b.remove_empty_dirs(&path("a/b/f")))

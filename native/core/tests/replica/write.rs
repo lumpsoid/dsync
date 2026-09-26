@@ -4,9 +4,11 @@ use std::fs;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use dsync_core::{Body, LocalReplica, Replica, ReplicaError, Stage, body_channel};
-use dsync_domain::{FileMeta, Side};
+use dsync_domain::{FileMeta, Precondition, Side};
 
-use crate::support::{MTIME_US, Site, failing_body, meta, path, temp_files_under, with_deadline};
+use crate::support::{
+    MTIME_US, Site, expect_at, failing_body, meta, path, temp_files_under, with_deadline,
+};
 
 async fn write(replica: &LocalReplica, relative: &str, content: &str, mode: u32) -> FileMeta {
     with_deadline(
@@ -15,6 +17,7 @@ async fn write(replica: &LocalReplica, relative: &str, content: &str, mode: u32)
             &path(relative),
             Body::from_bytes(content.as_bytes().to_vec()),
             meta(mode),
+            expect_at(&replica.root().join(relative)),
         ),
     )
     .await
@@ -100,6 +103,7 @@ async fn a_parent_is_created_once_a_session_and_forgotten_when_a_write_fails() {
             &path("sub/b.txt"),
             Body::from_bytes(b"x".to_vec()),
             meta(0o644),
+            Precondition::Absent,
         ),
     )
     .await;
@@ -117,7 +121,8 @@ async fn a_folder_this_session_pruned_is_created_again_not_trusted() {
 
     write(&replica, "sub/a.txt", "x", 0o644).await;
     with_deadline("prune", async {
-        replica.delete(&path("sub/a.txt")).await.unwrap();
+        let expect = site.expect(Side::B, "sub/a.txt");
+        replica.delete(&path("sub/a.txt"), expect).await.unwrap();
         replica.remove_empty_dirs(&path("sub/a.txt")).await.unwrap();
     })
     .await;
@@ -146,7 +151,10 @@ async fn a_body_failing_mid_way_fails_the_write_and_leaves_the_target_torn() {
 
     let result = with_deadline("write", async {
         let body = failing_body(b"partial").await;
-        replica.write(&path("a.txt"), body, meta(0o644)).await
+        let expect = site.expect(Side::B, "a.txt");
+        replica
+            .write(&path("a.txt"), body, meta(0o644), expect)
+            .await
     })
     .await;
 
@@ -170,7 +178,10 @@ async fn a_body_whose_sender_goes_away_unfinished_is_cut_short_not_complete() {
         let (sender, body) = body_channel(2);
         sender.send(b"all it sent".to_vec()).await.unwrap();
         drop(sender);
-        replica.write(&path("a.txt"), body, meta(0o644)).await
+        let expect = site.expect(Side::B, "a.txt");
+        replica
+            .write(&path("a.txt"), body, meta(0o644), expect)
+            .await
     })
     .await;
 
@@ -189,7 +200,7 @@ async fn writes_in_place_with_no_scratch_file_at_any_point() {
     with_deadline("write", async {
         let (sender, body) = body_channel(2);
         let target = path("a.txt");
-        let write = replica.write(&target, body, meta(0o644));
+        let write = replica.write(&target, body, meta(0o644), site.expect(Side::B, "a.txt"));
         let feed = async {
             sender.send(b"first half ".to_vec()).await.unwrap();
             // Mid-write: the target already holds the first half.
@@ -239,9 +250,12 @@ async fn a_stalled_writer_bounds_received_but_unwritten_bytes_and_the_sender_wai
         },
     );
     let (sender, body) = body_channel(1);
+    let expect = site.expect(Side::B, "stalled");
 
     let write = tokio::spawn(async move {
-        let landed = replica.write(&path("stalled"), body, meta(0o644)).await;
+        let landed = replica
+            .write(&path("stalled"), body, meta(0o644), expect)
+            .await;
         (replica, landed)
     });
 
@@ -304,7 +318,8 @@ async fn a_write_dropped_mid_body_lands_nothing_and_leaves_no_scratch() {
     with_deadline("cancelled write", async {
         let (sender, body) = body_channel(2);
         let at = path("a.txt");
-        let mut write = Box::pin(replica.write(&at, body, meta(0o644)));
+        let expect = site.expect(Side::B, "a.txt");
+        let mut write = Box::pin(replica.write(&at, body, meta(0o644), expect));
         sender.send(b"partial".to_vec()).await.unwrap();
         // Drive the write until the writer is streaming into its scratch
         // file, then drop it the way a run's second stop does.
@@ -326,4 +341,49 @@ async fn a_write_dropped_mid_body_lands_nothing_and_leaves_no_scratch() {
     .await;
 
     assert_eq!(site.get(Side::B, "a.txt"), b"old");
+}
+
+#[tokio::test]
+async fn a_target_no_longer_what_the_scan_saw_is_left_untouched() {
+    let site = Site::new();
+    site.put(Side::B, "edited", "as scanned");
+    let scanned = site.expect(Side::B, "edited");
+    site.put(Side::B, "edited", "edited since");
+    let replica = site.replica(Side::B);
+
+    let edited = with_deadline(
+        "write",
+        replica.write(
+            &path("edited"),
+            Body::from_bytes(b"new".to_vec()),
+            meta(0o644),
+            scanned,
+        ),
+    )
+    .await;
+    // Created since a scan that saw nothing there, in a folder that did
+    // not exist either: no folder is left behind.
+    site.put(Side::B, "sub/created", "made meanwhile");
+    let created = with_deadline(
+        "write",
+        replica.write(
+            &path("sub/created"),
+            Body::from_bytes(b"new".to_vec()),
+            meta(0o644),
+            Precondition::Absent,
+        ),
+    )
+    .await;
+
+    assert!(
+        matches!(edited, Err(ReplicaError::Changed(_))),
+        "{edited:?}"
+    );
+    assert!(
+        matches!(created, Err(ReplicaError::Changed(_))),
+        "{created:?}"
+    );
+    assert_eq!(site.get(Side::B, "edited"), b"edited since");
+    assert_eq!(site.get(Side::B, "sub/created"), b"made meanwhile");
+    assert!(temp_files_under(&site.root(Side::B)).is_empty());
 }

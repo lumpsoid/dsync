@@ -3,6 +3,7 @@
 //! local against local and against a replica served over the protocol.
 
 mod apply;
+mod changed;
 mod connect;
 mod flow;
 mod missing_root;

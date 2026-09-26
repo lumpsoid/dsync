@@ -12,8 +12,8 @@ use std::io;
 use std::path::PathBuf;
 
 use dsync_domain::{
-    ArchiveCommit, ChangedScan, FileMeta, RelPath, ReplicaInfo, ReplicaSpec, RuleSet, ScanEntry,
-    Stage, WriteStats,
+    ArchiveCommit, ChangedDuringSync, ChangedScan, FileMeta, Precondition, RelPath, ReplicaInfo,
+    ReplicaSpec, RuleSet, ScanEntry, Stage, WriteStats,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,14 +36,19 @@ pub(crate) enum Request {
         peer_changed: Vec<RelPath>,
     },
     ScanBuckets(Vec<u32>),
-    /// Answered with [`Reply::Opened`], then the body's frames.
+    /// Answered with [`Reply::Opened`], then the body's frames; its `End`
+    /// carries what the file was once read ([`dsync_domain::OnDisk`]).
     Read(RelPath),
     /// Followed by the body's frames under the same id.
     Write {
         path: RelPath,
         meta: FileMeta,
+        expect: Precondition,
     },
-    Delete(RelPath),
+    Delete {
+        path: RelPath,
+        expect: Precondition,
+    },
     RemoveEmptyDirs(RelPath),
     Commit(Vec<ArchiveCommit>),
     Compact,
@@ -102,6 +107,7 @@ pub(crate) enum WireError {
     },
     NoScan,
     Refused(String),
+    Changed,
     /// The far side could not make sense of a request (a path that is not
     /// a [`RelPath`], a bucket out of range), or its own link failed.
     Protocol(String),
@@ -154,6 +160,7 @@ impl From<ReplicaError> for WireError {
             },
             ReplicaError::NoScan => WireError::NoScan,
             ReplicaError::Refused(message) => WireError::Refused(message),
+            ReplicaError::Changed(ChangedDuringSync) => WireError::Changed,
             ReplicaError::RemoteArchive(message) => WireError::Archive(message),
             ReplicaError::Link(error) => WireError::Protocol(error.to_string()),
         }
@@ -187,6 +194,7 @@ impl From<WireError> for ReplicaError {
             },
             WireError::NoScan => ReplicaError::NoScan,
             WireError::Refused(message) => ReplicaError::Refused(message),
+            WireError::Changed => ReplicaError::Changed(ChangedDuringSync),
             WireError::Protocol(message) => ReplicaError::Link(
                 crate::link_error::LinkError::Protocol(format!("the far side: {message}")),
             ),
@@ -349,8 +357,15 @@ mod tests {
             Request::Write {
                 path: path("w"),
                 meta: file(1).meta,
+                expect: Precondition::Absent,
             },
-            Request::Delete(path("d")),
+            Request::Delete {
+                path: path("d"),
+                expect: Precondition::File {
+                    size: 3,
+                    mtime_us: -5,
+                },
+            },
             Request::RemoveEmptyDirs(path("e/f")),
             Request::Commit(vec![
                 ArchiveCommit::Upsert {
@@ -436,14 +451,15 @@ mod tests {
     #[test]
     fn a_path_that_is_not_a_rel_path_does_not_decode() {
         // Same length as "../x", so only the path's bytes differ.
-        let bytes = encode(&Request::Delete(path("ab/x")));
+        let delete = Request::Delete {
+            path: path("ab/x"),
+            expect: Precondition::Absent,
+        };
+        let bytes = encode(&delete);
         let tampered = replace(&bytes, b"ab/x", b"../x");
         assert!(decode::<Request>(&tampered).is_err());
         // The positive control: the untampered bytes decode.
-        assert_eq!(
-            decode::<Request>(&bytes).unwrap(),
-            Request::Delete(path("ab/x"))
-        );
+        assert_eq!(decode::<Request>(&bytes).unwrap(), delete);
     }
 
     #[test]
@@ -465,6 +481,13 @@ mod tests {
         let mut out = bytes.to_vec();
         out[at..at + to.len()].copy_from_slice(to);
         out
+    }
+
+    #[test]
+    fn a_path_changed_during_sync_comes_back_as_changed() {
+        let wire = WireError::from(ReplicaError::Changed(ChangedDuringSync));
+        let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
+        assert!(matches!(back, ReplicaError::Changed(_)), "{back:?}");
     }
 
     #[test]

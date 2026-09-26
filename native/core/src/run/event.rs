@@ -130,15 +130,29 @@ pub enum ActionFailure {
     /// A copy whose source the scan did not see as a file.
     #[error("replica {side} has no file to copy at this path")]
     NoSource { side: Side },
+    /// The path on `side` is no longer what the scan saw there: a write or
+    /// delete found it changed and left it untouched, or a copy's source
+    /// changed under its read. Nothing is recorded for it, and the next
+    /// run reconciles it (SPEC §7.6).
+    #[error("replica {side}: changed during sync, left for the next run")]
+    ChangedDuringSync { side: Side },
 }
 
 impl ActionFailure {
     pub(crate) fn replica(side: Side, op: ReplicaOp) -> impl FnOnce(ReplicaError) -> ActionFailure {
-        move |source| ActionFailure::Replica {
-            side,
-            op,
-            source: Arc::new(source),
+        move |source| match source {
+            ReplicaError::Changed(_) => ActionFailure::ChangedDuringSync { side },
+            source => ActionFailure::Replica {
+                side,
+                op,
+                source: Arc::new(source),
+            },
         }
+    }
+
+    /// Whether this is `side`'s path found changed during sync.
+    pub(crate) fn changed_on(&self, side: Side) -> bool {
+        matches!(self, ActionFailure::ChangedDuringSync { side: on } if *on == side)
     }
 
     /// The failure that ends the whole run, when this is one (see

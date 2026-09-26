@@ -25,8 +25,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dsync_domain::{
-    Archive, CaseFolding, ContentHash, FileMeta, FileState, Jobs, RelPath, RelPathError, RuleSet,
-    ScanEntry, ScanResult, SkippedPath, SkippedReason, Status, WalkedTree, is_temp_file_name,
+    Archive, CaseFolding, ContentHash, FileMeta, FileState, Jobs, OnDisk, RelPath, RelPathError,
+    RuleSet, ScanEntry, ScanResult, SkippedPath, SkippedReason, Status, WalkedTree,
+    is_temp_file_name,
 };
 use ring::digest;
 
@@ -354,6 +355,38 @@ pub(crate) fn stat(source: &Path) -> io::Result<FileMeta> {
         mtime_us: mtime_us(meta.modified()?),
         mode: mode_of(&meta),
     })
+}
+
+/// What `meta` says is at its path, as a precondition compares it (SPEC
+/// §7.6): by the fast path's two facts, unless it is a folder. A fifo or a
+/// device reads as a file here - no scan reports one, so no precondition
+/// holds against it anyway.
+pub(crate) fn on_disk(meta: &Metadata) -> OnDisk {
+    match meta.modified() {
+        Ok(modified) if !meta.is_dir() => OnDisk::File {
+            size: meta.len(),
+            mtime_us: mtime_us(modified),
+        },
+        _ => OnDisk::Unknown,
+    }
+}
+
+/// What is at `path` now, through a followed link, as the scan would have
+/// read it.
+pub(crate) fn on_disk_at(path: &Path) -> OnDisk {
+    match fs::metadata(path) {
+        Ok(meta) => on_disk(&meta),
+        Err(error) => on_disk_failing(&error),
+    }
+}
+
+/// What a stat that failed with `error` says is at its path: nothing, when
+/// the path or a folder on it is missing - or is a file.
+pub(crate) fn on_disk_failing(error: &io::Error) -> OnDisk {
+    match error.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory => OnDisk::Absent,
+        _ => OnDisk::Unknown,
+    }
 }
 
 /// Microseconds since the epoch, negative before it (floored).

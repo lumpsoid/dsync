@@ -18,11 +18,12 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc as std_mpsc};
 use std::thread;
 use std::time::Instant;
 
-use dsync_domain::{FileMeta, RelPath};
+use dsync_domain::{FileMeta, Precondition, RelPath};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::body::Body;
 use crate::file_write::{Chunk, Destination, write_file};
+use crate::replica_error::ReplicaError;
 use crate::write_error::WriteError;
 use dsync_domain::{Stage, WriteStats};
 
@@ -31,9 +32,10 @@ use dsync_domain::{Stage, WriteStats};
 struct Job {
     path: RelPath,
     meta: FileMeta,
+    expect: Precondition,
     queued: Instant,
     chunks: mpsc::UnboundedReceiver<Chunk>,
-    landed: oneshot::Sender<Result<FileMeta, WriteError>>,
+    landed: oneshot::Sender<Result<FileMeta, ReplicaError>>,
 }
 
 pub(crate) struct WriterPool {
@@ -79,17 +81,21 @@ impl WriterPool {
     }
 
     /// Lands `body` at `path` on the next free writer, pacing the body by
-    /// the byte budget, and returns what landed.
+    /// the byte budget, and returns what landed - unless `path` is no
+    /// longer what `expect` says (see [`write_file`]).
     pub(crate) async fn write(
         &self,
         path: RelPath,
         mut body: Body,
         meta: FileMeta,
-    ) -> Result<FileMeta, WriteError> {
-        let stopped = |path: RelPath| WriteError {
-            path,
-            stage: Stage::Wait,
-            source: std::io::Error::other("the writer pool stopped"),
+        expect: Precondition,
+    ) -> Result<FileMeta, ReplicaError> {
+        let stopped = |path: RelPath| {
+            ReplicaError::Write(WriteError {
+                path,
+                stage: Stage::Wait,
+                source: std::io::Error::other("the writer pool stopped"),
+            })
         };
         let Ok(_slot) = self.slots.clone().acquire_owned().await else {
             return Err(stopped(path));
@@ -99,6 +105,7 @@ impl WriterPool {
         let job = Job {
             path: path.clone(),
             meta,
+            expect,
             queued: Instant::now(),
             chunks,
             landed: landed_tx,
@@ -163,7 +170,14 @@ fn run_writer(
         let taken = Instant::now();
         let mut file = WriteStats::default();
         file.queue_wait = taken - job.queued;
-        let landed = write_file(destination, &job.path, job.meta, &mut job.chunks, &mut file);
+        let landed = write_file(
+            destination,
+            &job.path,
+            job.meta,
+            job.expect,
+            &mut job.chunks,
+            &mut file,
+        );
         file.files = u64::from(landed.is_ok());
         file.busy = taken.elapsed();
         stats

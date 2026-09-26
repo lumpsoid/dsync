@@ -9,10 +9,10 @@ use std::fs;
 use std::os::unix::fs::symlink;
 
 use dsync_core::{Body, LocalReplica, Replica, ReplicaError};
-use dsync_domain::Side;
+use dsync_domain::{Precondition, Side};
 
 use crate::support::{
-    Site, failing_body, meta, mode_of, path, set_mode, temp_files_under, with_deadline,
+    Site, expect_at, failing_body, meta, mode_of, path, set_mode, temp_files_under, with_deadline,
 };
 
 async fn write_new(replica: &LocalReplica, content: &str) {
@@ -22,6 +22,7 @@ async fn write_new(replica: &LocalReplica, content: &str) {
             &path("a.txt"),
             Body::from_bytes(content.as_bytes().to_vec()),
             meta(0o644),
+            expect_at(&replica.root().join("a.txt")),
         ),
     )
     .await
@@ -105,31 +106,32 @@ async fn a_followed_symlink_is_written_through_and_stays_a_link() {
 }
 
 #[tokio::test]
-async fn a_target_that_cannot_be_probed_is_replaced_and_a_failed_replace_leaves_nothing() {
+async fn a_target_that_cannot_be_probed_is_changed_since_the_scan_and_left_untouched() {
     let site = Site::new();
-    // A link to itself: reading through it fails (ELOOP), so what is there
-    // is unknown and the write takes the safe way.
+    // A link to itself: reading through it fails (ELOOP). The scan skips
+    // it, so it saw nothing there, and nothing there is not what the
+    // write finds.
     let target = site.file(Side::B, "a.txt");
     symlink("a.txt", &target).unwrap();
     let replica = site.replica(Side::B);
 
-    let failed = with_deadline("failing write", async {
+    let refused = with_deadline("write", async {
         let body = failing_body(b"partial").await;
-        replica.write(&path("a.txt"), body, meta(0o644)).await
+        replica
+            .write(&path("a.txt"), body, meta(0o644), Precondition::Absent)
+            .await
     })
     .await;
 
-    assert!(matches!(failed, Err(ReplicaError::Write(_))), "{failed:?}");
-    // Untouched, unlike an in-place write's torn target, and no scratch.
+    assert!(
+        matches!(refused, Err(ReplicaError::Changed(_))),
+        "{refused:?}"
+    );
     assert!(
         fs::symlink_metadata(&target)
             .unwrap()
             .file_type()
             .is_symlink()
     );
-    assert!(temp_files_under(site.dir()).is_empty());
-
-    write_new(&replica, "new").await;
-    assert_eq!(fs::read(&target).unwrap(), b"new");
     assert!(temp_files_under(site.dir()).is_empty());
 }

@@ -95,7 +95,9 @@ pub use peer_listener::{NOT_GRANTED, PeerBindError, PeerListener, bind_peer};
 pub use peer_pin::CertificateRefusal;
 pub use profile_store::{ProfileStore, ProfileStoreError};
 pub use remote_replica::RemoteReplica;
-pub use replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Replica};
+pub use replica::{
+    BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
+};
 pub use replica_error::{FileOp, ReplicaError};
 pub use replica_lock::{LockError, ReplicaLock};
 pub use replica_server::ReplicaServer;

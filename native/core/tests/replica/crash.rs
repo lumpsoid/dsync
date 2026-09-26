@@ -3,7 +3,7 @@
 //! copy nor move its bytes again.
 
 use dsync_core::Replica;
-use dsync_domain::{Action, Side, Status};
+use dsync_domain::{Action, Precondition, Side, Status};
 
 use crate::support::{CopyUntil, Site, apply, copy, exchange, hash_of, path, seed, with_deadline};
 
@@ -38,7 +38,11 @@ async fn a_crash_between_the_two_commits_converges_without_moving_bytes_again() 
                 }]
             );
             let source = *exchanged.status(Side::A, "f").unwrap().file().unwrap();
-            copy(&a, &b, "f", source, CopyUntil::DestinationCommitted).await;
+            let seen = exchanged
+                .status(Side::B, "f")
+                .and_then(|b| b.file().copied());
+            let expect = Precondition::of(seen.as_ref());
+            copy(&a, &b, "f", source, expect, CopyUntil::DestinationCommitted).await;
             a.unlock().await.unwrap();
             b.unlock().await.unwrap();
         })

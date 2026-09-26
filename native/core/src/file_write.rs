@@ -11,11 +11,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use dsync_domain::{FileMeta, RelPath, WriteMode, WriteTarget, temp_name_for};
+use dsync_domain::{
+    ChangedDuringSync, FileMeta, OnDisk, Precondition, RelPath, WriteMode, WriteTarget,
+    temp_name_for,
+};
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::body::BodyError;
-use crate::scanner::stat;
+use crate::replica_error::ReplicaError;
+use crate::scanner::{on_disk, on_disk_failing, stat};
 use crate::write_error::WriteError;
 use dsync_domain::{Stage, WriteStats};
 
@@ -180,6 +184,10 @@ fn next_temp() -> u64 {
 /// metadata that actually landed (SPEC §7.4: the post-write state, not the
 /// one asked for). Every stage is timed into `stats`.
 ///
+/// Unless `path` is no longer what `expect` says the scan saw there: then
+/// nothing is touched, and the write fails [`ReplicaError::Changed`] (SPEC
+/// §7.6). Checked by the stat the write makes anyway, just before acting.
+///
 /// On failure the target is left as the write left it: torn if it was
 /// written in place, which is safe only because the caller marked the path
 /// untrusted, durably, first (SPEC §7.6). A scratch file is this write's
@@ -190,12 +198,21 @@ pub(crate) fn write_file(
     destination: &Destination,
     path: &RelPath,
     meta: FileMeta,
+    expect: Precondition,
     chunks: &mut mpsc::UnboundedReceiver<Chunk>,
     stats: &mut WriteStats,
-) -> Result<FileMeta, WriteError> {
+) -> Result<FileMeta, ReplicaError> {
     let mut timer = StageTimer::new(stats);
     let mut scratch: Option<Scratch> = None;
-    let landed = land(destination, path, meta, chunks, &mut timer, &mut scratch);
+    let landed = land(
+        destination,
+        path,
+        meta,
+        expect,
+        chunks,
+        &mut timer,
+        &mut scratch,
+    );
     if landed.is_err() {
         if let Some(parent) = path.parent() {
             destination.forget(&parent);
@@ -204,28 +221,47 @@ pub(crate) fn write_file(
             let _ = fs::remove_file(scratch.path);
         }
     }
-    landed.map_err(|(stage, source)| WriteError {
-        path: path.clone(),
-        stage,
-        source,
+    landed.map_err(|failed| match failed {
+        Failed::At(stage, source) => ReplicaError::Write(WriteError {
+            path: path.clone(),
+            stage,
+            source,
+        }),
+        Failed::Changed(changed) => ReplicaError::Changed(changed),
     })
 }
 
-type Failed = (Stage, io::Error);
+enum Failed {
+    At(Stage, io::Error),
+    Changed(ChangedDuringSync),
+}
+
+impl From<ChangedDuringSync> for Failed {
+    fn from(changed: ChangedDuringSync) -> Failed {
+        Failed::Changed(changed)
+    }
+}
 
 fn at(stage: Stage) -> impl FnOnce(io::Error) -> Failed {
-    move |source| (stage, source)
+    move |source| Failed::At(stage, source)
 }
 
 fn land(
     destination: &Destination,
     path: &RelPath,
     meta: FileMeta,
+    expect: Precondition,
     chunks: &mut mpsc::UnboundedReceiver<Chunk>,
     timer: &mut StageTimer,
     scratch: &mut Option<Scratch>,
 ) -> Result<FileMeta, Failed> {
     let root = &destination.root;
+    let target = path.join_under(root);
+    // Before the folders too: a path whose parent is not there reads as
+    // absent, and one that changed leaves nothing behind.
+    let (found, now) = probe(&target);
+    timer.lap(Stage::Probe);
+    expect.check(now)?;
     if let Some(parent) = path.parent()
         && destination
             .ensure_parent(&parent)
@@ -234,9 +270,6 @@ fn land(
         timer.lap(Stage::Mkdir);
     }
 
-    let target = path.join_under(root);
-    let found = probe(&target);
-    timer.lap(Stage::Probe);
     let mut file = match found.mode() {
         WriteMode::InPlace => match open_in_place(&target, &found) {
             Ok(file) => {
@@ -250,7 +283,7 @@ fn land(
                 timer.lap(Stage::Open);
                 create_scratch(&target, scratch, timer)?
             }
-            Err(error) => return Err((stage_opening(&found), error)),
+            Err(error) => return Err(Failed::At(stage_opening(&found), error)),
         },
         WriteMode::TempAndRename => create_scratch(&target, scratch, timer)?,
     };
@@ -265,8 +298,8 @@ fn land(
                 timer.lap(Stage::Write);
             }
             Some(Chunk::End) => break,
-            Some(Chunk::Failed(error)) => return Err((Stage::Wait, error.into())),
-            None => return Err((Stage::Wait, BodyError::CutShort.into())),
+            Some(Chunk::Failed(error)) => return Err(Failed::At(Stage::Wait, error.into())),
+            None => return Err(Failed::At(Stage::Wait, BodyError::CutShort.into())),
         }
     }
 
@@ -288,17 +321,26 @@ fn land(
 }
 
 /// What is at `target`, read through a followed symlink: the write lands on
-/// the link's target (SPEC §5.1).
-fn probe(target: &Path) -> WriteTarget {
+/// the link's target (SPEC §5.1). Once as the write path needs it, once as
+/// the write's precondition does, from one stat.
+fn probe(target: &Path) -> (WriteTarget, OnDisk) {
     match fs::metadata(target) {
-        Ok(meta) => WriteTarget::Existing {
-            link_count: link_count(&meta),
-            writable: !meta.permissions().readonly(),
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => WriteTarget::Absent,
-        Err(error) => WriteTarget::Unknown {
-            reason: error.to_string(),
-        },
+        Ok(meta) => (
+            WriteTarget::Existing {
+                link_count: link_count(&meta),
+                writable: !meta.permissions().readonly(),
+            },
+            on_disk(&meta),
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            (WriteTarget::Absent, OnDisk::Absent)
+        }
+        Err(error) => (
+            WriteTarget::Unknown {
+                reason: error.to_string(),
+            },
+            on_disk_failing(&error),
+        ),
     }
 }
 
@@ -359,7 +401,7 @@ fn create_scratch(
     let name = onto
         .file_name()
         .ok_or_else(|| {
-            (
+            Failed::At(
                 Stage::Create,
                 io::Error::other("the target has no file name"),
             )
@@ -434,6 +476,7 @@ mod tests {
             destination,
             &RelPath::parse(name).unwrap(),
             meta,
+            Precondition::Absent,
             &mut chunks,
             &mut WriteStats::one_writer(),
         )

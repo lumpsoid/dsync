@@ -40,16 +40,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use dsync_domain::{
-    Action, ArchiveCommit, FileState, OwedCommits, RelPath, ReplicaOp, ScanEntry, Side, Status,
-    Tuning, spread_across_folders,
+    Action, ArchiveCommit, FileState, OwedCommits, Precondition, RelPath, ReplicaOp, ScanEntry,
+    Side, Status, Tuning, spread_across_folders,
 };
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use tokio::sync::{Semaphore, SemaphorePermit, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::body::Body;
-use crate::replica::Replica;
+use crate::replica::{Reading, Replica, Settled};
 use crate::run::Events;
 use crate::run::event::{ActionFailure, RunError, RunEvent};
 use crate::run::pair::Pair;
@@ -86,7 +85,7 @@ enum Prepared {
         path: RelPath,
         from: Side,
         source: FileState,
-        body: Body,
+        reading: Reading,
     },
     /// A copy aside, written at `to` (its source path is not needed past
     /// the read).
@@ -94,7 +93,7 @@ enum Prepared {
         from: Side,
         to: RelPath,
         source: FileState,
-        body: Body,
+        reading: Reading,
     },
     Delete {
         path: RelPath,
@@ -113,7 +112,8 @@ struct Owed {
 }
 
 /// Copies marked on the side and path they write, and the written path of
-/// every copy a worker started: the marks to withdraw are the difference.
+/// every copy a worker started and did not find changed on its
+/// destination: the marks to withdraw are the difference.
 #[derive(Default)]
 struct Marks {
     marked: Vec<(Side, RelPath)>,
@@ -319,6 +319,14 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             lock(marks).started.insert(written.clone());
         }
         let outcome = self.perform(prepared, emptied).await;
+        if let Err(failure) = &outcome
+            && let Some((side, written)) = action.written()
+            && failure.changed_on(side)
+        {
+            // The write touched nothing: its mark is withdrawn like an
+            // unstarted copy's (SPEC §7.6).
+            lock(marks).started.remove(written);
+        }
         let _ = owed.send(Owed { action, outcome }).await;
     }
 
@@ -326,20 +334,20 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
     async fn prepare(&self, action: &Action) -> Prepared {
         match action {
             Action::Copy { path, from, .. } => match self.read_source(*from, path).await {
-                Ok((source, body)) => Prepared::Copy {
+                Ok((source, reading)) => Prepared::Copy {
                     path: path.clone(),
                     from: *from,
                     source,
-                    body,
+                    reading,
                 },
                 Err(failure) => Prepared::Failed(failure),
             },
             Action::CopyAside { path, from, to, .. } => match self.read_source(*from, path).await {
-                Ok((source, body)) => Prepared::CopyAside {
+                Ok((source, reading)) => Prepared::CopyAside {
                     from: *from,
                     to: to.clone(),
                     source,
-                    body,
+                    reading,
                 },
                 Err(failure) => Prepared::Failed(failure),
             },
@@ -356,20 +364,22 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         &self,
         from: Side,
         path: &RelPath,
-    ) -> Result<(FileState, Body), ActionFailure> {
+    ) -> Result<(FileState, Reading), ActionFailure> {
         let source = self
             .file_on(from, path)
             .ok_or(ActionFailure::NoSource { side: from })?;
-        let body = self
+        let reading = self
             .pair
             .read(from, path)
             .await
             .map_err(ActionFailure::replica(from, ReplicaOp::Read))?;
-        Ok((source, body))
+        Ok((source, reading))
     }
 
     /// The action's file work (SPEC §7.2, §7.5), and what it leaves the two
-    /// archives owing (§7.3).
+    /// archives owing (§7.3). Each write and delete carries what the scan
+    /// saw at its path, and each copy's source is checked against its scan
+    /// once read; a path found changed owes nothing (§7.6).
     async fn perform(
         &self,
         prepared: Prepared,
@@ -380,14 +390,16 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 path,
                 from,
                 source,
-                body,
+                reading,
             } => {
                 let onto = from.other();
+                let expect = Precondition::of(self.file_on(onto, &path).as_ref());
                 let landed = self
                     .pair
-                    .write(onto, &path, body, source.meta)
+                    .write(onto, &path, reading.body, source.meta, expect)
                     .await
                     .map_err(ActionFailure::replica(onto, ReplicaOp::Write))?;
+                source_unchanged(from, &source, reading.settled).await?;
                 let owed = OwedCommits::for_copy(&path, from, source, landed)?;
                 self.pair.clock.copied(from, landed.size);
                 Ok(owed)
@@ -396,21 +408,26 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 from,
                 to,
                 source,
-                body,
+                reading,
             } => {
                 let onto = from.other();
+                // A new name: whatever is there already - the aside of an
+                // earlier keep-both, perhaps merged since - is not
+                // overwritten (SPEC §7.2).
                 let landed = self
                     .pair
-                    .write(onto, &to, body, source.meta)
+                    .write(onto, &to, reading.body, source.meta, Precondition::Absent)
                     .await
                     .map_err(ActionFailure::replica(onto, ReplicaOp::Write))?;
+                source_unchanged(from, &source, reading.settled).await?;
                 let owed = OwedCommits::for_copy_aside(&to, from, source, landed)?;
                 self.pair.clock.copied(from, landed.size);
                 Ok(owed)
             }
             Prepared::Delete { path, on } => {
+                let expect = Precondition::of(self.file_on(on, &path).as_ref());
                 self.pair
-                    .delete(on, &path)
+                    .delete(on, &path, expect)
                     .await
                     .map_err(ActionFailure::replica(on, ReplicaOp::Delete))?;
                 // Swept once every action is done: the folder is empty
@@ -533,6 +550,19 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             done = work => done.ok(),
         }
     }
+}
+
+/// Whether a copy's source, once read, was still what the scan saw on
+/// `from` (SPEC §7.6). If not, the destination keeps the bytes, but nothing
+/// is recorded for the path: they may not be the scanned content.
+async fn source_unchanged(
+    from: Side,
+    source: &FileState,
+    settled: Settled,
+) -> Result<(), ActionFailure> {
+    Precondition::of(Some(source))
+        .check(settled.after().await)
+        .map_err(|_| ActionFailure::ChangedDuringSync { side: from })
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

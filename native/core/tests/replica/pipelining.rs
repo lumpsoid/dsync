@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use dsync_core::{BodySender, LinkError, Replica, ReplicaError, body_channel};
-use dsync_domain::{ArchiveCommit, Side};
+use dsync_domain::{ArchiveCommit, Precondition, Side};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -21,7 +21,7 @@ fn held_write(served: &Served, relative: &'static str) -> (BodySender, JoinHandl
     let replica = served.replica.clone();
     let write = tokio::spawn(async move {
         replica
-            .write(&path(relative), body, meta(0o644))
+            .write(&path(relative), body, meta(0o644), Precondition::Absent)
             .await
             .unwrap();
     });
@@ -55,7 +55,8 @@ async fn a_later_operation_on_another_path_completes_before_an_earlier_one() {
     let (sender, mut write) = held_write(&served, "slow");
     // Issued after the write, answered first: the reply for `other`
     // reaches its own caller while the write's exchange is still open.
-    with_deadline("delete", served.replica.delete(&path("other")))
+    let expect = site.expect(Side::B, "other");
+    with_deadline("delete", served.replica.delete(&path("other"), expect))
         .await
         .unwrap();
     assert!(still_pending(&mut write).await);
@@ -108,11 +109,10 @@ async fn a_barrier_drains_the_window_and_holds_what_comes_after_it() {
     let mut compact = logged(&log, "compact", async move { replica.compact().await });
     tokio::task::yield_now().await;
     let replica = served.replica.clone();
-    let mut delete = logged(
-        &log,
-        "delete",
-        async move { replica.delete(&path("q")).await },
-    );
+    let expect = site.expect(Side::B, "q");
+    let mut delete = logged(&log, "delete", async move {
+        replica.delete(&path("q"), expect).await
+    });
     assert!(still_pending(&mut compact).await);
     assert!(still_pending(&mut delete).await);
     assert!(site.file(Side::B, "q").exists());
@@ -174,10 +174,18 @@ async fn a_connection_that_fails_takes_every_outstanding_operation_with_it() {
         "{compacted:?}"
     );
     // A body still arriving is cut short, never taken as a short file.
-    assert!(with_deadline("collect", unread.collect()).await.is_err());
+    assert!(
+        with_deadline("collect", unread.body.collect())
+            .await
+            .is_err()
+    );
     // And every later call fails at once.
     assert!(matches!(
-        with_deadline("later", served.replica.delete(&path("x"))).await,
+        with_deadline(
+            "later",
+            served.replica.delete(&path("x"), Precondition::Absent)
+        )
+        .await,
         Err(ReplicaError::Link(LinkError::Closed))
     ));
     drop(sender);
@@ -194,8 +202,11 @@ fn held_write_failing(
 ) {
     let (sender, body) = body_channel(4);
     let replica = served.replica.clone();
-    let write =
-        tokio::spawn(async move { replica.write(&path(relative), body, meta(0o644)).await });
+    let write = tokio::spawn(async move {
+        replica
+            .write(&path(relative), body, meta(0o644), Precondition::Absent)
+            .await
+    });
     (sender, write)
 }
 
@@ -217,7 +228,7 @@ async fn small_read_behind_an_unread(size: usize) -> bool {
     let replica = served.replica.clone();
     let (done, mut finished) = mpsc::channel(1);
     let small = tokio::spawn(async move {
-        let body = replica.read(&path("small")).await.unwrap();
+        let body = replica.read(&path("small")).await.unwrap().body;
         let bytes = body.collect().await.unwrap();
         done.send(()).await.unwrap();
         bytes
@@ -226,7 +237,7 @@ async fn small_read_behind_an_unread(size: usize) -> bool {
         .await
         .is_ok();
     assert_eq!(
-        with_deadline("the unread body", unread.collect())
+        with_deadline("the unread body", unread.body.collect())
             .await
             .unwrap()
             .len(),

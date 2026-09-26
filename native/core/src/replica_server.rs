@@ -266,26 +266,31 @@ impl<R: Replica> Served<R> {
                 answer.map(Reply::Buckets)
             }
             Request::Read(path) => match replica.read(&path).await {
-                Ok(body) => {
+                Ok(reading) => {
                     // Open before the reply, so no grant can arrive ahead
                     // of it.
                     let credit = self.credits.open(id);
                     reply(&self.outbox, id, Ok(Reply::Opened)).await;
                     // Forwarded as it is read: a local read holds a blocking
                     // thread until its body is consumed.
-                    let _ = self.outbox.send_body(id, body, credit).await;
+                    let _ = self.outbox.send_read(id, reading, credit).await;
                     return;
                 }
                 Err(error) => Err(error),
             },
-            Request::Write { path, meta } => match body {
-                Some(body) => replica.write(&path, body, meta).await.map(Reply::Written),
+            Request::Write { path, meta, expect } => match body {
+                Some(body) => replica
+                    .write(&path, body, meta, expect)
+                    .await
+                    .map(Reply::Written),
                 None => {
                     return reply(&self.outbox, id, Err(protocol("a write without its body")))
                         .await;
                 }
             },
-            Request::Delete(path) => replica.delete(&path).await.map(|()| Reply::Done),
+            Request::Delete { path, expect } => {
+                replica.delete(&path, expect).await.map(|()| Reply::Done)
+            }
             Request::RemoveEmptyDirs(path) => {
                 replica.remove_empty_dirs(&path).await.map(|()| Reply::Done)
             }
@@ -408,9 +413,9 @@ mod tests {
     //! what only a client that breaks the protocol can reach.
 
     use std::fs;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
-    use dsync_domain::{Jobs, ProfileId, RelPath, Side};
+    use dsync_domain::{Jobs, Precondition, ProfileId, RelPath, Side};
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, duplex};
     use tokio::task::JoinHandle;
 
@@ -547,7 +552,19 @@ mod tests {
         ));
 
         // "ab/x" and "../x" have the same length, so only the path differs.
-        let valid = wire::encode(&Request::Delete(RelPath::parse("ab/x").unwrap()));
+        let inside = fs::metadata(site.dir.path().join("root/ab/x")).unwrap();
+        let mtime = inside
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap();
+        let valid = wire::encode(&Request::Delete {
+            path: RelPath::parse("ab/x").unwrap(),
+            expect: Precondition::File {
+                size: inside.len(),
+                mtime_us: i64::try_from(mtime.as_micros()).unwrap(),
+            },
+        });
         let at = valid.windows(4).position(|w| w == b"ab/x").unwrap();
         let mut escaping = valid.clone();
         escaping[at..at + 4].copy_from_slice(b"../x");

@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, BucketDigests, FileMeta, RelPath, ReplicaInfo, ReplicaSpec,
-    RuleSet, ScanEntry, Tuning, WriteStats,
+    ArchiveCommit, Bucket, BucketCount, BucketDigests, FileMeta, OnDisk, Precondition, RelPath,
+    ReplicaInfo, ReplicaSpec, RuleSet, ScanEntry, Tuning, WriteStats,
 };
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::oneshot;
@@ -28,7 +28,9 @@ use crate::credit::{self, Credits};
 use crate::frame::{Frame, FrameError, Kind};
 use crate::inbound::{Inbound, Piece};
 use crate::link_error::LinkError;
-use crate::replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Replica};
+use crate::replica::{
+    BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
+};
 use crate::replica_error::ReplicaError;
 use crate::request_window::RequestWindow;
 use crate::ssh_transport::{SshChild, SshLaunch};
@@ -70,10 +72,12 @@ struct Routes {
 /// Where the reader sends an exchange's frames.
 enum Route {
     Reply(oneshot::Sender<Answer>),
-    /// A read: its reply, then its body.
+    /// A read: its reply, then its body, whose end says what the file
+    /// was once read.
     Read {
         reply: Option<oneshot::Sender<Answer>>,
         body: Inbound,
+        settle: oneshot::Sender<OnDisk>,
     },
 }
 
@@ -284,16 +288,25 @@ impl Link {
                     Some(Route::Reply(reply)) => {
                         let _ = reply.send(answer);
                     }
-                    Some(Route::Read { reply, body }) => {
+                    Some(Route::Read {
+                        reply,
+                        body,
+                        settle,
+                    }) => {
                         let failed = answer.is_err();
                         if let Some(reply) = reply {
                             let _ = reply.send(answer);
                         }
                         // A read that failed to open sends no body.
                         if !failed {
-                            routes
-                                .open
-                                .insert(frame.id, Route::Read { reply: None, body });
+                            routes.open.insert(
+                                frame.id,
+                                Route::Read {
+                                    reply: None,
+                                    body,
+                                    settle,
+                                },
+                            );
                         }
                     }
                     // The caller gave up on it; nobody is waiting.
@@ -302,20 +315,31 @@ impl Link {
                 Ok(())
             }
             Kind::Chunk | Kind::End | Kind::Fail => {
-                let piece = match frame.kind {
-                    Kind::Chunk => Piece::Chunk(frame.payload),
-                    Kind::End => Piece::End,
-                    _ => Piece::Fail(wire::decode::<WireIo>(&frame.payload).map_err(|error| {
-                        LinkError::Protocol(format!("an undecodable body failure: {error}"))
-                    })?),
+                let (piece, settled) = match frame.kind {
+                    Kind::Chunk => (Piece::Chunk(frame.payload), None),
+                    Kind::End => {
+                        let now = wire::decode::<OnDisk>(&frame.payload).map_err(|error| {
+                            LinkError::Protocol(format!("an undecodable read end: {error}"))
+                        })?;
+                        (Piece::End, Some(now))
+                    }
+                    _ => (
+                        Piece::Fail(wire::decode::<WireIo>(&frame.payload).map_err(|error| {
+                            LinkError::Protocol(format!("an undecodable body failure: {error}"))
+                        })?),
+                        None,
+                    ),
                 };
                 let mut routes = self.routes();
                 if let Some(Route::Read { body, .. }) = routes.open.get(&frame.id) {
                     let over = body
                         .push(piece)
                         .map_err(|_| LinkError::Protocol("a body frame past its credit".into()))?;
-                    if over {
-                        routes.open.remove(&frame.id);
+                    if over
+                        && let Some(Route::Read { settle, .. }) = routes.open.remove(&frame.id)
+                        && let Some(now) = settled
+                    {
+                        let _ = settle.send(now);
                     }
                 }
                 Ok(())
@@ -453,17 +477,19 @@ impl Replica for RemoteReplica {
         }
     }
 
-    async fn read(&self, path: &RelPath) -> Result<Body, ReplicaError> {
+    async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
         // Held by the body's route until the body is over, so a read costs
         // its place in the window for as long as its bytes are arriving.
         let slot = self.window.enter([path.clone()]).await;
-        let (id, answer, body) = self.link.open(|id, reply| {
+        let (id, answer, reading) = self.link.open(|id, reply| {
             let (inbound, body) = Inbound::open(self.link.outbox.clone(), id, slot);
+            let (settle, settled) = Settled::channel();
             let route = Route::Read {
                 reply: Some(reply),
                 body: inbound,
+                settle,
             };
-            (route, body)
+            (route, Reading { body, settled })
         })?;
         self.link
             .send(Frame::new(
@@ -473,7 +499,7 @@ impl Replica for RemoteReplica {
             ))
             .await?;
         match self.link.answer(answer).await? {
-            Reply::Opened => Ok(body),
+            Reply::Opened => Ok(reading),
             _ => Err(unexpected("read")),
         }
     }
@@ -483,6 +509,7 @@ impl Replica for RemoteReplica {
         path: &RelPath,
         mut body: Body,
         meta: FileMeta,
+        expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         let _slot = self.window.enter([path.clone()]).await;
         let (id, mut answer, ()) = self.link.open(|_, reply| (Route::Reply(reply), ()))?;
@@ -490,6 +517,7 @@ impl Replica for RemoteReplica {
         let request = Request::Write {
             path: path.clone(),
             meta,
+            expect,
         };
         self.link
             .send(Frame::new(Kind::Request, id, wire::encode(&request)))
@@ -542,9 +570,13 @@ impl Replica for RemoteReplica {
         }
     }
 
-    async fn delete(&self, path: &RelPath) -> Result<(), ReplicaError> {
+    async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
         let _slot = self.window.enter([path.clone()]).await;
-        done(self.call(Request::Delete(path.clone())).await?, "delete")
+        let request = Request::Delete {
+            path: path.clone(),
+            expect,
+        };
+        done(self.call(request).await?, "delete")
     }
 
     async fn remove_empty_dirs(&self, path: &RelPath) -> Result<(), ReplicaError> {
@@ -792,7 +824,7 @@ mod tests {
             request.id
         };
         let (wrote, id) = within(REAL, async {
-            tokio::join!(client.write(&f, body, meta), far_side)
+            tokio::join!(client.write(&f, body, meta, Precondition::Absent), far_side)
         })
         .await;
         assert!(matches!(wrote, Err(ReplicaError::Refused(_))), "{wrote:?}");
@@ -818,11 +850,35 @@ mod tests {
             .await;
         };
         let (read, ()) = within(REAL, async { tokio::join!(client.read(&f), far_side) }).await;
-        assert!(within(REAL, read.unwrap().collect()).await.is_err());
+        assert!(within(REAL, read.unwrap().body.collect()).await.is_err());
         assert!(matches!(
             within(REAL, client.lock()).await,
             Err(ReplicaError::Link(LinkError::Protocol(_)))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_read_s_end_says_what_its_file_was_once_read() {
+        let (client, mut peer) = connected(None).await;
+        let f = RelPath::parse("f").unwrap();
+        let now = OnDisk::File {
+            size: 2,
+            mtime_us: 7,
+        };
+        let far_side = async {
+            let request = peer.next_request().await;
+            let opened: Answer = Ok(Reply::Opened);
+            peer.send(Frame::new(Kind::Reply, request.id, wire::encode(&opened)))
+                .await;
+            peer.send(Frame::new(Kind::Chunk, request.id, b"hi".to_vec()))
+                .await;
+            peer.send(Frame::new(Kind::End, request.id, wire::encode(&now)))
+                .await;
+        };
+        let (read, ()) = within(REAL, async { tokio::join!(client.read(&f), far_side) }).await;
+        let Reading { body, settled } = read.unwrap();
+        assert_eq!(within(REAL, body.collect()).await.unwrap(), b"hi");
+        assert_eq!(within(REAL, settled.after()).await, now);
     }
 
     #[tokio::test]
@@ -834,7 +890,8 @@ mod tests {
             let second = peer.next_request().await;
             // Answered last first; each answer names the path it was for.
             for request in [second, first] {
-                let Ok(Request::Delete(path)) = wire::decode::<Request>(&request.payload) else {
+                let Ok(Request::Delete { path, .. }) = wire::decode::<Request>(&request.payload)
+                else {
                     panic!("not a delete");
                 };
                 let answer: Answer = Err(WireError::Refused(path.to_string()));
@@ -843,7 +900,11 @@ mod tests {
             }
         };
         let (on_x, on_y, ()) = within(REAL, async {
-            tokio::join!(client.delete(&x), client.delete(&y), far_side)
+            tokio::join!(
+                client.delete(&x, Precondition::Absent),
+                client.delete(&y, Precondition::Absent),
+                far_side
+            )
         })
         .await;
         assert!(matches!(on_x, Err(ReplicaError::Refused(p)) if p == "x"));

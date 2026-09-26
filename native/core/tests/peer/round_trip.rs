@@ -2,7 +2,7 @@
 //! through `RemoteReplica` to a `LocalReplica` behind the listener.
 
 use dsync_core::{Body, Replica};
-use dsync_domain::{ArchiveCommit, FileMeta, FileState, RelPath, RuleSet, Status};
+use dsync_domain::{ArchiveCommit, FileMeta, FileState, Precondition, RelPath, RuleSet, Status};
 
 use crate::support::{Host, PROFILE, identity, serve, somewhere, with_deadline};
 
@@ -54,7 +54,12 @@ async fn a_replica_behind_the_listener_scans_writes_and_commits() {
     .unwrap();
     let landed = with_deadline(
         "write",
-        replica.write(&path, Body::from_bytes(content.clone()), meta),
+        replica.write(
+            &path,
+            Body::from_bytes(content.clone()),
+            meta,
+            Precondition::Absent,
+        ),
     )
     .await
     .unwrap();

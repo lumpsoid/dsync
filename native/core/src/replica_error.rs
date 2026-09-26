@@ -4,6 +4,8 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+use dsync_domain::ChangedDuringSync;
+
 use crate::archive_store::ArchiveError;
 use crate::link_error::LinkError;
 use crate::replica_lock::LockError;
@@ -20,6 +22,10 @@ pub enum ReplicaError {
     Scan(#[from] UnreadableRoot),
     #[error(transparent)]
     Write(#[from] WriteError),
+    /// A write or delete found its path no longer what the scan saw there,
+    /// and left it untouched (SPEC §7.6).
+    #[error(transparent)]
+    Changed(#[from] ChangedDuringSync),
     #[error("{op} {}: {source}", path.display())]
     File {
         op: FileOp,

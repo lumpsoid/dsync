@@ -3,14 +3,14 @@
 //! enum dispatches by delegation, statically.
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, FileMeta, RelPath, ReplicaInfo, RuleSet, ScanEntry,
-    WriteStats,
+    ArchiveCommit, Bucket, BucketCount, FileMeta, Precondition, RelPath, ReplicaInfo, RuleSet,
+    ScanEntry, WriteStats,
 };
 
 use crate::body::Body;
 use crate::local_replica::LocalReplica;
 use crate::remote_replica::RemoteReplica;
-use crate::replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Replica};
+use crate::replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica};
 use crate::replica_error::ReplicaError;
 
 pub enum AnyReplica {
@@ -66,7 +66,7 @@ impl Replica for AnyReplica {
         delegate!(self.scan_buckets(ticket, buckets))
     }
 
-    async fn read(&self, path: &RelPath) -> Result<Body, ReplicaError> {
+    async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
         delegate!(self.read(path))
     }
 
@@ -75,12 +75,13 @@ impl Replica for AnyReplica {
         path: &RelPath,
         body: Body,
         meta: FileMeta,
+        expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
-        delegate!(self.write(path, body, meta))
+        delegate!(self.write(path, body, meta, expect))
     }
 
-    async fn delete(&self, path: &RelPath) -> Result<(), ReplicaError> {
-        delegate!(self.delete(path))
+    async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
+        delegate!(self.delete(path, expect))
     }
 
     async fn remove_empty_dirs(&self, path: &RelPath) -> Result<(), ReplicaError> {

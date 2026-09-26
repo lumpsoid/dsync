@@ -17,10 +17,10 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, Sleep};
 
-use crate::body::Body;
 use crate::credit::Credit;
 use crate::frame::{Frame, Kind};
-use crate::wire::WireIo;
+use crate::replica::Reading;
+use crate::wire::{self, WireIo};
 
 /// Bytes the frame reader buffers from the transport.
 pub(crate) const READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -162,18 +162,25 @@ impl Outbox {
             .await
     }
 
-    /// Streams `body` as exchange `id`'s frames, as `credit` allows,
-    /// ending it or failing it as the body does.
-    pub async fn send_body(
+    /// Streams a read's body as exchange `id`'s frames, as `credit`
+    /// allows, failing it as the body does. Its `End` carries what the
+    /// file was once read (SPEC §7.6's source check).
+    pub async fn send_read(
         &self,
         id: u32,
-        mut body: Body,
+        reading: Reading,
         credit: Credit,
     ) -> Result<(), OutboxClosed> {
+        let Reading { mut body, settled } = reading;
         loop {
             match body.next().await {
                 Ok(Some(bytes)) => self.send_chunk(id, bytes, &credit).await?,
-                Ok(None) => return self.end(id).await,
+                Ok(None) => {
+                    let now = settled.after().await;
+                    return self
+                        .send(Frame::new(Kind::End, id, wire::encode(&now)))
+                        .await;
+                }
                 Err(error) => return self.fail(id, &error.into()).await,
             }
         }

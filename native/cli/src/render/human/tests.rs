@@ -251,16 +251,21 @@ fn apply_lines_show_each_action_its_outcome_and_progress() {
                 action: copy("g", Side::B),
                 outcome: Err(ActionFailure::NoSource { side: Side::B }),
             },
+            RunEvent::Result {
+                action: copy("h", Side::A),
+                outcome: Err(ActionFailure::ChangedDuringSync { side: Side::B }),
+            },
             RunEvent::Progress {
-                completed: 2,
-                total: 2,
+                completed: 3,
+                total: 3,
             },
         ],
     );
     assert_eq!(
         text,
         "> copy A→B  f\n  applied  copy A→B  f\n  failed   copy B→A  g: replica b has no file to \
-         copy at this path\n  [2/2]\n"
+         copy at this path\n  failed   copy A→B  h: replica b: changed during sync, left for the \
+         next run\n  [3/3]\n"
     );
 }
 

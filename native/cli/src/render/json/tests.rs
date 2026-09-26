@@ -240,6 +240,19 @@ fn action_progress_result_summary_and_error_lines() {
         })
     );
     assert_eq!(
+        one(RunEvent::Result {
+            action: copy("f"),
+            outcome: Err(ActionFailure::ChangedDuringSync { side: Side::B }),
+        }),
+        json!({
+            "type": "result",
+            "path": "f",
+            "actionType": "copyAtoB",
+            "succeeded": false,
+            "error": "replica b: changed during sync, left for the next run",
+        })
+    );
+    assert_eq!(
         one(RunEvent::Summary(RunSummary {
             applied: 1,
             skipped: 2,

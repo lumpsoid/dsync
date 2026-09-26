@@ -14,9 +14,10 @@
 use std::future::Future;
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, RelPath, ReplicaInfo,
-    RuleSet, ScanEntry, WriteStats,
+    ArchiveCommit, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, OnDisk, Precondition,
+    RelPath, ReplicaInfo, RuleSet, ScanEntry, WriteStats,
 };
+use tokio::sync::oneshot;
 
 use crate::body::Body;
 use crate::replica_error::ReplicaError;
@@ -76,9 +77,10 @@ pub trait Replica: Send + Sync {
         buckets: &[Bucket],
     ) -> impl Future<Output = Result<Vec<ScanEntry>, ReplicaError>> + Send;
 
-    /// The current bytes of the file at `path`. A file that cannot be
+    /// The current bytes of the file at `path`, and what the file was once
+    /// they were all read (SPEC §7.6's source check). A file that cannot be
     /// opened fails here; one that fails part-way fails the body.
-    fn read(&self, path: &RelPath) -> impl Future<Output = Result<Body, ReplicaError>> + Send;
+    fn read(&self, path: &RelPath) -> impl Future<Output = Result<Reading, ReplicaError>> + Send;
 
     /// Lands `body` at `path` and returns the metadata that actually
     /// landed, which the caller archives even where it differs from `meta`
@@ -92,15 +94,26 @@ pub trait Replica: Send + Sync {
     /// that is what makes the next scan read it as untrusted rather than as
     /// the user's edit. A body that fails or is cut short fails the write;
     /// nothing it wrote is ever reported as landed.
+    ///
+    /// `expect` is what the scan saw at `path`. Just before acting the
+    /// replica stats it, and if it no longer holds, touches nothing and
+    /// fails [`ReplicaError::Changed`] (SPEC §7.6).
     fn write(
         &self,
         path: &RelPath,
         body: Body,
         meta: FileMeta,
+        expect: Precondition,
     ) -> impl Future<Output = Result<FileMeta, ReplicaError>> + Send;
 
-    /// Deletes the file at `path` (SPEC §7.5).
-    fn delete(&self, path: &RelPath) -> impl Future<Output = Result<(), ReplicaError>> + Send;
+    /// Deletes the file at `path` (SPEC §7.5), unless it is no longer what
+    /// `expect` says the scan saw there: then, like [`Replica::write`], it
+    /// fails [`ReplicaError::Changed`] and leaves it.
+    fn delete(
+        &self,
+        path: &RelPath,
+        expect: Precondition,
+    ) -> impl Future<Output = Result<(), ReplicaError>> + Send;
 
     /// Removes `path`'s ancestor folders, up to but never including the
     /// root, while they are empty - the emptiness this run's deletes left
@@ -157,6 +170,32 @@ pub struct DigestedScan {
     /// changed.
     pub owed: Vec<ScanEntry>,
     pub next: BucketTicket,
+}
+
+/// A read under way: its bytes, and what its file was after the last of
+/// them was read.
+#[must_use]
+pub struct Reading {
+    pub body: Body,
+    pub settled: Settled,
+}
+
+/// What a read's file was once the read reached its end: size and mtime
+/// by a stat of the file it read (SPEC §7.6). Known only once the body is
+/// whole; [`OnDisk::Unknown`] for a read that never got there.
+#[derive(Debug)]
+pub struct Settled(oneshot::Receiver<OnDisk>);
+
+impl Settled {
+    /// The reader's end of a new one, and the settled value it will send.
+    pub(crate) fn channel() -> (oneshot::Sender<OnDisk>, Settled) {
+        let (sender, settled) = oneshot::channel();
+        (sender, Settled(settled))
+    }
+
+    pub async fn after(self) -> OnDisk {
+        self.0.await.unwrap_or(OnDisk::Unknown)
+    }
 }
 
 /// Proof that phase 1 ran; spent by phase 2. Only a replica issues one.

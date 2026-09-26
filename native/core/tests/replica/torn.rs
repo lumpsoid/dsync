@@ -132,7 +132,8 @@ async fn a_body_failing_part_way_leaves_an_interrupted_conflict() {
             with_deadline("tear and recover", async {
                 torn_run(&site, async |b: &LocalReplica| {
                     let body = failing_body(&SOURCE[..at]).await;
-                    let written = b.write(&path("f"), body, meta(0o644)).await;
+                    let expect = site.expect(Side::B, "f");
+                    let written = b.write(&path("f"), body, meta(0o644), expect).await;
                     assert!(written.is_err(), "{cell:?} at {at}");
                 })
                 .await;
@@ -165,7 +166,10 @@ async fn a_write_whose_commit_batch_is_lost_converges() {
         with_deadline("tear and recover", async {
             let (a, b) = torn_run(&site, async |b: &LocalReplica| {
                 let body = a_whole_body();
-                b.write(&path("f"), body, meta(0o644)).await.unwrap();
+                let expect = site.expect(Side::B, "f");
+                b.write(&path("f"), body, meta(0o644), expect)
+                    .await
+                    .unwrap();
             })
             .await;
             // The upserts never reach either replica; the run ends cleanly.
@@ -183,8 +187,9 @@ async fn a_write_killed_before_its_commits_are_flushed_converges() {
         let site = with_deadline("arrange", arrange(cell)).await;
         with_deadline("tear and recover", async {
             let (a, b) = torn_run(&site, async |b: &LocalReplica| {
+                let expect = site.expect(Side::B, "f");
                 let landed = b
-                    .write(&path("f"), a_whole_body(), meta(0o644))
+                    .write(&path("f"), a_whole_body(), meta(0o644), expect)
                     .await
                     .unwrap();
                 b.commit(vec![ArchiveCommit::Upsert {
@@ -213,7 +218,12 @@ async fn a_compaction_with_a_mark_open_carries_the_mark() {
     with_deadline("tear, compact and recover", async {
         let (a, b) = torn_run(&site, async |b: &LocalReplica| {
             let body = failing_body(&SOURCE[..3]).await;
-            assert!(b.write(&path("f"), body, meta(0o644)).await.is_err());
+            let expect = site.expect(Side::B, "f");
+            assert!(
+                b.write(&path("f"), body, meta(0o644), expect)
+                    .await
+                    .is_err()
+            );
         })
         .await;
         b.compact().await.unwrap();
@@ -266,7 +276,9 @@ pub fn tear_write(dir: &Path) {
             .await
             .unwrap();
         let (sender, body) = body_channel(1);
-        let _write = tokio::spawn(async move { b.write(&path("f"), body, meta(0o644)).await });
+        let expect = site.expect(Side::B, "f");
+        let _write =
+            tokio::spawn(async move { b.write(&path("f"), body, meta(0o644), expect).await });
         sender
             .send(SOURCE[..SOURCE.len() / 2].to_vec())
             .await

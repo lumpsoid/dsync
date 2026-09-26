@@ -1,7 +1,7 @@
 //! `read`: a file's bytes as a body, read on the blocking pool in
 //! `read_buffer_bytes` chunks (the cases of Dart's `read_pool_test`).
 
-use dsync_core::{Body, FileOp, LocalReplica, Replica, ReplicaError};
+use dsync_core::{Body, FileOp, LocalReplica, Reading, Replica, ReplicaError};
 use dsync_domain::{Side, Tuning};
 
 use crate::support::{Site, path, with_deadline};
@@ -30,7 +30,7 @@ async fn chunks(mut body: Body) -> Vec<Vec<u8>> {
 
 async fn read_chunks(replica: &LocalReplica, relative: &str) -> Vec<Vec<u8>> {
     with_deadline("read", async {
-        chunks(replica.read(&path(relative)).await.unwrap()).await
+        chunks(replica.read(&path(relative)).await.unwrap().body).await
     })
     .await
 }
@@ -112,11 +112,28 @@ async fn many_reads_in_flight_at_once_all_complete() {
         // own consumer, not on the others.
         let mut bodies = Vec::new();
         for name in &names {
-            bodies.push(replica.read(&path(name)).await.unwrap());
+            bodies.push(replica.read(&path(name)).await.unwrap().body);
         }
         for (name, body) in names.iter().zip(bodies) {
             assert_eq!(body.collect().await.unwrap(), name.as_bytes());
         }
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_read_settles_on_what_its_file_was_once_read() {
+    let site = Site::new();
+    site.put(Side::A, "f", "hello");
+    let scanned = site.expect(Side::A, "f");
+    let replica = site.replica(Side::A);
+
+    let now = with_deadline("read", async {
+        let Reading { body, settled } = replica.read(&path("f")).await.unwrap();
+        assert_eq!(body.collect().await.unwrap(), b"hello");
+        settled.after().await
+    })
+    .await;
+
+    assert_eq!(scanned.check(now), Ok(()));
 }

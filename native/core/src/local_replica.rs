@@ -13,19 +13,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, Digested, FileMeta, Jobs, ProfileId, RelPath, ReplicaInfo,
-    ReplicaRoot, RuleSet, ScanEntry, Side, Tuning,
+    ArchiveCommit, Bucket, BucketCount, Digested, FileMeta, Jobs, OnDisk, Precondition, ProfileId,
+    RelPath, ReplicaInfo, ReplicaRoot, RuleSet, ScanEntry, Side, Tuning,
 };
 
 use crate::archive_store::{ArchiveError, ArchiveStore};
 use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
 use crate::file_write::Destination;
-use crate::replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Replica};
+use crate::replica::{
+    BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
+};
 use crate::replica_error::{FileOp, ReplicaError};
 use crate::replica_lock::ReplicaLock;
 use crate::scan_session::ScanSession;
-use crate::scanner::Scanner;
+use crate::scanner::{Scanner, on_disk, on_disk_at};
 use crate::state_dir::StateDir;
 use crate::writer_pool::WriterPool;
 use dsync_domain::WriteStats;
@@ -275,7 +277,7 @@ impl Replica for LocalReplica {
         }
     }
 
-    async fn read(&self, path: &RelPath) -> Result<Body, ReplicaError> {
+    async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
         let source = path.join_under(&self.shared.root);
         let file = self
             .blocking(move |shared| {
@@ -283,9 +285,10 @@ impl Replica for LocalReplica {
             })
             .await?;
         let (sender, body) = body_channel(READ_AHEAD_CHUNKS);
+        let (settle, settled) = Settled::channel();
         let buffer = self.shared.tuning.read_buffer_bytes;
-        tokio::task::spawn_blocking(move || send_file(file, buffer, sender));
-        Ok(body)
+        tokio::task::spawn_blocking(move || send_file(file, buffer, sender, settle));
+        Ok(Reading { body, settled })
     }
 
     async fn write(
@@ -293,17 +296,18 @@ impl Replica for LocalReplica {
         path: &RelPath,
         body: Body,
         meta: FileMeta,
+        expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
-        Ok(self
-            .shared
+        self.shared
             .writers()
-            .write(path.clone(), body, meta)
-            .await?)
+            .write(path.clone(), body, meta, expect)
+            .await
     }
 
-    async fn delete(&self, path: &RelPath) -> Result<(), ReplicaError> {
+    async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
         let target = path.join_under(&self.shared.root);
         self.blocking(move |shared| {
+            expect.check(on_disk_at(&target))?;
             fs::remove_file(&target).map_err(shared.file_error(FileOp::Delete, target.clone()))
         })
         .await
@@ -356,8 +360,16 @@ impl Replica for LocalReplica {
 }
 
 /// Streams `file` into `sender`, `buffer` bytes a read, until the end or
-/// the first error; stops early if the body is dropped.
-fn send_file(mut file: File, buffer: usize, sender: BodySender) {
+/// the first error; stops early if the body is dropped. At the end, what
+/// the file is by then goes to `settle`, before the body is finished: the
+/// open file's own stat, so the check is of the bytes just read, whatever
+/// has been renamed over its path since.
+fn send_file(
+    mut file: File,
+    buffer: usize,
+    sender: BodySender,
+    settle: tokio::sync::oneshot::Sender<OnDisk>,
+) {
     loop {
         let mut chunk = vec![0; buffer];
         match fill(&mut file, &mut chunk) {
@@ -367,6 +379,10 @@ fn send_file(mut file: File, buffer: usize, sender: BodySender) {
                     return;
                 }
                 if read < buffer {
+                    let now = file
+                        .metadata()
+                        .map_or(OnDisk::Unknown, |meta| on_disk(&meta));
+                    let _ = settle.send(now);
                     let _ = sender.blocking_finish();
                     return;
                 }

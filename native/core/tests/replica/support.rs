@@ -12,7 +12,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use dsync_core::{ArchiveStore, Body, LocalReplica, Replica, StateDir, body_channel};
 use dsync_domain::{
     Action, Archive, ArchiveCommit, BucketCount, ContentHash, FileMeta, FileState, Jobs, Plan,
-    ProfileId, RelPath, RuleSet, ScanEntry, Side, Status, Tuning, UnreadablePaths,
+    Precondition, ProfileId, RelPath, RuleSet, ScanEntry, Side, Status, Tuning, UnreadablePaths,
     is_temp_file_name, reconcile, status_list,
 };
 use tempfile::TempDir;
@@ -165,6 +165,12 @@ impl Site {
     }
 
     /// What is on disk at `relative` on `side`, as a scan would record it.
+    /// What a scan would see at `relative` on `side` now: the precondition
+    /// a write or delete there carries (SPEC §7.6).
+    pub fn expect(&self, side: Side, relative: &str) -> Precondition {
+        expect_at(&self.file(side, relative))
+    }
+
     pub fn state_of(&self, side: Side, relative: &str) -> FileState {
         let file = self.file(side, relative);
         let metadata = fs::metadata(&file).unwrap();
@@ -177,6 +183,22 @@ impl Site {
             },
             hash: hash_of(fs::read(&file).unwrap()),
         }
+    }
+}
+
+/// What a scan would see at `file` now: the precondition a write or
+/// delete there carries (SPEC §7.6).
+pub fn expect_at(file: &Path) -> Precondition {
+    match fs::metadata(file) {
+        Ok(metadata) => {
+            let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH);
+            Precondition::File {
+                size: metadata.len(),
+                mtime_us: i64::try_from(mtime.unwrap().as_micros()).unwrap(),
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Precondition::Absent,
+        Err(error) => panic!("stat {}: {error}", file.display()),
     }
 }
 
@@ -318,21 +340,23 @@ pub enum CopyUntil {
 }
 
 /// Copies `relative` from `from` to `to` in SPEC's order: the intent on
-/// the destination (durable before the bytes), the read, the write, then
-/// the upsert on each side.
+/// the destination (durable before the bytes), the read, the write over
+/// what the destination's scan saw there (`expect`), then the upsert on
+/// each side.
 pub async fn copy(
     from: &impl Replica,
     to: &impl Replica,
     relative: &str,
     source: FileState,
+    expect: Precondition,
     until: CopyUntil,
 ) {
     let at = path(relative);
     to.commit(vec![ArchiveCommit::Intent(at.clone())])
         .await
         .unwrap();
-    let body = from.read(&at).await.unwrap();
-    let landed = to.write(&at, body, source.meta).await.unwrap();
+    let body = from.read(&at).await.unwrap().body;
+    let landed = to.write(&at, body, source.meta, expect).await.unwrap();
     to.commit(vec![ArchiveCommit::Upsert {
         path: at.clone(),
         file: FileState {
@@ -358,19 +382,21 @@ pub async fn copy(
 pub async fn apply(a: &impl Replica, b: &impl Replica, exchanged: &Exchanged) {
     for action in exchanged.actions().iter() {
         let relative = action.path().as_str();
-        let file_on = |side| {
-            *exchanged
+        let scanned = |side| {
+            exchanged
                 .status(side, relative)
                 .and_then(|status| status.file().copied())
-                .as_ref()
-                .expect("a side the action reads has the file")
         };
+        let file_on = |side| scanned(side).expect("a side the action reads has the file");
+        let expect = |side| Precondition::of(scanned(side).as_ref());
         match action {
             Action::Copy { from: Side::A, .. } => {
-                copy(a, b, relative, file_on(Side::A), CopyUntil::Done).await;
+                let (source, expect) = (file_on(Side::A), expect(Side::B));
+                copy(a, b, relative, source, expect, CopyUntil::Done).await;
             }
             Action::Copy { from: Side::B, .. } => {
-                copy(b, a, relative, file_on(Side::B), CopyUntil::Done).await;
+                let (source, expect) = (file_on(Side::B), expect(Side::A));
+                copy(b, a, relative, source, expect, CopyUntil::Done).await;
             }
             Action::CommitOnly { path } => {
                 let upsert = |side| {

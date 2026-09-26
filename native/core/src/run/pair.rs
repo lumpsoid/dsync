@@ -2,10 +2,12 @@
 //! run's clock. The two may be different kinds (the trait is not
 //! dyn-compatible), so each call picks its side here once.
 
-use dsync_domain::{ArchiveCommit, FileMeta, RelPath, ReplicaInfo, ReplicaOp, Side, WriteStats};
+use dsync_domain::{
+    ArchiveCommit, FileMeta, Precondition, RelPath, ReplicaInfo, ReplicaOp, Side, WriteStats,
+};
 
 use crate::body::Body;
-use crate::replica::Replica;
+use crate::replica::{Reading, Replica};
 use crate::replica_error::ReplicaError;
 use crate::run::clock::RunClock;
 
@@ -62,7 +64,7 @@ impl<A: Replica, B: Replica> Pair<'_, A, B> {
         on_side!(self, side, ReplicaOp::CreateRoot, replica => replica.create_root())
     }
 
-    pub(crate) async fn read(&self, side: Side, path: &RelPath) -> Result<Body, ReplicaError> {
+    pub(crate) async fn read(&self, side: Side, path: &RelPath) -> Result<Reading, ReplicaError> {
         on_side!(self, side, ReplicaOp::Read, replica => replica.read(path))
     }
 
@@ -72,12 +74,18 @@ impl<A: Replica, B: Replica> Pair<'_, A, B> {
         path: &RelPath,
         body: Body,
         meta: FileMeta,
+        expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
-        on_side!(self, side, ReplicaOp::Write, replica => replica.write(path, body, meta))
+        on_side!(self, side, ReplicaOp::Write, replica => replica.write(path, body, meta, expect))
     }
 
-    pub(crate) async fn delete(&self, side: Side, path: &RelPath) -> Result<(), ReplicaError> {
-        on_side!(self, side, ReplicaOp::Delete, replica => replica.delete(path))
+    pub(crate) async fn delete(
+        &self,
+        side: Side,
+        path: &RelPath,
+        expect: Precondition,
+    ) -> Result<(), ReplicaError> {
+        on_side!(self, side, ReplicaOp::Delete, replica => replica.delete(path, expect))
     }
 
     pub(crate) async fn remove_empty_dirs(
