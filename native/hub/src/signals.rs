@@ -13,8 +13,9 @@
 //! sends [`RunSnapshot`]s: the whole view after every change, so the head
 //! renders the latest and decides nothing; what the user does goes back as
 //! a [`RunIntent`] in [`CoreCommand::SteerRun`]. Serving sends
-//! [`ServeUpdate`]s and a pairing window [`EnrolmentUpdate`]s, each ending
-//! with one terminal update; nothing for that session follows it.
+//! [`ServeSnapshot`]s the same way, the last one when it stops. A pairing
+//! window sends [`EnrolmentUpdate`]s, ending with one terminal update;
+//! nothing for that session follows it.
 
 use rinf::{DartSignal, RustSignal, SignalPiece};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ use crate::views::{
     ActionChoiceView, AddressesView, ArchiveView, ConflictChoiceView, DeviceView, DirsView,
     EnrolmentEndView, FilterPreviewView, FilterRowView, IdentityView, PairCodeView,
     PairingShownView, ProbeOutcome, ProfileEntry, RunView, ScanProbeView, ServeStartedView,
+    ServeView,
 };
 
 /// Dart asks the core for one thing. Answered by one [`CoreReply`] with
@@ -294,38 +296,11 @@ pub struct RunSnapshot {
     pub view: RunView,
 }
 
-/// One connection's story on the serving session `session`.
+/// The serving session `session`, whole, as it now stands.
 #[derive(Serialize, RustSignal)]
-pub struct ServeUpdate {
+pub struct ServeSnapshot {
     pub session: u64,
-    pub update: ServeUpdateBody,
-}
-
-#[derive(Serialize, SignalPiece)]
-pub enum ServeUpdateBody {
-    Refused {
-        from: String,
-        message: String,
-    },
-    Started {
-        from: String,
-        device_id: String,
-        name: String,
-    },
-    /// A session opened the replica at `root` (expanded).
-    Serving {
-        root: String,
-    },
-    Ended {
-        from: String,
-        device_id: String,
-        name: String,
-        failure: Option<String>,
-    },
-    /// Terminal: stopped, or the listener failed.
-    Stopped {
-        failure: Option<String>,
-    },
+    pub view: ServeView,
 }
 
 /// The pairing window `session`.

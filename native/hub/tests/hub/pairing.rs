@@ -4,9 +4,10 @@
 
 use hub::signals::{
     CoreCommand, EnrolmentUpdateBody, ProfileDraft, ReplyResult, RunIntent, RunTarget,
-    ServeUpdateBody,
 };
-use hub::views::{EnrolmentEndView, PairCodeView, ProbeOutcome, RunPhaseView};
+use hub::views::{
+    EnrolmentEndView, PairCodeView, ProbeOutcome, RunPhaseView, ServeEventView, ServePhaseView,
+};
 
 use crate::support::{Head, read, write};
 
@@ -233,27 +234,38 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
     ));
     assert_eq!(read(&desktop.path("shared/photo.jpg")), "jpeg");
 
+    // The first view answers where it was bound, with nothing reported.
+    let first = desktop.serve_view(serving).await;
+    assert!(matches!(
+        first.phase,
+        ServePhaseView::Listening { ref advertised } if *advertised == started.advertised
+    ));
+    assert!(first.lines.is_empty());
+
     let stop = CoreCommand::StopServe { session: serving };
     assert!(matches!(desktop.ok(stop).await.1, ReplyResult::Done));
-    let mut story = Vec::new();
-    loop {
-        let update = desktop.serve_update(serving).await;
-        if let ServeUpdateBody::Stopped { failure } = update {
-            assert_eq!(failure, None);
-            break;
+    let last = loop {
+        let view = desktop.serve_view(serving).await;
+        if !matches!(view.phase, ServePhaseView::Listening { .. }) {
+            break view;
         }
-        story.push(update);
-    }
+    };
+    assert!(matches!(last.phase, ServePhaseView::Stopped));
     // The desktop saw the phone's sessions (the probe's and the run's) and
-    // which root the run was served.
-    assert!(story.iter().any(|update| matches!(
-        update,
-        ServeUpdateBody::Started { device_id, name, .. } if *device_id == phone_id && name == "phone"
+    // which root the run was served, newest first.
+    assert!(last.lines.iter().any(|line| matches!(
+        &line.event,
+        ServeEventView::Started { device_id, name, .. } if *device_id == phone_id && name == "phone"
     )));
-    assert!(story.iter().any(|update| matches!(
-        update,
-        ServeUpdateBody::Serving { root } if *root == shared
+    assert!(last.lines.iter().any(|line| matches!(
+        &line.event,
+        ServeEventView::Serving { root } if *root == shared
     )));
+    assert!(
+        last.lines
+            .windows(2)
+            .all(|pair| pair[0].at_ms >= pair[1].at_ms)
+    );
     let probe = CoreCommand::ProbePeer {
         device_id: desktop_id,
         address: at,

@@ -47,26 +47,20 @@ final class ServeFailed extends ServeStatus {
 /// made anywhere else in the app — the same reasoning
 /// `SharedFoldersViewState` records.
 ///
-/// [sessions] is bounded by construction. `AgentListener`'s own
-/// `SessionErrorHandler` doc warns that a head on a real network port must
-/// keep this quiet rather than print one line per probe; a ring that cannot
-/// grow past [maxSessions] satisfies that without a rate limiter's clock,
-/// and nothing here is persisted.
+/// [sessions] is the core's: the few lines its serving session keeps,
+/// newest first, rendered. `AgentListener`'s own `SessionErrorHandler` doc
+/// warns that a head on a real network port must keep this quiet rather
+/// than print one line per probe, and the core's bound is what does.
 class ServeViewState extends ChangeNotifier {
-  /// How many session lines are kept. Enough to see a handful of refusals
-  /// in a row while diagnosing a first phone-to-phone sync, few enough that
-  /// a port being scanned costs a fixed amount of memory.
-  static const int maxSessions = 20;
-
   ServeStatus _status = const ServeStopped();
-  final List<String> _sessions = <String>[];
+  List<String> _sessions = const [];
 
   /// Whether this device is answering, and where.
   ServeStatus get status => _status;
 
-  /// What sessions have reported, newest first, at most [maxSessions] of
-  /// them. Already rendered lines; the page draws them and decides nothing.
-  List<String> get sessions => List.unmodifiable(_sessions);
+  /// What sessions have reported, newest first. Already rendered lines;
+  /// the page draws them and decides nothing.
+  List<String> get sessions => _sessions;
 
   /// Moves the status. `ServeController` only.
   void recordStatus(ServeStatus status) {
@@ -74,19 +68,11 @@ class ServeViewState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Prepends one rendered session line, dropping the oldest once the ring
-  /// is full. `ServeController` only.
-  void recordSession(String line) {
-    _sessions.insert(0, line);
-    if (_sessions.length > maxSessions) _sessions.removeLast();
-    notifyListeners();
-  }
-
-  /// Empties the ring — what a fresh bind starts from, so lines from the
-  /// last time this page was open do not read as this one's.
-  void clearSessions() {
-    if (_sessions.isEmpty) return;
-    _sessions.clear();
+  /// Renders the core's latest view of serving: [status], and [sessions]
+  /// newest first. `ServeController` only.
+  void show({required ServeStatus status, required List<String> sessions}) {
+    _status = status;
+    _sessions = List.unmodifiable(sessions);
     notifyListeners();
   }
 }

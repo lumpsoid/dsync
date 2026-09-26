@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use dsync_domain::{DIR_LEAF, HostFacts, Platform};
-use hub::signals::{CoreCommand, EnrolmentUpdateBody, ReplyResult, ServeUpdateBody};
-use hub::views::RunView;
+use hub::signals::{CoreCommand, EnrolmentUpdateBody, ReplyResult};
+use hub::views::{RunView, ServeView};
 use hub::{Core, Outbox, Outgoing};
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -142,11 +142,11 @@ impl Head {
         }
     }
 
-    pub async fn serve_update(&mut self, session: u64) -> ServeUpdateBody {
-        let wanted = |out: &Outgoing| matches!(out, Outgoing::Serve(u) if u.session == session);
+    pub async fn serve_view(&mut self, session: u64) -> ServeView {
+        let wanted = |out: &Outgoing| matches!(out, Outgoing::Serve(s) if s.session == session);
         match self.next_matching(wanted).await {
-            Outgoing::Serve(update) => update.update,
-            _ => unreachable!("matched a serve update"),
+            Outgoing::Serve(snapshot) => snapshot.view,
+            _ => unreachable!("matched a serve snapshot"),
         }
     }
 

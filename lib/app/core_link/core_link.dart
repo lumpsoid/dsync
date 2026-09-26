@@ -23,7 +23,8 @@ import 'models/run_view.dart';
 import 'models/scan_probe_result.dart';
 import 'models/serve_addresses.dart';
 import 'models/serve_session.dart';
-import 'models/serve_update.dart';
+import 'models/serve_phase.dart';
+import 'models/serve_view.dart';
 import 'wire_models.dart';
 
 /// The head's one way into the Rust core (plan D10): intent-named calls,
@@ -33,7 +34,7 @@ import 'wire_models.dart';
 /// Concrete, and the same code in the app and in its tests: each call is a
 /// `CoreRequest` handed to the [CoreChannel], answered by the `CoreReply`
 /// with its id; each session's stream is fed from its `RunSnapshot` /
-/// `ServeUpdate` / `EnrolmentUpdate` signals. The channel is the one
+/// `ServeSnapshot` / `EnrolmentUpdate` signals. The channel is the one
 /// interface (`RinfCoreChannel` in the app, a fake hub in tests), so the
 /// correlation and the decoding below always run.
 ///
@@ -52,8 +53,8 @@ final class CoreLink {
       _channel.runSnapshots.listen((snapshot) {
         _runs.deliver(snapshot.session.toInt(), runView(snapshot.view));
       }),
-      _channel.serveUpdates.listen((update) {
-        _serves.deliver(update.session.toInt(), serveUpdate(update.update));
+      _channel.serveSnapshots.listen((snapshot) {
+        _serves.deliver(snapshot.session.toInt(), serveView(snapshot.view));
       }),
       _channel.enrolmentUpdates.listen((update) {
         _pairings.deliver(
@@ -69,8 +70,8 @@ final class CoreLink {
   /// A run's views never end on their own: the session is over when its
   /// controller stops listening.
   final _runs = SessionStreams<RunView>(isTerminal: (_) => false);
-  final _serves = SessionStreams<ServeUpdate>(
-    isTerminal: (u) => u is ServeStopped,
+  final _serves = SessionStreams<ServeView>(
+    isTerminal: (view) => view.phase is! ServePhaseListening,
   );
   final _pairings = SessionStreams<EnrolmentUpdate>(
     isTerminal: (u) => u is EnrolmentEnded,
@@ -341,13 +342,13 @@ final class CoreLink {
     required int port,
   }) async {
     late int session;
-    late Stream<ServeUpdate> updates;
+    late Stream<ServeView> views;
     try {
       return await _ask(
         wire.CoreCommandStartServe(bind: bind, port: port),
         opening: (id) {
           session = id;
-          updates = _serves.open(id);
+          views = _serves.open(id);
         },
         (result) => switch (result) {
           wire.ReplyResultServeStarted(:final value) => ServeSession(
@@ -355,7 +356,7 @@ final class CoreLink {
             port: value.port,
             advertised: value.advertised,
             deviceId: value.deviceId,
-            updates: updates,
+            views: views,
           ),
           _ => _unexpected(result),
         },

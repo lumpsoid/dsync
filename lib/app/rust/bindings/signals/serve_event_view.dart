@@ -2,20 +2,19 @@
 part of 'signals.dart';
 
 
-abstract class ServeUpdateBody {
-  const ServeUpdateBody();
+abstract class ServeEventView {
+  const ServeEventView();
 
   void serialize(BinarySerializer serializer);
 
-  static ServeUpdateBody deserialize(BinaryDeserializer deserializer) {
+  static ServeEventView deserialize(BinaryDeserializer deserializer) {
     int index = deserializer.deserializeVariantIndex();
     switch (index) {
-      case 0: return ServeUpdateBodyRefused.load(deserializer);
-      case 1: return ServeUpdateBodyStarted.load(deserializer);
-      case 2: return ServeUpdateBodyServing.load(deserializer);
-      case 3: return ServeUpdateBodyEnded.load(deserializer);
-      case 4: return ServeUpdateBodyStopped.load(deserializer);
-      default: throw Exception('Unknown variant index for ServeUpdateBody: ' + index.toString());
+      case 0: return ServeEventViewRefused.load(deserializer);
+      case 1: return ServeEventViewStarted.load(deserializer);
+      case 2: return ServeEventViewServing.load(deserializer);
+      case 3: return ServeEventViewEnded.load(deserializer);
+      default: throw Exception('Unknown variant index for ServeEventView: ' + index.toString());
     }
   }
 
@@ -25,9 +24,9 @@ abstract class ServeUpdateBody {
       return serializer.bytes;
   }
 
-  static ServeUpdateBody bincodeDeserialize(Uint8List input) {
+  static ServeEventView bincodeDeserialize(Uint8List input) {
     final deserializer = BincodeDeserializer(input);
-    final value = ServeUpdateBody.deserialize(deserializer);
+    final value = ServeEventView.deserialize(deserializer);
     if (deserializer.offset < input.length) {
       throw Exception('Some input bytes were not read');
     }
@@ -37,15 +36,15 @@ abstract class ServeUpdateBody {
 
 
 @immutable
-class ServeUpdateBodyRefused extends ServeUpdateBody {
-  const ServeUpdateBodyRefused({
+class ServeEventViewRefused extends ServeEventView {
+  const ServeEventViewRefused({
     required this.from,
     required this.message,
   }) : super();
 
-  static ServeUpdateBodyRefused load(BinaryDeserializer deserializer) {
+  static ServeEventViewRefused load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = ServeUpdateBodyRefused(
+    final instance = ServeEventViewRefused(
       from: deserializer.deserializeString(),
       message: deserializer.deserializeString(),
     );
@@ -56,11 +55,11 @@ class ServeUpdateBodyRefused extends ServeUpdateBody {
   final String from;
   final String message;
 
-  ServeUpdateBodyRefused copyWith({
+  ServeEventViewRefused copyWith({
     String? from,
     String? message,
   }) {
-    return ServeUpdateBodyRefused(
+    return ServeEventViewRefused(
       from: from ?? this.from,
       message: message ?? this.message,
     );
@@ -79,7 +78,7 @@ class ServeUpdateBodyRefused extends ServeUpdateBody {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is ServeUpdateBodyRefused
+    return other is ServeEventViewRefused
       && from == other.from
       && message == other.message;
   }
@@ -102,21 +101,21 @@ class ServeUpdateBodyRefused extends ServeUpdateBody {
       return true;
     }());
 
-    return fullString ?? 'ServeUpdateBodyRefused';
+    return fullString ?? 'ServeEventViewRefused';
   }
 }
 
 @immutable
-class ServeUpdateBodyStarted extends ServeUpdateBody {
-  const ServeUpdateBodyStarted({
+class ServeEventViewStarted extends ServeEventView {
+  const ServeEventViewStarted({
     required this.from,
     required this.deviceId,
     required this.name,
   }) : super();
 
-  static ServeUpdateBodyStarted load(BinaryDeserializer deserializer) {
+  static ServeEventViewStarted load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = ServeUpdateBodyStarted(
+    final instance = ServeEventViewStarted(
       from: deserializer.deserializeString(),
       deviceId: deserializer.deserializeString(),
       name: deserializer.deserializeString(),
@@ -129,12 +128,12 @@ class ServeUpdateBodyStarted extends ServeUpdateBody {
   final String deviceId;
   final String name;
 
-  ServeUpdateBodyStarted copyWith({
+  ServeEventViewStarted copyWith({
     String? from,
     String? deviceId,
     String? name,
   }) {
-    return ServeUpdateBodyStarted(
+    return ServeEventViewStarted(
       from: from ?? this.from,
       deviceId: deviceId ?? this.deviceId,
       name: name ?? this.name,
@@ -155,7 +154,7 @@ class ServeUpdateBodyStarted extends ServeUpdateBody {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is ServeUpdateBodyStarted
+    return other is ServeEventViewStarted
       && from == other.from
       && deviceId == other.deviceId
       && name == other.name;
@@ -181,19 +180,19 @@ class ServeUpdateBodyStarted extends ServeUpdateBody {
       return true;
     }());
 
-    return fullString ?? 'ServeUpdateBodyStarted';
+    return fullString ?? 'ServeEventViewStarted';
   }
 }
 
 @immutable
-class ServeUpdateBodyServing extends ServeUpdateBody {
-  const ServeUpdateBodyServing({
+class ServeEventViewServing extends ServeEventView {
+  const ServeEventViewServing({
     required this.root,
   }) : super();
 
-  static ServeUpdateBodyServing load(BinaryDeserializer deserializer) {
+  static ServeEventViewServing load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = ServeUpdateBodyServing(
+    final instance = ServeEventViewServing(
       root: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
@@ -202,10 +201,10 @@ class ServeUpdateBodyServing extends ServeUpdateBody {
 
   final String root;
 
-  ServeUpdateBodyServing copyWith({
+  ServeEventViewServing copyWith({
     String? root,
   }) {
-    return ServeUpdateBodyServing(
+    return ServeEventViewServing(
       root: root ?? this.root,
     );
   }
@@ -222,7 +221,7 @@ class ServeUpdateBodyServing extends ServeUpdateBody {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is ServeUpdateBodyServing
+    return other is ServeEventViewServing
       && root == other.root;
   }
 
@@ -240,22 +239,22 @@ class ServeUpdateBodyServing extends ServeUpdateBody {
       return true;
     }());
 
-    return fullString ?? 'ServeUpdateBodyServing';
+    return fullString ?? 'ServeEventViewServing';
   }
 }
 
 @immutable
-class ServeUpdateBodyEnded extends ServeUpdateBody {
-  const ServeUpdateBodyEnded({
+class ServeEventViewEnded extends ServeEventView {
+  const ServeEventViewEnded({
     required this.from,
     required this.deviceId,
     required this.name,
     this.failure,
   }) : super();
 
-  static ServeUpdateBodyEnded load(BinaryDeserializer deserializer) {
+  static ServeEventViewEnded load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = ServeUpdateBodyEnded(
+    final instance = ServeEventViewEnded(
       from: deserializer.deserializeString(),
       deviceId: deserializer.deserializeString(),
       name: deserializer.deserializeString(),
@@ -270,13 +269,13 @@ class ServeUpdateBodyEnded extends ServeUpdateBody {
   final String name;
   final String? failure;
 
-  ServeUpdateBodyEnded copyWith({
+  ServeEventViewEnded copyWith({
     String? from,
     String? deviceId,
     String? name,
     String? Function()? failure,
   }) {
-    return ServeUpdateBodyEnded(
+    return ServeEventViewEnded(
       from: from ?? this.from,
       deviceId: deviceId ?? this.deviceId,
       name: name ?? this.name,
@@ -299,7 +298,7 @@ class ServeUpdateBodyEnded extends ServeUpdateBody {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is ServeUpdateBodyEnded
+    return other is ServeEventViewEnded
       && from == other.from
       && deviceId == other.deviceId
       && name == other.name
@@ -328,65 +327,6 @@ class ServeUpdateBodyEnded extends ServeUpdateBody {
       return true;
     }());
 
-    return fullString ?? 'ServeUpdateBodyEnded';
-  }
-}
-
-@immutable
-class ServeUpdateBodyStopped extends ServeUpdateBody {
-  const ServeUpdateBodyStopped({
-    this.failure,
-  }) : super();
-
-  static ServeUpdateBodyStopped load(BinaryDeserializer deserializer) {
-    deserializer.increaseContainerDepth();
-    final instance = ServeUpdateBodyStopped(
-      failure: TraitHelpers.deserializeOptionStr(deserializer),
-    );
-    deserializer.decreaseContainerDepth();
-    return instance;
-  }
-
-  final String? failure;
-
-  ServeUpdateBodyStopped copyWith({
-    String? Function()? failure,
-  }) {
-    return ServeUpdateBodyStopped(
-      failure: failure == null ? this.failure : failure(),
-    );
-  }
-
-  void serialize(BinarySerializer serializer) {
-    serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(4);
-    TraitHelpers.serializeOptionStr(failure, serializer);
-    serializer.decreaseContainerDepth();
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other.runtimeType != runtimeType) return false;
-
-    return other is ServeUpdateBodyStopped
-      && failure == other.failure;
-  }
-
-  @override
-  int get hashCode => failure.hashCode;
-
-  @override
-  String toString() {
-    String? fullString;
-
-    assert(() {
-      fullString = '$runtimeType('
-        'failure: $failure'
-        ')';
-      return true;
-    }());
-
-    return fullString ?? 'ServeUpdateBodyStopped';
+    return fullString ?? 'ServeEventViewEnded';
   }
 }

@@ -48,7 +48,7 @@ async fn main() {
         while let Some(signal) = outgoing.recv().await {
             match signal {
                 Outgoing::Run(snapshot) => (*snapshot).send_signal_to_dart(),
-                Outgoing::Serve(update) => update.send_signal_to_dart(),
+                Outgoing::Serve(snapshot) => snapshot.send_signal_to_dart(),
                 Outgoing::Enrolment(update) => update.send_signal_to_dart(),
             }
         }

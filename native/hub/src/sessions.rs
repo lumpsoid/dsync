@@ -10,11 +10,12 @@ use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 
 use crate::run::RunControl;
+use crate::serve::Serving;
 
 /// How a command reaches a running session.
 pub enum Session {
     Run(Arc<RunControl>),
-    Serve(AbortHandle),
+    Serve(Serving),
     Pairing(PairingControl),
 }
 

@@ -33,7 +33,10 @@ import 'models/scan_probe_layer.dart';
 import 'models/scan_probe_result.dart';
 import 'models/scan_tally.dart';
 import 'models/serve_addresses.dart';
-import 'models/serve_update.dart';
+import 'models/serve_event.dart';
+import 'models/serve_line.dart';
+import 'models/serve_phase.dart';
+import 'models/serve_view.dart';
 import 'models/skipped_path_info.dart';
 
 /// The signals `rinf gen` writes (lib/app/rust/bindings) as the head's own
@@ -390,15 +393,30 @@ RunSummaryInfo _summary(wire.SummaryView view) => RunSummaryInfo(
   unreadable: _n(view.unreadable),
 );
 
-ServeUpdate serveUpdate(wire.ServeUpdateBody body) => switch (body) {
-  wire.ServeUpdateBodyRefused(:final from, :final message) => ServeRefused(
+ServeView serveView(wire.ServeView view) => ServeView(
+  phase: switch (view.phase) {
+    wire.ServePhaseViewListening(:final advertised) => ServePhaseListening(
+      advertised,
+    ),
+    wire.ServePhaseViewStopped() => const ServePhaseStopped(),
+    wire.ServePhaseViewFailed(:final message) => ServePhaseFailed(message),
+    _ => throw StateError('unknown serve phase: ${view.phase}'),
+  },
+  lines: [
+    for (final line in view.lines)
+      ServeLine(at: _at(line.atMs), event: _serveEvent(line.event)),
+  ],
+);
+
+ServeEvent _serveEvent(wire.ServeEventView event) => switch (event) {
+  wire.ServeEventViewRefused(:final from, :final message) => ServeRefused(
     from: from,
     message: message,
   ),
-  wire.ServeUpdateBodyStarted(:final from, :final deviceId, :final name) =>
+  wire.ServeEventViewStarted(:final from, :final deviceId, :final name) =>
     ServeSessionStarted(from: from, deviceId: deviceId, name: name),
-  wire.ServeUpdateBodyServing(:final root) => ServeServing(root),
-  wire.ServeUpdateBodyEnded(
+  wire.ServeEventViewServing(:final root) => ServeServing(root),
+  wire.ServeEventViewEnded(
     :final from,
     :final deviceId,
     :final name,
@@ -410,8 +428,7 @@ ServeUpdate serveUpdate(wire.ServeUpdateBody body) => switch (body) {
       name: name,
       failure: failure,
     ),
-  wire.ServeUpdateBodyStopped(:final failure) => ServeStopped(failure),
-  _ => throw StateError('unknown serve update: $body'),
+  _ => throw StateError('unknown serve event: $event'),
 };
 
 ServeAddresses addresses(wire.AddressesView view) =>

@@ -169,8 +169,13 @@ void main() {
 
   testWidgets('session lines render newest first', (tester) async {
     await pumpPage(tester);
-    controller.state.recordSession('10:00:00  Serving /home/me/notes');
-    controller.state.recordSession('10:00:01  Refused: bad handshake');
+    controller.state.show(
+      status: const ServeListening('10.0.0.5:28771'),
+      sessions: const [
+        '10:00:01  Refused: bad handshake',
+        '10:00:00  Serving /home/me/notes',
+      ],
+    );
     await tester.pump();
 
     expect(find.byKey(const Key('serve-no-sessions')), findsNothing);
@@ -187,8 +192,8 @@ void main() {
 
 /// A [ServeController] that records the page's two inputs instead of
 /// binding anything. The page is given the real view state, so every
-/// rendering assertion above goes through the same `recordStatus` the real
-/// controller writes with.
+/// rendering assertion above goes through the same `recordStatus` and
+/// `show` the real controller writes with.
 class _FakeServeController extends ServeController {
   _FakeServeController(super.app)
     : super(bindAddress: _loopback, screenWake: FakeScreenWake());

@@ -28,13 +28,13 @@ final assignRustSignal = <String, void Function(Uint8List, Uint8List)>{
     _runSnapshotStreamController.add(rustSignal);
     RunSnapshot.latestRustSignal = rustSignal;
   },
-  'ServeUpdate': (Uint8List messageBytes, Uint8List binary) {
-    final message = ServeUpdate.bincodeDeserialize(messageBytes);
+  'ServeSnapshot': (Uint8List messageBytes, Uint8List binary) {
+    final message = ServeSnapshot.bincodeDeserialize(messageBytes);
     final rustSignal = RustSignalPack(
       message,
       binary,
     );
-    _serveUpdateStreamController.add(rustSignal);
-    ServeUpdate.latestRustSignal = rustSignal;
+    _serveSnapshotStreamController.add(rustSignal);
+    ServeSnapshot.latestRustSignal = rustSignal;
   },
 };

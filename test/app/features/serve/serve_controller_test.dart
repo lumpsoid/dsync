@@ -5,9 +5,9 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
-import 'package:dsync/app/core_link/models/serve_update.dart' as core_update;
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
+import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -15,9 +15,9 @@ import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 
 /// The Serve controller over a real `AppController` and a `FakeHub`
-/// whose serving session the test drives: when it asks the core to serve
-/// and to stop, what it shows for the core's story, and the wakelock it
-/// holds meanwhile. What a peer connecting actually gets is the core's
+/// whose serving session the test drives with the core's views: when it
+/// asks the core to serve and to stop, what it shows for each view, and
+/// the wakelock it holds meanwhile. What a peer connecting actually gets is the core's
 /// (native/hub/tests/hub/pairing.rs, native/cli/tests).
 void main() {
   late FakeHub core;
@@ -57,12 +57,35 @@ void main() {
   /// The session the fake opened last.
   int session() => core.serveStarts.last;
 
-  /// Lets the controller fold what the fake just emitted.
+  /// Lets the controller render what the fake just emitted.
   Future<void> settle() => Future<void>.delayed(Duration.zero);
+
+  /// 12:00:00 today, where the fake's lines happened.
+  final noon = DateTime(2026, 6, 1, 12).millisecondsSinceEpoch;
+
+  wire.ServeView view({
+    wire.ServePhaseView phase = const wire.ServePhaseViewListening(
+      advertised: '192.168.1.5:$defaultPeerPort',
+    ),
+    List<wire.ServeEventView> newestFirst = const [],
+  }) => wire.ServeView(
+    phase: phase,
+    lines: [
+      for (final event in newestFirst)
+        wire.ServeLineView(atMs: noon, event: event),
+    ],
+  );
+
+  /// Starts serving and delivers the core's first view of it.
+  Future<void> serve() async {
+    await controller.start();
+    core.emitServe(session(), view());
+    await settle();
+  }
 
   test('start asks the core to serve on the stored bind address and the '
       'default port, and shows where to dial this device', () async {
-    await controller.start();
+    await serve();
 
     expect(core.servedOn, (bind: '127.0.0.1', port: defaultPeerPort));
     final status = controller.state.status;
@@ -112,7 +135,7 @@ void main() {
   });
 
   test('stop asks the core to stop, and a second stop is a no-op', () async {
-    await controller.start();
+    await serve();
 
     await controller.stop();
 
@@ -127,7 +150,7 @@ void main() {
   });
 
   test('a second start while serving asks for nothing more', () async {
-    await controller.start();
+    await serve();
 
     await controller.start();
 
@@ -152,7 +175,7 @@ void main() {
   test(
     'dispose while serving stops the core and releases the screen',
     () async {
-      await controller.start();
+      await serve();
 
       controller.dispose();
       disposed = true;
@@ -165,37 +188,38 @@ void main() {
     },
   );
 
-  test('each connection event is a timestamped line, newest first', () async {
-    await controller.start();
+  test('each line the core kept is timestamped, newest first', () async {
+    await serve();
 
-    core
-      ..emitServe(
-        session(),
-        const core_update.ServeSessionStarted(
-          from: '10.0.0.7:5000',
-          deviceId: 'dddd',
-          name: 'phone-b',
-        ),
-      )
-      ..emitServe(session(), const core_update.ServeServing('/home/me/notes'))
-      ..emitServe(
-        session(),
-        const core_update.ServeSessionEnded(
-          from: '10.0.0.7:5000',
-          deviceId: 'dddd',
-          name: 'phone-b',
-          failure: null,
-        ),
-      )
-      ..emitServe(
-        session(),
-        const core_update.ServeSessionEnded(
-          from: '10.0.0.7:5001',
-          deviceId: 'dddd',
-          name: 'phone-b',
-          failure: 'connection reset',
-        ),
-      );
+    core.emitServe(
+      session(),
+      view(
+        newestFirst: const [
+          wire.ServeEventViewEnded(
+            from: '10.0.0.7:5001',
+            deviceId: 'dddd',
+            name: 'phone-b',
+            failure: 'connection reset',
+          ),
+          wire.ServeEventViewEnded(
+            from: '10.0.0.7:5000',
+            deviceId: 'dddd',
+            name: 'phone-b',
+            failure: null,
+          ),
+          wire.ServeEventViewServing(root: '/home/me/notes'),
+          wire.ServeEventViewStarted(
+            from: '10.0.0.7:5000',
+            deviceId: 'dddd',
+            name: 'phone-b',
+          ),
+          wire.ServeEventViewRefused(
+            from: '10.0.0.66:1',
+            message: 'bad handshake',
+          ),
+        ],
+      ),
+    );
     await settle();
 
     expect(controller.state.sessions, [
@@ -203,46 +227,40 @@ void main() {
       '12:00:00  phone-b disconnected',
       '12:00:00  Serving /home/me/notes',
       '12:00:00  phone-b connected from 10.0.0.7:5000',
+      '12:00:00  Refused 10.0.0.66:1: bad handshake',
     ]);
   });
 
-  test('the session log is bounded however many probes arrive', () async {
-    await controller.start();
-
-    for (var i = 0; i < 100; i++) {
-      core.emitServe(
-        session(),
-        core_update.ServeRefused(from: '10.0.0.66:$i', message: 'probe $i'),
-      );
-    }
-    await settle();
-
-    expect(controller.state.sessions, hasLength(ServeViewState.maxSessions));
-    // Newest first: the last probe is the one a user is looking for.
-    expect(controller.state.sessions.first, contains('probe 99'));
-    expect(controller.state.sessions.first, contains('Refused'));
-  });
-
-  test('a fresh start begins from an empty log', () async {
-    await controller.start();
+  test('a fresh start shows the new session\'s lines, not the last '
+      'one\'s', () async {
+    await serve();
     core.emitServe(
       session(),
-      const core_update.ServeRefused(from: '10.0.0.66:1', message: 'old'),
+      view(
+        newestFirst: const [
+          wire.ServeEventViewRefused(from: '10.0.0.66:1', message: 'old'),
+        ],
+      ),
     );
     await settle();
+    expect(controller.state.sessions, hasLength(1));
     await controller.stop();
 
-    await controller.start();
+    await serve();
 
     expect(controller.state.sessions, isEmpty);
   });
 
   test('a listener that fails on its own is the page\'s failure', () async {
-    await controller.start();
+    await serve();
 
     core.emitServe(
       session(),
-      const core_update.ServeStopped('accept: too many open files'),
+      view(
+        phase: const wire.ServePhaseViewFailed(
+          message: 'accept: too many open files',
+        ),
+      ),
     );
     await settle();
 
@@ -254,12 +272,15 @@ void main() {
     expect(controller.boundPort, isNull);
   });
 
-  test('the stop this page asked for is not reported as a failure', () async {
-    await controller.start();
+  test('a view that arrives after this page stopped is not shown', () async {
+    await serve();
     final serving = session();
 
     await controller.stop();
-    core.emitServe(serving, const core_update.ServeStopped('aborted'));
+    core.emitServe(
+      serving,
+      view(phase: const wire.ServePhaseViewFailed(message: 'aborted')),
+    );
     await settle();
 
     expect(controller.state.status, isA<ServeStopped>());

@@ -325,6 +325,18 @@ class TraitHelpers {
     return List.generate(length, (_) => ScanPassView.deserialize(deserializer));
   }
 
+  static void serializeVectorServeLineView(List<ServeLineView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<ServeLineView> deserializeVectorServeLineView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => ServeLineView.deserialize(deserializer));
+  }
+
   static void serializeVectorSkippedView(List<SkippedView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

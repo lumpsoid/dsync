@@ -5,8 +5,11 @@ import '../../app_controller.dart';
 import '../../app_settings.dart';
 import '../../app_settings_store.dart';
 import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/serve_event.dart';
+import '../../core_link/models/serve_line.dart';
+import '../../core_link/models/serve_phase.dart';
 import '../../core_link/models/serve_session.dart';
-import '../../core_link/models/serve_update.dart' as core;
+import '../../core_link/models/serve_view.dart';
 import '../../screen_wake.dart';
 import '../../shared_folder_row.dart';
 import 'serve_view_state.dart';
@@ -14,7 +17,8 @@ import 'serve_view_state.dart';
 /// `dsync agent --serve` in the Flutter head (SPEC §4.4): answer paired
 /// devices that dial *this* device, each for the folders this host granted
 /// it, for as long as the Serve page is in front of the user. The core
-/// serves; this owns when, and renders what it reports.
+/// serves and keeps its story; this owns when, and renders the core's
+/// latest view of it.
 ///
 /// **Serving is explicit, foreground and visible.** The listener's lifetime
 /// is the page's: [start] on mount, [stop] on the way out, and stopped
@@ -78,11 +82,14 @@ class ServeController {
   ];
 
   ServeSession? _session;
+  StreamSubscription<ServeView>? _views;
 
   /// The port the core bound, while serving.
   int? get boundPort => _session?.port;
 
   bool _starting = false;
+
+  bool _screenHeld = false;
 
   bool _stopRequested = false;
 
@@ -122,40 +129,35 @@ class ServeController {
         return;
       }
       _session = session;
-      unawaited(_follow(session));
-      state.clearSessions();
-      await screenWake.enable();
-      state.recordStatus(ServeListening(session.advertised));
+      _views = session.views.listen(_show);
     } finally {
       _starting = false;
     }
   }
 
-  /// Renders [session]'s story as it arrives: one timestamped line per
-  /// connection event, and a listener that failed on its own as the page's
-  /// failure.
-  Future<void> _follow(ServeSession session) async {
-    await for (final update in session.updates) {
-      switch (update) {
-        case core.ServeRefused(:final from, :final message):
-          _recordLine('Refused $from: $message');
-        case core.ServeSessionStarted(:final name, :final from):
-          _recordLine('$name connected from $from');
-        case core.ServeServing(:final root):
-          _recordLine('Serving $root');
-        case core.ServeSessionEnded(:final name, failure: null):
-          _recordLine('$name disconnected');
-        case core.ServeSessionEnded(:final name, :final failure?):
-          _recordLine('$name: $failure');
-        case core.ServeStopped(:final failure?) when !_stopRequested:
-          _session = null;
-          if (_disposed) return;
-          unawaited(screenWake.disable());
-          state.recordStatus(ServeFailed(failure));
-        case core.ServeStopped():
-          break;
-      }
+  /// Renders the core's [view]: whether it answers — a listener that
+  /// failed on its own is the page's failure — and one timestamped line
+  /// per connection event it kept.
+  void _show(ServeView view) {
+    if (_disposed) return;
+    final ServeStatus status;
+    switch (view.phase) {
+      case ServePhaseListening(:final advertised):
+        status = ServeListening(advertised);
+        _holdScreen(true);
+      case ServePhaseStopped():
+        _session = null;
+        status = const ServeStopped();
+        _holdScreen(false);
+      case ServePhaseFailed(:final message):
+        _session = null;
+        status = ServeFailed(message);
+        _holdScreen(false);
     }
+    state.show(
+      status: status,
+      sessions: [for (final line in view.lines) _line(line)],
+    );
   }
 
   /// Stops accepting and records the page as stopped.
@@ -163,8 +165,10 @@ class ServeController {
     _stopRequested = true;
     final session = _session;
     _session = null;
+    await _views?.cancel();
+    _views = null;
     if (session != null) await _stopQuietly(session);
-    await screenWake.disable();
+    _holdScreen(false);
     if (!_disposed) state.recordStatus(const ServeStopped());
   }
 
@@ -173,11 +177,18 @@ class ServeController {
     _stopRequested = true;
     final session = _session;
     _session = null;
-    // Neither is awaited: a `dispose` is synchronous, and
+    // None is awaited: a `dispose` is synchronous, and
     // `PlatformScreenWake` swallows its own failures already.
+    unawaited(_views?.cancel());
     if (session != null) unawaited(_stopQuietly(session));
-    unawaited(screenWake.disable());
+    _holdScreen(false);
     state.dispose();
+  }
+
+  void _holdScreen(bool wanted) {
+    if (wanted == _screenHeld) return;
+    _screenHeld = wanted;
+    unawaited(wanted ? screenWake.enable() : screenWake.disable());
   }
 
   Future<void> _stopQuietly(ServeSession session) async {
@@ -188,13 +199,21 @@ class ServeController {
     }
   }
 
-  void _recordLine(String text) {
-    if (_disposed) return;
-    final at = app.now();
+  /// [line] as "HH:MM:SS  what happened", in this device's time.
+  String _line(ServeLine line) {
+    final at = line.at.toLocal();
     final hh = at.hour.toString().padLeft(2, '0');
     final mm = at.minute.toString().padLeft(2, '0');
     final ss = at.second.toString().padLeft(2, '0');
-    state.recordSession('$hh:$mm:$ss  $text');
+    final text = switch (line.event) {
+      ServeRefused(:final from, :final message) => 'Refused $from: $message',
+      ServeSessionStarted(:final name, :final from) =>
+        '$name connected from $from',
+      ServeServing(:final root) => 'Serving $root',
+      ServeSessionEnded(:final name, failure: null) => '$name disconnected',
+      ServeSessionEnded(:final name, :final failure?) => '$name: $failure',
+    };
+    return '$hh:$mm:$ss  $text';
   }
 
   String _bindRefusal(InternetAddress address, String cause) =>

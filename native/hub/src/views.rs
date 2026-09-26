@@ -828,6 +828,50 @@ pub struct DecisionSummaryView {
     pub left_open: u64,
 }
 
+/// Serving, as the head shows it, whole: sent after every change.
+#[derive(Serialize, SignalPiece)]
+pub struct ServeView {
+    pub phase: ServePhaseView,
+    /// What connections reported, newest first, a bounded few.
+    pub lines: Vec<ServeLineView>,
+}
+
+#[derive(Serialize, SignalPiece)]
+pub enum ServePhaseView {
+    /// Answering: `advertised` is what to type on the other device.
+    Listening { advertised: String },
+    /// Stopped by the head.
+    Stopped,
+    /// The listener failed on its own.
+    Failed { message: String },
+}
+
+/// One connection event, when it happened.
+#[derive(Clone, Serialize, SignalPiece)]
+pub struct ServeLineView {
+    pub at_ms: i64,
+    pub event: ServeEventView,
+}
+
+#[derive(Clone, Serialize, SignalPiece)]
+pub enum ServeEventView {
+    /// Turned away before a session began.
+    Refused { from: String, message: String },
+    Started {
+        from: String,
+        device_id: String,
+        name: String,
+    },
+    /// A session opened the replica at `root` (expanded).
+    Serving { root: String },
+    Ended {
+        from: String,
+        device_id: String,
+        name: String,
+        failure: Option<String>,
+    },
+}
+
 /// How a pairing window ended.
 #[derive(Serialize, SignalPiece)]
 pub enum EnrolmentEndView {

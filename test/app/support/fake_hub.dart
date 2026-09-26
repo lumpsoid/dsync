@@ -17,7 +17,6 @@ import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/core_link/models/serve_addresses.dart';
-import 'package:dsync/app/core_link/models/serve_update.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 
 import 'fake_hub_sessions.dart';
@@ -148,7 +147,7 @@ final class FakeHub implements CoreChannel {
 
   final _replies = _Signals<wire.CoreReply>();
   final _runSnapshots = _Signals<wire.RunSnapshot>();
-  final _serveUpdates = _Signals<wire.ServeUpdate>();
+  final _serveSnapshots = _Signals<wire.ServeSnapshot>();
   final _enrolmentUpdates = _Signals<wire.EnrolmentUpdate>();
 
   @override
@@ -158,7 +157,7 @@ final class FakeHub implements CoreChannel {
   Stream<wire.RunSnapshot> get runSnapshots => _runSnapshots.stream;
 
   @override
-  Stream<wire.ServeUpdate> get serveUpdates => _serveUpdates.stream;
+  Stream<wire.ServeSnapshot> get serveSnapshots => _serveSnapshots.stream;
 
   @override
   Stream<wire.EnrolmentUpdate> get enrolmentUpdates => _enrolmentUpdates.stream;
@@ -168,9 +167,9 @@ final class FakeHub implements CoreChannel {
     wire.RunSnapshot(session: _id(session), view: view),
   );
 
-  /// Delivers [update] to the serving in [session], as the hub's signal.
-  void emitServe(int session, ServeUpdate update) => _serveUpdates.add(
-    wire.ServeUpdate(session: _id(session), update: wireServeUpdate(update)),
+  /// Delivers [view] to the serving in [session], as the hub's snapshot.
+  void emitServe(int session, wire.ServeView view) => _serveSnapshots.add(
+    wire.ServeSnapshot(session: _id(session), view: view),
   );
 
   /// Delivers [update] to the pairing window in [session], as the hub's

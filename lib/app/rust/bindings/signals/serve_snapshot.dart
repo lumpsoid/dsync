@@ -1,39 +1,39 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// One connection's story on the serving session `session`.
+/// The serving session `session`, whole, as it now stands.
 @immutable
-class ServeUpdate {
+class ServeSnapshot {
   /// An async broadcast stream that listens for signals from Rust.
   /// It supports multiple subscriptions.
   /// Make sure to cancel the subscription when it's no longer needed,
   /// such as when a widget is disposed.
   static final rustSignalStream =
-      _serveUpdateStreamController.stream.asBroadcastStream();
+      _serveSnapshotStreamController.stream.asBroadcastStream();
         
   /// The latest signal value received from Rust.
   /// This is updated every time a new signal is received.
   /// It can be null if no signals have been received yet.
-  static RustSignalPack<ServeUpdate>? latestRustSignal = null;
+  static RustSignalPack<ServeSnapshot>? latestRustSignal = null;
 
-  const ServeUpdate({
+  const ServeSnapshot({
     required this.session,
-    required this.update,
+    required this.view,
   });
 
-  static ServeUpdate deserialize(BinaryDeserializer deserializer) {
+  static ServeSnapshot deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
-    final instance = ServeUpdate(
+    final instance = ServeSnapshot(
       session: deserializer.deserializeUint64(),
-      update: ServeUpdateBody.deserialize(deserializer),
+      view: ServeView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
-  static ServeUpdate bincodeDeserialize(Uint8List input) {
+  static ServeSnapshot bincodeDeserialize(Uint8List input) {
     final deserializer = BincodeDeserializer(input);
-    final value = ServeUpdate.deserialize(deserializer);
+    final value = ServeSnapshot.deserialize(deserializer);
     if (deserializer.offset < input.length) {
       throw Exception('Some input bytes were not read');
     }
@@ -41,22 +41,22 @@ class ServeUpdate {
   }
 
   final Uint64 session;
-  final ServeUpdateBody update;
+  final ServeView view;
 
-  ServeUpdate copyWith({
+  ServeSnapshot copyWith({
     Uint64? session,
-    ServeUpdateBody? update,
+    ServeView? view,
   }) {
-    return ServeUpdate(
+    return ServeSnapshot(
       session: session ?? this.session,
-      update: update ?? this.update,
+      view: view ?? this.view,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeUint64(session);
-    update.serialize(serializer);
+    view.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -71,15 +71,15 @@ class ServeUpdate {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is ServeUpdate
+    return other is ServeSnapshot
       && session == other.session
-      && update == other.update;
+      && view == other.view;
   }
 
   @override
   int get hashCode => Object.hash(
         session,
-        update,
+        view,
       );
 
   @override
@@ -89,14 +89,14 @@ class ServeUpdate {
     assert(() {
       fullString = '$runtimeType('
         'session: $session, '
-        'update: $update'
+        'view: $view'
         ')';
       return true;
     }());
 
-    return fullString ?? 'ServeUpdate';
+    return fullString ?? 'ServeSnapshot';
   }
 }
 
-final _serveUpdateStreamController =
-    StreamController<RustSignalPack<ServeUpdate>>();
+final _serveSnapshotStreamController =
+    StreamController<RustSignalPack<ServeSnapshot>>();
