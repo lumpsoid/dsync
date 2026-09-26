@@ -217,22 +217,20 @@ fn action_offers(plan: &Plan, index: usize, choice: ActionChoiceView) -> bool {
         })
 }
 
-/// What a conflict can be settled as: a side with no record of the path
-/// cannot be the one kept (there is nothing there to copy), and keeping
-/// both needs a file on both sides. Leaving it open always.
+/// What a conflict can be settled as: what the domain offers, and leaving
+/// it open always.
 fn conflict_offers(conflict: &Conflict) -> Vec<ConflictChoiceView> {
-    let holds_file = |status: &Option<Status>| status.as_ref().and_then(Status::file).is_some();
-    let mut offered = vec![ConflictChoiceView::Unresolved];
-    if conflict.a.is_some() {
-        offered.push(ConflictChoiceView::KeepA);
-    }
-    if conflict.b.is_some() {
-        offered.push(ConflictChoiceView::KeepB);
-    }
-    if holds_file(&conflict.a) && holds_file(&conflict.b) {
-        offered.push(ConflictChoiceView::KeepBoth);
-    }
-    offered
+    let offered = conflict
+        .offers()
+        .into_iter()
+        .map(|resolution| match resolution {
+            dsync_domain::Resolution::Keep(Side::A) => ConflictChoiceView::KeepA,
+            dsync_domain::Resolution::Keep(Side::B) => ConflictChoiceView::KeepB,
+            dsync_domain::Resolution::KeepBoth => ConflictChoiceView::KeepBoth,
+        });
+    std::iter::once(ConflictChoiceView::Unresolved)
+        .chain(offered)
+        .collect()
 }
 
 fn count(n: usize) -> u64 {

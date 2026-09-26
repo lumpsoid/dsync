@@ -2,6 +2,7 @@
 
 use crate::action::Action;
 use crate::rel_path::RelPath;
+use crate::resolution::Resolution;
 use crate::scan_entry::Status;
 use crate::side::Side;
 
@@ -31,6 +32,26 @@ impl Conflict {
             .any(|&side| self.on(side).is_some_and(Status::is_untrusted))
     }
 
+    /// The ways this conflict can be settled: a side with no record of
+    /// the path cannot be the one kept (there is nothing there to keep),
+    /// and keeping both needs a file on both sides - otherwise there is
+    /// only one version to keep. Leaving it open is always possible and is
+    /// not a resolution.
+    pub fn offers(&self) -> Vec<Resolution> {
+        let mut offered: Vec<Resolution> = Side::BOTH
+            .into_iter()
+            .filter(|&side| self.on(side).is_some())
+            .map(Resolution::Keep)
+            .collect();
+        if Side::BOTH
+            .iter()
+            .all(|&side| self.on(side).and_then(Status::file).is_some())
+        {
+            offered.push(Resolution::KeepBoth);
+        }
+        offered
+    }
+
     /// The action that settles this conflict the user's way: `keep`'s
     /// state wins (SPEC §6, §11.3). A kept file is copied over the other
     /// side; a kept absence - `keep` deleted it, or never had it - deletes
@@ -52,11 +73,12 @@ impl Conflict {
 
     /// "Keep both": the action that saves the peer's (side B's) version
     /// beside this device's, at `to` on side A, and settles nothing (SPEC
-    /// §7.2). Offered only when both sides hold a file - otherwise there is
-    /// only one version to keep - so `None` then.
+    /// §7.2). `None` unless [`Conflict::offers`] offers it.
     pub fn keep_both(&self, to: RelPath) -> Option<Action> {
+        if !self.offers().contains(&Resolution::KeepBoth) {
+            return None;
+        }
         let peer = self.b.as_ref().and_then(Status::file)?;
-        self.a.as_ref().and_then(Status::file)?;
         Some(Action::CopyAside {
             path: self.path.clone(),
             from: Side::B,
@@ -161,6 +183,68 @@ mod tests {
         ] {
             assert_eq!(conflict(a, b).keep_both(aside()), None);
         }
+    }
+
+    /// Every state a side can be in: `None` is no record at all (absent,
+    /// or a directory in a file-vs-directory conflict), then each status
+    /// without a file, then each with one.
+    fn every_state() -> Vec<Option<Status>> {
+        vec![
+            None,
+            Some(Status::Deleted),
+            Some(Status::UntrustedAbsent),
+            Some(unchanged(1)),
+            Some(Status::Created(file(1))),
+            Some(Status::Modified(file(1))),
+            Some(Status::Untrusted(file(1))),
+        ]
+    }
+
+    #[test]
+    fn a_side_can_be_kept_when_it_has_a_record_of_the_path() {
+        for a in every_state() {
+            for b in every_state() {
+                let offers = conflict(a, b).offers();
+                assert_eq!(
+                    offers.contains(&Resolution::Keep(Side::A)),
+                    a.is_some(),
+                    "{a:?} / {b:?}"
+                );
+                assert_eq!(
+                    offers.contains(&Resolution::Keep(Side::B)),
+                    b.is_some(),
+                    "{a:?} / {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn both_can_be_kept_only_when_both_sides_hold_a_file() {
+        for a in every_state() {
+            for b in every_state() {
+                let holds = |s: &Option<Status>| s.as_ref().is_some_and(Status::is_present);
+                let both = conflict(a, b);
+                let offered = both.offers().contains(&Resolution::KeepBoth);
+                assert_eq!(offered, holds(&a) && holds(&b), "{a:?} / {b:?}");
+                assert_eq!(both.keep_both(aside()).is_some(), offered, "{a:?} / {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn offers_list_keep_a_then_keep_b_then_keep_both() {
+        let both = conflict(Some(unchanged(1)), Some(Status::Modified(file(2))));
+        assert_eq!(
+            both.offers(),
+            vec![
+                Resolution::Keep(Side::A),
+                Resolution::Keep(Side::B),
+                Resolution::KeepBoth
+            ]
+        );
+        let one = conflict(None, Some(Status::Deleted));
+        assert_eq!(one.offers(), vec![Resolution::Keep(Side::B)]);
     }
 
     #[test]

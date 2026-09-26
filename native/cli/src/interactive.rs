@@ -8,7 +8,7 @@
 use std::io::Write;
 
 use dsync_core::Decider;
-use dsync_domain::{Action, Conflict, MassDelete, Plan, Side, Status};
+use dsync_domain::{Action, Conflict, MassDelete, Plan, Resolution, Side, Status};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, Lines};
 use tokio::sync::watch;
 
@@ -99,7 +99,9 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
                 }
                 Answer::Skip => {}
                 Answer::Keep(side) => kept.push(conflict.resolve(side)),
-                Answer::Accept => kept.push(conflict.resolve(only_side(conflict))),
+                Answer::Accept => {
+                    kept.extend(only_keep(conflict).map(|side| conflict.resolve(side)))
+                }
             }
         }
         for action in plan.actions.iter().map(|p| &p.action) {
@@ -124,8 +126,8 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
         let _ = writeln!(self.output, "--- conflict: {}", conflict.path);
         let _ = writeln!(self.output, "  A: {}", describe(conflict.a.as_ref()));
         let _ = writeln!(self.output, "  B: {}", describe(conflict.b.as_ref()));
-        if conflict.a.is_none() || conflict.b.is_none() {
-            let only = words::prompt_action(&conflict.resolve(only_side(conflict)));
+        if let Some(side) = only_keep(conflict) {
+            let only = words::prompt_action(&conflict.resolve(side));
             let _ = write!(
                 self.output,
                 "  [y] accept ({only})  [s] skip  [a] accept all remaining  [q] quit > "
@@ -230,12 +232,13 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> Decider for InteractiveDec
     }
 }
 
-/// The side a one-sided conflict has a record on: the only one to keep.
-fn only_side(conflict: &Conflict) -> Side {
-    if conflict.a.is_some() {
-        Side::A
-    } else {
-        Side::B
+/// The side to keep when the conflict offers keeping only one: a
+/// one-sided conflict, whose other side has no record of the path. Keeping
+/// both is not asked here.
+fn only_keep(conflict: &Conflict) -> Option<Side> {
+    match conflict.offers().as_slice() {
+        [Resolution::Keep(side)] => Some(*side),
+        _ => None,
     }
 }
 
