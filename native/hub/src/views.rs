@@ -504,7 +504,7 @@ impl SkippedView {
 
 /// A conflict (SPEC §6), each side's status as the scan found it.
 /// `interrupted`: a side holds a write that never committed.
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub struct ConflictView {
     pub path: String,
     pub a: Option<StatusView>,
@@ -523,7 +523,7 @@ impl From<&Conflict> for ConflictView {
     }
 }
 
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub enum StatusView {
     Unchanged { file: FileView, by_hash: bool },
     Created(FileView),
@@ -533,7 +533,7 @@ pub enum StatusView {
     UntrustedAbsent,
 }
 
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub struct FileView {
     pub size: u64,
     pub mtime_us: i64,
@@ -559,7 +559,7 @@ impl From<&Status> for StatusView {
     }
 }
 
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub enum ActionView {
     Copy {
         path: String,
@@ -615,7 +615,7 @@ impl From<&Action> for ActionView {
 
 /// A planned action and, when it can be put the other way, the bytes that
 /// reversal would copy (`None`: no reverse is offered).
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub struct ProposalView {
     pub action: ActionView,
     pub reverse_bytes: Option<u64>,
@@ -631,7 +631,7 @@ impl From<&Proposal> for ProposalView {
 }
 
 /// One action's outcome; `failure` says why it did not land.
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub struct ResultView {
     pub action: ActionView,
     pub failure: Option<String>,
@@ -826,7 +826,7 @@ impl TalliesView {
 }
 
 /// The bytes the plan's copies write onto each side.
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub struct PlanSummaryView {
     pub bytes_to_a: u64,
     pub bytes_to_b: u64,

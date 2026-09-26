@@ -8,6 +8,8 @@
 //! phase change, a question or a tap, and otherwise (progress, the scan's
 //! facts) at most once per refresh interval, the latest state each time.
 
+mod rows;
+mod sending;
 mod state;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -31,7 +33,8 @@ use crate::signals::{ReplyResult, RunIntent, RunTarget};
 use crate::throttle::{Throttle, Urgency, Verdict};
 use crate::views::millis;
 
-use state::{Choices, Ended, RunState, Steer};
+use sending::Sending;
+use state::{Choices, Ended, RunState, Snapshot, Steer};
 
 /// Events buffered between the run and the session, as the CLI's.
 const EVENT_BUFFER: usize = 256;
@@ -57,6 +60,7 @@ impl Hub {
                 attempt: None,
                 pending: None,
                 throttle: Throttle::new(),
+                sending: Sending::Idle,
             }),
         });
         control.update(|_| Urgency::Now);
@@ -202,6 +206,7 @@ struct Shared {
     /// The question the decider waits on, if any.
     pending: Option<Pending>,
     throttle: Throttle,
+    sending: Sending<Snapshot>,
 }
 
 /// A run session: its state, the live attempt's handles, and where its
@@ -230,11 +235,11 @@ impl RunControl {
     fn update(self: &Arc<Self>, change: impl FnOnce(&mut RunState) -> Urgency) {
         let mut shared = self.lock();
         let urgency = change(&mut shared.state);
-        self.publish(&mut shared, urgency);
+        self.publish(shared, urgency);
     }
 
     /// Carries out what the throttle says of a change of `urgency`.
-    fn publish(self: &Arc<Self>, shared: &mut Shared, urgency: Urgency) {
+    fn publish(self: &Arc<Self>, mut shared: MutexGuard<'_, Shared>, urgency: Urgency) {
         match shared.throttle.on(urgency, Instant::now()) {
             Verdict::Send => self.send(shared),
             Verdict::DeferUntil(at) => {
@@ -243,7 +248,7 @@ impl RunControl {
                     tokio::time::sleep_until(at).await;
                     let mut shared = control.lock();
                     if let Verdict::Send = shared.throttle.due(Instant::now()) {
-                        control.send(&mut shared);
+                        control.send(shared);
                     }
                 });
             }
@@ -251,9 +256,24 @@ impl RunControl {
         }
     }
 
-    fn send(&self, shared: &mut Shared) {
-        let state = &shared.state;
-        self.out.run(self.session, state.view(), state.is_over());
+    /// Takes the state as it stands under the lock, cheaply, and builds
+    /// and sends it once the lock is released, so the run's events are
+    /// not held up by a large plan's rows; see [`Sending`] for the order.
+    fn send(&self, mut shared: MutexGuard<'_, Shared>) {
+        let taken = shared.state.snapshot();
+        let Some(mut snapshot) = shared.sending.offer(taken) else {
+            return;
+        };
+        drop(shared);
+        loop {
+            let last = snapshot.is_last();
+            self.out.run(self.session, snapshot.view(), last);
+            let next = self.lock().sending.sent();
+            match next {
+                Some(waiting) => snapshot = waiting,
+                None => return,
+            }
+        }
     }
 
     /// Carries out what `intent` means where the run stands.
@@ -261,18 +281,18 @@ impl RunControl {
         let mut shared = self.lock();
         match shared.state.steer(intent) {
             Steer::Ignored => {}
-            Steer::Changed => self.publish(&mut shared, Urgency::Now),
+            Steer::Changed => self.publish(shared, Urgency::Now),
             Steer::Decide(choices) => {
                 if let Some(Pending::Review(answer)) = shared.pending.take() {
                     let _ = answer.send(choices);
                 }
-                self.publish(&mut shared, Urgency::Now);
+                self.publish(shared, Urgency::Now);
             }
             Steer::AnswerDeletes(proceed) => {
                 if let Some(Pending::Deletes(answer)) = shared.pending.take() {
                     let _ = answer.send(proceed);
                 }
-                self.publish(&mut shared, Urgency::Now);
+                self.publish(shared, Urgency::Now);
             }
             Steer::Stop => {
                 // An attempt not yet attached is stopped as it attaches.
@@ -281,7 +301,7 @@ impl RunControl {
                 }
             }
             Steer::Restart => {
-                self.publish(&mut shared, Urgency::Now);
+                self.publish(shared, Urgency::Now);
                 let _ = self.wake.send(Wake::Restart);
             }
             Steer::End => {
@@ -306,7 +326,7 @@ impl RunControl {
         shared.attempt = None;
         shared.pending = None;
         let urgency = shared.state.ended(end);
-        self.publish(&mut shared, urgency);
+        self.publish(shared, urgency);
     }
 
     fn is_over(&self) -> bool {
@@ -323,7 +343,7 @@ impl RunControl {
                 Asked::Waiting(answered)
             }
         };
-        self.publish(&mut shared, Urgency::Now);
+        self.publish(shared, Urgency::Now);
         asked
     }
 
@@ -337,7 +357,7 @@ impl RunControl {
                 Asked::Waiting(answered)
             }
         };
-        self.publish(&mut shared, Urgency::Now);
+        self.publish(shared, Urgency::Now);
         asked
     }
 }
@@ -463,7 +483,7 @@ mod tests {
     use dsync_domain::{Action, RelPath, RunSummary, Side};
     use tokio::sync::mpsc;
 
-    use super::{Ended, RunControl, RunState, Shared};
+    use super::{Ended, RunControl, RunState, Sending, Shared};
     use crate::outbox::{Outbox, Outgoing};
     use crate::throttle::{REFRESH_INTERVAL, Throttle, Urgency};
     use crate::views::{RunPhaseView, RunView};
@@ -480,6 +500,7 @@ mod tests {
                 attempt: None,
                 pending: None,
                 throttle: Throttle::new(),
+                sending: Sending::Idle,
             }),
         });
         (control, outgoing)

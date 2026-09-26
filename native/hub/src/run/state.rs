@@ -2,24 +2,24 @@
 //! the run's events, the decider's questions, the user's intents. Pure -
 //! the session in `run.rs` feeds it and carries out what it answers - and
 //! the one place the run's phase, its review and its outcome are decided;
-//! the head renders [`RunState::view`] and decides nothing.
+//! the head renders the [`Snapshot`]s it takes and decides nothing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use dsync_core::RunEvent;
 use dsync_domain::{
-    Action, Conflict, MassDelete, Plan, RelPath, ReplicaInfo, RunSummary, ScanTally, Side,
-    SideDeletes, SkippedPath, Status,
+    Action, MassDelete, Plan, RelPath, ReplicaInfo, RunSummary, ScanTally, Side, SideDeletes,
+    SkippedPath, Status,
 };
 
+use super::rows::{Outcomes, PlanRows};
 use crate::signals::RunIntent;
 use crate::throttle::Urgency;
 use crate::views::{
-    ActionChoiceView, ActionView, ConflictChoiceView, ConflictRowView, ConflictView,
-    DecisionSummaryView, MassDeleteView, PlanRowView, PlanSummaryView, ProgressView, ProposalView,
-    ReplicasView, ResultView, RunPhaseView, RunStandingView, RunView, SkippedView, SummaryView,
-    TalliesView,
+    ActionChoiceView, ConflictChoiceView, DecisionSummaryView, MassDeleteView, PlanSummaryView,
+    ProgressView, ReplicasView, ResultView, RunPhaseView, RunStandingView, RunView, SkippedView,
+    SummaryView, TalliesView,
 };
 
 /// What an intent asks the session to carry out.
@@ -60,12 +60,11 @@ enum Suspend {
     Pause,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
 enum Phase {
     Connecting,
     Scanning,
     /// The head reviews this plan, the decider waiting.
-    Reviewing(Arc<Plan>),
+    Reviewing(Arc<PlanRows>),
     ConfirmingDeletes(Vec<SideDeletes>),
     Applying,
     Finished(RunSummary),
@@ -115,21 +114,21 @@ impl Choices {
     }
 
     /// The plan as reconciled, every conflict left open (`--batch`).
-    fn as_planned(plan: &Plan) -> Choices {
+    fn as_planned(plan: &PlanRows) -> Choices {
         Choices {
-            actions: vec![ActionChoiceView::Proposed; plan.actions.len()],
-            conflicts: vec![ConflictChoiceView::Unresolved; plan.conflicts.len()],
+            actions: vec![ActionChoiceView::Proposed; plan.actions()],
+            conflicts: vec![ConflictChoiceView::Unresolved; plan.conflicts()],
         }
     }
 
-    fn action(&self, index: usize) -> ActionChoiceView {
+    pub(super) fn action(&self, index: usize) -> ActionChoiceView {
         self.actions
             .get(index)
             .copied()
             .unwrap_or(ActionChoiceView::Proposed)
     }
 
-    fn conflict(&self, index: usize) -> ConflictChoiceView {
+    pub(super) fn conflict(&self, index: usize) -> ConflictChoiceView {
         self.conflicts
             .get(index)
             .copied()
@@ -166,7 +165,7 @@ impl Choices {
     }
 
     /// The running total over `plan`.
-    fn summary(&self, plan: &Plan) -> DecisionSummaryView {
+    fn summary(&self, plan: &PlanRows) -> DecisionSummaryView {
         let (mut reversed, mut skipped) = (0, 0);
         for choice in &self.actions {
             match choice {
@@ -183,8 +182,8 @@ impl Choices {
                 ConflictChoiceView::KeepBoth => kept_both += 1,
             }
         }
-        let actions = count(plan.actions.len());
-        let conflicts = count(plan.conflicts.len());
+        let actions = count(plan.actions());
+        let conflicts = count(plan.conflicts());
         DecisionSummaryView {
             apply: actions.saturating_sub(skipped),
             reversed,
@@ -196,39 +195,11 @@ impl Choices {
     }
 }
 
-/// What a planned action under review can be: as planned or left out
-/// always, reversed only where the proposal offers it.
-fn action_offers(plan: &Plan, index: usize, choice: ActionChoiceView) -> bool {
-    plan.actions
-        .get(index)
-        .is_some_and(|proposal| match choice {
-            ActionChoiceView::Proposed | ActionChoiceView::Skipped => true,
-            ActionChoiceView::Reversed => proposal.reversed().is_some(),
-        })
-}
-
-/// What a conflict can be settled as: what the domain offers, and leaving
-/// it open always.
-fn conflict_offers(conflict: &Conflict) -> Vec<ConflictChoiceView> {
-    let offered = conflict
-        .offers()
-        .into_iter()
-        .map(|resolution| match resolution {
-            dsync_domain::Resolution::Keep(Side::A) => ConflictChoiceView::KeepA,
-            dsync_domain::Resolution::Keep(Side::B) => ConflictChoiceView::KeepB,
-            dsync_domain::Resolution::KeepBoth => ConflictChoiceView::KeepBoth,
-        });
-    std::iter::once(ConflictChoiceView::Unresolved)
-        .chain(offered)
-        .collect()
-}
-
 fn count(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
 /// What an attempt that failed ends as.
-#[derive(Clone, PartialEq, Eq, Debug)]
 enum Failure {
     Failed(String),
     /// SPEC §4.3's held lock.
@@ -245,12 +216,6 @@ impl From<Failure> for Phase {
             Failure::DeletesDeclined => Phase::DeletesDeclined,
         }
     }
-}
-
-/// One action's reported outcome.
-struct Outcome {
-    action: Action,
-    failure: Option<String>,
 }
 
 /// A run session's state: its current attempt, and how the head steered
@@ -272,10 +237,16 @@ pub(crate) struct RunState {
     replicas: Option<[ReplicaInfo; 2]>,
     tallies: Option<[ScanTally; 2]>,
     skipped: Vec<(Side, SkippedPath)>,
-    plan: Option<Arc<Plan>>,
+    /// The plan's rows, built once it is taken.
+    plan: Option<Arc<PlanRows>>,
     choices: Choices,
-    /// By path: a plan's action and a conflict's own path never coincide.
-    outcomes: HashMap<RelPath, Outcome>,
+    /// Shown on the plan's rows; shared with the snapshots taken.
+    outcomes: Arc<Outcomes>,
+    /// Every path an outcome was reported for, once each: whether it
+    /// failed.
+    reported: HashMap<RelPath, bool>,
+    /// How many of `reported` failed.
+    failed: usize,
     progress: Option<(usize, usize)>,
     timings: Option<String>,
 }
@@ -297,7 +268,9 @@ impl RunState {
             skipped: Vec::new(),
             plan: None,
             choices: Choices::none(),
-            outcomes: HashMap::new(),
+            outcomes: Arc::default(),
+            reported: HashMap::new(),
+            failed: 0,
             progress: None,
             timings: None,
         }
@@ -335,24 +308,25 @@ impl RunState {
         Urgency::Now
     }
 
-    /// Takes `plan` in, the first time it is seen: the decider and the
-    /// plan's event both bring it. The plan taken, and whether it was new.
-    fn take_plan(&mut self, plan: &Plan) -> (Arc<Plan>, bool) {
+    /// Takes `plan` in, the first time it is seen (the decider and the
+    /// plan's event both bring it), building its rows once.
+    fn take_plan(&mut self, plan: &Plan) -> Arc<PlanRows> {
         if let Some(taken) = &self.plan {
-            return (taken.clone(), false);
+            return taken.clone();
         }
-        self.choices = Choices::as_planned(plan);
-        let taken = Arc::new(plan.clone());
+        let taken = Arc::new(PlanRows::of(plan));
+        self.choices = Choices::as_planned(&taken);
+        self.outcomes = Arc::new(Outcomes::over(&taken));
         self.plan = Some(taken.clone());
-        (taken, true)
+        taken
     }
 
     /// The decider asks about `plan`: `Some` answers at once - a run
     /// already stopping keeps nothing, and a plan with nothing in it needs
     /// no review - and `None` opens the review, every row as planned.
     pub(crate) fn review(&mut self, plan: &Plan) -> Option<Choices> {
-        let (taken, _) = self.take_plan(plan);
-        if self.suspend.is_some() || (plan.actions.is_empty() && plan.conflicts.is_empty()) {
+        let taken = self.take_plan(plan);
+        if self.suspend.is_some() || taken.is_empty() {
             self.phase = Phase::Applying;
             return Some(Choices::none());
         }
@@ -402,16 +376,21 @@ impl RunState {
                 Urgency::Unseen
             }
             RunEvent::Plan { plan, .. } => {
-                if self.take_plan(&plan).1 {
-                    Urgency::Now
-                } else {
-                    Urgency::Unseen
+                if self.plan.is_some() {
+                    return Urgency::Unseen;
                 }
+                self.take_plan(&plan);
+                Urgency::Now
             }
             RunEvent::Result { action, outcome } => {
-                let failure = outcome.err().map(|failure| failure.to_string());
-                let path = action.path().clone();
-                self.outcomes.insert(path, Outcome { action, failure });
+                let path = action.path();
+                if let Some(rows) = &self.plan {
+                    let shown = ResultView::of(&action, &outcome);
+                    Arc::make_mut(&mut self.outcomes).report(rows, path, shown);
+                }
+                let failed = outcome.is_err();
+                let was_failed = self.reported.insert(path.clone(), failed) == Some(true);
+                self.failed = self.failed - usize::from(was_failed) + usize::from(failed);
                 Urgency::Routine
             }
             RunEvent::Progress { completed, total } => {
@@ -464,7 +443,7 @@ impl RunState {
         Urgency::Now
     }
 
-    fn reviewing(&self) -> Option<&Plan> {
+    fn reviewing(&self) -> Option<&PlanRows> {
         match &self.phase {
             Phase::Reviewing(plan) if self.suspend.is_none() => Some(plan),
             _ => None,
@@ -483,7 +462,7 @@ impl RunState {
                     return Steer::Ignored;
                 };
                 match self.reviewing() {
-                    Some(plan) if action_offers(plan, at, choice) => {
+                    Some(plan) if plan.action_offers(at, choice) => {
                         self.choices.actions[at] = choice;
                         Steer::Changed
                     }
@@ -494,8 +473,8 @@ impl RunState {
                 let Ok(at) = usize::try_from(index) else {
                     return Steer::Ignored;
                 };
-                match self.reviewing().and_then(|plan| plan.conflicts.get(at)) {
-                    Some(conflict) if conflict_offers(conflict).contains(&choice) => {
+                match self.reviewing() {
+                    Some(plan) if plan.conflict_offers(at, choice) => {
                         self.choices.conflicts[at] = choice;
                         Steer::Changed
                     }
@@ -593,22 +572,12 @@ impl RunState {
         }
     }
 
-    fn outcome(&self, path: &RelPath) -> Option<ResultView> {
-        self.outcomes.get(path).map(|outcome| ResultView {
-            action: ActionView::from(&outcome.action),
-            failure: outcome.failure.clone(),
-        })
-    }
-
-    /// Everything the head shows, as it now stands.
-    pub(crate) fn view(&self) -> RunView {
+    /// The state as it now stands, for a snapshot: everything but the
+    /// plan's rows, which [`Snapshot::view`] builds from the rows taken
+    /// once, the choices and the outcomes, shared or copied here cheaply.
+    pub(crate) fn snapshot(&self) -> Snapshot {
         let plan = self.plan.as_deref();
-        let failed = self
-            .outcomes
-            .values()
-            .filter(|outcome| outcome.failure.is_some())
-            .count();
-        RunView {
+        let view = RunView {
             dry_run: self.dry_run,
             phase: self.phase_view(),
             standing: self.phase.standing(),
@@ -620,51 +589,84 @@ impl RunState {
                 .iter()
                 .map(|(side, skipped)| SkippedView::of(*side, skipped))
                 .collect(),
-            conflicts: plan.map_or_else(Vec::new, |plan| {
-                plan.conflicts
-                    .iter()
-                    .enumerate()
-                    .map(|(at, conflict)| ConflictRowView {
-                        conflict: ConflictView::from(conflict),
-                        offered: conflict_offers(conflict),
-                        choice: self.choices.conflict(at),
-                        outcome: self.outcome(&conflict.path),
-                    })
-                    .collect()
-            }),
-            plan: plan.map_or_else(Vec::new, |plan| {
-                plan.actions
-                    .iter()
-                    .enumerate()
-                    .map(|(at, proposal)| PlanRowView {
-                        proposal: ProposalView::from(proposal),
-                        choice: self.choices.action(at),
-                        outcome: self.outcome(proposal.action.path()),
-                    })
-                    .collect()
-            }),
-            bytes_to_transfer: plan.map_or(0, Plan::bytes_to_transfer),
+            conflicts: Vec::new(),
+            plan: Vec::new(),
+            bytes_to_transfer: plan.map_or(0, PlanRows::bytes_to_transfer),
             plan_summary: plan.map_or(
                 PlanSummaryView {
                     bytes_to_a: 0,
                     bytes_to_b: 0,
                 },
-                PlanSummaryView::from,
+                PlanRows::summary,
             ),
             progress: self.progress.map(|(completed, total)| ProgressView {
                 completed: count(completed),
                 total: count(total),
             }),
-            applied: count(self.outcomes.len() - failed),
-            failed: count(failed),
+            applied: count(self.reported.len() - self.failed),
+            failed: count(self.failed),
             timings: self.timings.clone(),
+        };
+        Snapshot {
+            view,
+            rows: self.plan.as_ref().map(|plan| Rows {
+                plan: plan.clone(),
+                choices: self.choices.clone(),
+                outcomes: self.outcomes.clone(),
+            }),
+            last: self.is_over(),
         }
+    }
+
+    /// Everything the head shows, as it now stands.
+    #[cfg(test)]
+    pub(crate) fn view(&self) -> RunView {
+        self.snapshot().view()
+    }
+}
+
+/// What a snapshot's rows are built from.
+struct Rows {
+    plan: Arc<PlanRows>,
+    choices: Choices,
+    outcomes: Arc<Outcomes>,
+}
+
+/// A run's state as it stood when [`RunState::snapshot`] took it.
+pub(crate) struct Snapshot {
+    /// Everything but the plan's rows.
+    view: RunView,
+    rows: Option<Rows>,
+    last: bool,
+}
+
+impl Snapshot {
+    /// The session sends nothing after this one.
+    pub(crate) fn is_last(&self) -> bool {
+        self.last
+    }
+
+    /// Everything the head shows: the plan's rows are built here, away
+    /// from the session's lock.
+    pub(crate) fn view(self) -> RunView {
+        let mut view = self.view;
+        if let Some(Rows {
+            plan,
+            choices,
+            outcomes,
+        }) = &self.rows
+        {
+            view.plan = plan.plan_rows(choices, outcomes);
+            view.conflicts = plan.conflict_rows(choices, outcomes);
+        }
+        view
     }
 }
 
 #[cfg(test)]
 mod tests {
     use dsync_core::{RunError, RunEvent};
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
     use dsync_domain::{
@@ -1287,6 +1289,106 @@ mod tests {
         assert_eq!((summary.bytes_to_a, summary.bytes_to_b), (7, 2));
         let before = RunState::new(false).view().plan_summary;
         assert_eq!((before.bytes_to_a, before.bytes_to_b), (0, 0));
+    }
+
+    #[test]
+    fn a_tap_reuses_the_rows_built_when_the_plan_was_taken() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        let before = state.snapshot();
+        choose(&mut state, 1, ActionChoiceView::Skipped);
+        let after = state.snapshot();
+        let (Some(was), Some(now)) = (&before.rows, &after.rows) else {
+            panic!("a reviewed plan has rows");
+        };
+        assert!(Arc::ptr_eq(&was.plan, &now.plan));
+        assert_eq!(before.view().plan[1].choice, ActionChoiceView::Proposed);
+        assert_eq!(after.view().plan[1].choice, ActionChoiceView::Skipped);
+    }
+
+    #[test]
+    fn a_snapshot_shows_the_outcomes_reported_before_it_was_taken() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        state.steer(RunIntent::Confirm);
+        let before = state.snapshot();
+        state.event(RunEvent::Result {
+            action: copy("p"),
+            outcome: Ok(()),
+        });
+        let after = state.snapshot();
+        assert!(before.view().plan[1].outcome.is_none());
+        let view = after.view();
+        assert!(view.plan[1].outcome.is_some());
+        assert_eq!(view.applied, 1);
+    }
+
+    /// Rows in the snapshot-cost measurement: a large first sync.
+    const COST_ROWS: usize = 50_000;
+
+    /// The median of `runs` timings of `work`, in microseconds.
+    fn median_us(runs: usize, mut work: impl FnMut()) -> u128 {
+        let mut times: Vec<u128> = (0..runs)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                work();
+                started.elapsed().as_micros()
+            })
+            .collect();
+        times.sort_unstable();
+        times[runs / 2]
+    }
+
+    /// Times taking one snapshot of `state` (under the session's lock),
+    /// building its view and encoding it (both away from the lock).
+    fn cost(label: &str, state: &RunState) {
+        let take = median_us(11, || {
+            std::hint::black_box(state.snapshot());
+        });
+        let mut snapshots: Vec<_> = (0..11).map(|_| state.snapshot()).collect();
+        let build = median_us(11, || {
+            if let Some(snapshot) = snapshots.pop() {
+                std::hint::black_box(snapshot.view());
+            }
+        });
+        let snapshot = crate::signals::RunSnapshot {
+            session: 1,
+            view: state.view(),
+            last: false,
+        };
+        let mut bytes = 0;
+        let encode = median_us(11, || {
+            bytes = rinf::serialize(&snapshot)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .len();
+        });
+        eprintln!(
+            "{label}: take {take} us (locked), build {build} us, encode {encode} us, {bytes} bytes"
+        );
+    }
+
+    /// Not a gate: run with `cargo test --release -p hub --lib -- --ignored
+    /// --nocapture snapshot_cost` to see what a large plan's snapshots cost.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn snapshot_cost_at_fifty_thousand_rows() {
+        let plan = Plan {
+            actions: (0..COST_ROWS)
+                .map(|index| reversible(&format!("photos/{:03}/img_{index:06}.jpg", index / 500)))
+                .collect(),
+            conflicts: Vec::new(),
+        };
+        let mut state = reviewing(&plan);
+        choose(&mut state, 7, ActionChoiceView::Skipped);
+        cost("per tap (reviewing)", &state);
+        state.steer(RunIntent::Confirm);
+        for proposal in &plan.actions {
+            state.event(RunEvent::Result {
+                action: proposal.action.clone(),
+                outcome: Ok(()),
+            });
+        }
+        cost("per refresh (applied)", &state);
     }
 
     #[test]
