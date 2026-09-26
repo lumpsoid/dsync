@@ -50,14 +50,6 @@ pub enum IdentityError {
         key: PathBuf,
         detail: IdentityPairError,
     },
-    #[error(
-        "Device identity {} was written by another dsync version (a CA certificate; this \
-         build issues end-entity ones). Delete {} and {} to generate a fresh identity.",
-        certificate.display(),
-        certificate.display(),
-        key.display()
-    )]
-    ForeignSchema { certificate: PathBuf, key: PathBuf },
     #[error(transparent)]
     Issue(#[from] IdentityIssueError),
 }
@@ -153,20 +145,11 @@ impl DeviceIdentityStore {
     }
 
     fn parse(&self, certificate: &str, key: &str) -> Result<DeviceIdentity, IdentityError> {
-        let identity = DeviceIdentity::from_pem(certificate, key).map_err(|detail| {
-            IdentityError::Corrupt {
-                certificate: self.certificate.clone(),
-                key: self.key.clone(),
-                detail,
-            }
-        })?;
-        if identity.certificate().is_ca() {
-            return Err(IdentityError::ForeignSchema {
-                certificate: self.certificate.clone(),
-                key: self.key.clone(),
-            });
-        }
-        Ok(identity)
+        DeviceIdentity::from_pem(certificate, key).map_err(|detail| IdentityError::Corrupt {
+            certificate: self.certificate.clone(),
+            key: self.key.clone(),
+            detail,
+        })
     }
 }
 

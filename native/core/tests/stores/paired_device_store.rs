@@ -1,7 +1,7 @@
 //! The cases of `test/dsync_core/identity/paired_device_store_test.dart`
 //! against a real file: absent vs. damaged, round trips, every change
-//! surviving a reload, freshness across instances, and the Dart-era
-//! document refused by name.
+//! surviving a reload, freshness across instances, and a document of
+//! another major refused by name.
 
 use std::fs;
 use std::time::{Duration, SystemTime};
@@ -11,7 +11,9 @@ use dsync_core::{
     PairingError, StateDir,
 };
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{DeviceId, DirRule, HostFacts, PeerName, Platform, StateDirChoice};
+use dsync_domain::{
+    DeviceId, DirRule, FormatVersion, HostFacts, PeerName, Platform, StateDirChoice,
+};
 use tempfile::TempDir;
 
 fn at(seconds: u64) -> SystemTime {
@@ -96,13 +98,14 @@ fn a_damaged_file_is_corruption_not_an_empty_set() {
     let fixture = Fixture::new();
     for text in [
         "",
-        "{\"schemaVersion\": 2, \"devi",
+        "{\"version\": \"1.0\", \"devi",
         "{not json at all",
         "[]",
         "{\"totally\": \"unrelated\"}",
-        "{\"schemaVersion\": \"2\", \"devices\": {}}",
-        "{\"schemaVersion\": 2, \"devices\": []}",
-        "{\"schemaVersion\": 2, \"devices\": {}, \"extra\": 1}",
+        "{\"version\": 1, \"devices\": {}}",
+        "{\"version\": \"1\", \"devices\": {}}",
+        "{\"version\": \"1.0\", \"devices\": []}",
+        "{\"version\": \"1.0\"}",
     ] {
         fixture.write(text);
         corrupt_detail(&fixture);
@@ -163,40 +166,56 @@ fn two_entries_under_one_name_are_corruption() {
 #[test]
 fn a_well_formed_document_with_zero_devices_is_a_legitimate_empty_set() {
     let fixture = Fixture::new();
-    fixture.write("{\"schemaVersion\": 2, \"devices\": {}}");
+    fixture.write("{\"version\": \"1.0\", \"devices\": {}}");
     assert!(fixture.load().is_empty());
 }
 
-/// Byte-for-byte the shape the Dart store wrote (schema 1).
 #[test]
-fn a_dart_era_document_is_refused_naming_the_file_and_saying_to_delete_it() {
+fn a_document_of_another_major_is_refused_naming_both_versions_and_the_file() {
     let fixture = Fixture::new();
-    let certificate = identity().certificate().to_pem().replace('\n', "\\n");
-    fixture.write(&format!(
-        r#"{{"schemaVersion":1,"devices":[{{"certificatePem":"{certificate}","name":"phone","agreedReplicaRoots":["/home/me/notes"],"pairedAt":"2026-09-15T11:21:00.000Z","lastKnownAddress":{{"host":"192.168.1.5","port":28771}}}}]}}"#
-    ));
+    let text = "{\"version\": \"2.0\", \"devices\": []}";
+    fixture.write(text);
 
     let error = fixture.store().load().unwrap_err();
     assert!(
-        matches!(&error, PairedDeviceStoreError::ForeignSchema { found, .. } if found == "1"),
+        matches!(&error, PairedDeviceStoreError::ForeignVersion { found, .. }
+            if *found == FormatVersion::new(2, 0)),
         "{error:?}"
     );
     let message = error.to_string();
     let path = fixture.store().path().display().to_string();
-    assert!(message.contains(&format!("Delete {path}")), "{message}");
+    assert!(message.contains("format 2.0"), "{message}");
+    assert!(message.contains("(format 1.0)"), "{message}");
+    assert!(message.contains(&format!("delete {path}")), "{message}");
 
-    // So is any other schema; and a change is refused without writing.
-    fixture.write("{\"schemaVersion\": 999, \"devices\": []}");
+    // A change is refused without writing.
     assert!(matches!(
         fixture
             .store()
             .update(|devices| devices.add(device(&identity(), "x"))),
-        Err(PairedDeviceStoreError::ForeignSchema { .. })
+        Err(PairedDeviceStoreError::ForeignVersion { .. })
     ));
-    assert_eq!(
-        fs::read_to_string(fixture.store().path()).unwrap(),
-        "{\"schemaVersion\": 999, \"devices\": []}"
-    );
+    assert_eq!(fs::read_to_string(fixture.store().path()).unwrap(), text);
+}
+
+/// What a later minor may add - a field at every level - is ignored.
+#[test]
+fn a_later_minor_with_fields_this_build_does_not_know_still_reads() {
+    let fixture = Fixture::new();
+    let phone = identity();
+    let mut paired = device(&phone, "phone");
+    paired.grant("/home/me/notes".to_owned());
+    fixture.add(paired.clone());
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.store().path()).unwrap()).unwrap();
+    json["version"] = "1.7".into();
+    json["addedLater"] = true.into();
+    let entry = &mut json["devices"][phone.device_id().to_string()];
+    entry["nickname"] = "pocket".into();
+    entry["lastKnownAddress"]["scope"] = "lan".into();
+    fixture.write(&json.to_string());
+
+    assert_eq!(fixture.load().get(&phone.device_id()), Some(&paired));
 }
 
 // add / round trip
@@ -591,7 +610,7 @@ fn the_document_is_keyed_by_device_id_and_leaves_no_temp() {
     fixture.add(device(&phone, "phone"));
     let text = fs::read_to_string(fixture.store().path()).unwrap();
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(json["schemaVersion"], 2);
+    assert_eq!(json["version"], "1.0");
     let entry = &json["devices"][phone.device_id().to_string()];
     assert_eq!(entry["name"], "phone");
     assert_eq!(entry["lastKnownAddress"]["port"], 28771);

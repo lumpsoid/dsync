@@ -19,7 +19,6 @@ pub struct Certificate {
     device_id: DeviceId,
     common_name: Option<String>,
     validity: CertificateValidity,
-    is_ca: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -58,12 +57,10 @@ impl Certificate {
             system_time(tbs.validity.not_before),
             system_time(tbs.validity.not_after),
         );
-        let is_ca = parsed.is_ca();
         Ok(Certificate {
             device_id,
             common_name,
             validity,
-            is_ca,
             der,
         })
     }
@@ -99,12 +96,6 @@ impl Certificate {
 
     pub fn validity(&self) -> CertificateValidity {
         self.validity
-    }
-
-    /// Whether basicConstraints says `cA:TRUE` - what the Dart identity
-    /// carried for BoringSSL's trust store, and what this build never issues.
-    pub(crate) fn is_ca(&self) -> bool {
-        self.is_ca
     }
 }
 

@@ -394,7 +394,7 @@ desktop:
 
 1. On the desktop, `dsync pair show --name <app-name>`, where `<app-name>` is
    what the desktop will call the app from then on — the name you will use in
-   `dsync pair grant` below. It prints a `dsync-pair:v3:…` line and waits five
+   `dsync pair grant` below. It prints a `dsync-pair:1.0:…` line and waits five
    minutes for the peer. Add `--serve-port <port>` if this desktop's
    `dsync agent --serve` runs on anything but 28771: the payload tells the app
    where to reach it from then on, so this is the number the app stores and
@@ -402,7 +402,7 @@ desktop:
    before it records the pairing.
 2. In the app, open **Pair a device** and tap **Scan QR code** — pointing the
    phone at the code on the desktop's terminal — or **Paste line** for the
-   `dsync-pair:v3:…` line. Either way the app then shows which desktop the
+   `dsync-pair:1.0:…` line. Either way the app then shows which desktop the
    code names and the address it will be reached at; check it, adjust the name
    the app will list the desktop under, and pair. There is no field for what
    the desktop calls the app: that is the `--name` given in step 1. The

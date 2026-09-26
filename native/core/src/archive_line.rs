@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub(crate) enum Line {
+    /// `version` is the log's format, `major.minor`
+    /// ([`crate::ARCHIVE_FORMAT_VERSION`]).
     Header {
-        #[serde(rename = "schemaVersion")]
-        schema_version: u64,
+        version: String,
         #[serde(rename = "profileId")]
         profile_id: String,
         #[serde(rename = "rootPath")]

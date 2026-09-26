@@ -9,9 +9,9 @@ use crate::host_facts::HostFacts;
 
 /// The directory name every rule below appends (plan D0).
 ///
-/// `dsync`: the Rust core is the only core now. Every store still refuses a
-/// file with a foreign or older schema, naming it and saying to delete it,
-/// which is what a Dart-era file left behind in this directory hits.
+/// `dsync`: the Rust core is the only core now. Every versioned store
+/// refuses, naming it, a file it cannot read as its own format (SPEC
+/// §8.4), which is what a Dart-era file left behind in this directory hits.
 pub const DIR_LEAF: &str = "dsync";
 
 /// A directory path given outright: never empty, because an empty one

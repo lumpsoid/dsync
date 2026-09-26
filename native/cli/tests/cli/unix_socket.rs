@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use crate::support::{Site, Spawned, archived_paths, archives};
+use crate::support::{Site, Spawned, archived_paths, archives, version_frame};
 
 const STARTUP: Duration = Duration::from_secs(10);
 
@@ -81,4 +81,34 @@ fn sigterm_ends_the_listener_and_takes_the_socket_file_with_it() {
     let (code, _) = agent.exit(STARTUP);
     assert_eq!(code, Some(143), "{}", agent.stderr());
     assert!(!std::path::Path::new(&socket).exists());
+}
+
+/// A far side on the socket that speaks protocol 2.0: the run is refused
+/// at the handshake, naming both versions, before anything is scanned.
+#[test]
+fn a_far_side_of_another_protocol_major_is_refused_naming_both() {
+    use std::io::{Read, Write};
+
+    let site = Site::new();
+    let socket = site.path("later.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let far_side = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(&version_frame(2, 0)).unwrap();
+        let mut heard = Vec::new();
+        let _ = stream.read_to_end(&mut heard);
+    });
+    let local = site.root("local");
+    let location = format!("unix://{}:{}", socket.display(), site.root("remote"));
+
+    let refused = site.run(&["sync", &local, &location, "--batch"]);
+
+    refused.exits(3);
+    assert!(
+        refused
+            .stderr
+            .contains("protocol version mismatch: this side speaks 1.0, the far side 2.0"),
+        "{refused:#?}"
+    );
+    far_side.join().unwrap();
 }

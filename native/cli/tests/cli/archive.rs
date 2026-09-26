@@ -227,7 +227,7 @@ fn an_empty_state_dir_is_a_usage_error_on_every_command_that_takes_one() {
         &["pair", "revoke", "phone"],
         &["pair", "grant", "phone", "/n"],
         &["pair", "renew"],
-        &["pair", "accept", "--name", "d", "dsync-pair:v3:AAAA"],
+        &["pair", "accept", "--name", "d", "dsync-pair:1.0:AAAA"],
         &["pair", "show", "--name", "phone"],
     ];
     for command in commands {

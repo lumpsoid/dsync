@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 use toml::{Table, Value};
 
 use crate::device_id::DeviceId;
+use crate::format_version::FormatVersion;
 use crate::glob::Glob;
 use crate::host_facts::HostFacts;
 use crate::jobs::Jobs;
@@ -30,7 +31,9 @@ mod tests;
 /// break the profile. A device id is required for a `peer://` side and
 /// refused for any other. Every table and key is optional except
 /// `[replicas] a` and `b`; an unknown one is an error - a misspelled key
-/// silently ignored is how a profile quietly stops ignoring `**/.git`.
+/// silently ignored is how a profile quietly stops ignoring `**/.git` -
+/// unless the profile's `version` is a later minor than
+/// [`PROFILE_FORMAT_VERSION`], whose additions this build cannot know.
 ///
 /// `warn_size_bytes` and `jobs` stay `None` when unset, so a flag can be
 /// told apart from a profile default when options are merged.
@@ -45,12 +48,27 @@ pub struct Profile {
     ssh_b: SshAccess,
 }
 
+/// The profile's format (SPEC §8.4, §12), written as the top-level
+/// `version`. A new key is a minor bump; any change to what an existing
+/// one means is a major one.
+pub const PROFILE_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 0);
+
+/// What a profile without a `version` is: the first format, whatever build
+/// reads it, so a hand-written profile need not name one.
+const UNVERSIONED: FormatVersion = FormatVersion::new(1, 0);
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProfileError {
     #[error("not valid TOML: {0}")]
     Toml(String),
     #[error("unknown key: {0}")]
     UnknownKey(String),
+    #[error(
+        "format {found}, which this build (format {PROFILE_FORMAT_VERSION}) cannot read; use a \
+         dsync that reads format {}.x, or write the profile again for this one",
+        found.major()
+    )]
+    ForeignVersion { found: FormatVersion },
     #[error("missing replica \"{0}\" in [replicas]")]
     MissingReplica(Side),
     #[error(
@@ -63,7 +81,7 @@ pub enum ProfileError {
     InvalidValue { key: String, reason: String },
 }
 
-const TABLES: &[&str] = &["replicas", "rules", "options", "ssh"];
+const TOP_KEYS: &[&str] = &["version", "replicas", "rules", "options", "ssh"];
 const REPLICA_KEYS: &[&str] = &["a", "b", "a_device_id", "b_device_id"];
 const RULE_KEYS: &[&str] = &["ignore", "follow"];
 const OPTION_KEYS: &[&str] = &["warn_size_bytes", "jobs"];
@@ -103,19 +121,31 @@ impl Profile {
         let root: Table = text
             .parse()
             .map_err(|e: toml::de::Error| ProfileError::Toml(e.message().to_owned()))?;
-        check_keys(&root, TABLES, "")?;
+        let version = match string(&root, "", "version")? {
+            Some(text) => FormatVersion::parse(text).map_err(|e| invalid("version", e))?,
+            None => UNVERSIONED,
+        };
+        PROFILE_FORMAT_VERSION
+            .agree(version)
+            .map_err(|mismatch| ProfileError::ForeignVersion {
+                found: mismatch.theirs(),
+            })?;
+        let keys = KnownKeys {
+            strict: !PROFILE_FORMAT_VERSION.is_older_minor_of(version),
+        };
+        keys.check(&root, TOP_KEYS, "")?;
 
         let replicas = table(&root, "replicas", "")?;
-        check_keys(replicas, REPLICA_KEYS, "replicas.")?;
+        keys.check(replicas, REPLICA_KEYS, "replicas.")?;
         let a = replica(replicas, Side::A, platform)?;
         let b = replica(replicas, Side::B, platform)?;
 
         let rules = table(&root, "rules", "")?;
-        check_keys(rules, RULE_KEYS, "rules.")?;
+        keys.check(rules, RULE_KEYS, "rules.")?;
         let rules = RuleSet::new(globs(rules, "ignore")?, globs(rules, "follow")?);
 
         let options = table(&root, "options", "")?;
-        check_keys(options, OPTION_KEYS, "options.")?;
+        keys.check(options, OPTION_KEYS, "options.")?;
         let warn_size_bytes = integer(options, "options.", "warn_size_bytes")?
             .map(|bytes| {
                 u64::try_from(bytes)
@@ -127,7 +157,7 @@ impl Profile {
             .transpose()?;
 
         let ssh = table(&root, "ssh", "")?;
-        check_keys(ssh, SSH_SIDES, "ssh.")?;
+        keys.check(ssh, SSH_SIDES, "ssh.")?;
 
         Ok(Profile {
             a,
@@ -135,8 +165,8 @@ impl Profile {
             rules,
             warn_size_bytes,
             jobs,
-            ssh_a: ssh_access(ssh, Side::A)?,
-            ssh_b: ssh_access(ssh, Side::B)?,
+            ssh_a: ssh_access(ssh, Side::A, keys)?,
+            ssh_b: ssh_access(ssh, Side::B, keys)?,
         })
     }
 
@@ -182,6 +212,10 @@ impl Profile {
             }
         }
         let mut root = Table::new();
+        root.insert(
+            "version".to_owned(),
+            PROFILE_FORMAT_VERSION.to_string().into(),
+        );
         root.insert("replicas".to_owned(), replicas.into());
 
         let mut rules = Table::new();
@@ -258,10 +292,19 @@ fn insert_unless_empty(parent: &mut Table, key: &str, table: Table) {
     }
 }
 
-fn check_keys(table: &Table, known: &[&str], prefix: &str) -> Result<(), ProfileError> {
-    match table.keys().find(|key| !known.contains(&key.as_str())) {
-        Some(key) => Err(ProfileError::UnknownKey(format!("{prefix}{key}"))),
-        None => Ok(()),
+/// Whether a key this build does not know is an error: always, except in
+/// a profile of a later minor, where it is that minor's addition.
+#[derive(Clone, Copy)]
+struct KnownKeys {
+    strict: bool,
+}
+
+impl KnownKeys {
+    fn check(self, table: &Table, known: &[&str], prefix: &str) -> Result<(), ProfileError> {
+        match table.keys().find(|key| !known.contains(&key.as_str())) {
+            Some(key) if self.strict => Err(ProfileError::UnknownKey(format!("{prefix}{key}"))),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -339,10 +382,10 @@ fn globs(rules: &Table, key: &str) -> Result<Vec<Glob>, ProfileError> {
 /// `[ssh.<side>]`, or the default access when absent. An empty option or
 /// command is refused here, where its key can be named, rather than failing
 /// inside ssh far from the profile that caused it.
-fn ssh_access(ssh: &Table, side: Side) -> Result<SshAccess, ProfileError> {
+fn ssh_access(ssh: &Table, side: Side, keys: KnownKeys) -> Result<SshAccess, ProfileError> {
     let prefix = format!("ssh.{side}.");
     let table = table(ssh, side.key(), "ssh.")?;
-    check_keys(table, SSH_KEYS, &prefix)?;
+    keys.check(table, SSH_KEYS, &prefix)?;
     let options = strings(table, &prefix, "options")?
         .into_iter()
         .map(|word| {

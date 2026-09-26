@@ -496,7 +496,7 @@ pub fn seed_log(state: &Path, profile: &str, side: &str, root: &str, commits: us
     std::fs::create_dir_all(state).unwrap();
     let path = state.join(format!("{profile}-{side}.jsonl"));
     let mut lines = vec![
-        serde_json::json!({"op": "header", "schemaVersion": 2, "profileId": profile, "rootPath": root})
+        serde_json::json!({"op": "header", "version": "1.0", "profileId": profile, "rootPath": root})
             .to_string(),
     ];
     for i in 0..commits {
@@ -507,4 +507,14 @@ pub fn seed_log(state: &Path, profile: &str, side: &str, root: &str, commits: us
     }
     std::fs::write(&path, lines.join("\n")).unwrap();
     path
+}
+
+/// A version frame (kind 1, request 0): the magic, then `major` and
+/// `minor` as big-endian `u32`s.
+pub fn version_frame(major: u32, minor: u32) -> Vec<u8> {
+    let mut frame = vec![0x01, 0, 0, 0, 0, 0, 0, 0, 16];
+    frame.extend_from_slice(b"dsync-rp");
+    frame.extend_from_slice(&major.to_be_bytes());
+    frame.extend_from_slice(&minor.to_be_bytes());
+    frame
 }

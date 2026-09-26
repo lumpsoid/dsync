@@ -32,18 +32,16 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use dsync_domain::{Archive, ArchiveCommit, ProfileId, Side, Tuning};
+use dsync_domain::{Archive, ArchiveCommit, FormatVersion, ProfileId, Side, Tuning};
 
 use crate::archive_line::Line;
 use crate::atomic_write::{sync_dir, write_atomically};
 use crate::state_dir::StateDir;
 
-/// The on-disk line format's version. Bumped whenever the format changes.
-///
-/// 3, not 1: the Dart core's logs are schema 2 (and its schema 1 had no
-/// header), so starting above both keeps "is this file ours" a plain
-/// comparison and never accepts a Dart-era log.
-pub const ARCHIVE_SCHEMA_VERSION: u64 = 3;
+/// The log's format, written in its header (SPEC §8.2, §8.4). A new field
+/// on a line is a minor bump; a new kind of line, or any change to what an
+/// existing one means, is a major one.
+pub const ARCHIVE_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 0);
 
 /// Read buffer for replaying a log: about one line per live path in steady
 /// state, which is megabytes on a tree of any size.
@@ -58,26 +56,6 @@ pub struct ArchiveHeader {
     pub root_path: String,
 }
 
-/// What a log's first line turned out to be when it is not this build's
-/// header.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum ForeignHeader {
-    /// A header of another schema version.
-    Schema(u64),
-    /// No header at all (a Dart schema 1 log starts straight in on
-    /// commits), or a line that is not JSON.
-    Missing,
-}
-
-impl std::fmt::Display for ForeignHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ForeignHeader::Schema(version) => write!(f, "schema {version}"),
-            ForeignHeader::Missing => f.write_str("no readable header"),
-        }
-    }
-}
-
 /// Why the archive cannot be used. All fatal for a run (SPEC §11.5 exit 3):
 /// an archive of another tree lists every path as absent here, and a run
 /// that went ahead would propagate the whole tree as deleted.
@@ -90,12 +68,14 @@ pub enum ArchiveError {
         source: io::Error,
     },
     #[error(
-        "Archive at {} was written by another dsync version ({found}; this build reads \
-         schema {ARCHIVE_SCHEMA_VERSION}). Delete {} to start this replica's archive afresh.",
+        "Archive at {} is format {found}, which this build (format {ARCHIVE_FORMAT_VERSION}) \
+         cannot read. Use a dsync that reads format {}.x, or delete {} to start this \
+         replica's archive afresh.",
         path.display(),
+        found.major(),
         path.display()
     )]
-    ForeignSchema { path: PathBuf, found: ForeignHeader },
+    ForeignVersion { path: PathBuf, found: FormatVersion },
     #[error(
         "Archive at {} belongs to a different replica: expected profile {} root {}, \
          found profile {found_profile} root {found_root}",
@@ -276,7 +256,7 @@ impl ArchiveStore {
 
     fn header_line(&self) -> Line {
         Line::Header {
-            schema_version: ARCHIVE_SCHEMA_VERSION,
+            version: ARCHIVE_FORMAT_VERSION.to_string(),
             profile_id: self.header.profile_id.as_str().to_owned(),
             root_path: self.header.root_path.clone(),
         }
@@ -407,7 +387,7 @@ fn replay(log: &Path, expected: &ArchiveHeader) -> Result<Replayed, ArchiveError
             if !terminated && is_torn(&buffer) {
                 break;
             }
-            verify_header(log, &buffer, expected)?;
+            verify_header(log, number, &buffer, expected)?;
             header_seen = true;
             continue;
         }
@@ -460,30 +440,34 @@ fn parse_commit(log: &Path, line: usize, bytes: &[u8]) -> Result<ArchiveCommit, 
         .map_err(corrupt)
 }
 
-/// Checks the log's first line names the replica this store is for, in
-/// this build's schema.
-fn verify_header(log: &Path, line: &[u8], expected: &ArchiveHeader) -> Result<(), ArchiveError> {
-    let foreign = |found| ArchiveError::ForeignSchema {
+/// Checks the log's first line is a header of this build's major that
+/// names the replica this store is for.
+fn verify_header(
+    log: &Path,
+    number: usize,
+    line: &[u8],
+    expected: &ArchiveHeader,
+) -> Result<(), ArchiveError> {
+    let corrupt = |reason: &str| ArchiveError::Corrupt {
         path: log.to_owned(),
-        found,
+        line: number,
+        reason: reason.to_owned(),
     };
-    let (profile_id, root_path) = match serde_json::from_slice::<Line>(line) {
-        Ok(Line::Header {
-            schema_version,
-            profile_id,
-            root_path,
-        }) => {
-            if schema_version != ARCHIVE_SCHEMA_VERSION {
-                return Err(foreign(ForeignHeader::Schema(schema_version)));
-            }
-            (profile_id, root_path)
-        }
-        // A header of another shape still says which schema wrote it.
-        _ => {
-            return Err(foreign(
-                schema_version_of(line).map_or(ForeignHeader::Missing, ForeignHeader::Schema),
-            ));
-        }
+    let version = header_version(line)
+        .ok_or_else(|| corrupt("the first line is not a header naming a version"))?;
+    ARCHIVE_FORMAT_VERSION
+        .agree(version)
+        .map_err(|mismatch| ArchiveError::ForeignVersion {
+            path: log.to_owned(),
+            found: mismatch.theirs(),
+        })?;
+    let Ok(Line::Header {
+        profile_id,
+        root_path,
+        ..
+    }) = serde_json::from_slice::<Line>(line)
+    else {
+        return Err(corrupt("the header is missing its profile or root"));
     };
     if profile_id != expected.profile_id.as_str() || root_path != expected.root_path {
         return Err(ArchiveError::Mismatch {
@@ -496,10 +480,12 @@ fn verify_header(log: &Path, line: &[u8], expected: &ArchiveHeader) -> Result<()
     Ok(())
 }
 
-fn schema_version_of(line: &[u8]) -> Option<u64> {
+/// The version a header line names, read before the rest of it: a header
+/// of another major may be shaped differently.
+fn header_version(line: &[u8]) -> Option<FormatVersion> {
     let value: serde_json::Value = serde_json::from_slice(line).ok()?;
     if value.get("op")?.as_str()? != "header" {
         return None;
     }
-    value.get("schemaVersion")?.as_u64()
+    FormatVersion::parse(value.get("version")?.as_str()?).ok()
 }

@@ -3,13 +3,11 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use dsync_core::{
-    ARCHIVE_SCHEMA_VERSION, ArchiveError, ArchiveHeader, ArchiveStore, ForeignHeader,
-};
-use dsync_domain::{Archive, ArchiveCommit, Tuning};
+use dsync_core::{ARCHIVE_FORMAT_VERSION, ArchiveError, ArchiveHeader, ArchiveStore};
+use dsync_domain::{Archive, ArchiveCommit, FormatVersion, Tuning};
 use tempfile::TempDir;
 
 use crate::support::{file, names_in, path, profile, upsert};
@@ -214,7 +212,8 @@ fn the_first_line_of_a_new_log_is_the_header() {
 
     let first = &fixture.lines()[0];
     assert!(first.contains(r#""op":"header""#), "{first}");
-    assert!(first.contains(&format!(r#""schemaVersion":{ARCHIVE_SCHEMA_VERSION}"#)));
+    assert!(first.contains(&format!(r#""version":"{ARCHIVE_FORMAT_VERSION}""#)));
+    assert_eq!(ARCHIVE_FORMAT_VERSION.to_string(), "1.0");
     assert!(first.contains(&format!(r#""profileId":"{}""#, profile().as_str())));
     assert!(first.contains(r#""rootPath":"/home/me/notes""#));
 }
@@ -262,30 +261,13 @@ fn refuses_a_log_written_for_a_different_root_or_profile() {
     assert_eq!(fixture.reloaded().len(), 1);
 }
 
-fn assert_refused_naming_the_file(error: ArchiveError, log: &Path, found: ForeignHeader) {
-    let message = error.to_string();
-    match error {
-        ArchiveError::ForeignSchema {
-            path,
-            found: actual,
-        } => {
-            assert_eq!(path, log);
-            assert_eq!(actual, found);
-        }
-        other => panic!("expected a foreign-schema refusal, got {other:?}"),
-    }
-    assert!(message.contains(&log.display().to_string()), "{message}");
-    assert!(message.contains("Delete"), "{message}");
-}
-
-#[test]
-fn refuses_a_dart_era_log_naming_the_file_and_saying_to_delete_it() {
-    let fixture = Fixture::new();
-    // The Dart core's schema 2 header, over this very profile and root.
+/// A log whose header names `version`, over this very profile and root,
+/// with one upsert after it.
+fn write_log_of_version(fixture: &Fixture, version: &str) {
     fs::write(
         fixture.log(),
         format!(
-            "{{\"op\":\"header\",\"schemaVersion\":2,\"profileId\":\"{}\",\
+            "{{\"op\":\"header\",\"version\":\"{version}\",\"profileId\":\"{}\",\
              \"rootPath\":\"/home/me/notes\"}}\n\
              {{\"op\":\"upsert\",\"path\":\"a.txt\",\"size\":10,\"mtime\":123456,\
              \"mode\":420,\"hash\":\"deadbeef\"}}\n",
@@ -293,13 +275,63 @@ fn refuses_a_dart_era_log_naming_the_file_and_saying_to_delete_it() {
         ),
     )
     .unwrap();
-
-    let error = open_err(&fixture, Fixture::header());
-    assert_refused_naming_the_file(error, &fixture.log(), ForeignHeader::Schema(2));
 }
 
 #[test]
-fn refuses_a_headerless_schema_1_log_the_same_way() {
+fn refuses_a_log_of_another_major_naming_both_versions_and_the_file() {
+    let fixture = Fixture::new();
+    for (version, found) in [
+        ("2.0", FormatVersion::new(2, 0)),
+        ("0.3", FormatVersion::new(0, 3)),
+    ] {
+        write_log_of_version(&fixture, version);
+        let error = open_err(&fixture, Fixture::header());
+        let message = error.to_string();
+        match error {
+            ArchiveError::ForeignVersion {
+                path,
+                found: actual,
+            } => {
+                assert_eq!(path, fixture.log());
+                assert_eq!(actual, found);
+            }
+            other => panic!("expected a foreign-version refusal, got {other:?}"),
+        }
+        assert!(
+            message.contains(&format!("is format {version}")),
+            "{message}"
+        );
+        assert!(message.contains("(format 1.0)"), "{message}");
+        let log = fixture.log().display().to_string();
+        assert!(message.contains(&format!("delete {log}")), "{message}");
+    }
+}
+
+/// A later minor may add fields to any line; this build replays the log
+/// as if they were not there.
+#[test]
+fn reads_a_later_minor_whose_lines_carry_fields_it_does_not_know() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    committed(&mut store, [entry()]);
+    drop(store);
+    let expected = fixture.reloaded();
+
+    let text = fs::read_to_string(fixture.log())
+        .unwrap()
+        .replace(
+            r#""version":"1.0""#,
+            r#""version":"1.4","createdBy":"later""#,
+        )
+        .replace(r#""op":"upsert""#, r#""op":"upsert","xattrs":{"k":"v"}"#);
+    assert!(text.contains("1.4") && text.contains("xattrs"), "{text}");
+    fs::write(fixture.log(), text).unwrap();
+
+    assert_eq!(fixture.reloaded(), expected);
+}
+
+#[test]
+fn a_first_line_that_is_not_a_header_is_corruption_at_that_line() {
     let fixture = Fixture::new();
     fs::write(
         fixture.log(),
@@ -308,7 +340,11 @@ fn refuses_a_headerless_schema_1_log_the_same_way() {
     .unwrap();
 
     let error = open_err(&fixture, Fixture::header());
-    assert_refused_naming_the_file(error, &fixture.log(), ForeignHeader::Missing);
+    assert!(
+        matches!(&error, ArchiveError::Corrupt { line: 1, .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("not a header"), "{error}");
 }
 
 // --- torn tail ---

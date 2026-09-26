@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_code_carries_the_decode_error() {
-        let code = PairCode::read("dsync-pair:v2:AAAA", |_| None);
+        let code = PairCode::read("dsync-pair:0.9:AAAA", |_| None);
         assert!(matches!(
             code,
             PairCode::Unreadable(PairingPayloadError::OlderVersion(_))

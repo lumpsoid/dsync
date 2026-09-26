@@ -248,7 +248,6 @@ mod tests {
         let usage = certificate.key_usage().unwrap().unwrap().value;
         assert!(usage.digital_signature());
         assert!(!usage.key_cert_sign());
-        assert!(!identity.certificate().is_ca());
     }
 
     #[test]

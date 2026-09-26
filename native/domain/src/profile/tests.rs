@@ -4,6 +4,7 @@
 //! profile store (phase 5).
 
 use super::*;
+use crate::format_version::FormatVersion;
 use crate::location::SshForm;
 
 const DEVICE: &str =
@@ -208,6 +209,52 @@ fn unknown_tables_and_keys_are_fatal_wherever_they_are() {
         unknown_key(&format!("{MINIMAL}[options]\nwrn_size_bytes = 100\n")),
         "options.wrn_size_bytes"
     );
+}
+
+#[test]
+fn the_written_profile_names_its_version_and_one_without_is_1_0() {
+    let written = ok(MINIMAL).to_toml();
+    assert!(written.starts_with("version = \"1.0\"\n"), "{written}");
+    assert_eq!(PROFILE_FORMAT_VERSION, FormatVersion::new(1, 0));
+    assert_eq!(ok(&format!("version = \"1.0\"\n{MINIMAL}")), ok(MINIMAL));
+    assert_eq!(
+        invalid_key(&format!("version = \"one\"\n{MINIMAL}")),
+        "version"
+    );
+    assert_eq!(invalid_key(&format!("version = 1\n{MINIMAL}")), "version");
+}
+
+#[test]
+fn a_profile_of_another_major_is_refused_naming_both_versions() {
+    for (text, found) in [
+        ("2.0", FormatVersion::new(2, 0)),
+        ("0.9", FormatVersion::new(0, 9)),
+    ] {
+        let error = parse(&format!("version = \"{text}\"\n{MINIMAL}")).unwrap_err();
+        assert_eq!(error, ProfileError::ForeignVersion { found });
+        let message = error.to_string();
+        assert!(message.contains(&format!("format {text}")), "{message}");
+        assert!(message.contains("(format 1.0)"), "{message}");
+    }
+}
+
+/// A later minor's additions are unknown here by construction; the same
+/// keys under this build's own minor are still typos.
+#[test]
+fn a_later_minor_reads_with_its_unknown_keys_ignored_wherever_they_are() {
+    let additions = "[replicas]\na = \"/a\"\nb = \"/b\"\nc = \"/c\"\n\
+                     [rules]\nignore = [\"**/.git\"]\nprune = true\n\
+                     [schedule]\nevery = \"1h\"\n\
+                     [ssh.a]\ncommand = \"dsync\"\nport = 22\n";
+    let later = ok(&format!("version = \"1.3\"\n{additions}"));
+    assert_eq!(patterns(later.rules().ignore()), ["**/.git"]);
+    assert_eq!(later.ssh(Side::A).command().to_string(), "dsync");
+
+    assert_eq!(
+        unknown_key(&format!("version = \"1.0\"\n{additions}")),
+        "schedule"
+    );
+    assert_eq!(unknown_key(additions), "schedule");
 }
 
 #[test]

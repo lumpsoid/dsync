@@ -4,7 +4,11 @@
 //! `agent_listener_secure_e2e_test` and the TLS half of
 //! `agent_listener_test`.
 
-use dsync_core::{CertificateRefusal, PeerDialError, PeerEvent, PeerRefusal, Replica};
+use dsync_core::{
+    CertificateRefusal, LinkError, PROTOCOL_VERSION, PeerDialError, PeerEvent, PeerRefusal, Replica,
+};
+use dsync_domain::FormatVersion;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::support::{Host, identity, raw_tls, serve, somewhere, with_deadline};
 
@@ -297,4 +301,70 @@ async fn two_sessions_are_served_at_once() {
     let (one, two) = (one.unwrap(), two.unwrap());
     with_deadline("close", one.replica.close()).await.unwrap();
     with_deadline("close", two.replica.close()).await.unwrap();
+}
+
+/// A version frame (kind 1, request 0): the magic, then `major` and
+/// `minor` as big-endian `u32`s.
+fn version_frame(version: FormatVersion) -> Vec<u8> {
+    let mut frame = vec![0x01, 0, 0, 0, 0, 0, 0, 0, 16];
+    frame.extend_from_slice(b"dsync-rp");
+    frame.extend_from_slice(&version.major().to_be_bytes());
+    frame.extend_from_slice(&version.minor().to_be_bytes());
+    frame
+}
+
+/// A paired device's session that opens with `version` as its protocol:
+/// what the listener answered, and how it says the session ended.
+async fn session_speaking(version: FormatVersion) -> (Vec<u8>, Result<(), LinkError>) {
+    let server = Host::new(identity("desktop"));
+    let client = Host::new(identity("phone"));
+    server.pair(&client.identity, "phone", somewhere(), &[]);
+    let mut serving = serve(&server).await;
+    let mut tls = with_deadline("raw handshake", raw_tls(serving.at, Some(&client.identity)))
+        .await
+        .unwrap();
+    tls.write_all(&version_frame(version)).await.unwrap();
+    tls.flush().await.unwrap();
+    let mut answer = vec![0u8; version_frame(PROTOCOL_VERSION).len()];
+    with_deadline("the listener's version", tls.read_exact(&mut answer))
+        .await
+        .unwrap();
+    // A clean close (TLS close_notify), so a served session ends Ok.
+    let _ = tls.shutdown().await;
+    assert!(matches!(
+        serving.next_event().await,
+        PeerEvent::Started { .. }
+    ));
+    match serving.next_event().await {
+        PeerEvent::Ended { outcome, .. } => (answer, outcome),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_peer_of_another_protocol_major_is_refused_naming_both() {
+    let (answer, outcome) = session_speaking(FormatVersion::new(2, 0)).await;
+    assert_eq!(answer, version_frame(PROTOCOL_VERSION));
+    let error = outcome.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            LinkError::VersionMismatch { local, remote }
+                if local == PROTOCOL_VERSION && remote == FormatVersion::new(2, 0)
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("this side speaks 1.0, the far side 2.0"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_of_a_later_protocol_minor_is_served() {
+    let (answer, outcome) = session_speaking(FormatVersion::new(1, 5)).await;
+    assert_eq!(answer, version_frame(PROTOCOL_VERSION));
+    outcome.unwrap();
 }

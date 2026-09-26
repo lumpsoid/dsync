@@ -8,7 +8,7 @@ use dsync_domain::{Jobs, ProfileId, ReplicaSpec, RuleSet, Side, Status, Tuning};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
-use crate::support::{DSYNC, Site, with_deadline};
+use crate::support::{DSYNC, Site, version_frame, with_deadline};
 
 const PROFILE: &str = "0123456789abcdef0123456789abcdef";
 
@@ -73,23 +73,45 @@ async fn exit_and_stderr(mut child: Child) -> (Option<i32>, String) {
 }
 
 #[tokio::test]
-async fn a_protocol_version_mismatch_exits_3_saying_so() {
+async fn a_protocol_major_mismatch_exits_3_naming_both_versions() {
     with_deadline("a mismatched handshake", async {
         let site = Site::new();
         let mut child = agent(&site);
-        // A version frame (kind 1, request 0) carrying version 999.
-        let mut frame = vec![0x01, 0, 0, 0, 0, 0, 0, 0, 12];
-        frame.extend_from_slice(b"dsync-rp");
-        frame.extend_from_slice(&999u32.to_be_bytes());
         let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(&frame).await.unwrap();
+        stdin.write_all(&version_frame(999, 2)).await.unwrap();
         stdin.flush().await.unwrap();
         let (code, stderr) = exit_and_stderr(child).await;
         assert_eq!(code, Some(3), "{stderr}");
         assert!(
-            stderr.contains("protocol version mismatch: this side speaks 1, the far side 999"),
+            stderr.contains("protocol version mismatch: this side speaks 1.0, the far side 999.2"),
             "{stderr}"
         );
+    })
+    .await;
+}
+
+/// A later minor of the same major is spoken to, not refused: the agent
+/// answers with its own version and serves until the initiator leaves.
+#[tokio::test]
+async fn a_later_protocol_minor_is_accepted() {
+    with_deadline("a later minor's handshake", async {
+        let site = Site::new();
+        let mut child = agent(&site);
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(&version_frame(1, 9)).await.unwrap();
+        stdin.flush().await.unwrap();
+        let mut answer = vec![0u8; version_frame(1, 0).len()];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut answer)
+            .await
+            .unwrap();
+        assert_eq!(answer, version_frame(1, 0));
+        drop(stdin);
+        let (code, stderr) = exit_and_stderr(child).await;
+        assert_eq!(code, Some(0), "{stderr}");
     })
     .await;
 }

@@ -342,7 +342,7 @@ async fn a_pair_code_offers_the_name_the_showing_device_gave_itself() {
     assert_eq!(read.desktop_name(), "studio");
     assert_eq!(read.address().port(), SERVICE_PORT);
     assert!(matches!(
-        read_pair_code("dsync-pair:v2:AAAA"),
+        read_pair_code("dsync-pair:0.9:AAAA"),
         PairCode::Unreadable(_)
     ));
 }

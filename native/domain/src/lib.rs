@@ -23,6 +23,7 @@ mod effective_options;
 mod exit_code;
 mod filter_preview;
 mod folder_spread;
+mod format_version;
 mod glob;
 mod hex;
 mod host_facts;
@@ -90,6 +91,7 @@ pub use filter_preview::{
     filter_folder_rows, preview_filters,
 };
 pub use folder_spread::spread_across_folders;
+pub use format_version::{FormatVersion, FormatVersionError, MajorMismatch};
 pub use glob::{Glob, GlobError};
 pub use host_facts::HostFacts;
 pub use jobs::{Jobs, JobsError};
@@ -107,7 +109,7 @@ pub use peer_name::{PeerName, PeerNameError};
 pub use plan::Plan;
 pub use platform::Platform;
 pub use precondition::{ChangedDuringSync, Precondition};
-pub use profile::{Profile, ProfileError, ProfileName, ProfileNameError};
+pub use profile::{PROFILE_FORMAT_VERSION, Profile, ProfileError, ProfileName, ProfileNameError};
 pub use profile_id::{CanonicalSide, ProfileId, ProfileIdError};
 pub use proposal::Proposal;
 pub use reconcile::reconcile;

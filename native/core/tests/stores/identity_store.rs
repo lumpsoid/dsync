@@ -174,28 +174,6 @@ fn a_key_that_is_not_the_certificates_is_refused_naming_both_files() {
     ));
 }
 
-/// The Dart identity was a CA certificate. Written by hand here with
-/// rcgen, `cA:TRUE`, as the Dart generator would have.
-#[test]
-fn a_dart_era_ca_identity_is_refused_naming_the_files_to_delete() {
-    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
-
-    let dir = tempfile::tempdir().unwrap();
-    let key = KeyPair::generate().unwrap();
-    let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    let certificate = params.self_signed(&key).unwrap();
-    fs::write(dir.path().join("identity.crt"), certificate.pem()).unwrap();
-    fs::write(dir.path().join("identity.key"), key.serialize_pem()).unwrap();
-
-    let error = store_in(dir.path()).load().unwrap_err();
-    assert!(
-        matches!(error, IdentityError::ForeignSchema { .. }),
-        "{error:?}"
-    );
-    assert!(error.to_string().contains("Delete"), "{error}");
-}
-
 #[test]
 fn renewal_rewrites_the_certificate_under_the_same_key_and_id_in_place() {
     let dir = tempfile::tempdir().unwrap();

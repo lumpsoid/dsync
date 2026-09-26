@@ -1,29 +1,36 @@
-//! The first exchange on a replica connection (SPEC §4.2, plan D5): each
-//! side sends its protocol version, then reads the other's, and anything
-//! but exact equality ends the connection.
+//! The first exchange on a replica connection (SPEC §4.2, §8.4): each
+//! side sends its protocol version, `major.minor`, then reads the other's.
+//! A different major ends the connection; the same major goes ahead at the
+//! lower of the two minors.
 
+use dsync_domain::FormatVersion;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 
 use crate::frame::{Frame, FrameError, Kind, NO_REQUEST, QUOTED_BYTES};
 use crate::link_error::LinkError;
 
-/// This build's protocol. Bumped on any change a peer would otherwise
-/// decode silently wrong: a message field renamed or repurposed, an
-/// operation replaced. Started at 1 for the Rust protocol, which shares
-/// nothing with the Dart one.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// This build's protocol. The major moves on any change a peer would
+/// otherwise decode silently wrong - a message field renamed or
+/// repurposed, an operation replaced; the minor on one an older peer can
+/// ignore or never be asked for.
+pub const PROTOCOL_VERSION: FormatVersion = FormatVersion::new(1, 0);
 
 /// Opens every version frame, so a stream that happens to start with the
 /// version kind byte is still not mistaken for the protocol.
 const MAGIC: &[u8; 8] = b"dsync-rp";
 
-/// Sends this side's version and checks the far side's.
+/// Sends this side's version and checks the far side's, answering the
+/// version the session speaks: the lower minor of the shared major. No
+/// behaviour depends on the minor yet.
 ///
 /// Undecodable first bytes are not a protocol bug but a far side that is
 /// not speaking the protocol yet - in practice a remote shell printing a
 /// banner over it - so they come back quoted in
 /// [`LinkError::NotSpeakingProtocol`].
-pub(crate) async fn handshake<R, W>(reader: &mut R, writer: &mut W) -> Result<(), LinkError>
+pub(crate) async fn handshake<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<FormatVersion, LinkError>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -32,10 +39,10 @@ where
 }
 
 pub(crate) async fn handshake_as<R, W>(
-    version: u32,
+    version: FormatVersion,
     reader: &mut R,
     writer: &mut W,
-) -> Result<(), LinkError>
+) -> Result<FormatVersion, LinkError>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -68,32 +75,45 @@ where
             truncated,
         }
     })?;
-    if remote != version {
-        return Err(LinkError::VersionMismatch {
-            local: version,
-            remote,
-        });
-    }
-    Ok(sent?)
+    let agreed = version
+        .agree(remote)
+        .map_err(|mismatch| LinkError::VersionMismatch {
+            local: mismatch.ours(),
+            remote: mismatch.theirs(),
+        })?;
+    sent?;
+    Ok(agreed)
 }
 
-async fn send_version<W: AsyncWrite + Unpin>(version: u32, writer: &mut W) -> std::io::Result<()> {
+async fn send_version<W: AsyncWrite + Unpin>(
+    version: FormatVersion,
+    writer: &mut W,
+) -> std::io::Result<()> {
     version_frame(version).write_to(writer).await?;
     writer.flush().await
 }
 
-pub(crate) fn version_frame(version: u32) -> Frame {
+/// The magic, then the major and the minor as big-endian `u32`s. This
+/// layout is the one thing no major may change, since it is how two
+/// majors tell each other apart; a later minor may append to it.
+pub(crate) fn version_frame(version: FormatVersion) -> Frame {
     let mut payload = MAGIC.to_vec();
-    payload.extend_from_slice(&version.to_be_bytes());
+    payload.extend_from_slice(&version.major().to_be_bytes());
+    payload.extend_from_slice(&version.minor().to_be_bytes());
     Frame::new(Kind::Version, NO_REQUEST, payload)
 }
 
-fn version_of(frame: &Frame) -> Option<u32> {
+fn version_of(frame: &Frame) -> Option<FormatVersion> {
     if frame.kind != Kind::Version || frame.id != NO_REQUEST {
         return None;
     }
     let version = frame.payload.strip_prefix(MAGIC.as_slice())?;
-    Some(u32::from_be_bytes(version.try_into().ok()?))
+    let word = |at: usize| {
+        Some(u32::from_be_bytes(
+            version.get(at..at + 4)?.try_into().ok()?,
+        ))
+    };
+    Some(FormatVersion::new(word(0)?, word(4)?))
 }
 
 #[cfg(test)]
@@ -109,7 +129,13 @@ mod tests {
     const DEADLINE: Duration = Duration::from_secs(5);
 
     /// Both ends of a connection shaking hands as `near` and `far`.
-    async fn shake(near: u32, far: u32) -> (Result<(), LinkError>, Result<(), LinkError>) {
+    async fn shake(
+        near: FormatVersion,
+        far: FormatVersion,
+    ) -> (
+        Result<FormatVersion, LinkError>,
+        Result<FormatVersion, LinkError>,
+    ) {
         let (a, b) = duplex(1024);
         let (a_read, mut a_write) = tokio::io::split(a);
         let (b_read, mut b_write) = tokio::io::split(b);
@@ -140,31 +166,65 @@ mod tests {
         error
     }
 
+    const V1_0: FormatVersion = FormatVersion::new(1, 0);
+    const V1_3: FormatVersion = FormatVersion::new(1, 3);
+    const V2_0: FormatVersion = FormatVersion::new(2, 0);
+
     #[tokio::test]
     async fn succeeds_when_both_ends_speak_the_same_version() {
         let (near, far) = shake(PROTOCOL_VERSION, PROTOCOL_VERSION).await;
-        near.unwrap();
-        far.unwrap();
-        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(near.unwrap(), PROTOCOL_VERSION);
+        assert_eq!(far.unwrap(), PROTOCOL_VERSION);
+        assert_eq!(PROTOCOL_VERSION, V1_0);
     }
 
     #[tokio::test]
-    async fn fails_both_ends_when_the_versions_differ() {
-        let (near, far) = shake(1, 2).await;
+    async fn the_same_major_at_different_minors_speaks_the_lower_one() {
+        let (near, far) = shake(V1_0, V1_3).await;
+        assert_eq!(near.unwrap(), V1_0);
+        assert_eq!(far.unwrap(), V1_0);
+    }
+
+    #[tokio::test]
+    async fn a_later_minor_may_append_to_the_version_frame() {
+        let mut frame = version_frame(V1_3);
+        frame.payload.extend_from_slice(b"more");
+        let (near, mut far) = duplex(1024);
+        frame.write_to(&mut far).await.unwrap();
+        let (read, mut write) = tokio::io::split(near);
+        let agreed =
+            tokio::time::timeout(DEADLINE, handshake(&mut BufReader::new(read), &mut write))
+                .await
+                .unwrap();
+        assert_eq!(agreed.unwrap(), V1_0);
+    }
+
+    #[tokio::test]
+    async fn fails_both_ends_when_the_majors_differ_naming_both() {
+        let (near, far) = shake(V1_3, V2_0).await;
         assert!(matches!(
             near,
             Err(LinkError::VersionMismatch {
-                local: 1,
-                remote: 2
+                local: V1_3,
+                remote: V2_0
             })
         ));
-        assert!(matches!(
-            far,
-            Err(LinkError::VersionMismatch {
-                local: 2,
-                remote: 1
-            })
-        ));
+        let far = far.unwrap_err();
+        assert!(
+            matches!(
+                far,
+                LinkError::VersionMismatch {
+                    local: V2_0,
+                    remote: V1_3
+                }
+            ),
+            "{far:?}"
+        );
+        let text = far.to_string();
+        assert!(
+            text.contains("this side speaks 2.0, the far side 1.3"),
+            "{text}"
+        );
     }
 
     #[tokio::test]

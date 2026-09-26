@@ -7,6 +7,8 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dsync_domain::FormatVersion;
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum LinkError {
     /// The far side closed the connection, or it was closed here.
@@ -18,9 +20,16 @@ pub enum LinkError {
     ClosedBeforeHandshake,
     #[error("the connection to the replica failed: {0}")]
     Io(#[source] Arc<io::Error>),
-    /// Fatal for the caller (SPEC §11.5 exit 3).
-    #[error("protocol version mismatch: this side speaks {local}, the far side {remote}")]
-    VersionMismatch { local: u32, remote: u32 },
+    /// The two sides speak different protocol majors (SPEC §8.4). Fatal
+    /// for the caller (SPEC §11.5 exit 3).
+    #[error(
+        "protocol version mismatch: this side speaks {local}, the far side {remote}; \
+         install dsync versions of the same major on both"
+    )]
+    VersionMismatch {
+        local: FormatVersion,
+        remote: FormatVersion,
+    },
     /// What arrived in place of the far side's version frame was not this
     /// protocol at all - in practice a remote shell printing over it.
     #[error("{}", NotSpeaking { received, truncated: *truncated })]

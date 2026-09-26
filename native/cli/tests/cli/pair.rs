@@ -254,10 +254,16 @@ fn accept_refuses_a_malformed_or_unsupported_payload_by_name() {
         malformed.stderr.contains("not a dsync pairing code"),
         "{malformed:#?}"
     );
-    let newer = site.run(&["pair", "accept", "--name", "desktop", "dsync-pair:v99:AAAA"]);
+    let newer = site.run(&[
+        "pair",
+        "accept",
+        "--name",
+        "desktop",
+        "dsync-pair:99.0:AAAA",
+    ]);
     newer.exits(3);
     assert!(
-        newer.stderr.contains("from a newer dsync (v99"),
+        newer.stderr.contains("from a newer dsync (format 99.0"),
         "{newer:#?}"
     );
     assert!(
@@ -269,8 +275,9 @@ fn accept_refuses_a_malformed_or_unsupported_payload_by_name() {
 #[test]
 fn accept_needs_a_name_and_exactly_one_payload() {
     let site = Site::new();
-    site.run(&["pair", "accept", "dsync-pair:v3:AAAA"]).exits(3);
-    site.run(&["pair", "accept", "--name", "  ", "dsync-pair:v3:AAAA"])
+    site.run(&["pair", "accept", "dsync-pair:1.0:AAAA"])
+        .exits(3);
+    site.run(&["pair", "accept", "--name", "  ", "dsync-pair:1.0:AAAA"])
         .exits(3);
     site.run(&["pair", "accept", "--name", "desktop"]).exits(3);
     site.run(&["pair", "accept", "--name", "desktop", "a", "b"])

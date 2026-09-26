@@ -4,21 +4,26 @@
 //! accepting side dials with), the one-shot enrolment endpoint, the port
 //! the device serves peer:// on, and the single-use enrolment token.
 //!
-//! Text form `dsync-pair:v3:<base64>`, the base64 of a flat big-endian
-//! layout (the Dart v2 shape, bumped): `[u16 len][cert DER][u8 len][host]
+//! Text form `dsync-pair:<major.minor>:<base64>` (SPEC §8.4), the base64
+//! of a flat big-endian layout: `[u16 len][cert DER][u8 len][host]
 //! [u16 port][u16 service port][u8 len][token]`. Every length is checked
-//! against what is there and nothing may follow the token, so a truncated
-//! or padded payload is refused rather than half-read.
+//! against what is there, so a truncated payload is refused rather than
+//! half-read. Nothing may follow the token, except in a code of a later
+//! minor: that is where its additions go.
 
 use std::fmt;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+use crate::format_version::FormatVersion;
 use crate::host_port::{PeerAddress, PeerAddressError};
 
 const MAGIC: &str = "dsync-pair";
-const VERSION: u32 = 3;
+
+/// The payload's format. The major moves on any change to the layout
+/// above; the minor when fields are appended after the token.
+const PAIRING_PAYLOAD_VERSION: FormatVersion = FormatVersion::new(1, 0);
 
 /// The enrolment token: 16 random bytes, generated per enrolment listener
 /// by the core. No `PartialEq` on purpose: the only comparison that may
@@ -46,19 +51,21 @@ impl fmt::Debug for EnrolmentToken {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PairingPayloadError {
-    #[error("not a dsync pairing code (it should start with \"{MAGIC}:v{VERSION}:\")")]
+    #[error(
+        "not a dsync pairing code (it should start with \"{MAGIC}:{PAIRING_PAYLOAD_VERSION}:\")"
+    )]
     NotAPayload,
     #[error(
-        "this pairing code is from an older dsync ({0}; this build reads v{VERSION}): update \
-         dsync on the device showing it and show a new code"
+        "this pairing code is from an older dsync (format {0}; this build reads \
+         {PAIRING_PAYLOAD_VERSION}): update dsync on the device showing it and show a new code"
     )]
-    OlderVersion(String),
+    OlderVersion(FormatVersion),
     #[error(
-        "this pairing code is from a newer dsync ({0}; this build reads v{VERSION}): update \
-         dsync here"
+        "this pairing code is from a newer dsync (format {0}; this build reads \
+         {PAIRING_PAYLOAD_VERSION}): update dsync here"
     )]
-    NewerVersion(String),
-    #[error("unsupported pairing code version {0:?}; this build reads v{VERSION}")]
+    NewerVersion(FormatVersion),
+    #[error("unsupported pairing code version {0:?}; this build reads {PAIRING_PAYLOAD_VERSION}")]
     UnknownVersion(String),
     #[error("the pairing code is not valid base64: {0}")]
     Base64(String),
@@ -142,7 +149,7 @@ impl PairingPayload {
         &self.token
     }
 
-    /// One line of ASCII: `dsync-pair:v3:<base64>`.
+    /// One line of ASCII: `dsync-pair:1.0:<base64>`.
     pub fn encode(&self) -> String {
         let host = self.address.host().as_bytes();
         let mut bytes = Vec::with_capacity(self.certificate_der.len() + host.len() + 24);
@@ -155,7 +162,10 @@ impl PairingPayload {
         bytes.extend_from_slice(&self.service_address.port().to_be_bytes());
         bytes.push(EnrolmentToken::LEN as u8);
         bytes.extend_from_slice(self.token.as_bytes());
-        format!("{MAGIC}:v{VERSION}:{}", STANDARD.encode(bytes))
+        format!(
+            "{MAGIC}:{PAIRING_PAYLOAD_VERSION}:{}",
+            STANDARD.encode(bytes)
+        )
     }
 
     pub fn decode(text: &str) -> Result<PairingPayload, PairingPayloadError> {
@@ -164,7 +174,7 @@ impl PairingPayload {
         else {
             return Err(PairingPayloadError::NotAPayload);
         };
-        check_version(version)?;
+        let version = check_version(version)?;
         let bytes = STANDARD
             .decode(body)
             .map_err(|e| PairingPayloadError::Base64(e.to_string()))?;
@@ -179,7 +189,7 @@ impl PairingPayload {
         let service_port = reader.u16()?;
         let token_len = usize::from(reader.u8()?);
         let token = reader.take(token_len)?;
-        if !reader.0.is_empty() {
+        if !reader.0.is_empty() && !PAIRING_PAYLOAD_VERSION.is_older_minor_of(version) {
             return Err(PairingPayloadError::TrailingBytes(reader.0.len()));
         }
         let token = <[u8; EnrolmentToken::LEN]>::try_from(token)
@@ -193,16 +203,18 @@ impl PairingPayload {
     }
 }
 
-fn check_version(version: &str) -> Result<(), PairingPayloadError> {
-    let number = version
-        .strip_prefix('v')
-        .and_then(|digits| digits.parse::<u32>().ok())
-        .ok_or_else(|| PairingPayloadError::UnknownVersion(version.to_owned()))?;
-    match number.cmp(&VERSION) {
-        std::cmp::Ordering::Less => Err(PairingPayloadError::OlderVersion(version.to_owned())),
-        std::cmp::Ordering::Greater => Err(PairingPayloadError::NewerVersion(version.to_owned())),
-        std::cmp::Ordering::Equal => Ok(()),
-    }
+/// The code's version, when this build reads its major.
+fn check_version(text: &str) -> Result<FormatVersion, PairingPayloadError> {
+    let version = FormatVersion::parse(text)
+        .map_err(|_| PairingPayloadError::UnknownVersion(text.to_owned()))?;
+    PAIRING_PAYLOAD_VERSION.agree(version).map_err(|mismatch| {
+        if mismatch.theirs().major() < mismatch.ours().major() {
+            PairingPayloadError::OlderVersion(version)
+        } else {
+            PairingPayloadError::NewerVersion(version)
+        }
+    })?;
+    Ok(version)
 }
 
 /// The unread rest of a payload's bytes.

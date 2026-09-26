@@ -1,5 +1,5 @@
 //! Every case of `test/dsync_core/identity/pairing_payload_test.dart`,
-//! bumped to v3, plus the fields the v3 layout refuses outright.
+//! at format 1.0, plus the fields the layout refuses outright.
 
 use super::*;
 
@@ -93,7 +93,9 @@ fn it_serves_from_the_same_host_as_the_enrolment_endpoint() {
 fn encode_is_one_line_of_plain_base64_ascii() {
     let text = sample().encode();
     assert!(!text.contains('\n'));
-    let body = text.strip_prefix("dsync-pair:v3:").expect("the v3 prefix");
+    let body = text
+        .strip_prefix("dsync-pair:1.0:")
+        .expect("the 1.0 prefix");
     assert!(STANDARD.decode(body).is_ok());
     assert!(
         body.bytes()
@@ -126,7 +128,7 @@ fn surrounding_whitespace_is_ignored() {
 
 #[test]
 fn text_that_is_not_a_payload_is_refused() {
-    for text in ["not-dsync-pair:v3:AAAA", "dsync-pair:v3", ""] {
+    for text in ["not-dsync-pair:1.0:AAAA", "dsync-pair:1.0", ""] {
         assert_eq!(
             PairingPayload::decode(text).unwrap_err(),
             PairingPayloadError::NotAPayload,
@@ -136,36 +138,47 @@ fn text_that_is_not_a_payload_is_refused() {
 }
 
 #[test]
-fn a_v2_payload_is_refused_as_from_an_older_dsync() {
+fn another_major_is_refused_saying_which_side_to_update() {
     let body = body_of(&sample().encode());
-    let refused = PairingPayload::decode(&with_body("v2", &body)).unwrap_err();
-    assert_eq!(refused, PairingPayloadError::OlderVersion("v2".into()));
-    assert!(refused.to_string().contains("older dsync"), "{refused}");
-    // Positive control: the same body under v3 decodes.
-    assert!(PairingPayload::decode(&with_body("v3", &body)).is_ok());
+    let older = PairingPayload::decode(&with_body("0.9", &body)).unwrap_err();
+    assert_eq!(
+        older,
+        PairingPayloadError::OlderVersion(FormatVersion::new(0, 9))
+    );
+    let message = older.to_string();
+    assert!(
+        message.contains("older dsync (format 0.9; this build reads 1.0)"),
+        "{message}"
+    );
+    let newer = PairingPayload::decode(&with_body("2.0", &body)).unwrap_err();
+    assert_eq!(
+        newer,
+        PairingPayloadError::NewerVersion(FormatVersion::new(2, 0))
+    );
+    let message = newer.to_string();
+    assert!(
+        message.contains("newer dsync (format 2.0; this build reads 1.0)"),
+        "{message}"
+    );
+    // Positive control: the same body under 1.0 decodes.
+    assert!(PairingPayload::decode(&with_body("1.0", &body)).is_ok());
 }
 
 #[test]
-fn other_versions_are_refused() {
+fn a_version_that_is_not_major_dot_minor_is_refused() {
     let body = body_of(&sample().encode());
-    assert_eq!(
-        PairingPayload::decode(&with_body("v1", &body)).unwrap_err(),
-        PairingPayloadError::OlderVersion("v1".into())
-    );
-    assert_eq!(
-        PairingPayload::decode(&with_body("v4", &body)).unwrap_err(),
-        PairingPayloadError::NewerVersion("v4".into())
-    );
-    assert_eq!(
-        PairingPayload::decode(&with_body("vx", &body)).unwrap_err(),
-        PairingPayloadError::UnknownVersion("vx".into())
-    );
+    for text in ["v3", "1", "x.y"] {
+        assert_eq!(
+            PairingPayload::decode(&with_body(text, &body)).unwrap_err(),
+            PairingPayloadError::UnknownVersion(text.into())
+        );
+    }
 }
 
 #[test]
 fn corrupt_base64_is_refused() {
     assert!(matches!(
-        PairingPayload::decode("dsync-pair:v3:not-valid-base64!!!"),
+        PairingPayload::decode("dsync-pair:1.0:not-valid-base64!!!"),
         Err(PairingPayloadError::Base64(_))
     ));
 }
@@ -174,12 +187,12 @@ fn corrupt_base64_is_refused() {
 fn a_payload_truncated_inside_the_layout_is_refused() {
     let body = body_of(&sample().encode());
     assert_eq!(
-        PairingPayload::decode(&with_body("v3", &body[..4])).unwrap_err(),
+        PairingPayload::decode(&with_body("1.0", &body[..4])).unwrap_err(),
         PairingPayloadError::Truncated
     );
     // Cut inside the token: every field before it is whole.
     assert_eq!(
-        PairingPayload::decode(&with_body("v3", &body[..body.len() - 1])).unwrap_err(),
+        PairingPayload::decode(&with_body("1.0", &body[..body.len() - 1])).unwrap_err(),
         PairingPayloadError::Truncated
     );
 }
@@ -190,7 +203,7 @@ fn a_length_prefix_that_overruns_what_is_there_is_refused() {
     body[0] = 0xff;
     body[1] = 0xff;
     assert_eq!(
-        PairingPayload::decode(&with_body("v3", &body)).unwrap_err(),
+        PairingPayload::decode(&with_body("1.0", &body)).unwrap_err(),
         PairingPayloadError::Truncated
     );
 }
@@ -200,9 +213,20 @@ fn bytes_past_the_token_are_refused() {
     let mut body = body_of(&sample().encode());
     body.push(0);
     assert_eq!(
-        PairingPayload::decode(&with_body("v3", &body)).unwrap_err(),
+        PairingPayload::decode(&with_body("1.0", &body)).unwrap_err(),
         PairingPayloadError::TrailingBytes(1)
     );
+}
+
+/// A later minor appends its additions after the token; this build reads
+/// the fields it knows and ignores the rest.
+#[test]
+fn a_later_minor_is_read_with_what_follows_the_token_ignored() {
+    let mut body = body_of(&sample().encode());
+    body.extend_from_slice(b"added later");
+    let decoded = PairingPayload::decode(&with_body("1.4", &body)).unwrap();
+    assert_eq!(decoded.address(), sample().address());
+    assert_eq!(decoded.token().as_bytes(), token().as_bytes());
 }
 
 #[test]
@@ -214,7 +238,7 @@ fn a_token_of_any_other_length_is_refused() {
         resized.push(len as u8);
         resized.extend(std::iter::repeat_n(7u8, len));
         assert_eq!(
-            PairingPayload::decode(&with_body("v3", &resized)).unwrap_err(),
+            PairingPayload::decode(&with_body("1.0", &resized)).unwrap_err(),
             PairingPayloadError::TokenLength(len),
             "{len}"
         );
@@ -229,7 +253,7 @@ fn a_zero_port_in_the_body_is_refused() {
     zeroed[service_port_at] = 0;
     zeroed[service_port_at + 1] = 0;
     assert_eq!(
-        PairingPayload::decode(&with_body("v3", &zeroed)).unwrap_err(),
+        PairingPayload::decode(&with_body("1.0", &zeroed)).unwrap_err(),
         PairingPayloadError::Address(PeerAddressError::ZeroPort)
     );
 }

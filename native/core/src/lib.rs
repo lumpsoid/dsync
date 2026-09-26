@@ -62,9 +62,7 @@ mod writer_pool;
 
 pub use any_replica::AnyReplica;
 pub use archive_inventory::{ArchiveDeleteError, ArchiveInventory};
-pub use archive_store::{
-    ARCHIVE_SCHEMA_VERSION, ArchiveError, ArchiveHeader, ArchiveStore, ForeignHeader,
-};
+pub use archive_store::{ARCHIVE_FORMAT_VERSION, ArchiveError, ArchiveHeader, ArchiveStore};
 pub use body::{Body, BodyDropped, BodyError, BodySender, body_channel};
 pub use case_folding::probe_case_folding;
 pub use certificate::{Certificate, CertificateError};
@@ -86,7 +84,7 @@ pub use link_error::LinkError;
 pub use local_replica::LocalReplica;
 pub use paired_device::{DifferentKey, PairedDevice};
 pub use paired_device_store::{
-    PAIRED_DEVICES_SCHEMA_VERSION, PairedDeviceStore, PairedDeviceStoreError,
+    PAIRED_DEVICES_FORMAT_VERSION, PairedDeviceStore, PairedDeviceStoreError,
 };
 pub use paired_devices::{PairedDevices, PairingError};
 pub use peer_dialer::{DialedPeer, PeerDialError, PeerDialer};

@@ -8,10 +8,9 @@
 //! atomic helper, so two concurrent writers can lose one update but never
 //! leave a torn file.
 //!
-//! Schema 2. Dart wrote 1 (a list with `agreedReplicaRoots` and a
-//! verification record carrying its own id); this build refuses it, naming
-//! the file and saying to delete it, rather than reading it as damage or as
-//! "no devices".
+//! Versioned `major.minor` (SPEC §8.4): a document of another major is
+//! refused, naming the file, rather than read as damage or as "no
+//! devices"; fields a later minor added are ignored.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -20,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{DeviceId, PeerName};
+use dsync_domain::{DeviceId, FormatVersion, PeerName};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -32,7 +31,9 @@ use crate::paired_device::PairedDevice;
 use crate::paired_devices::{PairedDevices, PairingError};
 use crate::state_dir::StateDir;
 
-pub const PAIRED_DEVICES_SCHEMA_VERSION: u64 = 2;
+/// The document's format: a new field is a minor bump, any change to what
+/// an existing one means a major one.
+pub const PAIRED_DEVICES_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 0);
 
 #[derive(Debug, thiserror::Error)]
 pub enum PairedDeviceStoreError {
@@ -43,13 +44,14 @@ pub enum PairedDeviceStoreError {
         source: io::Error,
     },
     #[error(
-        "Paired devices at {} was written by another dsync version (schema {found}; this \
-         build reads schema {PAIRED_DEVICES_SCHEMA_VERSION}). Delete {} and pair every \
-         device again.",
+        "Paired devices at {} is format {found}, which this build (format \
+         {PAIRED_DEVICES_FORMAT_VERSION}) cannot read. Use a dsync that reads format {}.x, \
+         or delete {} and pair every device again.",
         path.display(),
+        found.major(),
         path.display()
     )]
-    ForeignSchema { path: PathBuf, found: String },
+    ForeignVersion { path: PathBuf, found: FormatVersion },
     #[error(
         "Paired devices at {} is corrupt and cannot be trusted as either the paired set or \
          an empty one: {detail}. Restore it from a backup, or delete it and pair every \
@@ -93,7 +95,7 @@ impl PairedDeviceStore {
             }
         };
         decode(&text).map_err(|failure| match failure {
-            DecodeFailure::Foreign(found) => PairedDeviceStoreError::ForeignSchema {
+            DecodeFailure::Foreign(found) => PairedDeviceStoreError::ForeignVersion {
                 path: self.path.clone(),
                 found,
             },
@@ -123,15 +125,16 @@ impl PairedDeviceStore {
     }
 }
 
+/// Unknown fields are ignored, not refused: a later minor may add them.
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct DocumentJson {
-    schema_version: u64,
+    version: String,
     devices: BTreeMap<String, DeviceJson>,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct DeviceJson {
     name: String,
     certificate_pem: String,
@@ -143,14 +146,13 @@ struct DeviceJson {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct AddressJson {
     host: String,
     port: u16,
 }
 
 enum DecodeFailure {
-    Foreign(String),
+    Foreign(FormatVersion),
     Corrupt(String),
 }
 
@@ -160,14 +162,15 @@ fn decode(text: &str) -> Result<PairedDevices, DecodeFailure> {
     let version = value
         .as_object()
         .ok_or_else(|| corrupt("the document is not a JSON object".to_owned()))?
-        .get("schemaVersion")
-        .ok_or_else(|| corrupt("no schemaVersion".to_owned()))?;
-    if version.as_u64() != Some(PAIRED_DEVICES_SCHEMA_VERSION) {
-        return Err(match version {
-            Value::Number(found) => DecodeFailure::Foreign(found.to_string()),
-            other => corrupt(format!("schemaVersion is {other}")),
-        });
-    }
+        .get("version")
+        .ok_or_else(|| corrupt("no version".to_owned()))?;
+    let version = version
+        .as_str()
+        .ok_or_else(|| corrupt(format!("version is {version}")))
+        .and_then(|text| FormatVersion::parse(text).map_err(|e| corrupt(e.to_string())))?;
+    PAIRED_DEVICES_FORMAT_VERSION
+        .agree(version)
+        .map_err(|mismatch| DecodeFailure::Foreign(mismatch.theirs()))?;
     let document: DocumentJson =
         serde_json::from_value(value).map_err(|e| corrupt(e.to_string()))?;
     let mut devices = PairedDevices::default();
@@ -212,7 +215,7 @@ fn encode(devices: &PairedDevices) -> io::Result<String> {
         .map(|device| Ok((device.device_id().to_string(), device_to_json(device)?)))
         .collect::<io::Result<_>>()?;
     let document = DocumentJson {
-        schema_version: PAIRED_DEVICES_SCHEMA_VERSION,
+        version: PAIRED_DEVICES_FORMAT_VERSION.to_string(),
         devices: entries,
     };
     let mut text = serde_json::to_string_pretty(&document)?;

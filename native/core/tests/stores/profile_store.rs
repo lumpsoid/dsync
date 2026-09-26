@@ -97,6 +97,44 @@ fn an_invalid_profile_is_fatal_naming_the_file_and_the_reason() {
 }
 
 #[test]
+fn a_profile_of_another_major_is_refused_naming_the_file_and_both_versions() {
+    let config = tempfile::tempdir().unwrap();
+    let store = ProfileStore::new(config.path());
+    fs::create_dir_all(store.dir()).unwrap();
+    let path = store.path(&name("later"));
+    fs::write(&path, format!("version = \"2.0\"\n{EXAMPLE}")).unwrap();
+
+    let error = store.load(&name("later"), Platform::Unix).unwrap_err();
+    let message = error.to_string();
+    assert!(
+        matches!(
+            &error,
+            ProfileStoreError::Invalid {
+                source: ProfileError::ForeignVersion { .. },
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    assert!(message.contains("format 2.0"), "{message}");
+    assert!(message.contains("(format 1.0)"), "{message}");
+}
+
+#[test]
+fn a_profile_of_a_later_minor_loads_with_its_additions_ignored() {
+    let config = tempfile::tempdir().unwrap();
+    let store = ProfileStore::new(config.path());
+    fs::create_dir_all(store.dir()).unwrap();
+    let later = format!("version = \"1.2\"\n{EXAMPLE}\n[notify]\non_conflict = true\n");
+    fs::write(store.path(&name("later")), later).unwrap();
+
+    let loaded = store.load(&name("later"), Platform::Unix).unwrap();
+
+    assert_eq!(loaded, profile(EXAMPLE));
+}
+
+#[test]
 fn a_saved_profile_round_trips_through_its_file() {
     let config = tempfile::tempdir().unwrap();
     let store = ProfileStore::new(config.path());

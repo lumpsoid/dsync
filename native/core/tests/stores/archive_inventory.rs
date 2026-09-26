@@ -107,11 +107,11 @@ fn lists_a_log_whose_header_cannot_be_read_with_no_root() {
 }
 
 #[test]
-fn lists_a_dart_era_log_with_its_root_so_it_can_be_cleared() {
+fn lists_a_log_of_another_major_with_its_root_so_it_can_be_cleared() {
     let fixture = Fixture::new();
     fs::write(
         fixture.dir.path().join(format!("{P1}-a.jsonl")),
-        "{\"op\":\"header\",\"schemaVersion\":2,\"profileId\":\"notes\",\"rootPath\":\"/old\"}\n",
+        "{\"op\":\"header\",\"version\":\"2.0\",\"profileId\":\"notes\",\"rootPath\":\"/old\"}\n",
     )
     .unwrap();
 
