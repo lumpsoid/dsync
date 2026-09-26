@@ -463,8 +463,9 @@ flutter drive --profile -d linux \
 ### Release check on a phone
 
 Before a release, run the app on an Android **test device** against this
-desktop's `dsync`. Everything is driven from here: one command, plus a few
-steps on the phone that the script prints and waits for (Enter).
+desktop's `dsync`. Everything is driven from here, by one command, and nobody
+touches the phone: nothing opens the folder chooser or Settings on it, and the
+script asks nothing.
 
 ```sh
 adb devices   # the serial
@@ -473,21 +474,24 @@ integration_test/phone_release_check.sh --device <serial> --i-understand-this-re
 
 **It wipes the app on that phone.** It uninstalls `com.example.dsync` (the
 archives, identity, pairings and All-files grant go with it), installs a test
-build, and deletes and recreates `/storage/emulated/0/dsync-e2e`. It refuses
-to run without both flags; `--dry-run` prints the plan and touches nothing.
-Reinstall your own build afterwards.
+build and leaves it installed with All-files access granted, and deletes and
+recreates `/storage/emulated/0/dsync-e2e`. It refuses to run without both
+flags; `--dry-run` prints the plan and touches nothing. Reinstall your own
+build afterwards.
 
-It checks, and ends with PASS or FAIL for each: (a) All-files access, refused
-and then granted through the access settings; (b) the folder chooser's pick
-turned into a path; (c) a sync the app starts against `dsync agent --serve`,
-and one the desktop CLI starts against the app's Serve page; (d) the app
-force-stopped mid-apply, relaunched, its unfinished-run marker seen and the
-run recovered. The steps on the phone are: pick `dsync-e2e/app-root` in the
-chooser and leave All-files access off; grant it in App info (or type
-`appops` at that prompt to have the script grant it over adb); pick the
-folder again. The phone must be unlocked and on the same Wi-Fi, and this
-desktop must accept inbound TCP on port 28791. The script's header has the
-details; the desktop's side of it lives under `~/.cache/dsync/scratch/e2e-<time>/`.
+It checks, and ends with PASS or FAIL for each: (a) All-files access, with the
+`MANAGE_EXTERNAL_STORAGE` app-op set over adb to `default` (the folder
+refused, and Run setup asking for the grant) and then `allow` (the same app
+process takes it); (b) Run setup taking the picked folder's path; (c) a sync
+the app starts against `dsync agent --serve`, and one the desktop CLI starts
+against the app's Serve page; (d) the app force-stopped mid-apply, relaunched,
+its unfinished-run marker seen and the run recovered. It does **not** cover
+the system folder chooser, the conversion of its `content://` answer to a
+path, or a person granting access in Settings: those need a person. The phone
+must be awake, unlocked and kept so (Developer options → Stay awake), on the
+same Wi-Fi, and this desktop must accept inbound TCP on port 28791. The
+script's header has the details; the desktop's side of it lives under
+`~/.cache/dsync/scratch/e2e-<time>/`.
 
 ### Running the head against a desktop
 

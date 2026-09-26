@@ -11,14 +11,25 @@
 # IT WIPES THE APP ON THAT PHONE. It uninstalls com.example.dsync first — its
 # archives, identity, pairings and All-files grant go with it — and installs a
 # test build whose entry point is integration_test/phone_release_check_test.dart,
-# removed again at the end. Reinstall your own build afterwards. Use a test
+# left installed at the end. Reinstall your own build afterwards. Use a test
 # device, never one holding a replica you care about. On the phone it touches
 # only /storage/emulated/0/dsync-e2e, which it deletes and recreates.
 #
+# Nobody touches the phone. Nothing it runs opens a system screen (the
+# folder chooser, Settings) or drives one; a step that would need a person
+# fails at once, saying so. It asks nothing on the terminal.
+#
 # What it checks, each ending PASS or FAIL in the summary:
-#   (a) All-files access: a picked folder is refused without it, the access
-#       settings are opened, and the same folder is accepted once granted.
-#   (b) The system chooser's pick comes back as the folder's path.
+#   (a) All-files access: with the app-op MANAGE_EXTERNAL_STORAGE at
+#       `default` (set here over adb) the core refuses the test folder, and
+#       Run setup's pick flow refuses it and asks for the grant; with the
+#       app-op at `allow` the same process (same pid) takes it. Also checks
+#       that the two settings screens the app would open resolve, without
+#       opening them.
+#   (b) Run setup takes /storage/emulated/0/dsync-e2e/app-root as a picked
+#       folder. NOT covered: the system chooser itself and file_picker's
+#       conversion of its content:// tree URI to that path, which run only
+#       inside the chooser's result callback.
 #   (c) A sync the app starts against `dsync agent --serve` here, and one this
 #       desktop's CLI starts against the app's Serve page.
 #   (d) The app force-stopped mid-apply (`am force-stop`), relaunched, the
@@ -31,15 +42,15 @@
 # twice: phase `main` runs (a)–(c) and starts (d)'s run, which this script
 # kills; phase `recover` is the relaunch. The test prints `E2E|…` lines that
 # `flutter test` streams into this script's log; this script answers by
-# creating files in the phone's test folder (control/), which the app can read
-# once step (a) has given it All-files access. The steps a person has to do —
-# the folder chooser twice, refusing then granting access — are printed here,
-# and the script waits for Enter. The grant can instead be made with
-# `adb shell appops set --uid com.example.dsync MANAGE_EXTERNAL_STORAGE allow`,
-# which the script runs only when you ask for it at that step.
+# creating folders in the phone's test folder (control/), which the app sees
+# even before (a) grants it All-files access. Every wait on either side
+# polls, logs each attempt and gives up at a short deadline. The test build
+# stays installed at the end, with the All-files app-op at `allow`.
 #
 # Needs: adb, flutter, cargo; the phone on the same Wi-Fi as this desktop,
-# unlocked, screen kept on (Developer options → Stay awake); this desktop
+# awake and unlocked, and kept so (Developer options → Stay awake): the test
+# needs its frames, and the script checks this first rather than waking the
+# phone. This desktop
 # accepting inbound TCP on --agent-port (28791), where the app dials the agent.
 # --desktop-ip overrides the address the app dials, which is otherwise this
 # desktop's source address on its default route.
@@ -121,20 +132,6 @@ cli() {
 
 say() { printf '\n==> %s\n' "$*"; }
 
-# A step for the person at the phone; waits for Enter and leaves the line
-# typed in $reply.
-prompt() {
-  reply=""
-  printf '\n  ┌─ ON THE PHONE ─────────────────────────────────────────────\n'
-  printf '  │ %s\n' "$@"
-  printf '  └────────────────────────────────────────────────────────────\n'
-  if ((dry)); then
-    echo "  (waits for Enter)"
-  else
-    read -r -p "  Press Enter when done " reply </dev/tty
-  fi
-}
-
 declare -A result=([a]="NOT RUN" [b]="NOT RUN" [c1]="NOT RUN" [c2]="NOT RUN" [d]="NOT RUN")
 declare -A detail=()
 current=a
@@ -151,8 +148,8 @@ summary() {
   local step label
   for step in a b c1 c2 d; do
     case $step in
-      a) label='(a) All-files grant, refused then granted' ;;
-      b) label='(b) chooser pick turned into a path' ;;
+      a) label='(a) All-files app-op, refused then taken' ;;
+      b) label='(b) Run setup takes the picked path' ;;
       c1) label='(c) sync, the app initiates' ;;
       c2) label='(c) sync, the desktop CLI initiates' ;;
       d) label='(d) killed mid-apply, relaunched, recovered' ;;
@@ -178,18 +175,19 @@ abort() {
   exit 1
 }
 
-# Waits for the app's `E2E|<prefix>…` line in $log; the whole line after
-# `E2E|` lands in $marker. An `E2E|fail|` line, the test process ending, or
-# the deadline ends the session.
+# Waits for the app's `E2E|<prefix>…` line in $log, looking every 2 s and
+# logging each look; the whole line after `E2E|` lands in $marker. An
+# `E2E|fail|` line, the test process ending, or the deadline ends the
+# session.
 wait_marker() {
-  local prefix=$1 seconds=${2:-600} line
+  local prefix=$1 seconds=${2:-120} line attempt=0
   marker=""
   if ((dry)); then
-    echo "  (waits for the app's E2E|$prefix line)"
+    echo "  (waits up to ${seconds}s for the app's E2E|$prefix line)"
     marker="$prefix<from the app>"
     return
   fi
-  local deadline=$((SECONDS + seconds))
+  local started=$SECONDS
   while :; do
     line=$(grep -a -m 1 -o "E2E|fail|.*" "$log" || true)
     if [[ -n "$line" ]]; then
@@ -207,13 +205,37 @@ wait_marker() {
     fi
     kill -0 "$flutter_pid" 2>/dev/null ||
       abort "flutter test ended before the app reported $prefix"
-    ((SECONDS < deadline)) || abort "no E2E|$prefix from the app in ${seconds}s"
-    sleep 0.2
+    ((SECONDS - started < seconds)) || abort "no E2E|$prefix from the app in ${seconds}s"
+    attempt=$((attempt + 1))
+    echo "  waiting for E2E|$prefix: attempt $attempt, $((SECONDS - started))s of ${seconds}s"
+    sleep 2
   done
 }
 
 # Tells the app the desktop is ready for it (see the test file's header).
-signal_app() { phone shell "touch $test_dir/control/$1"; }
+signal_app() { phone shell "mkdir -p $test_dir/control/$1"; }
+
+# Sets the app's All-files app-op and reads it back; the mode lands in
+# $appop_mode. At `default` there is no uid mode to print, only
+# `Default mode: default`.
+set_appop() {
+  phone shell appops set --uid "$pkg" MANAGE_EXTERNAL_STORAGE "$1"
+  appop_mode=$1
+  ((dry)) && return
+  appop_mode=$(adb -s "$serial" shell appops get --uid "$pkg" MANAGE_EXTERNAL_STORAGE |
+    tr -d '\r' | sed -n -e 's/^Uid mode: MANAGE_EXTERNAL_STORAGE: //p' -e 's/^Default mode: //p' |
+    sed -n 1p)
+  echo "  the app-op reads back: $appop_mode"
+}
+
+# Whether an activity answers intent $1 for this package, without starting
+# it: what the app's grant request and its Settings action would open.
+resolves() {
+  local out
+  out=$(adb -s "$serial" shell cmd package resolve-activity --brief -a "$1" -d "package:$pkg" | tr -d '\r')
+  echo "  $1 -> ${out##*$'\n'}"
+  [[ -n "$out" && $out != *"No activity found"* ]]
+}
 
 # `sha256  ./path` for every file under a folder, in one order on both sides.
 desktop_sums() { (cd "$1" && find . -type f -exec sha256sum {} +) | LC_ALL=C sort -k2; }
@@ -288,6 +310,15 @@ if ((!dry)); then
   attached=$(adb devices)
   grep -q "^${serial}[[:space:]]*device$" <<<"$attached" ||
     { echo "phone_release_check: $serial is not an attached adb device" >&2; exit 2; }
+  # The test needs its frames, so the phone must be awake and unlocked. It
+  # is never woken or unlocked from here: that would be driving a system
+  # screen, and a person is not there to do it either.
+  adb -s "$serial" shell dumpsys power | grep -q 'mWakefulness=Awake' ||
+    { echo "phone_release_check: $serial is asleep; it needs a person to wake it" >&2; exit 2; }
+  if adb -s "$serial" shell dumpsys window | grep -q 'isKeyguardShowing=true'; then
+    echo "phone_release_check: $serial is locked; it needs a person to unlock it" >&2
+    exit 2
+  fi
   if [[ -z "$desktop_ip" ]]; then
     desktop_ip=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
   fi
@@ -296,9 +327,6 @@ else
   desktop_ip=${desktop_ip:-<desktop-ip>}
 fi
 echo "  The app will dial this desktop at $desktop_ip:$agent_port."
-
-prompt "Unlock the phone and keep it unlocked, on the same Wi-Fi as this desktop." \
-  "Last chance: Ctrl-C now keeps $pkg and its data."
 
 say "Build the desktop CLI and seed the trees"
 run bash -c 'cd native && cargo build --release -p dsync-cli'
@@ -317,36 +345,39 @@ start_phase main --no-uninstall
 
 # (a) and (b) -------------------------------------------------------------------
 current=a
-wait_marker 'step|a1-chooser' 1800
-prompt "The folder chooser is open. Go to dsync-e2e → app-root and tap" \
-  "'Use this folder', then 'Allow'." \
-  "Next an 'All files access' screen opens: leave the switch OFF, press Back." \
-  "If a dialog asks for access to files, tap 'Don't allow'."
-wait_marker 'a|probe-refused' 900
-echo "  refused without the grant: ${marker#a|probe-refused|}"
+wait_marker 'step|a-default' 900
+set_appop default
+[[ $appop_mode == default ]] || abort "the app-op reads $appop_mode after setting default"
+signal_app appop-default
+wait_marker 'a|refused|' 60
+refused=${marker#a|refused|}
+refused_pid=${refused%%|*}
+echo "  ✓ (a) refused without the grant, as expected: ${refused#*|}"
 
-wait_marker 'step|a2-settings' 60
-prompt "dsync's App info page is open. Grant All-files access there" \
-  "(Permissions → Files → 'Allow management of all files'; wording varies)," \
-  "then switch back to the dsync screen." \
-  "Or type 'appops' and Enter to have this script grant it over adb instead."
-if [[ "$reply" == appops ]]; then
-  read -r -p "  Run 'adb shell appops set --uid $pkg MANAGE_EXTERNAL_STORAGE allow'? [y/N] " yes </dev/tty
-  if [[ "$yes" == y || "$yes" == Y ]]; then
-    phone shell appops set --uid "$pkg" MANAGE_EXTERNAL_STORAGE allow
-    prompt "Switch back to the dsync screen (press Back until it shows)."
-  fi
+set_appop allow
+[[ $appop_mode == allow ]] || abort "the app-op reads $appop_mode after setting allow"
+signal_app appop-allow
+wait_marker 'a|granted|' 60
+granted_pid=${marker#a|granted|}
+if ((!dry)) && [[ "$granted_pid" != "$refused_pid" ]]; then
+  abort "refused in $refused_pid but taken in $granted_pid: not the same process"
 fi
-wait_marker 'a|granted' 900
-pass a
+echo "  ✓ (a) the same process ($granted_pid) took it once granted, as expected"
+settings_ok=1
+if ((dry)); then
+  echo "  (checks that the grant request's and App info's screens resolve, without opening them)"
+else
+  resolves android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION || settings_ok=0
+  resolves android.settings.APPLICATION_DETAILS_SETTINGS || settings_ok=0
+fi
+((settings_ok)) || abort "a settings screen the app opens does not resolve"
+pass a "same $granted_pid; settings screens resolve"
 
 current=b
-wait_marker 'step|b-chooser' 60
-prompt "The folder chooser is open again. Pick dsync-e2e → app-root once more."
-wait_marker 'b|ok|' 900
+wait_marker 'b|ok|' 60
 picked=${marker#b|ok|}
 if ((dry)) || [[ "$picked" == "$test_dir/app-root" ]]; then
-  pass b "$picked"
+  pass b "$picked (the chooser and its URI conversion not run)"
 else
   abort "the form holds $picked"
 fi
@@ -354,7 +385,7 @@ fi
 # (c) ---------------------------------------------------------------------------
 current=c1
 say "Pair: the app shows a code, this desktop redeems it"
-wait_marker 'pair|' 60
+wait_marker 'pair|' 120
 payload=${marker#pair|}
 cli pair accept --name phone "$payload" </dev/null || abort "dsync pair accept failed"
 wait_marker 'paired|' 120
@@ -368,15 +399,16 @@ if ((!dry)); then
     "$dsync" agent --serve --bind 0.0.0.0 --port "$agent_port" \
     </dev/null >"$logs/agent.log" 2>&1 &
   agent_pid=$!
-  for _ in $(seq 50); do
+  for attempt in $(seq 20); do
     grep -q 'serving paired devices' "$logs/agent.log" && break
-    sleep 0.2
+    echo "  waiting for the agent: attempt $attempt of 20"
+    sleep 0.5
   done
   grep -q 'serving paired devices' "$logs/agent.log" || abort "the agent did not start; see $logs/agent.log"
 fi
 signal_app agent-serving
 
-wait_marker 'c1|done|' 900
+wait_marker 'c1|done|' 300
 if same_tree c1 "$scratch/cli-root" "$test_dir/app-root"; then
   pass c1 "${marker#c1|done|}"
 else
@@ -405,7 +437,7 @@ signal_app c2-done
 # (d) ---------------------------------------------------------------------------
 current=d
 say "Kill the app mid-apply"
-wait_marker 'd|applying|' 900
+wait_marker 'd|applying|' 300
 phone shell am force-stop "$pkg"
 echo "  killed at ${marker#d|applying|} actions"
 killed_mid=1
@@ -420,9 +452,10 @@ if ((!dry)); then
 fi
 
 say "Phase recover: relaunch the same app (its data kept) and run the profile again"
-start_phase recover
-wait_marker 'd|marker|true' 1800
-wait_marker 'd|recovered|' 900
+set_appop allow
+start_phase recover --no-uninstall
+wait_marker 'd|marker|true' 600
+wait_marker 'd|recovered|' 300
 recovered=${marker#d|recovered|}
 if ((!dry)); then
   wait "$flutter_pid" || abort "flutter test (recover) failed; see $log"

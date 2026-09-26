@@ -3,13 +3,20 @@
 // driver `integration_test/phone_release_check.sh` builds the CLI, seeds
 // the trees, starts this file with `flutter test -d <serial>` (twice: the
 // `main` phase, then the `recover` phase after it force-stops the app),
-// prompts the human steps, and compares the trees. Read its header first.
+// sets the All-files grant over adb, and compares the trees. Read its
+// header first. Nobody touches the phone: nothing here opens a system
+// screen, and a step that would need one fails at once, saying so.
 //
 // What this file covers, against the real app build and a real desktop
 // `dsync` over peer://:
-//   (a) the All-files grant: a picked folder refused without it, the
-//       settings page opened, then the same folder accepted with it;
-//   (b) the system folder chooser's pick turned into a path;
+//   (a) the All-files grant: with the app-op at `default` the core refuses
+//       the test folder and Run setup's pick flow refuses it and asks for
+//       the grant; the driver then sets the app-op to `allow` and the same
+//       process (its pid in both markers) is accepted;
+//   (b) Run setup takes the path the chooser's answer converts to. The
+//       conversion itself (`content://…/tree/…` to a path) runs inside
+//       `file_picker`'s activity-result callback, reachable only through the
+//       real chooser, so it is not exercised here;
 //   (c) a sync the app starts against `dsync agent --serve`, and one the
 //       desktop CLI starts against the app's Serve page;
 //   (d) a run killed mid-apply, relaunched, its §7.6 run marker seen and
@@ -17,10 +24,15 @@
 //
 // The driver and this file talk in two directions. This file prints
 // `E2E|…` lines, which `flutter test` streams back to the driver's log;
-// the driver answers by creating files under [_control], which this file
-// can read once it holds All-files access (step a). Everything it writes on
-// the phone is under [_testDir]; everything the app keeps is in its own
-// container, which the driver's first step wipes by uninstalling.
+// the driver answers by creating *folders* under [_control]. Folders,
+// because shared storage shows an app other apps' folders without any
+// grant but not their files, and the first answers come before (a) grants
+// All-files access. Every wait polls once a second on the wall clock —
+// never `tester.pump`, whose frame never comes while the app is not drawn
+// — logs each attempt, and fails its step at a short deadline. Everything
+// it writes on the phone is under [_testDir]; everything the app keeps is
+// in its own container, which the driver's first step wipes by
+// uninstalling.
 import 'dart:io';
 
 import 'package:dsync/app/app_bootstrap.dart';
@@ -43,7 +55,6 @@ import 'package:dsync/app/features/serve/serve_view_state.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' show assignRustSignal;
 import 'package:dsync/app/screen_wake.dart';
-import 'package:flutter/foundation.dart' show ValueListenable, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -78,19 +89,23 @@ const _killProfile = 'e2e-kill';
 /// this phone calls the desktop.
 const _desktopName = 'desktop';
 
-/// Long enough for a person to find their way through a system screen.
-const _humanWait = Duration(minutes: 15);
+/// How long the core may take to see a grant the driver has just set: the
+/// same process sees it at once (the probe that led here), so a few
+/// seconds only.
+const _grantWait = Duration(seconds: 10);
+
+/// How long the driver may take to answer: an adb command or a CLI step.
+const _driverWait = Duration(minutes: 2);
 
 /// Long enough for a sync over Wi-Fi, short enough to not hang a session.
-const _runWait = Duration(minutes: 10);
+const _runWait = Duration(minutes: 5);
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('release check on a phone: $_phase', (tester) async {
     _refuseWrongSetup();
-    final status = ValueNotifier('Starting…');
-    await tester.pumpWidget(_StatusScreen(status));
+    await tester.pumpWidget(const _StatusScreen());
 
     await initializeRust(assignRustSignal);
     final app = AppController(
@@ -102,10 +117,11 @@ void main() {
     await app.bootstrap();
     expect(app.state.bootstrap, isA<AppBootstrapReady>());
 
-    final e2e = _Session(tester, app, status);
+    final e2e = _Session(app);
     switch (_phase) {
       case 'main':
-        await e2e.allFilesAndPick();
+        await e2e.allFilesGrant();
+        await e2e.pickedPath();
         final desktop = await e2e.pair();
         await e2e.appInitiates(desktop);
         await e2e.cliInitiates(desktop);
@@ -113,7 +129,7 @@ void main() {
       case 'recover':
         await e2e.recover();
     }
-  }, timeout: const Timeout(Duration(minutes: 90)));
+  }, timeout: const Timeout(Duration(minutes: 30)));
 }
 
 void _refuseWrongSetup() {
@@ -132,56 +148,52 @@ void _refuseWrongSetup() {
 
 /// One phase's steps, over the one app they share.
 class _Session {
-  _Session(this.tester, this.app, this.status);
+  _Session(this.app);
 
-  final WidgetTester tester;
   final AppController app;
-  final ValueNotifier<String> status;
 
-  /// (a) and (b), through Run setup's own pick flow and the real platform
-  /// picker, which the person drives.
-  Future<void> allFilesAndPick() async {
-    final picker = _RecordingPicker(PlatformFolderPicker.forThisHost());
+  /// (a): with the app-op at `default` the core refuses the test folder and
+  /// Run setup's pick flow refuses it and asks for the grant; once the
+  /// driver sets `allow`, the same process is accepted. The grant request
+  /// answers "not given" here without opening anything: in production it is
+  /// where Settings opens, and nobody is at the phone to use it.
+  Future<void> allFilesGrant() async {
+    _mark('step|a-default');
+    await _awaitControl('appop-default', step: 'a');
+    final coreRefusal = await app.core.checkFolder(_appRoot);
+    if (coreRefusal == null) {
+      _fail('a', 'the core took $_appRoot with the app-op at default');
+    }
+    final picker = _ScriptedPicker(_appRoot, step: 'a', grantAsked: true);
     final setup = RunSetupController(app, picker: picker);
-
-    _say(
-      'a1-chooser',
-      'Pick dsync-e2e/app-root in the chooser. Then LEAVE All-files access '
-          'OFF and go back.',
-    );
     await setup.pickLocalFolder();
-    if (picker.lastPicked == null) _fail('a', 'the chooser was dismissed');
-    if (picker.lastPicked != _appRoot) {
-      _fail('b', 'the chooser answered ${picker.lastPicked}, not $_appRoot');
+    final shown =
+        setup.state.folderAccessError ??
+        _fail('a', 'Run setup took $_appRoot without the grant');
+    if (setup.state.localRoot != null) {
+      _fail('a', 'Run setup holds ${setup.state.localRoot} after refusing it');
     }
-    final refusal = setup.state.folderAccessError;
-    if (refusal == null) {
-      _fail(
-        'a',
-        'the folder was taken without All-files access, so the refusal '
-            'path never ran (grant already there, or an old Android)',
-      );
+    if (picker.grantRequests != 1) {
+      _fail('a', 'Run setup asked for the grant ${picker.grantRequests} times');
     }
-    if (picker.lastRequestAnswer != false) {
-      _fail('a', 'the grant request answered ${picker.lastRequestAnswer}');
-    }
-    _mark('a|probe-refused|${_oneLine(refusal)}');
+    setup.dispose();
+    _mark('a|refused|pid=$pid|${_oneLine(shown)}');
 
-    _say(
-      'a2-settings',
-      'Settings is open: turn on All-files access for dsync, then come '
-          'back to this screen.',
-    );
-    await setup.openAccessSettings();
+    await _awaitControl('appop-allow', step: 'a');
     await _until(
       () async => await app.core.checkFolder(_appRoot) == null,
-      'All-files access for $_appRoot',
-      within: _humanWait,
+      'the core to take $_appRoot',
+      within: _grantWait,
       step: 'a',
     );
-    _mark('a|granted');
+    _mark('a|granted|pid=$pid');
+  }
 
-    _say('b-chooser', 'Pick dsync-e2e/app-root in the chooser once more.');
+  /// (b): Run setup takes the path the chooser's answer converts to, with
+  /// the grant in place and without asking for it again.
+  Future<void> pickedPath() async {
+    final picker = _ScriptedPicker(_appRoot, step: 'b', grantAsked: false);
+    final setup = RunSetupController(app, picker: picker);
     await setup.pickLocalFolder();
     if (setup.state.folderAccessError case final error?) {
       _fail('b', 'the granted folder was refused: ${_oneLine(error)}');
@@ -399,22 +411,23 @@ class _Session {
     final run = SyncRunController(app, screenWake: const PlatformScreenWake());
     await run.start(request);
     final deadline = DateTime.now().add(_runWait);
-    while (run.state.phase is! SyncRunAwaitingDecisions) {
+    for (var attempt = 1; ; attempt++) {
       final phase = run.state.phase;
+      if (phase is SyncRunAwaitingDecisions) return run;
       if (phase is SyncRunFailed) _fail(step, 'run failed: ${phase.message}');
       if (phase is SyncRunFinished) {
         _fail(step, 'run finished with nothing to review: $phase');
       }
+      _mark('wait|the review|attempt $attempt|$phase');
       if (DateTime.now().isAfter(deadline)) {
         _fail(step, 'timed out waiting for the review ($phase)');
       }
       if (phase is SyncRunReplicaBusy) {
-        await tester.pump(const Duration(seconds: 3));
+        await Future<void>.delayed(const Duration(seconds: 3));
         await run.resume();
       }
-      await tester.pump(const Duration(milliseconds: 100));
+      await Future<void>.delayed(_poll);
     }
-    return run;
   }
 
   Future<SyncRunFinished> _finished(
@@ -428,24 +441,28 @@ class _Session {
       'the run to finish',
       within: _runWait,
       step: step,
+      failure: () => '${run.state.phase}',
     );
     final phase = run.state.phase;
     if (phase is! SyncRunFinished) _fail(step, 'run ended as $phase');
     return phase;
   }
 
+  /// Waits for the driver's answer [name]: a folder, which this app can see
+  /// before it holds All-files access (see the file header).
   Future<void> _awaitControl(
     String name, {
     required String step,
-    Duration within = const Duration(minutes: 5),
+    Duration within = _driverWait,
   }) => _until(
-    () async => File(p.join(_control, name)).exists(),
+    () async => Directory(p.join(_control, name)).exists(),
     'the desktop driver ($name)',
     within: within,
     step: step,
   );
 
-  /// Pumps until [done] holds, failing [step] after [within].
+  /// Polls [done] once a [_poll], logging each attempt, and fails [step]
+  /// after [within]. Wall-clock waits, not `tester.pump`: see the header.
   Future<void> _until(
     Future<bool> Function() done,
     String what, {
@@ -454,20 +471,25 @@ class _Session {
     String Function()? failure,
   }) async {
     final deadline = DateTime.now().add(within);
-    while (!await done()) {
+    for (var attempt = 1; !await done(); attempt++) {
+      final state = failure?.call() ?? '';
+      _mark('wait|$what|attempt $attempt|$state');
       if (DateTime.now().isAfter(deadline)) {
-        _fail(step, 'timed out waiting for $what ${failure?.call() ?? ''}');
+        _fail(
+          step,
+          'timed out after ${within.inSeconds}s waiting for $what $state',
+        );
       }
-      await tester.pump(const Duration(milliseconds: 250));
+      await Future<void>.delayed(_poll);
     }
   }
 
-  /// Tells both the driver and the person at the phone what is next.
-  void _say(String step, String text) {
-    status.value = text;
-    _mark('step|$step');
-  }
+  /// Tells the driver which step is under way.
+  void _say(String step, String text) => _mark('step|$step|$text');
 }
+
+/// How often a wait looks again.
+const _poll = Duration(seconds: 1);
 
 /// One line for the driver's log; see the file header.
 void _mark(String line) => debugPrint('E2E|$line');
@@ -492,43 +514,51 @@ Future<InternetAddress> _lanAddress() async {
   return InternetAddress.anyIPv4;
 }
 
-/// The real platform picker, with what it answered kept for the checks.
-final class _RecordingPicker implements FolderPicker {
-  _RecordingPicker(this._picker);
+/// Stands in for the system chooser and the grant request, neither of which
+/// may open here: [pick] answers [path], the path `file_picker` hands Run
+/// setup for the chooser's answer. [requestAccess] is where production opens
+/// the All-files Settings screen; when [grantAsked] it counts the request and
+/// answers "not given" (the app-op is at `default`), and otherwise the step
+/// fails, because only a person could answer it.
+final class _ScriptedPicker implements FolderPicker {
+  _ScriptedPicker(this.path, {required this.step, required this.grantAsked});
 
-  final FolderPicker _picker;
-  String? lastPicked;
-  bool? lastRequestAnswer;
+  final String path;
+  final String step;
+  final bool grantAsked;
+  var grantRequests = 0;
 
   @override
-  Future<String?> pick() async => lastPicked = await _picker.pick();
+  Future<String?> pick() async => path;
 
   @override
-  Future<bool> requestAccess() async =>
-      lastRequestAnswer = await _picker.requestAccess();
+  Future<bool> requestAccess() async {
+    if (!grantAsked) {
+      _fail(step, 'Run setup asked for the grant, which opens Settings');
+    }
+    grantRequests++;
+    return false;
+  }
 
   @override
-  Future<void> openSettings() => _picker.openSettings();
+  Future<void> openSettings() async =>
+      _fail(step, 'Run setup opened Settings, which needs a person');
 }
 
-/// What the person at the phone reads while the driver waits on them.
+/// What the phone shows: nothing to do there.
 class _StatusScreen extends StatelessWidget {
-  const _StatusScreen(this.status);
-
-  final ValueListenable<String> status;
+  const _StatusScreen();
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
+  Widget build(BuildContext context) => const MaterialApp(
     home: Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: ValueListenableBuilder(
-            valueListenable: status,
-            builder: (context, text, _) => Text(
-              'dsync release check\n\n$text',
-              style: const TextStyle(fontSize: 20),
-            ),
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'dsync release check\n\nDriven from the desktop. '
+            'Do not touch the phone.',
+            style: TextStyle(fontSize: 20),
           ),
         ),
       ),
