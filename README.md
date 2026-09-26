@@ -551,3 +551,8 @@ and `profile` source sets, so its absence there made every connect work under
 `flutter run` and fail in a release build. The `CAMERA` permission the Pair
 page's scanner reads through is declared there too, and `NSCameraUsageDescription`
 is the iOS half of the same pair (SPEC §4.4).
+
+## License
+
+MIT — see [LICENSE](LICENSE). The vendored `third_party/rinf` keeps its own
+license and notice.

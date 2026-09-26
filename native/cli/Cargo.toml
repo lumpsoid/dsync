@@ -2,6 +2,7 @@
 name = "dsync-cli"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 publish = false
 
 # The `dsync` command line (SPEC §11): `sync`, `status` and `agent` over

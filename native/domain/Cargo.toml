@@ -2,6 +2,7 @@
 name = "dsync-domain"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 publish = false
 
 # Pure: values, rules, reconcile, planning, exchange math. Must never depend
