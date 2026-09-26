@@ -12,8 +12,7 @@ pub(crate) enum Line {
     /// ([`crate::ARCHIVE_FORMAT_VERSION`]).
     Header {
         version: String,
-        #[serde(rename = "profileId")]
-        profile_id: String,
+        entry_id: String,
         #[serde(rename = "rootPath")]
         root_path: String,
     },

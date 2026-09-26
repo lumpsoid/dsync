@@ -1,11 +1,11 @@
 //! The options a run actually uses: flags over profile over defaults.
 
+use crate::entry_id::{CanonicalSide, EntryId};
 use crate::host_facts::HostFacts;
 use crate::jobs::Jobs;
 use crate::location::Locality;
 use crate::options_error::OptionsError;
 use crate::profile::{Profile, ProfileName};
-use crate::profile_id::{CanonicalSide, ProfileId};
 use crate::replica_location::ReplicaLocation;
 use crate::rule_set::RuleSet;
 use crate::run_flags::RunFlags;
@@ -25,7 +25,7 @@ pub struct EffectiveOptions {
     /// `--allow-mass-delete`: SPEC §10's delete guard reports, but does not
     /// ask. A flag only; no profile sets it.
     pub allow_mass_delete: bool,
-    pub profile_id: ProfileId,
+    pub entry_id: EntryId,
     ssh_a: SshAccess,
     ssh_b: SshAccess,
 }
@@ -60,7 +60,7 @@ impl EffectiveOptions {
             warn_size_bytes: flags.warn_size_bytes.or(profile.warn_size_bytes()),
             jobs: flags.jobs.or(profile.jobs()),
             allow_mass_delete: flags.allow_mass_delete,
-            profile_id: ProfileId::for_pair(&canonical_a, &canonical_b),
+            entry_id: EntryId::for_pair(&canonical_a, &canonical_b),
             ssh_a: ssh(Side::A),
             ssh_b: ssh(Side::B),
             a,
@@ -109,7 +109,7 @@ impl EffectiveOptions {
             warn_size_bytes: flags.warn_size_bytes,
             jobs: flags.jobs,
             allow_mass_delete: flags.allow_mass_delete,
-            profile_id: ProfileId::for_pair(&canonical_first, &canonical_second),
+            entry_id: EntryId::for_pair(&canonical_first, &canonical_second),
             ssh_a: access.clone(),
             ssh_b: access,
         })

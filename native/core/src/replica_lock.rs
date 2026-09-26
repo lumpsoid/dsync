@@ -23,7 +23,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use dsync_domain::{ProfileId, Side};
+use dsync_domain::{EntryId, Side};
 
 use crate::state_dir::StateDir;
 
@@ -74,16 +74,16 @@ pub(crate) struct RunLocks {
 }
 
 impl RunLocks {
-    /// Takes both for side `side` of `profile`, whose folder is `root`, in
+    /// Takes both for side `side` of `entry_id`, whose folder is `root`, in
     /// `state`. `root` need not exist yet (SPEC §4.5): see
     /// [`canonical_root`]. A refusal of either claims nothing.
     pub(crate) fn acquire(
         state: &StateDir,
-        profile: &ProfileId,
+        entry_id: &EntryId,
         side: Side,
         root: &Path,
     ) -> Result<RunLocks, LockError> {
-        let profile = ReplicaLock::acquire(&state.lock(profile, side))?;
+        let profile = ReplicaLock::acquire(&state.lock(entry_id, side))?;
         let folder = canonical_root(root).map_err(|source| LockError::Io {
             path: root.to_owned(),
             source,

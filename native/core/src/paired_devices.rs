@@ -140,7 +140,7 @@ mod tests {
 
     use std::time::Duration;
 
-    use dsync_domain::{Jobs, ProfileId, ReplicaSpec, Side};
+    use dsync_domain::{EntryId, Jobs, ReplicaSpec, Side};
 
     use super::*;
     use crate::device_identity::DeviceIdentity;
@@ -200,7 +200,7 @@ mod tests {
     fn serves_a_spec_whose_expanded_root_is_granted() {
         let spec = |root: &str| ReplicaSpec {
             root: root.to_owned(),
-            profile: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
             side: Side::B,
             jobs: Jobs::DEFAULT,
         };

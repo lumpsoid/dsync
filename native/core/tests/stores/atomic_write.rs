@@ -75,7 +75,7 @@ fn a_kill_between_the_temp_write_and_the_rename_leaves_the_old_log_intact() {
     let state = StateDir::new(dir.path());
     let log = state.archive_log(&profile(), Side::A);
     let header = ArchiveHeader {
-        profile_id: profile(),
+        entry_id: profile(),
         root_path: "/home/me/notes".into(),
     };
     let mut store = ArchiveStore::open(log.clone(), header.clone(), &Tuning::DEFAULT).unwrap();

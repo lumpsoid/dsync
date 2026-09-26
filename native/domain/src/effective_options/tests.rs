@@ -233,9 +233,9 @@ b = "/home/me/notes"
     assert_eq!(host_of(&forward, Side::B).as_deref(), Some("phone"));
     // One derivation (plan OQ6): the profile's id is the pair's, whatever
     // the name, and an ad-hoc run over the same pair shares it.
-    assert_eq!(effective.profile_id, forward.profile_id);
+    assert_eq!(effective.entry_id, forward.entry_id);
     let adhoc = ad_hoc("/home/me/notes", "me@phone:/sdcard/notes", &no_flags());
-    assert_eq!(adhoc.profile_id, forward.profile_id);
+    assert_eq!(adhoc.entry_id, forward.entry_id);
 }
 
 #[test]
@@ -262,7 +262,7 @@ b = "$HOME/notes/"
 fn the_same_pair_in_both_orders_derives_one_id_and_one_a() {
     let forward = ad_hoc("/home/me/a", "/home/me/b", &no_flags());
     let backward = ad_hoc("/home/me/b", "/home/me/a", &no_flags());
-    assert_eq!(forward.profile_id, backward.profile_id);
+    assert_eq!(forward.entry_id, backward.entry_id);
     assert_eq!(path_of(&forward, Side::A), "/home/me/a");
     assert_eq!(path_of(&forward, Side::B), "/home/me/b");
     assert_eq!(path_of(&backward, Side::A), "/home/me/a");
@@ -292,7 +292,7 @@ fn how_a_replica_is_reached_is_not_part_of_its_identity() {
         ..Flags::default()
     });
     let with_access = ad_hoc("/home/me/a", "ssh://phone:/sdcard/b", &run);
-    assert_eq!(plain.profile_id, with_access.profile_id);
+    assert_eq!(plain.entry_id, with_access.entry_id);
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn one_relative_path_from_two_working_directories_is_two_pairs() {
         &facts_in("/home/me/proj2"),
         &[],
     );
-    assert_ne!(proj1.profile_id, proj2.profile_id);
+    assert_ne!(proj1.entry_id, proj2.entry_id);
 }
 
 #[test]
@@ -440,7 +440,7 @@ fn a_relative_path_derives_the_id_of_its_absolute_spelling() {
         &[],
     );
     let absolute = ad_hoc("/home/me/proj1/notes", "me@phone:/n", &no_flags());
-    assert_eq!(relative.profile_id, absolute.profile_id);
+    assert_eq!(relative.entry_id, absolute.entry_id);
 }
 
 #[test]
@@ -459,6 +459,6 @@ fn a_relative_remote_path_is_left_alone_whatever_the_working_directory() {
         &facts_in("/elsewhere"),
         &[],
     );
-    assert_eq!(with_cwd.profile_id, other_cwd.profile_id);
+    assert_eq!(with_cwd.entry_id, other_cwd.entry_id);
     assert_eq!(path_of(&with_cwd, Side::B), "notes");
 }

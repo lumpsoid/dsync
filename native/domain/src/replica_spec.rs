@@ -1,8 +1,8 @@
 //! What a remote replica's `hello` asks the far side to open (SPEC §4.2).
 
+use crate::entry_id::EntryId;
 use crate::jobs::Jobs;
 use crate::location::{ExpandError, expand_home};
-use crate::profile_id::ProfileId;
 use crate::side::Side;
 
 /// The replica an initiator wants served: which root, as which side of
@@ -14,7 +14,7 @@ use crate::side::Side;
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplicaSpec {
     pub root: String,
-    pub profile: ProfileId,
+    pub entry: EntryId,
     pub side: Side,
     pub jobs: Jobs,
 }
@@ -36,7 +36,7 @@ mod tests {
     fn spec(root: &str) -> ReplicaSpec {
         ReplicaSpec {
             root: root.to_owned(),
-            profile: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
             side: Side::B,
             jobs: Jobs::DEFAULT,
         }

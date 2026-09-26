@@ -50,7 +50,7 @@ fn copies_to_the_far_agent_honours_ignore_and_jobs_and_commits_both_archives() {
     for (_, archive) in near.iter().chain(&far) {
         assert_eq!(archived_paths(archive), expected);
     }
-    assert_eq!(near[0].0.profile_id, far[0].0.profile_id);
+    assert_eq!(near[0].0.entry_id, far[0].0.entry_id);
 }
 
 #[test]

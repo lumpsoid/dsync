@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use dsync_domain::{ProfileId, Side};
+use dsync_domain::{EntryId, Side};
 
 /// What someone deciding whether to delete an archive needs, and nothing
 /// that takes replaying it: the replica from the file name, the root from
@@ -13,7 +13,7 @@ pub struct StoredArchive {
     pub log_path: PathBuf,
     /// Read off the file name, which is readable even when the header is
     /// not.
-    pub profile_id: ProfileId,
+    pub entry_id: EntryId,
     pub side: Side,
     /// The replica root the header names, or `None` when the first line is
     /// not a header. Such a log is still listed: a run over it aborts, so

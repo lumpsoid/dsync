@@ -172,7 +172,7 @@ impl Connector {
         let location = replica_location.to_location();
         let spec = ReplicaSpec {
             root: location.path().to_owned(),
-            profile: options.profile_id.clone(),
+            entry: options.entry_id.clone(),
             side,
             jobs: options.jobs.unwrap_or(self.tuning.scan_jobs),
         };
@@ -232,7 +232,7 @@ impl Connector {
             LocalReplica::open(
                 root,
                 state,
-                spec.profile,
+                spec.entry,
                 spec.side,
                 spec.jobs,
                 tuning,

@@ -7,13 +7,13 @@ use std::sync::LazyLock;
 use toml::{Table, Value};
 
 use crate::device_id::DeviceId;
+use crate::entry_id::{CanonicalSide, EntryId};
 use crate::format_version::FormatVersion;
 use crate::glob::Glob;
 use crate::host_facts::HostFacts;
 use crate::jobs::Jobs;
 use crate::location::{ExpandError, Location};
 use crate::platform::Platform;
-use crate::profile_id::{CanonicalSide, ProfileId};
 use crate::replica_location::{ReplicaLocation, ReplicaLocationError};
 use crate::rule_set::RuleSet;
 use crate::side::Side;
@@ -267,8 +267,8 @@ impl Profile {
 
     /// The id this profile's archive and state are named by: the same one
     /// an ad-hoc run over the same pair derives (plan OQ6).
-    pub fn id(&self, facts: &HostFacts) -> Result<ProfileId, ExpandError> {
-        Ok(ProfileId::for_pair(
+    pub fn id(&self, facts: &HostFacts) -> Result<EntryId, ExpandError> {
+        Ok(EntryId::for_pair(
             &CanonicalSide::of(&self.a, facts)?,
             &CanonicalSide::of(&self.b, facts)?,
         ))

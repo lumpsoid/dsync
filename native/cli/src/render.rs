@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 use dsync_core::{PeerContact, RunEvent, SshLaunch, StateDir};
 use dsync_domain::{
-    EffectiveOptions, Locality, Location, ProfileId, ProfileName, ReplicaLocation, RuleSet, Side,
+    EffectiveOptions, EntryId, Locality, Location, ProfileName, ReplicaLocation, RuleSet, Side,
 };
 use time::UtcOffset;
 
@@ -101,7 +101,7 @@ pub enum RunName {
 #[derive(Clone, Debug)]
 pub struct RunView {
     pub name: RunName,
-    pub profile_id: ProfileId,
+    pub entry_id: EntryId,
     pub rules: RuleSet,
     pub warn_size_bytes: Option<u64>,
     pub a: ReplicaView,
@@ -123,8 +123,7 @@ impl RunView {
             let locality = typed.locality(local_addresses);
             let transport = Transport::of(&typed, locality);
             ReplicaView {
-                lock: (transport == Transport::Local)
-                    .then(|| state.lock(&options.profile_id, side)),
+                lock: (transport == Transport::Local).then(|| state.lock(&options.entry_id, side)),
                 ssh_args: match (&typed, transport) {
                     (Location::Ssh(ssh), Transport::Ssh) => Some(
                         SshLaunch::new(options.ssh(side), ssh.user(), ssh.host())
@@ -139,7 +138,7 @@ impl RunView {
         };
         RunView {
             name,
-            profile_id: options.profile_id.clone(),
+            entry_id: options.entry_id.clone(),
             rules: options.rules.clone(),
             warn_size_bytes: options.warn_size_bytes,
             a: replica(Side::A),
@@ -192,8 +191,8 @@ pub(crate) mod fixtures {
     use std::time::{Duration, SystemTime};
 
     use dsync_domain::{
-        Action, Conflict, ContentHash, FileMeta, FileState, Glob, Locality, Location, MassDelete,
-        MassDeletePolicy, Platform, ProfileId, ProfileName, Proposal, RelPath, ReplicaLocation,
+        Action, Conflict, ContentHash, EntryId, FileMeta, FileState, Glob, Locality, Location,
+        MassDelete, MassDeletePolicy, Platform, ProfileName, Proposal, RelPath, ReplicaLocation,
         RuleSet, Side, Status, Unchanged,
     };
     use time::UtcOffset;
@@ -275,7 +274,7 @@ pub(crate) mod fixtures {
     pub fn view() -> RunView {
         RunView {
             name: RunName::Profile(ProfileName::parse("work").unwrap()),
-            profile_id: ProfileId::parse(PROFILE_ID).unwrap(),
+            entry_id: EntryId::parse(PROFILE_ID).unwrap(),
             rules: RuleSet::new(vec![Glob::new("*.tmp").unwrap()], vec![]),
             warn_size_bytes: None,
             a: ReplicaView {

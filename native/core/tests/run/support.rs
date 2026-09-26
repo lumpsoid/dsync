@@ -92,7 +92,7 @@ impl Site {
     pub fn spec(&self, side: Side) -> ReplicaSpec {
         ReplicaSpec {
             root: self.root(side).to_str().unwrap().to_owned(),
-            profile: self.options().profile_id,
+            entry: self.options().entry_id,
             side,
             jobs: dsync_domain::Jobs::DEFAULT,
         }
@@ -107,7 +107,7 @@ impl Site {
         LocalReplica::open(
             spec.root,
             self.state(),
-            spec.profile,
+            spec.entry,
             side,
             spec.jobs,
             tuning,
@@ -144,7 +144,7 @@ impl Site {
     }
 
     pub fn log(&self, side: Side) -> PathBuf {
-        self.state().archive_log(&self.options().profile_id, side)
+        self.state().archive_log(&self.options().entry_id, side)
     }
 
     /// `side`'s archive as the next run would read it off disk.
@@ -152,7 +152,7 @@ impl Site {
         let spec = self.spec(side);
         ArchiveStore::open_replica(
             &self.state(),
-            &spec.profile,
+            &spec.entry,
             side,
             spec.root,
             &Tuning::DEFAULT,
@@ -163,7 +163,7 @@ impl Site {
     }
 
     pub fn marker(&self) -> PathBuf {
-        self.state().run_marker(&self.options().profile_id)
+        self.state().run_marker(&self.options().entry_id)
     }
 }
 
@@ -529,7 +529,7 @@ where
                     LocalReplica::open(
                         spec.root,
                         state,
-                        spec.profile,
+                        spec.entry,
                         spec.side,
                         spec.jobs,
                         tuning,

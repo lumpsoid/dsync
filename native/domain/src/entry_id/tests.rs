@@ -35,8 +35,8 @@ fn side(raw: &str) -> CanonicalSide {
     side_with(raw, None, &facts())
 }
 
-fn id(a: &CanonicalSide, b: &CanonicalSide) -> ProfileId {
-    ProfileId::for_pair(a, b)
+fn id(a: &CanonicalSide, b: &CanonicalSide) -> EntryId {
+    EntryId::for_pair(a, b)
 }
 
 #[test]
@@ -151,14 +151,20 @@ fn local_unix_and_peer_sides_never_collide() {
 }
 
 #[test]
+fn for_pair_pins_a_known_vector() {
+    // Pinned before the ProfileId -> EntryId rename (Phase 1 of the
+    // multi-entry-profiles plan) to prove the derivation itself did not
+    // change; Phase 2 relies on this same value for a folder entry's id.
+    let pinned = id(&side("/a"), &side("/b"));
+    assert_eq!(pinned.as_str(), "424ee6fb554b2977c1a940c91cb7c5b8");
+}
+
+#[test]
 fn the_id_is_32_lowercase_hex_and_reads_back() {
-    let profile_id = id(&side("/a"), &side("/b"));
-    assert_eq!(profile_id.as_str().len(), 32);
-    assert_eq!(
-        ProfileId::parse(profile_id.as_str()),
-        Ok(profile_id.clone())
-    );
+    let entry_id = id(&side("/a"), &side("/b"));
+    assert_eq!(entry_id.as_str().len(), 32);
+    assert_eq!(EntryId::parse(entry_id.as_str()), Ok(entry_id.clone()));
     for bad in ["", "ABCDEF0123456789ABCDEF0123456789", "../x", "notes"] {
-        assert!(ProfileId::parse(bad).is_err(), "{bad}");
+        assert!(EntryId::parse(bad).is_err(), "{bad}");
     }
 }

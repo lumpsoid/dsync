@@ -79,7 +79,7 @@ async fn a_replica_behind_the_listener_scans_writes_and_commits() {
 
     assert_eq!(std::fs::read(root.join("sent.txt")).unwrap(), content);
     let log = server.state().archive_log(
-        &dsync_domain::ProfileId::parse(PROFILE).unwrap(),
+        &dsync_domain::EntryId::parse(PROFILE).unwrap(),
         dsync_domain::Side::B,
     );
     let archived = std::fs::read_to_string(log).unwrap();

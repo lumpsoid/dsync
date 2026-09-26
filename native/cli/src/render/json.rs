@@ -37,7 +37,7 @@ impl<'v, O: Write> JsonRenderer<'v, O> {
                 last_run_unfinished,
             } => json!({
                 "type": "replicas",
-                "profileId": self.view.profile_id.as_str(),
+                "profileId": self.view.entry_id.as_str(),
                 "a": self.replica(Side::A, a),
                 "b": self.replica(Side::B, b),
                 "firstSync": a.last_commit.is_none() || b.last_commit.is_none(),

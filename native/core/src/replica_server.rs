@@ -415,7 +415,7 @@ mod tests {
     use std::fs;
     use std::time::{Duration, UNIX_EPOCH};
 
-    use dsync_domain::{Jobs, Precondition, ProfileId, RelPath, Side};
+    use dsync_domain::{EntryId, Jobs, Precondition, RelPath, Side};
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, duplex};
     use tokio::task::JoinHandle;
 
@@ -485,7 +485,7 @@ mod tests {
         fn spec(&self) -> ReplicaSpec {
             ReplicaSpec {
                 root: self.dir.path().join("root").to_str().unwrap().to_owned(),
-                profile: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+                entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
                 side: Side::A,
                 jobs: Jobs::DEFAULT,
             }
@@ -506,7 +506,7 @@ mod tests {
                             LocalReplica::open(
                                 spec.root,
                                 state,
-                                spec.profile,
+                                spec.entry,
                                 spec.side,
                                 spec.jobs,
                                 Tuning::DEFAULT,

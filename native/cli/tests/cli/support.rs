@@ -219,7 +219,7 @@ pub fn archives(state: &Path) -> Vec<(StoredArchive, Archive)> {
         .into_iter()
         .map(|log| {
             let header = ArchiveHeader {
-                profile_id: log.profile_id.clone(),
+                entry_id: log.entry_id.clone(),
                 root_path: log.root_path.clone().expect("a log with a header"),
             };
             let store = ArchiveStore::open(log.log_path.clone(), header, &Tuning::DEFAULT).unwrap();
@@ -496,7 +496,7 @@ pub fn seed_log(state: &Path, profile: &str, side: &str, root: &str, commits: us
     std::fs::create_dir_all(state).unwrap();
     let path = state.join(format!("{profile}-{side}.jsonl"));
     let mut lines = vec![
-        serde_json::json!({"op": "header", "version": "1.0", "profileId": profile, "rootPath": root})
+        serde_json::json!({"op": "header", "version": "1.0", "entry_id": profile, "rootPath": root})
             .to_string(),
     ];
     for i in 0..commits {

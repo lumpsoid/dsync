@@ -63,13 +63,7 @@ impl Opener {
                 .map_err(|error| ReplicaError::Refused(error.to_string()))?;
             let opening = tokio::task::spawn_blocking(move || {
                 LocalReplica::open(
-                    root,
-                    state,
-                    spec.profile,
-                    spec.side,
-                    spec.jobs,
-                    tuning,
-                    symlinks,
+                    root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,
                 )
             });
             match opening.await {

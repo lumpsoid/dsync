@@ -14,7 +14,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dsync_domain::{ArchiveCommit, ContentHash, FileMeta, FileState, ProfileId, RelPath};
+use dsync_domain::{ArchiveCommit, ContentHash, EntryId, FileMeta, FileState, RelPath};
 
 /// Selects the role a re-executed test binary plays.
 pub const ROLE_VAR: &str = "DSYNC_CORE_TEST_ROLE";
@@ -27,8 +27,8 @@ pub const CHILD_DEADLINE: Duration = Duration::from_secs(10);
 
 pub const PROFILE: &str = "0123456789abcdef0123456789abcdef";
 
-pub fn profile() -> ProfileId {
-    ProfileId::parse(PROFILE).unwrap()
+pub fn profile() -> EntryId {
+    EntryId::parse(PROFILE).unwrap()
 }
 
 pub fn path(text: &str) -> RelPath {

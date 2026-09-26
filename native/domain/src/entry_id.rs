@@ -214,16 +214,16 @@ fn expand_vars(path: &str, facts: &HostFacts) -> String {
     Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, serde::Serialize, serde::Deserialize,
 )]
 #[serde(try_from = "String", into = "String")]
-pub struct ProfileId(String);
+pub struct EntryId(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0:?} is not a profile id (32 lowercase hex digits)")]
-pub struct ProfileIdError(String);
+#[error("{0:?} is not an entry id (32 lowercase hex digits)")]
+pub struct EntryIdError(String);
 
-impl ProfileId {
+impl EntryId {
     const DOMAIN: &[u8] = b"dsync-profile:v1";
 
-    pub fn for_pair(a: &CanonicalSide, b: &CanonicalSide) -> ProfileId {
+    pub fn for_pair(a: &CanonicalSide, b: &CanonicalSide) -> EntryId {
         let (first, second) = {
             let (a, b) = (a.encode(), b.encode());
             if a <= b { (a, b) } else { (b, a) }
@@ -233,19 +233,19 @@ impl ProfileId {
         hasher.update(&first);
         hasher.update(&second);
         let digest = hasher.finalize();
-        ProfileId(hex::encode(&digest[..16]))
+        EntryId(hex::encode(&digest[..16]))
     }
 
     /// Reads an id back, e.g. from a state file name.
-    pub fn parse(text: &str) -> Result<ProfileId, ProfileIdError> {
+    pub fn parse(text: &str) -> Result<EntryId, EntryIdError> {
         let well_formed = text.len() == 32
             && text
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
         if !well_formed {
-            return Err(ProfileIdError(text.to_owned()));
+            return Err(EntryIdError(text.to_owned()));
         }
-        Ok(ProfileId(text.to_owned()))
+        Ok(EntryId(text.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -253,29 +253,29 @@ impl ProfileId {
     }
 }
 
-impl TryFrom<String> for ProfileId {
-    type Error = ProfileIdError;
+impl TryFrom<String> for EntryId {
+    type Error = EntryIdError;
 
     fn try_from(text: String) -> Result<Self, Self::Error> {
-        ProfileId::parse(&text)
+        EntryId::parse(&text)
     }
 }
 
-impl From<ProfileId> for String {
-    fn from(id: ProfileId) -> String {
+impl From<EntryId> for String {
+    fn from(id: EntryId) -> String {
         id.0
     }
 }
 
-impl FromStr for ProfileId {
-    type Err = ProfileIdError;
+impl FromStr for EntryId {
+    type Err = EntryIdError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        ProfileId::parse(text)
+        EntryId::parse(text)
     }
 }
 
-impl fmt::Display for ProfileId {
+impl fmt::Display for EntryId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }

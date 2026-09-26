@@ -9,7 +9,7 @@ use std::time::Duration;
 use dsync_core::{
     LinkError, LocalReplica, RemoteReplica, ReplicaError, ReplicaServer, StateDir, Transport,
 };
-use dsync_domain::{Jobs, ProfileId, ReplicaSpec, Side, Tuning};
+use dsync_domain::{EntryId, Jobs, ReplicaSpec, Side, Tuning};
 use tokio::task::JoinHandle;
 
 use crate::support::{PROFILE, Site, with_deadline};
@@ -21,7 +21,7 @@ const DUPLEX_BYTES: usize = 64 * 1024;
 pub fn spec(site: &Site, side: Side) -> ReplicaSpec {
     ReplicaSpec {
         root: site.root(side).to_str().unwrap().to_owned(),
-        profile: ProfileId::parse(PROFILE).unwrap(),
+        entry: EntryId::parse(PROFILE).unwrap(),
         side,
         jobs: Jobs::DEFAULT,
     }
@@ -43,7 +43,7 @@ pub fn open_local(
                 LocalReplica::open(
                     spec.root,
                     state,
-                    spec.profile,
+                    spec.entry,
                     spec.side,
                     spec.jobs,
                     Tuning::DEFAULT,

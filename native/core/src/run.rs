@@ -173,7 +173,7 @@ impl Run {
         decider: &mut impl Decider,
     ) -> RunReport {
         let clock = RunClock::start();
-        let marker = self.state.run_marker(&options.profile_id);
+        let marker = self.state.run_marker(&options.entry_id);
         let pair = Pair {
             a: &a,
             b: &b,

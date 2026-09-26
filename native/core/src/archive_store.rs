@@ -32,7 +32,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use dsync_domain::{Archive, ArchiveCommit, FormatVersion, ProfileId, Side, Tuning};
+use dsync_domain::{Archive, ArchiveCommit, EntryId, FormatVersion, Side, Tuning};
 
 use crate::archive_line::Line;
 use crate::atomic_write::{sync_dir, write_atomically};
@@ -51,7 +51,7 @@ const READ_BUFFER_BYTES: usize = 256 * 1024;
 /// first line on open; anything else is fatal.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ArchiveHeader {
-    pub profile_id: ProfileId,
+    pub entry_id: EntryId,
     /// The replica root the entries are relative to.
     pub root_path: String,
 }
@@ -77,16 +77,16 @@ pub enum ArchiveError {
     )]
     ForeignVersion { path: PathBuf, found: FormatVersion },
     #[error(
-        "Archive at {} belongs to a different replica: expected profile {} root {}, \
-         found profile {found_profile} root {found_root}",
+        "Archive at {} belongs to a different replica: expected entry {} root {}, \
+         found entry {found_entry} root {found_root}",
         path.display(),
-        expected.profile_id.as_str(),
+        expected.entry_id.as_str(),
         expected.root_path
     )]
     Mismatch {
         path: PathBuf,
         expected: ArchiveHeader,
-        found_profile: String,
+        found_entry: String,
         found_root: String,
     },
     #[error("Archive at {} is corrupt at line {line}: {reason}", path.display())]
@@ -129,19 +129,19 @@ pub struct ArchiveStore {
 }
 
 impl ArchiveStore {
-    /// Opens the log of `side` of `profile` in `state`.
+    /// Opens the log of `side` of `entry_id` in `state`.
     pub fn open_replica(
         state: &StateDir,
-        profile: &ProfileId,
+        entry_id: &EntryId,
         side: Side,
         root_path: String,
         tuning: &Tuning,
     ) -> Result<ArchiveStore, ArchiveError> {
         let header = ArchiveHeader {
-            profile_id: profile.clone(),
+            entry_id: entry_id.clone(),
             root_path,
         };
-        ArchiveStore::open(state.archive_log(profile, side), header, tuning)
+        ArchiveStore::open(state.archive_log(entry_id, side), header, tuning)
     }
 
     /// Opens the log at `log` and replays it. A missing log is an empty
@@ -257,7 +257,7 @@ impl ArchiveStore {
     fn header_line(&self) -> Line {
         Line::Header {
             version: ARCHIVE_FORMAT_VERSION.to_string(),
-            profile_id: self.header.profile_id.as_str().to_owned(),
+            entry_id: self.header.entry_id.as_str().to_owned(),
             root_path: self.header.root_path.clone(),
         }
     }
@@ -462,18 +462,18 @@ fn verify_header(
             found: mismatch.theirs(),
         })?;
     let Ok(Line::Header {
-        profile_id,
+        entry_id,
         root_path,
         ..
     }) = serde_json::from_slice::<Line>(line)
     else {
-        return Err(corrupt("the header is missing its profile or root"));
+        return Err(corrupt("the header is missing its entry or root"));
     };
-    if profile_id != expected.profile_id.as_str() || root_path != expected.root_path {
+    if entry_id != expected.entry_id.as_str() || root_path != expected.root_path {
         return Err(ArchiveError::Mismatch {
             path: log.to_owned(),
             expected: expected.clone(),
-            found_profile: profile_id,
+            found_entry: entry_id,
             found_root: root_path,
         });
     }

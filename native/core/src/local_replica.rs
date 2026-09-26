@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, Digested, FileMeta, Jobs, OnDisk, Precondition, ProfileId,
+    ArchiveCommit, Bucket, BucketCount, Digested, EntryId, FileMeta, Jobs, OnDisk, Precondition,
     RelPath, ReplicaInfo, ReplicaRoot, RuleSet, ScanEntry, Side, Tuning,
 };
 
@@ -46,7 +46,7 @@ struct Shared {
     root: PathBuf,
     root_text: String,
     state: StateDir,
-    profile: ProfileId,
+    entry_id: EntryId,
     side: Side,
     jobs: Jobs,
     tuning: Tuning,
@@ -72,19 +72,19 @@ enum ScanPhase {
 
 impl LocalReplica {
     /// The replica at `root` (as the location names it; also the archive
-    /// header's root), side `side` of `profile`, with its state in
+    /// header's root), side `side` of `entry_id`, with its state in
     /// `state`, going through the `symlinks` it may. Replays the archive,
     /// so this blocks.
     pub fn open(
         root: String,
         state: StateDir,
-        profile: ProfileId,
+        entry_id: EntryId,
         side: Side,
         jobs: Jobs,
         tuning: Tuning,
         symlinks: Symlinks,
     ) -> Result<LocalReplica, ArchiveError> {
-        let store = ArchiveStore::open_replica(&state, &profile, side, root.clone(), &tuning)?;
+        let store = ArchiveStore::open_replica(&state, &entry_id, side, root.clone(), &tuning)?;
         let path = PathBuf::from(&root);
         let confinement = Arc::new(Confinement::new(path.clone(), symlinks));
         Ok(LocalReplica {
@@ -94,7 +94,7 @@ impl LocalReplica {
                 root: path,
                 root_text: root,
                 state,
-                profile,
+                entry_id,
                 side,
                 jobs,
                 tuning,
@@ -190,14 +190,14 @@ impl Replica for LocalReplica {
     async fn lock(&self) -> Result<(), ReplicaError> {
         self.blocking(|shared| {
             let lock =
-                RunLocks::acquire(&shared.state, &shared.profile, shared.side, &shared.root)?;
+                RunLocks::acquire(&shared.state, &shared.entry_id, shared.side, &shared.root)?;
             // Replayed again under the lock: a run that held it until now
             // may have committed since this replica was opened.
             let mut store = shared.store();
             store.flush()?;
             *store = ArchiveStore::open_replica(
                 &shared.state,
-                &shared.profile,
+                &shared.entry_id,
                 shared.side,
                 shared.root_text.clone(),
                 &shared.tuning,

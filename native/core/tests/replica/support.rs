@@ -11,8 +11,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use dsync_core::{ArchiveStore, Body, LocalReplica, Replica, StateDir, body_channel};
 use dsync_domain::{
-    Action, Archive, ArchiveCommit, BucketCount, ContentHash, FileMeta, FileState, Jobs, Plan,
-    Precondition, ProfileId, RelPath, RuleSet, ScanEntry, Side, Status, Tuning, UnreadablePaths,
+    Action, Archive, ArchiveCommit, BucketCount, ContentHash, EntryId, FileMeta, FileState, Jobs,
+    Plan, Precondition, RelPath, RuleSet, ScanEntry, Side, Status, Tuning, UnreadablePaths,
     is_temp_file_name, reconcile, status_list,
 };
 use tempfile::TempDir;
@@ -151,7 +151,7 @@ impl Site {
         LocalReplica::open(
             root.to_str().unwrap().to_owned(),
             self.state(),
-            ProfileId::parse(profile).unwrap(),
+            EntryId::parse(profile).unwrap(),
             side,
             Jobs::DEFAULT,
             tuning,
@@ -162,14 +162,14 @@ impl Site {
 
     pub fn log(&self, side: Side) -> PathBuf {
         self.state()
-            .archive_log(&ProfileId::parse(PROFILE).unwrap(), side)
+            .archive_log(&EntryId::parse(PROFILE).unwrap(), side)
     }
 
     /// `side`'s archive as the next run would read it off disk.
     pub fn archive(&self, side: Side) -> Archive {
         ArchiveStore::open_replica(
             &self.state(),
-            &ProfileId::parse(PROFILE).unwrap(),
+            &EntryId::parse(PROFILE).unwrap(),
             side,
             self.root(side).to_str().unwrap().to_owned(),
             &Tuning::DEFAULT,

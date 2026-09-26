@@ -29,7 +29,7 @@ impl Fixture {
 
     fn header() -> ArchiveHeader {
         ArchiveHeader {
-            profile_id: profile(),
+            entry_id: profile(),
             root_path: "/home/me/notes".into(),
         }
     }
@@ -214,7 +214,7 @@ fn the_first_line_of_a_new_log_is_the_header() {
     assert!(first.contains(r#""op":"header""#), "{first}");
     assert!(first.contains(&format!(r#""version":"{ARCHIVE_FORMAT_VERSION}""#)));
     assert_eq!(ARCHIVE_FORMAT_VERSION.to_string(), "1.0");
-    assert!(first.contains(&format!(r#""profileId":"{}""#, profile().as_str())));
+    assert!(first.contains(&format!(r#""entry_id":"{}""#, profile().as_str())));
     assert!(first.contains(r#""rootPath":"/home/me/notes""#));
 }
 
@@ -249,7 +249,7 @@ fn refuses_a_log_written_for_a_different_root_or_profile() {
     assert!(error.to_string().contains("/home/me/elsewhere"), "{error}");
 
     let other = ArchiveHeader {
-        profile_id: dsync_domain::ProfileId::parse(&"f".repeat(32)).unwrap(),
+        entry_id: dsync_domain::EntryId::parse(&"f".repeat(32)).unwrap(),
         ..Fixture::header()
     };
     assert!(matches!(
@@ -267,7 +267,7 @@ fn write_log_of_version(fixture: &Fixture, version: &str) {
     fs::write(
         fixture.log(),
         format!(
-            "{{\"op\":\"header\",\"version\":\"{version}\",\"profileId\":\"{}\",\
+            "{{\"op\":\"header\",\"version\":\"{version}\",\"entry_id\":\"{}\",\
              \"rootPath\":\"/home/me/notes\"}}\n\
              {{\"op\":\"upsert\",\"path\":\"a.txt\",\"size\":10,\"mtime\":123456,\
              \"mode\":420,\"hash\":\"deadbeef\"}}\n",

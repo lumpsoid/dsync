@@ -9,7 +9,7 @@ use dsync_core::{
     ArchiveDeleteError, ArchiveInventory, LockError, ProfileStore, ProfileStoreError, StateDir,
     StoredArchive,
 };
-use dsync_domain::{DirRule, ProfileId, ProfileName};
+use dsync_domain::{DirRule, EntryId, ProfileName};
 use serde_json::{Value, json};
 
 use crate::args::{ArchiveClearArgs, ArchiveCommand, ClearTarget, ListArgs, StateDirArgs};
@@ -62,7 +62,7 @@ fn list(args: &ListArgs, host: &Host) -> Result<u8, Failure> {
 fn archive_line(archive: &StoredArchive) -> String {
     format!(
         "{}  {}  {} byte(s)  root: {}  last commit: {}",
-        archive.profile_id,
+        archive.entry_id,
         archive.side,
         archive.size_bytes,
         archive
@@ -78,7 +78,7 @@ fn archive_line(archive: &StoredArchive) -> String {
 fn archive_json(archive: &StoredArchive) -> Value {
     json!({
         "type": "archive",
-        "profileId": archive.profile_id.as_str(),
+        "profileId": archive.entry_id.as_str(),
         "side": archive.side.key(),
         "logPath": archive.log_path.to_string_lossy(),
         "rootPath": archive.root_path,
@@ -98,10 +98,10 @@ fn clear(args: &ArchiveClearArgs, host: &Host) -> Result<u8, Failure> {
     let doomed: Vec<StoredArchive> = match &target {
         ClearTarget::All => archives,
         ClearTarget::Profile(named) => {
-            let id = profile_id(named, host)?;
+            let id = entry_id(named, host)?;
             archives
                 .into_iter()
-                .filter(|archive| Some(&archive.profile_id) == id.as_ref())
+                .filter(|archive| Some(&archive.entry_id) == id.as_ref())
                 .collect()
         }
     };
@@ -118,7 +118,7 @@ fn clear(args: &ArchiveClearArgs, host: &Host) -> Result<u8, Failure> {
     }
     let mut freed = 0;
     for archive in &doomed {
-        if let Err(error) = inventory.delete(&archive.profile_id, archive.side) {
+        if let Err(error) = inventory.delete(&archive.entry_id, archive.side) {
             println!("freed: {freed} byte(s)");
             let busy = matches!(error, ArchiveDeleteError::Lock(LockError::Held { .. }));
             let note = if busy {
@@ -148,7 +148,7 @@ fn clear(args: &ArchiveClearArgs, host: &Host) -> Result<u8, Failure> {
 /// The profile `named` names: a profile of that name, else an id as
 /// `archive list` prints it. `None` when it is neither, which has no
 /// archive by definition.
-fn profile_id(named: &str, host: &Host) -> Result<Option<ProfileId>, Failure> {
+fn entry_id(named: &str, host: &Host) -> Result<Option<EntryId>, Failure> {
     if let Ok(name) = ProfileName::parse(named) {
         let facts = &host.facts;
         let store = ProfileStore::resolve(&DirRule::HOST, facts).map_err(Failure::error)?;
@@ -158,13 +158,13 @@ fn profile_id(named: &str, host: &Host) -> Result<Option<ProfileId>, Failure> {
             Err(error) => return Err(Failure::error(error)),
         }
     }
-    Ok(ProfileId::parse(named).ok())
+    Ok(EntryId::parse(named).ok())
 }
 
 /// What the next run is: over the one profile cleared, or over each of
 /// the profiles `--all` turned out to cover.
 fn subject(doomed: &[StoredArchive]) -> String {
-    let profiles: BTreeSet<&ProfileId> = doomed.iter().map(|archive| &archive.profile_id).collect();
+    let profiles: BTreeSet<&EntryId> = doomed.iter().map(|archive| &archive.entry_id).collect();
     match profiles.len() {
         1 => "this profile".to_owned(),
         count => format!("each of these {count} profiles"),
@@ -183,7 +183,7 @@ mod tests {
     fn archive(id: &str, side: Side, root: Option<&str>) -> StoredArchive {
         StoredArchive {
             log_path: PathBuf::from(format!("/state/{id}-{side}.jsonl")),
-            profile_id: ProfileId::parse(id).unwrap(),
+            entry_id: EntryId::parse(id).unwrap(),
             side,
             root_path: root.map(str::to_owned),
             size_bytes: 42,

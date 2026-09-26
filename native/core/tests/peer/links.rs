@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use dsync_core::{Body, DialedPeer, LocalReplica, Replica, ReplicaError, Symlinks};
 use dsync_domain::{
-    FileMeta, Glob, Jobs, Precondition, ProfileId, RelPath, RuleSet, ScanEntry, Side,
-    SkippedReason, Stage, Tuning,
+    EntryId, FileMeta, Glob, Jobs, Precondition, RelPath, RuleSet, ScanEntry, Side, SkippedReason,
+    Stage, Tuning,
 };
 
 use crate::support::{Host, Serving, identity, serve, somewhere, with_deadline};
@@ -303,7 +303,7 @@ async fn a_local_replica_follows_links_as_its_own_rules_say() {
     let local = LocalReplica::open(
         linked.root.to_str().unwrap().to_owned(),
         linked.server.state(),
-        ProfileId::parse("fedcba9876543210fedcba9876543210").unwrap(),
+        EntryId::parse("fedcba9876543210fedcba9876543210").unwrap(),
         Side::A,
         Jobs::DEFAULT,
         Tuning::DEFAULT,

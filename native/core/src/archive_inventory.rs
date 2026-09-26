@@ -15,7 +15,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::PathBuf;
 
-use dsync_domain::{ProfileId, Side};
+use dsync_domain::{EntryId, Side};
 
 use crate::archive_line::Line;
 use crate::replica_lock::{LockError, ReplicaLock};
@@ -62,7 +62,7 @@ impl ArchiveInventory {
         let mut archives = Vec::new();
         for entry in entries {
             let entry = entry?;
-            let Some((profile_id, side)) = entry.file_name().to_str().and_then(archive_log_owner)
+            let Some((entry_id, side)) = entry.file_name().to_str().and_then(archive_log_owner)
             else {
                 continue;
             };
@@ -74,7 +74,7 @@ impl ArchiveInventory {
             archives.push(StoredArchive {
                 root_path: root_path_of(&log_path)?,
                 log_path,
-                profile_id,
+                entry_id,
                 side,
                 size_bytes: metadata.len(),
                 last_modified: metadata.modified()?,
@@ -84,13 +84,13 @@ impl ArchiveInventory {
         Ok(archives)
     }
 
-    /// Deletes the archive of `side` of `profile`, under its replica lock.
+    /// Deletes the archive of `side` of `entry`, under its replica lock.
     /// Refused with [`LockError::Held`] while anything holds that lock. A
     /// log already gone is not an error. The lock file is left: it is
     /// empty by construction, and removing it would race the next holder.
-    pub fn delete(&self, profile: &ProfileId, side: Side) -> Result<(), ArchiveDeleteError> {
-        let _lock = ReplicaLock::acquire(&self.state.lock(profile, side))?;
-        let log = self.state.archive_log(profile, side);
+    pub fn delete(&self, entry_id: &EntryId, side: Side) -> Result<(), ArchiveDeleteError> {
+        let _lock = ReplicaLock::acquire(&self.state.lock(entry_id, side))?;
+        let log = self.state.archive_log(entry_id, side);
         match fs::remove_file(&log) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),

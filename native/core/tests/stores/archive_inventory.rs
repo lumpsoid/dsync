@@ -8,7 +8,7 @@ use dsync_core::{
     ArchiveDeleteError, ArchiveHeader, ArchiveInventory, ArchiveStore, LockError, ReplicaLock,
     StateDir,
 };
-use dsync_domain::{ProfileId, Side, Tuning};
+use dsync_domain::{EntryId, Side, Tuning};
 use tempfile::TempDir;
 
 use crate::support::{file, names_in, upsert};
@@ -17,8 +17,8 @@ const P1: &str = "11111111111111111111111111111111";
 const P2: &str = "22222222222222222222222222222222";
 const P3: &str = "33333333333333333333333333333333";
 
-fn id(text: &str) -> ProfileId {
-    ProfileId::parse(text).unwrap()
+fn id(text: &str) -> EntryId {
+    EntryId::parse(text).unwrap()
 }
 
 struct Fixture {
@@ -77,7 +77,7 @@ fn reports_every_log_with_its_replica_root_size_and_mtime() {
     assert_eq!(listed.len(), 2);
     let a = listed.iter().find(|stored| stored.side == Side::A).unwrap();
     assert_eq!(a.log_path, log);
-    assert_eq!(a.profile_id, id(P1));
+    assert_eq!(a.entry_id, id(P1));
     assert_eq!(a.root_path.as_deref(), Some("/home/me/notes"));
     let metadata = fs::metadata(&log).unwrap();
     assert_eq!(a.size_bytes, metadata.len());
@@ -111,7 +111,7 @@ fn lists_a_log_of_another_major_with_its_root_so_it_can_be_cleared() {
     let fixture = Fixture::new();
     fs::write(
         fixture.dir.path().join(format!("{P1}-a.jsonl")),
-        "{\"op\":\"header\",\"version\":\"2.0\",\"profileId\":\"notes\",\"rootPath\":\"/old\"}\n",
+        "{\"op\":\"header\",\"version\":\"2.0\",\"entry_id\":\"notes\",\"rootPath\":\"/old\"}\n",
     )
     .unwrap();
 
@@ -182,12 +182,12 @@ fn deleting_removes_the_log_and_nothing_else() {
     assert!(!log.exists());
     assert!(neighbour.exists());
     assert!(other_side.exists());
-    let left: Vec<ProfileId> = fixture
+    let left: Vec<EntryId> = fixture
         .inventory()
         .list()
         .unwrap()
         .into_iter()
-        .map(|stored| stored.profile_id)
+        .map(|stored| stored.entry_id)
         .collect();
     assert_eq!(left.len(), 2);
     assert!(!names_in(fixture.dir.path()).contains(&format!("{P1}-a.jsonl")));
@@ -231,7 +231,7 @@ fn the_next_run_over_a_deleted_archive_starts_from_nothing() {
     fixture.inventory().delete(&id(P1), Side::A).unwrap();
 
     let header = ArchiveHeader {
-        profile_id: id(P1),
+        entry_id: id(P1),
         root_path: "/home/me/notes".into(),
     };
     let next = ArchiveStore::open(

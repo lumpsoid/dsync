@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use dsync_core::{LocalReplica, LockError, RemoteReplica, Replica, ReplicaError};
-use dsync_domain::{Jobs, ProfileId, ReplicaSpec, Side, Tuning};
+use dsync_domain::{EntryId, Jobs, ReplicaSpec, Side, Tuning};
 
 use crate::support::{Host, address_of, identity, serve, with_deadline};
 
@@ -20,7 +20,7 @@ fn local(host: &Host, root: &Path, profile: &str) -> LocalReplica {
     LocalReplica::open(
         root.to_str().unwrap().to_owned(),
         host.state(),
-        ProfileId::parse(profile).unwrap(),
+        EntryId::parse(profile).unwrap(),
         Side::A,
         Jobs::DEFAULT,
         Tuning::DEFAULT,
@@ -40,7 +40,7 @@ async fn remote(
 ) -> RemoteReplica {
     let spec = ReplicaSpec {
         root: root.to_str().unwrap().to_owned(),
-        profile: ProfileId::parse(profile).unwrap(),
+        entry: EntryId::parse(profile).unwrap(),
         side: Side::B,
         jobs: Jobs::DEFAULT,
     };

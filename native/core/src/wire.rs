@@ -318,7 +318,7 @@ impl WireIo {
 mod tests {
     use super::*;
     use dsync_domain::{
-        ContentHash, FileState, Glob, Jobs, ProfileId, ReplicaRoot, ScanTally, Side, SkippedPath,
+        ContentHash, EntryId, FileState, Glob, Jobs, ReplicaRoot, ScanTally, Side, SkippedPath,
         SkippedReason, Status, Unchanged,
     };
     use std::time::{Duration, UNIX_EPOCH};
@@ -352,7 +352,7 @@ mod tests {
         for request in [
             Request::Hello(ReplicaSpec {
                 root: "~/sync".into(),
-                profile: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+                entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
                 side: Side::B,
                 jobs: Jobs::new(8).unwrap(),
             }),

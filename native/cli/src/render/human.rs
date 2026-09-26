@@ -164,7 +164,7 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
                 let _ = writeln!(self.out, "profile {name}");
                 String::new()
             }
-            RunName::AdHoc => format!("{} · ", self.view.profile_id),
+            RunName::AdHoc => format!("{} · ", self.view.entry_id),
         };
         for (side, info) in [(Side::A, a), (Side::B, b)] {
             let replica = self.view.replica(side);

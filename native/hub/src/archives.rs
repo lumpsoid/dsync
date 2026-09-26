@@ -3,7 +3,7 @@
 //! starts with no history.
 
 use dsync_core::ArchiveInventory;
-use dsync_domain::ProfileId;
+use dsync_domain::EntryId;
 
 use crate::dispatch::{Handled, Hub, blocking, text};
 use crate::signals::ReplyResult;
@@ -19,16 +19,13 @@ impl Hub {
     /// kept without the other's records a propagation the other no longer
     /// remembers. Stops at a log a run holds; answers with what is left.
     pub(crate) async fn clear_archive(&self, profile_id: &str) -> Handled {
-        let profile = ProfileId::parse(profile_id).map_err(text)?;
+        let entry_id = EntryId::parse(profile_id).map_err(text)?;
         let inventory = ArchiveInventory::new(self.state.clone());
         blocking(move || {
             let stored = inventory.list().map_err(text)?;
-            for archive in stored
-                .iter()
-                .filter(|archive| archive.profile_id == profile)
-            {
+            for archive in stored.iter().filter(|archive| archive.entry_id == entry_id) {
                 inventory
-                    .delete(&archive.profile_id, archive.side)
+                    .delete(&archive.entry_id, archive.side)
                     .map_err(text)?;
             }
             archives(&inventory)

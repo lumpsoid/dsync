@@ -7,7 +7,7 @@ use std::io;
 
 use dsync_core::{Body, FileOp, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
-    ArchiveCommit, BucketCount, Glob, Precondition, ProfileId, ReplicaRoot, RuleSet, Side, Status,
+    ArchiveCommit, BucketCount, EntryId, Glob, Precondition, ReplicaRoot, RuleSet, Side, Status,
     Tuning,
 };
 
@@ -127,7 +127,7 @@ async fn a_lock_held_on_the_far_side_comes_back_as_held() {
         .unwrap();
     let refused = with_deadline("remote lock", served.replica.lock()).await;
     assert!(
-        matches!(&refused, Err(ReplicaError::Lock(LockError::Held { path })) if path == &site.state().lock(&ProfileId::parse(PROFILE).unwrap(), Side::B)),
+        matches!(&refused, Err(ReplicaError::Lock(LockError::Held { path })) if path == &site.state().lock(&EntryId::parse(PROFILE).unwrap(), Side::B)),
         "{refused:?}"
     );
     served.close().await;

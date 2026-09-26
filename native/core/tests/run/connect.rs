@@ -68,7 +68,7 @@ async fn two_local_locations_open_two_local_replicas_at_their_roots() {
     assert_eq!(
         info.archive_path.as_deref(),
         site.state()
-            .archive_log(&options.profile_id, Side::A)
+            .archive_log(&options.entry_id, Side::A)
             .to_str()
     );
 }

@@ -224,7 +224,7 @@ impl From<&StoredArchive> for ArchiveView {
     fn from(archive: &StoredArchive) -> ArchiveView {
         ArchiveView {
             log_path: archive.log_path.to_string_lossy().into_owned(),
-            profile_id: archive.profile_id.as_str().to_owned(),
+            profile_id: archive.entry_id.as_str().to_owned(),
             side: archive.side.into(),
             root_path: archive.root_path.clone(),
             size_bytes: archive.size_bytes,

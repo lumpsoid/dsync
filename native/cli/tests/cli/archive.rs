@@ -4,7 +4,7 @@
 use std::time::SystemTime;
 
 use dsync_core::{ReplicaLock, StateDir};
-use dsync_domain::{ProfileId, Side};
+use dsync_domain::{EntryId, Side};
 use serde_json::Value;
 
 use crate::support::{Site, seed_device, seed_log};
@@ -93,7 +93,7 @@ fn clear_finds_a_profile_by_its_name() {
 
     let cleared = site.run(&["archive", "clear", "notes"]);
     cleared.exits(0);
-    let id = before[0].0.profile_id.as_str();
+    let id = before[0].0.entry_id.as_str();
     assert!(cleared.stdout.contains(id), "{cleared:#?}");
     let left = site.listing(&site.state_dir());
     assert!(
@@ -165,7 +165,7 @@ fn clear_refuses_both_a_profile_and_all_and_neither() {
 fn clear_refuses_a_log_a_run_holds_and_says_what_it_freed() {
     let site = Site::new();
     let held = seed_log(&site.state_dir(), P1, "a", "/n", 2);
-    let profile = ProfileId::parse(P1).unwrap();
+    let profile = EntryId::parse(P1).unwrap();
     let lock = StateDir::new(site.state_dir()).lock(&profile, Side::A);
     let _run = ReplicaLock::acquire(&lock).unwrap();
     let refused = site.run(&["archive", "clear", P1]);

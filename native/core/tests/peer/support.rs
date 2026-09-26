@@ -17,7 +17,7 @@ use dsync_core::{
     PeerDialer, PeerEvent, PeerListener, ReplicaError, StateDir, Symlinks, bind_peer,
 };
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{HostFacts, Jobs, PeerName, Platform, ProfileId, ReplicaSpec, Side, Tuning};
+use dsync_domain::{EntryId, HostFacts, Jobs, PeerName, Platform, ReplicaSpec, Side, Tuning};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, ring};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
@@ -149,7 +149,7 @@ impl Host {
 pub fn spec(root: &str) -> ReplicaSpec {
     ReplicaSpec {
         root: root.to_owned(),
-        profile: ProfileId::parse(PROFILE).unwrap(),
+        entry: EntryId::parse(PROFILE).unwrap(),
         side: Side::B,
         jobs: Jobs::DEFAULT,
     }
@@ -231,13 +231,7 @@ pub async fn serve_with(host: &Host, tuning: Tuning) -> Serving {
                 let root = root.map_err(|e| ReplicaError::Refused(e.to_string()))?;
                 let opened = tokio::task::spawn_blocking(move || {
                     LocalReplica::open(
-                        root,
-                        state,
-                        spec.profile,
-                        spec.side,
-                        spec.jobs,
-                        tuning,
-                        symlinks,
+                        root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,
                     )
                 });
                 Ok(opened.await.unwrap()?)

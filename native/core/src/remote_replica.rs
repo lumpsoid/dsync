@@ -635,7 +635,7 @@ mod tests {
 
     use std::time::Duration;
 
-    use dsync_domain::{Jobs, ProfileId, ReplicaRoot, Side};
+    use dsync_domain::{EntryId, Jobs, ReplicaRoot, Side};
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, duplex};
     use tokio::time::Instant;
 
@@ -672,7 +672,7 @@ mod tests {
     fn spec() -> ReplicaSpec {
         ReplicaSpec {
             root: "~/r".into(),
-            profile: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
             side: Side::B,
             jobs: Jobs::DEFAULT,
         }
