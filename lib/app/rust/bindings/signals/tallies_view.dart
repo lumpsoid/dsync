@@ -1,12 +1,14 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-
+/// Both scans' counts, and what they come to across the two sides.
 @immutable
 class TalliesView {
   const TalliesView({
     required this.a,
     required this.b,
+    required this.checked,
+    required this.changed,
   });
 
   static TalliesView deserialize(BinaryDeserializer deserializer) {
@@ -14,6 +16,8 @@ class TalliesView {
     final instance = TalliesView(
       a: TallyView.deserialize(deserializer),
       b: TallyView.deserialize(deserializer),
+      checked: deserializer.deserializeUint64(),
+      changed: deserializer.deserializeUint64(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -30,14 +34,20 @@ class TalliesView {
 
   final TallyView a;
   final TallyView b;
+  final Uint64 checked;
+  final Uint64 changed;
 
   TalliesView copyWith({
     TallyView? a,
     TallyView? b,
+    Uint64? checked,
+    Uint64? changed,
   }) {
     return TalliesView(
       a: a ?? this.a,
       b: b ?? this.b,
+      checked: checked ?? this.checked,
+      changed: changed ?? this.changed,
     );
   }
 
@@ -45,6 +55,8 @@ class TalliesView {
     serializer.increaseContainerDepth();
     a.serialize(serializer);
     b.serialize(serializer);
+    serializer.serializeUint64(checked);
+    serializer.serializeUint64(changed);
     serializer.decreaseContainerDepth();
   }
 
@@ -61,13 +73,17 @@ class TalliesView {
 
     return other is TalliesView
       && a == other.a
-      && b == other.b;
+      && b == other.b
+      && checked == other.checked
+      && changed == other.changed;
   }
 
   @override
   int get hashCode => Object.hash(
         a,
         b,
+        checked,
+        changed,
       );
 
   @override
@@ -77,7 +93,9 @@ class TalliesView {
     assert(() {
       fullString = '$runtimeType('
         'a: $a, '
-        'b: $b'
+        'b: $b, '
+        'checked: $checked, '
+        'changed: $changed'
         ')';
       return true;
     }());

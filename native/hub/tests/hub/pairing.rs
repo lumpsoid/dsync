@@ -120,10 +120,9 @@ async fn a_pairing_window_takes_no_answer_unasked_and_closes_when_cancelled() {
     assert!(early.contains("confirmed"), "{early}");
     let cancel = CoreCommand::CancelPairing { session };
     assert!(matches!(desktop.ok(cancel).await.1, ReplyResult::Done));
-    assert!(matches!(
-        desktop.pairing_view(session).await,
-        PairingView::Cancelled
-    ));
+    let closed = desktop.pairing_snapshot(session).await;
+    assert!(matches!(closed.view, PairingView::Cancelled));
+    assert!(closed.last, "the window's last snapshot");
     let late = desktop
         .failure(CoreCommand::ConfirmPairing {
             session,
@@ -255,10 +254,12 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
     let stop = CoreCommand::StopServe { session: serving };
     assert!(matches!(desktop.ok(stop).await.1, ReplyResult::Done));
     let last = loop {
-        let view = desktop.serve_view(serving).await;
-        if !matches!(view.phase, ServePhaseView::Listening { .. }) {
-            break view;
+        let snapshot = desktop.serve_snapshot(serving).await;
+        if !matches!(snapshot.view.phase, ServePhaseView::Listening { .. }) {
+            assert!(snapshot.last, "serving's last snapshot");
+            break snapshot.view;
         }
+        assert!(!snapshot.last);
     };
     assert!(matches!(last.phase, ServePhaseView::Stopped));
     // The desktop saw the phone's sessions (the probe's and the run's) and

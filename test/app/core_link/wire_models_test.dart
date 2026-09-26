@@ -5,6 +5,8 @@ import 'package:dsync/app/core_link/models/plan_action.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/run_intent.dart';
 import 'package:dsync/app/core_link/models/run_phase.dart';
+import 'package:dsync/app/core_link/models/run_standing.dart';
+import 'package:dsync/app/core_link/models/sync_history.dart';
 import 'package:dsync/app/core_link/wire_models.dart' as link;
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter_test/flutter_test.dart';
@@ -149,6 +151,41 @@ void main() {
     expect(read.progress, (completed: 3, total: 9));
     expect((read.applied, read.failed), (2, 1));
     expect(read.timings, 'run: 1s');
+  });
+
+  test('the core\'s verdicts read as sent: standing, history, totals and '
+      'the plan\'s bytes', () {
+    final at = DateTime(2026, 9, 16, 12);
+    final read = link.runView(
+      runView(
+        phase: paused(1),
+        replicas: replicas(lastA: at),
+        tallies: tallies(b: tally(modified: 4)),
+        plan: [
+          planRow(copyTo('up.txt', bytes: 10)),
+          planRow(copyHere('down.txt', bytes: 3)),
+        ],
+      ),
+    );
+    expect(read.standing, RunStanding.resumable);
+    expect(
+      read.replicas!.history,
+      isA<OneSidedFirstSync>().having((h) => h.empty, 'empty', ReplicaSide.b),
+    );
+    expect((read.tallies!.a.total, read.tallies!.b.changed), (11, 5));
+    expect((read.tallies!.checked, read.tallies!.changed), (25, 7));
+    expect(read.planSummary, (bytesToA: 3, bytesToB: 10));
+    expect(
+      link
+          .runView(
+            runView(
+              replicas: replicas(lastA: at, lastB: at),
+            ),
+          )
+          .replicas!
+          .history,
+      isA<LastSynced>().having((h) => h.b, 'b', at),
+    );
   });
 
   test('an intent is written as the hub reads it', () {

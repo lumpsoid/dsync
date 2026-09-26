@@ -1,7 +1,9 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-
+/// One side's SPEC §5.2 counts, with what they come to: every path the
+/// scan checked, and those it found changed - every path not scanned
+/// unchanged.
 @immutable
 class TallyView {
   const TallyView({
@@ -11,6 +13,8 @@ class TallyView {
     required this.created,
     required this.deleted,
     required this.untrusted,
+    required this.total,
+    required this.changed,
   });
 
   static TallyView deserialize(BinaryDeserializer deserializer) {
@@ -22,6 +26,8 @@ class TallyView {
       created: deserializer.deserializeUint64(),
       deleted: deserializer.deserializeUint64(),
       untrusted: deserializer.deserializeUint64(),
+      total: deserializer.deserializeUint64(),
+      changed: deserializer.deserializeUint64(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -42,6 +48,8 @@ class TallyView {
   final Uint64 created;
   final Uint64 deleted;
   final Uint64 untrusted;
+  final Uint64 total;
+  final Uint64 changed;
 
   TallyView copyWith({
     Uint64? metadataMatched,
@@ -50,6 +58,8 @@ class TallyView {
     Uint64? created,
     Uint64? deleted,
     Uint64? untrusted,
+    Uint64? total,
+    Uint64? changed,
   }) {
     return TallyView(
       metadataMatched: metadataMatched ?? this.metadataMatched,
@@ -58,6 +68,8 @@ class TallyView {
       created: created ?? this.created,
       deleted: deleted ?? this.deleted,
       untrusted: untrusted ?? this.untrusted,
+      total: total ?? this.total,
+      changed: changed ?? this.changed,
     );
   }
 
@@ -69,6 +81,8 @@ class TallyView {
     serializer.serializeUint64(created);
     serializer.serializeUint64(deleted);
     serializer.serializeUint64(untrusted);
+    serializer.serializeUint64(total);
+    serializer.serializeUint64(changed);
     serializer.decreaseContainerDepth();
   }
 
@@ -89,7 +103,9 @@ class TallyView {
       && modified == other.modified
       && created == other.created
       && deleted == other.deleted
-      && untrusted == other.untrusted;
+      && untrusted == other.untrusted
+      && total == other.total
+      && changed == other.changed;
   }
 
   @override
@@ -100,6 +116,8 @@ class TallyView {
         created,
         deleted,
         untrusted,
+        total,
+        changed,
       );
 
   @override
@@ -113,7 +131,9 @@ class TallyView {
         'modified: $modified, '
         'created: $created, '
         'deleted: $deleted, '
-        'untrusted: $untrusted'
+        'untrusted: $untrusted, '
+        'total: $total, '
+        'changed: $changed'
         ')';
       return true;
     }());

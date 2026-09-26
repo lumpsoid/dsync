@@ -9,6 +9,7 @@ class RunView {
   const RunView({
     required this.dryRun,
     required this.phase,
+    required this.standing,
     this.connectedAtMs,
     this.replicas,
     this.tally,
@@ -16,6 +17,7 @@ class RunView {
     required this.conflicts,
     required this.plan,
     required this.bytesToTransfer,
+    required this.planSummary,
     this.progress,
     required this.applied,
     required this.failed,
@@ -27,6 +29,7 @@ class RunView {
     final instance = RunView(
       dryRun: deserializer.deserializeBool(),
       phase: RunPhaseView.deserialize(deserializer),
+      standing: RunStandingViewExtension.deserialize(deserializer),
       connectedAtMs: TraitHelpers.deserializeOptionI64(deserializer),
       replicas: TraitHelpers.deserializeOptionReplicasView(deserializer),
       tally: TraitHelpers.deserializeOptionTalliesView(deserializer),
@@ -34,6 +37,7 @@ class RunView {
       conflicts: TraitHelpers.deserializeVectorConflictRowView(deserializer),
       plan: TraitHelpers.deserializeVectorPlanRowView(deserializer),
       bytesToTransfer: deserializer.deserializeUint64(),
+      planSummary: PlanSummaryView.deserialize(deserializer),
       progress: TraitHelpers.deserializeOptionProgressView(deserializer),
       applied: deserializer.deserializeUint64(),
       failed: deserializer.deserializeUint64(),
@@ -54,6 +58,7 @@ class RunView {
 
   final bool dryRun;
   final RunPhaseView phase;
+  final RunStandingView standing;
   final int? connectedAtMs;
   final ReplicasView? replicas;
   final TalliesView? tally;
@@ -61,6 +66,7 @@ class RunView {
   final List<ConflictRowView> conflicts;
   final List<PlanRowView> plan;
   final Uint64 bytesToTransfer;
+  final PlanSummaryView planSummary;
   final ProgressView? progress;
   final Uint64 applied;
   final Uint64 failed;
@@ -69,6 +75,7 @@ class RunView {
   RunView copyWith({
     bool? dryRun,
     RunPhaseView? phase,
+    RunStandingView? standing,
     int? Function()? connectedAtMs,
     ReplicasView? Function()? replicas,
     TalliesView? Function()? tally,
@@ -76,6 +83,7 @@ class RunView {
     List<ConflictRowView>? conflicts,
     List<PlanRowView>? plan,
     Uint64? bytesToTransfer,
+    PlanSummaryView? planSummary,
     ProgressView? Function()? progress,
     Uint64? applied,
     Uint64? failed,
@@ -84,6 +92,7 @@ class RunView {
     return RunView(
       dryRun: dryRun ?? this.dryRun,
       phase: phase ?? this.phase,
+      standing: standing ?? this.standing,
       connectedAtMs: connectedAtMs == null ? this.connectedAtMs : connectedAtMs(),
       replicas: replicas == null ? this.replicas : replicas(),
       tally: tally == null ? this.tally : tally(),
@@ -91,6 +100,7 @@ class RunView {
       conflicts: conflicts ?? this.conflicts,
       plan: plan ?? this.plan,
       bytesToTransfer: bytesToTransfer ?? this.bytesToTransfer,
+      planSummary: planSummary ?? this.planSummary,
       progress: progress == null ? this.progress : progress(),
       applied: applied ?? this.applied,
       failed: failed ?? this.failed,
@@ -102,6 +112,7 @@ class RunView {
     serializer.increaseContainerDepth();
     serializer.serializeBool(dryRun);
     phase.serialize(serializer);
+    standing.serialize(serializer);
     TraitHelpers.serializeOptionI64(connectedAtMs, serializer);
     TraitHelpers.serializeOptionReplicasView(replicas, serializer);
     TraitHelpers.serializeOptionTalliesView(tally, serializer);
@@ -109,6 +120,7 @@ class RunView {
     TraitHelpers.serializeVectorConflictRowView(conflicts, serializer);
     TraitHelpers.serializeVectorPlanRowView(plan, serializer);
     serializer.serializeUint64(bytesToTransfer);
+    planSummary.serialize(serializer);
     TraitHelpers.serializeOptionProgressView(progress, serializer);
     serializer.serializeUint64(applied);
     serializer.serializeUint64(failed);
@@ -130,6 +142,7 @@ class RunView {
     return other is RunView
       && dryRun == other.dryRun
       && phase == other.phase
+      && standing == other.standing
       && connectedAtMs == other.connectedAtMs
       && replicas == other.replicas
       && tally == other.tally
@@ -137,6 +150,7 @@ class RunView {
       && listEquals(conflicts, other.conflicts)
       && listEquals(plan, other.plan)
       && bytesToTransfer == other.bytesToTransfer
+      && planSummary == other.planSummary
       && progress == other.progress
       && applied == other.applied
       && failed == other.failed
@@ -147,6 +161,7 @@ class RunView {
   int get hashCode => Object.hash(
         dryRun,
         phase,
+        standing,
         connectedAtMs,
         replicas,
         tally,
@@ -154,6 +169,7 @@ class RunView {
         conflicts,
         plan,
         bytesToTransfer,
+        planSummary,
         progress,
         applied,
         failed,
@@ -168,6 +184,7 @@ class RunView {
       fullString = '$runtimeType('
         'dryRun: $dryRun, '
         'phase: $phase, '
+        'standing: $standing, '
         'connectedAtMs: $connectedAtMs, '
         'replicas: $replicas, '
         'tally: $tally, '
@@ -175,6 +192,7 @@ class RunView {
         'conflicts: $conflicts, '
         'plan: $plan, '
         'bytesToTransfer: $bytesToTransfer, '
+        'planSummary: $planSummary, '
         'progress: $progress, '
         'applied: $applied, '
         'failed: $failed, '

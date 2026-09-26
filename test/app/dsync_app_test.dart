@@ -390,6 +390,7 @@ void main() {
       core.emitRun(
         core.runStarts.last.session,
         runView(phase: failedWith('Could not reach "desktop": refused.')),
+        last: false,
       );
       await tester.pump();
       await tester.pump();

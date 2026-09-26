@@ -1,3 +1,5 @@
+import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -15,6 +17,14 @@ void main() {
   late RunHarness harness;
 
   SyncRunViewState state() => harness.state;
+
+  /// The rendered plan row for [path].
+  SyncRunPlanRow planRowAt(String path) =>
+      state().plan.singleWhere((row) => row.path == path);
+
+  /// The rendered conflict row for [path].
+  SyncRunConflictRow conflictAt(String path) =>
+      state().conflicts.singleWhere((row) => row.path == path);
 
   setUp(() async {
     harness = RunHarness(now: () => now);
@@ -136,10 +146,10 @@ void main() {
       expect(row.local.status, SyncRunSideStatus.created);
       expect(row.remote.status, SyncRunSideStatus.modified);
       expect(row.offered, [
-        SyncRunConflictChoice.unresolved,
-        SyncRunConflictChoice.keepLocal,
-        SyncRunConflictChoice.keepRemote,
-        SyncRunConflictChoice.keepBoth,
+        ConflictChoice.unresolved,
+        ConflictChoice.keepA,
+        ConflictChoice.keepB,
+        ConflictChoice.keepBoth,
       ]);
 
       await harness.show(
@@ -148,10 +158,7 @@ void main() {
       final only = state().conflicts.single;
       expect(only.remote.status, SyncRunSideStatus.none);
       expect(only.remote.file, isNull);
-      expect(only.offered, [
-        SyncRunConflictChoice.unresolved,
-        SyncRunConflictChoice.keepLocal,
-      ]);
+      expect(only.offered, [ConflictChoice.unresolved, ConflictChoice.keepA]);
     });
 
     test('conflicts: a side with a file carries when it was modified and its '
@@ -328,8 +335,8 @@ void main() {
           'saved the remote version as both (desktop).txt',
         );
         expect(
-          state().conflictDecisionCell('both.txt').value,
-          SyncRunConflictChoice.keepBoth,
+          state().conflictDecisionCell(conflictAt('both.txt')).value,
+          ConflictChoice.keepBoth,
         );
       },
     );
@@ -393,16 +400,16 @@ void main() {
         ),
       );
       expect(
-        state().actionDecisionCell('new.txt').value,
-        SyncRunActionChoice.proposed,
+        state().actionDecisionCell(planRowAt('new.txt')).value,
+        ActionChoice.proposed,
       );
       expect(
-        state().actionDecisionCell('gone.txt').value,
-        SyncRunActionChoice.skipped,
+        state().actionDecisionCell(planRowAt('gone.txt')).value,
+        ActionChoice.skipped,
       );
       expect(
-        state().conflictDecisionCell('both.txt').value,
-        SyncRunConflictChoice.keepBoth,
+        state().conflictDecisionCell(conflictAt('both.txt')).value,
+        ConflictChoice.keepBoth,
       );
 
       // The review over: no total.
@@ -653,9 +660,9 @@ void main() {
           ],
         ),
       );
-      final tapped = state().actionDecisionCell('a.txt');
-      final other = state().actionDecisionCell('b.txt');
-      final conflict = state().conflictDecisionCell('c.txt');
+      final tapped = state().actionDecisionCell(planRowAt('a.txt'));
+      final other = state().actionDecisionCell(planRowAt('b.txt'));
+      final conflict = state().conflictDecisionCell(conflictAt('c.txt'));
       var tappedFired = 0, otherFired = 0, conflictFired = 0;
       var summaryFired = 0, plan = 0, phase = 0;
       tapped.addListener(() => tappedFired++);
@@ -680,11 +687,11 @@ void main() {
         ),
       );
 
-      expect(tapped.value, SyncRunActionChoice.reversed);
+      expect(tapped.value, ActionChoice.reversed);
       expect((tappedFired, summaryFired), (1, 1));
       expect((otherFired, conflictFired, plan, phase), (0, 0, 0, 0));
       // A cell first read after the choice starts at it.
-      expect(state().actionDecisionCell('a.txt'), same(tapped));
+      expect(state().actionDecisionCell(planRowAt('a.txt')), same(tapped));
     });
   });
 }

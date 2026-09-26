@@ -128,7 +128,7 @@ impl ServeControl {
     fn update(&self, change: impl FnOnce(&mut ServeState)) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         change(&mut state);
-        self.out.serve(self.session, state.view());
+        self.out.serve(self.session, state.view(), state.is_over());
     }
 }
 
@@ -172,6 +172,11 @@ impl ServeState {
         if let Phase::Listening(_) = self.phase {
             self.phase = failure.map_or(Phase::Stopped, Phase::Failed);
         }
+    }
+
+    /// Serving no longer answers: nothing more happens to it.
+    fn is_over(&self) -> bool {
+        !matches!(self.phase, Phase::Listening(_))
     }
 
     fn view(&self) -> ServeView {
@@ -300,13 +305,16 @@ mod tests {
     #[test]
     fn serving_ends_stopped_or_failed_and_the_first_end_stands() {
         let mut stopped = ServeState::new("x".to_owned());
+        assert!(!stopped.is_over());
         stopped.ended(None);
+        assert!(stopped.is_over());
         stopped.ended(Some("aborted".to_owned()));
         assert!(matches!(stopped.view().phase, ServePhaseView::Stopped));
 
         let mut failed = ServeState::new("x".to_owned());
         failed.ended(Some("accept: too many open files".to_owned()));
         failed.ended(None);
+        assert!(failed.is_over());
         assert!(matches!(
             failed.view().phase,
             ServePhaseView::Failed { ref message } if message == "accept: too many open files"

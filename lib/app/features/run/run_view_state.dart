@@ -1,5 +1,9 @@
 import 'package:flutter/foundation.dart';
 
+import '../../core_link/models/action_choice.dart';
+import '../../core_link/models/conflict_choice.dart';
+import '../../core_link/models/run_standing.dart';
+
 /// Where the run stands. Sealed, for the reason `PairOutcome` and
 /// `AppBootstrap` give: a phase with the wrong payload — "finished" with no
 /// counts, "stopped" with no number — cannot be constructed, and the page
@@ -72,7 +76,7 @@ final class SyncRunFinished extends SyncRunPhase {
 /// (SPEC §11.3): the page's own plan and conflict rows turn into the
 /// review, each with its control. What each conflict offers rides on its
 /// row ([SyncRunConflictRow.offered]). The current choices are not here:
-/// each lives in its path's cell ([SyncRunViewState.actionDecisionCell],
+/// each lives in its row's cell ([SyncRunViewState.actionDecisionCell],
 /// [SyncRunViewState.conflictDecisionCell]) and the running total in
 /// [SyncRunViewState.decisionSummary], so a tap rebuilds one row and the
 /// bar under the page, never the phase and every row with it.
@@ -125,19 +129,6 @@ final class SyncRunDeletesOnSide {
   @override
   int get hashCode => Object.hash(where, root, deletes, archived);
 }
-
-/// What the user can do with one conflict (SPEC §11.3: "picks a
-/// direction"). [unresolved] is a choice too — the default, and what "skip"
-/// means for a conflict: no action is added for the path, and the summary
-/// counts it under conflicts, not skips. [keepBoth] saves the peer's file
-/// beside this device's and leaves the conflict open; it is offered only
-/// when both sides hold a file.
-enum SyncRunConflictChoice { unresolved, keepLocal, keepRemote, keepBoth }
-
-/// What the user can do with one proposed action: apply it as planned
-/// (the default), apply its reverse — the loser's version put back,
-/// offered only when the plan carries one — or leave it out.
-enum SyncRunActionChoice { proposed, reversed, skipped }
 
 /// The review's running total, for the bar under the page: how many of
 /// the plan's actions will be applied ([apply], reversed ones included)
@@ -284,10 +275,10 @@ final class SyncRunHeader {
   final String? firstSyncWarning;
 }
 
-/// One side's `ScanReasonTally` (SPEC §5.2), as five numbers. `metadata`
-/// and `hash` both stay: a path that scans unchanged appears nowhere else
-/// in the run, and which of the two branches resolved it is the only thing
-/// the tally is for.
+/// One side's `ScanReasonTally` (SPEC §5.2), as five numbers, and the
+/// core's [total] of paths it checked. `metadata` and `hash` both stay: a
+/// path that scans unchanged appears nowhere else in the run, and which of
+/// the two branches resolved it is the only thing the tally is for.
 final class SyncRunScanSide {
   const SyncRunScanSide({
     required this.metadataMatched,
@@ -295,6 +286,7 @@ final class SyncRunScanSide {
     required this.modified,
     required this.created,
     required this.deleted,
+    required this.total,
   });
 
   final int metadataMatched;
@@ -302,27 +294,25 @@ final class SyncRunScanSide {
   final int modified;
   final int created;
   final int deleted;
-
-  int get total => metadataMatched + hashMatched + modified + created + deleted;
-
-  /// Paths this side's scan found to differ from the last commit — the
-  /// three reasons that are not "scanned unchanged" (SPEC §5.2).
-  int get changed => modified + created + deleted;
+  final int total;
 }
 
+/// Both sides' tallies, and the core's counts across them: every path
+/// either side's scan touched ([totalChecked], Design C.4's one-line
+/// summary, ahead of the per-side breakdown it discloses) and how many of
+/// those it did not find unchanged ([totalChanged]).
 final class SyncRunScanTally {
-  const SyncRunScanTally({required this.local, required this.remote});
+  const SyncRunScanTally({
+    required this.local,
+    required this.remote,
+    required this.totalChecked,
+    required this.totalChanged,
+  });
 
   final SyncRunScanSide local;
   final SyncRunScanSide remote;
-
-  /// Every path either side's scan touched (Design C.4's one-line summary,
-  /// ahead of the per-side breakdown it discloses).
-  int get totalChecked => local.total + remote.total;
-
-  /// How many of those paths scanned changed — the sum of both sides'
-  /// [SyncRunScanSide.changed].
-  int get totalChanged => local.changed + remote.changed;
+  final int totalChecked;
+  final int totalChanged;
 }
 
 /// One `Conflict` (SPEC §6), rendered: each side's status, and its file
@@ -343,7 +333,7 @@ final class SyncRunConflictRow {
   final String path;
   final SyncRunConflictSide local;
   final SyncRunConflictSide remote;
-  final List<SyncRunConflictChoice> offered;
+  final List<ConflictChoice> offered;
 }
 
 /// One side of a conflict: its [status], and — for a side with a file on
@@ -381,9 +371,10 @@ enum SyncRunSideStatus {
 enum SyncRunPlanGroup { toDevice, toThisDevice, deletions, recordOnly }
 
 /// One [SyncRunPlanGroup]'s slice of the plan: which indexes into
-/// [SyncRunViewState.plan] belong to it, and the bytes those rows move,
-/// folded once per plan by [SyncRunViewState.show] so a group's header count
-/// never re-walks the plan to find its own rows.
+/// [SyncRunViewState.plan] belong to it, folded once per plan by
+/// [SyncRunViewState.show] so a group's header count never re-walks the
+/// plan to find its own rows, and the bytes the core counts those rows
+/// moving.
 final class SyncRunPlanSection {
   const SyncRunPlanSection({required this.indexes, required this.bytes});
 
@@ -499,6 +490,7 @@ final class SyncRunProgress {
 /// ([phaseChanged]), which fires only when the phase does.
 class SyncRunViewState extends ChangeNotifier {
   final ValueNotifier<SyncRunPhase> _phase = ValueNotifier(const SyncRunIdle());
+  RunStanding? _standing;
   bool _dryRun = false;
   SyncRunHeader? _header;
   SyncRunScanTally? _scanTally;
@@ -510,10 +502,10 @@ class SyncRunViewState extends ChangeNotifier {
   int _bytesToTransfer = 0;
   Map<String, SyncRunResultRow> _results = const {};
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
-  Map<String, SyncRunActionChoice> _actionChoices = const {};
-  final Map<String, ValueNotifier<SyncRunActionChoice>> _actionCells = {};
-  Map<String, SyncRunConflictChoice> _conflictChoices = const {};
-  final Map<String, ValueNotifier<SyncRunConflictChoice>> _conflictCells = {};
+  List<ActionChoice> _actionChoices = const [];
+  final Map<int, ValueNotifier<ActionChoice>> _actionCells = {};
+  List<ConflictChoice> _conflictChoices = const [];
+  final Map<int, ValueNotifier<ConflictChoice>> _conflictCells = {};
   final ValueNotifier<SyncRunDecisionSummary?> _decisionSummary = ValueNotifier(
     null,
   );
@@ -530,6 +522,14 @@ class SyncRunViewState extends ChangeNotifier {
   /// applying, on the phase; this lets it without following every view to
   /// get it.
   Listenable get phaseChanged => _phase;
+
+  /// The core's word on whether the run is live: connecting to applying.
+  /// The screen is held, leaving asks first and probes wait while it is.
+  /// `false` before the core has said anything.
+  bool get live => _standing == RunStanding.live;
+
+  /// Whether the core offers to run it again: paused, or ended short.
+  bool get resumable => _standing == RunStanding.resumable;
 
   /// SPEC §11.3 `--dry-run`: the plan is shown and nothing is applied, so
   /// the page labels the empty apply section as intended, not as a failure.
@@ -581,26 +581,23 @@ class SyncRunViewState extends ChangeNotifier {
   ValueListenable<SyncRunResultRow?> resultCell(String path) =>
       _resultCells.putIfAbsent(path, () => ValueNotifier(_results[path]));
 
-  /// The review's current choice for the proposed action at [path], as
-  /// something that row can watch — [resultCell]'s reasoning, for a tap
-  /// rather than an applied action. Created on first read;
-  /// [SyncRunActionChoice.proposed] when the core says nothing else.
-  ValueListenable<SyncRunActionChoice> actionDecisionCell(String path) =>
+  /// The review's current choice for [row], as something that row can
+  /// watch — [resultCell]'s reasoning, for a tap rather than an applied
+  /// action. Created on first read, from the choice the core sent for the
+  /// row.
+  ValueListenable<ActionChoice> actionDecisionCell(SyncRunPlanRow row) =>
       _actionCells.putIfAbsent(
-        path,
-        () =>
-            ValueNotifier(_actionChoices[path] ?? SyncRunActionChoice.proposed),
+        row.index,
+        () => ValueNotifier(_actionChoices[row.index]),
       );
 
-  /// [actionDecisionCell], for the conflict at [path];
-  /// [SyncRunConflictChoice.unresolved] when the core says nothing else.
-  ValueListenable<SyncRunConflictChoice> conflictDecisionCell(String path) =>
-      _conflictCells.putIfAbsent(
-        path,
-        () => ValueNotifier(
-          _conflictChoices[path] ?? SyncRunConflictChoice.unresolved,
-        ),
-      );
+  /// [actionDecisionCell], for the conflict [row].
+  ValueListenable<ConflictChoice> conflictDecisionCell(
+    SyncRunConflictRow row,
+  ) => _conflictCells.putIfAbsent(
+    row.index,
+    () => ValueNotifier(_conflictChoices[row.index]),
+  );
 
   /// The review's running total; `null` outside a review. Its own
   /// listenable for the same reason as the cells: the bar that shows it
@@ -624,9 +621,15 @@ class SyncRunViewState extends ChangeNotifier {
   /// Every field is replaced — a resumed attempt's view shows nothing of
   /// the attempt before it — but a listenable is set only when its value
   /// changed, and the cells are written rather than dropped: a built row
-  /// may be watching one.
+  /// may be watching one. A decision cell past the end of this view's rows
+  /// belongs to a row on its way out, and keeps what it showed.
+  ///
+  /// [actionChoices] and [conflictChoices] are the core's, one per row of
+  /// [plan] and [conflicts], in their order; [copyBytes] is what the core
+  /// counts the plan's copies moving each way.
   void show({
     required SyncRunPhase phase,
+    required RunStanding? standing,
     required bool dryRun,
     required String? startedAt,
     required SyncRunHeader? header,
@@ -635,15 +638,17 @@ class SyncRunViewState extends ChangeNotifier {
     required List<String> unreadablePaths,
     required List<SyncRunConflictRow> conflicts,
     required List<SyncRunPlanRow> plan,
+    required ({int toDevice, int toThisDevice}) copyBytes,
     required int bytesToTransfer,
     required Map<String, SyncRunResultRow> results,
-    required Map<String, SyncRunActionChoice> actionChoices,
-    required Map<String, SyncRunConflictChoice> conflictChoices,
+    required List<ActionChoice> actionChoices,
+    required List<ConflictChoice> conflictChoices,
     required SyncRunDecisionSummary? decisionSummary,
     required SyncRunProgress? progress,
     required int appliedCount,
     required int failedCount,
   }) {
+    _standing = standing;
     _dryRun = dryRun;
     _startedAt = startedAt;
     _header = header;
@@ -659,16 +664,16 @@ class SyncRunViewState extends ChangeNotifier {
     for (final MapEntry(key: path, value: cell) in _resultCells.entries) {
       cell.value = results[path];
     }
-    _actionChoices = actionChoices;
-    for (final MapEntry(key: path, value: cell) in _actionCells.entries) {
-      cell.value = actionChoices[path] ?? SyncRunActionChoice.proposed;
+    _actionChoices = List.unmodifiable(actionChoices);
+    for (final MapEntry(key: index, value: cell) in _actionCells.entries) {
+      if (index < actionChoices.length) cell.value = actionChoices[index];
     }
-    _conflictChoices = conflictChoices;
-    for (final MapEntry(key: path, value: cell) in _conflictCells.entries) {
-      cell.value = conflictChoices[path] ?? SyncRunConflictChoice.unresolved;
+    _conflictChoices = List.unmodifiable(conflictChoices);
+    for (final MapEntry(key: index, value: cell) in _conflictCells.entries) {
+      if (index < conflictChoices.length) cell.value = conflictChoices[index];
     }
     _decisionSummary.value = decisionSummary;
-    if (!listEquals(plan, _plan.value)) _recordPlan(plan);
+    if (!listEquals(plan, _plan.value)) _recordPlan(plan, copyBytes);
     _phase.value = phase;
     notifyListeners();
   }
@@ -677,21 +682,25 @@ class SyncRunViewState extends ChangeNotifier {
   /// [planSections] is set first, so a listener woken by the plan reads
   /// the plan's own group counts; it is one pass over [rows], not
   /// re-walked on every build that follows.
-  void _recordPlan(List<SyncRunPlanRow> rows) {
+  void _recordPlan(
+    List<SyncRunPlanRow> rows,
+    ({int toDevice, int toThisDevice}) copyBytes,
+  ) {
     final indexes = {
       for (final group in SyncRunPlanGroup.values) group: <int>[],
     };
-    final bytes = {for (final group in SyncRunPlanGroup.values) group: 0};
     for (var i = 0; i < rows.length; i++) {
-      final row = rows[i];
-      indexes[row.group]!.add(i);
-      bytes[row.group] = bytes[row.group]! + row.bytes;
+      indexes[rows[i].group]!.add(i);
     }
     _planSections = {
       for (final group in SyncRunPlanGroup.values)
         group: SyncRunPlanSection(
           indexes: List.unmodifiable(indexes[group]!),
-          bytes: bytes[group]!,
+          bytes: switch (group) {
+            SyncRunPlanGroup.toDevice => copyBytes.toDevice,
+            SyncRunPlanGroup.toThisDevice => copyBytes.toThisDevice,
+            SyncRunPlanGroup.deletions || SyncRunPlanGroup.recordOnly => 0,
+          },
         ),
     };
     _plan.value = List.unmodifiable(rows);

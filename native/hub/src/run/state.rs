@@ -15,9 +15,9 @@ use dsync_domain::{
 use crate::signals::RunIntent;
 use crate::views::{
     ActionChoiceView, ActionView, ConflictChoiceView, ConflictRowView, ConflictView,
-    DecisionSummaryView, MassDeleteView, PlanRowView, ProgressView, ProposalView, ReplicaInfoView,
-    ReplicasView, ResultView, RunPhaseView, RunView, SkippedView, SummaryView, TalliesView,
-    TallyView,
+    DecisionSummaryView, MassDeleteView, PlanRowView, PlanSummaryView, ProgressView, ProposalView,
+    ReplicasView, ResultView, RunPhaseView, RunStandingView, RunView, SkippedView, SummaryView,
+    TalliesView,
 };
 
 /// How soon a change has to reach the head.
@@ -87,26 +87,25 @@ enum Phase {
 }
 
 impl Phase {
-    fn is_live(&self) -> bool {
+    /// Live, waiting on a resume, or over for good.
+    fn standing(&self) -> RunStandingView {
         match self {
             Phase::Connecting
             | Phase::Scanning
             | Phase::Reviewing
             | Phase::ConfirmingDeletes(_)
-            | Phase::Applying => true,
-            Phase::Finished(_)
-            | Phase::Stopped(_)
-            | Phase::Paused(_)
+            | Phase::Applying => RunStandingView::Live,
+            Phase::Paused(_)
             | Phase::Failed(_)
             | Phase::ReplicaBusy(_)
             | Phase::DeletesDeclined
-            | Phase::NoSummary => false,
+            | Phase::NoSummary => RunStandingView::Resumable,
+            Phase::Finished(_) | Phase::Stopped(_) => RunStandingView::Over,
         }
     }
 
-    /// Over for good: nothing resumes it.
-    fn is_final(&self) -> bool {
-        matches!(self, Phase::Finished(_) | Phase::Stopped(_))
+    fn is_live(&self) -> bool {
+        self.standing() == RunStandingView::Live
     }
 }
 
@@ -304,7 +303,7 @@ impl RunState {
     /// Whether the session is over: its last attempt ended for good, or
     /// the page left.
     pub(crate) fn is_over(&self) -> bool {
-        self.closing || self.phase.is_final()
+        self.closing || self.phase.standing() == RunStandingView::Over
     }
 
     /// Whether the head asked a live attempt to stop.
@@ -529,16 +528,12 @@ impl RunState {
                 self.suspend = Some(Suspend::Pause);
                 Steer::Stop
             }
-            RunIntent::Resume => match self.phase {
-                Phase::Paused(_)
-                | Phase::Failed(_)
-                | Phase::ReplicaBusy(_)
-                | Phase::DeletesDeclined
-                | Phase::NoSummary => {
+            RunIntent::Resume => match self.phase.standing() {
+                RunStandingView::Resumable => {
                     self.begin();
                     Steer::Restart
                 }
-                _ => Steer::Ignored,
+                RunStandingView::Live | RunStandingView::Over => Steer::Ignored,
             },
             RunIntent::Foreground => match self.phase {
                 Phase::Paused(_) => {
@@ -608,15 +603,10 @@ impl RunState {
         RunView {
             dry_run: self.dry_run,
             phase: self.phase_view(),
+            standing: self.phase.standing(),
             connected_at_ms: self.connected_at_ms,
-            replicas: self.replicas.as_ref().map(|[a, b]| ReplicasView {
-                a: ReplicaInfoView::from(a),
-                b: ReplicaInfoView::from(b),
-            }),
-            tally: self.tallies.as_ref().map(|[a, b]| TalliesView {
-                a: TallyView::from(a),
-                b: TallyView::from(b),
-            }),
+            replicas: self.replicas.as_ref().map(|[a, b]| ReplicasView::of(a, b)),
+            tally: self.tallies.as_ref().map(|[a, b]| TalliesView::of(a, b)),
             skipped: self
                 .skipped
                 .iter()
@@ -646,6 +636,13 @@ impl RunState {
                     .collect()
             }),
             bytes_to_transfer: plan.map_or(0, Plan::bytes_to_transfer),
+            plan_summary: plan.map_or(
+                PlanSummaryView {
+                    bytes_to_a: 0,
+                    bytes_to_b: 0,
+                },
+                PlanSummaryView::from,
+            ),
             progress: self.progress.map(|(completed, total)| ProgressView {
                 completed: count(completed),
                 total: count(total),
@@ -660,14 +657,19 @@ impl RunState {
 #[cfg(test)]
 mod tests {
     use dsync_core::{RunError, RunEvent};
+    use std::time::{Duration, SystemTime};
+
     use dsync_domain::{
         Action, Conflict, ContentHash, FileMeta, FileState, MassDelete, MassDeletePolicy, Plan,
-        Proposal, RelPath, RunSummary, Side, Status,
+        Proposal, RelPath, ReplicaInfo, ReplicaRoot, RunSummary, ScanTally, Side, Status,
     };
 
     use super::{Choices, Ended, RunState, Steer, Urgency};
     use crate::signals::RunIntent;
-    use crate::views::{ActionChoiceView, ConflictChoiceView, RunPhaseView, RunView};
+    use crate::views::{
+        ActionChoiceView, ConflictChoiceView, HistoryView, RunPhaseView, RunStandingView, RunView,
+        SideView,
+    };
 
     const PEER: &str = "Phone";
 
@@ -1167,6 +1169,115 @@ mod tests {
             phase(&stopped),
             RunPhaseView::Paused { completed: 0 }
         ));
+    }
+
+    fn standing(state: &RunState) -> RunStandingView {
+        state.view().standing
+    }
+
+    #[test]
+    fn the_view_says_whether_the_run_is_live_resumable_or_over() {
+        let mut state = RunState::new(false);
+        assert_eq!(standing(&state), RunStandingView::Live, "connecting");
+        state.connected(1);
+        state.steer(RunIntent::Pause);
+        assert_eq!(standing(&state), RunStandingView::Live, "still stopping");
+        state.ended(ran());
+        assert_eq!(standing(&state), RunStandingView::Resumable, "paused");
+        state.steer(RunIntent::Resume);
+        state.ended(Ended::NotConnected("nobody answered".to_owned()));
+        assert_eq!(standing(&state), RunStandingView::Resumable, "failed");
+
+        let mut done = RunState::new(false);
+        done.connected(1);
+        done.event(summary(1));
+        done.ended(ran());
+        assert_eq!(standing(&done), RunStandingView::Over);
+        assert!(done.is_over());
+    }
+
+    fn replica(last_commit_s: Option<u64>) -> ReplicaInfo {
+        ReplicaInfo {
+            last_commit: last_commit_s.map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s)),
+            archive_path: None,
+            root: ReplicaRoot::Present,
+        }
+    }
+
+    fn history(a: Option<u64>, b: Option<u64>) -> HistoryView {
+        let mut state = RunState::new(false);
+        state.event(RunEvent::Replicas {
+            a: replica(a),
+            b: replica(b),
+            last_run_unfinished: false,
+        });
+        state
+            .view()
+            .replicas
+            .unwrap_or_else(|| panic!("replicas"))
+            .history
+    }
+
+    #[test]
+    fn a_side_with_no_commit_makes_the_run_a_first_sync() {
+        assert!(matches!(history(None, None), HistoryView::FirstSync));
+        assert!(matches!(
+            history(None, Some(5)),
+            HistoryView::OneSided { empty: SideView::A }
+        ));
+        assert!(matches!(
+            history(Some(5), None),
+            HistoryView::OneSided { empty: SideView::B }
+        ));
+        assert!(matches!(
+            history(Some(5), Some(7)),
+            HistoryView::Synced {
+                last_a_ms: 5000,
+                last_b_ms: 7000
+            }
+        ));
+    }
+
+    #[test]
+    fn the_tally_counts_every_path_checked_and_every_one_not_unchanged() {
+        let a = ScanTally {
+            metadata_matched: 7,
+            hash_matched: 2,
+            modified: 1,
+            created: 1,
+            deleted: 0,
+            untrusted: 1,
+        };
+        let b = ScanTally {
+            deleted: 3,
+            ..ScanTally::default()
+        };
+        let mut state = RunState::new(false);
+        state.event(RunEvent::ScanTally { a, b });
+        let tally = state.view().tally.unwrap_or_else(|| panic!("tally"));
+        assert_eq!((tally.a.total, tally.a.changed), (12, 3));
+        assert_eq!((tally.b.total, tally.b.changed), (3, 3));
+        assert_eq!((tally.checked, tally.changed), (15, 6));
+    }
+
+    #[test]
+    fn the_plan_summary_adds_up_the_bytes_written_onto_each_side() {
+        let plan = Plan {
+            actions: vec![
+                reversible("r"),
+                proposed(copy("p")),
+                proposed(copy_back("q")),
+                proposed(Action::Delete {
+                    path: path("d"),
+                    on: Side::A,
+                }),
+            ],
+            conflicts: Vec::new(),
+        };
+        let summary = reviewing(&plan).view().plan_summary;
+        assert_eq!((summary.bytes_to_a, summary.bytes_to_b), (7, 2));
+        let before = RunState::new(false).view().plan_summary;
+        assert_eq!((before.bytes_to_a, before.bytes_to_b), (0, 0));
     }
 
     #[test]

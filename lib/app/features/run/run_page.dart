@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../core_link/models/conflict_choice.dart';
 import '../../format_bytes.dart';
 import '../../format_count.dart';
 import '../../format_path.dart';
@@ -102,51 +103,17 @@ class _RunPageState extends State<RunPage> {
     super.dispose();
   }
 
-  /// System back while the run is live: ask before leaving, because popping
-  /// disposes the controller and that cancels the session mid-apply. Only
-  /// the phases that have a session to lose are guarded — idle and
-  /// connecting have applied nothing, and finished, stopped and failed are
-  /// over, so back pops those with no prompt. Stop stays the deliberate
-  /// path and is untouched: this only closes the silent one.
-  bool _abortsRun(SyncRunPhase phase) => switch (phase) {
-    SyncRunScanning() ||
-    SyncRunApplying() ||
-    SyncRunAwaitingDecisions() ||
-    SyncRunConfirmingDeletes() => true,
-    SyncRunIdle() ||
-    SyncRunConnecting() ||
-    SyncRunFinished() ||
-    SyncRunStopped() ||
-    SyncRunPaused() ||
-    SyncRunReplicaBusy() ||
-    SyncRunFailed() => false,
-  };
-
   /// Opens the Diagnostics page over this run's local replica.
   ///
-  /// The reason a probe may not run is decided here rather than there: what
-  /// counts as "a run is in flight" is this feature's own phase sum type, and
-  /// the Diagnostics page takes a sentence it can show rather than a phase it
-  /// would have to interpret.
+  /// A probe may not run while the core says the run is live; the
+  /// Diagnostics page takes a sentence it can show rather than a run state
+  /// it would have to interpret.
   Future<void> _openDiagnostics(SyncRunViewState state) {
-    final running = switch (state.phase) {
-      SyncRunConnecting() ||
-      SyncRunScanning() ||
-      SyncRunApplying() ||
-      SyncRunAwaitingDecisions() ||
-      SyncRunConfirmingDeletes() => true,
-      SyncRunIdle() ||
-      SyncRunFinished() ||
-      SyncRunStopped() ||
-      SyncRunPaused() ||
-      SyncRunReplicaBusy() ||
-      SyncRunFailed() => false,
-    };
     return Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => DiagnosticsPage(
           rootPath: widget.request.localRootPath,
-          blockedReason: running
+          blockedReason: state.live
               ? 'A sync is running. Measuring now would compete with it for '
                     'the same storage, so neither figure would be honest — '
                     'wait for it to finish, or stop it.'
@@ -171,10 +138,16 @@ class _RunPageState extends State<RunPage> {
   @override
   Widget build(BuildContext context) {
     final state = _controller.state;
+    // System back while the core says the run is live asks before
+    // leaving, because popping disposes the controller and that closes the
+    // session mid-run. Before the first view and once the run is not live
+    // there is no session to lose, so back pops with no prompt. Stop stays
+    // the deliberate path and is untouched: this only closes the silent
+    // one.
     return ListenableBuilder(
-      listenable: state.phaseChanged,
+      listenable: state,
       builder: (context, child) => PopScope(
-        canPop: !_abortsRun(state.phase),
+        canPop: !state.live,
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
           _confirmAbort();
@@ -230,28 +203,18 @@ class _RunPageState extends State<RunPage> {
           ),
           ListenableBuilder(
             listenable: state,
-            // Resume is offered where a run can be continued but is not
-            // continued on its own: a failure, and a pause the app has not
-            // come back from yet (the tablet on the desk that is picked up
-            // and read rather than unlocked). A finished or stopped run is
-            // an outcome, not an interruption, and is not re-run from here.
-            builder: (context, _) => switch (state.phase) {
-              SyncRunPaused() ||
-              SyncRunReplicaBusy() ||
-              SyncRunFailed() => TextButton(
-                key: const Key('run-resume'),
-                onPressed: _controller.resume,
-                child: const Text('Resume'),
-              ),
-              SyncRunIdle() ||
-              SyncRunConnecting() ||
-              SyncRunScanning() ||
-              SyncRunApplying() ||
-              SyncRunAwaitingDecisions() ||
-              SyncRunConfirmingDeletes() ||
-              SyncRunFinished() ||
-              SyncRunStopped() => const SizedBox.shrink(),
-            },
+            // Resume is offered where the core offers it: a run it can
+            // continue but does not continue on its own — a failure, and a
+            // pause the app has not come back from yet (the tablet on the
+            // desk that is picked up and read rather than unlocked). A
+            // finished or stopped run is an outcome, not an interruption.
+            builder: (context, _) => state.resumable
+                ? TextButton(
+                    key: const Key('run-resume'),
+                    onPressed: _controller.resume,
+                    child: const Text('Resume'),
+                  )
+                : const SizedBox.shrink(),
           ),
           ListenableBuilder(
             listenable: state,
@@ -1142,8 +1105,8 @@ class _ConflictRow extends StatelessWidget {
 
   final SyncRunConflictRow row;
   final SyncRunViewState state;
-  final List<SyncRunConflictChoice>? offered;
-  final void Function(int index, SyncRunConflictChoice choice) onResolve;
+  final List<ConflictChoice>? offered;
+  final void Function(int index, ConflictChoice choice) onResolve;
 
   @override
   Widget build(BuildContext context) {
@@ -1152,116 +1115,106 @@ class _ConflictRow extends StatelessWidget {
     final label = PathLabel.stacked(row.path);
     return ValueListenableBuilder<SyncRunResultRow?>(
       valueListenable: state.resultCell(row.path),
-      builder: (context, result, _) =>
-          ValueListenableBuilder<SyncRunConflictChoice>(
-            valueListenable: state.conflictDecisionCell(row.path),
-            builder: (context, choice, _) {
-              final (local: keepsLocal, remote: keepsRemote) = _sides(choice);
-              return Padding(
-                key: Key('run-conflict-${row.path}'),
-                padding: const EdgeInsets.only(bottom: 16),
-                child: Column(
+      builder: (context, result, _) => ValueListenableBuilder<ConflictChoice>(
+        valueListenable: state.conflictDecisionCell(row),
+        builder: (context, choice, _) {
+          final (local: keepsLocal, remote: keepsRemote) = _sides(choice);
+          return Padding(
+            key: Key('run-conflict-${row.path}'),
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2, right: 6),
-                          child: Icon(
-                            Icons.error_outline,
-                            size: 16,
-                            color: theme.colorScheme.error,
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            label.leaf,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                        if (offered != null)
-                          Padding(
-                            padding: const EdgeInsets.only(left: 8),
-                            child: Text(
-                              _label(choice),
-                              key: Key('decision-${row.path}'),
-                              style: theme.textTheme.labelLarge?.copyWith(
-                                color:
-                                    choice == SyncRunConflictChoice.unresolved
-                                    ? theme.colorScheme.outline
-                                    : theme.colorScheme.primary,
-                              ),
-                            ),
-                          ),
-                      ],
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, right: 6),
+                      child: Icon(
+                        Icons.error_outline,
+                        size: 16,
+                        color: theme.colorScheme.error,
+                      ),
                     ),
-                    if (label.parent.isNotEmpty)
+                    Expanded(
+                      child: Text(
+                        label.leaf,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    if (offered != null)
                       Padding(
-                        padding: const EdgeInsets.only(left: 22),
+                        padding: const EdgeInsets.only(left: 8),
                         child: Text(
-                          label.parent,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.outline,
+                          _label(choice),
+                          key: Key('decision-${row.path}'),
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            color: choice == ConflictChoice.unresolved
+                                ? theme.colorScheme.outline
+                                : theme.colorScheme.primary,
                           ),
                         ),
-                      ),
-                    const SizedBox(height: 8),
-                    // Both boxes as tall as the taller: a side with a file
-                    // carries a line more than one without.
-                    IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(
-                            child: _ConflictSide(
-                              key: Key('run-conflict-local-${row.path}'),
-                              name: 'This device',
-                              side: row.local,
-                              selected: offered != null && keepsLocal,
-                              onTap: _tapFor(
-                                offered,
-                                choice,
-                                SyncRunConflictChoice.keepLocal,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: _ConflictSide(
-                              key: Key('run-conflict-remote-${row.path}'),
-                              name: 'Remote',
-                              side: row.remote,
-                              selected: offered != null && keepsRemote,
-                              onTap: _tapFor(
-                                offered,
-                                choice,
-                                SyncRunConflictChoice.keepRemote,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (result != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: _result(context, result, choice),
                       ),
                   ],
                 ),
-              );
-            },
-          ),
+                if (label.parent.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 22),
+                    child: Text(
+                      label.parent,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.outline,
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                // Both boxes as tall as the taller: a side with a file
+                // carries a line more than one without.
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: _ConflictSide(
+                          key: Key('run-conflict-local-${row.path}'),
+                          name: 'This device',
+                          side: row.local,
+                          selected: offered != null && keepsLocal,
+                          onTap: _tapFor(offered, choice, ConflictChoice.keepA),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _ConflictSide(
+                          key: Key('run-conflict-remote-${row.path}'),
+                          name: 'Remote',
+                          side: row.remote,
+                          selected: offered != null && keepsRemote,
+                          onTap: _tapFor(offered, choice, ConflictChoice.keepB),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (result != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: _result(context, result, choice),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
   /// The tap on the side that [side] keeps, or `null` — not tappable —
   /// outside the review or where that side cannot be kept.
   VoidCallback? _tapFor(
-    List<SyncRunConflictChoice>? offered,
-    SyncRunConflictChoice current,
-    SyncRunConflictChoice side,
+    List<ConflictChoice>? offered,
+    ConflictChoice current,
+    ConflictChoice side,
   ) {
     if (offered == null || !offered.contains(side)) return null;
     return () => onResolve(row.index, _toggled(current, side, offered));
@@ -1270,12 +1223,12 @@ class _ConflictRow extends StatelessWidget {
   Widget _result(
     BuildContext context,
     SyncRunResultRow result,
-    SyncRunConflictChoice choice,
+    ConflictChoice choice,
   ) {
     if (result.error case final error?) {
       return _NoticeLine.error('${result.action}: $error');
     }
-    final keptOpen = choice == SyncRunConflictChoice.keepBoth;
+    final keptOpen = choice == ConflictChoice.keepBoth;
     return Row(
       key: Key('run-conflict-result-${row.path}'),
       mainAxisSize: MainAxisSize.min,
@@ -1295,42 +1248,41 @@ class _ConflictRow extends StatelessWidget {
   }
 
   /// The choice said back in words, above the boxes that make it.
-  static String _label(SyncRunConflictChoice choice) => switch (choice) {
-    SyncRunConflictChoice.unresolved => 'Skip',
-    SyncRunConflictChoice.keepLocal => 'This device',
-    SyncRunConflictChoice.keepRemote => 'Remote',
-    SyncRunConflictChoice.keepBoth => 'Both',
+  static String _label(ConflictChoice choice) => switch (choice) {
+    ConflictChoice.unresolved => 'Skip',
+    ConflictChoice.keepA => 'This device',
+    ConflictChoice.keepB => 'Remote',
+    ConflictChoice.keepBoth => 'Both',
   };
 }
 
 /// Which side boxes [choice] selects.
-({bool local, bool remote}) _sides(SyncRunConflictChoice choice) =>
-    switch (choice) {
-      SyncRunConflictChoice.unresolved => (local: false, remote: false),
-      SyncRunConflictChoice.keepLocal => (local: true, remote: false),
-      SyncRunConflictChoice.keepRemote => (local: false, remote: true),
-      SyncRunConflictChoice.keepBoth => (local: true, remote: true),
-    };
+({bool local, bool remote}) _sides(ConflictChoice choice) => switch (choice) {
+  ConflictChoice.unresolved => (local: false, remote: false),
+  ConflictChoice.keepA => (local: true, remote: false),
+  ConflictChoice.keepB => (local: false, remote: true),
+  ConflictChoice.keepBoth => (local: true, remote: true),
+};
 
-/// The choice after a tap on the box that keeps [side] ([keepLocal] or
-/// [keepRemote]): the tapped box flips, and the two boxes read back as a
+/// The choice after a tap on the box that keeps [side] (`keepA`, this
+/// device's, or `keepB`, the remote's): the tapped box flips, and the two boxes read back as a
 /// choice — none is Skip, one is that side, both is Both. Where Both is not
 /// offered, a second side moves the selection instead of adding to it.
-SyncRunConflictChoice _toggled(
-  SyncRunConflictChoice current,
-  SyncRunConflictChoice side,
-  List<SyncRunConflictChoice> offered,
+ConflictChoice _toggled(
+  ConflictChoice current,
+  ConflictChoice side,
+  List<ConflictChoice> offered,
 ) {
   final (:local, :remote) = _sides(current);
-  final tappedLocal = side == SyncRunConflictChoice.keepLocal;
+  final tappedLocal = side == ConflictChoice.keepA;
   final next = switch ((
     tappedLocal ? !local : local,
     tappedLocal ? remote : !remote,
   )) {
-    (false, false) => SyncRunConflictChoice.unresolved,
-    (true, false) => SyncRunConflictChoice.keepLocal,
-    (false, true) => SyncRunConflictChoice.keepRemote,
-    (true, true) => SyncRunConflictChoice.keepBoth,
+    (false, false) => ConflictChoice.unresolved,
+    (true, false) => ConflictChoice.keepA,
+    (false, true) => ConflictChoice.keepB,
+    (true, true) => ConflictChoice.keepBoth,
   };
   return offered.contains(next) ? next : side;
 }

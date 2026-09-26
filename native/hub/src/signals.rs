@@ -14,7 +14,8 @@
 //! renders the latest and decides nothing; what the user does goes back as
 //! a [`RunIntent`] in [`CoreCommand::SteerRun`]. Serving sends
 //! [`ServeSnapshot`]s and a pairing window [`PairingSnapshot`]s the same
-//! way, the last one when it ends.
+//! way. Every snapshot says whether it is its session's `last`: the head
+//! closes the session's stream on it and asks nothing of its own.
 
 use rinf::{DartSignal, RustSignal, SignalPiece};
 use serde::{Deserialize, Serialize};
@@ -287,23 +288,29 @@ pub enum ReplyResult {
     ScanProbe(ScanProbeView),
 }
 
-/// The run in `session`, whole, as it now stands.
+/// The run in `session`, whole, as it now stands. `last`: the session is
+/// over - finished, stopped, or the page left - and sends nothing more.
 #[derive(Serialize, RustSignal)]
 pub struct RunSnapshot {
     pub session: u64,
     pub view: RunView,
+    pub last: bool,
 }
 
-/// The serving session `session`, whole, as it now stands.
+/// The serving session `session`, whole, as it now stands. `last`: it no
+/// longer answers, stopped or failed, and sends nothing more.
 #[derive(Serialize, RustSignal)]
 pub struct ServeSnapshot {
     pub session: u64,
     pub view: ServeView,
+    pub last: bool,
 }
 
-/// The pairing window `session`, whole, as it now stands.
+/// The pairing window `session`, whole, as it now stands. `last`: the
+/// window closed, and the view says how.
 #[derive(Serialize, RustSignal)]
 pub struct PairingSnapshot {
     pub session: u64,
     pub view: PairingView,
+    pub last: bool,
 }

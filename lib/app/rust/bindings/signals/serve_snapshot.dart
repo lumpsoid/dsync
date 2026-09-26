@@ -1,7 +1,8 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// The serving session `session`, whole, as it now stands.
+/// The serving session `session`, whole, as it now stands. `last`: it no
+/// longer answers, stopped or failed, and sends nothing more.
 @immutable
 class ServeSnapshot {
   /// An async broadcast stream that listens for signals from Rust.
@@ -19,6 +20,7 @@ class ServeSnapshot {
   const ServeSnapshot({
     required this.session,
     required this.view,
+    required this.last,
   });
 
   static ServeSnapshot deserialize(BinaryDeserializer deserializer) {
@@ -26,6 +28,7 @@ class ServeSnapshot {
     final instance = ServeSnapshot(
       session: deserializer.deserializeUint64(),
       view: ServeView.deserialize(deserializer),
+      last: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -42,14 +45,17 @@ class ServeSnapshot {
 
   final Uint64 session;
   final ServeView view;
+  final bool last;
 
   ServeSnapshot copyWith({
     Uint64? session,
     ServeView? view,
+    bool? last,
   }) {
     return ServeSnapshot(
       session: session ?? this.session,
       view: view ?? this.view,
+      last: last ?? this.last,
     );
   }
 
@@ -57,6 +63,7 @@ class ServeSnapshot {
     serializer.increaseContainerDepth();
     serializer.serializeUint64(session);
     view.serialize(serializer);
+    serializer.serializeBool(last);
     serializer.decreaseContainerDepth();
   }
 
@@ -73,13 +80,15 @@ class ServeSnapshot {
 
     return other is ServeSnapshot
       && session == other.session
-      && view == other.view;
+      && view == other.view
+      && last == other.last;
   }
 
   @override
   int get hashCode => Object.hash(
         session,
         view,
+        last,
       );
 
   @override
@@ -89,7 +98,8 @@ class ServeSnapshot {
     assert(() {
       fullString = '$runtimeType('
         'session: $session, '
-        'view: $view'
+        'view: $view, '
+        'last: $last'
         ')';
       return true;
     }());

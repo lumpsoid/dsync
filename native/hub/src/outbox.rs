@@ -32,15 +32,28 @@ impl Outbox {
         let _ = self.0.send(outgoing);
     }
 
-    pub fn run(&self, session: u64, view: RunView) {
-        self.send(Outgoing::Run(Box::new(RunSnapshot { session, view })));
+    /// `last`: the session sends nothing after this one.
+    pub fn run(&self, session: u64, view: RunView, last: bool) {
+        self.send(Outgoing::Run(Box::new(RunSnapshot {
+            session,
+            view,
+            last,
+        })));
     }
 
-    pub fn serve(&self, session: u64, view: ServeView) {
-        self.send(Outgoing::Serve(ServeSnapshot { session, view }));
+    pub fn serve(&self, session: u64, view: ServeView, last: bool) {
+        self.send(Outgoing::Serve(ServeSnapshot {
+            session,
+            view,
+            last,
+        }));
     }
 
-    pub fn pairing(&self, session: u64, view: PairingView) {
-        self.send(Outgoing::Pairing(PairingSnapshot { session, view }));
+    pub fn pairing(&self, session: u64, view: PairingView, last: bool) {
+        self.send(Outgoing::Pairing(PairingSnapshot {
+            session,
+            view,
+            last,
+        }));
     }
 }

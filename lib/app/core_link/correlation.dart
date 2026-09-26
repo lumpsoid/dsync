@@ -32,18 +32,13 @@ final class Correlator<R> {
 }
 
 /// The streams of live sessions, by session id: updates for a session go
-/// to its stream, the terminal one closes it, and an update for a session
-/// nobody opened (or that already ended) is dropped.
+/// to its stream, the one the core marks its last closes it, and an update
+/// for a session nobody opened (or that already ended) is dropped.
 ///
 /// A session's stream buffers until it is listened to, so updates that
 /// arrive before the caller subscribes are not lost; once its listener
 /// cancels, the session is forgotten and what arrives for it is dropped.
 final class SessionStreams<U> {
-  SessionStreams({required this.isTerminal});
-
-  /// Whether [update] is the last one its session sends.
-  final bool Function(U update) isTerminal;
-
   final Map<int, StreamController<U>> _open = {};
 
   /// The stream for session [id]. Open it before sending the command that
@@ -55,13 +50,13 @@ final class SessionStreams<U> {
     return controller.stream;
   }
 
-  /// Delivers [update] to session [id], closing its stream on the terminal
-  /// update.
-  void deliver(int id, U update) {
+  /// Delivers [update] to session [id], closing its stream when the core
+  /// says it is the [last] the session sends.
+  void deliver(int id, U update, {required bool last}) {
     final controller = _open[id];
     if (controller == null) return;
     controller.add(update);
-    if (isTerminal(update)) {
+    if (last) {
       _open.remove(id);
       controller.close();
     }

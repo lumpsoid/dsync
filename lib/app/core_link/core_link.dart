@@ -23,7 +23,6 @@ import 'models/run_view.dart';
 import 'models/scan_probe_result.dart';
 import 'models/serve_addresses.dart';
 import 'models/serve_session.dart';
-import 'models/serve_phase.dart';
 import 'models/serve_view.dart';
 import 'wire_models.dart';
 
@@ -51,28 +50,37 @@ final class CoreLink {
         _requests.complete(reply.id.toInt(), reply.result);
       }),
       _channel.runSnapshots.listen((snapshot) {
-        _runs.deliver(snapshot.session.toInt(), runView(snapshot.view));
+        _runs.deliver(
+          snapshot.session.toInt(),
+          runView(snapshot.view),
+          last: snapshot.last,
+        );
       }),
       _channel.serveSnapshots.listen((snapshot) {
-        _serves.deliver(snapshot.session.toInt(), serveView(snapshot.view));
+        _serves.deliver(
+          snapshot.session.toInt(),
+          serveView(snapshot.view),
+          last: snapshot.last,
+        );
       }),
       _channel.pairingSnapshots.listen((snapshot) {
-        _pairings.deliver(snapshot.session.toInt(), pairingView(snapshot.view));
+        _pairings.deliver(
+          snapshot.session.toInt(),
+          pairingView(snapshot.view),
+          last: snapshot.last,
+        );
       }),
     ]);
   }
 
   final CoreChannel _channel;
   final _requests = Correlator<wire.ReplyResult>();
-  /// A run's views never end on their own: the session is over when its
-  /// controller stops listening.
-  final _runs = SessionStreams<RunView>(isTerminal: (_) => false);
-  final _serves = SessionStreams<ServeView>(
-    isTerminal: (view) => view.phase is! ServePhaseListening,
-  );
-  final _pairings = SessionStreams<PairingView>(
-    isTerminal: (view) => view is! PairingWaiting && view is! PairingConfirming,
-  );
+
+  /// Each closes a session's stream on the snapshot the core marks its
+  /// last.
+  final _runs = SessionStreams<RunView>();
+  final _serves = SessionStreams<ServeView>();
+  final _pairings = SessionStreams<PairingView>();
   final List<StreamSubscription<Object?>> _subscriptions = [];
 
   /// Stops listening to the hub. Pending calls never complete.

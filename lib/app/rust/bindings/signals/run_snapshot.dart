@@ -1,7 +1,8 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// The run in `session`, whole, as it now stands.
+/// The run in `session`, whole, as it now stands. `last`: the session is
+/// over - finished, stopped, or the page left - and sends nothing more.
 @immutable
 class RunSnapshot {
   /// An async broadcast stream that listens for signals from Rust.
@@ -19,6 +20,7 @@ class RunSnapshot {
   const RunSnapshot({
     required this.session,
     required this.view,
+    required this.last,
   });
 
   static RunSnapshot deserialize(BinaryDeserializer deserializer) {
@@ -26,6 +28,7 @@ class RunSnapshot {
     final instance = RunSnapshot(
       session: deserializer.deserializeUint64(),
       view: RunView.deserialize(deserializer),
+      last: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -42,14 +45,17 @@ class RunSnapshot {
 
   final Uint64 session;
   final RunView view;
+  final bool last;
 
   RunSnapshot copyWith({
     Uint64? session,
     RunView? view,
+    bool? last,
   }) {
     return RunSnapshot(
       session: session ?? this.session,
       view: view ?? this.view,
+      last: last ?? this.last,
     );
   }
 
@@ -57,6 +63,7 @@ class RunSnapshot {
     serializer.increaseContainerDepth();
     serializer.serializeUint64(session);
     view.serialize(serializer);
+    serializer.serializeBool(last);
     serializer.decreaseContainerDepth();
   }
 
@@ -73,13 +80,15 @@ class RunSnapshot {
 
     return other is RunSnapshot
       && session == other.session
-      && view == other.view;
+      && view == other.view
+      && last == other.last;
   }
 
   @override
   int get hashCode => Object.hash(
         session,
         view,
+        last,
       );
 
   @override
@@ -89,7 +98,8 @@ class RunSnapshot {
     assert(() {
       fullString = '$runtimeType('
         'session: $session, '
-        'view: $view'
+        'view: $view, '
+        'last: $last'
         ')';
       return true;
     }());

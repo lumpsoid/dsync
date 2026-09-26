@@ -265,7 +265,8 @@ impl RunControl {
     }
 
     fn send(&self, shared: &mut Shared, now: Instant) {
-        self.out.run(self.session, shared.state.view());
+        let state = &shared.state;
+        self.out.run(self.session, state.view(), state.is_over());
         shared.last_sent = Some(now);
         shared.dirty = false;
     }
@@ -475,10 +476,10 @@ mod tests {
     use std::time::Duration;
 
     use dsync_core::RunEvent;
-    use dsync_domain::{Action, RelPath, Side};
+    use dsync_domain::{Action, RelPath, RunSummary, Side};
     use tokio::sync::mpsc;
 
-    use super::{REFRESH_INTERVAL, RunControl, RunState, Shared, Urgency};
+    use super::{Ended, REFRESH_INTERVAL, RunControl, RunState, Shared, Urgency};
     use crate::outbox::{Outbox, Outgoing};
     use crate::views::{RunPhaseView, RunView};
 
@@ -548,6 +549,21 @@ mod tests {
         // Nothing new: nothing more goes out.
         tokio::time::sleep(REFRESH_INTERVAL * 3).await;
         assert!(sent(&mut outgoing).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_the_snapshot_that_ends_the_session_is_its_last() {
+        let (control, mut outgoing) = control();
+        control.update(|state| state.connected(1));
+        control.update(|state| state.event(RunEvent::Summary(RunSummary::default())));
+        control.ended(Ended::Ran {
+            timings: String::new(),
+        });
+        let mut lasts = Vec::new();
+        while let Ok(Outgoing::Run(snapshot)) = outgoing.try_recv() {
+            lasts.push(snapshot.last);
+        }
+        assert_eq!(lasts, [false, true]);
     }
 
     #[tokio::test(start_paused = true)]

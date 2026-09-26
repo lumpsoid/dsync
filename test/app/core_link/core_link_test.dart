@@ -89,8 +89,11 @@ void main() {
     );
     final views = <RunView>[];
     final listening = run.views.listen(views.add);
-    hub.emitRun(run.session, runView(phase: reviewing(apply: 2)));
-    await link.steerRun(run.session, const ChooseAction(1, ActionChoice.skipped));
+    hub.emitRun(run.session, runView(phase: reviewing(apply: 2)), last: false);
+    await link.steerRun(
+      run.session,
+      const ChooseAction(1, ActionChoice.skipped),
+    );
     await link.steerRun(run.session, const ConfirmReview());
     await Future<void>.delayed(Duration.zero);
 
@@ -107,9 +110,32 @@ void main() {
     // Once nobody listens, the session is forgotten: what arrives for it
     // is dropped.
     await listening.cancel();
-    hub.emitRun(run.session, runView(phase: applying));
+    hub.emitRun(run.session, runView(phase: applying), last: false);
     await Future<void>.delayed(Duration.zero);
     expect(views, hasLength(1));
+  });
+
+  test('a session\'s stream ends with the snapshot the hub marks its '
+      'last, and nothing after it is seen', () async {
+    final hub = FakeHub();
+    final link = CoreLink(hub);
+    final run = await link.startRun(
+      const DraftTarget(
+        ProfileDraft(localRoot: '/a', peerDeviceId: 'x', remoteRoot: '/b'),
+      ),
+      dryRun: false,
+    );
+    final views = run.views.toList();
+    hub
+      ..emitRun(run.session, runView(phase: applying), last: false)
+      ..emitRun(run.session, runView(phase: finished()), last: true)
+      ..emitRun(run.session, runView(phase: connecting), last: false);
+
+    final seen = await views;
+    expect(
+      [for (final view in seen) view.phase.runtimeType],
+      [RunApplying, RunFinished],
+    );
   });
 
   test('failNext fails the next call only', () async {

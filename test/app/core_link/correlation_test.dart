@@ -54,15 +54,19 @@ void main() {
   });
 
   group('SessionStreams', () {
-    SessionStreams<String> sessions() =>
-        SessionStreams<String>(isTerminal: (update) => update == 'end');
+    SessionStreams<String> sessions() => SessionStreams<String>();
+
+    /// Delivers [update] to session [id], the core's last when it is
+    /// 'end'.
+    void send(SessionStreams<String> streams, int id, String update) =>
+        streams.deliver(id, update, last: update == 'end');
 
     test('a session\'s stream closes when its session ends', () async {
       final streams = sessions();
       final updates = streams.open(7);
-      streams.deliver(7, 'plan');
-      streams.deliver(7, 'end');
-      streams.deliver(7, 'after the end');
+      send(streams, 7, 'plan');
+      send(streams, 7, 'end');
+      send(streams, 7, 'after the end');
       expect(await updates.toList(), ['plan', 'end']);
       expect(streams.live, isEmpty);
     });
@@ -70,10 +74,10 @@ void main() {
     test('updates before anyone listens are kept, in order', () async {
       final streams = sessions();
       final updates = streams.open(1);
-      streams.deliver(1, 'connected');
-      streams.deliver(1, 'plan');
+      send(streams, 1, 'connected');
+      send(streams, 1, 'plan');
       await pumpEventQueue();
-      streams.deliver(1, 'end');
+      send(streams, 1, 'end');
       expect(await updates.toList(), ['connected', 'plan', 'end']);
     });
 
@@ -82,11 +86,11 @@ void main() {
       final streams = sessions();
       final one = streams.open(1);
       final two = streams.open(2);
-      streams.deliver(2, 'two');
-      streams.deliver(9, 'nobody');
-      streams.deliver(1, 'one');
-      streams.deliver(1, 'end');
-      streams.deliver(2, 'end');
+      send(streams, 2, 'two');
+      send(streams, 9, 'nobody');
+      send(streams, 1, 'one');
+      send(streams, 1, 'end');
+      send(streams, 2, 'end');
       expect(await one.toList(), ['one', 'end']);
       expect(await two.toList(), ['two', 'end']);
     });
@@ -105,13 +109,13 @@ void main() {
     test('a session left open stays open', () async {
       final streams = sessions();
       final updates = streams.open(4);
-      streams.deliver(4, 'plan');
+      send(streams, 4, 'plan');
       final seen = <String>[];
       var done = false;
       updates.listen(seen.add, onDone: () => done = true);
       await pumpEventQueue();
       expect(seen, ['plan']);
-      expect(done, isFalse, reason: 'no terminal update yet');
+      expect(done, isFalse, reason: 'no last update yet');
       expect(streams.live, [4]);
     });
   });

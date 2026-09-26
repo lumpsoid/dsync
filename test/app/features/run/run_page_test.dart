@@ -1,4 +1,5 @@
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
@@ -72,7 +73,7 @@ void main() {
   /// Delivers [view] as the core's latest, and lets it render: folded in
   /// one pump, on screen after the next.
   Future<void> deliver(WidgetTester tester, wire.RunView view) async {
-    hub.emitRun(session(), view);
+    hub.emitRun(session(), view, last: false);
     await tester.pump();
     await tester.pump();
   }
@@ -1357,7 +1358,7 @@ void main() {
       expect(find.byKey(const Key('decision-file-0.txt')), findsOneWidget);
       expect(find.byKey(const Key('decision-file-49999.txt')), findsNothing);
       expect(
-        find.byType(SegmentedButton<SyncRunActionChoice>).evaluate().length,
+        find.byType(SegmentedButton<ActionChoice>).evaluate().length,
         lessThan(100),
       );
     });

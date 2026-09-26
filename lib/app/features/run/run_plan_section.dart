@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core_link/models/action_choice.dart';
 import '../../format_bytes.dart';
 import '../../format_count.dart';
 import '../../format_path.dart';
@@ -41,7 +42,7 @@ class RunPlanSection extends StatelessWidget {
 
   /// What a row's control calls — `SyncRunController.choose`. Handed to
   /// the rows only while the review is up.
-  final void Function(int index, SyncRunActionChoice choice) onChoose;
+  final void Function(int index, ActionChoice choice) onChoose;
 
   @override
   Widget build(BuildContext context) {
@@ -115,7 +116,7 @@ class _PlanGroupSection extends StatefulWidget {
   final SyncRunPlanSection section;
   final String title;
   final bool collapsible;
-  final void Function(int index, SyncRunActionChoice choice)? onChoose;
+  final void Function(int index, ActionChoice choice)? onChoose;
   final Key disclosureKey;
 
   @override
@@ -202,75 +203,72 @@ class RunPlanRow extends StatelessWidget {
   final SyncRunPlanRow row;
 
   /// `null` outside the review: no control.
-  final void Function(int index, SyncRunActionChoice choice)? onChoose;
+  final void Function(int index, ActionChoice choice)? onChoose;
 
   @override
   Widget build(BuildContext context) {
     final label = PathLabel.stacked(row.path);
     return ValueListenableBuilder<SyncRunResultRow?>(
       valueListenable: state.resultCell(row.path),
-      builder: (context, result, _) =>
-          ValueListenableBuilder<SyncRunActionChoice>(
-            valueListenable: state.actionDecisionCell(row.path),
-            builder: (context, choice, _) {
-              final theme = Theme.of(context);
-              final dim = theme.colorScheme.outline;
-              final skipped = choice == SyncRunActionChoice.skipped;
-              final onChoose = this.onChoose;
-              return ListTile(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                titleAlignment: ListTileTitleAlignment.top,
-                leading: _resultIcon(result, theme),
-                // The name wraps rather than ellipsising: the leaf is what
-                // tells two rows apart, so it is never the part cut. A
-                // skipped row is struck through and dimmed in place — no
-                // line appears or goes, so a tap never moves the row.
-                title: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2, right: 6),
-                      child: Icon(_groupIcon(row.group), size: 14, color: dim),
-                    ),
-                    Expanded(
-                      child: Text(
-                        label.leaf,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          decoration: skipped
-                              ? TextDecoration.lineThrough
-                              : null,
-                          color: skipped ? dim : null,
-                        ),
-                      ),
-                    ),
-                  ],
+      builder: (context, result, _) => ValueListenableBuilder<ActionChoice>(
+        valueListenable: state.actionDecisionCell(row),
+        builder: (context, choice, _) {
+          final theme = Theme.of(context);
+          final dim = theme.colorScheme.outline;
+          final skipped = choice == ActionChoice.skipped;
+          final onChoose = this.onChoose;
+          return ListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            titleAlignment: ListTileTitleAlignment.top,
+            leading: _resultIcon(result, theme),
+            // The name wraps rather than ellipsising: the leaf is what
+            // tells two rows apart, so it is never the part cut. A
+            // skipped row is struck through and dimmed in place — no
+            // line appears or goes, so a tap never moves the row.
+            title: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 2, right: 6),
+                  child: Icon(_groupIcon(row.group), size: 14, color: dim),
                 ),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (label.parent.isNotEmpty)
-                      Text(
-                        label.parent,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: dim),
-                      ),
-                    _detail(result, choice, theme),
-                  ],
+                Expanded(
+                  child: Text(
+                    label.leaf,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      decoration: skipped ? TextDecoration.lineThrough : null,
+                      color: skipped ? dim : null,
+                    ),
+                  ),
                 ),
-                trailing: onChoose == null
-                    ? null
-                    : _ActionChoiceControl(
-                        key: Key('decision-${row.path}'),
-                        choice: choice,
-                        reversible: row.reversal != null,
-                        onChoose: (choice) => onChoose(row.index, choice),
-                      ),
-              );
-            },
-          ),
+              ],
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (label.parent.isNotEmpty)
+                  Text(
+                    label.parent,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: dim),
+                  ),
+                _detail(result, choice, theme),
+              ],
+            ),
+            trailing: onChoose == null
+                ? null
+                : _ActionChoiceControl(
+                    key: Key('decision-${row.path}'),
+                    choice: choice,
+                    reversible: row.reversal != null,
+                    onChoose: (choice) => onChoose(row.index, choice),
+                  ),
+          );
+        },
+      ),
     );
   }
 
@@ -281,14 +279,14 @@ class RunPlanRow extends StatelessWidget {
   /// the control say it is left out.
   Widget _detail(
     SyncRunResultRow? result,
-    SyncRunActionChoice choice,
+    ActionChoice choice,
     ThemeData theme,
   ) {
     if (result?.error case final error?) {
       return Text(error, style: TextStyle(color: theme.colorScheme.error));
     }
     final (words, bytes) = switch ((choice, row.reversal)) {
-      (SyncRunActionChoice.reversed, final reversal?) => (
+      (ActionChoice.reversed, final reversal?) => (
         reversal.action,
         reversal.bytes,
       ),
@@ -298,7 +296,7 @@ class RunPlanRow extends StatelessWidget {
       bytes > 0 ? '$words · ${formatBytes(bytes)}' : words,
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: choice == SyncRunActionChoice.skipped
+      style: choice == ActionChoice.skipped
           ? TextStyle(color: theme.colorScheme.outline)
           : null,
     );
@@ -317,29 +315,29 @@ class _ActionChoiceControl extends StatelessWidget {
     required this.onChoose,
   });
 
-  final SyncRunActionChoice choice;
+  final ActionChoice choice;
   final bool reversible;
-  final ValueChanged<SyncRunActionChoice> onChoose;
+  final ValueChanged<ActionChoice> onChoose;
 
   @override
   Widget build(BuildContext context) {
-    return SegmentedButton<SyncRunActionChoice>(
+    return SegmentedButton<ActionChoice>(
       showSelectedIcon: false,
       style: const ButtonStyle(visualDensity: VisualDensity.compact),
       segments: [
         const ButtonSegment(
-          value: SyncRunActionChoice.proposed,
+          value: ActionChoice.proposed,
           icon: Icon(Icons.check),
           tooltip: 'As planned',
         ),
         if (reversible)
           const ButtonSegment(
-            value: SyncRunActionChoice.reversed,
+            value: ActionChoice.reversed,
             icon: Icon(Icons.swap_horiz),
             tooltip: 'Reverse',
           ),
         const ButtonSegment(
-          value: SyncRunActionChoice.skipped,
+          value: ActionChoice.skipped,
           icon: Icon(Icons.block),
           tooltip: 'Skip',
         ),

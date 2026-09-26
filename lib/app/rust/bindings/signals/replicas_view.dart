@@ -7,6 +7,7 @@ class ReplicasView {
   const ReplicasView({
     required this.a,
     required this.b,
+    required this.history,
   });
 
   static ReplicasView deserialize(BinaryDeserializer deserializer) {
@@ -14,6 +15,7 @@ class ReplicasView {
     final instance = ReplicasView(
       a: ReplicaInfoView.deserialize(deserializer),
       b: ReplicaInfoView.deserialize(deserializer),
+      history: HistoryView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -30,14 +32,17 @@ class ReplicasView {
 
   final ReplicaInfoView a;
   final ReplicaInfoView b;
+  final HistoryView history;
 
   ReplicasView copyWith({
     ReplicaInfoView? a,
     ReplicaInfoView? b,
+    HistoryView? history,
   }) {
     return ReplicasView(
       a: a ?? this.a,
       b: b ?? this.b,
+      history: history ?? this.history,
     );
   }
 
@@ -45,6 +50,7 @@ class ReplicasView {
     serializer.increaseContainerDepth();
     a.serialize(serializer);
     b.serialize(serializer);
+    history.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -61,13 +67,15 @@ class ReplicasView {
 
     return other is ReplicasView
       && a == other.a
-      && b == other.b;
+      && b == other.b
+      && history == other.history;
   }
 
   @override
   int get hashCode => Object.hash(
         a,
         b,
+        history,
       );
 
   @override
@@ -77,7 +85,8 @@ class ReplicasView {
     assert(() {
       fullString = '$runtimeType('
         'a: $a, '
-        'b: $b'
+        'b: $b, '
+        'history: $history'
         ')';
       return true;
     }());

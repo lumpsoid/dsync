@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
@@ -66,6 +68,9 @@ void main() {
         controller().state.phase,
         const SyncRunFailed('the core is not initialised'),
       );
+      // No session: nothing live, nothing to resume.
+      expect(controller().state.live, isFalse);
+      expect(controller().state.resumable, isFalse);
       expect(harness.screenWake.held, isFalse);
     });
 
@@ -106,13 +111,13 @@ void main() {
 
     test('a row\'s choice by its index, a conflict\'s by the side it '
         'keeps', () async {
-      await controller().choose(1, SyncRunActionChoice.reversed);
-      await controller().choose(0, SyncRunActionChoice.skipped);
-      await controller().choose(0, SyncRunActionChoice.proposed);
-      await controller().resolveConflict(2, SyncRunConflictChoice.keepLocal);
-      await controller().resolveConflict(2, SyncRunConflictChoice.keepRemote);
-      await controller().resolveConflict(2, SyncRunConflictChoice.keepBoth);
-      await controller().resolveConflict(2, SyncRunConflictChoice.unresolved);
+      await controller().choose(1, ActionChoice.reversed);
+      await controller().choose(0, ActionChoice.skipped);
+      await controller().choose(0, ActionChoice.proposed);
+      await controller().resolveConflict(2, ConflictChoice.keepA);
+      await controller().resolveConflict(2, ConflictChoice.keepB);
+      await controller().resolveConflict(2, ConflictChoice.keepBoth);
+      await controller().resolveConflict(2, ConflictChoice.unresolved);
 
       expect(harness.intents, const [
         wire.RunIntentChooseAction(

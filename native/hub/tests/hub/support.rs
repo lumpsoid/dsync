@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use dsync_domain::{DIR_LEAF, HostFacts, Platform};
-use hub::signals::{CoreCommand, ReplyResult};
+use hub::signals::{CoreCommand, PairingSnapshot, ReplyResult, ServeSnapshot};
 use hub::views::{PairingView, RunView, ServeView};
 use hub::{Core, Outbox, Outgoing};
 use tempfile::TempDir;
@@ -143,17 +143,25 @@ impl Head {
     }
 
     pub async fn serve_view(&mut self, session: u64) -> ServeView {
+        self.serve_snapshot(session).await.view
+    }
+
+    pub async fn serve_snapshot(&mut self, session: u64) -> ServeSnapshot {
         let wanted = |out: &Outgoing| matches!(out, Outgoing::Serve(s) if s.session == session);
         match self.next_matching(wanted).await {
-            Outgoing::Serve(snapshot) => snapshot.view,
+            Outgoing::Serve(snapshot) => snapshot,
             _ => unreachable!("matched a serve snapshot"),
         }
     }
 
     pub async fn pairing_view(&mut self, session: u64) -> PairingView {
+        self.pairing_snapshot(session).await.view
+    }
+
+    pub async fn pairing_snapshot(&mut self, session: u64) -> PairingSnapshot {
         let wanted = |out: &Outgoing| matches!(out, Outgoing::Pairing(s) if s.session == session);
         match self.next_matching(wanted).await {
-            Outgoing::Pairing(snapshot) => snapshot.view,
+            Outgoing::Pairing(snapshot) => snapshot,
             _ => unreachable!("matched a pairing snapshot"),
         }
     }

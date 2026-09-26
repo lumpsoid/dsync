@@ -39,7 +39,14 @@ import 'serve_view_state.dart';
 ///
 /// **Stopping stops accepting.** A session already connected when [stop]
 /// lands runs to its end in the core (it holds the replica's lock and is
-/// mid-exchange); nothing new is accepted.
+/// mid-exchange); nothing new is accepted. [stop] asks the core and keeps
+/// listening: the page shows the core's last view, which says how serving
+/// ended.
+///
+/// **Where serving stands is one value** ([_Lifecycle]): idle, binding,
+/// binding for a page that already left, serving, stopping, or disposed.
+/// A session's views are shown only while it is the one serving or
+/// stopping, so a stopped session's late news never lands on a fresh one.
 ///
 /// **The port is fixed at [defaultPeerPort].** Both sides of a pairing
 /// already record that port for each other and this head's own pairing
@@ -81,113 +88,124 @@ class ServeController {
       if (row.agreedRootLabels.isEmpty) row.name,
   ];
 
-  ServeSession? _session;
-  StreamSubscription<ServeView>? _views;
+  _Lifecycle _lifecycle = const _Idle();
 
   /// The port the core bound, while serving.
-  int? get boundPort => _session?.port;
-
-  bool _starting = false;
-
-  bool _screenHeld = false;
-
-  bool _stopRequested = false;
-
-  bool _disposed = false;
+  int? get boundPort => switch (_lifecycle) {
+    _Serving(:final session) => session.port,
+    _Idle() || _Binding() || _Abandoned() || _Stopping() || _Disposed() => null,
+  };
 
   /// Starts serving on the stored bind address. A second call while serving
-  /// or starting is ignored.
+  /// or binding is ignored; one while the last session is still stopping
+  /// starts afresh, and that session's last view is not shown.
   Future<void> start() async {
-    if (_starting || _session != null) return;
-    _starting = true;
-    _stopRequested = false;
-    state.recordStatus(const ServeStarting());
-    try {
-      final InternetAddress address;
-      try {
-        address = await bindAddress();
-      } on AppSettingsStoreException catch (e) {
-        // Binding the defaults instead would be reading damaged bytes as a
-        // decision the user never made — the same refusal
-        // `PairShowController.show` makes over the same file.
-        state.recordStatus(ServeFailed(e.toString()));
+    switch (_lifecycle) {
+      case _Idle():
+        break;
+      case _Stopping(:final views):
+        unawaited(views.cancel());
+      case _Binding() || _Abandoned() || _Serving() || _Disposed():
         return;
-      }
-
-      final ServeSession session;
-      try {
-        session = await app.core.startServe(bind: address.address, port: port);
-      } on CoreFailure catch (e) {
-        state.recordStatus(ServeFailed(_bindRefusal(address, e.message)));
-        return;
-      }
-      if (_stopRequested) {
-        // The page left while the socket was being bound: stop it rather
-        // than leave this device answering behind a screen that is gone.
-        await _stopQuietly(session);
-        if (!_disposed) state.recordStatus(const ServeStopped());
-        return;
-      }
-      _session = session;
-      _views = session.views.listen(_show);
-    } finally {
-      _starting = false;
     }
+    _moveTo(const _Binding());
+    state.recordStatus(const ServeStarting());
+    final InternetAddress address;
+    try {
+      address = await bindAddress();
+    } on AppSettingsStoreException catch (e) {
+      // Binding the defaults instead would be reading damaged bytes as a
+      // decision the user never made — the same refusal
+      // `PairShowController.show` makes over the same file.
+      _bindFailed(ServeFailed(e.toString()));
+      return;
+    }
+
+    final ServeSession session;
+    try {
+      session = await app.core.startServe(bind: address.address, port: port);
+    } on CoreFailure catch (e) {
+      _bindFailed(ServeFailed(_bindRefusal(address, e.message)));
+      return;
+    }
+    // Only this call leaves binding: a stop meanwhile abandoned it, and a
+    // dispose ended the page.
+    final now = _lifecycle;
+    if (now is _Binding) {
+      _moveTo(_Serving(session, _listen(session)));
+      return;
+    }
+    // Stopped or left while the socket was being bound: stop it rather
+    // than leave this device answering behind a screen that asked it not
+    // to — and, for a page still here, show how the core says it ended.
+    if (now is _Abandoned) _moveTo(_Stopping(session, _listen(session)));
+    await _stopQuietly(session);
   }
+
+  /// A bind refused before the core opened a session: the page's own
+  /// failure, unless the page left meanwhile.
+  void _bindFailed(ServeFailed failure) {
+    if (_lifecycle is _Disposed) return;
+    _moveTo(const _Idle());
+    state.recordStatus(failure);
+  }
+
+  /// Renders [session]'s views until its last, which ends the lifecycle.
+  StreamSubscription<ServeView> _listen(ServeSession session) =>
+      session.views.listen(_show, onDone: () => _moveTo(const _Idle()));
 
   /// Renders the core's [view]: whether it answers — a listener that
   /// failed on its own is the page's failure — and one timestamped line
   /// per connection event it kept.
   void _show(ServeView view) {
-    if (_disposed) return;
-    final ServeStatus status;
-    switch (view.phase) {
-      case ServePhaseListening(:final advertised):
-        status = ServeListening(advertised);
-        _holdScreen(true);
-      case ServePhaseStopped():
-        _session = null;
-        status = const ServeStopped();
-        _holdScreen(false);
-      case ServePhaseFailed(:final message):
-        _session = null;
-        status = ServeFailed(message);
-        _holdScreen(false);
-    }
     state.show(
-      status: status,
+      status: switch (view.phase) {
+        ServePhaseListening(:final advertised) => ServeListening(advertised),
+        ServePhaseStopped() => const ServeStopped(),
+        ServePhaseFailed(:final message) => ServeFailed(message),
+      },
       sessions: [for (final line in view.lines) _line(line)],
     );
   }
 
-  /// Stops accepting and records the page as stopped.
+  /// Asks the core to stop accepting and keeps listening: its last view
+  /// says how serving ended. A stop while binding shows the page stopped
+  /// and stops the session once the core opens it.
   Future<void> stop() async {
-    _stopRequested = true;
-    final session = _session;
-    _session = null;
-    await _views?.cancel();
-    _views = null;
-    if (session != null) await _stopQuietly(session);
-    _holdScreen(false);
-    if (!_disposed) state.recordStatus(const ServeStopped());
+    switch (_lifecycle) {
+      case _Serving(:final session, :final views):
+        _moveTo(_Stopping(session, views));
+        await _stopQuietly(session);
+      case _Binding():
+        _moveTo(const _Abandoned());
+        state.recordStatus(const ServeStopped());
+      case _Idle() || _Abandoned() || _Stopping() || _Disposed():
+        break;
+    }
   }
 
   void dispose() {
-    _disposed = true;
-    _stopRequested = true;
-    final session = _session;
-    _session = null;
+    final was = _lifecycle;
+    _moveTo(const _Disposed());
     // None is awaited: a `dispose` is synchronous, and
     // `PlatformScreenWake` swallows its own failures already.
-    unawaited(_views?.cancel());
-    if (session != null) unawaited(_stopQuietly(session));
-    _holdScreen(false);
+    switch (was) {
+      case _Serving(:final session, :final views) ||
+          _Stopping(:final session, :final views):
+        unawaited(views.cancel());
+        unawaited(_stopQuietly(session));
+      case _Idle() || _Binding() || _Abandoned() || _Disposed():
+        break;
+    }
     state.dispose();
   }
 
-  void _holdScreen(bool wanted) {
-    if (wanted == _screenHeld) return;
-    _screenHeld = wanted;
+  /// Moves to [next], holding the screen exactly while serving.
+  void _moveTo(_Lifecycle next) {
+    final held = _lifecycle is _Serving;
+    _lifecycle = next;
+    final wanted = next is _Serving;
+    if (wanted == held) return;
     unawaited(wanted ? screenWake.enable() : screenWake.disable());
   }
 
@@ -220,4 +238,47 @@ class ServeController {
       'This device could not answer on ${address.address}:$port: $cause. '
       'Either a `dsync agent --serve` on this machine already holds that '
       'port, or ${address.address} is not an address this device has.';
+}
+
+/// Where serving stands. One value, so the page's news, the screen and the
+/// core's session cannot disagree.
+sealed class _Lifecycle {
+  const _Lifecycle();
+}
+
+/// Nothing bound, nothing binding.
+final class _Idle extends _Lifecycle {
+  const _Idle();
+}
+
+/// The bind address is being read and the socket bound.
+final class _Binding extends _Lifecycle {
+  const _Binding();
+}
+
+/// Binding, but stopped meanwhile: the session is stopped as soon as the
+/// core opens it.
+final class _Abandoned extends _Lifecycle {
+  const _Abandoned();
+}
+
+/// Answering: [views] renders [session]; the screen is held.
+final class _Serving extends _Lifecycle {
+  const _Serving(this.session, this.views);
+
+  final ServeSession session;
+  final StreamSubscription<ServeView> views;
+}
+
+/// Asked to stop: still rendering [session] until its last view.
+final class _Stopping extends _Lifecycle {
+  const _Stopping(this.session, this.views);
+
+  final ServeSession session;
+  final StreamSubscription<ServeView> views;
+}
+
+/// The page left.
+final class _Disposed extends _Lifecycle {
+  const _Disposed();
 }

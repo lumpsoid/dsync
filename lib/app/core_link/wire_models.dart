@@ -25,6 +25,7 @@ import 'models/replica_info.dart';
 import 'models/replica_side.dart';
 import 'models/run_intent.dart';
 import 'models/run_phase.dart';
+import 'models/run_standing.dart';
 import 'models/run_summary_info.dart';
 import 'models/run_target.dart';
 import 'models/run_view.dart';
@@ -37,6 +38,7 @@ import 'models/serve_line.dart';
 import 'models/serve_phase.dart';
 import 'models/serve_view.dart';
 import 'models/skipped_path_info.dart';
+import 'models/sync_history.dart';
 
 /// The signals `rinf gen` writes (lib/app/rust/bindings) as the head's own
 /// models, and back: the one place that knows both, so nothing outside
@@ -97,8 +99,10 @@ PairingView pairingView(wire.PairingView view) => switch (view) {
       endpoint: endpoint,
       expiresAt: _at(expiresAtMs),
     ),
-  wire.PairingViewConfirming(:final deviceId, :final name) =>
-    PairingConfirming(deviceId: deviceId, name: name),
+  wire.PairingViewConfirming(:final deviceId, :final name) => PairingConfirming(
+    deviceId: deviceId,
+    name: name,
+  ),
   wire.PairingViewEnrolled(:final value) => PairingEnrolled(device(value)),
   wire.PairingViewDeclined(:final deviceId) => PairingDeclined(deviceId),
   wire.PairingViewUnconfirmed(:final deviceId) => PairingUnconfirmed(deviceId),
@@ -175,8 +179,10 @@ wire.RunIntent wireIntent(RunIntent intent) => switch (intent) {
       ActionChoice.skipped => wire.ActionChoiceView.skipped,
     },
   ),
-  ChooseConflict(:final index, :final choice) =>
-    wire.RunIntentChooseConflict(index: index, choice: _wireConflictChoice(choice)),
+  ChooseConflict(:final index, :final choice) => wire.RunIntentChooseConflict(
+    index: index,
+    choice: _wireConflictChoice(choice),
+  ),
   ConfirmReview() => const wire.RunIntentConfirm(),
   AcceptAll() => const wire.RunIntentAcceptAll(),
   AnswerDeletes(:final proceed) => wire.RunIntentAnswerDeletes(
@@ -208,16 +214,30 @@ ConflictChoice _conflictChoice(wire.ConflictChoiceView choice) =>
 RunView runView(wire.RunView view) => RunView(
   dryRun: view.dryRun,
   phase: _phase(view.phase),
+  standing: switch (view.standing) {
+    wire.RunStandingView.live => RunStanding.live,
+    wire.RunStandingView.resumable => RunStanding.resumable,
+    wire.RunStandingView.over => RunStanding.over,
+  },
   connectedAt: switch (view.connectedAtMs) {
     final ms? => _at(ms),
     null => null,
   },
   replicas: switch (view.replicas) {
-    final replicas? => (a: _replica(replicas.a), b: _replica(replicas.b)),
+    final replicas? => (
+      a: _replica(replicas.a),
+      b: _replica(replicas.b),
+      history: _history(replicas.history),
+    ),
     null => null,
   },
   tallies: switch (view.tally) {
-    final tally? => (a: _tally(tally.a), b: _tally(tally.b)),
+    final tally? => (
+      a: _tally(tally.a),
+      b: _tally(tally.b),
+      checked: _n(tally.checked),
+      changed: _n(tally.changed),
+    ),
     null => null,
   },
   skipped: [for (final skipped in view.skipped) _skipped(skipped)],
@@ -249,6 +269,10 @@ RunView runView(wire.RunView view) => RunView(
       ),
   ],
   bytesToTransfer: _n(view.bytesToTransfer),
+  planSummary: (
+    bytesToA: _n(view.planSummary.bytesToA),
+    bytesToB: _n(view.planSummary.bytesToB),
+  ),
   progress: switch (view.progress) {
     final p? => (completed: _n(p.completed), total: _n(p.total)),
     null => null,
@@ -335,7 +359,19 @@ ScanTally _tally(wire.TallyView view) => ScanTally(
   created: _n(view.created),
   deleted: _n(view.deleted),
   untrusted: _n(view.untrusted),
+  total: _n(view.total),
+  changed: _n(view.changed),
 );
+
+SyncHistory _history(wire.HistoryView view) => switch (view) {
+  wire.HistoryViewFirstSync() => const FirstSync(),
+  wire.HistoryViewOneSided(:final empty) => OneSidedFirstSync(side(empty)),
+  wire.HistoryViewSynced(:final lastAMs, :final lastBMs) => LastSynced(
+    a: _at(lastAMs),
+    b: _at(lastBMs),
+  ),
+  _ => throw StateError('unknown history: $view'),
+};
 
 ConflictInfo _conflict(wire.ConflictView view) => ConflictInfo(
   path: view.path,

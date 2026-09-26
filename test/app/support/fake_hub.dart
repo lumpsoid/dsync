@@ -31,7 +31,8 @@ import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 /// Canned answers ([probeOutcome], [folderRefusals], [filterPreview] ...)
 /// are fields to set. Sessions are driven by the test: a session starter
 /// is recorded and answered, and the test feeds its signals with
-/// [emitRun], [emitServe] and [emitPairing]. What the code under test
+/// [emitRun], [emitServe] and [emitPairing] — but for `StopServe`, whose
+/// last view the fake sends itself, as the hub does. What the code under test
 /// told a session is recorded in [runIntents], [stopped] and
 /// [confirmations].
 ///
@@ -159,20 +160,32 @@ final class FakeHub implements CoreChannel {
   @override
   Stream<wire.PairingSnapshot> get pairingSnapshots => _pairingSnapshots.stream;
 
-  /// Delivers [view] to the run in [session], as the hub's snapshot.
-  void emitRun(int session, wire.RunView view) =>
-      _runSnapshots.add(wire.RunSnapshot(session: _id(session), view: view));
+  /// Delivers [view] to the run in [session], as the hub's snapshot;
+  /// [last] marks the session's final one.
+  void emitRun(int session, wire.RunView view, {required bool last}) =>
+      _runSnapshots.add(
+        wire.RunSnapshot(session: _id(session), view: view, last: last),
+      );
 
-  /// Delivers [view] to the serving in [session], as the hub's snapshot.
-  void emitServe(int session, wire.ServeView view) => _serveSnapshots.add(
-    wire.ServeSnapshot(session: _id(session), view: view),
-  );
+  /// Delivers [view] to the serving in [session], as the hub's snapshot;
+  /// [last] marks the session's final one.
+  void emitServe(int session, wire.ServeView view, {required bool last}) {
+    _serveLines[session] = view.lines;
+    _serveSnapshots.add(
+      wire.ServeSnapshot(session: _id(session), view: view, last: last),
+    );
+  }
+
+  /// Each serving session's lines as last emitted, which its stopped view
+  /// keeps, as the hub's does.
+  final Map<int, List<wire.ServeLineView>> _serveLines = {};
 
   /// Delivers [view] to the pairing window in [session], as the hub's
-  /// snapshot.
-  void emitPairing(int session, wire.PairingView view) => _pairingSnapshots.add(
-    wire.PairingSnapshot(session: _id(session), view: view),
-  );
+  /// snapshot; [last] marks the window's final one.
+  void emitPairing(int session, wire.PairingView view, {required bool last}) =>
+      _pairingSnapshots.add(
+        wire.PairingSnapshot(session: _id(session), view: view, last: last),
+      );
 
   @override
   void send(wire.CoreRequest request) => unawaited(_handle(request));
@@ -449,9 +462,19 @@ final class FakeHub implements CoreChannel {
         ),
       );
     }(),
-    wire.CoreCommandStopServe(:final session) => _done(
-      () => stopped.add(session.toInt()),
-    ),
+    // As the hub does, the stopped session's last view goes out before
+    // the reply.
+    wire.CoreCommandStopServe(:final session) => _done(() {
+      stopped.add(session.toInt());
+      emitServe(
+        session.toInt(),
+        wire.ServeView(
+          phase: const wire.ServePhaseViewStopped(),
+          lines: _serveLines[session.toInt()] ?? const [],
+        ),
+        last: true,
+      );
+    }),
     wire.CoreCommandServeAddresses() => wire.ReplyResultAddresses(
       value: wire.AddressesView(
         interfaces: addresses.interfaces,

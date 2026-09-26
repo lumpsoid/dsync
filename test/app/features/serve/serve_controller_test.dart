@@ -79,7 +79,7 @@ void main() {
   /// Starts serving and delivers the core's first view of it.
   Future<void> serve() async {
     await controller.start();
-    core.emitServe(session(), view());
+    core.emitServe(session(), view(), last: false);
     await settle();
   }
 
@@ -147,6 +147,53 @@ void main() {
     await controller.stop();
     expect(core.stopped, [session()]);
     expect(controller.state.status, isA<ServeStopped>());
+  });
+
+  test('stop keeps listening: the page shows the core\'s last view of '
+      'serving, its lines included', () async {
+    await serve();
+    core.emitServe(
+      session(),
+      view(
+        newestFirst: const [
+          wire.ServeEventViewRefused(from: '10.0.0.66:1', message: 'probe'),
+        ],
+      ),
+      last: false,
+    );
+    await settle();
+
+    final stopping = controller.stop();
+    // Asked, not yet answered: still what the core last said.
+    expect(controller.state.status, isA<ServeListening>());
+    expect(screenWake.held, isFalse);
+    await stopping;
+
+    expect(controller.state.status, isA<ServeStopped>());
+    expect(controller.state.sessions, ['12:00:00  Refused 10.0.0.66:1: probe']);
+  });
+
+  test('a start while the last session is still stopping serves afresh, '
+      'and that session\'s last view is not shown', () async {
+    await serve();
+    final first = session();
+    final stopping = Completer<void>();
+    core.holds['stopServe'] = stopping.future;
+    unawaited(controller.stop());
+    await settle();
+
+    await controller.start();
+    core.holds.remove('stopServe');
+    stopping.complete();
+    await settle();
+
+    expect(core.stopped, [first]);
+    expect(serveCalls(), 2);
+    expect(controller.state.status, isA<ServeStarting>());
+    core.emitServe(session(), view(), last: false);
+    await settle();
+    expect(controller.state.status, isA<ServeListening>());
+    expect(screenWake.held, isTrue);
   });
 
   test('a second start while serving asks for nothing more', () async {
@@ -219,6 +266,7 @@ void main() {
           ),
         ],
       ),
+      last: false,
     );
     await settle();
 
@@ -241,6 +289,7 @@ void main() {
           wire.ServeEventViewRefused(from: '10.0.0.66:1', message: 'old'),
         ],
       ),
+      last: false,
     );
     await settle();
     expect(controller.state.sessions, hasLength(1));
@@ -261,6 +310,7 @@ void main() {
           message: 'accept: too many open files',
         ),
       ),
+      last: true,
     );
     await settle();
 
@@ -280,6 +330,7 @@ void main() {
     core.emitServe(
       serving,
       view(phase: const wire.ServePhaseViewFailed(message: 'aborted')),
+      last: true,
     );
     await settle();
 

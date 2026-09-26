@@ -14,9 +14,11 @@ import '../../core_link/models/replica_side.dart';
 import '../../core_link/models/run_intent.dart';
 import '../../core_link/models/run_phase.dart';
 import '../../core_link/models/run_session.dart';
+import '../../core_link/models/run_standing.dart';
 import '../../core_link/models/run_view.dart';
 import '../../core_link/models/scan_tally.dart';
 import '../../core_link/models/skipped_path_info.dart';
+import '../../core_link/models/sync_history.dart';
 import '../../run_request.dart';
 import '../../screen_wake.dart';
 import 'run_view_state.dart';
@@ -56,8 +58,8 @@ import 'run_view_state.dart';
 /// an incoming call are `inactive`. Do not widen it to `inactive`.
 ///
 /// **The screen is held awake while a run is live** ([ScreenWake],
-/// injected), and released the moment it stops being live — including
-/// while paused.
+/// injected) — live as the core says, from connecting to applying — and
+/// released the moment it stops being live, including while paused.
 class SyncRunController {
   SyncRunController(this.app, {required this.screenWake});
 
@@ -99,7 +101,7 @@ class SyncRunController {
       _views = session.views.listen((view) => _show(view, request));
     } on CoreFailure catch (e) {
       opened.complete(null);
-      _showPhase(SyncRunFailed(e.message));
+      _showRefusal(e.message);
     }
   }
 
@@ -116,17 +118,12 @@ class SyncRunController {
   Future<void> resume() => _steer(const ResumeRun());
 
   /// The choice made for the conflict at [index] under review.
-  Future<void> resolveConflict(int index, SyncRunConflictChoice choice) =>
-      _steer(ChooseConflict(index, _conflictChoice(choice)));
+  Future<void> resolveConflict(int index, ConflictChoice choice) =>
+      _steer(ChooseConflict(index, choice));
 
   /// The choice made for the planned action at [index] under review.
-  Future<void> choose(int index, SyncRunActionChoice choice) => _steer(
-    ChooseAction(index, switch (choice) {
-      SyncRunActionChoice.proposed => ActionChoice.proposed,
-      SyncRunActionChoice.reversed => ActionChoice.reversed,
-      SyncRunActionChoice.skipped => ActionChoice.skipped,
-    }),
-  );
+  Future<void> choose(int index, ActionChoice choice) =>
+      _steer(ChooseAction(index, choice));
 
   /// "Sync all except conflicts": the plan unchanged, whatever the rows
   /// say (`--batch`).
@@ -148,7 +145,7 @@ class SyncRunController {
     unawaited(_steer(const CloseRun()));
     unawaited(_views?.cancel());
     // The page is gone, so there is no screen of this head's to hold on.
-    _syncScreenWake(const SyncRunIdle());
+    _syncScreenWake(live: false);
     timings.dispose();
     state.dispose();
   }
@@ -163,26 +160,13 @@ class SyncRunController {
     }
   }
 
-  static ConflictChoice _conflictChoice(SyncRunConflictChoice choice) =>
-      switch (choice) {
-        SyncRunConflictChoice.unresolved => ConflictChoice.unresolved,
-        SyncRunConflictChoice.keepLocal => ConflictChoice.keepA,
-        SyncRunConflictChoice.keepRemote => ConflictChoice.keepB,
-        SyncRunConflictChoice.keepBoth => ConflictChoice.keepBoth,
-      };
-
-  static SyncRunConflictChoice _syncRunConflictChoice(ConflictChoice choice) =>
-      switch (choice) {
-        ConflictChoice.unresolved => SyncRunConflictChoice.unresolved,
-        ConflictChoice.keepA => SyncRunConflictChoice.keepLocal,
-        ConflictChoice.keepB => SyncRunConflictChoice.keepRemote,
-        ConflictChoice.keepBoth => SyncRunConflictChoice.keepBoth,
-      };
-
-  void _showPhase(SyncRunPhase phase) {
+  /// The core would not open the session: the page's own failure, with
+  /// nothing live and nothing to resume.
+  void _showRefusal(String message) {
     if (_disposed) return;
     state.show(
-      phase: phase,
+      phase: SyncRunFailed(message),
+      standing: null,
       dryRun: state.dryRun,
       startedAt: null,
       header: null,
@@ -191,16 +175,17 @@ class SyncRunController {
       unreadablePaths: const [],
       conflicts: const [],
       plan: const [],
+      copyBytes: (toDevice: 0, toThisDevice: 0),
       bytesToTransfer: 0,
       results: const {},
-      actionChoices: const {},
-      conflictChoices: const {},
+      actionChoices: const [],
+      conflictChoices: const [],
       decisionSummary: null,
       progress: null,
       appliedCount: 0,
       failedCount: 0,
     );
-    _syncScreenWake(phase);
+    _syncScreenWake(live: false);
   }
 
   /// Renders [view] of [request]'s run: the core's values in this page's
@@ -208,50 +193,46 @@ class SyncRunController {
   void _show(RunView view, RunRequest request) {
     if (_disposed) return;
     final phase = _phase(view.phase, request);
-    final results = <String, SyncRunResultRow>{};
-    final actionChoices = <String, SyncRunActionChoice>{};
-    final conflictChoices = <String, SyncRunConflictChoice>{};
-    for (final row in view.plan) {
-      final path = row.proposal.path;
-      actionChoices[path] = switch (row.choice) {
-        ActionChoice.proposed => SyncRunActionChoice.proposed,
-        ActionChoice.reversed => SyncRunActionChoice.reversed,
-        ActionChoice.skipped => SyncRunActionChoice.skipped,
-      };
-      if (row.outcome case final outcome?) results[path] = _result(outcome);
-    }
-    for (final row in view.conflicts) {
-      final path = row.conflict.path;
-      conflictChoices[path] = _syncRunConflictChoice(row.choice);
-      if (row.outcome case final outcome?) results[path] = _result(outcome);
-    }
+    final results = <String, SyncRunResultRow>{
+      for (final row in view.plan)
+        if (row.outcome case final outcome?)
+          row.proposal.path: _result(outcome),
+      for (final row in view.conflicts)
+        if (row.outcome case final outcome?)
+          row.conflict.path: _result(outcome),
+    };
     final skipped = [
       for (final skipped in view.skipped)
         (line: _skippedLine(skipped), isFailure: skipped.isFailure),
     ];
     state.show(
       phase: phase,
+      standing: view.standing,
       dryRun: view.dryRun,
       startedAt: switch (view.connectedAt) {
         final at? => _clockTime(at),
         null => null,
       },
       header: switch (view.replicas) {
-        (:final a, :final b) => SyncRunHeader(
+        (:final history, a: _, b: _) => SyncRunHeader(
           localRoot: request.localRootPath,
           remoteRoot: request.remoteRootPath,
-          history: _history(lastA: a.lastCommit, lastB: b.lastCommit),
-          firstSyncWarning: a.lastCommit == null || b.lastCommit == null
-              ? firstSyncWarning
-              : null,
+          history: _history(history),
+          firstSyncWarning: switch (history) {
+            FirstSync() || OneSidedFirstSync() => firstSyncWarning,
+            LastSynced() => null,
+          },
         ),
         null => null,
       },
       scanTally: switch (view.tallies) {
-        (:final a, :final b) => SyncRunScanTally(
-          local: _side(a),
-          remote: _side(b),
-        ),
+        (:final a, :final b, :final checked, :final changed) =>
+          SyncRunScanTally(
+            local: _side(a),
+            remote: _side(b),
+            totalChecked: checked,
+            totalChanged: changed,
+          ),
         null => null,
       },
       // `isFailure` is the reason's own verdict on which list this is
@@ -272,9 +253,7 @@ class SyncRunController {
             path: row.conflict.path,
             local: _conflictSide(row.conflict.a),
             remote: _conflictSide(row.conflict.b),
-            offered: [
-              for (final choice in row.offered) _syncRunConflictChoice(choice),
-            ],
+            offered: row.offered,
           ),
       ],
       plan: [
@@ -288,10 +267,14 @@ class SyncRunController {
             reversal: _reversal(row.proposal),
           ),
       ],
+      copyBytes: (
+        toDevice: view.planSummary.bytesToB,
+        toThisDevice: view.planSummary.bytesToA,
+      ),
       bytesToTransfer: view.bytesToTransfer,
       results: results,
-      actionChoices: actionChoices,
-      conflictChoices: conflictChoices,
+      actionChoices: [for (final row in view.plan) row.choice],
+      conflictChoices: [for (final row in view.conflicts) row.choice],
       decisionSummary: switch (view.phase) {
         RunReviewing(:final summary) => SyncRunDecisionSummary(
           apply: summary.apply,
@@ -314,26 +297,13 @@ class SyncRunController {
       failedCount: view.failed,
     );
     timings.value = view.timings;
-    _syncScreenWake(phase);
+    _syncScreenWake(live: view.standing == RunStanding.live);
   }
 
-  void _syncScreenWake(SyncRunPhase phase) {
-    final wanted = switch (phase) {
-      SyncRunConnecting() ||
-      SyncRunScanning() ||
-      SyncRunApplying() ||
-      SyncRunAwaitingDecisions() ||
-      SyncRunConfirmingDeletes() => true,
-      SyncRunIdle() ||
-      SyncRunFinished() ||
-      SyncRunStopped() ||
-      SyncRunPaused() ||
-      SyncRunReplicaBusy() ||
-      SyncRunFailed() => false,
-    };
-    if (wanted == _screenHeld) return;
-    _screenHeld = wanted;
-    unawaited(wanted ? screenWake.enable() : screenWake.disable());
+  void _syncScreenWake({required bool live}) {
+    if (live == _screenHeld) return;
+    _screenHeld = live;
+    unawaited(live ? screenWake.enable() : screenWake.disable());
   }
 
   SyncRunPhase _phase(RunPhase phase, RunRequest request) => switch (phase) {
@@ -371,19 +341,25 @@ class SyncRunController {
     RunNoSummary() => const SyncRunFailed(noSummaryMessage),
   };
 
-  String _history({required DateTime? lastA, required DateTime? lastB}) {
-    if (lastA == null && lastB == null) return 'First sync of this pair.';
-    if (lastA == null || lastB == null) {
-      final emptySide = lastA == null ? 'This device' : 'Remote';
-      return 'First sync of this pair: $emptySide has no archive for it '
-          'yet. Either this is a new replica joining an established one, '
-          "or that side's app data was wiped.";
+  String _history(SyncHistory history) {
+    switch (history) {
+      case FirstSync():
+        return 'First sync of this pair.';
+      case OneSidedFirstSync(:final empty):
+        final emptySide = switch (empty) {
+          ReplicaSide.a => 'This device',
+          ReplicaSide.b => 'Remote',
+        };
+        return 'First sync of this pair: $emptySide has no archive for it '
+            'yet. Either this is a new replica joining an established one, '
+            "or that side's app data was wiped.";
+      case LastSynced(a: final lastA, b: final lastB):
+        final a = _formatTimestamp(lastA);
+        final b = _formatTimestamp(lastB);
+        if (a == b) return 'Last synced $a (${_relative(lastA)}).';
+        return 'Last synced: this device $a (${_relative(lastA)}), '
+            'the remote $b (${_relative(lastB)}).';
     }
-    final a = _formatTimestamp(lastA);
-    final b = _formatTimestamp(lastB);
-    if (a == b) return 'Last synced $a (${_relative(lastA)}).';
-    return 'Last synced: this device $a (${_relative(lastA)}), '
-        'the remote $b (${_relative(lastB)}).';
   }
 
   /// [time] as this device's "HH:MM".
@@ -452,6 +428,7 @@ SyncRunScanSide _side(ScanTally tally) => SyncRunScanSide(
   modified: tally.modified,
   created: tally.created,
   deleted: tally.deleted,
+  total: tally.total,
 );
 
 SyncRunSideStatus _status(FileStatus? status) => switch (status) {

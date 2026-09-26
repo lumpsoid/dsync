@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dsync_core::{ActionFailure, Certificate, DeviceIdentity, PairedDevice, StoredArchive};
 use dsync_domain::{
     Action, CertificateExpiry, CertificateOwner, Conflict, EntryKind, FilterFolderRow,
-    FilterPreviewFolder, FilterPreviewReport, Proposal, ReplicaInfo, ReplicaRoot, RunSummary,
+    FilterPreviewFolder, FilterPreviewReport, Plan, Proposal, ReplicaInfo, ReplicaRoot, RunSummary,
     ScanProbeReport, ScanTally, Side, SideDeletes, SkippedAt, SkippedPath, SkippedReason, Status,
     Unchanged,
 };
@@ -425,6 +425,9 @@ impl From<&ReplicaInfo> for ReplicaInfoView {
     }
 }
 
+/// One side's SPEC §5.2 counts, with what they come to: every path the
+/// scan checked, and those it found changed - every path not scanned
+/// unchanged.
 #[derive(Serialize, SignalPiece)]
 pub struct TallyView {
     pub metadata_matched: u64,
@@ -433,10 +436,13 @@ pub struct TallyView {
     pub created: u64,
     pub deleted: u64,
     pub untrusted: u64,
+    pub total: u64,
+    pub changed: u64,
 }
 
 impl From<&ScanTally> for TallyView {
     fn from(tally: &ScanTally) -> TallyView {
+        let total = tally.total();
         TallyView {
             metadata_matched: count(tally.metadata_matched),
             hash_matched: count(tally.hash_matched),
@@ -444,6 +450,8 @@ impl From<&ScanTally> for TallyView {
             created: count(tally.created),
             deleted: count(tally.deleted),
             untrusted: count(tally.untrusted),
+            total: count(total),
+            changed: count(total - tally.metadata_matched - tally.hash_matched),
         }
     }
 }
@@ -686,6 +694,7 @@ pub struct RunView {
     /// SPEC §11.3's `--dry-run`: the plan is shown and nothing applied.
     pub dry_run: bool,
     pub phase: RunPhaseView,
+    pub standing: RunStandingView,
     /// When both sides connected; `None` before.
     pub connected_at_ms: Option<i64>,
     /// What each side's `hello` said, once both have.
@@ -699,6 +708,8 @@ pub struct RunView {
     /// The plan's actions, in its order; empty before it is made.
     pub plan: Vec<PlanRowView>,
     pub bytes_to_transfer: u64,
+    /// What the plan's copies write where; all zero before it is made.
+    pub plan_summary: PlanSummaryView,
     /// The apply's latest progress: completed of total.
     pub progress: Option<ProgressView>,
     /// How many of the reported outcomes landed, and how many failed.
@@ -752,12 +763,103 @@ pub enum RunPhaseView {
 pub struct ReplicasView {
     pub a: ReplicaInfoView,
     pub b: ReplicaInfoView,
+    pub history: HistoryView,
 }
 
+impl ReplicasView {
+    pub fn of(a: &ReplicaInfo, b: &ReplicaInfo) -> ReplicasView {
+        ReplicasView {
+            a: ReplicaInfoView::from(a),
+            b: ReplicaInfoView::from(b),
+            history: HistoryView::of(a, b),
+        }
+    }
+}
+
+/// What the pair has behind it, from each side's last commit: a side with
+/// none has no archive, so this run is a first sync (SPEC §6) - a path
+/// present on one side only is copied, never deleted.
+#[derive(Serialize, SignalPiece)]
+pub enum HistoryView {
+    /// Neither side has committed.
+    FirstSync,
+    /// Only one side has: `empty` joins with no archive - a new replica
+    /// beside an established one, or wiped app data.
+    OneSided { empty: SideView },
+    /// Both have, each at its own last commit.
+    Synced { last_a_ms: i64, last_b_ms: i64 },
+}
+
+impl HistoryView {
+    pub fn of(a: &ReplicaInfo, b: &ReplicaInfo) -> HistoryView {
+        match (a.last_commit, b.last_commit) {
+            (None, None) => HistoryView::FirstSync,
+            (None, Some(_)) => HistoryView::OneSided { empty: SideView::A },
+            (Some(_), None) => HistoryView::OneSided { empty: SideView::B },
+            (Some(last_a), Some(last_b)) => HistoryView::Synced {
+                last_a_ms: millis(last_a),
+                last_b_ms: millis(last_b),
+            },
+        }
+    }
+}
+
+/// Both scans' counts, and what they come to across the two sides.
 #[derive(Serialize, SignalPiece)]
 pub struct TalliesView {
     pub a: TallyView,
     pub b: TallyView,
+    pub checked: u64,
+    pub changed: u64,
+}
+
+impl TalliesView {
+    pub fn of(a: &ScanTally, b: &ScanTally) -> TalliesView {
+        let (a, b) = (TallyView::from(a), TallyView::from(b));
+        TalliesView {
+            checked: a.total + b.total,
+            changed: a.changed + b.changed,
+            a,
+            b,
+        }
+    }
+}
+
+/// The bytes the plan's copies write onto each side.
+#[derive(Serialize, SignalPiece)]
+pub struct PlanSummaryView {
+    pub bytes_to_a: u64,
+    pub bytes_to_b: u64,
+}
+
+impl From<&Plan> for PlanSummaryView {
+    fn from(plan: &Plan) -> PlanSummaryView {
+        let mut summary = PlanSummaryView {
+            bytes_to_a: 0,
+            bytes_to_b: 0,
+        };
+        for proposal in &plan.actions {
+            let action = &proposal.action;
+            match action.written() {
+                Some((Side::A, _)) => summary.bytes_to_a += action.bytes(),
+                Some((Side::B, _)) => summary.bytes_to_b += action.bytes(),
+                None => {}
+            }
+        }
+        summary
+    }
+}
+
+/// Where the run stands for what the head may do with it: `Live` from
+/// connecting to applying (the screen is held, leaving asks first, a
+/// stop is offered); `Resumable` when an attempt ended short and a resume
+/// runs it again (paused, failed, the replica busy, the deletions
+/// declined, no summary); `Over` when it finished or was stopped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, SignalPiece)]
+pub enum RunStandingView {
+    Live,
+    Resumable,
+    Over,
 }
 
 #[derive(Serialize, SignalPiece)]

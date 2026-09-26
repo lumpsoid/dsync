@@ -28,6 +28,7 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/core_channel.dart';
 import 'package:dsync/app/core_link/core_link.dart';
+import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
@@ -345,13 +346,10 @@ class _Session {
       if (conflict.local.status == SyncRunSideStatus.interrupted) {
         interrupted++;
       }
-      if (!conflict.offered.contains(SyncRunConflictChoice.keepRemote)) {
+      if (!conflict.offered.contains(ConflictChoice.keepB)) {
         _fail('d', '${conflict.path} does not offer the desktop\'s copy');
       }
-      await run.resolveConflict(
-        conflict.index,
-        SyncRunConflictChoice.keepRemote,
-      );
+      await run.resolveConflict(conflict.index, ConflictChoice.keepB);
     }
     await run.confirm();
     final finished = await _finished(run, step: 'd');

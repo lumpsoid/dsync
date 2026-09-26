@@ -87,6 +87,7 @@ void main() {
         endpoint: '127.0.0.1:51234',
         expiresAtMs: expiresAt.millisecondsSinceEpoch,
       ),
+      last: false,
     );
     final waiting = await statusWhere(
       (status) => status is PairShowWaiting,
@@ -97,9 +98,11 @@ void main() {
   void redeemed() => core.emitPairing(
     session(),
     const wire.PairingViewConfirming(deviceId: peerId, name: 'peer laptop'),
+    last: false,
   );
 
-  void ended(wire.PairingView view) => core.emitPairing(session(), view);
+  void ended(wire.PairingView view) =>
+      core.emitPairing(session(), view, last: true);
 
   test('asks the core for a window on the stored bind address, under the '
       'name this side chose, advertising the serving port', () async {

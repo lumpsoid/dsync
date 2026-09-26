@@ -68,6 +68,7 @@ impl Hub {
                 device_id,
                 expires_at_ms: millis(expires_at),
             },
+            false,
         );
 
         let answer = Answer::default();
@@ -82,6 +83,7 @@ impl Hub {
                         device_id: pending.device.to_string(),
                         name: pending.name.to_string(),
                     },
+                    false,
                 );
                 // Nobody left to answer is nobody who agreed.
                 async move { awaited.await.unwrap_or(false) }
@@ -98,7 +100,7 @@ impl Hub {
             |task| Session::Pairing(PairingControl { task, pending }),
             async move {
                 let ended = listener.serve(confirm, refused).await;
-                out.pairing(session, ended_view(ended, window.as_secs()));
+                out.pairing(session, ended_view(ended, window.as_secs()), true);
             },
         );
         Ok(ReplyResult::Done)
@@ -171,7 +173,7 @@ fn cancel(out: &Outbox, live: Option<Session>, session: u64) -> Handled {
     match live {
         Some(Session::Pairing(control)) => {
             control.task.abort();
-            out.pairing(session, PairingView::Cancelled);
+            out.pairing(session, PairingView::Cancelled, true);
             Ok(ReplyResult::Done)
         }
         _ => Err(format!("no pairing window is open in session {session}")),

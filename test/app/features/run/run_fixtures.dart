@@ -64,9 +64,10 @@ class RunHarness {
     await pump();
   }
 
-  /// Delivers [view] to the session and lets it render.
-  Future<void> show(wire.RunView view) async {
-    hub.emitRun(session, view);
+  /// Delivers [view] to the session and lets it render; [last] marks it
+  /// the session's final one.
+  Future<void> show(wire.RunView view, {bool last = false}) async {
+    hub.emitRun(session, view, last: last);
     await pump();
   }
 
@@ -85,11 +86,13 @@ Future<void> pump() async {
 wire.Uint64 n(int value) => wire.Uint64(BigInt.from(value));
 
 /// A view of the run as the core sends it. Every field has a plain
-/// default, so a test names only what it is about; [bytesToTransfer]
-/// defaults to what [plan]'s copies move.
+/// default, so a test names only what it is about; [standing] defaults to
+/// the core's for [phase], and [bytesToTransfer] and the plan summary to
+/// what [plan]'s copies move.
 wire.RunView runView({
   bool dryRun = false,
   wire.RunPhaseView phase = const wire.RunPhaseViewScanning(),
+  wire.RunStandingView? standing,
   DateTime? connectedAt,
   wire.ReplicasView? replicas,
   wire.TalliesView? tallies,
@@ -104,6 +107,7 @@ wire.RunView runView({
 }) => wire.RunView(
   dryRun: dryRun,
   phase: phase,
+  standing: standing ?? standingOf(phase),
   connectedAtMs: connectedAt?.millisecondsSinceEpoch,
   replicas: replicas,
   tally: tallies,
@@ -120,6 +124,10 @@ wire.RunView runView({
           },
         ),
   ),
+  planSummary: wire.PlanSummaryView(
+    bytesToA: n(_copied(plan, from: wire.SideView.b)),
+    bytesToB: n(_copied(plan, from: wire.SideView.a)),
+  ),
   progress: switch (progress) {
     (:final completed, :final total) => wire.ProgressView(
       completed: n(completed),
@@ -131,6 +139,33 @@ wire.RunView runView({
   failed: n(failed),
   timings: timings,
 );
+
+/// The bytes [plan]'s copies from side [from] move.
+int _copied(List<wire.PlanRowView> plan, {required wire.SideView from}) =>
+    plan.fold(
+      0,
+      (sum, row) => switch (row.proposal.action) {
+        wire.ActionViewCopy(from: final side, :final bytes) ||
+        wire.ActionViewCopyAside(
+          from: final side,
+          :final bytes,
+        ) when side == from => sum + bytes.toInt(),
+        _ => sum,
+      },
+    );
+
+/// What the core says [phase] allows: live from connecting to applying,
+/// over once finished or stopped, resumable otherwise.
+wire.RunStandingView standingOf(wire.RunPhaseView phase) => switch (phase) {
+  wire.RunPhaseViewConnecting() ||
+  wire.RunPhaseViewScanning() ||
+  wire.RunPhaseViewReviewing() ||
+  wire.RunPhaseViewConfirmingDeletes() ||
+  wire.RunPhaseViewApplying() => wire.RunStandingView.live,
+  wire.RunPhaseViewFinished() ||
+  wire.RunPhaseViewStopped() => wire.RunStandingView.over,
+  _ => wire.RunStandingView.resumable,
+};
 
 const connecting = wire.RunPhaseViewConnecting();
 const scanning = wire.RunPhaseViewScanning();
@@ -201,8 +236,22 @@ wire.ReplicaInfoView replicaInfo(DateTime? lastCommit) => wire.ReplicaInfoView(
   missingRoot: null,
 );
 
+/// Both sides' `hello`, and the pair's history as the core reads it from
+/// their last commits.
 wire.ReplicasView replicas({DateTime? lastA, DateTime? lastB}) =>
-    wire.ReplicasView(a: replicaInfo(lastA), b: replicaInfo(lastB));
+    wire.ReplicasView(
+      a: replicaInfo(lastA),
+      b: replicaInfo(lastB),
+      history: switch ((lastA, lastB)) {
+        (null, null) => const wire.HistoryViewFirstSync(),
+        (null, _?) => const wire.HistoryViewOneSided(empty: wire.SideView.a),
+        (_?, null) => const wire.HistoryViewOneSided(empty: wire.SideView.b),
+        (final a?, final b?) => wire.HistoryViewSynced(
+          lastAMs: a.millisecondsSinceEpoch,
+          lastBMs: b.millisecondsSinceEpoch,
+        ),
+      },
+    );
 
 wire.TallyView tally({
   int metadataMatched = 7,
@@ -217,10 +266,19 @@ wire.TallyView tally({
   created: n(created),
   deleted: n(deleted),
   untrusted: n(0),
+  total: n(metadataMatched + hashMatched + modified + created + deleted),
+  changed: n(modified + created + deleted),
 );
 
-wire.TalliesView tallies({wire.TallyView? a, wire.TallyView? b}) =>
-    wire.TalliesView(a: a ?? tally(), b: b ?? tally());
+wire.TalliesView tallies({wire.TallyView? a, wire.TallyView? b}) {
+  final (local, remote) = (a ?? tally(), b ?? tally());
+  return wire.TalliesView(
+    a: local,
+    b: remote,
+    checked: n(local.total.toInt() + remote.total.toInt()),
+    changed: n(local.changed.toInt() + remote.changed.toInt()),
+  );
+}
 
 wire.SkippedView skippedPath({
   required wire.SideView side,
