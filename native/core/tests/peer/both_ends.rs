@@ -24,6 +24,7 @@ fn local(host: &Host, root: &Path, profile: &str) -> LocalReplica {
         Side::A,
         Jobs::DEFAULT,
         Tuning::DEFAULT,
+        dsync_core::Symlinks::AsRuled,
     )
     .unwrap()
 }

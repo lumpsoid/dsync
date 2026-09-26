@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use dsync_core::{
     DeviceIdentityStore, LocalReplica, PairedDeviceStore, PeerEvent, PeerListener, ReplicaError,
-    ReplicaServer, StateDir, bind_peer,
+    ReplicaServer, StateDir, Symlinks, bind_peer,
 };
 use dsync_domain::host_port::{format_host_port, is_wildcard_address};
 use dsync_domain::{HostFacts, ReplicaSpec, Tuning};
@@ -46,9 +46,11 @@ struct Opener {
 }
 
 impl Opener {
+    /// Opens `spec`'s replica, going through the `symlinks` it may.
     fn open(
         &self,
         spec: ReplicaSpec,
+        symlinks: Symlinks,
     ) -> impl Future<Output = Result<LocalReplica, ReplicaError>> + Send + use<> {
         let Opener {
             state,
@@ -60,7 +62,15 @@ impl Opener {
                 .expanded_root(home.as_deref())
                 .map_err(|error| ReplicaError::Refused(error.to_string()))?;
             let opening = tokio::task::spawn_blocking(move || {
-                LocalReplica::open(root, state, spec.profile, spec.side, spec.jobs, tuning)
+                LocalReplica::open(
+                    root,
+                    state,
+                    spec.profile,
+                    spec.side,
+                    spec.jobs,
+                    tuning,
+                    symlinks,
+                )
             });
             match opening.await {
                 Ok(opened) => Ok(opened?),
@@ -79,7 +89,8 @@ impl Opener {
 /// ssh starts. A clean end is success; a broken one is fatal.
 async fn serve_stdio(opener: Opener) -> Result<u8, Failure> {
     let tuning = opener.tuning;
-    let server = ReplicaServer::new(move |spec| opener.open(spec), tuning);
+    // Over ssh the user owns both ends: their rules decide (SPEC §4.4).
+    let server = ReplicaServer::new(move |spec| opener.open(spec, Symlinks::AsRuled), tuning);
     match server.serve_stdio().await {
         Ok(()) => Ok(0),
         Err(error) => Err(Failure::Fatal(format!("dsync agent: {error}"))),
@@ -96,7 +107,11 @@ async fn listen(socket: &str, opener: Opener) -> Result<u8, Failure> {
         .map_err(|error| Failure::Fatal(format!("dsync agent: {error}")))?;
     let stop = watch_stop()?;
     let tuning = opener.tuning;
-    let server = Arc::new(ReplicaServer::new(move |spec| opener.open(spec), tuning));
+    // Whoever can open the socket is this host's user (SPEC §4.2).
+    let server = Arc::new(ReplicaServer::new(
+        move |spec| opener.open(spec, Symlinks::AsRuled),
+        tuning,
+    ));
     let serving = tokio::spawn(server.serve_unix(listener, |ended| {
         if let Err(error) = ended {
             eprintln!("dsync agent: {error}");
@@ -153,7 +168,7 @@ async fn serve(
     let stop = watch_stop()?;
     let tuning = opener.tuning;
     let peers = Arc::new(PeerListener::new(
-        move |spec| opener.open(spec),
+        move |spec, symlinks| opener.open(spec, symlinks),
         identity,
         PairedDeviceStore::new(state),
         facts,

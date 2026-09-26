@@ -18,6 +18,7 @@ use dsync_domain::{
 
 use crate::scan_pool;
 use crate::scanner::{Scanner, UnreadableRoot, child_path, stat};
+use crate::symlinks::Symlinks;
 
 /// A probe with the same `jobs` and `folding` a real scan of this replica
 /// would use, so the scanner rungs are the real thing and the §16 check's
@@ -71,7 +72,8 @@ impl ScanProbe {
         // The empty-archive rung runs first because it produces the warm
         // archive: what it reports is exactly what a committed archive
         // would hold, so the warm rung takes the fast path for every file.
-        let scanner = Scanner::new(self.jobs, self.folding);
+        // Measured as a local replica scans: by the run's own rules.
+        let scanner = Scanner::new(self.jobs, self.folding, Symlinks::AsRuled);
         let started = Instant::now();
         let cold = scanner.scan(root, &Archive::default(), rules)?;
         let cold_elapsed = started.elapsed();

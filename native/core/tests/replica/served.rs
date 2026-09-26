@@ -47,6 +47,7 @@ pub fn open_local(
                     spec.side,
                     spec.jobs,
                     Tuning::DEFAULT,
+                    dsync_core::Symlinks::AsRuled,
                 )
             });
             Ok(opened.await.unwrap()?)

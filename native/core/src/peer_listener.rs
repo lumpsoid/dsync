@@ -15,7 +15,8 @@
 //! session gets one generic refusal before the factory - and so the
 //! filesystem - is reached. A missing, an unreadable and an ungranted root
 //! cannot be told apart from the refusal, so a paired device cannot map
-//! this host's filesystem by asking.
+//! this host's filesystem by asking. A root it may open is opened bounded
+//! by all its grants: a link is gone through only to a target inside one.
 
 use std::future::Future;
 use std::io;
@@ -31,6 +32,7 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
 use crate::device_identity::DeviceIdentity;
+use crate::granted_roots::GrantedRoots;
 use crate::paired_device::PairedDevice;
 use crate::paired_device_store::PairedDeviceStore;
 use crate::paired_devices::PairedDevices;
@@ -39,6 +41,7 @@ use crate::peer_pin::{CertificateRefusal, PeerPin, presented, server_config};
 use crate::replica::Replica;
 use crate::replica_error::ReplicaError;
 use crate::replica_server::ReplicaServer;
+use crate::symlinks::Symlinks;
 use crate::transport::{Liveness, Transport};
 
 /// The one answer to a `hello` for a root the device may not reach -
@@ -75,13 +78,15 @@ pub struct PeerListener<F> {
 
 impl<F, Opening, R> PeerListener<F>
 where
-    F: Fn(ReplicaSpec) -> Opening + Send + Sync + 'static,
+    F: Fn(ReplicaSpec, Symlinks) -> Opening + Send + Sync + 'static,
     Opening: Future<Output = Result<R, ReplicaError>> + Send + 'static,
     R: Replica + 'static,
 {
-    /// `open` is the replica factory, as for [`ReplicaServer::new`]; it
-    /// must expand the spec's root with [`ReplicaSpec::expanded_root`]
-    /// against `host`'s home, the expansion the grant check uses.
+    /// `open` is the replica factory, as for [`ReplicaServer::new`] with
+    /// the links the replica may go through beside the spec
+    /// ([`Symlinks::WithinGrants`] of the connected device); it must
+    /// expand the spec's root with [`ReplicaSpec::expanded_root`] against
+    /// `host`'s home, the expansion the grant check uses.
     pub fn new(
         open: F,
         identity: DeviceIdentity,
@@ -139,12 +144,13 @@ where
                     name: name.clone(),
                 });
                 let (open, home) = (served.open.clone(), served.home.clone());
+                let symlinks = Symlinks::WithinGrants(GrantedRoots::of(&device));
                 // `open` is reached only for a root `device` was granted.
                 let session = ReplicaServer::new(
                     move |spec: ReplicaSpec| {
                         let opening = device
                             .serves_spec(&spec, home.as_deref())
-                            .then(|| open(spec));
+                            .then(|| open(spec, symlinks.clone()));
                         async move {
                             match opening {
                                 Some(opening) => opening.await,
@@ -238,12 +244,12 @@ mod tests {
     use crate::local_replica::LocalReplica;
     use crate::state_dir::StateDir;
 
-    type Open = fn(ReplicaSpec) -> std::future::Ready<Result<LocalReplica, ReplicaError>>;
+    type Open = fn(ReplicaSpec, Symlinks) -> std::future::Ready<Result<LocalReplica, ReplicaError>>;
 
     fn listener(state: &StateDir) -> PeerListener<Open> {
         let identity = DeviceIdentity::generate("desktop", SystemTime::now()).unwrap();
         let host = HostFacts::new(dsync_domain::Platform::HOST, None, Vec::new(), "/".into());
-        let refuse: Open = |_| std::future::ready(Err(ReplicaError::Refused("unused".into())));
+        let refuse: Open = |_, _| std::future::ready(Err(ReplicaError::Refused("unused".into())));
         PeerListener::new(
             refuse,
             identity,

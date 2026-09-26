@@ -510,6 +510,7 @@ mod tests {
                                 spec.side,
                                 spec.jobs,
                                 Tuning::DEFAULT,
+                                crate::Symlinks::AsRuled,
                             )
                         });
                         Ok(opened.await.unwrap()?)

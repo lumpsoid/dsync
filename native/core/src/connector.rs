@@ -26,6 +26,7 @@ use crate::remote_replica::RemoteReplica;
 use crate::replica::Replica;
 use crate::ssh_transport::SshLaunch;
 use crate::state_dir::StateDir;
+use crate::symlinks::Symlinks;
 
 /// Connects a run's locations, as this host.
 pub struct Connector {
@@ -226,8 +227,17 @@ impl Connector {
         let root = location.expanded_path(self.home.as_deref())?;
         let state = self.state.clone();
         let tuning = self.tuning;
+        // This host runs the run, so it owns both ends: its rules decide.
         let opening = tokio::task::spawn_blocking(move || {
-            LocalReplica::open(root, state, spec.profile, spec.side, spec.jobs, tuning)
+            LocalReplica::open(
+                root,
+                state,
+                spec.profile,
+                spec.side,
+                spec.jobs,
+                tuning,
+                Symlinks::AsRuled,
+            )
         });
         match opening.await {
             Ok(opened) => Ok(AnyReplica::Local(opened?)),

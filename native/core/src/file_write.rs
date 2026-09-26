@@ -8,7 +8,7 @@ use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dsync_domain::{
@@ -18,6 +18,7 @@ use dsync_domain::{
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::body::BodyError;
+use crate::confinement::Confinement;
 use crate::replica_error::ReplicaError;
 use crate::scanner::{on_disk, on_disk_failing, stat};
 use crate::write_error::WriteError;
@@ -39,14 +40,17 @@ pub(crate) struct Destination {
     /// [`Destination::ensure_parent`].
     parents: Mutex<HashSet<RelPath>>,
     modes: ModeStep,
+    /// Refuses a write through a link the replica may not go through.
+    confinement: Arc<Confinement>,
 }
 
 impl Destination {
-    pub(crate) fn new(root: PathBuf) -> Destination {
+    pub(crate) fn new(root: PathBuf, confinement: Arc<Confinement>) -> Destination {
         Destination {
             root,
             parents: Mutex::new(HashSet::new()),
             modes: ModeStep::for_host(),
+            confinement,
         }
     }
 
@@ -54,6 +58,7 @@ impl Destination {
     /// so a later write under it creates it again rather than trusting it.
     pub(crate) fn forget(&self, folder: &RelPath) {
         self.parents().remove(folder);
+        self.confinement.forget(folder);
     }
 
     fn parents(&self) -> MutexGuard<'_, HashSet<RelPath>> {
@@ -257,6 +262,11 @@ fn land(
 ) -> Result<FileMeta, Failed> {
     let root = &destination.root;
     let target = path.join_under(root);
+    // Before anything is looked at through a link it may not go through.
+    destination
+        .confinement
+        .check(path)
+        .map_err(at(Stage::Probe))?;
     // Before the folders too: a path whose parent is not there reads as
     // absent, and one that changed leaves nothing behind.
     let (found, now) = probe(&target);
@@ -455,7 +465,8 @@ mod tests {
     use super::*;
 
     fn destination(root: &Path, modes_apply: bool) -> Destination {
-        let destination = Destination::new(root.to_path_buf());
+        let confinement = Confinement::new(root.to_path_buf(), crate::Symlinks::AsRuled);
+        let destination = Destination::new(root.to_path_buf(), Arc::new(confinement));
         destination.modes.applies.set(modes_apply).unwrap();
         destination
     }

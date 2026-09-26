@@ -502,7 +502,11 @@ fn a_marked_path_with_no_file_is_deleted_with_an_entry_and_absent_without() {
 // -- case-fold collisions (SPEC §16) --
 
 fn folding_scanner() -> dsync_core::Scanner {
-    dsync_core::Scanner::new(Jobs::DEFAULT, CaseFolding::Folds)
+    dsync_core::Scanner::new(
+        Jobs::DEFAULT,
+        CaseFolding::Folds,
+        dsync_core::Symlinks::AsRuled,
+    )
 }
 
 /// Two live spellings need a filesystem that keeps both; on a folding one

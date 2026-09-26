@@ -360,12 +360,14 @@ SPEC section that owns the detail.
 
 **Serving and pairing**
 
-- **A paired device can reach symlinks under a folder you granted.** A run
-  against your `dsync agent --serve` or the app's **Answer paired devices**
-  page scans with the *other* device's `follow` rules, so a link under a
-  granted root leads wherever it points if that device asks to follow it.
-  Do not grant a folder that holds links to places you would not grant on
-  their own (SPEC §9, §4.4).
+- **A paired device follows a symlink only into folders you granted it.**
+  A run against your `dsync agent --serve` or the app's **Answer paired
+  devices** page follows the links the *other* device's `follow` rules
+  name, but only when the link's real target lies inside a folder granted
+  to that device; any other link is skipped and reported, and reads and
+  writes through it are refused. To sync a folder reached through a link,
+  grant the target folder too — which also lets that device sync it
+  directly (SPEC §4.4, §9).
 - **The phone serves only while its page is open.** There is no background
   service, and the app always serves on port 28771 (SPEC §16).
 - **A peer whose address changed has to be told again.** There is no
@@ -381,6 +383,10 @@ SPEC section that owns the detail.
   folders, so both proceed. Nothing is corrupted: files the other run
   changes are skipped as changed during sync and the next run settles them,
   so start one at a time (SPEC §4.3, §16).
+- **A folder reached through a symlink is not locked.** The lock covers the
+  folder a run names, not a granted folder a link inside it leads to, so a
+  run on that folder directly and one through the link proceed together,
+  with the same outcome as nested folders above (SPEC §4.4).
 
 **Storage and versions**
 

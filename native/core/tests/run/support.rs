@@ -111,6 +111,7 @@ impl Site {
             side,
             spec.jobs,
             tuning,
+            dsync_core::Symlinks::AsRuled,
         )
         .unwrap()
     }
@@ -525,7 +526,15 @@ where
             let state = state.clone();
             async move {
                 let opened = tokio::task::spawn_blocking(move || {
-                    LocalReplica::open(spec.root, state, spec.profile, spec.side, spec.jobs, tuning)
+                    LocalReplica::open(
+                        spec.root,
+                        state,
+                        spec.profile,
+                        spec.side,
+                        spec.jobs,
+                        tuning,
+                        dsync_core::Symlinks::AsRuled,
+                    )
                 });
                 Ok::<_, ReplicaError>(opened.await.unwrap()?)
             }

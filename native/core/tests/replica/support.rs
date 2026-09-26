@@ -155,6 +155,7 @@ impl Site {
             side,
             Jobs::DEFAULT,
             tuning,
+            dsync_core::Symlinks::AsRuled,
         )
         .unwrap()
     }

@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 
 use dsync_core::{
     DeviceIdentity, DialedPeer, LocalReplica, PairedDevice, PairedDeviceStore, PeerDialError,
-    PeerDialer, PeerEvent, PeerListener, ReplicaError, StateDir, bind_peer,
+    PeerDialer, PeerEvent, PeerListener, ReplicaError, StateDir, Symlinks, bind_peer,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{HostFacts, Jobs, PeerName, Platform, ProfileId, ReplicaSpec, Side, Tuning};
@@ -223,14 +223,22 @@ pub async fn serve_with(host: &Host, tuning: Tuning) -> Serving {
             host.state(),
             facts.home().map(str::to_owned),
         );
-        move |spec: ReplicaSpec| -> Opening {
+        move |spec: ReplicaSpec, symlinks: Symlinks| -> Opening {
             opened.fetch_add(1, Ordering::SeqCst);
             let state = state.clone();
             let root = spec.expanded_root(home.as_deref());
             Box::pin(async move {
                 let root = root.map_err(|e| ReplicaError::Refused(e.to_string()))?;
                 let opened = tokio::task::spawn_blocking(move || {
-                    LocalReplica::open(root, state, spec.profile, spec.side, spec.jobs, tuning)
+                    LocalReplica::open(
+                        root,
+                        state,
+                        spec.profile,
+                        spec.side,
+                        spec.jobs,
+                        tuning,
+                        symlinks,
+                    )
                 });
                 Ok(opened.await.unwrap()?)
             })

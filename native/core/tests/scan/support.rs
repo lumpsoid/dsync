@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
-use dsync_core::Scanner;
+use dsync_core::{Scanner, Symlinks};
 use dsync_domain::{
     Archive, ArchiveCommit, CaseFolding, ContentHash, FileMeta, FileState, Glob, Jobs, RelPath,
     RuleSet, ScanEntry, ScanResult, SkippedReason, Status,
@@ -64,7 +64,11 @@ pub fn symlink(target: &Path, link: &Path) {
 }
 
 pub fn scanner(jobs: i64) -> Scanner {
-    Scanner::new(Jobs::new(jobs).unwrap(), CaseFolding::Distinct)
+    Scanner::new(
+        Jobs::new(jobs).unwrap(),
+        CaseFolding::Distinct,
+        Symlinks::AsRuled,
+    )
 }
 
 pub fn path(text: &str) -> RelPath {

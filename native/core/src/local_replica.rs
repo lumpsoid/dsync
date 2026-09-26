@@ -20,6 +20,7 @@ use dsync_domain::{
 use crate::archive_store::{ArchiveError, ArchiveStore};
 use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
+use crate::confinement::Confinement;
 use crate::file_write::Destination;
 use crate::replica::{
     BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
@@ -29,6 +30,7 @@ use crate::replica_lock::RunLocks;
 use crate::scan_session::ScanSession;
 use crate::scanner::{Scanner, on_disk, on_disk_at};
 use crate::state_dir::StateDir;
+use crate::symlinks::Symlinks;
 use crate::writer_pool::WriterPool;
 use dsync_domain::WriteStats;
 
@@ -51,6 +53,8 @@ struct Shared {
     store: Mutex<ArchiveStore>,
     lock: Mutex<Option<RunLocks>>,
     scan: Mutex<ScanPhase>,
+    /// Which links this replica goes through, checked on every path.
+    confinement: Arc<Confinement>,
     destination: Arc<Destination>,
     /// Started by the first write: a replica only read from never starts
     /// its threads.
@@ -69,7 +73,8 @@ enum ScanPhase {
 impl LocalReplica {
     /// The replica at `root` (as the location names it; also the archive
     /// header's root), side `side` of `profile`, with its state in
-    /// `state`. Replays the archive, so this blocks.
+    /// `state`, going through the `symlinks` it may. Replays the archive,
+    /// so this blocks.
     pub fn open(
         root: String,
         state: StateDir,
@@ -77,12 +82,15 @@ impl LocalReplica {
         side: Side,
         jobs: Jobs,
         tuning: Tuning,
+        symlinks: Symlinks,
     ) -> Result<LocalReplica, ArchiveError> {
         let store = ArchiveStore::open_replica(&state, &profile, side, root.clone(), &tuning)?;
         let path = PathBuf::from(&root);
+        let confinement = Arc::new(Confinement::new(path.clone(), symlinks));
         Ok(LocalReplica {
             shared: Arc::new(Shared {
-                destination: Arc::new(Destination::new(path.clone())),
+                destination: Arc::new(Destination::new(path.clone(), confinement.clone())),
+                confinement,
                 root: path,
                 root_text: root,
                 state,
@@ -223,7 +231,11 @@ impl Replica for LocalReplica {
         let rules = rules.clone();
         let result = self
             .blocking(move |shared| {
-                let scanner = Scanner::new(shared.jobs, probe_case_folding(&shared.root));
+                let scanner = Scanner::new(
+                    shared.jobs,
+                    probe_case_folding(&shared.root),
+                    shared.confinement.symlinks().clone(),
+                );
                 let mut store = shared.store();
                 let result = scanner.scan(&shared.root, store.archive(), &rules)?;
                 store.commit(result.key_refreshes())?;
@@ -280,9 +292,16 @@ impl Replica for LocalReplica {
 
     async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
         let source = path.join_under(&self.shared.root);
+        let path = path.clone();
         let file = self
             .blocking(move |shared| {
-                File::open(&source).map_err(shared.file_error(FileOp::Read, source.clone()))
+                // A peer can read without scanning: the scan's skip is
+                // not the only bound.
+                shared
+                    .confinement
+                    .check(&path)
+                    .and_then(|()| File::open(&source))
+                    .map_err(shared.file_error(FileOp::Read, source.clone()))
             })
             .await?;
         let (sender, body) = body_channel(READ_AHEAD_CHUNKS);
@@ -307,7 +326,12 @@ impl Replica for LocalReplica {
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
         let target = path.join_under(&self.shared.root);
+        let path = path.clone();
         self.blocking(move |shared| {
+            shared
+                .confinement
+                .check(&path)
+                .map_err(shared.file_error(FileOp::Delete, target.clone()))?;
             expect.check(on_disk_at(&target))?;
             fs::remove_file(&target).map_err(shared.file_error(FileOp::Delete, target.clone()))
         })
@@ -318,6 +342,11 @@ impl Replica for LocalReplica {
         let path = path.clone();
         self.blocking(move |shared| {
             let mut ancestor = path.parent();
+            if let Some(folder) = &ancestor {
+                shared.confinement.check(folder).map_err(
+                    shared.file_error(FileOp::RemoveDir, folder.join_under(&shared.root)),
+                )?;
+            }
             while let Some(folder) = ancestor {
                 let at = folder.join_under(&shared.root);
                 match fs::remove_dir(&at) {

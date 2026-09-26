@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use dsync_core::{
-    LocalReplica, PeerEvent, PeerListener, ReplicaError, StateDir, bind_peer, interface_addresses,
+    LocalReplica, PeerEvent, PeerListener, ReplicaError, StateDir, Symlinks, bind_peer,
+    interface_addresses,
 };
 use dsync_domain::host_port::{format_host_port, parse_bind_address};
 use dsync_domain::{ReplicaSpec, Tuning, advertised_host, preferred_advertisable_address};
@@ -64,7 +65,7 @@ impl Hub {
             control: control.clone(),
         };
         let peers = Arc::new(PeerListener::new(
-            move |spec| opener.open(spec),
+            move |spec, symlinks| opener.open(spec, symlinks),
             identity,
             self.paired(),
             &self.facts,
@@ -247,9 +248,12 @@ struct Opener {
 }
 
 impl Opener {
+    /// Opens `spec`'s replica, going through the `symlinks` the listener
+    /// allows the connected device.
     fn open(
         &self,
         spec: ReplicaSpec,
+        symlinks: Symlinks,
     ) -> impl Future<Output = Result<LocalReplica, ReplicaError>> + Send + use<> {
         let Opener {
             state,
@@ -265,7 +269,15 @@ impl Opener {
                 serving.record(now_ms(), ServeEventView::Serving { root: root.clone() })
             });
             let opening = tokio::task::spawn_blocking(move || {
-                LocalReplica::open(root, state, spec.profile, spec.side, spec.jobs, tuning)
+                LocalReplica::open(
+                    root,
+                    state,
+                    spec.profile,
+                    spec.side,
+                    spec.jobs,
+                    tuning,
+                    symlinks,
+                )
             });
             match opening.await {
                 Ok(opened) => Ok(opened?),

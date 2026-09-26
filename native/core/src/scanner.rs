@@ -32,6 +32,7 @@ use dsync_domain::{
 use ring::digest;
 
 use crate::scan_pool;
+use crate::symlinks::Symlinks;
 
 /// How much of a file one read takes into the hash. Large enough that most
 /// files are one syscall and a big one costs few, small enough that `jobs`
@@ -39,12 +40,13 @@ use crate::scan_pool;
 pub const HASH_READ_BUFFER_BYTES: usize = 256 * 1024;
 
 /// A replica scanner. `jobs` and `folding` belong to the host and the
-/// filesystem under the root; the rules belong to the run and are passed
-/// to each [`Scanner::scan`].
-#[derive(Clone, Copy, Debug)]
+/// filesystem under the root, `symlinks` to whom the replica is served;
+/// the rules belong to the run and are passed to each [`Scanner::scan`].
+#[derive(Clone, Debug)]
 pub struct Scanner {
     jobs: Jobs,
     folding: CaseFolding,
+    symlinks: Symlinks,
 }
 
 /// The replica root itself could not be resolved or listed. Fatal, not a
@@ -59,8 +61,12 @@ pub struct UnreadableRoot {
 }
 
 impl Scanner {
-    pub fn new(jobs: Jobs, folding: CaseFolding) -> Scanner {
-        Scanner { jobs, folding }
+    pub fn new(jobs: Jobs, folding: CaseFolding, symlinks: Symlinks) -> Scanner {
+        Scanner {
+            jobs,
+            folding,
+            symlinks,
+        }
     }
 
     /// One [`dsync_domain::ScanEntry`] per file present and not ignored,
@@ -73,7 +79,7 @@ impl Scanner {
         archive: &Archive,
         rules: &RuleSet,
     ) -> Result<ScanResult, UnreadableRoot> {
-        let events = walk(root, rules)?;
+        let events = walk(root, rules, &self.symlinks)?;
         let files: Vec<(&RelPath, &Path)> = events
             .iter()
             .filter_map(|event| match event {
@@ -178,16 +184,17 @@ enum Event {
     Skipped(SkippedPath),
 }
 
-/// The walk's state: the rules, the directories it is inside (canonical,
-/// so a followed link back into one of them is recognised), and what it
-/// has met so far.
+/// The walk's state: the rules, what bounds the links they follow, the
+/// directories it is inside (canonical, so a followed link back into one
+/// of them is recognised), and what it has met so far.
 struct Walk<'a> {
     rules: &'a RuleSet,
+    symlinks: &'a Symlinks,
     open: Vec<PathBuf>,
     events: Vec<Event>,
 }
 
-fn walk(root: &Path, rules: &RuleSet) -> Result<Vec<Event>, UnreadableRoot> {
+fn walk(root: &Path, rules: &RuleSet, symlinks: &Symlinks) -> Result<Vec<Event>, UnreadableRoot> {
     let unreadable_root = |source| UnreadableRoot {
         root: root.to_path_buf(),
         source,
@@ -196,6 +203,7 @@ fn walk(root: &Path, rules: &RuleSet) -> Result<Vec<Event>, UnreadableRoot> {
     let children = list(&canonical).map_err(unreadable_root)?;
     let mut walk = Walk {
         rules,
+        symlinks,
         open: vec![canonical.clone()],
         events: Vec::new(),
     };
@@ -290,13 +298,17 @@ impl Walk<'_> {
     }
 
     /// A link a follow rule names: its target's content is scanned at the
-    /// link's own path.
+    /// link's own path, unless the target is out of this replica's
+    /// bounds (SPEC §4.4).
     fn link(&mut self, link: &Path, path: RelPath) {
         let Ok(target) = fs::canonicalize(link) else {
             // The user asked to follow it; saying nothing would be the
             // worst answer.
             return self.skip(symlink(path, "broken link"));
         };
+        if let Some(why) = self.symlinks.refuses(&target) {
+            return self.skip(symlink(path, &why));
+        }
         match fs::metadata(&target) {
             Ok(meta) if meta.is_dir() => {
                 if self.open.contains(&target) {
