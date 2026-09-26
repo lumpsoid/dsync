@@ -174,6 +174,24 @@ async fn devices_are_listed_renamed_granted_withdrawn_and_revoked() {
 }
 
 #[tokio::test]
+async fn a_device_s_grants_are_listed_once_each_in_order() {
+    let mut head = Head::new("studio").await;
+    let id = seed_device(&head, "phone");
+    let (a, b) = (head.path_text("a"), head.path_text("b"));
+
+    for path in [&b, &a, &b] {
+        head.ok(CoreCommand::GrantRoot {
+            device_id: id.clone(),
+            path: path.clone(),
+        })
+        .await;
+    }
+
+    let listed = devices(head.ok(CoreCommand::ListDevices).await.1);
+    assert_eq!(listed[0].granted_roots, [a, b]);
+}
+
+#[tokio::test]
 async fn a_device_s_address_and_verification_are_set_by_hand() {
     let mut head = Head::new("studio").await;
     let id = seed_device(&head, "phone");
