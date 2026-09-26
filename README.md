@@ -317,6 +317,77 @@ library), and **socket activation** via a
 pre-opened descriptor, where one `--listen-fd N` would cover systemd, launchd
 and s6 at once. Both are noted in SPEC §16, waiting for somebody to ask.
 
+## Known limits
+
+What this version does not do, or cannot promise. Each entry points at the
+SPEC section that owns the detail.
+
+**Changes and what gets noticed**
+
+- **An edit that keeps a file's size and modification time is not seen.** The
+  scan trusts size and mtime before it hashes, so such a file reads as
+  unchanged; touching it (a new mtime) makes the next run pick it up (SPEC
+  §5.2).
+- **A permissions-only change does not sync.** Mode bits travel with content,
+  so a `chmod` alone reaches the other side the next time the file's content
+  changes. Ownership, ACLs and extended attributes are never copied (SPEC
+  §7.4).
+- **A file edited while a run is applying is left alone, not synced.** It is
+  reported "changed during sync" and picked up by the next run. The only
+  uncovered moment is the instant between that check and the write (SPEC
+  §7.6).
+- **Nothing is kept of what a sync overwrites or deletes.** There is no trash
+  and no version history; the guard that asks before a run deletes at least
+  10 files and more than half of one side is the only brake, and
+  `--allow-mass-delete` switches it off for that run (SPEC §10).
+- **No watch mode and no delta transfer.** A sync happens when you start one,
+  and a changed file is copied whole (SPEC §16).
+
+**Names and file types**
+
+- **Case and Unicode normalization are only partly handled.** On a
+  case-insensitive replica (macOS, Windows), paths that already collide by
+  case are reported and skipped, but two *new* files from the other side that
+  differ only by case, or an NFC and an NFD spelling of one name, can land as
+  one file. Avoid such pairs, or rename one before syncing (SPEC §5.1, §16).
+- **Symlinks are never created.** A link is skipped unless a `follow` rule
+  names it, and then its target's content is synced as a plain file at the
+  link's path; the other side gets a file, not a link. The app offers no
+  `follow` rules at all (SPEC §9). Fifos, sockets and device files are
+  skipped too (SPEC §5.1).
+- **Hardlinked names become separate files** on the other side (SPEC §5.1).
+- **Ignore patterns cannot be negated** (SPEC §9, §16).
+
+**Serving and pairing**
+
+- **A paired device can reach symlinks under a folder you granted.** A run
+  against your `dsync agent --serve` or the app's **Answer paired devices**
+  page scans with the *other* device's `follow` rules, so a link under a
+  granted root leads wherever it points if that device asks to follow it.
+  Do not grant a folder that holds links to places you would not grant on
+  their own (SPEC §9, §4.4).
+- **The phone serves only while its page is open.** There is no background
+  service, and the app always serves on port 28771 (SPEC §16).
+- **A peer whose address changed has to be told again.** There is no
+  discovery on the network: type the new address into Run setup, and a
+  successful connect remembers it (SPEC §4.4, §16).
+- **Two phones behind separate carrier NATs cannot reach each other.** One
+  side needs a direct route or both need a shared overlay network such as
+  WireGuard or Tailscale (SPEC §16).
+- **Two devices starting a run against each other at the same moment are not
+  stopped.** Both runs proceed and reconciliation sorts out the result;
+  nothing is corrupted, but start one at a time (SPEC §16).
+
+**Storage and versions**
+
+- **Android folders with no filesystem path cannot be synced.** A folder the
+  chooser turns into a path works, under All-files access; the Downloads
+  provider or a cloud document provider does not (SPEC §16).
+- **Files from a different major version are refused.** Archive logs,
+  profiles, the paired-device store, pairing payloads and the wire protocol
+  all start at 1.0; a dsync of another major says so and stops rather than
+  guessing, so both devices need the same major (SPEC §8.4).
+
 ## Layout
 
 The engine and the CLI are a Rust cargo workspace under `native/`; the Flutter
