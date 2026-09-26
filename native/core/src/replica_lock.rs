@@ -105,7 +105,7 @@ impl RunLocks {
 /// then the rest joined lexically. A root created later by the run
 /// resolves to the same path, since nothing below that ancestor existed
 /// to be a symlink.
-pub(crate) fn canonical_root(root: &Path) -> io::Result<PathBuf> {
+pub fn canonical_root(root: &Path) -> io::Result<PathBuf> {
     let absolute = std::path::absolute(root)?;
     let mut existing = absolute.as_path();
     loop {

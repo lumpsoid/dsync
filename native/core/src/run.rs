@@ -22,8 +22,8 @@ mod pair;
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dsync_domain::{
@@ -80,6 +80,10 @@ pub struct RunReport {
     pub summary: Option<RunSummary>,
     /// A [`RunEvent::Error`] was emitted.
     pub errored: bool,
+    /// The first [`RunEvent::Error`]: the failure that ended the run (only
+    /// the unlocks' own can follow it), or the unlock's that spoiled a
+    /// completed one.
+    pub error: Option<RunError>,
     pub stopped: Option<Stopped>,
     pub metrics: RunMetrics,
 }
@@ -106,7 +110,17 @@ impl RunStop {
         }
     }
 
-    fn stopped(&self) -> Option<Stopped> {
+    /// Whether a stop was asked for.
+    pub(crate) fn requested(&self) -> bool {
+        self.graceful.is_cancelled()
+    }
+
+    /// Resolves once a stop is asked for.
+    pub(crate) async fn until_requested(&self) {
+        self.graceful.cancelled().await;
+    }
+
+    pub(crate) fn stopped(&self) -> Option<Stopped> {
         if self.hard.is_cancelled() {
             Some(Stopped::Dropped)
         } else if self.graceful.is_cancelled() {
@@ -117,10 +131,10 @@ impl RunStop {
     }
 }
 
-/// The run's event channel, and whether a failure went out on it.
+/// The run's event channel, and the first failure that went out on it.
 pub(crate) struct Events {
     sender: mpsc::Sender<RunEvent>,
-    failed: AtomicBool,
+    failed: Mutex<Option<RunError>>,
 }
 
 impl Events {
@@ -129,8 +143,18 @@ impl Events {
     }
 
     async fn fail(&self, error: RunError) {
-        self.failed.store(true, Ordering::SeqCst);
+        self.failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(|| error.clone());
         self.emit(RunEvent::Error(error)).await;
+    }
+
+    fn first_failure(&self) -> Option<RunError> {
+        self.failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -149,12 +173,19 @@ impl Run {
         Run {
             events: Events {
                 sender: events,
-                failed: AtomicBool::new(false),
+                failed: Mutex::new(None),
             },
             stop: RunStop::default(),
             state,
             tuning,
         }
+    }
+
+    /// This run, stopped by `stop` rather than a handle of its own: one
+    /// stop shared by the runs of a profile's entries, so a second stop
+    /// drops whichever entry is running then.
+    pub fn with_stop(self, stop: RunStop) -> Run {
+        Run { stop, ..self }
     }
 
     /// A handle that stops this run.
@@ -207,9 +238,11 @@ impl Run {
     }
 
     fn report(&self, summary: Option<RunSummary>, clock: RunClock) -> RunReport {
+        let error = self.events.first_failure();
         RunReport {
             summary,
-            errored: self.events.failed.load(Ordering::SeqCst),
+            errored: error.is_some(),
+            error,
             stopped: self.stop.stopped(),
             metrics: clock.finish(),
         }

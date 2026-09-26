@@ -5,6 +5,7 @@
 mod apply;
 mod changed;
 mod connect;
+mod entries;
 mod flow;
 mod mass_delete;
 mod missing_root;

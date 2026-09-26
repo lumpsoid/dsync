@@ -97,6 +97,23 @@ pub enum ConnectFailure {
     NoUnixSockets,
 }
 
+impl ConnectFailure {
+    /// Whether this failure says the device or transport is unreachable,
+    /// so a profile's later entries - over the same one - would only fail
+    /// the same way, each after its own timeout. A root or archive failure
+    /// is the entry's own.
+    pub fn ends_profile(&self) -> bool {
+        match self {
+            ConnectFailure::Root(_) | ConnectFailure::Archive(_) => false,
+            ConnectFailure::Link(_)
+            | ConnectFailure::Socket { .. }
+            | ConnectFailure::Peer(_)
+            | ConnectFailure::NoIdentity
+            | ConnectFailure::NoUnixSockets => true,
+        }
+    }
+}
+
 impl Connector {
     /// Local replicas keep their archives and locks in `state`; `home`
     /// expands a local root's `~`.

@@ -25,6 +25,16 @@ pub fn nests(a: &str, b: &str, style: PathStyle) -> bool {
     }
 }
 
+/// The first two of `paths` that [`nests`] pairs, by position (the
+/// earlier-placed pair first, the lower position first within it).
+pub fn first_nesting(paths: &[&str], style: PathStyle) -> Option<(usize, usize)> {
+    (0..paths.len()).find_map(|second| {
+        (0..second)
+            .find(|&first| nests(paths[first], paths[second], style))
+            .map(|first| (first, second))
+    })
+}
+
 struct Components {
     rooted: bool,
     names: Vec<String>,
@@ -62,6 +72,18 @@ mod tests {
         let forward = nests(a, b, PathStyle::Windows);
         assert_eq!(forward, nests(b, a, PathStyle::Windows), "{a} vs {b}");
         forward
+    }
+
+    #[test]
+    fn the_first_nesting_pair_is_found_by_position() {
+        let paths = ["/x", "/a", "/b", "/a/c", "/b"];
+        assert_eq!(first_nesting(&paths, PathStyle::Posix), Some((1, 3)));
+        assert_eq!(first_nesting(&["/a", "/b", "/c"], PathStyle::Posix), None);
+        assert_eq!(first_nesting(&[], PathStyle::Posix), None);
+        assert_eq!(
+            first_nesting(&[r"C:\A", r"c:\a\b"], PathStyle::Windows),
+            Some((0, 1))
+        );
     }
 
     #[test]

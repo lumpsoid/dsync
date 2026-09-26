@@ -113,7 +113,7 @@ pub use options_error::OptionsError;
 pub use owed_commits::{IncompleteTransfer, OwedCommits, UnevenCommitOnly};
 pub use pair_code::{PairCode, ReadPairCode, default_peer_name};
 pub use pairing_payload::{EnrolmentToken, PairingPayload, PairingPayloadError};
-pub use path_nesting::{PathStyle, nests};
+pub use path_nesting::{PathStyle, first_nesting, nests};
 pub use peer_name::{PeerName, PeerNameError};
 pub use plan::Plan;
 pub use platform::Platform;
