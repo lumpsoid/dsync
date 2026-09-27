@@ -13,7 +13,9 @@ mod show;
 use std::io::{self, Write};
 use std::time::SystemTime;
 
-use dsync_core::{DeviceIdentityStore, PairedDevice, PairedDeviceStore, PairedDevices, StateDir};
+use dsync_core::{
+    DeviceIdentityStore, PairedDevice, PairedDeviceStore, PairedDevices, StateDir, resolve_grant,
+};
 use dsync_domain::{
     CertificateExpiry, CertificateOwner, DeviceId, Location, PeerName, PeerNameError,
 };
@@ -180,7 +182,7 @@ fn grant(args: &PairGrantArgs, host: &Host) -> Result<u8, Failure> {
     let devices = store.load().map_err(Failure::error)?;
     let id = named(&devices, &args.name).ok_or_else(|| not_paired("grant", &args.name))?;
     store
-        .update(|devices| devices.grant(&id, root.clone()))
+        .update(|devices| devices.grant(&id, root.clone(), resolve_grant))
         .map_err(Failure::error)?;
     println!("granted: \"{}\" may now reach {root}", args.name);
     Ok(0)
@@ -207,6 +209,7 @@ fn renew(args: &StateDirArgs, host: &Host) -> Result<u8, Failure> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::Duration;
 
     use dsync_core::DeviceIdentity;
@@ -224,7 +227,9 @@ mod tests {
             at,
         );
         for root in roots {
-            device.grant((*root).to_owned());
+            device
+                .grant((*root).to_owned(), |root: &str| PathBuf::from(root))
+                .unwrap();
         }
         device
     }

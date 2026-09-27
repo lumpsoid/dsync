@@ -185,6 +185,37 @@ fn a_root_already_granted_is_not_duplicated() {
 }
 
 #[test]
+fn a_grant_nesting_with_one_already_granted_is_refused_naming_it_and_exits_3() {
+    let site = Site::new();
+    seed_device(
+        &site.state_dir(),
+        "phone",
+        &["/home/me/notes", "/home/me/todo.txt"],
+        now(),
+    );
+    let before = std::fs::read(site.state_dir().join("paired-devices.json")).unwrap();
+    for (root, existing) in [
+        ("/home/me/notes/2026", "/home/me/notes"),
+        ("/home/me/notes/list.txt", "/home/me/notes"),
+        ("/home/me", "/home/me/notes"),
+    ] {
+        let refused = site.run(&["pair", "grant", "phone", root]);
+        refused.exits(3);
+        assert!(
+            refused
+                .stderr
+                .contains(&format!("cannot grant {root}: it overlaps {existing}")),
+            "{refused:#?}"
+        );
+    }
+    let after = std::fs::read(site.state_dir().join("paired-devices.json")).unwrap();
+    assert_eq!(before, after);
+    // Positive control: a sibling sharing only a prefix of characters.
+    site.run(&["pair", "grant", "phone", "/home/me/notesx"])
+        .exits(0);
+}
+
+#[test]
 fn grant_needs_exactly_two_arguments_and_revoke_one() {
     let site = Site::new();
     for args in [

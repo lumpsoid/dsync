@@ -2,13 +2,14 @@
 //! every device at once (a unique name, one entry per key).
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{DeviceId, PeerName};
 
 use crate::certificate::Certificate;
-use crate::paired_device::{DifferentKey, PairedDevice};
+use crate::paired_device::{DifferentKey, GrantNests, PairedDevice};
 
 /// Every device this host has paired with, keyed by device id. Names are
 /// unique too (exact, case-sensitive - `peer://<name>:` resolves by it).
@@ -25,6 +26,8 @@ pub enum PairingError {
     NotPaired(DeviceId),
     #[error(transparent)]
     DifferentKey(#[from] DifferentKey),
+    #[error(transparent)]
+    GrantNests(#[from] GrantNests),
 }
 
 impl PairedDevices {
@@ -80,9 +83,15 @@ impl PairedDevices {
         Ok(())
     }
 
-    pub fn grant(&mut self, id: &DeviceId, expanded_root: String) -> Result<(), PairingError> {
-        self.device_mut(id)?.grant(expanded_root);
-        Ok(())
+    /// [`PairedDevice::grant`]. Called inside the store's update, so the
+    /// nesting check judges the very set that is written back.
+    pub fn grant(
+        &mut self,
+        id: &DeviceId,
+        expanded_root: String,
+        resolve: impl Fn(&str) -> PathBuf,
+    ) -> Result<(), PairingError> {
+        Ok(self.device_mut(id)?.grant(expanded_root, resolve)?)
     }
 
     pub fn withdraw_grant(
@@ -161,6 +170,11 @@ mod tests {
         PeerAddress::with_default_port(host).unwrap()
     }
 
+    /// Every path resolves to itself: no links, nothing moved.
+    fn as_spelled(root: &str) -> PathBuf {
+        PathBuf::from(root)
+    }
+
     fn device(identity: &DeviceIdentity, label: &str) -> PairedDevice {
         PairedDevice::new(
             identity.certificate().clone(),
@@ -184,7 +198,9 @@ mod tests {
     fn serves_only_a_granted_root_by_exact_string() {
         let mut phone = device(&identity(), "phone");
         assert!(!phone.serves_root("/home/me/notes"));
-        phone.grant("/home/me/notes".to_owned());
+        phone
+            .grant("/home/me/notes".to_owned(), as_spelled)
+            .unwrap();
         assert!(phone.serves_root("/home/me/notes"));
         for near_miss in [
             "/home/me/notes/",
@@ -207,7 +223,9 @@ mod tests {
             jobs: Jobs::DEFAULT,
         };
         let mut phone = device(&identity(), "phone");
-        phone.grant("/home/me/notes".to_owned());
+        phone
+            .grant("/home/me/notes".to_owned(), as_spelled)
+            .unwrap();
         assert!(phone.serves_spec(&spec("~/notes"), Some("/home/me")));
         assert!(phone.serves_spec(&spec("/home/me/notes"), None));
         assert!(!phone.serves_spec(&spec("~/notes"), Some("/home/you")));
@@ -219,9 +237,9 @@ mod tests {
     #[test]
     fn granting_is_idempotent_and_additive_and_withdrawing_takes_one_back() {
         let mut phone = device(&identity(), "phone");
-        phone.grant("/a".to_owned());
-        phone.grant("/b".to_owned());
-        phone.grant("/a".to_owned());
+        phone.grant("/a".to_owned(), as_spelled).unwrap();
+        phone.grant("/b".to_owned(), as_spelled).unwrap();
+        phone.grant("/a".to_owned(), as_spelled).unwrap();
         assert_eq!(phone.granted_roots().len(), 2);
         phone.withdraw_grant("/a");
         phone.withdraw_grant("/never");
@@ -230,10 +248,73 @@ mod tests {
     }
 
     #[test]
+    fn a_grant_inside_containing_or_resolving_equal_to_another_is_refused() {
+        let mut phone = device(&identity(), "phone");
+        phone.grant("/a/b".to_owned(), as_spelled).unwrap();
+        phone.grant("/f/notes.txt".to_owned(), as_spelled).unwrap();
+        let before = phone.clone();
+        for (new, existing) in [
+            // A file, and a folder, inside a granted folder.
+            ("/a/b/c.txt", "/a/b"),
+            ("/a/b/c", "/a/b"),
+            // A folder containing a granted file, and a granted folder.
+            ("/f", "/f/notes.txt"),
+            ("/a", "/a/b"),
+            // Another spelling of a granted folder.
+            ("/a/b/", "/a/b"),
+        ] {
+            assert_eq!(
+                phone.grant(new.to_owned(), as_spelled),
+                Err(GrantNests {
+                    new: new.to_owned(),
+                    existing: existing.to_owned(),
+                }),
+                "{new}"
+            );
+        }
+        // A link spelled elsewhere that resolves to a granted folder.
+        let through_link = |root: &str| match root {
+            "/link" => PathBuf::from("/a/b"),
+            other => PathBuf::from(other),
+        };
+        assert_eq!(
+            phone.grant("/link".to_owned(), through_link),
+            Err(GrantNests {
+                new: "/link".to_owned(),
+                existing: "/a/b".to_owned(),
+            })
+        );
+        assert_eq!(phone, before);
+        // Positive controls: the identical string again, and siblings that
+        // only share a prefix of characters.
+        phone.grant("/a/b".to_owned(), as_spelled).unwrap();
+        phone.grant("/a/bc".to_owned(), as_spelled).unwrap();
+        phone
+            .grant("/f/notes.txt.bak".to_owned(), as_spelled)
+            .unwrap();
+        assert_eq!(phone.granted_roots().len(), 4);
+    }
+
+    #[test]
+    fn grants_that_resolve_nested_now_are_found() {
+        let mut phone = device(&identity(), "phone");
+        phone.grant("/a".to_owned(), as_spelled).unwrap();
+        phone.grant("/b".to_owned(), as_spelled).unwrap();
+        phone.grant("/c".to_owned(), as_spelled).unwrap();
+        assert_eq!(phone.nesting_grants(as_spelled), None);
+        // `/c` was since replaced with a link into `/a`.
+        let moved = |root: &str| match root {
+            "/c" => PathBuf::from("/a/c"),
+            other => PathBuf::from(other),
+        };
+        assert_eq!(phone.nesting_grants(moved), Some(("/a", "/c")));
+    }
+
+    #[test]
     fn recording_a_connection_replaces_the_address_and_a_renewed_certificate_only() {
         let identity = identity();
         let mut phone = device(&identity, "phone");
-        phone.grant("/a".to_owned());
+        phone.grant("/a".to_owned(), as_spelled).unwrap();
         phone.verify(at(5));
         let renewed = identity.renewed(None, at(1_800_000_000)).unwrap();
 
@@ -286,7 +367,7 @@ mod tests {
         let id = identity.device_id();
         devices.verify(&id, at(7)).unwrap();
         devices.rename(&id, name("tablet")).unwrap();
-        devices.grant(&id, "/a".to_owned()).unwrap();
+        devices.grant(&id, "/a".to_owned(), as_spelled).unwrap();
         devices
             .record_connection(&id, address("10.0.0.2"), identity.certificate().clone())
             .unwrap();
@@ -343,7 +424,10 @@ mod tests {
         let not_paired = Err(PairingError::NotPaired(stranger));
         assert_eq!(devices.revoke(&stranger).map(|_| ()), not_paired);
         assert_eq!(devices.rename(&stranger, name("x")), not_paired);
-        assert_eq!(devices.grant(&stranger, "/a".to_owned()), not_paired);
+        assert_eq!(
+            devices.grant(&stranger, "/a".to_owned(), as_spelled),
+            not_paired
+        );
         assert_eq!(devices.withdraw_grant(&stranger, "/a"), not_paired);
         assert_eq!(devices.verify(&stranger, at(1)), not_paired);
         assert_eq!(devices.clear_verification(&stranger), not_paired);

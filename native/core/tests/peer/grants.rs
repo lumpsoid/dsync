@@ -2,7 +2,7 @@
 //! one generic refusal, and the factory - so the filesystem - never
 //! reached for a root the device was not granted.
 
-use dsync_core::{NOT_GRANTED, Replica, ReplicaError};
+use dsync_core::{GRANTS_NEST, NOT_GRANTED, Replica, ReplicaError, resolve_grant};
 use dsync_domain::ReplicaRoot;
 
 use crate::support::{Host, identity, serve, somewhere, with_deadline};
@@ -123,4 +123,87 @@ async fn a_granted_root_that_does_not_exist_yet_is_reported_missing_and_created(
         .await
         .unwrap();
     assert!(fresh.is_dir());
+}
+
+/// A single file may be granted: the grant check is the same exact match.
+#[tokio::test]
+async fn a_granted_file_is_served_and_a_file_inside_a_granted_folder_is_not() {
+    let (server, client) = hosts();
+    let inside = server.root("granted").join("inside.txt");
+    std::fs::write(&inside, "in a granted folder, not granted itself").unwrap();
+    let file = server.root("notes.txt");
+    std::fs::write(&file, "granted on its own").unwrap();
+    server
+        .store()
+        .update(|devices| {
+            devices.grant(
+                &client.identity.device_id(),
+                file.to_str().unwrap().to_owned(),
+                resolve_grant,
+            )
+        })
+        .unwrap();
+
+    assert_eq!(
+        hello_refusal(&server, &client, inside.to_str().unwrap())
+            .await
+            .as_deref(),
+        Some(NOT_GRANTED)
+    );
+    assert_eq!(
+        hello_refusal(&server, &client, file.to_str().unwrap()).await,
+        None
+    );
+}
+
+/// Grants that nest only as the host resolves them now - one replaced by
+/// a link into another after both were granted - refuse every hello from
+/// that device, after the grant check.
+#[cfg(unix)]
+#[tokio::test]
+async fn grants_made_to_nest_after_granting_refuse_the_hello() {
+    let (server, client) = hosts();
+    let granted = server.root("granted");
+    let other = server.root("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(granted.join("inner")).unwrap();
+    server
+        .store()
+        .update(|devices| {
+            devices.grant(
+                &client.identity.device_id(),
+                other.to_str().unwrap().to_owned(),
+                resolve_grant,
+            )
+        })
+        .unwrap();
+
+    // Positive control: the same grants, nothing moved, are served.
+    for root in [&granted, &other] {
+        assert_eq!(
+            hello_refusal(&server, &client, root.to_str().unwrap()).await,
+            None
+        );
+    }
+
+    std::fs::remove_dir(&other).unwrap();
+    std::os::unix::fs::symlink(granted.join("inner"), &other).unwrap();
+
+    for root in [&granted, &other] {
+        assert_eq!(
+            hello_refusal(&server, &client, root.to_str().unwrap())
+                .await
+                .as_deref(),
+            Some(GRANTS_NEST),
+            "{}",
+            root.display()
+        );
+    }
+    // A root never granted still gets exactly the generic refusal.
+    assert_eq!(
+        hello_refusal(&server, &client, server.root("elsewhere").to_str().unwrap())
+            .await
+            .as_deref(),
+        Some(NOT_GRANTED)
+    );
 }

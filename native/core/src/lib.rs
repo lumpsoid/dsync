@@ -87,14 +87,14 @@ pub use granted_roots::GrantedRoots;
 pub use interface_addresses::interface_addresses;
 pub use link_error::LinkError;
 pub use local_replica::LocalReplica;
-pub use paired_device::{DifferentKey, PairedDevice};
+pub use paired_device::{DifferentKey, GrantNests, PairedDevice, resolve_grant};
 pub use paired_device_store::{
     PAIRED_DEVICES_FORMAT_VERSION, PairedDeviceStore, PairedDeviceStoreError,
 };
 pub use paired_devices::{PairedDevices, PairingError};
 pub use peer_dialer::{DialedPeer, PeerDialError, PeerDialer};
 pub use peer_event::{PeerEvent, PeerRefusal};
-pub use peer_listener::{NOT_GRANTED, PeerBindError, PeerListener, bind_peer};
+pub use peer_listener::{GRANTS_NEST, NOT_GRANTED, PeerBindError, PeerListener, bind_peer};
 pub use peer_pin::CertificateRefusal;
 pub use profile_run::{
     EntryFailure, EntryOutcome, EntryReport, ListedEntry, ProfileEvent, ProfileReport, ProfileRun,

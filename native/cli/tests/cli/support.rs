@@ -475,7 +475,9 @@ pub fn seed_device(state: &Path, name: &str, roots: &[&str], issued: SystemTime)
         issued,
     );
     for root in roots {
-        device.grant((*root).to_owned());
+        device
+            .grant((*root).to_owned(), |root: &str| PathBuf::from(root))
+            .unwrap();
     }
     PairedDeviceStore::new(&StateDir::new(state))
         .update(|devices| devices.add(device.clone()))

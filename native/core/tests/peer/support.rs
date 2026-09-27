@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime};
 use dsync_core::{
     DeviceIdentity, DialedPeer, LocalReplica, PairedDevice, PairedDeviceStore, PeerDialError,
     PeerDialer, PeerEvent, PeerListener, ReplicaError, StateDir, Symlinks, bind_peer,
+    resolve_grant,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{EntryId, HostFacts, Jobs, PeerName, Platform, ReplicaSpec, Side, Tuning};
@@ -108,7 +109,9 @@ impl Host {
             SystemTime::now(),
         );
         for root in roots {
-            device.grant(root.to_str().unwrap().to_owned());
+            device
+                .grant(root.to_str().unwrap().to_owned(), resolve_grant)
+                .unwrap();
         }
         self.store().update(|devices| devices.add(device)).unwrap();
     }

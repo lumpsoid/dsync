@@ -5,7 +5,9 @@
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use dsync_core::{DeviceIdentityStore, PairedDeviceStore, PairedDevices, PairingError, PeerDialer};
+use dsync_core::{
+    DeviceIdentityStore, PairedDeviceStore, PairedDevices, PairingError, PeerDialer, resolve_grant,
+};
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{DeviceId, Location, PeerName};
 
@@ -69,7 +71,7 @@ impl Hub {
             .map_err(text)?
             .expanded_path(self.facts.home())
             .map_err(text)?;
-        self.change_devices(|devices| devices.grant(&id, root))
+        self.change_devices(|devices| devices.grant(&id, root, resolve_grant))
     }
 
     pub(crate) fn withdraw_grant(&self, device_id: &str, root: &str) -> Handled {

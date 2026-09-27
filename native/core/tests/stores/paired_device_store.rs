@@ -4,11 +4,12 @@
 //! another major refused by name.
 
 use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use dsync_core::{
-    DeviceIdentity, PairedDevice, PairedDeviceStore, PairedDeviceStoreError, PairedDevices,
-    PairingError, StateDir,
+    DeviceIdentity, GrantNests, PairedDevice, PairedDeviceStore, PairedDeviceStoreError,
+    PairedDevices, PairingError, StateDir, resolve_grant,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
@@ -22,6 +23,11 @@ fn at(seconds: u64) -> SystemTime {
 
 fn identity() -> DeviceIdentity {
     DeviceIdentity::generate("peer", at(1_790_000_000)).unwrap()
+}
+
+/// Every path resolves to itself: no links, nothing moved.
+fn as_spelled(root: &str) -> PathBuf {
+    PathBuf::from(root)
 }
 
 fn name(text: &str) -> PeerName {
@@ -204,7 +210,9 @@ fn a_later_minor_with_fields_this_build_does_not_know_still_reads() {
     let fixture = Fixture::new();
     let phone = identity();
     let mut paired = device(&phone, "phone");
-    paired.grant("/home/me/notes".to_owned());
+    paired
+        .grant("/home/me/notes".to_owned(), as_spelled)
+        .unwrap();
     fixture.add(paired.clone());
     let mut json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(fixture.store().path()).unwrap()).unwrap();
@@ -225,7 +233,9 @@ fn devices_round_trip_through_add_and_a_fresh_load() {
     let fixture = Fixture::new();
     let (phone, laptop) = (identity(), identity());
     let mut first = device(&phone, "phone");
-    first.grant("/home/me/notes".to_owned());
+    first
+        .grant("/home/me/notes".to_owned(), as_spelled)
+        .unwrap();
     fixture.add(first.clone());
     fixture.add(device(&laptop, "laptop"));
 
@@ -328,7 +338,7 @@ fn recording_a_connection_updates_the_address_and_certificate_and_survives_a_rel
     let fixture = Fixture::new();
     let phone = identity();
     let mut paired = device(&phone, "phone");
-    paired.grant("/a".to_owned());
+    paired.grant("/a".to_owned(), as_spelled).unwrap();
     fixture.add(paired);
     let renewed = phone.renewed(None, at(1_800_000_000)).unwrap();
 
@@ -401,7 +411,7 @@ fn grants_are_additive_idempotent_and_survive_a_reload_without_touching_others()
     for root in ["/home/me/notes", "/home/me/photos", "/home/me/notes"] {
         fixture
             .store()
-            .update(|devices| devices.grant(&id, root.to_owned()))
+            .update(|devices| devices.grant(&id, root.to_owned(), as_spelled))
             .unwrap();
     }
 
@@ -418,6 +428,43 @@ fn grants_are_additive_idempotent_and_survive_a_reload_without_touching_others()
     );
 }
 
+/// Grants are judged as this host resolves them: a link to a granted
+/// folder is that folder under another spelling, and is refused.
+#[cfg(unix)]
+#[test]
+fn a_grant_resolving_to_a_granted_folder_under_another_spelling_is_refused() {
+    let fixture = Fixture::new();
+    let phone = identity();
+    let id = phone.device_id();
+    fixture.add(device(&phone, "phone"));
+    let place = TempDir::new().unwrap();
+    let real = place.path().join("real");
+    let link = place.path().join("link");
+    fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let (real, link) = (
+        real.to_str().unwrap().to_owned(),
+        link.to_str().unwrap().to_owned(),
+    );
+    let grant = |root: &str| {
+        fixture
+            .store()
+            .update(|devices| devices.grant(&id, root.to_owned(), resolve_grant))
+    };
+
+    grant(&real).unwrap();
+    let before = fs::read(fixture.store().path()).unwrap();
+    assert!(matches!(
+        grant(&link),
+        Err(PairedDeviceStoreError::Pairing(PairingError::GrantNests(GrantNests { existing, .. })))
+            if existing == real
+    ));
+    assert_eq!(fs::read(fixture.store().path()).unwrap(), before);
+    // Positive control: the identical string again is no change.
+    grant(&real).unwrap();
+    assert_eq!(fixture.load().get(&id).unwrap().granted_roots().len(), 1);
+}
+
 #[test]
 fn withdrawing_takes_one_root_and_keeps_the_rest_and_a_never_granted_one_is_fine() {
     let fixture = Fixture::new();
@@ -427,7 +474,7 @@ fn withdrawing_takes_one_root_and_keeps_the_rest_and_a_never_granted_one_is_fine
     for root in ["/a", "/b"] {
         fixture
             .store()
-            .update(|devices| devices.grant(&id, root.to_owned()))
+            .update(|devices| devices.grant(&id, root.to_owned(), as_spelled))
             .unwrap();
     }
 
@@ -448,7 +495,7 @@ fn withdrawing_takes_one_root_and_keeps_the_rest_and_a_never_granted_one_is_fine
     assert!(matches!(
         fixture
             .store()
-            .update(|devices| devices.grant(&stranger, "/a".to_owned())),
+            .update(|devices| devices.grant(&stranger, "/a".to_owned(), as_spelled)),
         Err(PairedDeviceStoreError::Pairing(PairingError::NotPaired(_)))
     ));
     assert!(matches!(

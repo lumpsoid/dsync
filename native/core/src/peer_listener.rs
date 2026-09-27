@@ -33,7 +33,7 @@ use tokio_rustls::server::TlsStream;
 
 use crate::device_identity::DeviceIdentity;
 use crate::granted_roots::GrantedRoots;
-use crate::paired_device::PairedDevice;
+use crate::paired_device::{PairedDevice, resolve_grant};
 use crate::paired_device_store::PairedDeviceStore;
 use crate::paired_devices::PairedDevices;
 use crate::peer_event::{PeerEvent, PeerRefusal};
@@ -47,6 +47,13 @@ use crate::transport::{Liveness, Transport};
 /// The one answer to a `hello` for a root the device may not reach -
 /// whether it exists, is readable or is simply not granted.
 pub const NOT_GRANTED: &str = "this device is not authorized to reach that replica";
+
+/// The answer to a `hello` for a granted root while two of the device's
+/// grants nest as this host resolves them now (a path moved or was
+/// replaced by a link after granting). Given only after the root passed
+/// the grant check, so it says nothing about roots not granted.
+pub const GRANTS_NEST: &str =
+    "this device's granted roots now overlap on this host; withdraw one to sync";
 
 #[derive(Debug, thiserror::Error)]
 #[error("cannot listen on {address}: {source}")]
@@ -145,17 +152,21 @@ where
                 });
                 let (open, home) = (served.open.clone(), served.home.clone());
                 let symlinks = Symlinks::WithinGrants(GrantedRoots::of(&device));
-                // `open` is reached only for a root `device` was granted.
+                // `open` is reached only for a root `device` was granted,
+                // while its grants do not nest.
                 let session = ReplicaServer::new(
                     move |spec: ReplicaSpec| {
-                        let opening = device
-                            .serves_spec(&spec, home.as_deref())
-                            .then(|| open(spec, symlinks.clone()));
+                        let granted = device.serves_spec(&spec, home.as_deref());
+                        let (device, open, symlinks) =
+                            (device.clone(), open.clone(), symlinks.clone());
                         async move {
-                            match opening {
-                                Some(opening) => opening.await,
-                                None => Err(ReplicaError::Refused(NOT_GRANTED.to_owned())),
+                            if !granted {
+                                return Err(ReplicaError::Refused(NOT_GRANTED.to_owned()));
                             }
+                            if grants_nest(device).await {
+                                return Err(ReplicaError::Refused(GRANTS_NEST.to_owned()));
+                            }
+                            open(spec, symlinks).await
                         }
                     },
                     served.tuning,
@@ -225,6 +236,20 @@ where
                 Ok(()) => PeerRefusal::Handshake(error),
             },
         }
+    }
+}
+
+/// Whether two of `device`'s grants nest as this host resolves them now,
+/// resolved off the executor since it asks the filesystem.
+async fn grants_nest(device: PairedDevice) -> bool {
+    let resolving =
+        tokio::task::spawn_blocking(move || device.nesting_grants(resolve_grant).is_some());
+    match resolving.await {
+        Ok(nest) => nest,
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(_) => panic!("the runtime shut down while a device's grants resolved"),
+        },
     }
 }
 

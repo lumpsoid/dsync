@@ -1,12 +1,20 @@
 //! One device this installation has paired with (SPEC §4.4).
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{DeviceId, PeerName, ReplicaSpec};
+use dsync_domain::{DeviceId, PathStyle, PeerName, Platform, ReplicaSpec, first_nesting, nests};
 
 use crate::certificate::Certificate;
+use crate::replica_lock::canonical_root;
+
+/// How this host's own paths compare when grants are judged for nesting.
+const HOST_STYLE: PathStyle = match Platform::HOST {
+    Platform::Unix => PathStyle::Posix,
+    Platform::Windows => PathStyle::Windows,
+};
 
 /// A paired device: the certificate pinned for it (its device id is the
 /// certificate's key hash, never stored beside it, so the two cannot
@@ -26,6 +34,24 @@ pub struct PairedDevice {
     paired_at: SystemTime,
     last_known_address: PeerAddress,
     verified_at: Option<SystemTime>,
+}
+
+/// A grant refused because, resolved on this host, it would lie inside
+/// `existing`, contain it, or name the same place under another spelling.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "cannot grant {new}: it overlaps {existing}, already granted to this device (grants never nest)"
+)]
+pub struct GrantNests {
+    pub new: String,
+    pub existing: String,
+}
+
+/// `expanded_root` as this host resolves it for grant checks
+/// ([`canonical_root`]); a root that cannot be resolved is taken as
+/// spelled.
+pub fn resolve_grant(expanded_root: &str) -> PathBuf {
+    canonical_root(Path::new(expanded_root)).unwrap_or_else(|_| PathBuf::from(expanded_root))
 }
 
 /// A certificate offered for a device carries a different key: not a
@@ -122,9 +148,48 @@ impl PairedDevice {
             .is_ok_and(|root| self.serves_root(&root))
     }
 
-    /// Lets this device reach `expanded_root`. Idempotent.
-    pub fn grant(&mut self, expanded_root: String) {
+    /// Lets this device reach `expanded_root` - a folder or a single file.
+    /// Refused when, as `resolve` resolves them on this host, it lies
+    /// inside one of this device's grants, contains one, or names the same
+    /// place as one spelled differently: a device's grants never nest.
+    /// Re-granting the identical string is a no-op. The typed string is
+    /// what is stored, since [`Self::serves_root`] matches it exactly.
+    pub fn grant(
+        &mut self,
+        expanded_root: String,
+        resolve: impl Fn(&str) -> PathBuf,
+    ) -> Result<(), GrantNests> {
+        if self.granted_roots.contains(&expanded_root) {
+            return Ok(());
+        }
+        let new = resolve(&expanded_root);
+        let new = new.to_string_lossy();
+        let clash = self
+            .granted_roots
+            .iter()
+            .find(|existing| nests(&new, &resolve(existing).to_string_lossy(), HOST_STYLE));
+        if let Some(existing) = clash {
+            return Err(GrantNests {
+                new: expanded_root,
+                existing: existing.clone(),
+            });
+        }
         self.granted_roots.insert(expanded_root);
+        Ok(())
+    }
+
+    /// Two of this device's grants that nest as `resolve` resolves them
+    /// now - paths can move after granting - if any do.
+    pub fn nesting_grants(&self, resolve: impl Fn(&str) -> PathBuf) -> Option<(&str, &str)> {
+        let roots: Vec<&str> = self.granted_roots.iter().map(String::as_str).collect();
+        // A name that is not UTF-8 compares by its lossy spelling: at worst
+        // two such names read as one and the grants are refused.
+        let resolved: Vec<String> = roots
+            .iter()
+            .map(|root| resolve(root).to_string_lossy().into_owned())
+            .collect();
+        let resolved: Vec<&str> = resolved.iter().map(String::as_str).collect();
+        first_nesting(&resolved, HOST_STYLE).map(|(first, second)| (roots[first], roots[second]))
     }
 
     /// Takes a grant back. A root never granted is not an error: the
