@@ -376,13 +376,16 @@ SPEC section that owns the detail.
 - **Two phones behind separate carrier NATs cannot reach each other.** One
   side needs a direct route or both need a shared overlay network such as
   WireGuard or Tailscale (SPEC §16).
-- **Nested folders are not locked out of each other.** A second run on a
-  folder another run is syncing is refused because the folder is in use,
-  whichever pair or device started it; run it again when the first
-  finishes. But a run on `~/Docs` and one on `~/Docs/Photos` lock different
-  folders, so both proceed. Nothing is corrupted: files the other run
-  changes are skipped as changed during sync and the next run settles them,
-  so start one at a time (SPEC §4.3, §16).
+- **Nested folders across different profiles are not locked out of each
+  other.** A second run on a folder another run is syncing is refused
+  because the folder is in use, whichever profile, entry or device started
+  it; run it again when the first finishes. But `~/Docs` in one profile and
+  `~/Docs/Photos` in another lock different folders, so both proceed.
+  Nothing is corrupted: files the other run changes are skipped as changed
+  during sync and the next run settles them, so start one at a time (SPEC
+  §4.3, §16). Nesting *within* one profile's own entries is refused
+  outright when the profile is loaded or saved, before either root is ever
+  touched (SPEC §12).
 - **A folder reached through a symlink is not locked.** The lock covers the
   folder a run names, not a granted folder a link inside it leads to, so a
   run on that folder directly and one through the link proceed together,
