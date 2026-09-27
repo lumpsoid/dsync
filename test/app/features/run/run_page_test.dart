@@ -156,6 +156,120 @@ void main() {
       // from a phone and one from a desktop can be read side by side.
       expect(clipboard.single, report);
     });
+
+    /// A window wide enough for the shell's rail, where the report is a
+    /// dialog rather than a sheet.
+    void wideWindow(WidgetTester tester) {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+    }
+
+    const report = 'phases\n  connect 12 ms\n  scan 1.2 s';
+
+    testWidgets('a phone-sized window gets the sheet, with its handle', (
+      tester,
+    ) async {
+      await open(
+        tester,
+        runView(standing: over, phase: finished(), timings: report),
+      );
+      await openTimings(tester);
+
+      expect(
+        tester.widget<BottomSheet>(find.byType(BottomSheet)).showDragHandle,
+        isTrue,
+      );
+      expect(find.byType(Dialog), findsNothing);
+    });
+
+    testWidgets('a wide window gets a dialog, no drag handle, and Esc '
+        'closes it', (tester) async {
+      await open(
+        tester,
+        runView(standing: over, phase: finished(), timings: report),
+      );
+      wideWindow(tester);
+      await tester.pump();
+      await openTimings(tester);
+
+      expect(find.byType(Dialog), findsOneWidget);
+      // No sheet, so no handle for a mouse to fail to drag.
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.text('Timings'), findsOneWidget);
+      expect(find.byKey(const Key('run-timings-close')), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // The dialog is gone and the page it was over is still there.
+      expect(find.byType(Dialog), findsNothing);
+      expect(find.text('Sync with desktop'), findsOneWidget);
+    });
+
+    testWidgets('the report is selectable text in a monospace stack', (
+      tester,
+    ) async {
+      await open(
+        tester,
+        runView(standing: over, phase: finished(), timings: report),
+      );
+      wideWindow(tester);
+      await tester.pump();
+      await openTimings(tester);
+
+      final text = find.byKey(const Key('run-timings-report'));
+      expect(
+        find.ancestor(of: text, matching: find.byType(SelectionArea)),
+        findsOneWidget,
+      );
+      final style = tester.widget<Text>(text).style!;
+      expect(style.fontFamily, 'monospace');
+      expect(style.fontFamilyFallback, contains('Consolas'));
+      expect(style.fontFamilyFallback, contains('Menlo'));
+    });
+
+    testWidgets('the dialog copies the whole report, and says so', (
+      tester,
+    ) async {
+      final clipboard = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboard.add((call.arguments as Map)['text'] as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+
+      await open(
+        tester,
+        runView(standing: over, phase: finished(), timings: report),
+      );
+      wideWindow(tester);
+      await tester.pump();
+      await openTimings(tester);
+      expect(find.text('Copy'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('run-timings-copy')));
+      await tester.pump();
+
+      expect(clipboard.single, report);
+      expect(find.text('Copied'), findsOneWidget);
+
+      // The confirmation is brief: the button offers the copy again.
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('Copy'), findsOneWidget);
+    });
   });
 
   testWidgets('connecting: its line and Stop, no Done', (tester) async {

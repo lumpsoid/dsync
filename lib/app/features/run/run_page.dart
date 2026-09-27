@@ -61,7 +61,9 @@ import 'run_view_state.dart';
 /// **Its width is read once, here.** The page is pushed over the app
 /// shell, so it decides its own [RunLayout] from the window's width and
 /// hands the plain value down: the plan as a table on a wide window, the
-/// phone's rows otherwise, and the page's column to match.
+/// phone's rows otherwise, and the page's column to match. The Timings
+/// report is handed the width itself, to choose a sheet or a dialog by the
+/// shell's breakpoint ([showRunTimings]).
 ///
 /// **The review works from the keyboard** ([RunReviewKeyboard]), and Esc
 /// anywhere on the page does what the system back does ([PopOnEscape]) —
@@ -165,7 +167,9 @@ class _RunPageState extends State<RunPage> {
             },
             child: child!,
           ),
-          child: PopOnEscape(child: _buildScaffold(context, state, layout)),
+          child: PopOnEscape(
+            child: _buildScaffold(context, state, layout, constraints.maxWidth),
+          ),
         );
       },
     );
@@ -175,6 +179,7 @@ class _RunPageState extends State<RunPage> {
     BuildContext context,
     SyncRunViewState state,
     RunLayout layout,
+    double windowWidth,
   ) {
     return Scaffold(
       appBar: AppBar(
@@ -203,7 +208,11 @@ class _RunPageState extends State<RunPage> {
                 key: const Key('run-timings'),
                 icon: const Icon(Icons.speed_outlined),
                 tooltip: 'Timings',
-                onPressed: () => showRunTimings(context, _controller),
+                onPressed: () => showRunTimings(
+                  context,
+                  _controller,
+                  windowWidth: windowWidth,
+                ),
               ),
             },
           ),
