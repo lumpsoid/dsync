@@ -319,9 +319,7 @@ class RunSetupController {
           target: name.isEmpty
               ? DraftTarget(form.draft)
               : SavedProfileTarget(name),
-          localRootPath: form.entry.localRoot,
           deviceName: form.deviceName,
-          remoteRootPath: form.entry.remoteRoot,
           address: typed.isEmpty ? null : typed,
           dryRun: state.dryRun,
         ),

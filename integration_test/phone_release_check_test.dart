@@ -261,9 +261,7 @@ class _Session {
             ],
           ),
         ),
-        localRootPath: _appRoot,
         deviceName: desktop.name,
-        remoteRootPath: _desktopPushRoot,
         address: _desktopAddress,
         dryRun: false,
       ),
@@ -388,9 +386,7 @@ class _Session {
 
   RunRequest _profileRequest(String deviceName) => RunRequest(
     target: const SavedProfileTarget(_killProfile),
-    localRootPath: _appBig,
     deviceName: deviceName,
-    remoteRootPath: _desktopBigRoot,
     address: _desktopAddress,
     dryRun: false,
   );

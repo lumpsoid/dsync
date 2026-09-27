@@ -23,6 +23,7 @@ abstract class RunPhaseView {
       case 9: return RunPhaseViewReplicaBusy.load(deserializer);
       case 10: return RunPhaseViewDeletesDeclined.load(deserializer);
       case 11: return RunPhaseViewNoSummary.load(deserializer);
+      case 12: return RunPhaseViewFinishedWithIssues.load(deserializer);
       default: throw Exception('Unknown variant index for RunPhaseView: ' + index.toString());
     }
   }
@@ -674,5 +675,64 @@ class RunPhaseViewNoSummary extends RunPhaseView {
     }());
 
     return fullString ?? 'RunPhaseViewNoSummary';
+  }
+}
+
+@immutable
+class RunPhaseViewFinishedWithIssues extends RunPhaseView {
+  const RunPhaseViewFinishedWithIssues({
+    required this.entries,
+  }) : super();
+
+  static RunPhaseViewFinishedWithIssues load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = RunPhaseViewFinishedWithIssues(
+      entries: TraitHelpers.deserializeVectorEntryIssueView(deserializer),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final List<EntryIssueView> entries;
+
+  RunPhaseViewFinishedWithIssues copyWith({
+    List<EntryIssueView>? entries,
+  }) {
+    return RunPhaseViewFinishedWithIssues(
+      entries: entries ?? this.entries,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(12);
+    TraitHelpers.serializeVectorEntryIssueView(entries, serializer);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is RunPhaseViewFinishedWithIssues
+      && listEquals(entries, other.entries);
+  }
+
+  @override
+  int get hashCode => entries.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'entries: $entries'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'RunPhaseViewFinishedWithIssues';
   }
 }

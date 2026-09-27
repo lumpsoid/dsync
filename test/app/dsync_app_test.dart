@@ -4,6 +4,7 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/dsync_app.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
@@ -460,8 +461,9 @@ void main() {
     expect(find.byType(RunPage), findsOneWidget);
     expect(find.textContaining('Could not reach'), findsOneWidget);
     final first = requestIn(tester);
-    expect(first.localRootPath, localRoot.path);
-    expect(first.remoteRootPath, '~/notes');
+    final firstEntry = (first.target as DraftTarget).draft.entries.single;
+    expect(firstEntry.localRoot, localRoot.path);
+    expect(firstEntry.remoteRoot, '~/notes');
     expect(first.address, '10.0.0.9:4242');
 
     await tester.pageBack();
@@ -485,8 +487,9 @@ void main() {
 
     expect(find.byType(RunPage), findsOneWidget);
     final second = requestIn(tester);
-    expect(second.localRootPath, localRoot.path);
-    expect(second.remoteRootPath, '~/notes');
+    final secondEntry = (second.target as DraftTarget).draft.entries.single;
+    expect(secondEntry.localRoot, localRoot.path);
+    expect(secondEntry.remoteRoot, '~/notes');
     expect(second.address, '10.0.0.9:4242');
   });
 }

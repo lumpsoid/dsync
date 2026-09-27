@@ -1,4 +1,5 @@
 import 'conflict_row.dart';
+import 'entry_run.dart';
 import 'plan_row.dart';
 import 'replica_info.dart';
 import 'run_phase.dart';
@@ -9,11 +10,16 @@ import 'sync_history.dart';
 
 /// A run, whole, as the core sends it after every change: what to show,
 /// every decision in it already made. Each one stands alone.
+///
+/// A session runs a profile's [entries] in turn; everything from
+/// [connectedAt] on describes the [current] one alone.
 final class RunView {
   const RunView({
     required this.dryRun,
     required this.phase,
     required this.standing,
+    required this.entries,
+    required this.current,
     required this.connectedAt,
     required this.replicas,
     required this.tallies,
@@ -31,6 +37,14 @@ final class RunView {
   final bool dryRun;
   final RunPhase phase;
   final RunStanding standing;
+
+  /// The profile's entries, in the order they run; empty until the target
+  /// resolves.
+  final List<EntryRun> entries;
+
+  /// Which of [entries] the plan and tallies describe; `null` before the
+  /// first starts.
+  final int? current;
 
   /// When both sides connected; `null` before.
   final DateTime? connectedAt;

@@ -1,8 +1,10 @@
 import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
+import 'package:dsync/app/core_link/models/entry_run_status.dart';
 import 'package:dsync/app/core_link/models/file_status.dart';
 import 'package:dsync/app/core_link/models/plan_action.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/run_intent.dart';
 import 'package:dsync/app/core_link/models/run_phase.dart';
 import 'package:dsync/app/core_link/models/run_standing.dart';
@@ -132,6 +134,45 @@ void main() {
       isA<RunDeletesDeclined>(),
     );
     expect(phase(const wire.RunPhaseViewNoSummary()), isA<RunNoSummary>());
+    final issues =
+        phase(finishedWithIssues(1, 'not run')) as RunFinishedWithIssues;
+    expect(
+      (issues.entries.single.index, issues.entries.single.reason),
+      (1, 'not run'),
+    );
+  });
+
+  test('a session\'s entries read with their roots, statuses and the one '
+      'running', () {
+    final read = link.runView(
+      runView(
+        entries: [
+          entryRun(status: const wire.EntryStatusViewSkipped(reason: 'gone')),
+          entryRun(
+            kind: wire.RootKindView.file,
+            local: '/data/todo.md',
+            remote: '~/todo.md',
+          ),
+          entryRun(status: const wire.EntryStatusViewPending()),
+        ],
+        current: 1,
+      ),
+    );
+
+    expect(read.current, 1);
+    expect(
+      [for (final entry in read.entries) entry.status],
+      [
+        isA<EntrySkipped>().having((s) => s.reason, 'reason', 'gone'),
+        isA<EntryRunning>(),
+        isA<EntryPending>(),
+      ],
+    );
+    final file = read.entries[1];
+    expect(
+      (file.kind, file.localRoot, file.remoteRoot),
+      (RootKind.file, '/data/todo.md', '~/todo.md'),
+    );
   });
 
   test('the header\'s facts, the progress and the timings read as sent', () {

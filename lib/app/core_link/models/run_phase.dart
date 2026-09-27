@@ -1,4 +1,5 @@
 import 'decision_summary.dart';
+import 'entry_issue.dart';
 import 'mass_delete_side.dart';
 import 'run_summary_info.dart';
 
@@ -78,4 +79,12 @@ final class RunDeletesDeclined extends RunPhase {
 /// The run ended without a summary, and nobody stopped it.
 final class RunNoSummary extends RunPhase {
   const RunNoSummary();
+}
+
+/// A profile of several entries ran to its end and [entries] did not
+/// sync; the rest did. A resume runs every entry again.
+final class RunFinishedWithIssues extends RunPhase {
+  const RunFinishedWithIssues(this.entries);
+
+  final List<EntryIssue> entries;
 }

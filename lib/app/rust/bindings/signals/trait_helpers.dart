@@ -241,6 +241,30 @@ class TraitHelpers {
     return List.generate(length, (_) => EntryDraft.deserialize(deserializer));
   }
 
+  static void serializeVectorEntryIssueView(List<EntryIssueView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<EntryIssueView> deserializeVectorEntryIssueView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => EntryIssueView.deserialize(deserializer));
+  }
+
+  static void serializeVectorEntryRunView(List<EntryRunView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<EntryRunView> deserializeVectorEntryRunView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => EntryRunView.deserialize(deserializer));
+  }
+
   static void serializeVectorEntryView(List<EntryView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

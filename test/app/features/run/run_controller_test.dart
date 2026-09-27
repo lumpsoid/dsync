@@ -57,9 +57,7 @@ void main() {
       await harness.start(
         const RunRequest(
           target: SavedProfileTarget('notes'),
-          localRootPath: '/data/notes',
           deviceName: 'desktop',
-          remoteRootPath: '~/notes',
           address: null,
           dryRun: false,
         ),

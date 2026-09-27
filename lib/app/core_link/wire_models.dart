@@ -6,6 +6,9 @@ import 'models/conflict_choice.dart';
 import 'models/conflict_info.dart';
 import 'models/conflict_row.dart';
 import 'models/decision_summary.dart';
+import 'models/entry_issue.dart';
+import 'models/entry_run.dart';
+import 'models/entry_run_status.dart';
 import 'models/entry_view.dart';
 import 'models/device_identity_info.dart';
 import 'models/file_status.dart';
@@ -246,6 +249,16 @@ RunView runView(wire.RunView view) => RunView(
     wire.RunStandingView.resumable => RunStanding.resumable,
     wire.RunStandingView.over => RunStanding.over,
   },
+  entries: [
+    for (final entry in view.entries)
+      EntryRun(
+        kind: rootKind(entry.kind),
+        localRoot: entry.localRoot,
+        remoteRoot: entry.remoteRoot,
+        status: _entryStatus(entry.status),
+      ),
+  ],
+  current: view.current,
   connectedAt: switch (view.connectedAtMs) {
     final ms? => _at(ms),
     null => null,
@@ -346,7 +359,21 @@ RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
   wire.RunPhaseViewReplicaBusy(:final message) => RunReplicaBusy(message),
   wire.RunPhaseViewDeletesDeclined() => const RunDeletesDeclined(),
   wire.RunPhaseViewNoSummary() => const RunNoSummary(),
+  wire.RunPhaseViewFinishedWithIssues(:final entries) => RunFinishedWithIssues([
+    for (final issue in entries)
+      EntryIssue(index: issue.index, reason: issue.reason),
+  ]),
   _ => throw StateError('unknown run phase: $phase'),
+};
+
+EntryRunStatus _entryStatus(wire.EntryStatusView status) => switch (status) {
+  wire.EntryStatusViewPending() => const EntryPending(),
+  wire.EntryStatusViewRunning() => const EntryRunning(),
+  wire.EntryStatusViewSynced() => const EntrySynced(),
+  wire.EntryStatusViewSkipped(:final reason) => EntrySkipped(reason),
+  wire.EntryStatusViewFailed(:final message) => EntryFailed(message),
+  wire.EntryStatusViewNotRun() => const EntryNotRun(),
+  _ => throw StateError('unknown entry status: $status'),
 };
 
 SkippedPathInfo _skipped(wire.SkippedView value) => SkippedPathInfo(

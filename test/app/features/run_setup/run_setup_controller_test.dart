@@ -475,9 +475,7 @@ void main() {
       expect(controller.state.remoteRootError, isNull);
       expect(controller.state.addressError, isNull);
       final request = requests().single;
-      expect(request.localRootPath, notes());
       expect(request.deviceName, 'desktop');
-      expect(request.remoteRootPath, '~/notes');
       expect(request.address, isNull);
       expect(request.dryRun, isFalse);
       // Unnamed: a one-off run of the pair itself.

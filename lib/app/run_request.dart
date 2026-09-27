@@ -5,19 +5,16 @@ import 'core_link/models/run_target.dart';
 ///
 /// Constructed in exactly one place — `RunSetupController.start()` — after
 /// every field the head checks has validated. The Run feature hands
-/// [target], [dryRun] and [address] to the core's `startRun` verbatim; the
-/// rest is what the page shows about the run while the core runs it.
+/// [target], [dryRun] and [address] to the core's `startRun` verbatim;
+/// [deviceName] titles the page. What the run syncs - every entry's roots -
+/// the page learns from the core's views of the run, not from here.
 ///
-/// [remoteRootPath] is carried exactly as typed, `~` and all: the desktop
-/// expands it in its own environment (SPEC §4.4). [address] is SPEC §4.4's
-/// manual re-entry hatch, `host` or `host:port` as typed; `null` means the
-/// paired device's cached address.
+/// [address] is SPEC §4.4's manual re-entry hatch, `host` or `host:port`
+/// as typed; `null` means the paired device's cached address.
 class RunRequest {
   const RunRequest({
     required this.target,
-    required this.localRootPath,
     required this.deviceName,
-    required this.remoteRootPath,
     required this.address,
     required this.dryRun,
   });
@@ -26,15 +23,8 @@ class RunRequest {
   /// itself.
   final RunTarget target;
 
-  /// Side `a`: an absolute path on this device, the folder the user chose
-  /// through the platform's folder chooser.
-  final String localRootPath;
-
   /// This device's own name for the peer, as the page titles the run.
   final String deviceName;
-
-  /// Side `b`, unexpanded.
-  final String remoteRootPath;
 
   /// Where to dial the peer this once, or `null` for where it was last
   /// reached.

@@ -10,9 +10,9 @@ import 'scan_cost_sheet.dart';
 ///
 /// Reached from the Run page's app bar, which is where the question these
 /// answer is actually asked — "why was that slow" is asked looking at a run,
-/// and the root a probe needs is the one that run was over
-/// (`RunRequest.localRootPath`). It is a page rather than another sheet
-/// because its probe runs for minutes and ends in a report of its own; a
+/// and the root a probe needs is the one that run was over (the running
+/// entry's folder, from the run's view). It is a page rather than another
+/// sheet because its probe runs for minutes and ends in a report of its own; a
 /// sheet that spawns sheets is not a place to wait. (The read-rate probe
 /// measured the Dart core's I/O and went with it, plan D11.)
 ///

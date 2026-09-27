@@ -121,13 +121,51 @@ void main() {
       await tester.tap(find.byKey(const Key('run-diagnostics')));
       await tester.pumpAndSettle();
 
-      expect(find.text(request.localRootPath), findsOneWidget);
+      expect(find.text(localRoot), findsOneWidget);
       expect(
         tester
             .widget<FilledButton>(find.byKey(const Key('scan-cost-run')))
             .onPressed,
         isNotNull,
       );
+    });
+
+    testWidgets('it probes the running entry\'s folder, a file entry\'s own '
+        'folder', (tester) async {
+      await open(
+        tester,
+        runView(
+          standing: over,
+          phase: finished(),
+          entries: [
+            entryRun(status: const wire.EntryStatusViewSynced()),
+            entryRun(
+              kind: wire.RootKindView.file,
+              local: '/data/papers/todo.md',
+              remote: '~/todo.md',
+            ),
+          ],
+          current: 1,
+        ),
+      );
+
+      await tester.tap(find.byKey(const Key('run-diagnostics')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('/data/papers'), findsOneWidget);
+      expect(find.text(localRoot), findsNothing);
+    });
+
+    testWidgets('it waits for the core to list the entries', (tester) async {
+      await open(
+        tester,
+        runView(phase: connecting, entries: [], current: null),
+      );
+      expect(find.byKey(const Key('run-diagnostics')), findsNothing);
+
+      // Listed, not yet started: the first entry's folder.
+      await deliver(tester, runView(phase: connecting, current: null));
+      expect(find.byKey(const Key('run-diagnostics')), findsOneWidget);
     });
   });
 
@@ -844,14 +882,7 @@ void main() {
           lastB: lastSync,
           history: synced(lastSync, lastSync),
         ),
-      ),
-      runs: RunRequest(
-        target: request.target,
-        localRootPath: longRoot,
-        deviceName: request.deviceName,
-        remoteRootPath: request.remoteRootPath,
-        address: null,
-        dryRun: false,
+        entries: [entryRun(local: longRoot)],
       ),
     );
 
@@ -1241,6 +1272,38 @@ void main() {
       expect(find.byKey(const Key('run-resume')), findsOneWidget);
       expect(find.byKey(const Key('run-done')), findsOneWidget);
     });
+  });
+
+  testWidgets('finished with issues: each entry that did not sync, Resume '
+      'and Done', (tester) async {
+    await open(
+      tester,
+      runView(
+        standing: resumable,
+        phase: finishedWithIssues(0, 'the folder /data/gone is missing'),
+        entries: [
+          entryRun(
+            local: '/data/gone',
+            remote: '~/gone',
+            status: const wire.EntryStatusViewSkipped(
+              reason: 'the folder /data/gone is missing',
+            ),
+          ),
+          entryRun(status: const wire.EntryStatusViewSynced()),
+        ],
+        current: 1,
+      ),
+    );
+
+    expect(find.byKey(const Key('run-finished-with-issues')), findsOneWidget);
+    expect(
+      find.text('/data/gone ⇄ ~/gone: the folder /data/gone is missing'),
+      findsOneWidget,
+    );
+    expect(find.textContaining(localRoot), findsNothing, reason: 'synced');
+    expect(find.byKey(const Key('run-resume')), findsOneWidget);
+    expect(find.byKey(const Key('run-done')), findsOneWidget);
+    expect(find.byKey(const Key('run-stop')), findsNothing);
   });
 
   testWidgets('failed: the message and Done', (tester) async {

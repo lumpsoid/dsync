@@ -5,7 +5,10 @@
 use dsync_core::ProfileStore;
 use dsync_domain::{DIR_LEAF, Location, Platform, ProfileName, ReplicaLocation};
 use hub::signals::{CoreCommand, ReplyResult, RunIntent, RunTarget};
-use hub::views::{ActionChoiceView, ActionView, ConflictChoiceView, RunPhaseView, RunView};
+use hub::views::{
+    ActionChoiceView, ActionView, ConflictChoiceView, EntryStatusView, RunPhaseView,
+    RunStandingView, RunView,
+};
 
 use crate::support::{Head, one_entry, read, write};
 
@@ -57,6 +60,7 @@ fn stage(view: &RunView) -> &'static str {
         RunPhaseView::ReplicaBusy { .. } => "replica busy",
         RunPhaseView::DeletesDeclined => "deletes declined",
         RunPhaseView::NoSummary => "no summary",
+        RunPhaseView::FinishedWithIssues { .. } => "finished with issues",
     }
 }
 
@@ -442,39 +446,195 @@ async fn a_target_that_does_not_resolve_is_the_session_s_failure() {
     head.ok(steer(session, RunIntent::Close)).await;
 }
 
-/// Interim, until the session runs a profile's entries in turn.
+/// Saves `name` as a profile of one local folder entry per pair of leaves
+/// under the head's temp dir.
+fn entries_profile(head: &Head, name: &str, pairs: &[(&str, &str)]) {
+    let text: String = pairs
+        .iter()
+        .map(|(a, b)| {
+            format!(
+                "[[entries]]\na = {:?}\nb = {:?}\n",
+                head.path_text(a),
+                head.path_text(b)
+            )
+        })
+        .collect();
+    let profiles = head.path("support").join(DIR_LEAF).join("profiles");
+    write(&profiles.join(format!("{name}.toml")), &text);
+}
+
+fn statuses(view: &RunView) -> Vec<EntryStatusView> {
+    view.entries
+        .iter()
+        .map(|entry| entry.status.clone())
+        .collect()
+}
+
+/// Every snapshot but the last is live: no entry ends the session.
+fn live_until_the_end(views: &[RunView]) {
+    let (_, running) = views
+        .split_last()
+        .unwrap_or_else(|| unreachable!("some views"));
+    assert!(
+        running
+            .iter()
+            .all(|view| view.standing == RunStandingView::Live),
+        "{:?}",
+        stages(running)
+    );
+}
+
 #[tokio::test]
-async fn a_two_entry_profile_fails_to_start_for_now() {
+async fn a_profile_s_entries_run_in_turn_and_a_missing_one_is_skipped_for_the_rest() {
     let mut head = Head::new("studio").await;
-    for leaf in ["a", "b", "c", "d"] {
+    write(&head.path("a/one.txt"), "one");
+    write(&head.path("c/two.txt"), "two");
+    for leaf in ["b", "d"] {
         std::fs::create_dir_all(head.path(leaf)).unwrap_or_else(|error| panic!("{error}"));
     }
-    write(&head.path("a/new.txt"), "new");
-    let entry = |a: &str, b: &str| {
-        format!(
-            "[[entries]]\na = {:?}\nb = {:?}\n",
-            head.path_text(a),
-            head.path_text(b)
-        )
-    };
-    let (first, second) = (entry("a", "b"), entry("c", "d"));
-    let profiles = head.path("support").join(DIR_LEAF).join("profiles");
-    write(&profiles.join("two.toml"), &format!("{first}{second}"));
+    entries_profile(&head, "two", &[("a", "b"), ("c", "d")]);
+
     let (session, _) = head.ok(start("two", false)).await;
-    let views = head.run_until(session, is("failed")).await;
+    let mut views = head.run_until(session, is("reviewing")).await;
+    let first = views
+        .last()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    assert_eq!(first.current, Some(0));
+    assert_eq!(first.entries.len(), 2);
+    assert_eq!(first.entries[1].local_root, head.path_text("c"));
+    assert_eq!(first.entries[1].remote_root, head.path_text("d"));
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    views.extend(
+        head.run_until(session, |view| {
+            is("reviewing")(view) && view.current == Some(1)
+        })
+        .await,
+    );
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    views.extend(head.run_until(session, ended).await);
+    live_until_the_end(&views);
+    let done = views.last().unwrap_or_else(|| unreachable!("ended"));
     assert!(matches!(
-        &views[1].phase,
-        RunPhaseView::Failed { message }
-            if message.contains("multi-entry profiles are not supported yet")
+        &done.phase,
+        RunPhaseView::Finished(summary) if summary.applied == 2
     ));
+    assert_eq!(done.standing, RunStandingView::Over);
+    assert_eq!(
+        statuses(done),
+        [EntryStatusView::Synced, EntryStatusView::Synced]
+    );
+    assert_eq!(read(&head.path("b/one.txt")), "one");
+    assert_eq!(read(&head.path("d/two.txt")), "two");
+
+    // The first entry's synced folder goes; the second has more to sync.
+    std::fs::remove_dir_all(head.path("a")).unwrap_or_else(|error| panic!("{error}"));
+    write(&head.path("c/more.txt"), "more");
+    write(&head.path("c/skip.txt"), "not this one");
+    let (session, _) = head.ok(start("two", false)).await;
+    let mut views = head.run_until(session, is("reviewing")).await;
+    let review = views
+        .last()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    assert_eq!(review.current, Some(1));
+    assert!(matches!(
+        statuses(review)[0],
+        EntryStatusView::Skipped { ref reason } if reason.contains(&head.path_text("a"))
+    ));
+    // The intents index the running entry's plan.
+    let skip = row(review, "skip.txt");
+    let skipping = RunIntent::ChooseAction {
+        index: skip,
+        choice: ActionChoiceView::Skipped,
+    };
+    head.ok(steer(session, skipping)).await;
+    head.ok(steer(session, RunIntent::Confirm)).await;
+    views.extend(head.run_until(session, ended).await);
+    live_until_the_end(&views);
+    let done = views.last().unwrap_or_else(|| unreachable!("ended"));
+    let RunPhaseView::FinishedWithIssues { entries } = &done.phase else {
+        panic!("finished with issues, not {}", stage(done));
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].index, 0);
+    assert_eq!(done.standing, RunStandingView::Resumable);
+    assert_eq!(statuses(done)[1], EntryStatusView::Synced);
+    assert_eq!(read(&head.path("d/more.txt")), "more");
+    assert!(!head.path("d/skip.txt").exists());
+    assert!(!head.path("a").exists(), "a synced root is never recreated");
     head.ok(steer(session, RunIntent::Close)).await;
-    // Positive control: its first entry alone reaches the review.
-    write(&profiles.join("one.toml"), &first);
-    let (session, _) = head.ok(start("one", false)).await;
-    head.run_until(session, is("reviewing")).await;
-    head.ok(steer(session, RunIntent::Close)).await;
-    head.run_until(session, ended).await;
-    assert!(!head.path("b/new.txt").exists());
+}
+
+#[tokio::test]
+async fn a_pause_in_the_second_entry_resumes_from_the_first() {
+    let mut head = Head::new("studio").await;
+    write(&head.path("c/two.txt"), "two");
+    for leaf in ["a", "b", "d"] {
+        std::fs::create_dir_all(head.path(leaf)).unwrap_or_else(|error| panic!("{error}"));
+    }
+    entries_profile(&head, "two", &[("a", "b"), ("c", "d")]);
+    let (session, _) = head.ok(start("two", false)).await;
+    let second = |view: &RunView| is("reviewing")(view) && view.current == Some(1);
+    head.run_until(session, second).await;
+    head.ok(steer(session, RunIntent::Pause)).await;
+    let paused = head.run_until(session, is("paused")).await;
+    let paused = paused
+        .last()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    assert_eq!(paused.standing, RunStandingView::Resumable);
+    assert!(!head.path("d/two.txt").exists());
+
+    head.ok(steer(session, RunIntent::Foreground)).await;
+    let again = head.run_until(session, second).await;
+    assert_eq!(again[0].current, None);
+    assert_eq!(
+        statuses(&again[0]),
+        [EntryStatusView::Pending, EntryStatusView::Pending]
+    );
+    let started = again
+        .iter()
+        .find_map(|view| view.current)
+        .unwrap_or_else(|| unreachable!("the second entry started"));
+    assert_eq!(started, 0, "the first entry runs again first");
+    head.ok(steer(session, RunIntent::Confirm)).await;
+    let views = head.run_until(session, ended).await;
+    assert_eq!(
+        stage(views.last().unwrap_or_else(|| unreachable!("ended"))),
+        "finished"
+    );
+    assert_eq!(read(&head.path("d/two.txt")), "two");
+}
+
+/// Two entries whose roots differ as typed but nest once a symlink is
+/// followed: refused before either runs, named by the profile.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_profile_whose_roots_nest_through_a_symlink_is_refused_by_name() {
+    let mut head = Head::new("studio").await;
+    for leaf in ["a/inner", "b", "d"] {
+        std::fs::create_dir_all(head.path(leaf)).unwrap_or_else(|error| panic!("{error}"));
+    }
+    std::os::unix::fs::symlink(head.path("a"), head.path("link"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    entries_profile(&head, "nested", &[("a", "b"), ("link/inner", "d")]);
+    let (session, _) = head.ok(start("nested", false)).await;
+    let views = head.run_until(session, is("failed")).await;
+    let RunPhaseView::Failed { message } =
+        &views.last().unwrap_or_else(|| unreachable!("failed")).phase
+    else {
+        unreachable!("failed");
+    };
+    assert!(
+        message.starts_with("profile \"nested\": entries[0].a"),
+        "{message}"
+    );
+    // Positive control: the second entry alone runs.
+    entries_profile(&head, "inner", &[("link/inner", "d")]);
+    let (session, _) = head.ok(start("inner", false)).await;
+    let views = head.run_until(session, ended).await;
+    assert_eq!(
+        stage(views.last().unwrap_or_else(|| unreachable!("ended"))),
+        "finished"
+    );
 }
 
 #[cfg(unix)]
@@ -500,7 +660,7 @@ async fn a_run_whose_far_side_does_not_answer_fails_with_where_it_dialled() {
     let views = head.run_until(session, is("failed")).await;
     assert_eq!(stages(&views), ["connecting", "failed"]);
     assert!(matches!(
-        &views[1].phase,
-        RunPhaseView::Failed { message } if message.contains("nobody.sock")
+        views.last().map(|view| &view.phase),
+        Some(RunPhaseView::Failed { message }) if message.contains("nobody.sock")
     ));
 }

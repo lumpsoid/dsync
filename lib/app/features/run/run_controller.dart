@@ -1,16 +1,19 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 import '../../app_controller.dart';
 import '../../core_link/models/action_choice.dart';
 import '../../core_link/models/action_result.dart';
 import '../../core_link/models/conflict_choice.dart';
 import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/entry_run.dart';
 import '../../core_link/models/file_status.dart';
 import '../../core_link/models/plan_action.dart';
 import '../../core_link/models/plan_proposal.dart';
 import '../../core_link/models/replica_side.dart';
+import '../../core_link/models/root_kind.dart';
 import '../../core_link/models/run_intent.dart';
 import '../../core_link/models/run_phase.dart';
 import '../../core_link/models/run_session.dart';
@@ -98,7 +101,7 @@ class SyncRunController {
       );
       opened.complete(session);
       if (_disposed) return;
-      _views = session.views.listen((view) => _show(view, request));
+      _views = session.views.listen(_show);
     } on CoreFailure catch (e) {
       opened.complete(null);
       _showRefusal(e.message);
@@ -170,6 +173,7 @@ class SyncRunController {
       dryRun: state.dryRun,
       startedAt: null,
       header: null,
+      diagnosticsRoot: null,
       scanTally: null,
       skippedSymlinks: const [],
       unreadablePaths: const [],
@@ -188,11 +192,15 @@ class SyncRunController {
     _syncScreenWake(live: false);
   }
 
-  /// Renders [view] of [request]'s run: the core's values in this page's
-  /// words, nothing decided.
-  void _show(RunView view, RunRequest request) {
+  /// Renders [view]: the core's values in this page's words, nothing
+  /// decided. The header and the roots named are the running entry's.
+  void _show(RunView view) {
     if (_disposed) return;
-    final phase = _phase(view.phase, request);
+    final entry = switch (view.current) {
+      final index? => view.entries[index],
+      null => null,
+    };
+    final phase = _phase(view.phase, view.entries, entry);
     final results = <String, SyncRunResultRow>{
       for (final row in view.plan)
         if (row.outcome case final outcome?)
@@ -213,16 +221,20 @@ class SyncRunController {
         final at? => _clockTime(at),
         null => null,
       },
-      header: switch (view.replicas) {
-        (:final history, a: _, b: _) => SyncRunHeader(
-          localRoot: request.localRootPath,
-          remoteRoot: request.remoteRootPath,
+      header: switch ((view.replicas, entry)) {
+        ((:final history, a: _, b: _), final entry?) => SyncRunHeader(
+          localRoot: entry.localRoot,
+          remoteRoot: entry.remoteRoot,
           history: _history(history),
           firstSyncWarning: switch (history) {
             FirstSync() || OneSidedFirstSync() => firstSyncWarning,
             LastSynced() => null,
           },
         ),
+        _ => null,
+      },
+      diagnosticsRoot: switch (entry ?? view.entries.firstOrNull) {
+        final entry? => _folder(entry),
         null => null,
       },
       scanTally: switch (view.tallies) {
@@ -306,7 +318,11 @@ class SyncRunController {
     unawaited(live ? screenWake.enable() : screenWake.disable());
   }
 
-  SyncRunPhase _phase(RunPhase phase, RunRequest request) => switch (phase) {
+  SyncRunPhase _phase(
+    RunPhase phase,
+    List<EntryRun> entries,
+    EntryRun? entry,
+  ) => switch (phase) {
     RunConnecting() => const SyncRunConnecting(),
     RunScanning() => const SyncRunScanning(),
     RunReviewing() => const SyncRunAwaitingDecisions(),
@@ -318,8 +334,8 @@ class SyncRunController {
             ReplicaSide.b => 'the remote',
           },
           root: switch (side.side) {
-            ReplicaSide.a => request.localRootPath,
-            ReplicaSide.b => request.remoteRootPath,
+            ReplicaSide.a => entry?.localRoot,
+            ReplicaSide.b => entry?.remoteRoot,
           },
           deletes: side.deletes,
           archived: side.archived,
@@ -339,6 +355,10 @@ class SyncRunController {
     RunReplicaBusy(:final message) => SyncRunReplicaBusy(message),
     RunDeletesDeclined() => const SyncRunFailed(deletesDeclinedMessage),
     RunNoSummary() => const SyncRunFailed(noSummaryMessage),
+    RunFinishedWithIssues(entries: final issues) => SyncRunFinishedWithIssues([
+      for (final issue in issues)
+        '${_entryName(entries[issue.index])}: ${issue.reason}',
+    ]),
   };
 
   String _history(SyncHistory history) {
@@ -400,6 +420,16 @@ class SyncRunController {
     return 'just now';
   }
 }
+
+/// The folder on this device [entry] syncs: its root, or a file entry's
+/// own folder.
+String _folder(EntryRun entry) => switch (entry.kind) {
+  RootKind.folder => entry.localRoot,
+  RootKind.file => p.dirname(entry.localRoot),
+};
+
+/// [entry] as an issue line names it: both its roots.
+String _entryName(EntryRun entry) => '${entry.localRoot} ⇄ ${entry.remoteRoot}';
 
 const firstSyncWarning =
     'First sync: with no archive, a file present on one side only is '

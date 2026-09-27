@@ -4,12 +4,18 @@ part of 'signals.dart';
 /// A run as the head shows it, whole: sent after every change, so each
 /// one stands alone and the head renders the latest without folding
 /// anything. Built by the run's own state in `run/state.rs`.
+///
+/// A session runs a profile's entries one after another: `entries` lists
+/// them all, `current` is the one running (or that ran last), and every
+/// field from `connected_at_ms` on describes that entry alone.
 @immutable
 class RunView {
   const RunView({
     required this.dryRun,
     required this.phase,
     required this.standing,
+    required this.entries,
+    this.current,
     this.connectedAtMs,
     this.replicas,
     this.tally,
@@ -30,6 +36,8 @@ class RunView {
       dryRun: deserializer.deserializeBool(),
       phase: RunPhaseView.deserialize(deserializer),
       standing: RunStandingViewExtension.deserialize(deserializer),
+      entries: TraitHelpers.deserializeVectorEntryRunView(deserializer),
+      current: TraitHelpers.deserializeOptionU32(deserializer),
       connectedAtMs: TraitHelpers.deserializeOptionI64(deserializer),
       replicas: TraitHelpers.deserializeOptionReplicasView(deserializer),
       tally: TraitHelpers.deserializeOptionTalliesView(deserializer),
@@ -59,6 +67,8 @@ class RunView {
   final bool dryRun;
   final RunPhaseView phase;
   final RunStandingView standing;
+  final List<EntryRunView> entries;
+  final int? current;
   final int? connectedAtMs;
   final ReplicasView? replicas;
   final TalliesView? tally;
@@ -76,6 +86,8 @@ class RunView {
     bool? dryRun,
     RunPhaseView? phase,
     RunStandingView? standing,
+    List<EntryRunView>? entries,
+    int? Function()? current,
     int? Function()? connectedAtMs,
     ReplicasView? Function()? replicas,
     TalliesView? Function()? tally,
@@ -93,6 +105,8 @@ class RunView {
       dryRun: dryRun ?? this.dryRun,
       phase: phase ?? this.phase,
       standing: standing ?? this.standing,
+      entries: entries ?? this.entries,
+      current: current == null ? this.current : current(),
       connectedAtMs: connectedAtMs == null ? this.connectedAtMs : connectedAtMs(),
       replicas: replicas == null ? this.replicas : replicas(),
       tally: tally == null ? this.tally : tally(),
@@ -113,6 +127,8 @@ class RunView {
     serializer.serializeBool(dryRun);
     phase.serialize(serializer);
     standing.serialize(serializer);
+    TraitHelpers.serializeVectorEntryRunView(entries, serializer);
+    TraitHelpers.serializeOptionU32(current, serializer);
     TraitHelpers.serializeOptionI64(connectedAtMs, serializer);
     TraitHelpers.serializeOptionReplicasView(replicas, serializer);
     TraitHelpers.serializeOptionTalliesView(tally, serializer);
@@ -143,6 +159,8 @@ class RunView {
       && dryRun == other.dryRun
       && phase == other.phase
       && standing == other.standing
+      && listEquals(entries, other.entries)
+      && current == other.current
       && connectedAtMs == other.connectedAtMs
       && replicas == other.replicas
       && tally == other.tally
@@ -162,6 +180,8 @@ class RunView {
         dryRun,
         phase,
         standing,
+        entries,
+        current,
         connectedAtMs,
         replicas,
         tally,
@@ -185,6 +205,8 @@ class RunView {
         'dryRun: $dryRun, '
         'phase: $phase, '
         'standing: $standing, '
+        'entries: $entries, '
+        'current: $current, '
         'connectedAtMs: $connectedAtMs, '
         'replicas: $replicas, '
         'tally: $tally, '

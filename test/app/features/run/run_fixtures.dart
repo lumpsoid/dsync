@@ -13,8 +13,12 @@ import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 import '../../support/fake_hub.dart';
 
-/// The run the Run feature's tests start: this device's `/data/notes` with
-/// `~/notes` on the paired `desktop`, one-off (a draft, not a saved
+/// The run's one entry, as [runView] lists it by default.
+const localRoot = '/data/notes';
+const remoteRoot = '~/notes';
+
+/// The run the Run feature's tests start: this device's [localRoot] with
+/// [remoteRoot] on the paired `desktop`, one-off (a draft, not a saved
 /// profile).
 RunRequest runRequest({
   bool dryRun = false,
@@ -24,12 +28,10 @@ RunRequest runRequest({
   target: const DraftTarget(
     ProfileDraft(
       peerDeviceId: 'aaaa-bbbb-cccc-dddd',
-      entries: [EntryDraft(localRoot: '/data/notes', remoteRoot: '~/notes')],
+      entries: [EntryDraft(localRoot: localRoot, remoteRoot: remoteRoot)],
     ),
   ),
-  localRootPath: '/data/notes',
   deviceName: deviceName,
-  remoteRootPath: '~/notes',
   address: address,
   dryRun: dryRun,
 );
@@ -91,8 +93,22 @@ Future<void> pump() async {
 
 wire.Uint64 n(int value) => wire.Uint64(BigInt.from(value));
 
+/// One entry of a run session as the core lists it.
+wire.EntryRunView entryRun({
+  wire.RootKindView kind = wire.RootKindView.folder,
+  String local = localRoot,
+  String remote = remoteRoot,
+  wire.EntryStatusView status = const wire.EntryStatusViewRunning(),
+}) => wire.EntryRunView(
+  kind: kind,
+  localRoot: local,
+  remoteRoot: remote,
+  status: status,
+);
+
 /// A view of the run as the core sends it. Every field has a plain
-/// default, so a test names only what it is about. Nothing is worked out
+/// default, so a test names only what it is about: by default the session
+/// runs the one entry [localRoot] with [remoteRoot]. Nothing is worked out
 /// from anything else: a test that shows a finished run names its
 /// [standing], one whose plan moves bytes names [bytesToTransfer] and the
 /// two sides' [bytesToA] and [bytesToB], as the core would send them.
@@ -100,6 +116,8 @@ wire.RunView runView({
   bool dryRun = false,
   wire.RunPhaseView phase = const wire.RunPhaseViewScanning(),
   wire.RunStandingView standing = live,
+  List<wire.EntryRunView>? entries,
+  int? current = 0,
   DateTime? connectedAt,
   wire.ReplicasView? replicas,
   wire.TalliesView? tallies,
@@ -117,6 +135,8 @@ wire.RunView runView({
   dryRun: dryRun,
   phase: phase,
   standing: standing,
+  entries: entries ?? [entryRun()],
+  current: current,
   connectedAtMs: connectedAt?.millisecondsSinceEpoch,
   replicas: replicas,
   tally: tallies,
@@ -194,6 +214,13 @@ wire.RunPhaseView failedWith(String message) =>
 
 wire.RunPhaseView replicaBusy(String message) =>
     wire.RunPhaseViewReplicaBusy(message: message);
+
+/// A session of several entries ended, and the entry at [index] did not
+/// sync, for [reason].
+wire.RunPhaseView finishedWithIssues(int index, String reason) =>
+    wire.RunPhaseViewFinishedWithIssues(
+      entries: [wire.EntryIssueView(index: index, reason: reason)],
+    );
 
 /// SPEC §10's guard over the remote: [deletes] of its [archived] files.
 wire.RunPhaseView confirmingDeletes({int deletes = 40, int archived = 50}) =>

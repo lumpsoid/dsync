@@ -732,12 +732,22 @@ impl From<&SideDeletes> for MassDeleteView {
 /// A run as the head shows it, whole: sent after every change, so each
 /// one stands alone and the head renders the latest without folding
 /// anything. Built by the run's own state in `run/state.rs`.
+///
+/// A session runs a profile's entries one after another: `entries` lists
+/// them all, `current` is the one running (or that ran last), and every
+/// field from `connected_at_ms` on describes that entry alone.
 #[derive(Serialize, SignalPiece)]
 pub struct RunView {
     /// SPEC §11.3's `--dry-run`: the plan is shown and nothing applied.
     pub dry_run: bool,
     pub phase: RunPhaseView,
     pub standing: RunStandingView,
+    /// The profile's entries, in the order they run; empty until the
+    /// target resolves.
+    pub entries: Vec<EntryRunView>,
+    /// Which of `entries` the plan and tallies describe; `None` before the
+    /// first starts.
+    pub current: Option<u32>,
     /// When both sides connected; `None` before.
     pub connected_at_ms: Option<i64>,
     /// What each side's `hello` said, once both have.
@@ -800,6 +810,47 @@ pub enum RunPhaseView {
     DeletesDeclined,
     /// The run ended without a summary and nobody stopped it.
     NoSummary,
+    /// A profile of several entries ran to its end, and these did not
+    /// sync; the rest did. A resume runs every entry again.
+    FinishedWithIssues {
+        entries: Vec<EntryIssueView>,
+    },
+}
+
+/// One entry of a run session: its roots as typed, and how it went.
+#[derive(Serialize, SignalPiece)]
+pub struct EntryRunView {
+    pub kind: RootKindView,
+    /// Side A's path on this device: the folder, or the file itself.
+    pub local_root: String,
+    /// Side B's path on its host, unexpanded.
+    pub remote_root: String,
+    pub status: EntryStatusView,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, SignalPiece)]
+pub enum EntryStatusView {
+    /// Not started yet.
+    Pending,
+    Running,
+    Synced,
+    /// Not there to sync; nothing was written.
+    Skipped {
+        reason: String,
+    },
+    Failed {
+        message: String,
+    },
+    /// Never started: the session was stopped, or an earlier entry found
+    /// the device unreachable.
+    NotRun,
+}
+
+/// An entry that did not sync, by its place in the session's entries.
+#[derive(Serialize, SignalPiece)]
+pub struct EntryIssueView {
+    pub index: u32,
+    pub reason: String,
 }
 
 #[derive(Serialize, SignalPiece)]

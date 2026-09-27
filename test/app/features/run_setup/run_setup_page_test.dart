@@ -616,9 +616,7 @@ void main() {
       const RunSetupStarted(
         RunRequest(
           target: SavedProfileTarget('weekly'),
-          localRootPath: '/docs/notes',
           deviceName: 'desktop',
-          remoteRootPath: '~/notes',
           address: null,
           dryRun: true,
         ),
@@ -666,13 +664,11 @@ void main() {
     await tester.pump();
 
     final request = started.single;
-    expect(request.localRootPath, picked);
+    final draft = (request.target as DraftTarget).draft;
+    expect(draft.entries.single.localRoot, picked);
     expect(request.deviceName, 'desktop');
-    expect(
-      (request.target as DraftTarget).draft.peerDeviceId,
-      desktop.deviceId,
-    );
-    expect(request.remoteRootPath, '~/notes');
+    expect(draft.peerDeviceId, desktop.deviceId);
+    expect(draft.entries.single.remoteRoot, '~/notes');
     expect(request.address, '10.0.0.9:4242');
     expect(request.dryRun, isFalse);
   });

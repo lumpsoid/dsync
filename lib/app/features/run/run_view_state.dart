@@ -72,6 +72,22 @@ final class SyncRunFinished extends SyncRunPhase {
       Object.hash(applied, skipped, conflicts, failed, unreadable);
 }
 
+/// A profile of several entries ran to its end, and some did not sync:
+/// [issues] is one line per such entry, naming it and saying why. Not
+/// over: a resume runs every entry again, the synced ones as no-ops.
+final class SyncRunFinishedWithIssues extends SyncRunPhase {
+  const SyncRunFinishedWithIssues(this.issues);
+
+  final List<String> issues;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunFinishedWithIssues && listEquals(other.issues, issues);
+
+  @override
+  int get hashCode => Object.hashAll(issues);
+}
+
 /// The core has handed the plan to the review and waits on its answer
 /// (SPEC §11.3): the page's own plan and conflict rows turn into the
 /// review, each with its control. What each conflict offers rides on its
@@ -104,7 +120,8 @@ final class SyncRunConfirmingDeletes extends SyncRunPhase {
 
 /// One side of [SyncRunConfirmingDeletes]: the run deletes [deletes] of the
 /// [archived] files the last sync saw in [root], which is on [where] —
-/// "this device" or "the remote".
+/// "this device" or "the remote". [root] is the running entry's, `null`
+/// when the core has not said which entry runs.
 final class SyncRunDeletesOnSide {
   const SyncRunDeletesOnSide({
     required this.where,
@@ -114,7 +131,7 @@ final class SyncRunDeletesOnSide {
   });
 
   final String where;
-  final String root;
+  final String? root;
   final int deletes;
   final int archived;
 
@@ -493,6 +510,7 @@ class SyncRunViewState extends ChangeNotifier {
   RunStanding? _standing;
   bool _dryRun = false;
   SyncRunHeader? _header;
+  String? _diagnosticsRoot;
   SyncRunScanTally? _scanTally;
   List<String> _skippedSymlinks = const [];
   List<String> _unreadablePaths = const [];
@@ -537,6 +555,11 @@ class SyncRunViewState extends ChangeNotifier {
 
   /// `null` until both sides' `hello` is in.
   SyncRunHeader? get header => _header;
+
+  /// The folder on this device the Diagnostics page probes: the running
+  /// entry's (a file entry's own folder); `null` until the core has listed
+  /// the entries.
+  String? get diagnosticsRoot => _diagnosticsRoot;
 
   /// `null` until both scans have completed.
   SyncRunScanTally? get scanTally => _scanTally;
@@ -633,6 +656,7 @@ class SyncRunViewState extends ChangeNotifier {
     required bool dryRun,
     required String? startedAt,
     required SyncRunHeader? header,
+    required String? diagnosticsRoot,
     required SyncRunScanTally? scanTally,
     required List<String> skippedSymlinks,
     required List<String> unreadablePaths,
@@ -652,6 +676,7 @@ class SyncRunViewState extends ChangeNotifier {
     _dryRun = dryRun;
     _startedAt = startedAt;
     _header = header;
+    _diagnosticsRoot = diagnosticsRoot;
     _scanTally = scanTally;
     _skippedSymlinks = List.unmodifiable(skippedSymlinks);
     _unreadablePaths = List.unmodifiable(unreadablePaths);

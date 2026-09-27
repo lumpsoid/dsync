@@ -1,5 +1,6 @@
-//! A run from the head: the CLI's `sync` wiring (resolve, connect, run
-//! under a decider, report), one attempt after another in one session, and
+//! A run from the head: the CLI's `sync` wiring (resolve, then a
+//! [`ProfileRun`] connecting and running each entry in turn under a
+//! decider, report), one attempt after another in one session, and
 //! the run's state - [`RunState`], the one place its phase, review and
 //! outcome are decided - sent whole as `session`'s snapshots. What the
 //! user does arrives as intents; the state says what each one means.
@@ -16,14 +17,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use dsync_core::{
-    BatchDecider, Connector, Decider, DryRunDecider, PeerDialer, Run, RunEvent, RunStop,
-    interface_addresses,
+    BatchDecider, Connector, Decider, DryRunDecider, PeerDialer, ProfileEvent, ProfileReport,
+    ProfileRun, ProfileStop, interface_addresses,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
     Action, Command, EffectiveOptions, Flags, MassDelete, Mode, Plan, ProfileName, RunFlags, Side,
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::dispatch::{Handled, Hub, text};
@@ -34,7 +35,7 @@ use crate::throttle::{Throttle, Urgency, Verdict};
 use crate::views::millis;
 
 use sending::Sending;
-use state::{Choices, Ended, RunState, Snapshot, Steer};
+use state::{Choices, EntryRoots, Review, RunState, Snapshot, Steer};
 
 /// Events buffered between the run and the session, as the CLI's.
 const EVENT_BUFFER: usize = 256;
@@ -60,7 +61,7 @@ impl Hub {
             wake,
             shared: Mutex::new(Shared {
                 state: RunState::new(dry_run),
-                attempt: None,
+                stop: None,
                 pending: None,
                 throttle: Throttle::new(),
                 sending: Sending::Idle,
@@ -102,12 +103,12 @@ struct Launch {
 
 /// One attempt's wiring.
 struct Prepared {
+    /// The profile's name, for its refusals.
+    name: ProfileName,
     connector: Connector,
-    options: EffectiveOptions,
+    /// Every entry's, in the order they run.
+    entries: Vec<EffectiveOptions>,
     mode: Mode,
-    /// Side B's [`dsync_domain::Location::device_label`], naming a
-    /// keep-both copy.
-    peer_label: String,
 }
 
 impl Launch {
@@ -133,16 +134,7 @@ impl Launch {
             ),
         };
         let flags = run_flags(self.dry_run, Vec::new(), None)?;
-        let mut entries = profile.options(&name, &flags, facts).map_err(text)?;
-        // Interim, until the session sequences a profile's entries.
-        if entries.len() > 1 {
-            return Err(format!(
-                "profile \"{name}\" has {} entries; multi-entry profiles are not \
-                 supported yet",
-                entries.len()
-            ));
-        }
-        let options = entries.remove(0);
+        let entries = profile.options(&name, &flags, facts).map_err(text)?;
         let mut connector = Connector::new(
             hub.state.clone(),
             facts.home().map(str::to_owned),
@@ -155,18 +147,48 @@ impl Launch {
         if let Some(typed) = &self.address {
             connector = connector.with_peer_address(PeerAddress::parse(typed).map_err(text)?);
         }
-        let peer_label = options
+        Ok(Prepared {
+            name,
+            connector,
+            entries,
+            mode: flags.mode,
+        })
+    }
+}
+
+/// How the session lists `options`' entry: side A is this device's.
+fn roots(options: &EffectiveOptions) -> EntryRoots {
+    EntryRoots {
+        kind: options.kind(),
+        local_root: options.replica(Side::A).to_location().path().to_owned(),
+        remote_root: options.replica(Side::B).to_location().path().to_owned(),
+        peer_label: options
             .replica(Side::B)
             .to_location()
             .device_label()
-            .to_owned();
-        Ok(Prepared {
-            connector,
-            options,
-            mode: flags.mode,
-            peer_label,
-        })
+            .to_owned(),
     }
+}
+
+/// The `--timings` report of every entry that connected, each under its
+/// pair when there are several, as the CLI prints it; `None` when none
+/// connected.
+fn timings(entries: &[EffectiveOptions], report: &ProfileReport) -> Option<String> {
+    let mut text = None::<String>;
+    for (options, entry) in entries.iter().zip(&report.entries) {
+        if let Some(metrics) = &entry.metrics {
+            let text = text.get_or_insert_with(String::new);
+            if entries.len() > 1 {
+                text.push_str(&format!(
+                    "{} ↔ {}:\n",
+                    options.replica(Side::A),
+                    options.replica(Side::B)
+                ));
+            }
+            text.push_str(&metrics.render());
+        }
+    }
+    text
 }
 
 /// The head's run flags: interactive (the head decides) unless a dry run,
@@ -194,21 +216,6 @@ enum Wake {
     End,
 }
 
-/// A live attempt's handles.
-struct Attempt {
-    stop: RunStop,
-    /// Set on every stop, for an attempt still connecting (the run itself
-    /// does not see its stop until it executes).
-    stopping: watch::Sender<bool>,
-}
-
-impl Attempt {
-    fn stop(&self) {
-        self.stopping.send_replace(true);
-        self.stop.stop();
-    }
-}
-
 /// Where the answer to the question the decider waits on goes.
 enum Pending {
     Review(oneshot::Sender<Choices>),
@@ -217,7 +224,9 @@ enum Pending {
 
 struct Shared {
     state: RunState,
-    attempt: Option<Attempt>,
+    /// The live attempt's stop: it reaches an entry connecting, one
+    /// running, and the entries not yet started.
+    stop: Option<ProfileStop>,
     /// The question the decider waits on, if any.
     pending: Option<Pending>,
     throttle: Throttle,
@@ -311,8 +320,8 @@ impl RunControl {
             }
             Steer::Stop => {
                 // An attempt not yet attached is stopped as it attaches.
-                if let Some(attempt) = &shared.attempt {
-                    attempt.stop();
+                if let Some(stop) = &shared.stop {
+                    stop.stop();
                 }
             }
             Steer::Restart => {
@@ -327,35 +336,43 @@ impl RunControl {
 
     /// The attempt that is starting; stopped at once when the head already
     /// asked.
-    fn attach(&self, attempt: Attempt) {
+    fn attach(&self, stop: ProfileStop) {
         let mut shared = self.lock();
         if shared.state.is_suspending() {
-            attempt.stop();
+            stop.stop();
         }
-        shared.attempt = Some(attempt);
+        shared.stop = Some(stop);
     }
 
     /// The attempt ended as `end` says: nothing is waiting on it any more.
-    fn ended(self: &Arc<Self>, end: Ended) {
+    fn ended(self: &Arc<Self>, end: impl FnOnce(&mut RunState) -> Urgency) {
         let mut shared = self.lock();
-        shared.attempt = None;
+        shared.stop = None;
         shared.pending = None;
-        let urgency = shared.state.ended(end);
+        let urgency = end(&mut shared.state);
         self.publish(shared, urgency);
+    }
+
+    #[cfg(test)]
+    fn current(&self) -> Option<usize> {
+        self.lock().state.current()
     }
 
     fn is_over(&self) -> bool {
         self.lock().state.is_over()
     }
 
-    fn ask_review(self: &Arc<Self>, plan: &Plan) -> Asked<Choices> {
+    /// `None` when the plan is answered at once, keeping nothing; else the
+    /// head's answer to wait on and side B's label to name its keep-both
+    /// copies by.
+    fn ask_review(self: &Arc<Self>, plan: &Plan) -> Option<(oneshot::Receiver<Choices>, String)> {
         let mut shared = self.lock();
         let asked = match shared.state.review(plan) {
-            Some(now) => Asked::Answered(now),
-            None => {
+            Review::KeepNothing => None,
+            Review::Asked { peer_label } => {
                 let (answer, answered) = oneshot::channel();
                 shared.pending = Some(Pending::Review(answer));
-                Asked::Waiting(answered)
+                Some((answered, peer_label))
             }
         };
         self.publish(shared, Urgency::Now);
@@ -399,10 +416,10 @@ async fn run_session(
 
 async fn attempt(control: &Arc<RunControl>, hub: &Hub, launch: &Launch) {
     let Prepared {
+        name,
         connector,
-        options,
+        entries,
         mode,
-        peer_label,
     } = match launch.prepare(hub) {
         Ok(prepared) => prepared,
         Err(message) => {
@@ -410,57 +427,68 @@ async fn attempt(control: &Arc<RunControl>, hub: &Hub, launch: &Launch) {
             return;
         }
     };
+    control.update(|state| state.listed(entries.iter().map(roots).collect()));
     let (events, received) = mpsc::channel(EVENT_BUFFER);
-    let run = Run::new(events, hub.state.clone(), hub.tuning);
-    let (stopping, mut stopped) = watch::channel(false);
-    control.attach(Attempt {
-        stop: run.stopper(),
-        stopping,
-    });
-    let stop_asked = async {
-        // A dropped sender is no stop.
-        if stopped.wait_for(|stop| *stop).await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    };
-    let connected = tokio::select! {
-        connected = connector.connect(&options) => connected,
-        () = stop_asked => {
-            control.ended(Ended::StoppedConnecting);
-            return;
-        }
-    };
-    let connected = match connected {
-        Ok(connected) => connected,
-        Err(error) => {
-            control.ended(Ended::NotConnected(error.to_string()));
-            return;
-        }
-    };
-    control.update(|state| state.connected(millis(SystemTime::now())));
-    let (a, b) = (connected.a, connected.b);
+    let stop = ProfileStop::new();
+    control.attach(stop.clone());
+    let run = ProfileRun::new(
+        events,
+        hub.state.clone(),
+        hub.tuning,
+        hub.facts.home().map(str::to_owned),
+        stop,
+    );
     let mut head = HeadDecider {
         control: control.clone(),
-        peer_label,
     };
+    // The connect seam is written inline in each call: bound to a `let`,
+    // the closure's lifetime is inferred too general to compile.
     let executing = async {
         match mode {
-            Mode::DryRun => run.execute(a, b, &options, &mut DryRunDecider).await,
-            Mode::Batch => run.execute(a, b, &options, &mut BatchDecider).await,
-            Mode::Interactive => run.execute(a, b, &options, &mut head).await,
+            Mode::DryRun => {
+                run.execute(
+                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    &entries,
+                    &mut DryRunDecider,
+                )
+                .await
+            }
+            Mode::Batch => {
+                run.execute(
+                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    &entries,
+                    &mut BatchDecider,
+                )
+                .await
+            }
+            Mode::Interactive => {
+                run.execute(
+                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    &entries,
+                    &mut head,
+                )
+                .await
+            }
         }
     };
-    let (report, ()) = tokio::join!(executing, forward(control, received));
-    control.ended(Ended::Ran {
-        timings: report.metrics.render(),
-    });
+    let (result, ()) = tokio::join!(executing, forward(control, received));
+    match result {
+        Ok(report) => {
+            let timings = timings(&entries, &report);
+            control.ended(|state| state.ended(timings));
+        }
+        Err(overlap) => {
+            control.ended(|state| state.unprepared(format!("profile \"{name}\": {overlap}")));
+        }
+    }
 }
 
-/// Drains the run's events promptly (the channel is bounded: a slow
-/// reader would park the run) into the state.
-async fn forward(control: &Arc<RunControl>, mut events: mpsc::Receiver<RunEvent>) {
+/// Drains the profile run's events promptly (the channel is bounded: a
+/// slow reader would park the run) into the state.
+async fn forward(control: &Arc<RunControl>, mut events: mpsc::Receiver<ProfileEvent>) {
     while let Some(event) = events.recv().await {
-        control.update(|state| state.event(event));
+        let at_ms = millis(SystemTime::now());
+        control.update(|state| state.profile_event(event, at_ms));
     }
 }
 
@@ -469,16 +497,17 @@ async fn forward(control: &Arc<RunControl>, mut events: mpsc::Receiver<RunEvent>
 /// session gone before it answers keeps nothing and confirms nothing.
 struct HeadDecider {
     control: Arc<RunControl>,
-    peer_label: String,
 }
 
 impl Decider for HeadDecider {
     async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
-        let choices = match self.control.ask_review(plan) {
-            Asked::Answered(choices) => choices,
-            Asked::Waiting(answer) => answer.await.unwrap_or_else(|_| Choices::none()),
+        let Some((answer, peer_label)) = self.control.ask_review(plan) else {
+            return Vec::new();
         };
-        choices.actions(plan, &self.peer_label)
+        answer
+            .await
+            .unwrap_or_else(|_| Choices::none())
+            .actions(plan, &peer_label)
     }
 
     async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {
@@ -494,14 +523,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use dsync_core::RunEvent;
-    use dsync_domain::{Action, RelPath, RunSummary, Side};
+    use dsync_core::{BatchDecider, Connector, ProfileRun, ProfileStop, RunEvent, StateDir};
+    use dsync_domain::{
+        Action, EffectiveOptions, Entry, HostFacts, Location, Platform, Profile, ProfileName,
+        RelPath, ReplicaLocation, RunSummary, Side, Tuning,
+    };
     use tokio::sync::mpsc;
 
-    use super::{Ended, RunControl, RunState, Sending, Shared};
+    use super::{RunControl, RunState, Sending, Shared, forward};
     use crate::outbox::{Outbox, Outgoing};
+    use crate::signals::RunIntent;
     use crate::throttle::{REFRESH_INTERVAL, Throttle, Urgency};
-    use crate::views::{RunPhaseView, RunView};
+    use crate::views::{EntryStatusView, RunPhaseView, RunStandingView, RunView};
 
     fn control() -> (Arc<RunControl>, mpsc::UnboundedReceiver<Outgoing>) {
         let (out, outgoing) = Outbox::channel();
@@ -512,7 +545,7 @@ mod tests {
             wake,
             shared: Mutex::new(Shared {
                 state: RunState::new(false),
-                attempt: None,
+                stop: None,
                 pending: None,
                 throttle: Throttle::new(),
                 sending: Sending::Idle,
@@ -574,9 +607,7 @@ mod tests {
         let (control, mut outgoing) = control();
         control.update(|state| state.connected(1));
         control.update(|state| state.event(RunEvent::Summary(RunSummary::default())));
-        control.ended(Ended::Ran {
-            timings: String::new(),
-        });
+        control.ended(|state| state.ended(Some(String::new())));
         let mut lasts = Vec::new();
         while let Ok(Outgoing::Run(snapshot)) = outgoing.try_recv() {
             lasts.push(snapshot.last);
@@ -602,5 +633,88 @@ mod tests {
         // The flush finds nothing left to send.
         tokio::time::sleep(REFRESH_INTERVAL * 2).await;
         assert!(sent(&mut outgoing).is_empty());
+    }
+
+    /// Two folder entries under `dir`, `e<i>/a` with `e<i>/b`, all made.
+    fn two_entries(dir: &std::path::Path) -> Vec<EffectiveOptions> {
+        let side = |leaf: String| {
+            let path = dir.join(leaf);
+            std::fs::create_dir_all(&path).unwrap_or_else(|error| panic!("{error}"));
+            let location = Location::parse(&path.to_string_lossy(), Platform::HOST)
+                .unwrap_or_else(|error| panic!("{error}"));
+            ReplicaLocation::new(location, None).unwrap_or_else(|error| panic!("{error}"))
+        };
+        let entries = (0..2)
+            .map(|index| {
+                Entry::folder(side(format!("e{index}/a")), side(format!("e{index}/b")))
+                    .unwrap_or_else(|error| panic!("{error}"))
+            })
+            .collect();
+        let profile = Profile::new(entries).unwrap_or_else(|error| panic!("{error}"));
+        let home = dir.to_string_lossy().into_owned();
+        let facts = HostFacts::new(Platform::HOST, Some(home.clone()), Vec::new(), home);
+        let name = ProfileName::parse("two").unwrap_or_else(|error| panic!("{error}"));
+        let flags =
+            super::run_flags(false, Vec::new(), None).unwrap_or_else(|error| panic!("{error}"));
+        profile
+            .options(&name, &flags, &facts)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// The session's stop reaches the profile run while its second entry
+    /// connects - a connect that would never end - and the session ends
+    /// stopped, the first entry synced and the second never run.
+    #[tokio::test]
+    async fn a_stop_while_the_second_entry_connects_ends_the_session_at_once() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let entries = two_entries(dir.path());
+        let (control, mut outgoing) = control();
+        control.update(|state| state.listed(entries.iter().map(super::roots).collect()));
+        let (events, received) = mpsc::channel(super::EVENT_BUFFER);
+        let stop = ProfileStop::new();
+        control.attach(stop.clone());
+        let state_dir = StateDir::new(dir.path().join("state"));
+        let run = ProfileRun::new(events, state_dir.clone(), Tuning::DEFAULT, None, stop);
+        let connector = Connector::new(state_dir, None, Tuning::DEFAULT);
+        let second = entries[1].entry_id.clone();
+        let mut decider = BatchDecider;
+        let executing = run.execute(
+            |o| async {
+                if o.entry_id == second {
+                    std::future::pending::<()>().await;
+                }
+                connector.connect(o).await.map(|c| (c.a, c.b, c.peers))
+            },
+            &entries,
+            &mut decider,
+        );
+        let stopping = async {
+            while control.current() != Some(1) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            control.steer(RunIntent::Stop);
+        };
+        let (result, (), ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(executing, forward(&control, received), stopping)
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the stop did not end the run"));
+        let report = result.unwrap_or_else(|error| panic!("{error}"));
+        let timings = super::timings(&entries, &report);
+        control.ended(|state| state.ended(timings));
+        let last = sent(&mut outgoing)
+            .pop()
+            .unwrap_or_else(|| panic!("a snapshot"));
+        assert!(matches!(last.phase, RunPhaseView::Stopped { .. }));
+        assert_eq!(last.standing, RunStandingView::Over);
+        assert_eq!(last.current, Some(1));
+        assert_eq!(
+            last.entries
+                .iter()
+                .map(|entry| entry.status.clone())
+                .collect::<Vec<_>>(),
+            [EntryStatusView::Synced, EntryStatusView::NotRun]
+        );
+        assert!(last.timings.is_some_and(|text| text.contains(" ↔ ")));
     }
 }

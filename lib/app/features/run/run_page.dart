@@ -103,16 +103,17 @@ class _RunPageState extends State<RunPage> {
     super.dispose();
   }
 
-  /// Opens the Diagnostics page over this run's local replica.
+  /// Opens the Diagnostics page over [root], the running entry's folder on
+  /// this device.
   ///
   /// A probe may not run while the core says the run is live; the
   /// Diagnostics page takes a sentence it can show rather than a run state
   /// it would have to interpret.
-  Future<void> _openDiagnostics(SyncRunViewState state) {
+  Future<void> _openDiagnostics(SyncRunViewState state, String root) {
     return Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => DiagnosticsPage(
-          rootPath: widget.request.localRootPath,
+          rootPath: root,
           blockedReason: state.live
               ? 'A sync is running. Measuring now would compete with it for '
                     'the same storage, so neither figure would be honest — '
@@ -178,6 +179,7 @@ class _RunPageState extends State<RunPage> {
               SyncRunAwaitingDecisions() ||
               SyncRunConfirmingDeletes() ||
               SyncRunFinished() ||
+              SyncRunFinishedWithIssues() ||
               SyncRunStopped() ||
               SyncRunPaused() ||
               SyncRunReplicaBusy() ||
@@ -195,11 +197,19 @@ class _RunPageState extends State<RunPage> {
           // it leads to is read *beside* the Timings one — §17's `readFile`
           // and apply throughput against what this device's files cost to
           // read any other way — which is why the two are one tap apart.
-          IconButton(
-            key: const Key('run-diagnostics'),
-            icon: const Icon(Icons.biotech_outlined),
-            tooltip: 'Diagnostics',
-            onPressed: () => _openDiagnostics(state),
+          // It probes the running entry's folder, so it appears once the
+          // core has listed the entries.
+          ListenableBuilder(
+            listenable: state,
+            builder: (context, _) => switch (state.diagnosticsRoot) {
+              final root? => IconButton(
+                key: const Key('run-diagnostics'),
+                icon: const Icon(Icons.biotech_outlined),
+                tooltip: 'Diagnostics',
+                onPressed: () => _openDiagnostics(state, root),
+              ),
+              null => const SizedBox.shrink(),
+            },
           ),
           ListenableBuilder(
             listenable: state,
@@ -230,6 +240,7 @@ class _RunPageState extends State<RunPage> {
                 child: const Text('Stop'),
               ),
               SyncRunFinished() ||
+              SyncRunFinishedWithIssues() ||
               SyncRunStopped() ||
               SyncRunPaused() ||
               SyncRunReplicaBusy() ||
@@ -264,6 +275,7 @@ class _RunPageState extends State<RunPage> {
           SyncRunScanning() ||
           SyncRunApplying() ||
           SyncRunFinished() ||
+          SyncRunFinishedWithIssues() ||
           SyncRunStopped() ||
           SyncRunPaused() ||
           SyncRunReplicaBusy() ||
@@ -405,6 +417,7 @@ class _StageStrip extends StatelessWidget {
       SyncRunApplying() => _Stage.apply,
       SyncRunFinished() => _Stage.done,
       SyncRunIdle() ||
+      SyncRunFinishedWithIssues() ||
       SyncRunStopped() ||
       SyncRunPaused() ||
       SyncRunReplicaBusy() ||
@@ -520,6 +533,17 @@ class _StageText extends StatelessWidget {
       SyncRunFinished() => Text(
         state.dryRun ? 'Dry run finished' : 'Finished',
         style: theme.textTheme.titleMedium,
+      ),
+      SyncRunFinishedWithIssues(:final issues) => Column(
+        key: const Key('run-finished-with-issues'),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Finished, but not every entry synced',
+            style: theme.textTheme.titleMedium,
+          ),
+          for (final issue in issues) _NoticeLine.warning(issue),
+        ],
       ),
       SyncRunStopped(:final completedActions) => Text(
         stoppedMessage(completedActions),
@@ -1019,8 +1043,11 @@ class _DeletesBar extends StatelessWidget {
               for (final side in sides)
                 Text(
                   '${formatCount(side.deletes)} of the '
-                  '${formatCount(side.archived)} files on ${side.where} '
-                  '(${elidePath(side.root)}) would be deleted.',
+                  '${formatCount(side.archived)} files on ${side.where}'
+                  '${switch (side.root) {
+                    final root? => ' (${elidePath(root)})',
+                    null => '',
+                  }} would be deleted.',
                 ),
               const SizedBox(height: 4),
               const Text(

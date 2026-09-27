@@ -1,25 +1,33 @@
 //! A run as the head sees it, and what everything that happens to it does:
-//! the run's events, the decider's questions, the user's intents. Pure -
-//! the session in `run.rs` feeds it and carries out what it answers - and
-//! the one place the run's phase, its review and its outcome are decided;
-//! the head renders the [`Snapshot`]s it takes and decides nothing.
+//! the profile run's events, the decider's questions, the user's intents.
+//! Pure (the session in `run.rs` feeds it and carries out what it
+//! answers), and the one place the run's phase, its review and its
+//! outcome are decided; the head renders the [`Snapshot`]s it takes and
+//! decides nothing.
+//!
+//! Two levels: the session's (its entries, which one runs, how the head
+//! steered it, what it ended as) and the running entry's ([`EntryState`]:
+//! its replicas, plan, choices and outcomes, begun afresh as each entry
+//! starts, so one entry's paths never meet another's). The session stays
+//! live until the profile run returns: an entry that fails or is skipped
+//! is that entry's status, not the session's end.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dsync_core::RunEvent;
+use dsync_core::{EntryFailure, EntryOutcome, ProfileEvent, RunEvent, SkipReason};
 use dsync_domain::{
-    Action, MassDelete, Plan, RelPath, ReplicaInfo, RunSummary, ScanTally, Side, SideDeletes,
-    SkippedPath, Status,
+    Action, MassDelete, Plan, RelPath, ReplicaInfo, RootKind, RunSummary, ScanTally, Side,
+    SideDeletes, SkippedPath, Status,
 };
 
 use super::rows::{Outcomes, PlanRows};
 use crate::signals::RunIntent;
 use crate::throttle::Urgency;
 use crate::views::{
-    ActionChoiceView, ConflictChoiceView, DecisionSummaryView, MassDeleteView, PlanSummaryView,
-    ProgressView, ReplicasView, ResultView, RunPhaseView, RunStandingView, RunView, SkippedView,
-    SummaryView, TalliesView,
+    ActionChoiceView, ConflictChoiceView, DecisionSummaryView, EntryIssueView, EntryRunView,
+    EntryStatusView, MassDeleteView, PlanSummaryView, ProgressView, ReplicasView, ResultView,
+    RunPhaseView, RunStandingView, RunView, SkippedView, SummaryView, TalliesView,
 };
 
 /// What an intent asks the session to carry out.
@@ -40,17 +48,6 @@ pub(crate) enum Steer {
     Restart,
     /// No attempt is live and none will be: the session ends.
     End,
-}
-
-/// How an attempt ended, as the session saw it.
-pub(crate) enum Ended {
-    /// The run ran, to its end or until stopped; `timings` is its
-    /// `--timings` report.
-    Ran {
-        timings: String,
-    },
-    NotConnected(String),
-    StoppedConnecting,
 }
 
 /// Why the head stopped a live attempt.
@@ -74,6 +71,9 @@ enum Phase {
     ReplicaBusy(String),
     DeletesDeclined,
     NoSummary,
+    /// Several entries ran and these did not sync: each one's position
+    /// and why.
+    FinishedWithIssues(Vec<(usize, String)>),
 }
 
 impl Phase {
@@ -89,7 +89,8 @@ impl Phase {
             | Phase::Failed(_)
             | Phase::ReplicaBusy(_)
             | Phase::DeletesDeclined
-            | Phase::NoSummary => RunStandingView::Resumable,
+            | Phase::NoSummary
+            | Phase::FinishedWithIssues(_) => RunStandingView::Resumable,
             Phase::Finished(_) | Phase::Stopped(_) => RunStandingView::Over,
         }
     }
@@ -199,7 +200,18 @@ fn count(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
-/// What an attempt that failed ends as.
+/// What the decider's question about a plan comes to.
+#[derive(PartialEq, Eq, Debug)]
+pub(crate) enum Review {
+    /// Answered at once, keeping nothing: a run already stopping, a plan
+    /// with nothing in it, or no entry running to review it for.
+    KeepNothing,
+    /// The head reviews the plan; a keep-both copy it chooses is named from
+    /// `peer_label`, the running entry's side B.
+    Asked { peer_label: String },
+}
+
+/// What an entry that failed ends as.
 enum Failure {
     Failed(String),
     /// SPEC §4.3's held lock.
@@ -218,18 +230,84 @@ impl From<Failure> for Phase {
     }
 }
 
-/// A run session's state: its current attempt, and how the head steered
-/// it.
-pub(crate) struct RunState {
-    dry_run: bool,
-    phase: Phase,
-    suspend: Option<Suspend>,
-    /// The page left: the session ends with its attempt.
-    closing: bool,
+/// One entry of a session as the head lists it: its kind and its two
+/// roots' paths.
+pub(crate) struct EntryRoots {
+    pub(crate) kind: RootKind,
+    /// Side A's path on this device.
+    pub(crate) local_root: String,
+    /// Side B's path on its host, as typed.
+    pub(crate) remote_root: String,
+    /// Side B's [`dsync_domain::Location::device_label`], naming a
+    /// keep-both copy.
+    pub(crate) peer_label: String,
+}
+
+/// Where one entry of the session stands.
+enum EntryStatus {
+    Pending,
+    Running,
+    Ended(EntryOutcome),
+}
+
+impl EntryStatus {
+    fn view(&self) -> EntryStatusView {
+        match self {
+            EntryStatus::Pending => EntryStatusView::Pending,
+            EntryStatus::Running => EntryStatusView::Running,
+            EntryStatus::Ended(EntryOutcome::Synced(_)) => EntryStatusView::Synced,
+            EntryStatus::Ended(EntryOutcome::Skipped(reason)) => EntryStatusView::Skipped {
+                reason: skip_reason(reason),
+            },
+            EntryStatus::Ended(EntryOutcome::Failed(failure)) => EntryStatusView::Failed {
+                message: failure_message(failure),
+            },
+            EntryStatus::Ended(EntryOutcome::NotRun) => EntryStatusView::NotRun,
+        }
+    }
+
+    /// Why the entry did not sync; `None` when it did.
+    fn issue(&self) -> Option<String> {
+        match self {
+            EntryStatus::Ended(EntryOutcome::Synced(_)) => None,
+            EntryStatus::Ended(EntryOutcome::Skipped(reason)) => Some(skip_reason(reason)),
+            EntryStatus::Ended(EntryOutcome::Failed(failure)) => Some(failure_message(failure)),
+            EntryStatus::Pending
+            | EntryStatus::Running
+            | EntryStatus::Ended(EntryOutcome::NotRun) => Some("not run".to_owned()),
+        }
+    }
+}
+
+fn skip_reason(reason: &SkipReason) -> String {
+    match reason {
+        SkipReason::Missing(missing) => missing.to_string(),
+        SkipReason::ParentMissing(missing) => missing.to_string(),
+        SkipReason::WrongKind(wrong) => wrong.to_string(),
+    }
+}
+
+fn failure_message(failure: &EntryFailure) -> String {
+    match failure {
+        EntryFailure::Connect(error) => error.to_string(),
+        EntryFailure::Run(error) => error.to_string(),
+        EntryFailure::Dropped => "dropped mid-way by a second stop".to_owned(),
+    }
+}
+
+struct EntryRunState {
+    roots: EntryRoots,
+    status: EntryStatus,
+}
+
+/// The running entry, as the head sees it: begun afresh as each entry
+/// starts.
+struct EntryState {
     /// The head declined the delete guard's deletions.
     declined: bool,
-    /// The attempt's summary, once reported; what it ends as is decided
-    /// when it has ended, so nothing resumes an attempt still closing.
+    /// The run's summary, once reported; what a lone entry ends as is
+    /// decided when the session has ended, so nothing resumes a run still
+    /// closing.
     summary: Option<RunSummary>,
     /// The failure it ends as, once reported: the last one.
     failure: Option<Failure>,
@@ -248,17 +326,11 @@ pub(crate) struct RunState {
     /// How many of `reported` failed.
     failed: usize,
     progress: Option<(usize, usize)>,
-    timings: Option<String>,
 }
 
-impl RunState {
-    /// A session's first attempt, connecting.
-    pub(crate) fn new(dry_run: bool) -> RunState {
-        RunState {
-            dry_run,
-            phase: Phase::Connecting,
-            suspend: None,
-            closing: false,
+impl EntryState {
+    fn new() -> EntryState {
+        EntryState {
             declined: false,
             summary: None,
             failure: None,
@@ -272,40 +344,7 @@ impl RunState {
             reported: HashMap::new(),
             failed: 0,
             progress: None,
-            timings: None,
         }
-    }
-
-    /// A fresh attempt: everything the last one showed is gone.
-    fn begin(&mut self) {
-        *self = RunState {
-            closing: self.closing,
-            ..RunState::new(self.dry_run)
-        };
-    }
-
-    /// Whether the session is over: its last attempt ended for good, or
-    /// the page left.
-    pub(crate) fn is_over(&self) -> bool {
-        self.closing || self.phase.standing() == RunStandingView::Over
-    }
-
-    /// Whether the head asked a live attempt to stop.
-    pub(crate) fn is_suspending(&self) -> bool {
-        self.suspend.is_some()
-    }
-
-    /// The target would not resolve: nothing ran.
-    pub(crate) fn unprepared(&mut self, message: String) -> Urgency {
-        self.phase = Phase::Failed(message);
-        Urgency::Now
-    }
-
-    /// Both sides are connected, at `at_ms`.
-    pub(crate) fn connected(&mut self, at_ms: i64) -> Urgency {
-        self.phase = Phase::Scanning;
-        self.connected_at_ms = Some(at_ms);
-        Urgency::Now
     }
 
     /// Takes `plan` in, the first time it is seen (the decider and the
@@ -321,43 +360,11 @@ impl RunState {
         taken
     }
 
-    /// The decider asks about `plan`: `Some` answers at once - a run
-    /// already stopping keeps nothing, and a plan with nothing in it needs
-    /// no review - and `None` opens the review, every row as planned.
-    pub(crate) fn review(&mut self, plan: &Plan) -> Option<Choices> {
-        let taken = self.take_plan(plan);
-        if self.suspend.is_some() || taken.is_empty() {
-            self.phase = Phase::Applying;
-            return Some(Choices::none());
-        }
-        self.phase = Phase::Reviewing(taken);
-        None
-    }
-
-    /// SPEC §10's guard asks about `verdict`: `Some` answers at once (a
-    /// run already stopping applies nothing either way), `None` asks the
-    /// head.
-    pub(crate) fn ask_deletes(&mut self, verdict: &MassDelete) -> Option<bool> {
-        if self.suspend.is_some() {
-            return Some(false);
-        }
-        self.phase = Phase::ConfirmingDeletes(verdict.sides().to_vec());
-        None
-    }
-
-    /// Stopped or paused after `completed` actions, when the head asked.
-    fn suspended(&self, completed: usize) -> Option<Phase> {
-        self.suspend.map(|suspend| match suspend {
-            Suspend::Stop => Phase::Stopped(completed),
-            Suspend::Pause => Phase::Paused(completed),
-        })
-    }
-
     fn completed(&self) -> usize {
         self.progress.map_or(0, |(completed, _)| completed)
     }
 
-    pub(crate) fn event(&mut self, event: RunEvent) -> Urgency {
+    fn event(&mut self, event: RunEvent) -> Urgency {
         match event {
             RunEvent::Replicas { a, b, .. } => {
                 self.replicas = Some([a, b]);
@@ -414,33 +421,256 @@ impl RunState {
             }
         }
     }
+}
 
-    /// The attempt is over: what it ends as. A failure is shown as such;
-    /// otherwise a run the head stopped reads as stopped or paused after
-    /// the actions it completed (a stopped run still reports a summary),
-    /// and one nobody stopped as finished - or, with no summary, as ended
-    /// without one.
-    pub(crate) fn ended(&mut self, end: Ended) -> Urgency {
-        match end {
-            Ended::Ran { timings } => {
-                self.timings = Some(timings);
-                let completed = self.completed();
-                self.phase = match (self.failure.take(), self.summary) {
+/// A run session's state: its entries, the running one's state, and how
+/// the head steered it.
+pub(crate) struct RunState {
+    dry_run: bool,
+    phase: Phase,
+    suspend: Option<Suspend>,
+    /// The page left: the session ends with its attempt.
+    closing: bool,
+    entries: Vec<EntryRunState>,
+    /// The entry that runs, or ran last.
+    current: Option<usize>,
+    /// Actions completed by the entries before `current`.
+    completed_earlier: usize,
+    entry: EntryState,
+    timings: Option<String>,
+}
+
+impl RunState {
+    /// A session's first attempt, connecting.
+    pub(crate) fn new(dry_run: bool) -> RunState {
+        RunState {
+            dry_run,
+            phase: Phase::Connecting,
+            suspend: None,
+            closing: false,
+            entries: Vec::new(),
+            current: None,
+            completed_earlier: 0,
+            entry: EntryState::new(),
+            timings: None,
+        }
+    }
+
+    /// A fresh attempt, from the first entry: everything the last one
+    /// showed is gone but the entries' roots.
+    fn begin(&mut self) {
+        let entries = std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|entry| EntryRunState {
+                status: EntryStatus::Pending,
+                ..entry
+            })
+            .collect();
+        *self = RunState {
+            closing: self.closing,
+            entries,
+            ..RunState::new(self.dry_run)
+        };
+    }
+
+    /// Whether the session is over: its last attempt ended for good, or
+    /// the page left.
+    pub(crate) fn is_over(&self) -> bool {
+        self.closing || self.phase.standing() == RunStandingView::Over
+    }
+
+    /// Whether the head asked a live attempt to stop.
+    pub(crate) fn is_suspending(&self) -> bool {
+        self.suspend.is_some()
+    }
+
+    /// The entry that runs, or ran last.
+    #[cfg(test)]
+    pub(crate) fn current(&self) -> Option<usize> {
+        self.current
+    }
+
+    /// The target would not resolve, or was refused: nothing ran.
+    pub(crate) fn unprepared(&mut self, message: String) -> Urgency {
+        self.phase = Phase::Failed(message);
+        Urgency::Now
+    }
+
+    /// The target resolved to these entries, none started yet.
+    pub(crate) fn listed(&mut self, entries: Vec<EntryRoots>) -> Urgency {
+        self.entries = entries
+            .into_iter()
+            .map(|roots| EntryRunState {
+                roots,
+                status: EntryStatus::Pending,
+            })
+            .collect();
+        self.current = None;
+        Urgency::Now
+    }
+
+    /// The running entry's two sides are connected, at `at_ms`.
+    pub(crate) fn connected(&mut self, at_ms: i64) -> Urgency {
+        self.phase = Phase::Scanning;
+        self.entry.connected_at_ms = Some(at_ms);
+        Urgency::Now
+    }
+
+    /// One step of the profile run; `at_ms` is when it arrived.
+    pub(crate) fn profile_event(&mut self, event: ProfileEvent, at_ms: i64) -> Urgency {
+        match event {
+            // Listed from the options already, with their paths.
+            ProfileEvent::Entries { .. } => Urgency::Unseen,
+            ProfileEvent::EntryConnecting { entry } => {
+                self.completed_earlier += self.entry.completed();
+                self.entry = EntryState::new();
+                self.current = Some(entry);
+                self.phase = Phase::Connecting;
+                if let Some(listed) = self.entries.get_mut(entry) {
+                    listed.status = EntryStatus::Running;
+                }
+                Urgency::Now
+            }
+            ProfileEvent::EntryConnected { entry, .. } if self.current == Some(entry) => {
+                self.connected(at_ms)
+            }
+            ProfileEvent::Entry { entry, event } if self.current == Some(entry) => {
+                self.event(event)
+            }
+            ProfileEvent::EntryFinished { entry, outcome } => {
+                if let Some(listed) = self.entries.get_mut(entry) {
+                    listed.status = EntryStatus::Ended(outcome);
+                }
+                Urgency::Now
+            }
+            // Its `EntryFinished` says it.
+            ProfileEvent::EntryNotConnected { .. }
+            | ProfileEvent::EntryConnected { .. }
+            | ProfileEvent::Entry { .. } => Urgency::Unseen,
+        }
+    }
+
+    /// The decider asks about `plan`: kept nothing at once - a run
+    /// already stopping keeps nothing, a plan with nothing in it needs no
+    /// review, and no entry running has none to review - or the review
+    /// opens, every row as planned.
+    pub(crate) fn review(&mut self, plan: &Plan) -> Review {
+        let taken = self.entry.take_plan(plan);
+        let running = self.current.and_then(|index| self.entries.get(index));
+        match running {
+            Some(running) if self.suspend.is_none() && !taken.is_empty() => {
+                let peer_label = running.roots.peer_label.clone();
+                self.phase = Phase::Reviewing(taken);
+                Review::Asked { peer_label }
+            }
+            _ => {
+                self.phase = Phase::Applying;
+                Review::KeepNothing
+            }
+        }
+    }
+
+    /// SPEC §10's guard asks about `verdict`: `Some` answers at once (a
+    /// run already stopping applies nothing either way), `None` asks the
+    /// head.
+    pub(crate) fn ask_deletes(&mut self, verdict: &MassDelete) -> Option<bool> {
+        if self.suspend.is_some() {
+            return Some(false);
+        }
+        self.phase = Phase::ConfirmingDeletes(verdict.sides().to_vec());
+        None
+    }
+
+    /// Stopped or paused after `completed` actions, when the head asked.
+    fn suspended(&self, completed: usize) -> Option<Phase> {
+        self.suspend.map(|suspend| match suspend {
+            Suspend::Stop => Phase::Stopped(completed),
+            Suspend::Pause => Phase::Paused(completed),
+        })
+    }
+
+    /// One event of the running entry's run.
+    pub(crate) fn event(&mut self, event: RunEvent) -> Urgency {
+        self.entry.event(event)
+    }
+
+    /// The profile run returned: what the session ends as. `timings` is
+    /// the `--timings` report of the entries that connected, `None` when
+    /// none did.
+    pub(crate) fn ended(&mut self, timings: Option<String>) -> Urgency {
+        self.timings = timings;
+        self.phase = if self.entries.len() > 1 {
+            self.profile_end()
+        } else {
+            self.lone_entry_end()
+        };
+        Urgency::Now
+    }
+
+    /// A session of one entry ends as that entry's run did. A failure is
+    /// shown as such; otherwise a run the head stopped reads as stopped or
+    /// paused after the actions it completed (a stopped run still reports
+    /// a summary), and one nobody stopped as finished - or, with no
+    /// summary, as ended without one. One that never connected is failed,
+    /// or stopped while connecting.
+    fn lone_entry_end(&mut self) -> Phase {
+        match self.entries.first().map(|entry| &entry.status) {
+            Some(EntryStatus::Ended(EntryOutcome::Failed(EntryFailure::Connect(error)))) => self
+                .suspended(0)
+                .unwrap_or_else(|| Phase::Failed(error.to_string())),
+            Some(EntryStatus::Ended(EntryOutcome::NotRun)) => {
+                self.suspended(0).unwrap_or(Phase::Stopped(0))
+            }
+            _ => {
+                let completed = self.entry.completed();
+                match (self.entry.failure.take(), self.entry.summary) {
                     (Some(failure), _) => failure.into(),
                     (None, summary) => self.suspended(completed).unwrap_or(match summary {
                         Some(summary) => Phase::Finished(summary),
                         None => Phase::NoSummary,
                     }),
-                };
-            }
-            Ended::NotConnected(message) => {
-                self.phase = self.suspended(0).unwrap_or(Phase::Failed(message));
-            }
-            Ended::StoppedConnecting => {
-                self.phase = self.suspended(0).unwrap_or(Phase::Stopped(0));
+                }
             }
         }
-        Urgency::Now
+    }
+
+    /// A session of several entries: stopped or paused when the head
+    /// asked; finished, over every entry's summary, when all synced;
+    /// failed as a lone entry would be when the first could not connect
+    /// and so none ran; otherwise finished with the entries that did not
+    /// sync.
+    fn profile_end(&self) -> Phase {
+        let completed = self.completed_earlier + self.entry.completed();
+        if let Some(suspended) = self.suspended(completed) {
+            return suspended;
+        }
+        let summaries: Option<Vec<RunSummary>> = self
+            .entries
+            .iter()
+            .map(|entry| match &entry.status {
+                EntryStatus::Ended(EntryOutcome::Synced(summary)) => Some(*summary),
+                _ => None,
+            })
+            .collect();
+        if let Some(summaries) = summaries {
+            return Phase::Finished(summaries.iter().fold(RunSummary::default(), add));
+        }
+        if let [first, rest @ ..] = &self.entries[..]
+            && let EntryStatus::Ended(EntryOutcome::Failed(EntryFailure::Connect(error))) =
+                &first.status
+            && rest
+                .iter()
+                .all(|entry| matches!(entry.status, EntryStatus::Ended(EntryOutcome::NotRun)))
+        {
+            return Phase::Failed(error.to_string());
+        }
+        Phase::FinishedWithIssues(
+            self.entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| Some((index, entry.status.issue()?)))
+                .collect(),
+        )
     }
 
     fn reviewing(&self) -> Option<&PlanRows> {
@@ -463,7 +693,7 @@ impl RunState {
                 };
                 match self.reviewing() {
                     Some(plan) if plan.action_offers(at, choice) => {
-                        self.choices.actions[at] = choice;
+                        self.entry.choices.actions[at] = choice;
                         Steer::Changed
                     }
                     _ => Steer::Ignored,
@@ -475,7 +705,7 @@ impl RunState {
                 };
                 match self.reviewing() {
                     Some(plan) if plan.conflict_offers(at, choice) => {
-                        self.choices.conflicts[at] = choice;
+                        self.entry.choices.conflicts[at] = choice;
                         Steer::Changed
                     }
                     _ => Steer::Ignored,
@@ -484,29 +714,29 @@ impl RunState {
             RunIntent::Confirm => match self.reviewing() {
                 Some(_) => {
                     self.phase = Phase::Applying;
-                    Steer::Decide(self.choices.clone())
+                    Steer::Decide(self.entry.choices.clone())
                 }
                 None => Steer::Ignored,
             },
             RunIntent::AcceptAll => match self.reviewing() {
                 Some(plan) => {
                     // The rows go back to what is sent.
-                    self.choices = Choices::as_planned(plan);
+                    self.entry.choices = Choices::as_planned(plan);
                     self.phase = Phase::Applying;
-                    Steer::Decide(self.choices.clone())
+                    Steer::Decide(self.entry.choices.clone())
                 }
                 None => Steer::Ignored,
             },
             RunIntent::AnswerDeletes { proceed } => {
                 let asked = matches!(self.phase, Phase::ConfirmingDeletes(_));
-                if !asked || self.declined || self.suspend.is_some() {
+                if !asked || self.entry.declined || self.suspend.is_some() {
                     return Steer::Ignored;
                 }
                 if proceed {
                     self.phase = Phase::Applying;
                 } else {
                     // The refusal that follows reads as the head's choice.
-                    self.declined = true;
+                    self.entry.declined = true;
                 }
                 Steer::AnswerDeletes(proceed)
             }
@@ -549,7 +779,7 @@ impl RunState {
         match &self.phase {
             Phase::Connecting => RunPhaseView::Connecting,
             Phase::Scanning => RunPhaseView::Scanning,
-            Phase::Reviewing(plan) => RunPhaseView::Reviewing(self.choices.summary(plan)),
+            Phase::Reviewing(plan) => RunPhaseView::Reviewing(self.entry.choices.summary(plan)),
             Phase::ConfirmingDeletes(sides) => RunPhaseView::ConfirmingDeletes {
                 sides: sides.iter().map(MassDeleteView::from).collect(),
             },
@@ -569,6 +799,15 @@ impl RunState {
             },
             Phase::DeletesDeclined => RunPhaseView::DeletesDeclined,
             Phase::NoSummary => RunPhaseView::NoSummary,
+            Phase::FinishedWithIssues(issues) => RunPhaseView::FinishedWithIssues {
+                entries: issues
+                    .iter()
+                    .map(|(index, reason)| EntryIssueView {
+                        index: index_view(*index),
+                        reason: reason.clone(),
+                    })
+                    .collect(),
+            },
         }
     }
 
@@ -576,15 +815,27 @@ impl RunState {
     /// plan's rows, which [`Snapshot::view`] builds from the rows taken
     /// once, the choices and the outcomes, shared or copied here cheaply.
     pub(crate) fn snapshot(&self) -> Snapshot {
-        let plan = self.plan.as_deref();
+        let entry = &self.entry;
+        let plan = entry.plan.as_deref();
         let view = RunView {
             dry_run: self.dry_run,
             phase: self.phase_view(),
             standing: self.phase.standing(),
-            connected_at_ms: self.connected_at_ms,
-            replicas: self.replicas.as_ref().map(|[a, b]| ReplicasView::of(a, b)),
-            tally: self.tallies.as_ref().map(|[a, b]| TalliesView::of(a, b)),
-            skipped: self
+            entries: self
+                .entries
+                .iter()
+                .map(|listed| EntryRunView {
+                    kind: listed.roots.kind.into(),
+                    local_root: listed.roots.local_root.clone(),
+                    remote_root: listed.roots.remote_root.clone(),
+                    status: listed.status.view(),
+                })
+                .collect(),
+            current: self.current.map(index_view),
+            connected_at_ms: entry.connected_at_ms,
+            replicas: entry.replicas.as_ref().map(|[a, b]| ReplicasView::of(a, b)),
+            tally: entry.tallies.as_ref().map(|[a, b]| TalliesView::of(a, b)),
+            skipped: entry
                 .skipped
                 .iter()
                 .map(|(side, skipped)| SkippedView::of(*side, skipped))
@@ -599,20 +850,20 @@ impl RunState {
                 },
                 PlanRows::summary,
             ),
-            progress: self.progress.map(|(completed, total)| ProgressView {
+            progress: entry.progress.map(|(completed, total)| ProgressView {
                 completed: count(completed),
                 total: count(total),
             }),
-            applied: count(self.reported.len() - self.failed),
-            failed: count(self.failed),
+            applied: count(entry.reported.len() - entry.failed),
+            failed: count(entry.failed),
             timings: self.timings.clone(),
         };
         Snapshot {
             view,
-            rows: self.plan.as_ref().map(|plan| Rows {
+            rows: entry.plan.as_ref().map(|plan| Rows {
                 plan: plan.clone(),
-                choices: self.choices.clone(),
-                outcomes: self.outcomes.clone(),
+                choices: entry.choices.clone(),
+                outcomes: entry.outcomes.clone(),
             }),
             last: self.is_over(),
         }
@@ -622,6 +873,21 @@ impl RunState {
     #[cfg(test)]
     pub(crate) fn view(&self) -> RunView {
         self.snapshot().view()
+    }
+}
+
+fn index_view(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
+}
+
+/// Two entries' summaries as one.
+fn add(total: RunSummary, entry: &RunSummary) -> RunSummary {
+    RunSummary {
+        applied: total.applied + entry.applied,
+        skipped: total.skipped + entry.skipped,
+        conflicts: total.conflicts + entry.conflicts,
+        failed: total.failed + entry.failed,
+        unreadable: total.unreadable + entry.unreadable,
     }
 }
 
@@ -665,24 +931,40 @@ impl Snapshot {
 
 #[cfg(test)]
 mod tests {
-    use dsync_core::{RunError, RunEvent};
+    use dsync_core::{
+        ActionFailure, ConnectError, ConnectFailure, EntryFailure, EntryOutcome, ProfileEvent,
+        RunError, RunEvent, SkipReason,
+    };
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
     use dsync_domain::{
-        Action, Conflict, ContentHash, FileMeta, FileState, MassDelete, MassDeletePolicy, Plan,
-        Proposal, RelPath, ReplicaInfo, ReplicaRoot, RunSummary, ScanTally, Side, Status,
+        Action, Conflict, ContentHash, FileMeta, FileState, MassDelete, MassDeletePolicy,
+        MissingReplicaRoot, Plan, Proposal, RelPath, ReplicaInfo, ReplicaRoot, RunSummary,
+        ScanTally, Side, Status,
     };
 
-    use super::{Choices, Ended, RunState, Steer};
+    use super::{Choices, EntryRoots, Review, RunState, Steer};
     use crate::signals::RunIntent;
     use crate::throttle::Urgency;
     use crate::views::{
-        ActionChoiceView, ConflictChoiceView, HistoryView, RunPhaseView, RunStandingView, RunView,
-        SideView,
+        ActionChoiceView, ConflictChoiceView, EntryStatusView, HistoryView, RunPhaseView,
+        RunStandingView, RunView, SideView,
     };
 
     const PEER: &str = "Phone";
+
+    /// `n` folder entries, `/e<i>/a` with `~/e<i>/b`.
+    fn roots(n: usize) -> Vec<EntryRoots> {
+        (0..n)
+            .map(|index| EntryRoots {
+                kind: dsync_domain::RootKind::Folder,
+                local_root: format!("/e{index}/a"),
+                remote_root: format!("~/e{index}/b"),
+                peer_label: format!("b{index}"),
+            })
+            .collect()
+    }
 
     fn path(text: &str) -> RelPath {
         RelPath::parse(text).unwrap_or_else(|error| panic!("{error}"))
@@ -749,11 +1031,29 @@ mod tests {
         }
     }
 
+    /// A state running its one entry, connected.
+    fn running() -> RunState {
+        let mut state = RunState::new(false);
+        state.listed(roots(1));
+        state.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
+        state.connected(1);
+        state
+    }
+
+    fn asked(label: &str) -> Review {
+        Review::Asked {
+            peer_label: label.to_owned(),
+        }
+    }
+
     /// A state reviewing `plan`, the decider waiting.
     fn reviewing(plan: &Plan) -> RunState {
-        let mut state = RunState::new(false);
-        state.connected(1);
-        assert_eq!(state.review(plan), None, "the review waits on the head");
+        let mut state = running();
+        assert_eq!(
+            state.review(plan),
+            asked("b0"),
+            "the review waits on the head"
+        );
         state
     }
 
@@ -788,10 +1088,38 @@ mod tests {
             .unwrap_or_else(|| panic!("10 of 12 trips the guard"))
     }
 
-    fn ran() -> Ended {
-        Ended::Ran {
-            timings: "run: 1s".to_owned(),
-        }
+    fn ran() -> Option<String> {
+        Some("run: 1s".to_owned())
+    }
+
+    /// The side that would not connect.
+    fn unreachable() -> Arc<ConnectError> {
+        Arc::new(ConnectError {
+            side: Side::B,
+            failure: ConnectFailure::NoIdentity,
+        })
+    }
+
+    /// `entry` could not connect: what the profile run says of it.
+    fn not_connected(state: &mut RunState, entry: usize) {
+        state.profile_event(ProfileEvent::EntryConnecting { entry }, 0);
+        let failure = unreachable();
+        state.profile_event(
+            ProfileEvent::EntryNotConnected {
+                entry,
+                failure: failure.clone(),
+            },
+            0,
+        );
+        finish(
+            state,
+            entry,
+            EntryOutcome::Failed(EntryFailure::Connect(failure)),
+        );
+    }
+
+    fn finish(state: &mut RunState, entry: usize, outcome: EntryOutcome) {
+        state.profile_event(ProfileEvent::EntryFinished { entry, outcome }, 0);
     }
 
     fn summary(applied: usize) -> RunEvent {
@@ -846,18 +1174,16 @@ mod tests {
 
     #[test]
     fn a_plan_with_nothing_in_it_is_answered_at_once_and_applies() {
-        let mut state = RunState::new(false);
-        state.connected(1);
-        assert_eq!(state.review(&Plan::default()), Some(Choices::none()));
+        let mut state = running();
+        assert_eq!(state.review(&Plan::default()), Review::KeepNothing);
         assert!(matches!(phase(&state), RunPhaseView::Applying));
     }
 
     #[test]
     fn a_run_stopping_is_answered_with_nothing_and_asks_nothing() {
-        let mut state = RunState::new(false);
-        state.connected(1);
+        let mut state = running();
         assert_eq!(state.steer(RunIntent::Stop), Steer::Stop);
-        assert_eq!(state.review(&plan()), Some(Choices::none()));
+        assert_eq!(state.review(&plan()), Review::KeepNothing);
         assert_eq!(state.ask_deletes(&emptied_b()), Some(false));
         assert!(matches!(phase(&state), RunPhaseView::Applying));
     }
@@ -1173,11 +1499,20 @@ mod tests {
     #[test]
     fn an_attempt_that_never_connected_is_failed_or_suspended() {
         let mut state = RunState::new(false);
-        state.ended(Ended::NotConnected("nobody answered".to_owned()));
-        assert!(matches!(phase(&state), RunPhaseView::Failed { .. }));
+        state.listed(roots(1));
+        not_connected(&mut state, 0);
+        state.ended(None);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Failed { ref message } if message.starts_with("replica b:")
+        ));
+        assert_eq!(state.view().timings, None);
         let mut stopped = RunState::new(false);
+        stopped.listed(roots(1));
+        stopped.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
         stopped.steer(RunIntent::Pause);
-        stopped.ended(Ended::StoppedConnecting);
+        finish(&mut stopped, 0, EntryOutcome::NotRun);
+        stopped.ended(None);
         assert!(matches!(
             phase(&stopped),
             RunPhaseView::Paused { completed: 0 }
@@ -1198,7 +1533,9 @@ mod tests {
         state.ended(ran());
         assert_eq!(standing(&state), RunStandingView::Resumable, "paused");
         state.steer(RunIntent::Resume);
-        state.ended(Ended::NotConnected("nobody answered".to_owned()));
+        state.listed(roots(1));
+        not_connected(&mut state, 0);
+        state.ended(None);
         assert_eq!(standing(&state), RunStandingView::Resumable, "failed");
 
         let mut done = RunState::new(false);
@@ -1409,5 +1746,269 @@ mod tests {
         idle.unprepared("no profile".to_owned());
         assert_eq!(idle.steer(RunIntent::Close), Steer::End);
         assert!(idle.is_over());
+    }
+
+    /// Starts entry `entry` of `state`'s session and connects it.
+    fn start(state: &mut RunState, entry: usize) {
+        state.profile_event(ProfileEvent::EntryConnecting { entry }, 0);
+        state.profile_event(
+            ProfileEvent::EntryConnected {
+                entry,
+                peers: Vec::new(),
+            },
+            5,
+        );
+    }
+
+    fn synced(applied: usize) -> EntryOutcome {
+        EntryOutcome::Synced(RunSummary {
+            applied,
+            ..RunSummary::default()
+        })
+    }
+
+    fn missing() -> MissingReplicaRoot {
+        MissingReplicaRoot {
+            side: Side::A,
+            root_path: "/e0/a".to_owned(),
+            archived_files: 3,
+        }
+    }
+
+    fn statuses(state: &RunState) -> Vec<EntryStatusView> {
+        state
+            .view()
+            .entries
+            .into_iter()
+            .map(|entry| entry.status)
+            .collect()
+    }
+
+    #[test]
+    fn a_skipped_entry_leaves_the_session_live_and_it_ends_with_that_issue() {
+        let mut state = RunState::new(false);
+        state.listed(roots(2));
+        let mut seen = vec![state.view()];
+        start(&mut state, 0);
+        seen.push(state.view());
+        state.event(RunEvent::Error(RunError::MissingRoot(missing())));
+        seen.push(state.view());
+        finish(
+            &mut state,
+            0,
+            EntryOutcome::Skipped(SkipReason::Missing(missing())),
+        );
+        seen.push(state.view());
+        start(&mut state, 1);
+        seen.push(state.view());
+        state.event(summary(2));
+        finish(&mut state, 1, synced(2));
+        seen.push(state.view());
+        assert!(
+            seen.iter()
+                .all(|view| view.standing == RunStandingView::Live && view.timings.is_none()),
+            "no entry ends the session"
+        );
+        assert_eq!(seen[4].current, Some(1));
+        assert_eq!(
+            statuses(&state)[0],
+            EntryStatusView::Skipped {
+                reason: missing().to_string()
+            }
+        );
+        assert_eq!(statuses(&state)[1], EntryStatusView::Synced);
+
+        state.ended(ran());
+        let view = state.view();
+        let RunPhaseView::FinishedWithIssues { entries } = &view.phase else {
+            panic!("finished with issues");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].index, 0);
+        assert_eq!(entries[0].reason, missing().to_string());
+        assert_eq!(view.standing, RunStandingView::Resumable);
+        assert!(!state.is_over());
+        assert_eq!(state.steer(RunIntent::Resume), Steer::Restart);
+    }
+
+    #[test]
+    fn a_lone_entry_that_is_skipped_fails_as_its_run_did() {
+        let mut state = RunState::new(false);
+        state.listed(roots(1));
+        start(&mut state, 0);
+        state.event(RunEvent::Error(RunError::MissingRoot(missing())));
+        finish(
+            &mut state,
+            0,
+            EntryOutcome::Skipped(SkipReason::Missing(missing())),
+        );
+        state.ended(ran());
+        assert!(matches!(phase(&state), RunPhaseView::Failed { .. }));
+    }
+
+    #[test]
+    fn every_entry_synced_finishes_over_all_their_summaries() {
+        let mut state = RunState::new(false);
+        state.listed(roots(2));
+        for (entry, applied) in [(0, 2), (1, 3)] {
+            start(&mut state, entry);
+            state.event(summary(applied));
+            finish(&mut state, entry, synced(applied));
+        }
+        state.ended(ran());
+        let RunPhaseView::Finished(finished) = phase(&state) else {
+            panic!("finished");
+        };
+        assert_eq!(finished.applied, 5);
+        assert!(state.is_over());
+        assert_eq!(
+            statuses(&state),
+            [EntryStatusView::Synced, EntryStatusView::Synced]
+        );
+    }
+
+    #[test]
+    fn the_first_entry_unreachable_with_none_run_after_fails_as_a_lone_one_would() {
+        let mut state = RunState::new(false);
+        state.listed(roots(2));
+        not_connected(&mut state, 0);
+        finish(&mut state, 1, EntryOutcome::NotRun);
+        state.ended(None);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Failed { ref message } if message.starts_with("replica b:")
+        ));
+        assert_eq!(statuses(&state)[1], EntryStatusView::NotRun);
+    }
+
+    #[test]
+    fn a_resume_after_a_pause_runs_every_entry_again_from_the_first() {
+        let mut state = RunState::new(false);
+        state.listed(roots(2));
+        start(&mut state, 0);
+        state.event(RunEvent::Progress {
+            completed: 2,
+            total: 2,
+        });
+        finish(&mut state, 0, synced(2));
+        start(&mut state, 1);
+        assert_eq!(state.review(&plan()), asked("b1"));
+        assert_eq!(state.steer(RunIntent::Pause), Steer::Stop);
+        finish(&mut state, 1, synced(0));
+        state.ended(ran());
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Paused { completed: 2 }
+        ));
+
+        assert_eq!(state.steer(RunIntent::Foreground), Steer::Restart);
+        let view = state.view();
+        assert!(matches!(view.phase, RunPhaseView::Connecting));
+        assert_eq!(view.current, None);
+        assert!(view.plan.is_empty() && view.timings.is_none());
+        assert_eq!(view.entries[1].local_root, "/e1/a", "the roots stay listed");
+        assert_eq!(
+            statuses(&state),
+            [EntryStatusView::Pending, EntryStatusView::Pending]
+        );
+        state.listed(roots(2));
+        start(&mut state, 0);
+        assert_eq!(state.view().current, Some(0));
+        assert_eq!(
+            statuses(&state),
+            [EntryStatusView::Running, EntryStatusView::Pending]
+        );
+    }
+
+    #[test]
+    fn the_review_s_intents_apply_to_the_running_entry_s_plan() {
+        let mut state = RunState::new(false);
+        state.listed(roots(2));
+        start(&mut state, 0);
+        let first = Plan {
+            actions: vec![proposed(copy("only"))],
+            conflicts: Vec::new(),
+        };
+        state.review(&first);
+        state.steer(RunIntent::AcceptAll);
+        finish(&mut state, 0, synced(1));
+        start(&mut state, 1);
+        assert!(
+            state.view().plan.is_empty(),
+            "the first entry's rows are gone"
+        );
+        let second = plan();
+        assert_eq!(
+            state.review(&second),
+            asked("b1"),
+            "the running entry's side B names its keep-both copies"
+        );
+        assert_eq!(
+            choose(&mut state, 1, ActionChoiceView::Skipped),
+            Steer::Changed,
+            "a row the first entry's plan did not have"
+        );
+        let choices = choices_of(state.steer(RunIntent::Confirm));
+        assert_eq!(
+            choices.actions(&second, PEER),
+            [copy("r")],
+            "the second entry's plan, as chosen"
+        );
+    }
+
+    #[test]
+    fn each_entry_counts_its_own_outcomes_where_their_paths_are_the_same() {
+        let result = |text: &str, ok: bool| RunEvent::Result {
+            action: copy(text),
+            outcome: if ok {
+                Ok(())
+            } else {
+                Err(ActionFailure::NoSource { side: Side::A })
+            },
+        };
+        let mut state = RunState::new(false);
+        state.listed(roots(2));
+        start(&mut state, 0);
+        state.event(result("same.txt", true));
+        state.event(result("other.txt", true));
+        assert_eq!((state.view().applied, state.view().failed), (2, 0));
+        finish(&mut state, 0, synced(2));
+        start(&mut state, 1);
+        state.event(result("same.txt", false));
+        let view = state.view();
+        assert_eq!((view.applied, view.failed), (0, 1));
+    }
+
+    #[test]
+    fn a_stop_while_the_second_entry_connects_ends_the_session_stopped() {
+        let mut state = RunState::new(false);
+        state.listed(roots(2));
+        start(&mut state, 0);
+        state.event(RunEvent::Progress {
+            completed: 4,
+            total: 4,
+        });
+        finish(&mut state, 0, synced(4));
+        state.profile_event(ProfileEvent::EntryConnecting { entry: 1 }, 0);
+        assert_eq!(state.steer(RunIntent::Stop), Steer::Stop);
+        finish(&mut state, 1, EntryOutcome::NotRun);
+        state.ended(ran());
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Stopped { completed: 4 }
+        ));
+        assert!(state.is_over());
+        assert_eq!(
+            statuses(&state),
+            [EntryStatusView::Synced, EntryStatusView::NotRun]
+        );
+    }
+
+    #[test]
+    fn a_plan_with_no_entry_running_is_answered_with_nothing() {
+        let mut state = RunState::new(false);
+        state.connected(1);
+        assert_eq!(state.review(&plan()), Review::KeepNothing);
+        assert!(matches!(phase(&state), RunPhaseView::Applying));
     }
 }
