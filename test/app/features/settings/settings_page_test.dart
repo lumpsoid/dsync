@@ -156,8 +156,36 @@ void main() {
     await pumpPage(tester);
 
     expect(find.textContaining('is damaged'), findsOneWidget);
-    // Both settings: neither shows a default the file did not say.
-    expect(find.textContaining('Unavailable'), findsNWidgets(2));
+    // Every setting: none shows a default the file did not say.
+    expect(find.textContaining('Unavailable'), findsNWidgets(3));
+    expect(find.byType(Switch), findsNothing);
+  });
+
+  testWidgets('shows the Power section with the stored keep-awake switch', (
+    tester,
+  ) async {
+    controller.state.recordSettings(
+      AppSettings.defaults.withKeepScreenAwake(false),
+    );
+
+    await pumpPage(tester);
+
+    expect(find.text('Power'), findsOneWidget);
+    expect(
+      find.text('Keep screen awake during runs and serve'),
+      findsOneWidget,
+    );
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+  });
+
+  testWidgets('a flipped switch is handed to the controller', (tester) async {
+    controller.state.recordSettings(AppSettings.defaults);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('settings-keep-screen-awake')));
+    await tester.pump();
+
+    expect(controller.keepScreenAwake, [false]);
   });
 
   group('width', () {
@@ -214,4 +242,9 @@ class _RecordingController extends SettingsController {
 
   @override
   Future<void> saveTheme(ThemePreference theme) async => themes.add(theme);
+
+  final keepScreenAwake = <bool>[];
+
+  @override
+  Future<void> saveKeepScreenAwake(bool on) async => keepScreenAwake.add(on);
 }

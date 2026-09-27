@@ -266,7 +266,11 @@ void main() {
 /// `show` the real controller writes with.
 class _FakeServeController extends ServeController {
   _FakeServeController(super.app)
-    : super(bindAddress: _loopback, screenWake: FakeScreenWake());
+    : super(
+        bindAddress: _loopback,
+        screenWake: FakeScreenWake(),
+        keepScreenAwake: () async => true,
+      );
 
   int starts = 0;
   int stops = 0;

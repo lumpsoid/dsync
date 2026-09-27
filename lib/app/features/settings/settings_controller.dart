@@ -85,6 +85,22 @@ class SettingsController {
     state.recordOutcome(const SettingsIdle());
   }
 
+  /// Stores whether a live run and a serving session hold the screen
+  /// awake. Like the theme, the switch moving is the confirmation; the next
+  /// run or serve reads it when it starts.
+  Future<void> saveKeepScreenAwake(bool on) async {
+    state.recordOutcome(const SettingsWorking());
+    final failure = await _change(
+      (settings) => settings.withKeepScreenAwake(on),
+      unchanged: 'Keeping the screen awake is unchanged.',
+    );
+    if (failure != null) {
+      state.recordOutcome(SettingsFailed(failure));
+      return;
+    }
+    state.recordOutcome(const SettingsIdle());
+  }
+
   /// Rewrites the stored settings as [change] of what is stored now, so one
   /// setting's save keeps the others, and records what was written onto
   /// [state]. Returns `null` on success, or the line to show, ending in

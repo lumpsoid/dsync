@@ -171,4 +171,35 @@ void main() {
       },
     );
   });
+
+  group('saveKeepScreenAwake', () {
+    test('stores the switch, keeping the other settings', () async {
+      await controller.saveBindAddress('10.8.0.3');
+      await controller.saveTheme(ThemePreference.dark);
+
+      await controller.saveKeepScreenAwake(false);
+
+      expect(controller.state.settings?.keepScreenAwake, isFalse);
+      expect(controller.state.outcome, isA<SettingsIdle>());
+      final second = SettingsController(app);
+      await second.load();
+      expect(second.state.settings?.keepScreenAwake, isFalse);
+      expect(second.state.settings?.theme, ThemePreference.dark);
+      expect(second.state.settings?.bindAddress.address, '10.8.0.3');
+      second.dispose();
+    });
+
+    test('a damaged file is not overwritten', () async {
+      final file = await settingsFile();
+      await file.parent.create(recursive: true);
+      await file.writeAsString('{"version": "1.0", "netw');
+
+      await controller.saveKeepScreenAwake(false);
+
+      final outcome = controller.state.outcome;
+      expect(outcome, isA<SettingsFailed>());
+      expect((outcome as SettingsFailed).message, contains(file.path));
+      expect(await file.readAsString(), '{"version": "1.0", "netw');
+    });
+  });
 }

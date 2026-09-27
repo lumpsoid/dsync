@@ -49,6 +49,7 @@ void main() {
     controller = SyncRunController(
       fakeApp(hub, now: () => clock),
       screenWake: screenWake,
+      keepScreenAwake: () async => true,
     );
     appScope.setController(controller.app);
     runScope.setController(controller);

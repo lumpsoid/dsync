@@ -30,11 +30,13 @@ void main() {
 
   ServeController build({
     Future<InternetAddress> Function()? bindAddress,
+    Future<bool> Function()? keepScreenAwake,
     int port = defaultPeerPort,
   }) => ServeController(
     app,
     bindAddress: bindAddress ?? (() async => InternetAddress.loopbackIPv4),
     screenWake: screenWake,
+    keepScreenAwake: keepScreenAwake ?? () async => true,
     port: port,
   );
 
@@ -215,6 +217,51 @@ void main() {
     await settle();
     expect(controller.state.status, isA<ServeListening>());
     expect(screenWake.held, isTrue);
+  });
+
+  group('the keep-awake setting', () {
+    test('off: serving never holds the screen', () async {
+      controller.dispose();
+      controller = build(keepScreenAwake: () async => false);
+
+      await serve();
+
+      expect(controller.state.status, isA<ServeListening>());
+      expect(screenWake.calls, isEmpty);
+    });
+
+    test(
+      'is read at each start, so a change applies to the next serve',
+      () async {
+        var keepAwake = true;
+        controller.dispose();
+        controller = build(keepScreenAwake: () async => keepAwake);
+        await serve();
+        expect(screenWake.held, isTrue);
+        await controller.stop();
+        await settle();
+        expect(screenWake.held, isFalse);
+
+        keepAwake = false;
+        await serve();
+
+        expect(controller.state.status, isA<ServeListening>());
+        expect(screenWake.calls, [true, false]);
+      },
+    );
+
+    test('a settings file it cannot be read from holds the screen, as '
+        'before the setting existed', () async {
+      controller.dispose();
+      controller = build(
+        keepScreenAwake: () async =>
+            throw const AppSettingsStoreCorruptException('/s.json', 'bad'),
+      );
+
+      await serve();
+
+      expect(screenWake.held, isTrue);
+    });
   });
 
   test('a second start while serving asks for nothing more', () async {

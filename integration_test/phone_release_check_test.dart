@@ -295,6 +295,7 @@ class _Session {
       app,
       bindAddress: _lanAddress,
       screenWake: const PlatformScreenWake(),
+      keepScreenAwake: () async => true,
     );
     await serve.start();
     await _until(
@@ -412,7 +413,11 @@ class _Session {
     RunRequest request, {
     required String step,
   }) async {
-    final run = SyncRunController(app, screenWake: const PlatformScreenWake());
+    final run = SyncRunController(
+      app,
+      screenWake: const PlatformScreenWake(),
+      keepScreenAwake: () async => true,
+    );
     await run.start(request);
     final deadline = DateTime.now().add(_runWait);
     for (var attempt = 1; ; attempt++) {

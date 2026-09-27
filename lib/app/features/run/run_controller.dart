@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../app_controller.dart';
+import '../../app_settings_store.dart';
 import '../../core_link/models/action_choice.dart';
 import '../../core_link/models/action_result.dart';
 import '../../core_link/models/conflict_choice.dart';
@@ -63,20 +64,30 @@ import 'run_view_state.dart';
 ///
 /// **The screen is held awake while a run is live** ([ScreenWake],
 /// injected) — live as the core says, from connecting to applying — and
-/// released the moment it stops being live, including while paused.
+/// released the moment it stops being live, including while paused. The
+/// Settings page can turn this off; the switch is read when the run starts.
 ///
 /// **The app is told each time an attempt stops being live**
 /// (`AppController.runEnded`): that is when the core writes or clears the
 /// run marker the home list warns with. A page that leaves a live run
 /// keeps listening, and only for that, until the run winds down.
 class SyncRunController {
-  SyncRunController(this.app, {required this.screenWake});
+  SyncRunController(
+    this.app, {
+    required this.screenWake,
+    required this.keepScreenAwake,
+  });
 
   final AppController app;
 
   /// Held while a run is live; see the class doc comment. A platform
   /// channel, so a test hands over one it can watch.
   final ScreenWake screenWake;
+
+  /// Whether the Settings page wants the screen held, read once per [start]
+  /// so a change applies from the next run. Throws
+  /// `AppSettingsStoreException` when the settings file cannot be read.
+  final Future<bool> Function() keepScreenAwake;
 
   /// The view state this controller renders into; owned here, disposed here.
   final SyncRunViewState state = SyncRunViewState();
@@ -90,6 +101,7 @@ class SyncRunController {
   Future<RunSession?>? _session;
   StreamSubscription<RunView>? _views;
   bool _screenHeld = false;
+  bool _screenWanted = false;
   bool _live = false;
   bool _disposed = false;
 
@@ -100,6 +112,7 @@ class SyncRunController {
     if (_disposed || _session != null) return;
     final opened = Completer<RunSession?>();
     _session = opened.future;
+    _screenWanted = await _readKeepScreenAwake();
     try {
       final session = await app.core.startRun(
         request.target,
@@ -299,9 +312,21 @@ class SyncRunController {
   }
 
   void _syncScreenWake({required bool live}) {
-    if (live == _screenHeld) return;
-    _screenHeld = live;
-    unawaited(live ? screenWake.enable() : screenWake.disable());
+    final hold = live && _screenWanted;
+    if (hold == _screenHeld) return;
+    _screenHeld = hold;
+    unawaited(hold ? screenWake.enable() : screenWake.disable());
+  }
+
+  /// The stored keep-awake switch. A settings file that cannot be read
+  /// holds the screen, as this head always did: a damaged file is the
+  /// Settings page's to show, and must not cost a run its screen.
+  Future<bool> _readKeepScreenAwake() async {
+    try {
+      return await keepScreenAwake();
+    } on AppSettingsStoreException {
+      return true;
+    }
   }
 
   SyncRunPhase _phase(

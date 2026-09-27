@@ -156,7 +156,11 @@ void main() {
     // progress and the summary.
     late SyncRunController run;
     runScope.setFactory(
-      () => run = SyncRunController(app, screenWake: const _NoScreenWake()),
+      () => run = SyncRunController(
+        app,
+        screenWake: const _NoScreenWake(),
+        keepScreenAwake: () async => true,
+      ),
     );
     addTearDown(runScope.reset);
     await tester.pumpWidget(

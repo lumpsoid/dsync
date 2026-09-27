@@ -432,7 +432,11 @@ void main() {
     var runs = 0;
     runScope.setFactory(() {
       runs++;
-      return SyncRunController(app, screenWake: FakeScreenWake());
+      return SyncRunController(
+        app,
+        screenWake: FakeScreenWake(),
+        keepScreenAwake: () async => true,
+      );
     });
     Future<void> failTheRun() async {
       core.emitRun(
@@ -555,6 +559,7 @@ void main() {
           app,
           bindAddress: () async => InternetAddress.loopbackIPv4,
           screenWake: FakeScreenWake(),
+          keepScreenAwake: () async => true,
         ),
       );
     });

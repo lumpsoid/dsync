@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
@@ -305,6 +306,35 @@ void main() {
       // A resumed attempt's own, not the last one's.
       await harness.show(runView(phase: connecting));
       expect(controller().timings.value, isNull);
+    });
+  });
+
+  group('the keep-awake setting', () {
+    test('off: a live run never holds the screen', () async {
+      harness.dispose();
+      harness = RunHarness(keepScreenAwake: () async => false);
+      await harness.start();
+
+      await harness.show(runView(phase: applying));
+      await harness.show(runView(standing: over, phase: finished()));
+      harness.controller.dispose();
+      await pump();
+
+      expect(harness.screenWake.calls, isEmpty);
+    });
+
+    test('a settings file it cannot be read from holds the screen, as '
+        'before the setting existed', () async {
+      harness.dispose();
+      harness = RunHarness(
+        keepScreenAwake: () async =>
+            throw const AppSettingsStoreCorruptException('/s.json', 'bad'),
+      );
+      await harness.start();
+
+      await harness.show(runView(phase: applying));
+
+      expect(harness.screenWake.held, isTrue);
     });
   });
 

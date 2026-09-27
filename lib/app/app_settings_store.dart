@@ -43,9 +43,13 @@ import 'theme_preference.dart';
 /// section — every 1.0 one — reads as [ThemePreference.system], the
 /// default it was drawn in; a present one naming no known theme is damage
 /// like any other wrong shape.
+///
+/// **1.2 added `power.keepScreenAwake`.** A document without the `power`
+/// section — every 1.0 and 1.1 one — reads as on, the screen held awake as
+/// it always was; a present one that is not a boolean is damage.
 class AppSettingsStore {
   /// The version this build writes, `major.minor`.
-  static const formatVersion = '1.1';
+  static const formatVersion = '1.2';
 
   final File _file;
 
@@ -85,6 +89,7 @@ class AppSettingsStore {
       'version': formatVersion,
       'network': {'bindAddress': settings.bindAddress.address},
       'appearance': {'theme': settings.theme.name},
+      'power': {'keepScreenAwake': settings.keepScreenAwake},
     };
     await writeFileAtomically(_file, jsonEncode(document));
   }
@@ -114,7 +119,22 @@ class AppSettingsStore {
     return AppSettings(
       bindAddress: parseBindAddress(bindAddress),
       theme: _parseTheme(decoded['appearance']),
+      keepScreenAwake: _parseKeepScreenAwake(decoded['power']),
     );
+  }
+
+  /// The `power` section's keep-awake switch: on when the section is
+  /// absent (a 1.0 or 1.1 document), a boolean when it is present.
+  static bool _parseKeepScreenAwake(Object? power) {
+    if (power == null) return true;
+    if (power is! Map<String, dynamic>) {
+      throw const FormatException('"power" is not a JSON object');
+    }
+    final keepScreenAwake = power['keepScreenAwake'];
+    if (keepScreenAwake is! bool) {
+      throw const FormatException('"power.keepScreenAwake" is not a boolean');
+    }
+    return keepScreenAwake;
   }
 
   /// The `appearance` section's theme: [ThemePreference.system] when the
@@ -151,7 +171,8 @@ sealed class AppSettingsStoreException implements Exception {
 
 /// Thrown by [AppSettingsStore.load] when its file exists but cannot be
 /// read as this store's document: truncated, malformed JSON, or
-/// well-formed JSON of the wrong shape, version text, bind address or theme.
+/// well-formed JSON of the wrong shape, version text, bind address, theme
+/// or keep-awake switch.
 class AppSettingsStoreCorruptException extends AppSettingsStoreException {
   final String path;
   final String detail;

@@ -5,10 +5,12 @@ import 'theme_preference.dart';
 /// What the head's Settings page owns: the preferences this installation
 /// keeps for itself, as already-parsed values.
 ///
-/// Two settings — [bindAddress] and [theme] — held as one model because
-/// the thing the Settings page edits and [AppSettingsStore] writes is "the
-/// settings", one whole document: changing one of them is [withBindAddress]
-/// or [withTheme] on what is stored, so a save never drops the other.
+/// Three settings — [bindAddress], [theme] and [keepScreenAwake] — held as
+/// one model because the thing the Settings page edits and
+/// [AppSettingsStore] writes is "the settings", one whole document:
+/// changing one of them is [withBindAddress], [withTheme] or
+/// [withKeepScreenAwake] on what is stored, so a save never drops the
+/// others.
 ///
 /// **Parsed, not textual.** A bind address that reached here as a string
 /// would be re-validated by everything that read it; [parseBindAddress] is
@@ -18,7 +20,11 @@ import 'theme_preference.dart';
 /// literal again when it binds; this copy is what lets the Settings page
 /// refuse a hostname before it is saved.)
 class AppSettings {
-  const AppSettings({required this.bindAddress, required this.theme});
+  const AppSettings({
+    required this.bindAddress,
+    required this.theme,
+    required this.keepScreenAwake,
+  });
 
   /// Which address the pairing listener binds — the head's equivalent of
   /// `dsync pair show --bind` (task 2b26ac). A literal only, never a
@@ -28,21 +34,37 @@ class AppSettings {
   /// Which brightness the app draws in.
   final ThemePreference theme;
 
+  /// Whether a live run and a serving session hold the screen awake
+  /// (`ScreenWake`).
+  final bool keepScreenAwake;
+
   /// These settings with the bind address changed to [address].
-  AppSettings withBindAddress(InternetAddress address) =>
-      AppSettings(bindAddress: address, theme: theme);
+  AppSettings withBindAddress(InternetAddress address) => AppSettings(
+    bindAddress: address,
+    theme: theme,
+    keepScreenAwake: keepScreenAwake,
+  );
 
   /// These settings with the theme changed to [preference].
-  AppSettings withTheme(ThemePreference preference) =>
-      AppSettings(bindAddress: bindAddress, theme: preference);
+  AppSettings withTheme(ThemePreference preference) => AppSettings(
+    bindAddress: bindAddress,
+    theme: preference,
+    keepScreenAwake: keepScreenAwake,
+  );
+
+  /// These settings with keeping the screen awake turned [on] or off.
+  AppSettings withKeepScreenAwake(bool on) =>
+      AppSettings(bindAddress: bindAddress, theme: theme, keepScreenAwake: on);
 
   /// What an installation that has never opened Settings runs with:
   /// `0.0.0.0`, the same default the CLI's `--bind` carries, so both heads
-  /// listen in the same place until somebody says otherwise; and the
-  /// device's own light or dark.
+  /// listen in the same place until somebody says otherwise; the device's
+  /// own light or dark; and the screen held awake while a run or serve is
+  /// live, as it was before this was a setting.
   static final AppSettings defaults = AppSettings(
     bindAddress: InternetAddress.anyIPv4,
     theme: ThemePreference.system,
+    keepScreenAwake: true,
   );
 }
 

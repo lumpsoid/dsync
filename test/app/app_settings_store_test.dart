@@ -39,14 +39,15 @@ void main() {
 
         expect(settings.bindAddress.address, '0.0.0.0');
         expect(settings.theme, ThemePreference.system);
+        expect(settings.keepScreenAwake, isTrue);
         expect(storeFile().existsSync(), isFalse);
       },
     );
 
-    test('reads back what was saved, written as version 1.1', () async {
+    test('reads back what was saved, written as version 1.2', () async {
       await store().save(at('10.8.0.3'));
 
-      expect(storeFile().readAsStringSync(), contains('"version":"1.1"'));
+      expect(storeFile().readAsStringSync(), contains('"version":"1.2"'));
       expect((await store().load()).bindAddress.address, '10.8.0.3');
     });
 
@@ -58,6 +59,56 @@ void main() {
       expect(settings.bindAddress.address, '10.8.0.3');
     });
 
+    test('keeping the screen awake off survives the round trip beside the '
+        'others', () async {
+      await store().save(
+        at('10.8.0.3')
+            .withTheme(ThemePreference.dark)
+            .withKeepScreenAwake(false),
+      );
+
+      final settings = await store().load();
+      expect(settings.keepScreenAwake, isFalse);
+      expect(settings.theme, ThemePreference.dark);
+      expect(settings.bindAddress.address, '10.8.0.3');
+    });
+
+    test('a 1.1 document, which has no power section, keeps the screen '
+        'awake', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.1", "network": {"bindAddress": "10.8.0.3"}, '
+        '"appearance": {"theme": "dark"}}',
+      );
+
+      final settings = await store().load();
+      expect(settings.keepScreenAwake, isTrue);
+      expect(settings.theme, ThemePreference.dark);
+    });
+
+    test('a keep-awake switch that is not a boolean is corruption', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.2", "network": {"bindAddress": "0.0.0.0"}, '
+        '"power": {"keepScreenAwake": "yes"}}',
+      );
+
+      await expectLater(
+        store().load(),
+        throwsA(isA<AppSettingsStoreCorruptException>()),
+      );
+    });
+
+    test('a power section that is not an object is corruption', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.2", "network": {"bindAddress": "0.0.0.0"}, '
+        '"power": true}',
+      );
+
+      await expectLater(
+        store().load(),
+        throwsA(isA<AppSettingsStoreCorruptException>()),
+      );
+    });
+
     test('a 1.0 document, which has no theme, reads as System', () async {
       await storeFile().writeAsString(
         '{"version": "1.0", "network": {"bindAddress": "10.8.0.3"}}',
@@ -65,6 +116,7 @@ void main() {
 
       final settings = await store().load();
       expect(settings.theme, ThemePreference.system);
+      expect(settings.keepScreenAwake, isTrue);
       expect(settings.bindAddress.address, '10.8.0.3');
     });
 
@@ -140,7 +192,7 @@ void main() {
             allOf(
               contains(storeFile().path),
               contains('format 2.0'),
-              contains('(format 1.1)'),
+              contains('(format 1.2)'),
               contains('reads format 2.x'),
             ),
           ),

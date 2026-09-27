@@ -40,11 +40,17 @@ RunRequest runRequest({
 /// page would, [show] plays the core's view of it, and [intents] is what
 /// the controller told the core.
 class RunHarness {
-  RunHarness({DateTime Function()? now})
-    : hub = FakeHub(),
-      screenWake = FakeScreenWake() {
+  RunHarness({
+    DateTime Function()? now,
+    Future<bool> Function()? keepScreenAwake,
+  }) : hub = FakeHub(),
+       screenWake = FakeScreenWake() {
     app = fakeApp(hub, now: now);
-    controller = SyncRunController(app, screenWake: screenWake);
+    controller = SyncRunController(
+      app,
+      screenWake: screenWake,
+      keepScreenAwake: keepScreenAwake ?? () async => true,
+    );
   }
 
   final FakeHub hub;

@@ -8,7 +8,8 @@ import 'settings_view_state.dart';
 
 /// What this installation keeps for itself, in sections: **Network**,
 /// holding the address the pairing listener binds (task 2b26ac's `--bind`,
-/// as the head's own setting), and **Appearance**, holding the theme.
+/// as the head's own setting), **Appearance**, holding the theme, and
+/// **Power**, holding whether runs and serve keep the screen awake.
 ///
 /// Widgets only, per the page role in `app_scope.dart`: the stored settings
 /// arrive as one value the controller has already parsed, and the only
@@ -62,6 +63,7 @@ class _SettingsBody extends StatelessWidget {
     final working = outcome is SettingsWorking;
     final bindAddress = state.settings?.bindAddress.address;
     final theme = state.settings?.theme;
+    final keepScreenAwake = state.settings?.keepScreenAwake;
     return ReadableScrollPadding(
       width: ReadableWidth.list,
       padding: null,
@@ -129,6 +131,29 @@ class _SettingsBody extends StatelessWidget {
               },
             ),
           ),
+          const _SectionHeader('Power'),
+          SelectionContainer.disabled(
+            child: switch (keepScreenAwake) {
+              null => const ListTile(
+                key: Key('settings-keep-screen-awake'),
+                leading: Icon(Icons.screen_lock_portrait_outlined),
+                title: Text(_keepScreenAwakeTitle),
+                subtitle: Text('Unavailable — see below.'),
+                enabled: false,
+              ),
+              final on => SwitchListTile(
+                key: const Key('settings-keep-screen-awake'),
+                secondary: const Icon(Icons.screen_lock_portrait_outlined),
+                title: const Text(_keepScreenAwakeTitle),
+                subtitle: const Text(
+                  'The screen timing out pauses a live sync and stops '
+                  'serving.',
+                ),
+                value: on,
+                onChanged: working ? null : controller.saveKeepScreenAwake,
+              ),
+            },
+          ),
           switch (outcome) {
             SettingsSaved(:final message) => _NoticeTile(
               message,
@@ -159,6 +184,8 @@ class _SettingsBody extends StatelessWidget {
     if (typed != null) await controller.saveBindAddress(typed);
   }
 }
+
+const _keepScreenAwakeTitle = 'Keep screen awake during runs and serve';
 
 /// A settings section's name: what tells a reader which of this device's
 /// behaviours the settings under it change.

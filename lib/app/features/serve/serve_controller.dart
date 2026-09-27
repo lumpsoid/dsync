@@ -35,7 +35,8 @@ import 'serve_view_state.dart';
 ///
 /// **The screen is held awake while serving** ([ScreenWake]), for the
 /// reason the Run page holds it: a session this device is serving is a
-/// session an idle timeout can cut in half.
+/// session an idle timeout can cut in half — unless the Settings page
+/// turned that off, read when serving starts.
 ///
 /// **Stopping stops accepting.** A session already connected when [stop]
 /// lands runs to its end in the core (it holds the replica's lock and is
@@ -57,6 +58,7 @@ class ServeController {
     this.app, {
     required this.bindAddress,
     required this.screenWake,
+    required this.keepScreenAwake,
     this.port = defaultPeerPort,
   });
 
@@ -70,6 +72,11 @@ class ServeController {
   final Future<InternetAddress> Function() bindAddress;
 
   final ScreenWake screenWake;
+
+  /// Whether the Settings page wants the screen held while serving, read
+  /// once per [start] like [bindAddress]. Throws `AppSettingsStoreException`
+  /// when the settings file cannot be read.
+  final Future<bool> Function() keepScreenAwake;
 
   final int port;
 
@@ -89,6 +96,8 @@ class ServeController {
   ];
 
   _Lifecycle _lifecycle = const _Idle();
+  bool _screenHeld = false;
+  bool _screenWanted = false;
 
   /// The port the core bound, while serving.
   int? get boundPort => switch (_lifecycle) {
@@ -110,6 +119,7 @@ class ServeController {
     }
     _moveTo(const _Binding());
     state.recordStatus(const ServeStarting());
+    _screenWanted = await _readKeepScreenAwake();
     final InternetAddress address;
     try {
       address = await bindAddress();
@@ -200,13 +210,25 @@ class ServeController {
     state.dispose();
   }
 
-  /// Moves to [next], holding the screen exactly while serving.
+  /// Moves to [next], holding the screen exactly while serving, if the
+  /// Settings page wants it held.
   void _moveTo(_Lifecycle next) {
-    final held = _lifecycle is _Serving;
     _lifecycle = next;
-    final wanted = next is _Serving;
-    if (wanted == held) return;
-    unawaited(wanted ? screenWake.enable() : screenWake.disable());
+    final hold = next is _Serving && _screenWanted;
+    if (hold == _screenHeld) return;
+    _screenHeld = hold;
+    unawaited(hold ? screenWake.enable() : screenWake.disable());
+  }
+
+  /// The stored keep-awake switch. A settings file that cannot be read
+  /// holds the screen, as this head always did; the bind address, read
+  /// next from the same file, is what refuses it.
+  Future<bool> _readKeepScreenAwake() async {
+    try {
+      return await keepScreenAwake();
+    } on AppSettingsStoreException {
+      return true;
+    }
   }
 
   Future<void> _stopQuietly(ServeSession session) async {

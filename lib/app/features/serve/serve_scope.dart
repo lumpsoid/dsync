@@ -1,6 +1,7 @@
 import '../../app_scope.dart';
 import '../../screen_wake.dart';
 import '../pair_show/pair_show_scope.dart';
+import '../run/run_scope.dart';
 import 'serve_controller.dart';
 
 /// The cell for [ServeController]; see the scope contract in
@@ -9,8 +10,8 @@ import 'serve_controller.dart';
 /// serving session, and a second page sharing one would mean two views over
 /// one listener, one of which can stop it under the other.
 ///
-/// The default factory names the same [PlatformScreenWake] the Run feature
-/// uses.
+/// The default factory names the same [PlatformScreenWake] and
+/// [storedKeepScreenAwake] the Run feature uses: one switch covers both.
 ///
 /// The bind address is [storedBindAddress], the Pair-show scope's own
 /// reader, rather than a second copy of the same three lines: it is one
@@ -23,6 +24,7 @@ final class ServeScope extends Scope<ServeController> {
           appScope.controller,
           bindAddress: storedBindAddress,
           screenWake: const PlatformScreenWake(),
+          keepScreenAwake: storedKeepScreenAwake,
         ),
       );
 }
