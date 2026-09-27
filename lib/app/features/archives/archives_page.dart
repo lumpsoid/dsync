@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../archive_row.dart';
+import '../../refresh_action.dart';
 import 'archives_controller.dart';
 import 'archives_scope.dart';
 import 'archives_view_state.dart';
@@ -23,7 +24,8 @@ import 'archives_view_state.dart';
 /// dead histories out of a dozen, where deleting each in turn is four taps
 /// apiece and "delete all" costs the nine that are still earning their keep.
 ///
-/// Loads on mounting and refreshes on pull, like the home list. It takes no
+/// Loads on mounting and refreshes on pull, on the app-bar [RefreshButton]
+/// or on F5 ([RefreshShortcuts]), like the home list. It takes no
 /// navigation callbacks: nothing leads anywhere from here.
 class ArchivesPage extends StatefulWidget {
   const ArchivesPage({super.key});
@@ -46,9 +48,12 @@ class _ArchivesPageState extends State<ArchivesPage> {
     // The whole scaffold rebuilds on the view state, not just the body: the
     // app-bar action exists only over a list with rows, so it is as much a
     // reader of the listing as the body is.
-    return ListenableBuilder(
-      listenable: _controller.state,
-      builder: (context, _) => _scaffold(context),
+    return RefreshShortcuts(
+      onRefresh: _controller.refresh,
+      child: ListenableBuilder(
+        listenable: _controller.state,
+        builder: (context, _) => _scaffold(context),
+      ),
     );
   }
 
@@ -65,6 +70,10 @@ class _ArchivesPageState extends State<ArchivesPage> {
     return AppBar(
       title: const Text('Sync history'),
       actions: [
+        RefreshButton(
+          key: const Key('archives-refresh'),
+          onRefresh: _controller.refresh,
+        ),
         // Only over a list that has rows: "delete everything" is not an
         // action to offer while the page is still reading, or over nothing.
         if (_controller.state.listing case ArchivesReady(:final rows)

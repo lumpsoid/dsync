@@ -6,6 +6,7 @@ import 'package:dsync/app/features/archives/archives_page.dart';
 import 'package:dsync/app/features/archives/archives_scope.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
@@ -50,6 +51,53 @@ void main() {
     await pumpPage(tester);
 
     expect(controller.refreshes, 1);
+  });
+
+  /// The page under a desktop theme, where the refresh action is drawn.
+  Future<void> pumpDesktopPage(WidgetTester tester) => tester.pumpWidget(
+    MaterialApp(
+      theme: ThemeData(platform: TargetPlatform.linux),
+      home: const ArchivesPage(),
+    ),
+  );
+
+  testWidgets('the refresh action asks for the listing again on a desktop', (
+    tester,
+  ) async {
+    await pumpDesktopPage(tester);
+
+    await tester.tap(find.byKey(const Key('archives-refresh')));
+
+    expect(controller.refreshes, 2);
+  });
+
+  testWidgets('a phone refreshes on pull and draws no refresh action', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+
+    expect(find.byTooltip('Refresh (F5)'), findsNothing);
+  });
+
+  testWidgets('F5 asks for the listing again', (tester) async {
+    await pumpDesktopPage(tester);
+    // Autofocus lands a frame after the mount.
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.f5);
+
+    expect(controller.refreshes, 2);
+  });
+
+  testWidgets('Ctrl+R asks for the listing again', (tester) async {
+    await pumpDesktopPage(tester);
+    await tester.pump();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyR);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+    expect(controller.refreshes, 2);
   });
 
   testWidgets('a list still being read shows neither rows nor an empty state', (

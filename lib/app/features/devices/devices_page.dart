@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../paired_device_row.dart';
+import '../../refresh_action.dart';
 import 'devices_controller.dart';
 import 'devices_scope.dart';
 
@@ -12,7 +13,8 @@ import 'devices_scope.dart';
 /// Rows come from `AppState.devices` through the controller's
 /// `AppController`; this page holds no copy of them. It rebuilds on either
 /// notifier — the application state for the list and the gate, the view
-/// state for this page's own error line.
+/// state for this page's own error line — and refreshes on pull, on the
+/// app-bar [RefreshButton] or on F5 ([RefreshShortcuts]).
 ///
 /// [onOpenDevice], [onOpenRunSetup], [onOpenPair], [onOpenThisDevice] and
 /// [onOpenSharedFolders] are the seams to the features a tap leads to: the
@@ -57,37 +59,47 @@ class DevicesPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = devicesScope.controller;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Devices'),
-        actions: [
-          IconButton(
-            key: const Key('devices-open-shared-folders'),
-            icon: const Icon(Icons.folder_shared_outlined),
-            tooltip: 'Shared folders',
-            onPressed: onOpenSharedFolders,
+    return RefreshShortcuts(
+      onRefresh: controller.refresh,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Devices'),
+          actions: [
+            RefreshButton(
+              key: const Key('devices-refresh'),
+              onRefresh: controller.refresh,
+            ),
+            IconButton(
+              key: const Key('devices-open-shared-folders'),
+              icon: const Icon(Icons.folder_shared_outlined),
+              tooltip: 'Shared folders',
+              onPressed: onOpenSharedFolders,
+            ),
+            IconButton(
+              key: const Key('devices-open-this-device'),
+              icon: const Icon(Icons.badge_outlined),
+              tooltip: 'This device',
+              onPressed: onOpenThisDevice,
+            ),
+            IconButton(
+              key: const Key('devices-open-pair'),
+              icon: const Icon(Icons.add),
+              tooltip: 'Pair a device',
+              onPressed: onOpenPair,
+            ),
+          ],
+        ),
+        body: ListenableBuilder(
+          listenable: Listenable.merge([
+            controller.app.state,
+            controller.state,
+          ]),
+          builder: (context, _) => _DevicesBody(
+            controller: controller,
+            onOpenDevice: onOpenDevice,
+            onOpenRunSetup: onOpenRunSetup,
+            onOpenPair: onOpenPair,
           ),
-          IconButton(
-            key: const Key('devices-open-this-device'),
-            icon: const Icon(Icons.badge_outlined),
-            tooltip: 'This device',
-            onPressed: onOpenThisDevice,
-          ),
-          IconButton(
-            key: const Key('devices-open-pair'),
-            icon: const Icon(Icons.add),
-            tooltip: 'Pair a device',
-            onPressed: onOpenPair,
-          ),
-        ],
-      ),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([controller.app.state, controller.state]),
-        builder: (context, _) => _DevicesBody(
-          controller: controller,
-          onOpenDevice: onOpenDevice,
-          onOpenRunSetup: onOpenRunSetup,
-          onOpenPair: onOpenPair,
         ),
       ),
     );

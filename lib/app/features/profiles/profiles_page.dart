@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../format_path.dart';
 import '../../profile_breakage.dart';
 import '../../profile_row.dart';
+import '../../refresh_action.dart';
 import 'profiles_controller.dart';
 import 'profiles_scope.dart';
 
@@ -16,7 +17,8 @@ import 'profiles_scope.dart';
 /// `AppController`; this page holds no copy of them. It loads on mounting —
 /// the store read that makes the list survive an app restart — rebuilds on
 /// either notifier (the application state for the rows, the view state for
-/// this page's own error line), and refreshes on pull.
+/// this page's own error line), and refreshes on pull, on the app-bar
+/// [RefreshButton] or on F5 ([RefreshShortcuts]).
 ///
 /// A broken profile renders as itself, not gone: not a tap target, with its
 /// [ProfileBreakage] message and that breakage's remedy where the tap
@@ -84,51 +86,58 @@ class _ProfilesPageState extends State<ProfilesPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('dsync'),
-        actions: [
-          IconButton(
-            key: const Key('profiles-open-serve'),
-            icon: const Icon(Icons.wifi_tethering),
-            tooltip: 'Answer paired devices',
-            onPressed: widget.onOpenServe,
-          ),
-          IconButton(
-            key: const Key('profiles-open-archives'),
-            icon: const Icon(Icons.sd_storage_outlined),
-            tooltip: 'Sync history',
-            onPressed: widget.onOpenArchives,
-          ),
-          IconButton(
-            key: const Key('profiles-open-settings'),
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Settings',
-            onPressed: widget.onOpenSettings,
-          ),
-          TextButton(
-            key: const Key('profiles-open-devices'),
-            onPressed: widget.onOpenDevices,
-            child: const Text('Devices'),
-          ),
-        ],
-      ),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([
-          _controller.app.state,
-          _controller.state,
-        ]),
-        builder: (context, _) => _ProfilesBody(
-          controller: _controller,
-          onOpenProfile: widget.onOpenProfile,
-          onOpenDevices: widget.onOpenDevices,
+    return RefreshShortcuts(
+      onRefresh: _controller.refresh,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('dsync'),
+          actions: [
+            RefreshButton(
+              key: const Key('profiles-refresh'),
+              onRefresh: _controller.refresh,
+            ),
+            IconButton(
+              key: const Key('profiles-open-serve'),
+              icon: const Icon(Icons.wifi_tethering),
+              tooltip: 'Answer paired devices',
+              onPressed: widget.onOpenServe,
+            ),
+            IconButton(
+              key: const Key('profiles-open-archives'),
+              icon: const Icon(Icons.sd_storage_outlined),
+              tooltip: 'Sync history',
+              onPressed: widget.onOpenArchives,
+            ),
+            IconButton(
+              key: const Key('profiles-open-settings'),
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: 'Settings',
+              onPressed: widget.onOpenSettings,
+            ),
+            TextButton(
+              key: const Key('profiles-open-devices'),
+              onPressed: widget.onOpenDevices,
+              child: const Text('Devices'),
+            ),
+          ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        key: const Key('profiles-new-run'),
-        onPressed: widget.onOpenDevices,
-        icon: const Icon(Icons.sync),
-        label: const Text('New run'),
+        body: ListenableBuilder(
+          listenable: Listenable.merge([
+            _controller.app.state,
+            _controller.state,
+          ]),
+          builder: (context, _) => _ProfilesBody(
+            controller: _controller,
+            onOpenProfile: widget.onOpenProfile,
+            onOpenDevices: widget.onOpenDevices,
+          ),
+        ),
+        floatingActionButton: FloatingActionButton.extended(
+          key: const Key('profiles-new-run'),
+          onPressed: widget.onOpenDevices,
+          icon: const Icon(Icons.sync),
+          label: const Text('New run'),
+        ),
       ),
     );
   }
