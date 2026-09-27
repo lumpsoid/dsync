@@ -327,6 +327,54 @@ void main() {
     expect(field.controller!.text, 'desktop');
   });
 
+  testWidgets('a rename shows in the title, not only in the body', (
+    tester,
+  ) async {
+    core.reply<wire.CoreCommandRenameDevice>(
+      devicesReply([
+        pairedDevice(
+          deviceId: phone.deviceId,
+          name: 'laptop',
+          grantedRoots: ['/home/me/notes'],
+          address: '10.0.0.7:28771',
+        ),
+      ]),
+    );
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+    final title = find.descendant(
+      of: find.byType(AppBar),
+      matching: find.byType(Text),
+    );
+    expect(tester.widget<Text>(title).data, 'desktop');
+
+    await tester.tap(find.byKey(const Key('device-rename')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('device-name-field')),
+      'laptop',
+    );
+    await awaitOutcome(tester, const Key('device-rename-confirm'));
+
+    expect(tester.widget<Text>(title).data, 'laptop');
+  });
+
+  testWidgets('a device that lands after the first frame titles the page', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    final title = find.descendant(
+      of: find.byType(AppBar),
+      matching: find.byType(Text),
+    );
+    expect(tester.widget<Text>(title).data, 'Device');
+
+    app.state.recordDevices([row()]);
+    await tester.pump();
+
+    expect(tester.widget<Text>(title).data, 'desktop');
+  });
+
   testWidgets('the address dialog opens filled with the address on file', (
     tester,
   ) async {

@@ -52,17 +52,16 @@ class _DeviceDetailPageState extends State<DeviceDetailPage> {
     _controller.select(widget.deviceId);
   }
 
+  /// The title listens alongside the body: it is the device's name too, so
+  /// a rename made here, or a row that lands after the first frame, has to
+  /// reach it as well.
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(_controller.device?.name ?? 'Device')),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([
-          _controller.app.state,
-          _controller.state,
-        ]),
-        builder: (context, _) =>
-            _DeviceDetailBody(controller: _controller, onGone: widget.onGone),
+    return ListenableBuilder(
+      listenable: Listenable.merge([_controller.app.state, _controller.state]),
+      builder: (context, _) => Scaffold(
+        appBar: AppBar(title: Text(_controller.device?.name ?? 'Device')),
+        body: _DeviceDetailBody(controller: _controller, onGone: widget.onGone),
       ),
     );
   }
