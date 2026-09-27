@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/theme_preference.dart';
@@ -204,6 +205,70 @@ void main() {
           contains('e.g. 500 MB or 2 GiB'),
         );
         expect(controller.state.settings?.warnSize, const WarnSizeOff());
+        expect((await settingsFile()).existsSync(), isFalse);
+      });
+    }
+  });
+
+  group('the delete guard\'s thresholds', () {
+    test('each is stored alone, keeping the other and the other settings, '
+        'and the line says the guard still asks', () async {
+      await controller.savePeerPort('9000');
+
+      await controller.saveMassDeleteMinFiles(' 3 ');
+      expect(
+        controller.state.settings?.massDeleteGuard,
+        MassDeleteGuard(minFiles: 3, percent: 50),
+      );
+      await controller.saveMassDeletePercent('20%');
+      expect(
+        controller.state.settings?.massDeleteGuard,
+        MassDeleteGuard(minFiles: 3, percent: 20),
+      );
+      final outcome = controller.state.outcome;
+      expect(outcome, isA<SettingsSaved>());
+      expect((outcome as SettingsSaved).message, contains('stops to ask'));
+
+      final second = SettingsController(app);
+      await second.load();
+      expect(
+        second.state.settings?.massDeleteGuard,
+        MassDeleteGuard(minFiles: 3, percent: 20),
+      );
+      expect(second.state.settings?.peerPort, PeerPort(9000));
+      second.dispose();
+    });
+
+    for (final typed in ['0', '-1', '', 'ten']) {
+      test('refuses "$typed" files, writing nothing', () async {
+        await controller.load();
+
+        await controller.saveMassDeleteMinFiles(typed);
+
+        final outcome = controller.state.outcome;
+        expect(outcome, isA<SettingsFailed>());
+        expect((outcome as SettingsFailed).message, contains('at least 1'));
+        expect(
+          controller.state.settings?.massDeleteGuard,
+          MassDeleteGuard.defaults,
+        );
+        expect((await settingsFile()).existsSync(), isFalse);
+      });
+    }
+
+    for (final typed in ['0', '101', '', 'half']) {
+      test('refuses "$typed" percent, writing nothing', () async {
+        await controller.load();
+
+        await controller.saveMassDeletePercent(typed);
+
+        final outcome = controller.state.outcome;
+        expect(outcome, isA<SettingsFailed>());
+        expect((outcome as SettingsFailed).message, contains('from 1 to 100'));
+        expect(
+          controller.state.settings?.massDeleteGuard,
+          MassDeleteGuard.defaults,
+        );
         expect((await settingsFile()).existsSync(), isFalse);
       });
     }

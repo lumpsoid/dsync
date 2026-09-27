@@ -31,7 +31,16 @@ fn local_profile(head: &Head, name: &str, a: &str, b: &str) {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
-fn start(name: &str, dry_run: bool, default_warn_size_bytes: Option<u64>) -> CoreCommand {
+/// The delete guard's default thresholds, as the head sends them unchanged:
+/// 10 files, 50 percent.
+const GUARD: (u64, u64) = (10, 50);
+
+fn start(
+    name: &str,
+    dry_run: bool,
+    default_warn_size_bytes: Option<u64>,
+    (mass_delete_min_files, mass_delete_percent): (u64, u64),
+) -> CoreCommand {
     CoreCommand::StartRun {
         target: RunTarget::Profile {
             name: name.to_owned(),
@@ -39,6 +48,8 @@ fn start(name: &str, dry_run: bool, default_warn_size_bytes: Option<u64>) -> Cor
         dry_run,
         address: None,
         default_warn_size_bytes,
+        mass_delete_min_files,
+        mass_delete_percent,
     }
 }
 
@@ -117,7 +128,7 @@ async fn the_head_reviews_the_plan_and_the_run_applies_what_it_kept() {
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
 
-    let (session, started) = head.ok(start("local", false, None)).await;
+    let (session, started) = head.ok(start("local", false, None, GUARD)).await;
     assert!(matches!(started, ReplyResult::Done));
     let mut views = head.run_until(session, is("reviewing")).await;
     let review = views
@@ -214,7 +225,7 @@ async fn the_head_default_warn_size_marks_a_larger_plan() {
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
 
-    let (session, _) = head.ok(start("local", false, Some(4))).await;
+    let (session, _) = head.ok(start("local", false, Some(4), GUARD)).await;
     let review = head
         .run_until(session, is("reviewing"))
         .await
@@ -224,7 +235,7 @@ async fn the_head_default_warn_size_marks_a_larger_plan() {
     head.ok(steer(session, RunIntent::Stop)).await;
     head.run_until(session, ended).await;
 
-    let (session, _) = head.ok(start("local", false, Some(5))).await;
+    let (session, _) = head.ok(start("local", false, Some(5), GUARD)).await;
     let review = head
         .run_until(session, is("reviewing"))
         .await
@@ -242,7 +253,7 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
     local_profile(&head, "local", "a", "b");
 
     // A first run keeps everything, so both sides share a baseline.
-    let (session, _) = head.ok(start("local", false, None)).await;
+    let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     head.run_until(session, is("reviewing")).await;
     head.ok(steer(session, RunIntent::AcceptAll)).await;
     head.run_until(session, ended).await;
@@ -252,7 +263,7 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
     write(&head.path("a/x.txt"), "two, longer");
     write(&head.path("a/n.md"), "mine, edited");
     write(&head.path("b/n.md"), "theirs, edited too");
-    let (session, _) = head.ok(start("local", false, None)).await;
+    let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     let review = head
         .run_until(session, is("reviewing"))
         .await
@@ -325,7 +336,7 @@ async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
     }
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
-    let (first, _) = head.ok(start("local", false, None)).await;
+    let (first, _) = head.ok(start("local", false, None, GUARD)).await;
     head.run_until(first, is("reviewing")).await;
     head.ok(steer(first, RunIntent::AcceptAll)).await;
     head.run_until(first, ended).await;
@@ -339,7 +350,7 @@ async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
             .count()
     };
 
-    let (session, _) = head.ok(start("local", false, None)).await;
+    let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     head.run_until(session, is("reviewing")).await;
     head.ok(steer(session, RunIntent::AcceptAll)).await;
     let asking = head
@@ -380,13 +391,58 @@ async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
     assert_eq!(remaining(&head), 0);
 }
 
+/// The head's own thresholds decide when the guard asks: three of four
+/// files is under the default's ten, but trips a minimum of three. Out of
+/// range thresholds refuse the start.
+#[tokio::test]
+async fn the_head_s_delete_thresholds_decide_when_the_run_asks() {
+    let mut head = Head::new("studio").await;
+    for index in 0..4 {
+        write(&head.path(&format!("a/f{index:02}")), "x");
+    }
+    std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
+    local_profile(&head, "local", "a", "b");
+    let (first, _) = head.ok(start("local", false, None, GUARD)).await;
+    head.run_until(first, is("reviewing")).await;
+    head.ok(steer(first, RunIntent::AcceptAll)).await;
+    head.run_until(first, ended).await;
+    for index in 0..3 {
+        std::fs::remove_file(head.path(&format!("a/f{index:02}")))
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    for refused in [(0, 50), (3, 0), (3, 101)] {
+        let message = head.failure(start("local", false, None, refused)).await;
+        assert!(message.contains("mass-delete guard"), "{message}");
+    }
+
+    let (session, _) = head.ok(start("local", false, None, (3, 50))).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    let asking = head
+        .run_until(session, is("confirming deletes"))
+        .await
+        .pop()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    let RunPhaseView::ConfirmingDeletes { sides } = &asking.phase else {
+        unreachable!("confirming");
+    };
+    assert_eq!(
+        sides.iter().map(|side| side.deletes).collect::<Vec<_>>(),
+        [3]
+    );
+    head.ok(steer(session, RunIntent::AnswerDeletes { proceed: false }))
+        .await;
+    head.run_until(session, ended).await;
+}
+
 #[tokio::test]
 async fn a_dry_run_asks_nothing_and_applies_nothing() {
     let mut head = Head::new("studio").await;
     write(&head.path("a/new.txt"), "hello");
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
-    let (session, _) = head.ok(start("local", true, None)).await;
+    let (session, _) = head.ok(start("local", true, None, GUARD)).await;
     let views = head.run_until(session, ended).await;
     assert_eq!(stages(&views), ["connecting", "scanning", "finished"]);
     let last = views.last().unwrap_or_else(|| unreachable!("ended"));
@@ -405,7 +461,7 @@ async fn a_run_stopped_while_the_head_decides_applies_nothing_and_ends_stopped()
     write(&head.path("a/new.txt"), "hello");
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
-    let (session, _) = head.ok(start("local", false, None)).await;
+    let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     head.run_until(session, is("reviewing")).await;
     assert!(matches!(
         head.ok(steer(session, RunIntent::Stop)).await.1,
@@ -425,7 +481,7 @@ async fn a_paused_run_resumes_when_the_app_comes_back() {
     write(&head.path("a/new.txt"), "hello");
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
-    let (session, _) = head.ok(start("local", false, None)).await;
+    let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     head.run_until(session, is("reviewing")).await;
     head.ok(steer(session, RunIntent::Pause)).await;
     head.run_until(session, is("paused")).await;
@@ -448,7 +504,7 @@ async fn leaving_mid_review_stops_the_run_and_ends_the_session() {
     write(&head.path("a/new.txt"), "hello");
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
-    let (session, _) = head.ok(start("local", false, None)).await;
+    let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     head.run_until(session, is("reviewing")).await;
     head.ok(steer(session, RunIntent::Close)).await;
     head.run_until(session, ended).await;
@@ -460,7 +516,7 @@ async fn leaving_mid_review_stops_the_run_and_ends_the_session() {
 #[tokio::test]
 async fn a_target_that_does_not_resolve_is_the_session_s_failure() {
     let mut head = Head::new("studio").await;
-    let (session, started) = head.ok(start("nothing-here", false, None)).await;
+    let (session, started) = head.ok(start("nothing-here", false, None, GUARD)).await;
     assert!(matches!(started, ReplyResult::Done));
     let views = head.run_until(session, is("failed")).await;
     assert_eq!(stages(&views), ["connecting", "failed"]);
@@ -523,7 +579,7 @@ async fn a_profile_s_entries_run_in_turn_and_a_missing_one_is_skipped_for_the_re
     }
     entries_profile(&head, "two", &[("a", "b"), ("c", "d")]);
 
-    let (session, _) = head.ok(start("two", false, None)).await;
+    let (session, _) = head.ok(start("two", false, None, GUARD)).await;
     let mut views = head.run_until(session, is("reviewing")).await;
     let first = views
         .last()
@@ -559,7 +615,7 @@ async fn a_profile_s_entries_run_in_turn_and_a_missing_one_is_skipped_for_the_re
     std::fs::remove_dir_all(head.path("a")).unwrap_or_else(|error| panic!("{error}"));
     write(&head.path("c/more.txt"), "more");
     write(&head.path("c/skip.txt"), "not this one");
-    let (session, _) = head.ok(start("two", false, None)).await;
+    let (session, _) = head.ok(start("two", false, None, GUARD)).await;
     let mut views = head.run_until(session, is("reviewing")).await;
     let review = views
         .last()
@@ -601,7 +657,7 @@ async fn a_pause_in_the_second_entry_resumes_from_the_first() {
         std::fs::create_dir_all(head.path(leaf)).unwrap_or_else(|error| panic!("{error}"));
     }
     entries_profile(&head, "two", &[("a", "b"), ("c", "d")]);
-    let (session, _) = head.ok(start("two", false, None)).await;
+    let (session, _) = head.ok(start("two", false, None, GUARD)).await;
     let second = |view: &FoldedRunView| is("reviewing")(view) && view.current == Some(1);
     head.run_until(session, second).await;
     head.ok(steer(session, RunIntent::Pause)).await;
@@ -645,7 +701,7 @@ async fn a_profile_whose_roots_nest_through_a_symlink_is_refused_by_name() {
     std::os::unix::fs::symlink(head.path("a"), head.path("link"))
         .unwrap_or_else(|error| panic!("{error}"));
     entries_profile(&head, "nested", &[("a", "b"), ("link/inner", "d")]);
-    let (session, _) = head.ok(start("nested", false, None)).await;
+    let (session, _) = head.ok(start("nested", false, None, GUARD)).await;
     let views = head.run_until(session, is("failed")).await;
     let RunPhaseView::Failed { message } =
         &views.last().unwrap_or_else(|| unreachable!("failed")).phase
@@ -658,7 +714,7 @@ async fn a_profile_whose_roots_nest_through_a_symlink_is_refused_by_name() {
     );
     // Positive control: the second entry alone runs.
     entries_profile(&head, "inner", &[("link/inner", "d")]);
-    let (session, _) = head.ok(start("inner", false, None)).await;
+    let (session, _) = head.ok(start("inner", false, None, GUARD)).await;
     let views = head.run_until(session, ended).await;
     assert_eq!(
         stage(views.last().unwrap_or_else(|| unreachable!("ended"))),
@@ -685,7 +741,7 @@ async fn a_run_whose_far_side_does_not_answer_fails_with_where_it_dialled() {
             &one_entry(parse(&head.path_text("a")), parse(&socket)),
         )
         .unwrap_or_else(|error| panic!("{error}"));
-    let (session, _) = head.ok(start("far", false, None)).await;
+    let (session, _) = head.ok(start("far", false, None, GUARD)).await;
     let views = head.run_until(session, is("failed")).await;
     assert_eq!(stages(&views), ["connecting", "failed"]);
     assert!(matches!(

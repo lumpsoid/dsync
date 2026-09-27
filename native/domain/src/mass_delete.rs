@@ -18,12 +18,37 @@ pub struct MassDeletePolicy {
     percent: usize,
 }
 
+/// Thresholds no guard can use: fewer than one file, or a percent outside
+/// 1 to 100 (0 would trip on any `min_files` deletes, over 100 never).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the mass-delete guard needs at least 1 file and a percent of 1 to 100, \
+     got {min_files} file(s) and {percent}%"
+)]
+pub struct MassDeletePolicyError {
+    min_files: u64,
+    percent: u64,
+}
+
 impl MassDeletePolicy {
     /// Ten files, and over half of the side.
     pub const DEFAULT: MassDeletePolicy = MassDeletePolicy {
         min_files: 10,
         percent: 50,
     };
+
+    /// A guard tripping at `min_files` deletes on a side (at least 1) and
+    /// more than `percent` (1 to 100) of that side's archived files.
+    pub fn new(min_files: u64, percent: u64) -> Result<MassDeletePolicy, MassDeletePolicyError> {
+        let error = MassDeletePolicyError { min_files, percent };
+        if min_files == 0 || !(1..=100).contains(&percent) {
+            return Err(error);
+        }
+        Ok(MassDeletePolicy {
+            min_files: usize::try_from(min_files).map_err(|_| error)?,
+            percent: usize::try_from(percent).map_err(|_| error)?,
+        })
+    }
 
     /// Paths of each tripped side carried for a head to show.
     pub const SAMPLE_PATHS: usize = 5;
@@ -192,6 +217,36 @@ mod tests {
         });
         kept.push(Action::CommitOnly { path: path("d") });
         assert_eq!(judge(&kept, [0, 10]), None);
+    }
+
+    #[test]
+    fn new_takes_at_least_one_file_and_a_percent_of_1_to_100() {
+        assert_eq!(MassDeletePolicy::new(10, 50), Ok(MassDeletePolicy::DEFAULT));
+        assert!(MassDeletePolicy::new(1, 1).is_ok());
+        assert!(MassDeletePolicy::new(1, 100).is_ok());
+        assert_eq!(
+            MassDeletePolicy::new(0, 50),
+            Err(MassDeletePolicyError {
+                min_files: 0,
+                percent: 50
+            })
+        );
+        assert!(MassDeletePolicy::new(10, 0).is_err());
+        assert!(MassDeletePolicy::new(10, 101).is_err());
+    }
+
+    #[test]
+    fn a_lower_minimum_trips_where_the_default_would_not() {
+        let three = MassDeletePolicy::new(3, 50).unwrap_or_else(|error| panic!("{error}"));
+        assert!(three.judge(&deletes(Side::B, 3), [0, 4]).is_some());
+        assert_eq!(judge(&deletes(Side::B, 3), [0, 4]), None);
+    }
+
+    #[test]
+    fn a_higher_percent_needs_more_of_the_side() {
+        let ninety = MassDeletePolicy::new(10, 90).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(ninety.judge(&deletes(Side::A, 18), [20, 0]), None);
+        assert!(ninety.judge(&deletes(Side::A, 19), [20, 0]).is_some());
     }
 
     #[test]

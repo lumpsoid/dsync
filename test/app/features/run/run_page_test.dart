@@ -8,6 +8,7 @@ import 'package:dsync/app/features/run/run_review_keyboard.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/readable_width.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/warn_size.dart';
@@ -52,6 +53,7 @@ void main() {
       screenWake: screenWake,
       keepScreenAwake: () async => true,
       defaultWarnSize: () async => const WarnSizeOff(),
+      massDeleteGuard: () async => MassDeleteGuard.defaults,
     );
     appScope.setController(controller.app);
     runScope.setController(controller);

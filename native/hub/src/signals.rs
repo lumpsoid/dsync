@@ -143,7 +143,9 @@ pub enum CoreCommand {
     /// the peer is dialled (`host` or `host:port`).
     /// `default_warn_size_bytes` is the head's setting: the plan review
     /// warns above it when neither a flag nor the profile sets a size.
-    /// Answered `Done` at
+    /// `mass_delete_min_files` and `mass_delete_percent` are the head's
+    /// thresholds for SPEC §10's delete guard: at least 1 file, a percent
+    /// of 1 to 100, or the command is refused. Answered `Done` at
     /// once; everything after, a target that will not resolve included,
     /// is the session's [`RunSnapshot`]s.
     StartRun {
@@ -151,6 +153,8 @@ pub enum CoreCommand {
         dry_run: bool,
         address: Option<String>,
         default_warn_size_bytes: Option<u64>,
+        mass_delete_min_files: u64,
+        mass_delete_percent: u64,
     },
     /// What the user did to the run in `session`.
     SteerRun {

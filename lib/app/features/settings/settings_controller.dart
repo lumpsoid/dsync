@@ -3,6 +3,7 @@ import 'dart:io';
 import '../../app_controller.dart';
 import '../../app_settings.dart';
 import '../../app_settings_store.dart';
+import '../../mass_delete_guard.dart';
 import '../../peer_port.dart';
 import '../../theme_preference.dart';
 import '../../warn_size.dart';
@@ -130,6 +131,62 @@ class SettingsController {
               '${size.label} warns before you apply it, unless its '
               'profile sets a size of its own.',
       }),
+    );
+  }
+
+  /// Stores [text] as how many files a sync deletes on one side before it
+  /// may stop to ask, refusing anything `MassDeleteGuard.parseMinFiles`
+  /// refuses. The percent is kept.
+  Future<void> saveMassDeleteMinFiles(String text) async {
+    final int count;
+    try {
+      count = MassDeleteGuard.parseMinFiles(text);
+    } on FormatException catch (e) {
+      state.recordOutcome(SettingsFailed(e.message));
+      return;
+    }
+    await _saveMassDeleteGuard(
+      (guard) => guard.withMinFiles(count),
+      unchanged: 'The file count is unchanged.',
+    );
+  }
+
+  /// Stores [text] as the share of a side a sync deletes before it may
+  /// stop to ask, refusing anything `MassDeleteGuard.parsePercent` refuses.
+  /// The file count is kept.
+  Future<void> saveMassDeletePercent(String text) async {
+    final int share;
+    try {
+      share = MassDeleteGuard.parsePercent(text);
+    } on FormatException catch (e) {
+      state.recordOutcome(SettingsFailed(e.message));
+      return;
+    }
+    await _saveMassDeleteGuard(
+      (guard) => guard.withPercent(share),
+      unchanged: 'The percent is unchanged.',
+    );
+  }
+
+  Future<void> _saveMassDeleteGuard(
+    MassDeleteGuard Function(MassDeleteGuard guard) change, {
+    required String unchanged,
+  }) async {
+    state.recordOutcome(const SettingsWorking());
+    final failure = await _change(
+      (settings) =>
+          settings.withMassDeleteGuard(change(settings.massDeleteGuard)),
+      unchanged: unchanged,
+    );
+    if (failure != null) {
+      state.recordOutcome(SettingsFailed(failure));
+      return;
+    }
+    state.recordOutcome(
+      const SettingsSaved(
+        'From the next sync, it stops to ask before deleting at these '
+        'thresholds. Nothing is deleted past them without your say-so.',
+      ),
     );
   }
 

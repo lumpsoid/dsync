@@ -24,6 +24,7 @@ import '../../core_link/models/scan_tally.dart';
 import '../../core_link/models/skipped_path_info.dart';
 import '../../core_link/models/sync_history.dart';
 import '../../format_bytes.dart';
+import '../../mass_delete_guard.dart';
 import '../../run_request.dart';
 import '../../screen_wake.dart';
 import '../../warn_size.dart';
@@ -75,6 +76,10 @@ import 'run_view_state.dart';
 /// A settings file that cannot be read means no default size, not a run
 /// that fails.
 ///
+/// **So are the delete guard's thresholds**: when the core stops to ask
+/// before deleting. A settings file that cannot be read means the default
+/// thresholds, never a run without the guard and never a run that fails.
+///
 /// **The app is told each time an attempt stops being live**
 /// (`AppController.runEnded`): that is when the core writes or clears the
 /// run marker the home list warns with. A page that leaves a live run
@@ -85,6 +90,7 @@ class SyncRunController {
     required this.screenWake,
     required this.keepScreenAwake,
     required this.defaultWarnSize,
+    required this.massDeleteGuard,
   });
 
   final AppController app;
@@ -102,6 +108,11 @@ class SyncRunController {
   /// [keepScreenAwake]. Throws `AppSettingsStoreException` when the
   /// settings file cannot be read.
   final Future<WarnSize> Function() defaultWarnSize;
+
+  /// The Settings page's delete-guard thresholds, read once per [start]
+  /// like [keepScreenAwake]. Throws `AppSettingsStoreException` when the
+  /// settings file cannot be read.
+  final Future<MassDeleteGuard> Function() massDeleteGuard;
 
   /// The view state this controller renders into; owned here, disposed here.
   final SyncRunViewState state = SyncRunViewState();
@@ -128,6 +139,7 @@ class SyncRunController {
     _session = opened.future;
     _screenWanted = await _readKeepScreenAwake();
     final warnSize = await _readDefaultWarnSize();
+    final guard = await _readMassDeleteGuard();
     try {
       final session = await app.core.startRun(
         request.target,
@@ -137,6 +149,8 @@ class SyncRunController {
           WarnSizeOff() => null,
           WarnSizeAbove(:final bytes) => bytes,
         },
+        massDeleteMinFiles: guard.minFiles,
+        massDeletePercent: guard.percent,
       );
       opened.complete(session);
       if (_disposed) return;
@@ -355,6 +369,15 @@ class SyncRunController {
       return await defaultWarnSize();
     } on AppSettingsStoreException {
       return const WarnSizeOff();
+    }
+  }
+
+  /// A damaged settings file guards with the default thresholds.
+  Future<MassDeleteGuard> _readMassDeleteGuard() async {
+    try {
+      return await massDeleteGuard();
+    } on AppSettingsStoreException {
+      return MassDeleteGuard.defaults;
     }
   }
 

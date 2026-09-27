@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/atomic_write.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/warn_size.dart';
@@ -44,14 +45,15 @@ void main() {
         expect(settings.keepScreenAwake, isTrue);
         expect(settings.peerPort, PeerPort(defaultPeerPort));
         expect(settings.warnSize, const WarnSizeOff());
+        expect(settings.massDeleteGuard, MassDeleteGuard.defaults);
         expect(storeFile().existsSync(), isFalse);
       },
     );
 
-    test('reads back what was saved, written as version 1.4', () async {
+    test('reads back what was saved, written as version 1.5', () async {
       await store().save(at('10.8.0.3'));
 
-      expect(storeFile().readAsStringSync(), contains('"version":"1.4"'));
+      expect(storeFile().readAsStringSync(), contains('"version":"1.5"'));
       expect((await store().load()).bindAddress.address, '10.8.0.3');
     });
 
@@ -108,6 +110,65 @@ void main() {
       await store().save(settings.withWarnSize(const WarnSizeOff()));
       expect((await store().load()).warnSize, const WarnSizeOff());
     });
+
+    test('the delete guard\'s thresholds survive the round trip beside the '
+        'others', () async {
+      await store().save(
+        at('10.8.0.3')
+            .withMassDeleteGuard(MassDeleteGuard(minFiles: 3, percent: 20))
+            .withWarnSize(WarnSizeAbove(500)),
+      );
+
+      expect(
+        storeFile().readAsStringSync(),
+        contains('"deletionSafety":{"minFiles":3,"percent":20}'),
+      );
+      final settings = await store().load();
+      expect(
+        settings.massDeleteGuard,
+        MassDeleteGuard(minFiles: 3, percent: 20),
+      );
+      expect(settings.warnSize, WarnSizeAbove(500));
+      expect(settings.bindAddress.address, '10.8.0.3');
+    });
+
+    test('a 1.4 document, which has no deletionSafety section, guards with '
+        'the defaults', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.4", "network": {"bindAddress": "10.8.0.3"}, '
+        '"sync": {"warnSizeBytes": 500}}',
+      );
+
+      final settings = await store().load();
+      expect(settings.massDeleteGuard, MassDeleteGuard.defaults);
+      expect(settings.warnSize, WarnSizeAbove(500));
+    });
+
+    for (final deletionSafety in [
+      '{"minFiles": 0, "percent": 50}',
+      '{"minFiles": 10, "percent": 0}',
+      '{"minFiles": 10, "percent": 101}',
+      '{"minFiles": "10", "percent": 50}',
+      '{"minFiles": 10, "percent": 50.5}',
+      '{"minFiles": 10}',
+      '{"percent": 50}',
+      '[]',
+    ]) {
+      test(
+        'a deletionSafety section of $deletionSafety is corruption',
+        () async {
+          await storeFile().writeAsString(
+            '{"version": "1.5", "network": {"bindAddress": "0.0.0.0"}, '
+            '"deletionSafety": $deletionSafety}',
+          );
+
+          await expectLater(
+            store().load(),
+            throwsA(isA<AppSettingsStoreCorruptException>()),
+          );
+        },
+      );
+    }
 
     test('a 1.3 document, which has no sync section, warns about no '
         'size', () async {
@@ -287,7 +348,7 @@ void main() {
             allOf(
               contains(storeFile().path),
               contains('format 2.0'),
-              contains('(format 1.4)'),
+              contains('(format 1.5)'),
               contains('reads format 2.x'),
             ),
           ),

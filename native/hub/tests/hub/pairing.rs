@@ -220,6 +220,8 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
         dry_run: false,
         address: at.clone(),
         default_warn_size_bytes: None,
+        mass_delete_min_files: 10,
+        mass_delete_percent: 50,
     };
     let (session, _) = phone.ok(run).await;
     let reviewing = phone

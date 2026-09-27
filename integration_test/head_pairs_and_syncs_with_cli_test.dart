@@ -38,6 +38,7 @@ import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/peer_port.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' show assignRustSignal;
 import 'package:dsync/app/screen_wake.dart';
@@ -165,6 +166,7 @@ void main() {
         screenWake: const _NoScreenWake(),
         keepScreenAwake: () async => true,
         defaultWarnSize: () async => const WarnSizeOff(),
+        massDeleteGuard: () async => MassDeleteGuard.defaults,
       ),
     );
     addTearDown(runScope.reset);

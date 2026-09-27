@@ -6,6 +6,7 @@ import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/warn_size.dart';
@@ -45,6 +46,7 @@ class RunHarness {
     DateTime Function()? now,
     Future<bool> Function()? keepScreenAwake,
     Future<WarnSize> Function()? defaultWarnSize,
+    Future<MassDeleteGuard> Function()? massDeleteGuard,
   }) : hub = FakeHub(),
        screenWake = FakeScreenWake() {
     app = fakeApp(hub, now: now);
@@ -53,6 +55,7 @@ class RunHarness {
       screenWake: screenWake,
       keepScreenAwake: keepScreenAwake ?? () async => true,
       defaultWarnSize: defaultWarnSize ?? () async => const WarnSizeOff(),
+      massDeleteGuard: massDeleteGuard ?? () async => MassDeleteGuard.defaults,
     );
   }
 

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'mass_delete_guard.dart';
 import 'peer_port.dart';
 import 'theme_preference.dart';
 import 'warn_size.dart';
@@ -7,12 +8,13 @@ import 'warn_size.dart';
 /// What the head's Settings page owns: the preferences this installation
 /// keeps for itself, as already-parsed values.
 ///
-/// Five settings — [bindAddress], [peerPort], [theme], [keepScreenAwake]
-/// and [warnSize] — held as one model because the thing the Settings page
-/// edits and [AppSettingsStore] writes is "the settings", one whole
-/// document: changing one of them is [withBindAddress], [withPeerPort],
-/// [withTheme], [withKeepScreenAwake] or [withWarnSize] on what is stored,
-/// so a save never drops the others.
+/// Six settings — [bindAddress], [peerPort], [theme], [keepScreenAwake],
+/// [warnSize] and [massDeleteGuard] — held as one model because the thing
+/// the Settings page edits and [AppSettingsStore] writes is "the settings",
+/// one whole document: changing one of them is [withBindAddress],
+/// [withPeerPort], [withTheme], [withKeepScreenAwake], [withWarnSize] or
+/// [withMassDeleteGuard] on what is stored, so a save never drops the
+/// others.
 ///
 /// **Parsed, not textual.** A bind address that reached here as a string
 /// would be re-validated by everything that read it; [parseBindAddress] is
@@ -28,6 +30,7 @@ class AppSettings {
     required this.theme,
     required this.keepScreenAwake,
     required this.warnSize,
+    required this.massDeleteGuard,
   });
 
   /// Which address the pairing listener binds — the head's equivalent of
@@ -51,6 +54,9 @@ class AppSettings {
   /// of its own.
   final WarnSize warnSize;
 
+  /// When a run stops to ask before it deletes.
+  final MassDeleteGuard massDeleteGuard;
+
   /// These settings with the bind address changed to [address].
   AppSettings withBindAddress(InternetAddress address) => AppSettings(
     bindAddress: address,
@@ -58,6 +64,7 @@ class AppSettings {
     theme: theme,
     keepScreenAwake: keepScreenAwake,
     warnSize: warnSize,
+    massDeleteGuard: massDeleteGuard,
   );
 
   /// These settings with the peer port changed to [port].
@@ -67,6 +74,7 @@ class AppSettings {
     theme: theme,
     keepScreenAwake: keepScreenAwake,
     warnSize: warnSize,
+    massDeleteGuard: massDeleteGuard,
   );
 
   /// These settings with the theme changed to [preference].
@@ -76,6 +84,7 @@ class AppSettings {
     theme: preference,
     keepScreenAwake: keepScreenAwake,
     warnSize: warnSize,
+    massDeleteGuard: massDeleteGuard,
   );
 
   /// These settings with keeping the screen awake turned [on] or off.
@@ -85,6 +94,7 @@ class AppSettings {
     theme: theme,
     keepScreenAwake: on,
     warnSize: warnSize,
+    massDeleteGuard: massDeleteGuard,
   );
 
   /// These settings with the default warn size changed to [size].
@@ -94,6 +104,17 @@ class AppSettings {
     theme: theme,
     keepScreenAwake: keepScreenAwake,
     warnSize: size,
+    massDeleteGuard: massDeleteGuard,
+  );
+
+  /// These settings with the delete guard's thresholds changed to [guard].
+  AppSettings withMassDeleteGuard(MassDeleteGuard guard) => AppSettings(
+    bindAddress: bindAddress,
+    peerPort: peerPort,
+    theme: theme,
+    keepScreenAwake: keepScreenAwake,
+    warnSize: warnSize,
+    massDeleteGuard: guard,
   );
 
   /// What an installation that has never opened Settings runs with:
@@ -101,14 +122,16 @@ class AppSettings {
   /// listen in the same place until somebody says otherwise;
   /// [defaultPeerPort], the CLI's `--port` default, for the same reason; the
   /// device's own light or dark; and the screen held awake while a run or
-  /// serve is live, as it was before this was a setting; and no warn
-  /// size, as the CLI without `--warn-size`.
+  /// serve is live, as it was before this was a setting; no warn size, as
+  /// the CLI without `--warn-size`; and the delete guard's default
+  /// thresholds, the CLI's.
   static final AppSettings defaults = AppSettings(
     bindAddress: InternetAddress.anyIPv4,
     peerPort: PeerPort(defaultPeerPort),
     theme: ThemePreference.system,
     keepScreenAwake: true,
     warnSize: const WarnSizeOff(),
+    massDeleteGuard: MassDeleteGuard.defaults,
   );
 }
 

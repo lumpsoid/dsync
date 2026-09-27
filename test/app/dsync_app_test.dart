@@ -42,6 +42,7 @@ import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/peer_port.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -440,6 +441,7 @@ void main() {
         screenWake: FakeScreenWake(),
         keepScreenAwake: () async => true,
         defaultWarnSize: () async => const WarnSizeOff(),
+        massDeleteGuard: () async => MassDeleteGuard.defaults,
       );
     });
     Future<void> failTheRun() async {

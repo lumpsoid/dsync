@@ -155,3 +155,31 @@ async fn deletions_under_the_threshold_are_not_asked_about() {
     assert_eq!(finished.exit_code(), 0, "{:?}", finished.errors());
     assert!(site.tree(Side::B).is_empty());
 }
+
+#[tokio::test]
+async fn the_runs_own_thresholds_decide_when_it_asks() {
+    let site = emptied_on_a(3).await;
+    let options = site.options_with(Flags {
+        mass_delete: Some((3, 50)),
+        ..Flags::default()
+    });
+    let mut decider = Confirming {
+        confirm: false,
+        asked: None,
+    };
+
+    let finished = run_with(
+        &site,
+        site.replica(Side::A),
+        site.replica(Side::B),
+        &options,
+        &mut decider,
+        Tuning::DEFAULT,
+    )
+    .await;
+
+    let asked = decider.asked.unwrap();
+    assert_eq!(asked.side(Side::B).map(|b| b.deletes), Some(3));
+    assert_eq!(finished.exit_code(), 3);
+    assert_eq!(site.tree(Side::B).len(), 3);
+}

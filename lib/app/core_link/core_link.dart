@@ -294,7 +294,10 @@ final class CoreLink {
 
   /// Opens a run session for [target]. [address] overrides where the peer
   /// is dialled. [defaultWarnSizeBytes] is the size the plan review warns
-  /// above when the profile sets none; `null` for none. The core resolves,
+  /// above when the profile sets none; `null` for none.
+  /// [massDeleteMinFiles] and [massDeletePercent] are when the run stops to
+  /// ask before deleting; a pair out of range (at least 1 file, 1 to 100
+  /// percent) is refused, and no session opens. The core resolves,
   /// connects and runs it; what it comes to — a target that will not
   /// resolve included — is the session's views.
   Future<RunSession> startRun(
@@ -302,6 +305,8 @@ final class CoreLink {
     required bool dryRun,
     String? address,
     required int? defaultWarnSizeBytes,
+    required int massDeleteMinFiles,
+    required int massDeletePercent,
   }) async {
     late int session;
     late Stream<RunView> views;
@@ -315,6 +320,8 @@ final class CoreLink {
             final bytes? => wire.Uint64(BigInt.from(bytes)),
             null => null,
           },
+          massDeleteMinFiles: wire.Uint64(BigInt.from(massDeleteMinFiles)),
+          massDeletePercent: wire.Uint64(BigInt.from(massDeletePercent)),
         ),
         opening: (id) {
           session = id;

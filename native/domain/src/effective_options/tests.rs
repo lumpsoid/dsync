@@ -240,6 +240,22 @@ fn allow_mass_delete_comes_from_the_flag_alone() {
 }
 
 #[test]
+fn the_mass_delete_policy_is_the_heads_or_the_default() {
+    let run = flags(Flags {
+        mass_delete: Some((3, 20)),
+        ..Flags::default()
+    });
+    let heads = MassDeletePolicy::new(3, 20).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(work(&run).mass_delete, heads);
+    assert_eq!(ad_hoc("/home/me/a", "/home/me/b", &run).mass_delete, heads);
+    assert_eq!(work(&no_flags()).mass_delete, MassDeletePolicy::DEFAULT);
+    assert_eq!(
+        ad_hoc("/home/me/a", "/home/me/b", &no_flags()).mass_delete,
+        MassDeletePolicy::DEFAULT
+    );
+}
+
+#[test]
 fn with_no_flag_the_profile_jobs_is_kept() {
     assert_eq!(work(&no_flags()).jobs.map(Jobs::get), Some(2));
 }

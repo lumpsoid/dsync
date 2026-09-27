@@ -49,6 +49,9 @@ impl Hub {
     /// Opens the run session and answers at once: resolving, connecting
     /// and running happen in `session`'s task, and a target that will not
     /// resolve is the session's failed phase, which a resume retries.
+    /// Flags that will not validate - the delete guard's thresholds
+    /// (`mass_delete`, min files then percent) out of range - refuse the
+    /// command, and no session opens.
     pub(crate) fn start_run(
         self: &Arc<Self>,
         session: u64,
@@ -56,7 +59,15 @@ impl Hub {
         dry_run: bool,
         address: Option<String>,
         default_warn_size_bytes: Option<u64>,
+        mass_delete: (u64, u64),
     ) -> Handled {
+        let flags = run_flags(
+            dry_run,
+            Vec::new(),
+            None,
+            default_warn_size_bytes,
+            Some(mass_delete),
+        )?;
         let (wake, wakes) = mpsc::unbounded_channel();
         let control = Arc::new(RunControl {
             session,
@@ -74,9 +85,8 @@ impl Hub {
         control.update(|_| Urgency::Now);
         let launch = Launch {
             target,
-            dry_run,
             address,
-            default_warn_size_bytes,
+            flags,
         };
         let running = run_session(control.clone(), self.clone(), launch, wakes);
         self.sessions
@@ -102,11 +112,10 @@ impl Hub {
 /// What the session runs, resolved afresh for every attempt.
 struct Launch {
     target: RunTarget,
-    dry_run: bool,
     address: Option<String>,
-    /// The head's setting: warn above this when neither a flag nor the
-    /// profile sets a size.
-    default_warn_size_bytes: Option<u64>,
+    /// Validated once, at the start: the head's dry run, default warn size
+    /// and delete-guard thresholds.
+    flags: RunFlags,
 }
 
 /// One attempt's wiring.
@@ -141,8 +150,8 @@ impl Launch {
                 hub.draft_profile(draft)?,
             ),
         };
-        let flags = run_flags(self.dry_run, Vec::new(), None, self.default_warn_size_bytes)?;
-        let entries = profile.options(&name, &flags, facts).map_err(text)?;
+        let flags = &self.flags;
+        let entries = profile.options(&name, flags, facts).map_err(text)?;
         let mut connector = Connector::new(
             hub.state.clone(),
             facts.home().map(str::to_owned),
@@ -202,12 +211,14 @@ fn timings(entries: &[EffectiveOptions], report: &ProfileReport) -> Option<Strin
 
 /// The head's run flags: interactive (the head decides) unless a dry run,
 /// the draft's ignore patterns and jobs as `--ignore`/`--jobs` would be,
-/// and the head's default warn size under the profile's own.
+/// the head's default warn size under the profile's own, and the head's
+/// delete-guard thresholds (`None` is the default policy).
 pub(crate) fn run_flags(
     dry_run: bool,
     ignore: Vec<String>,
     jobs: Option<u32>,
     default_warn_size_bytes: Option<u64>,
+    mass_delete: Option<(u64, u64)>,
 ) -> Result<RunFlags, String> {
     RunFlags::validate(
         Command::Sync,
@@ -216,6 +227,7 @@ pub(crate) fn run_flags(
             ignore,
             jobs: jobs.map(i64::from),
             default_warn_size_bytes,
+            mass_delete,
             ..Flags::default()
         },
     )
@@ -740,7 +752,7 @@ mod tests {
         let home = dir.to_string_lossy().into_owned();
         let facts = HostFacts::new(Platform::HOST, Some(home.clone()), Vec::new(), home);
         let name = ProfileName::parse("two").unwrap_or_else(|error| panic!("{error}"));
-        let flags = super::run_flags(false, Vec::new(), None, None)
+        let flags = super::run_flags(false, Vec::new(), None, None, None)
             .unwrap_or_else(|error| panic!("{error}"));
         profile
             .options(&name, &flags, &facts)

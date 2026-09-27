@@ -5,6 +5,7 @@ import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/warn_size.dart';
@@ -397,6 +398,35 @@ void main() {
         ),
       );
       expect(harness.state.sizeWarning, isNull);
+    });
+  });
+
+  group('the delete guard setting', () {
+    Future<wire.CoreCommandStartRun> startedWith(
+      Future<MassDeleteGuard> Function() massDeleteGuard,
+    ) async {
+      harness.dispose();
+      harness = RunHarness(massDeleteGuard: massDeleteGuard);
+      await harness.start();
+      return harness.hub.sent<wire.CoreCommandStartRun>().single;
+    }
+
+    test('the stored thresholds are sent with the run', () async {
+      final asked = await startedWith(
+        () async => MassDeleteGuard(minFiles: 3, percent: 20),
+      );
+      expect(asked.massDeleteMinFiles, n(3));
+      expect(asked.massDeletePercent, n(20));
+    });
+
+    test('a settings file it cannot be read from sends the defaults, and '
+        'the run still starts', () async {
+      final asked = await startedWith(
+        () async =>
+            throw const AppSettingsStoreCorruptException('/s.json', 'bad'),
+      );
+      expect(asked.massDeleteMinFiles, n(10));
+      expect(asked.massDeletePercent, n(50));
     });
   });
 

@@ -109,7 +109,7 @@ pub use location::{
     ExpandError, LocalLocation, Locality, Location, LocationError, PeerLocation, SshForm,
     SshLocation, UnixLocation,
 };
-pub use mass_delete::{MassDelete, MassDeletePolicy, SideDeletes};
+pub use mass_delete::{MassDelete, MassDeletePolicy, MassDeletePolicyError, SideDeletes};
 pub use metric_format::{format_bytes, format_count, format_duration};
 pub use missing_parent_folder::MissingParentFolder;
 pub use on_disk::OnDisk;

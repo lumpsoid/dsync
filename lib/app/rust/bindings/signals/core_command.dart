@@ -1404,6 +1404,8 @@ class CoreCommandStartRun extends CoreCommand {
     required this.dryRun,
     this.address,
     this.defaultWarnSizeBytes,
+    required this.massDeleteMinFiles,
+    required this.massDeletePercent,
   }) : super();
 
   static CoreCommandStartRun load(BinaryDeserializer deserializer) {
@@ -1413,6 +1415,8 @@ class CoreCommandStartRun extends CoreCommand {
       dryRun: deserializer.deserializeBool(),
       address: TraitHelpers.deserializeOptionStr(deserializer),
       defaultWarnSizeBytes: TraitHelpers.deserializeOptionU64(deserializer),
+      massDeleteMinFiles: deserializer.deserializeUint64(),
+      massDeletePercent: deserializer.deserializeUint64(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -1422,18 +1426,24 @@ class CoreCommandStartRun extends CoreCommand {
   final bool dryRun;
   final String? address;
   final Uint64? defaultWarnSizeBytes;
+  final Uint64 massDeleteMinFiles;
+  final Uint64 massDeletePercent;
 
   CoreCommandStartRun copyWith({
     RunTarget? target,
     bool? dryRun,
     String? Function()? address,
     Uint64? Function()? defaultWarnSizeBytes,
+    Uint64? massDeleteMinFiles,
+    Uint64? massDeletePercent,
   }) {
     return CoreCommandStartRun(
       target: target ?? this.target,
       dryRun: dryRun ?? this.dryRun,
       address: address == null ? this.address : address(),
       defaultWarnSizeBytes: defaultWarnSizeBytes == null ? this.defaultWarnSizeBytes : defaultWarnSizeBytes(),
+      massDeleteMinFiles: massDeleteMinFiles ?? this.massDeleteMinFiles,
+      massDeletePercent: massDeletePercent ?? this.massDeletePercent,
     );
   }
 
@@ -1444,6 +1454,8 @@ class CoreCommandStartRun extends CoreCommand {
     serializer.serializeBool(dryRun);
     TraitHelpers.serializeOptionStr(address, serializer);
     TraitHelpers.serializeOptionU64(defaultWarnSizeBytes, serializer);
+    serializer.serializeUint64(massDeleteMinFiles);
+    serializer.serializeUint64(massDeletePercent);
     serializer.decreaseContainerDepth();
   }
 
@@ -1456,7 +1468,9 @@ class CoreCommandStartRun extends CoreCommand {
       && target == other.target
       && dryRun == other.dryRun
       && address == other.address
-      && defaultWarnSizeBytes == other.defaultWarnSizeBytes;
+      && defaultWarnSizeBytes == other.defaultWarnSizeBytes
+      && massDeleteMinFiles == other.massDeleteMinFiles
+      && massDeletePercent == other.massDeletePercent;
   }
 
   @override
@@ -1465,6 +1479,8 @@ class CoreCommandStartRun extends CoreCommand {
         dryRun,
         address,
         defaultWarnSizeBytes,
+        massDeleteMinFiles,
+        massDeletePercent,
       );
 
   @override
@@ -1476,7 +1492,9 @@ class CoreCommandStartRun extends CoreCommand {
         'target: $target, '
         'dryRun: $dryRun, '
         'address: $address, '
-        'defaultWarnSizeBytes: $defaultWarnSizeBytes'
+        'defaultWarnSizeBytes: $defaultWarnSizeBytes, '
+        'massDeleteMinFiles: $massDeleteMinFiles, '
+        'massDeletePercent: $massDeletePercent'
         ')';
       return true;
     }());

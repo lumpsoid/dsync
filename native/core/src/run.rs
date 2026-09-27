@@ -27,9 +27,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dsync_domain::{
-    Action, BucketCount, ChangedScan, EffectiveOptions, MassDeletePolicy, Plan, ReplicaInfo,
-    ReplicaOp, RuleSet, RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side,
-    SkippedPath, StopSignal, Tuning, failure_count, reconcile, status_list, unreadable_of,
+    Action, BucketCount, ChangedScan, EffectiveOptions, Plan, ReplicaInfo, ReplicaOp, RuleSet,
+    RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side, SkippedPath,
+    StopSignal, Tuning, failure_count, reconcile, status_list, unreadable_of,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -477,7 +477,7 @@ impl Run {
         clock: &RunClock,
     ) -> Result<Vec<Action>, RunError> {
         let archived = tallies.map(ScanTally::archived);
-        let Some(verdict) = MassDeletePolicy::DEFAULT.judge(&kept, archived) else {
+        let Some(verdict) = options.mass_delete.judge(&kept, archived) else {
             return Ok(kept);
         };
         let allowed = options.allow_mass_delete;

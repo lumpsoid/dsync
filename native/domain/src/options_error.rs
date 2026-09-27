@@ -2,6 +2,7 @@
 
 use crate::glob::GlobError;
 use crate::location::{ExpandError, LocationError};
+use crate::mass_delete::MassDeletePolicyError;
 use crate::profile::ProfileNameError;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -34,6 +35,8 @@ pub enum OptionsError {
     Jobs(i64),
     #[error("--apply-concurrency must be a positive integer, got \"{0}\"")]
     ApplyConcurrency(i64),
+    #[error(transparent)]
+    MassDelete(#[from] MassDeletePolicyError),
     /// Two of a profile's 2N sides share a tree: an entry's own A and B,
     /// or any side of one entry and any side of another on the same
     /// endpoint. `first` and `second` name them as `entries[i].a`.

@@ -31,6 +31,8 @@ void main() {
       ),
       dryRun: false,
       defaultWarnSizeBytes: null,
+      massDeleteMinFiles: 10,
+      massDeletePercent: 50,
     );
     final views = <RunView>[];
     final listening = run.views.listen(views.add);
@@ -76,6 +78,8 @@ void main() {
       ),
       dryRun: false,
       defaultWarnSizeBytes: null,
+      massDeleteMinFiles: 10,
+      massDeletePercent: 50,
     );
     final views = run.views.toList();
     hub

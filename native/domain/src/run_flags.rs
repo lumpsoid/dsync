@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 
 use crate::glob::Glob;
 use crate::jobs::Jobs;
+use crate::mass_delete::MassDeletePolicy;
 use crate::options_error::OptionsError;
 use crate::ssh_access::{SshCommand, SshOption};
 
@@ -37,6 +38,10 @@ pub struct Flags {
     pub ssh_options: Vec<String>,
     pub remote_dsync: Option<String>,
     pub allow_mass_delete: bool,
+    /// Not a CLI flag: the head's own setting, the mass-delete guard's
+    /// thresholds as `(min_files, percent)`. `None` is
+    /// [`MassDeletePolicy::DEFAULT`].
+    pub mass_delete: Option<(u64, u64)>,
 }
 
 /// How the plan is decided.
@@ -77,6 +82,8 @@ pub struct RunFlags {
     /// `--allow-mass-delete`: apply deletions SPEC §10's guard would stop
     /// for without asking.
     pub allow_mass_delete: bool,
+    /// When SPEC §10's guard trips: the head's thresholds, or the default.
+    pub mass_delete: MassDeletePolicy,
 }
 
 impl RunFlags {
@@ -132,6 +139,10 @@ impl RunFlags {
             .iter()
             .map(|pattern| Glob::new(pattern))
             .collect::<Result<_, _>>()?;
+        let mass_delete = match flags.mass_delete {
+            Some((min_files, percent)) => MassDeletePolicy::new(min_files, percent)?,
+            None => MassDeletePolicy::DEFAULT,
+        };
         Ok(RunFlags {
             mode,
             json: flags.json,
@@ -145,6 +156,7 @@ impl RunFlags {
             ssh_options,
             remote_dsync,
             allow_mass_delete: flags.allow_mass_delete,
+            mass_delete,
         })
     }
 }
@@ -173,6 +185,27 @@ mod tests {
         assert_eq!(flags.jobs, None);
         assert_eq!(flags.apply_concurrency, None);
         assert!(!flags.allow_mass_delete);
+        assert_eq!(flags.mass_delete, MassDeletePolicy::DEFAULT);
+    }
+
+    #[test]
+    fn mass_delete_thresholds_are_validated_into_the_policy() {
+        let thresholds = |min_files, percent| Flags {
+            mass_delete: Some((min_files, percent)),
+            ..Flags::default()
+        };
+        assert_eq!(
+            sync(thresholds(3, 20)).unwrap().mass_delete,
+            MassDeletePolicy::new(3, 20).unwrap()
+        );
+        assert!(matches!(
+            sync(thresholds(0, 50)),
+            Err(OptionsError::MassDelete(_))
+        ));
+        assert!(matches!(
+            sync(thresholds(10, 101)),
+            Err(OptionsError::MassDelete(_))
+        ));
     }
 
     #[test]

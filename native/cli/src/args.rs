@@ -292,6 +292,7 @@ impl RunArgs {
             ssh_options: self.ssh_option,
             remote_dsync: self.remote_dsync,
             allow_mass_delete: self.allow_mass_delete,
+            mass_delete: None,
         }
     }
 }
@@ -497,6 +498,7 @@ mod tests {
                 ssh_options: vec!["-p".into(), "-i".into()],
                 remote_dsync: Some("/opt/dsync".into()),
                 allow_mass_delete: true,
+                mass_delete: None,
             }
         );
     }

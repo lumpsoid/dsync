@@ -11,16 +11,19 @@ import 'settings_view_state.dart';
 /// holding the address the pairing listener binds (task 2b26ac's `--bind`,
 /// as the head's own setting) and the port this device serves on,
 /// **Appearance**, holding the theme,
-/// **Power**, holding whether runs and serve keep the screen awake, and
-/// **Sync**, holding the size a run's review warns above.
+/// **Power**, holding whether runs and serve keep the screen awake,
+/// **Sync**, holding the size a run's review warns above, and
+/// **Deletion safety**, holding when a run stops to ask before deleting —
+/// its thresholds only: the guard has no off switch here.
 ///
 /// Widgets only, per the page role in `app_scope.dart`: the stored settings
 /// arrive as one value the controller has already parsed, and the only
 /// branches here are over whether they were read and the sealed
-/// [SettingsOutcome]. Nothing on this page decides what a bind address or
-/// a port or a warn size may be — the dialog hands what was typed to the
-/// controller, and the refusal it shows is `parseBindAddress`'s,
-/// `PeerPort.parse`'s or `WarnSize.parse`'s own words.
+/// [SettingsOutcome]. Nothing on this page decides what a bind address, a
+/// port, a warn size or a delete threshold may be — the dialog hands what
+/// was typed to the controller, and the refusal it shows is
+/// `parseBindAddress`'s, `PeerPort.parse`'s, `WarnSize.parse`'s or
+/// `MassDeleteGuard`'s own words.
 ///
 /// A leaf: nothing leads anywhere from this page, so it takes no callbacks.
 class SettingsPage extends StatefulWidget {
@@ -70,6 +73,7 @@ class _SettingsBody extends StatelessWidget {
     final theme = state.settings?.theme;
     final keepScreenAwake = state.settings?.keepScreenAwake;
     final warnSize = state.settings?.warnSize;
+    final guard = state.settings?.massDeleteGuard;
     return ReadableScrollPadding(
       width: ReadableWidth.list,
       padding: null,
@@ -201,6 +205,45 @@ class _SettingsBody extends StatelessWidget {
               }),
             ),
           ),
+          const _SectionHeader('Deletion safety'),
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('settings-mass-delete-min-files'),
+              leading: const Icon(Icons.delete_sweep_outlined),
+              title: const Text('Ask before deleting from'),
+              subtitle: Text(
+                guard == null
+                    ? 'Unavailable — see below.'
+                    : '${guard.minFiles} files on one side\nA sync stops to '
+                          'ask before it deletes this many files or more on '
+                          'one side, when they are also over the share '
+                          'below.',
+              ),
+              isThreeLine: guard != null,
+              enabled: !working && guard != null,
+              onTap: () =>
+                  _editMassDeleteMinFiles(context, '${guard?.minFiles ?? ''}'),
+            ),
+          ),
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('settings-mass-delete-percent'),
+              leading: const Icon(Icons.pie_chart_outline),
+              title: const Text('…and over this share of a side'),
+              subtitle: Text(
+                guard == null
+                    ? 'Unavailable — see below.'
+                    : '${guard.percent}% of its files\nOf the files that '
+                          'side last synced. These tune when dsync asks; '
+                          'it always asks past them, and never deletes that '
+                          'much without your say-so.',
+              ),
+              isThreeLine: guard != null,
+              enabled: !working && guard != null,
+              onTap: () =>
+                  _editMassDeletePercent(context, '${guard?.percent ?? ''}'),
+            ),
+          ),
           switch (outcome) {
             SettingsSaved(:final message) => _NoticeTile(
               message,
@@ -274,6 +317,48 @@ class _SettingsBody extends StatelessWidget {
     );
     if (typed != null) await controller.saveWarnSize(typed);
   }
+
+  Future<void> _editMassDeleteMinFiles(
+    BuildContext context,
+    String current,
+  ) async {
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (context) => _TypedValueDialog(
+        title: 'Ask before deleting from',
+        label: 'Files',
+        help:
+            'A whole number of at least 1. A sync that would delete this '
+            'many files or more on one side — and over the share of that '
+            'side — stops and asks you first.',
+        keyPrefix: 'settings-mass-delete-min-files',
+        initialValue: current,
+        keyboardType: TextInputType.number,
+      ),
+    );
+    if (typed != null) await controller.saveMassDeleteMinFiles(typed);
+  }
+
+  Future<void> _editMassDeletePercent(
+    BuildContext context,
+    String current,
+  ) async {
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (context) => _TypedValueDialog(
+        title: '…and over this share of a side',
+        label: 'Percent',
+        help:
+            'A whole number from 1 to 100. A sync that would delete more '
+            'than this share of the files a side last synced — and at least '
+            'the file count — stops and asks you first.',
+        keyPrefix: 'settings-mass-delete-percent',
+        initialValue: current,
+        keyboardType: TextInputType.number,
+      ),
+    );
+    if (typed != null) await controller.saveMassDeletePercent(typed);
+  }
 }
 
 const _keepScreenAwakeTitle = 'Keep screen awake during runs and serve';
@@ -300,8 +385,8 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-/// A typed setting — the bind address, the peer port or the warn size —
-/// popped as text.
+/// A typed setting — the bind address, the peer port, the warn size or a
+/// delete threshold — popped as text.
 /// Pops nothing at all when cancelled, and does not judge what was typed:
 /// the refusal belongs to the value's own parse through
 /// `SettingsController`, so there is one rule about each value rather than

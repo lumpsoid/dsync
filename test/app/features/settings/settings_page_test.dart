@@ -8,6 +8,7 @@ import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_page.dart';
 import 'package:dsync/app/features/settings/settings_scope.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/readable_width.dart';
@@ -190,6 +191,49 @@ void main() {
     expect(controller.warnSizes, ['']);
   });
 
+  testWidgets('shows the delete guard\'s thresholds in the Deletion safety '
+      'section, saying it always asks past them', (tester) async {
+    controller.state.recordSettings(
+      AppSettings.defaults.withMassDeleteGuard(
+        MassDeleteGuard(minFiles: 3, percent: 20),
+      ),
+    );
+    await pumpPage(tester);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings-mass-delete-percent')),
+      100,
+    );
+
+    expect(find.text('Deletion safety'), findsOneWidget);
+    expect(find.textContaining('3 files on one side'), findsOneWidget);
+    expect(find.textContaining('20% of its files'), findsOneWidget);
+    expect(find.textContaining('it always asks past them'), findsOneWidget);
+    expect(find.byType(Switch), findsOneWidget, reason: 'keep-awake only');
+  });
+
+  testWidgets('typed thresholds are handed to the controller', (tester) async {
+    controller.state.recordSettings(AppSettings.defaults);
+    // Tall enough for every section at once.
+    tester.view.physicalSize = const Size(800, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await pumpPage(tester);
+
+    for (final (key, typed) in [
+      ('settings-mass-delete-min-files', '3'),
+      ('settings-mass-delete-percent', '20'),
+    ]) {
+      await tester.tap(find.byKey(Key(key)));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(Key('$key-field')), typed);
+      await tester.tap(find.byKey(Key('$key-save')));
+      await tester.pumpAndSettle();
+    }
+
+    expect(controller.massDeleteMinFiles, ['3']);
+    expect(controller.massDeletePercents, ['20']);
+  });
+
   testWidgets('cancelling the dialog stores nothing', (tester) async {
     controller.state.recordSettings(at('0.0.0.0'));
     await pumpPage(tester);
@@ -251,7 +295,7 @@ void main() {
       const SettingsFailed('Settings file at /tmp/settings.json is damaged'),
     );
     // Tall enough for every section and the notice under them at once.
-    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.physicalSize = const Size(800, 1800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -259,7 +303,7 @@ void main() {
 
     expect(find.textContaining('is damaged'), findsOneWidget);
     // Every setting: none shows a default the file did not say.
-    expect(find.textContaining('Unavailable'), findsNWidgets(5));
+    expect(find.textContaining('Unavailable'), findsNWidgets(7));
     expect(find.byType(Switch), findsNothing);
   });
 
@@ -359,4 +403,16 @@ class _RecordingController extends SettingsController {
 
   @override
   Future<void> saveWarnSize(String text) async => warnSizes.add(text);
+
+  final massDeleteMinFiles = <String>[];
+
+  @override
+  Future<void> saveMassDeleteMinFiles(String text) async =>
+      massDeleteMinFiles.add(text);
+
+  final massDeletePercents = <String>[];
+
+  @override
+  Future<void> saveMassDeletePercent(String text) async =>
+      massDeletePercents.add(text);
 }

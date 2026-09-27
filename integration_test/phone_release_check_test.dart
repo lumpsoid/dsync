@@ -56,6 +56,7 @@ import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
 import 'package:dsync/app/peer_port.dart';
+import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' show assignRustSignal;
 import 'package:dsync/app/screen_wake.dart';
@@ -426,6 +427,7 @@ class _Session {
       screenWake: const PlatformScreenWake(),
       keepScreenAwake: () async => true,
       defaultWarnSize: () async => const WarnSizeOff(),
+      massDeleteGuard: () async => MassDeleteGuard.defaults,
     );
     await run.start(request);
     final deadline = DateTime.now().add(_runWait);

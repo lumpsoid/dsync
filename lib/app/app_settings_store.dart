@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'app_settings.dart';
 import 'atomic_write.dart';
+import 'mass_delete_guard.dart';
 import 'peer_port.dart';
 import 'theme_preference.dart';
 import 'warn_size.dart';
@@ -58,9 +59,15 @@ import 'warn_size.dart';
 /// section — every 1.0 to 1.3 one — reads as [WarnSizeOff], no warning as
 /// before; a present one is `null` for off or a whole number above 0, and
 /// anything else is damage.
+///
+/// **1.5 added `deletionSafety`**, the delete guard's `minFiles` and
+/// `percent`. A document without the section — every 1.0 to 1.4 one —
+/// reads as [MassDeleteGuard.defaults], the thresholds every run used
+/// before; a present one needs both, each in [MassDeleteGuard]'s range,
+/// and anything else is damage.
 class AppSettingsStore {
   /// The version this build writes, `major.minor`.
-  static const formatVersion = '1.4';
+  static const formatVersion = '1.5';
 
   final File _file;
 
@@ -110,6 +117,10 @@ class AppSettingsStore {
           WarnSizeAbove(:final bytes) => bytes,
         },
       },
+      'deletionSafety': {
+        'minFiles': settings.massDeleteGuard.minFiles,
+        'percent': settings.massDeleteGuard.percent,
+      },
     };
     await writeFileAtomically(_file, jsonEncode(document));
   }
@@ -142,7 +153,31 @@ class AppSettingsStore {
       theme: _parseTheme(decoded['appearance']),
       keepScreenAwake: _parseKeepScreenAwake(decoded['power']),
       warnSize: _parseWarnSize(decoded['sync']),
+      massDeleteGuard: _parseMassDeleteGuard(decoded['deletionSafety']),
     );
+  }
+
+  /// The `deletionSafety` section's thresholds: the defaults when the
+  /// section is absent (a 1.0 to 1.4 document), a pair [MassDeleteGuard]
+  /// accepts when it is present.
+  static MassDeleteGuard _parseMassDeleteGuard(Object? deletionSafety) {
+    if (deletionSafety == null) return MassDeleteGuard.defaults;
+    if (deletionSafety is! Map<String, dynamic>) {
+      throw const FormatException('"deletionSafety" is not a JSON object');
+    }
+    final minFiles = deletionSafety['minFiles'];
+    if (minFiles is! int) {
+      throw const FormatException(
+        '"deletionSafety.minFiles" is not a whole number',
+      );
+    }
+    final percent = deletionSafety['percent'];
+    if (percent is! int) {
+      throw const FormatException(
+        '"deletionSafety.percent" is not a whole number',
+      );
+    }
+    return MassDeleteGuard(minFiles: minFiles, percent: percent);
   }
 
   /// The `sync` section's warn size: off when the section is absent (a 1.0
@@ -224,7 +259,7 @@ sealed class AppSettingsStoreException implements Exception {
 /// Thrown by [AppSettingsStore.load] when its file exists but cannot be
 /// read as this store's document: truncated, malformed JSON, or
 /// well-formed JSON of the wrong shape, version text, bind address, peer
-/// port, theme, keep-awake switch or warn size.
+/// port, theme, keep-awake switch, warn size or delete-guard thresholds.
 class AppSettingsStoreCorruptException extends AppSettingsStoreException {
   final String path;
   final String detail;
