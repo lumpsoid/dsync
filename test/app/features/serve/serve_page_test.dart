@@ -10,6 +10,7 @@ import 'package:dsync/app/paired_device_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
@@ -187,6 +188,61 @@ void main() {
       '10:00:01  Refused: bad handshake',
       '10:00:00  Serving /home/me/notes',
     ]);
+  });
+
+  group('copying (task e3b418)', () {
+    testWidgets('the answering address copies exactly, and the toggle still '
+        'flips', (tester) async {
+      final clipboard = recordClipboard(tester);
+      await pumpPage(tester);
+      controller.state.recordStatus(const ServeListening('10.0.0.5:28771'));
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('serve-address-copy')));
+      await tester.pump();
+      expect(clipboard, ['10.0.0.5:28771']);
+      expect(find.text('Address copied.'), findsOneWidget);
+      // The button is its own target: copying did not stop the listener.
+      expect(controller.stops, 0);
+
+      await tester.tap(find.byKey(const Key('serve-toggle')));
+      await tester.pump();
+      expect(controller.stops, 1);
+    });
+
+    testWidgets('a refused bind copies in its own words', (tester) async {
+      final clipboard = recordClipboard(tester);
+      await pumpPage(tester);
+      controller.state.recordStatus(
+        const ServeFailed('This device could not answer on 0.0.0.0:28771.'),
+      );
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('serve-error-copy')));
+      await tester.pump();
+      expect(clipboard, ['This device could not answer on 0.0.0.0:28771.']);
+    });
+
+    testWidgets('the session lines are selectable, the toggle is not', (
+      tester,
+    ) async {
+      await pumpPage(tester);
+      controller.state.recordStatus(const ServeListening('10.0.0.5:28771'));
+      await tester.pump();
+
+      expect(
+        SelectionContainer.maybeOf(
+          tester.element(find.byKey(const Key('serve-no-sessions'))),
+        ),
+        isNotNull,
+      );
+      expect(
+        SelectionContainer.maybeOf(
+          tester.element(find.text('Answering at 10.0.0.5:28771')),
+        ),
+        isNull,
+      );
+    });
   });
 }
 

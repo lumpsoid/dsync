@@ -332,16 +332,29 @@ class _RunPageState extends State<RunPage> {
           slivers: [
             ListenableBuilder(
               listenable: _topSection,
+              // The read-only blocks — the phase and how the run ended, the
+              // entries, the roots, the paths that could not be read — are
+              // selectable each on its own. Not the page as a whole: the
+              // review's rows take the keys on pointer down, and a region
+              // over them would take the focus back from them on a click
+              // held past the press timeout (`CopyValueButton` states the
+              // rule).
               builder: (context, _) => SliverMainAxisGroup(
                 slivers: [
-                  SliverToBoxAdapter(child: _StageStrip(state)),
+                  SliverToBoxAdapter(
+                    child: SelectionArea(child: _StageStrip(state)),
+                  ),
                   // Only past one entry: a single-entry run reads
                   // exactly as it always has, with no list to draw
                   // above its own header and plan (D10).
                   if (state.entries.length > 1)
-                    SliverToBoxAdapter(child: _EntriesSection(state)),
+                    SliverToBoxAdapter(
+                      child: SelectionArea(child: _EntriesSection(state)),
+                    ),
                   if (state.header case final header?)
-                    SliverToBoxAdapter(child: _Header(header)),
+                    SliverToBoxAdapter(
+                      child: SelectionArea(child: _Header(header)),
+                    ),
                   SliverToBoxAdapter(child: _CountsRow(state)),
                   if (state.scanTally case final tally?)
                     SliverToBoxAdapter(child: _ScanTally(tally)),
@@ -352,10 +365,12 @@ class _RunPageState extends State<RunPage> {
                       header: null,
                       itemExtent: null,
                       itemCount: state.unreadablePaths.length,
-                      itemBuilder: (context, index) => Text(
-                        state.unreadablePaths[index],
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
+                      itemBuilder: (context, index) => SelectionArea(
+                        child: Text(
+                          state.unreadablePaths[index],
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
                         ),
                       ),
                     ),
@@ -366,8 +381,9 @@ class _RunPageState extends State<RunPage> {
                       header: null,
                       itemExtent: null,
                       itemCount: state.skippedSymlinks.length,
-                      itemBuilder: (context, index) =>
-                          Text(state.skippedSymlinks[index]),
+                      itemBuilder: (context, index) => SelectionArea(
+                        child: Text(state.skippedSymlinks[index]),
+                      ),
                     ),
                   // First of the plan area (Design C.5): during the
                   // review each row carries its own control and its

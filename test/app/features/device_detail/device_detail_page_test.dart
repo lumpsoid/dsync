@@ -13,6 +13,7 @@ import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
@@ -693,6 +694,42 @@ void main() {
     await pumpPage(tester);
 
     expect(find.textContaining('expires in 3 days'), findsOneWidget);
+  });
+
+  testWidgets('the address and the id copy exactly, and say so (task '
+      'e3b418)', (tester) async {
+    final clipboard = recordClipboard(tester);
+    app.state.recordDevices([row(verifiedAt: DateTime(2026, 9, 20))]);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('device-detail-address-copy')));
+    await tester.pump();
+    expect(clipboard, ['10.0.0.7:28771']);
+    expect(find.text('Address copied.'), findsOneWidget);
+
+    // Beside the confirmed mark, not instead of it.
+    expect(find.byKey(const Key('device-detail-verified')), findsOneWidget);
+    expect(find.byTooltip('Copy device id'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('device-detail-id-copy')));
+    await tester.pump();
+    expect(clipboard.last, phone.deviceId);
+  });
+
+  testWidgets('the identity and the notices are selectable, the action rows '
+      'are not (task e3b418)', (tester) async {
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    expect(
+      SelectionContainer.maybeOf(
+        tester.element(find.byKey(const Key('device-detail-id'))),
+      ),
+      isNotNull,
+    );
+    expect(
+      SelectionContainer.maybeOf(tester.element(find.text('Rename'))),
+      isNull,
+    );
   });
 }
 

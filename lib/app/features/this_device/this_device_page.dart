@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../copy_value_button.dart';
 import '../../device_identity_row.dart';
 import '../../format_date.dart';
 import '../../readable_width.dart';
@@ -44,12 +45,16 @@ class _ThisDevicePageState extends State<ThisDevicePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('This device')),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([
-          _controller.app.state,
-          _controller.state,
-        ]),
-        builder: (context, _) => _ThisDeviceBody(controller: _controller),
+      // Selectable as a page (`CopyValueButton` states the rule): the facts
+      // and the notices are read-only, and the two actions opt out.
+      body: SelectionArea(
+        child: ListenableBuilder(
+          listenable: Listenable.merge([
+            _controller.app.state,
+            _controller.state,
+          ]),
+          builder: (context, _) => _ThisDeviceBody(controller: _controller),
+        ),
       ),
     );
   }
@@ -93,27 +98,31 @@ class _ThisDeviceBody extends StatelessWidget {
             IdentityIdle() || IdentityWorking() => const SizedBox.shrink(),
           },
           const Divider(),
-          ListTile(
-            key: const Key('this-device-rename'),
-            leading: const Icon(Icons.edit_outlined),
-            title: const Text('Rename this device'),
-            subtitle: const Text(
-              'The name offered to devices you pair with from now on. Devices '
-              'already paired keep the name they gave this one.',
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('this-device-rename'),
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Rename this device'),
+              subtitle: const Text(
+                'The name offered to devices you pair with from now on. '
+                'Devices already paired keep the name they gave this one.',
+              ),
+              enabled: !working,
+              onTap: () => _rename(context, identity),
             ),
-            enabled: !working,
-            onTap: () => _rename(context, identity),
           ),
-          ListTile(
-            key: const Key('this-device-renew'),
-            leading: const Icon(Icons.autorenew),
-            title: const Text('Renew certificate'),
-            subtitle: const Text(
-              'Re-issue it under the same key, with a fresh expiry date. The '
-              'device id does not change.',
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('this-device-renew'),
+              leading: const Icon(Icons.autorenew),
+              title: const Text('Renew certificate'),
+              subtitle: const Text(
+                'Re-issue it under the same key, with a fresh expiry date. '
+                'The device id does not change.',
+              ),
+              enabled: !working,
+              onTap: () => _renew(context),
             ),
-            enabled: !working,
-            onTap: () => _renew(context),
           ),
           if (working)
             const ListTile(
@@ -151,9 +160,10 @@ class _ThisDeviceBody extends StatelessWidget {
 /// The identity's facts, in the order a person reads them: the name they
 /// gave it, the dates that decide whether it still works, and only then the
 /// grouped hex id — which is how a peer addresses this device rather than
-/// how anyone recognises it. Selectable, because reading it aloud or
-/// pasting it into a `dsync pair grant` on the other machine is the whole
-/// reason it is on screen.
+/// how anyone recognises it. Selectable with the rest of the page, and
+/// copyable in one click, because reading it aloud or pasting it into a
+/// `dsync pair grant` on the other machine is the whole reason it is on
+/// screen.
 class _IdentityCard extends StatelessWidget {
   const _IdentityCard(this.identity);
 
@@ -176,10 +186,15 @@ class _IdentityCard extends StatelessWidget {
         ),
         ListTile(
           title: const Text('Device id'),
-          subtitle: SelectableText(
+          subtitle: Text(
             identity.deviceId,
             key: const Key('this-device-id'),
             style: theme.textTheme.bodyMedium,
+          ),
+          trailing: CopyValueButton(
+            key: const Key('this-device-id-copy'),
+            value: identity.deviceId,
+            what: 'device id',
           ),
         ),
       ],
@@ -188,7 +203,7 @@ class _IdentityCard extends StatelessWidget {
 }
 
 /// Where the identity, the pairings and the archives are on disk.
-/// Selectable for the same reason the id is: the next thing a user does
+/// Copyable for the same reason the id is: the next thing a user does
 /// with a path is type it somewhere else.
 class _StateDirTile extends StatelessWidget {
   const _StateDirTile(this.path);
@@ -201,12 +216,17 @@ class _StateDirTile extends StatelessWidget {
     return ListTile(
       leading: const Icon(Icons.folder_outlined),
       title: const Text('State directory'),
-      subtitle: SelectableText(
+      subtitle: Text(
         path,
         key: const Key('this-device-state-dir'),
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
         ),
+      ),
+      trailing: CopyValueButton(
+        key: const Key('this-device-state-dir-copy'),
+        value: path,
+        what: 'state directory path',
       ),
     );
   }

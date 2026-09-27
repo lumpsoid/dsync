@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
@@ -396,9 +397,7 @@ void main() {
     controller.state.recordOutcome(const PairSubmitting());
     await tester.pump();
 
-    final id = tester.widget<SelectableText>(
-      find.byKey(const Key('pair-own-device-id')),
-    );
+    final id = tester.widget<Text>(find.byKey(const Key('pair-own-device-id')));
     expect(id.data, 'a1b2:c3d4:e5f6:0718');
     // Monospaced, as the desktop renders the id it is asking about: the
     // groups have to line up by eye.
@@ -664,5 +663,20 @@ void main() {
       expect(fieldText(tester, 'pair-line'), isEmpty);
       expect(find.byKey(const Key('pair-scan')), findsNothing);
     });
+  });
+
+  testWidgets('the address a code names copies exactly, and says so (task '
+      'e3b418)', (tester) async {
+    await pumpPage(tester, scanner: noCameraAskedFor);
+    await withCode(tester);
+    // Recorded after the code is in: until then the clipboard is how the
+    // code arrives.
+    final clipboard = recordClipboard(tester);
+
+    await tester.tap(find.byKey(const Key('pair-code-address-copy')));
+    await tester.pump();
+
+    expect(clipboard, ['192.168.1.5:28771']);
+    expect(find.text('Address copied.'), findsOneWidget);
   });
 }

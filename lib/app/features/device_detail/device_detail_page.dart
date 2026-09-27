@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../copy_value_button.dart';
 import '../../destructive_confirm_dialog.dart';
 import '../../format_date.dart';
 import '../../paired_device_row.dart';
@@ -70,10 +71,15 @@ class _DeviceDetailPageState extends State<DeviceDetailPage> {
       listenable: Listenable.merge([_controller.app.state, _controller.state]),
       builder: (context, _) => Scaffold(
         appBar: AppBar(title: Text(_controller.device?.name ?? 'Device')),
-        body: _DeviceDetailBody(
-          controller: _controller,
-          onGone: widget.onGone,
-          placement: widget.placement,
+        // Selectable as a page (`CopyValueButton` states the rule): the
+        // identity, the notices and the folder names are read-only, and
+        // the action rows and buttons opt out.
+        body: SelectionArea(
+          child: _DeviceDetailBody(
+            controller: _controller,
+            onGone: widget.onGone,
+            placement: widget.placement,
+          ),
         ),
       ),
     );
@@ -122,61 +128,73 @@ class _DeviceDetailBody extends StatelessWidget {
             DeviceDetailIdle() => const SizedBox.shrink(),
           },
           const Divider(),
-          ListTile(
-            key: const Key('device-rename'),
-            leading: const Icon(Icons.edit_outlined),
-            title: const Text('Rename'),
-            subtitle: const Text(
-              'What this device is called here. The other device is not told '
-              'and keeps its own name for this one.',
+          // One opt-out around the five action rows: every one of them is
+          // a tap, and their labels are not content.
+          SelectionContainer.disabled(
+            child: Column(
+              children: [
+                ListTile(
+                  key: const Key('device-rename'),
+                  leading: const Icon(Icons.edit_outlined),
+                  title: const Text('Rename'),
+                  subtitle: const Text(
+                    'What this device is called here. The other device is '
+                    'not told and keeps its own name for this one.',
+                  ),
+                  onTap: () => _rename(context, device),
+                ),
+                ListTile(
+                  key: const Key('device-address'),
+                  leading: const Icon(Icons.wifi_tethering),
+                  title: const Text('Address'),
+                  subtitle: const Text(
+                    'Where this device is reached. Correct it here when it '
+                    'has moved, and it is remembered — there is no need to '
+                    're-enter it for each run.',
+                  ),
+                  onTap: () => _editAddress(context, device),
+                ),
+                ListTile(
+                  key: const Key('device-test-connection'),
+                  leading: const Icon(Icons.network_check),
+                  title: const Text('Test connection'),
+                  subtitle: const Text(
+                    'Dial this device at the address above and report what '
+                    'answered.',
+                  ),
+                  onTap: controller.testConnection,
+                ),
+                ListTile(
+                  key: const Key('device-verify'),
+                  leading: const Icon(Icons.fingerprint),
+                  title: Text(
+                    confirmedAt == null
+                        ? 'Check device id'
+                        : 'Device id confirmed',
+                  ),
+                  subtitle: Text(
+                    confirmedAt == null
+                        ? 'Compare the id above with the one this device '
+                              'shows on its own This-device page.'
+                        : 'You confirmed this id on '
+                              '${formatDate(confirmedAt)}.',
+                  ),
+                  onTap: () => _verify(context, device),
+                ),
+                ListTile(
+                  key: const Key('device-revoke'),
+                  leading: Icon(
+                    Icons.link_off,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  title: const Text('Revoke pairing'),
+                  subtitle: const Text(
+                    'Stop trusting this device and refuse its connections.',
+                  ),
+                  onTap: () => _revoke(context, device),
+                ),
+              ],
             ),
-            onTap: () => _rename(context, device),
-          ),
-          ListTile(
-            key: const Key('device-address'),
-            leading: const Icon(Icons.wifi_tethering),
-            title: const Text('Address'),
-            subtitle: const Text(
-              'Where this device is reached. Correct it here when it has '
-              'moved, and it is remembered — there is no need to re-enter it '
-              'for each run.',
-            ),
-            onTap: () => _editAddress(context, device),
-          ),
-          ListTile(
-            key: const Key('device-test-connection'),
-            leading: const Icon(Icons.network_check),
-            title: const Text('Test connection'),
-            subtitle: const Text(
-              'Dial this device at the address above and report what answered.',
-            ),
-            onTap: controller.testConnection,
-          ),
-          ListTile(
-            key: const Key('device-verify'),
-            leading: const Icon(Icons.fingerprint),
-            title: Text(
-              confirmedAt == null ? 'Check device id' : 'Device id confirmed',
-            ),
-            subtitle: Text(
-              confirmedAt == null
-                  ? 'Compare the id above with the one this device shows on '
-                        'its own This-device page.'
-                  : 'You confirmed this id on ${formatDate(confirmedAt)}.',
-            ),
-            onTap: () => _verify(context, device),
-          ),
-          ListTile(
-            key: const Key('device-revoke'),
-            leading: Icon(
-              Icons.link_off,
-              color: Theme.of(context).colorScheme.error,
-            ),
-            title: const Text('Revoke pairing'),
-            subtitle: const Text(
-              'Stop trusting this device and refuse its connections.',
-            ),
-            onTap: () => _revoke(context, device),
           ),
           const Divider(),
           // Last on the page, and the one section that grows without bound.
@@ -245,8 +263,13 @@ class _DeviceDetailBody extends StatelessWidget {
 /// What this host knows the device by: the address it was last reached at,
 /// when the pairing happened, the certificate window it is pinned under,
 /// and the grouped hex id — last, because it is how the device is addressed
-/// rather than how anyone recognises it, and selectable because reading it
-/// aloud across a pairing is what it is for.
+/// rather than how anyone recognises it.
+///
+/// The address and the id each have a copy button: the address is what a
+/// user pastes into a ping or the other device's settings when a run will
+/// not connect, and the id is what they paste into `dsync pair grant` or
+/// read out across a pairing — values meant to leave the app, where a
+/// drag across grouped hex is a reach for exactly the right characters.
 class _IdentityTile extends StatelessWidget {
   const _IdentityTile(this.device);
 
@@ -262,6 +285,11 @@ class _IdentityTile extends StatelessWidget {
           subtitle: Text(
             '${device.address}\npaired ${formatDate(device.pairedAt)}',
           ),
+          trailing: CopyValueButton(
+            key: const Key('device-detail-address-copy'),
+            value: device.address,
+            what: 'address',
+          ),
         ),
         ListTile(
           leading: const Icon(Icons.verified_user_outlined),
@@ -273,22 +301,31 @@ class _IdentityTile extends StatelessWidget {
         ),
         ListTile(
           title: const Text('Device id'),
-          subtitle: SelectableText(
+          subtitle: Text(
             device.deviceId,
             key: const Key('device-detail-id'),
             style: theme.textTheme.bodyMedium,
           ),
-          // Present only once the user has confirmed the id: an unconfirmed
-          // pairing is the ordinary state and says nothing here, so there is
-          // no empty slot and no absence to read into.
-          trailing: device.verifiedAt == null
-              ? null
-              : Icon(
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Present only once the user has confirmed the id: an
+              // unconfirmed pairing is the ordinary state and says nothing
+              // here, so there is no empty slot and no absence to read into.
+              if (device.verifiedAt != null)
+                Icon(
                   Icons.verified,
                   key: const Key('device-detail-verified'),
                   color: theme.colorScheme.primary,
                   semanticLabel: 'Device id confirmed',
                 ),
+              CopyValueButton(
+                key: const Key('device-detail-id-copy'),
+                value: device.deviceId,
+                what: 'device id',
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -771,13 +808,15 @@ class _Gone extends StatelessWidget {
           children: [
             const Text('This device is no longer paired.'),
             const SizedBox(height: 16),
-            FilledButton(
-              key: const Key('device-detail-back'),
-              onPressed: onGone,
-              child: Text(switch (placement) {
-                DeviceDetailPlacement.overList => 'Back to devices',
-                DeviceDetailPlacement.besideList => 'Close',
-              }),
+            SelectionContainer.disabled(
+              child: FilledButton(
+                key: const Key('device-detail-back'),
+                onPressed: onGone,
+                child: Text(switch (placement) {
+                  DeviceDetailPlacement.overList => 'Back to devices',
+                  DeviceDetailPlacement.besideList => 'Close',
+                }),
+              ),
             ),
           ],
         ),

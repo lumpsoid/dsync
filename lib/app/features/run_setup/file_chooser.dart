@@ -268,10 +268,15 @@ class _FileChooserPageState extends State<FileChooserPage> {
           children: [
             Expanded(
               child: switch ((_error, _rows)) {
+                // Selectable on its own, the listing left out: the rows are
+                // taps (`CopyValueButton` states the rule), and the core's
+                // refusal is the one line here worth pasting anywhere.
                 (final error?, _) => Center(
-                  child: ReadableColumn(
-                    width: ReadableWidth.list,
-                    child: Text(error),
+                  child: SelectionArea(
+                    child: ReadableColumn(
+                      width: ReadableWidth.list,
+                      child: Text(error),
+                    ),
                   ),
                 ),
                 (null, null) => const Center(

@@ -251,9 +251,7 @@ void main() {
     // Every group of it, wrapped rather than cut: a comparison that cannot
     // see the whole id is not a comparison (SPEC §4.4).
     expect(
-      tester
-          .widget<SelectableText>(find.byKey(const Key('pair-show-device-id')))
-          .data,
+      tester.widget<Text>(find.byKey(const Key('pair-show-device-id'))).data,
       'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90:'
       'a1b2:c3d4:e5f6:0718:293a:4b5c:6d7e:8f90',
     );
@@ -362,6 +360,21 @@ void main() {
 
     expect(paired, 1);
     expect(find.text('Paired with peer laptop.'), findsOneWidget);
+  });
+
+  testWidgets('the address copies on its own, and says so (task e3b418)', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await openWindow(tester);
+    controller.state.recordStatus(PairShowWaiting(offer()));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('pair-show-address-copy')));
+    await tester.pump();
+
+    expect(copied, '192.168.1.5:51234');
+    expect(find.text('Address copied.'), findsOneWidget);
   });
 }
 

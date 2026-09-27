@@ -37,9 +37,13 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
-      body: ListenableBuilder(
-        listenable: _controller.state,
-        builder: (context, _) => _SettingsBody(controller: _controller),
+      // Selectable as a page (`CopyValueButton` states the rule): the
+      // notices are read-only, and the setting's own row opts out.
+      body: SelectionArea(
+        child: ListenableBuilder(
+          listenable: _controller.state,
+          builder: (context, _) => _SettingsBody(controller: _controller),
+        ),
       ),
     );
   }
@@ -62,21 +66,23 @@ class _SettingsBody extends StatelessWidget {
         padding: padding,
         children: [
           const _SectionHeader('Network'),
-          ListTile(
-            key: const Key('settings-bind-address'),
-            leading: const Icon(Icons.lan_outlined),
-            title: const Text('Pairing bind address'),
-            subtitle: Text(
-              state.bindAddress == null
-                  ? 'Unavailable — see below.'
-                  : '${state.bindAddress}\nWhich of this device\'s addresses '
-                        'the pairing code listens on. 0.0.0.0 is every IPv4 '
-                        'interface; one interface\'s own address is also what '
-                        'the code advertises.',
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('settings-bind-address'),
+              leading: const Icon(Icons.lan_outlined),
+              title: const Text('Pairing bind address'),
+              subtitle: Text(
+                state.bindAddress == null
+                    ? 'Unavailable — see below.'
+                    : '${state.bindAddress}\nWhich of this device\'s '
+                          'addresses the pairing code listens on. 0.0.0.0 is '
+                          'every IPv4 interface; one interface\'s own address '
+                          'is also what the code advertises.',
+              ),
+              isThreeLine: state.bindAddress != null,
+              enabled: !working && state.bindAddress != null,
+              onTap: () => _editBindAddress(context, state.bindAddress ?? ''),
             ),
-            isThreeLine: state.bindAddress != null,
-            enabled: !working && state.bindAddress != null,
-            onTap: () => _editBindAddress(context, state.bindAddress ?? ''),
           ),
           switch (outcome) {
             SettingsSaved(:final message) => _NoticeTile(

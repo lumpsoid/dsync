@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../copy_value_button.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import 'pair_code.dart';
@@ -237,21 +238,28 @@ class _PairPageState extends State<PairPage> {
     return PopOnEscape(
       child: Scaffold(
         appBar: AppBar(title: const Text('Pair a device')),
-        body: ListenableBuilder(
-          listenable: controller.state,
-          builder: (context, _) => _PairForm(
-            state: controller.state,
-            onScan: switch (widget.scanner) {
-              final scanner? => () => _scan(scanner),
-              null => null,
-            },
-            onPaste: _paste,
-            line: _line,
-            onReadLine: _readLine,
-            onShowOwnCode: widget.onShowOwnCode,
-            onClearCode: _clearCode,
-            localName: _localName,
-            onSubmit: _submit,
+        // Selectable as a page (`CopyValueButton` states the rule): the
+        // instructions, the refusals and the ids are read-only, and the
+        // buttons opt out. The fields stay in — an editable field is not
+        // part of a page's selection anyway and wins its own drags, and the
+        // refusal under one is an error line like any other.
+        body: SelectionArea(
+          child: ListenableBuilder(
+            listenable: controller.state,
+            builder: (context, _) => _PairForm(
+              state: controller.state,
+              onScan: switch (widget.scanner) {
+                final scanner? => () => _scan(scanner),
+                null => null,
+              },
+              onPaste: _paste,
+              line: _line,
+              onReadLine: _readLine,
+              onShowOwnCode: widget.onShowOwnCode,
+              onClearCode: _clearCode,
+              localName: _localName,
+              onSubmit: _submit,
+            ),
           ),
         ),
       ),
@@ -343,11 +351,13 @@ class _PairForm extends StatelessWidget {
               'No code to hand? Let the other device scan this one instead.',
             ),
             const SizedBox(height: 12),
-            OutlinedButton.icon(
-              key: const Key('pair-show-own-code'),
-              onPressed: onShowOwnCode,
-              icon: const Icon(Icons.qr_code_2),
-              label: const Text("Show this device's code"),
+            SelectionContainer.disabled(
+              child: OutlinedButton.icon(
+                key: const Key('pair-show-own-code'),
+                onPressed: onShowOwnCode,
+                icon: const Icon(Icons.qr_code_2),
+                label: const Text("Show this device's code"),
+              ),
             ),
           ],
           // The name and the button belong to a code: there is nothing to
@@ -386,10 +396,14 @@ class _PairForm extends StatelessWidget {
             // No spinner while submitting: almost all of that wait is the
             // operator confirming on the other device, so the button says where
             // the next step is instead of animating over it.
-            FilledButton(
-              key: const Key('pair-submit'),
-              onPressed: submitting ? null : onSubmit,
-              child: Text(submitting ? 'Confirm on the other device' : 'Pair'),
+            SelectionContainer.disabled(
+              child: FilledButton(
+                key: const Key('pair-submit'),
+                onPressed: submitting ? null : onSubmit,
+                child: Text(
+                  submitting ? 'Confirm on the other device' : 'Pair',
+                ),
+              ),
             ),
           ],
         ],
@@ -414,26 +428,28 @@ class _CodeActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: FilledButton.tonalIcon(
-            key: const Key('pair-scan'),
-            onPressed: enabled ? onScan : null,
-            icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Scan QR code'),
+    return SelectionContainer.disabled(
+      child: Row(
+        children: [
+          Expanded(
+            child: FilledButton.tonalIcon(
+              key: const Key('pair-scan'),
+              onPressed: enabled ? onScan : null,
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Scan QR code'),
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: OutlinedButton.icon(
-            key: const Key('pair-paste'),
-            onPressed: enabled ? onPaste : null,
-            icon: const Icon(Icons.content_paste),
-            label: const Text('Paste line'),
+          const SizedBox(width: 12),
+          Expanded(
+            child: OutlinedButton.icon(
+              key: const Key('pair-paste'),
+              onPressed: enabled ? onPaste : null,
+              icon: const Icon(Icons.content_paste),
+              label: const Text('Paste line'),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -477,10 +493,12 @@ class _CodeLine extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        FilledButton(
-          key: const Key('pair-line-read'),
-          onPressed: onRead,
-          child: const Text('Read code'),
+        SelectionContainer.disabled(
+          child: FilledButton(
+            key: const Key('pair-line-read'),
+            onPressed: onRead,
+            child: const Text('Read code'),
+          ),
         ),
       ],
     );
@@ -529,6 +547,10 @@ class _UnreadableCode extends StatelessWidget {
 /// What the code turned out to say: the device about to be paired with, and
 /// where it is answering. The whole point of the redesign — this is on
 /// screen, with the names under it, before anything is sent.
+///
+/// The address is copyable: it is the one this device will dial, and when
+/// a pairing will not connect it is what gets pasted into a ping or into
+/// the other device's settings to find out why.
 class _CodeCard extends StatelessWidget {
   const _CodeCard({
     required this.desktopName,
@@ -575,14 +597,21 @@ class _CodeCard extends StatelessWidget {
                     ],
                   ),
                 ),
+                CopyValueButton(
+                  key: const Key('pair-code-address-copy'),
+                  value: address,
+                  what: 'address',
+                ),
               ],
             ),
             Align(
               alignment: Alignment.centerLeft,
-              child: TextButton(
-                key: const Key('pair-clear-code'),
-                onPressed: onClear,
-                child: const Text('Use a different code'),
+              child: SelectionContainer.disabled(
+                child: TextButton(
+                  key: const Key('pair-clear-code'),
+                  onPressed: onClear,
+                  child: const Text('Use a different code'),
+                ),
               ),
             ),
           ],
@@ -600,9 +629,9 @@ class _CodeCard extends StatelessWidget {
 /// flow for `This device`.
 ///
 /// Rendered the way the desktop renders the id it is asking about
-/// (`pair_show_page.dart`): grouped hex, monospaced, selectable, and wrapped
-/// rather than truncated — a comparison that cannot see every group is not a
-/// comparison.
+/// (`pair_show_page.dart`): grouped hex, monospaced, selectable with the
+/// page, and wrapped rather than truncated — a comparison that cannot see
+/// every group is not a comparison.
 class _OwnIdCard extends StatelessWidget {
   const _OwnIdCard(this.deviceId);
 
@@ -624,7 +653,7 @@ class _OwnIdCard extends StatelessWidget {
           margin: EdgeInsets.zero,
           child: Padding(
             padding: const EdgeInsets.all(16),
-            child: SelectableText(
+            child: Text(
               deviceId,
               key: const Key('pair-own-device-id'),
               style: theme.textTheme.bodyMedium?.copyWith(

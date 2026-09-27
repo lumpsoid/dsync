@@ -6,9 +6,12 @@ import 'package:dsync/app/features/this_device/this_device_controller.dart';
 import 'package:dsync/app/features/this_device/this_device_page.dart';
 import 'package:dsync/app/features/this_device/this_device_scope.dart';
 import 'package:dsync/app/features/this_device/this_device_view_state.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
@@ -126,5 +129,78 @@ void main() {
     await tester.pump();
 
     expect(find.text('/home/me/.local/state/dsync'), findsOneWidget);
+  });
+
+  group('copying (task e3b418)', () {
+    testWidgets('a failure line is selectable: dragged across and copied, it '
+        'is the words on screen', (tester) async {
+      final clipboard = recordClipboard(tester);
+      ready();
+      await pumpPage(tester);
+      controller.state.recordOutcome(const IdentityFailed('nothing to renew'));
+      await tester.pump();
+
+      final line = find.text('nothing to renew');
+      final drag = await tester.startGesture(
+        tester.getTopLeft(line),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump();
+      await drag.moveTo(tester.getBottomRight(line));
+      await tester.pump();
+      await drag.up();
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+
+      expect(clipboard, ['nothing to renew']);
+    });
+
+    testWidgets('the actions stay out of the selection and still open', (
+      tester,
+    ) async {
+      ready();
+      await pumpPage(tester);
+
+      // Out of the selection: no registrar reaches the row's own text, so
+      // a drag across the page never picks up "Rename this device".
+      expect(
+        SelectionContainer.maybeOf(
+          tester.element(find.text('Rename this device')),
+        ),
+        isNull,
+      );
+      expect(
+        SelectionContainer.maybeOf(tester.element(find.text('a1b2:c3d4'))),
+        isNotNull,
+      );
+      final rename = find.byKey(const Key('this-device-rename'));
+      await tester.tap(rename);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('this-device-name-field')), findsOneWidget);
+    });
+
+    testWidgets('the id and the state directory copy exactly, and say so', (
+      tester,
+    ) async {
+      final clipboard = recordClipboard(tester);
+      ready();
+      await pumpPage(tester);
+      controller.state.recordStateDirPath('/home/me/.local/state/dsync');
+      await tester.pump();
+
+      expect(find.byTooltip('Copy device id'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('this-device-id-copy')));
+      await tester.pump();
+      expect(clipboard, ['a1b2:c3d4']);
+      expect(find.text('Device id copied.'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('this-device-state-dir-copy')));
+      await tester.pump();
+      expect(clipboard.last, '/home/me/.local/state/dsync');
+      expect(find.byTooltip('Copy state directory path'), findsOneWidget);
+    });
   });
 }

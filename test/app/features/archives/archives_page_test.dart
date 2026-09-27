@@ -6,6 +6,7 @@ import 'package:dsync/app/features/archives/archives_page.dart';
 import 'package:dsync/app/features/archives/archives_scope.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
 import 'package:dsync/app/pop_on_escape.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -561,6 +562,32 @@ void main() {
       expect(find.text('3 selected'), findsOneWidget);
     });
 
+    testWidgets('with a selectable notice on the page, a Shift-click still '
+        'ranges (task e3b418)', (tester) async {
+      await pumpWideDesktop(tester);
+      controller.state.recordError('A sync run is using this history.');
+      await tester.pump();
+      expect(
+        SelectionContainer.maybeOf(
+          tester.element(find.text('A sync run is using this history.')),
+        ),
+        isNotNull,
+      );
+
+      await tester.tap(
+        find.byKey(const Key('archive-check-$one')),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump();
+      await withKey(
+        tester,
+        LogicalKeyboardKey.shiftLeft,
+        () => tester.tap(rowOf(three), kind: PointerDeviceKind.mouse),
+      );
+
+      expect(controller.state.selected, {one, two, three});
+    });
+
     testWidgets('Ctrl+A ticks every row, as does Select all', (tester) async {
       await pumpWideDesktop(tester);
 
@@ -658,6 +685,33 @@ void main() {
       await tester.pump();
       expect(focusIsWithin(Key('archive-row-$two')), isTrue);
     });
+  });
+
+  testWidgets('the notice is selectable, the rows are not, and a long press '
+      'still picks a row (task e3b418)', (tester) async {
+    await pumpPage(tester);
+    controller.state.recordListing(ArchivesReady([row('one'), row('two')]));
+    controller.state.recordError('A sync run is using this history.');
+    await tester.pump();
+
+    expect(
+      SelectionContainer.maybeOf(
+        tester.element(find.text('A sync run is using this history.')),
+      ),
+      isNotNull,
+    );
+    // No region over the rows, so no long-press of its own to race the
+    // row's.
+    expect(
+      SelectionContainer.maybeOf(tester.element(find.text('one'))),
+      isNull,
+    );
+    await tester.longPress(
+      find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 selected'), findsOneWidget);
   });
 
   testWidgets('a refused delete is shown above the list it left alone', (

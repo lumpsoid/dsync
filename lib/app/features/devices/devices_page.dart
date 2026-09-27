@@ -261,13 +261,18 @@ class _NoticeTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Selectable on its own, the rows around it left out: they answer
+    // clicks (`CopyValueButton` states the rule), and this line is the one
+    // on the page worth pasting into a bug report.
     final scheme = Theme.of(context).colorScheme;
-    return ListTile(
-      leading: Icon(
-        isError ? Icons.error_outline : Icons.warning_amber_outlined,
-        color: isError ? scheme.error : scheme.tertiary,
+    return SelectionArea(
+      child: ListTile(
+        leading: Icon(
+          isError ? Icons.error_outline : Icons.warning_amber_outlined,
+          color: isError ? scheme.error : scheme.tertiary,
+        ),
+        title: Text(message),
       ),
-      title: Text(message),
     );
   }
 }

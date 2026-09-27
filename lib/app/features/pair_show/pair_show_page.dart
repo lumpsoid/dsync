@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../copy_value_button.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import 'pair_show_controller.dart';
@@ -131,56 +132,65 @@ class _PairShowPageState extends State<PairShowPage> {
     return PopOnEscape(
       child: Scaffold(
         appBar: AppBar(title: const Text("This device's code")),
-        body: !_showing
-            ? _NameField(name: _name, onShow: _show)
-            : ListenableBuilder(
-                listenable: _controller.state,
-                builder: (context, _) => switch (_controller.state.status) {
-                  PairShowStarting() => const Center(
-                    child: CircularProgressIndicator(
-                      semanticsLabel: 'Opening a pairing window',
+        // Selectable as a page (`CopyValueButton` states the rule): the
+        // instructions, the ids and the refusals are read-only, and the
+        // buttons opt out. The code's line keeps its own selectable field:
+        // it scrolls inside three lines rather than wrap the page long, and
+        // "Copy line" beside it is the way it is meant to leave.
+        body: SelectionArea(
+          child: !_showing
+              ? _NameField(name: _name, onShow: _show)
+              : ListenableBuilder(
+                  listenable: _controller.state,
+                  builder: (context, _) => switch (_controller.state.status) {
+                    PairShowStarting() => const Center(
+                      child: CircularProgressIndicator(
+                        semanticsLabel: 'Opening a pairing window',
+                      ),
                     ),
-                  ),
-                  PairShowWaiting(:final offer) => _Offer(
-                    offer: offer,
-                    onCopy: () => _copy(offer.payloadLine),
-                  ),
-                  PairShowConfirming(:final deviceId, :final peerName) =>
-                    _Confirm(
-                      deviceId: deviceId,
-                      peerName: peerName,
-                      onAnswer: (confirmed) =>
-                          _controller.answerConfirmation(confirmed: confirmed),
+                    PairShowWaiting(:final offer) => _Offer(
+                      offer: offer,
+                      onCopy: () => _copy(offer.payloadLine),
                     ),
-                  PairShowDeclined() => _Ended(
-                    key: const Key('pair-show-declined'),
-                    message:
-                        'You turned that device away, so nothing was recorded. '
-                        'The code is used up either way — show a new one when '
-                        'the device you meant is ready.',
-                    isError: false,
-                    onRetry: () => unawaited(_showAnother()),
-                  ),
-                  // Rendered as the window it is: the page is leaving, and says so
-                  // through the snackbar `_statusChanged` raises.
-                  PairShowPaired() => const SizedBox.shrink(),
-                  PairShowExpired(:final window) => _Ended(
-                    key: const Key('pair-show-expired'),
-                    message:
-                        'Nothing used this code before it ran out. Codes are good '
-                        'for ${window.inMinutes} minutes, so the '
-                        'other device needs to be ready before you show one.',
-                    isError: false,
-                    onRetry: () => unawaited(_showAnother()),
-                  ),
-                  PairShowFailed(:final message) => _Ended(
-                    key: const Key('pair-show-failed'),
-                    message: message,
-                    isError: true,
-                    onRetry: () => unawaited(_showAnother()),
-                  ),
-                },
-              ),
+                    PairShowConfirming(:final deviceId, :final peerName) =>
+                      _Confirm(
+                        deviceId: deviceId,
+                        peerName: peerName,
+                        onAnswer: (confirmed) => _controller.answerConfirmation(
+                          confirmed: confirmed,
+                        ),
+                      ),
+                    PairShowDeclined() => _Ended(
+                      key: const Key('pair-show-declined'),
+                      message:
+                          'You turned that device away, so nothing was '
+                          'recorded. The code is used up either way — show a '
+                          'new one when the device you meant is ready.',
+                      isError: false,
+                      onRetry: () => unawaited(_showAnother()),
+                    ),
+                    // Rendered as the window it is: the page is leaving, and
+                    // says so through the snackbar `_statusChanged` raises.
+                    PairShowPaired() => const SizedBox.shrink(),
+                    PairShowExpired(:final window) => _Ended(
+                      key: const Key('pair-show-expired'),
+                      message:
+                          'Nothing used this code before it ran out. Codes '
+                          'are good for ${window.inMinutes} minutes, so the '
+                          'other device needs to be ready before you show '
+                          'one.',
+                      isError: false,
+                      onRetry: () => unawaited(_showAnother()),
+                    ),
+                    PairShowFailed(:final message) => _Ended(
+                      key: const Key('pair-show-failed'),
+                      message: message,
+                      isError: true,
+                      onRetry: () => unawaited(_showAnother()),
+                    ),
+                  },
+                ),
+        ),
       ),
     );
   }
@@ -231,10 +241,12 @@ class _NameField extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              FilledButton(
-                key: const Key('pair-show-start'),
-                onPressed: ready ? onShow : null,
-                child: const Text('Show code'),
+              SelectionContainer.disabled(
+                child: FilledButton(
+                  key: const Key('pair-show-start'),
+                  onPressed: ready ? onShow : null,
+                  child: const Text('Show code'),
+                ),
               ),
             ],
           ),
@@ -303,13 +315,15 @@ class _Offer extends StatelessWidget {
                   ),
                   Align(
                     alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      key: const Key('pair-show-copy'),
-                      // The one thing to do here, so Enter copies.
-                      autofocus: true,
-                      onPressed: onCopy,
-                      icon: const Icon(Icons.content_copy),
-                      label: const Text('Copy line'),
+                    child: SelectionContainer.disabled(
+                      child: TextButton.icon(
+                        key: const Key('pair-show-copy'),
+                        // The one thing to do here, so Enter copies.
+                        autofocus: true,
+                        onPressed: onCopy,
+                        icon: const Icon(Icons.content_copy),
+                        label: const Text('Copy line'),
+                      ),
                     ),
                   ),
                 ],
@@ -334,12 +348,26 @@ class _Offer extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-          Text(
-            'This device is answering at ${offer.address}. Both devices have '
-            'to be on the same network.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+          // The address on its own is copyable: when the other device cannot
+          // reach this one, it is what gets pasted into a ping, or into that
+          // device's own settings, to find out why.
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'This device is answering at ${offer.address}. Both devices '
+                  'have to be on the same network.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              CopyValueButton(
+                key: const Key('pair-show-address-copy'),
+                value: offer.address,
+                what: 'address',
+              ),
+            ],
           ),
         ],
       ),
@@ -388,7 +416,7 @@ class _Confirm extends StatelessWidget {
             margin: EdgeInsets.zero,
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: SelectableText(
+              child: Text(
                 deviceId,
                 key: const Key('pair-show-device-id'),
                 style: theme.textTheme.bodyMedium?.copyWith(
@@ -407,25 +435,27 @@ class _Confirm extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  key: const Key('pair-show-refuse'),
-                  autofocus: true,
-                  onPressed: () => onAnswer(false),
-                  child: const Text('Not my device'),
+          SelectionContainer.disabled(
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    key: const Key('pair-show-refuse'),
+                    autofocus: true,
+                    onPressed: () => onAnswer(false),
+                    child: const Text('Not my device'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton(
-                  key: const Key('pair-show-confirm'),
-                  onPressed: () => onAnswer(true),
-                  child: const Text('Ids match — pair'),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    key: const Key('pair-show-confirm'),
+                    onPressed: () => onAnswer(true),
+                    child: const Text('Ids match — pair'),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -475,11 +505,13 @@ class _Ended extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 24),
-          FilledButton(
-            key: const Key('pair-show-retry'),
-            autofocus: true,
-            onPressed: onRetry,
-            child: const Text('Show a new code'),
+          SelectionContainer.disabled(
+            child: FilledButton(
+              key: const Key('pair-show-retry'),
+              autofocus: true,
+              onPressed: onRetry,
+              child: const Text('Show a new code'),
+            ),
           ),
         ],
       ),

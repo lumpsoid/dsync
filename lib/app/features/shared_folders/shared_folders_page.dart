@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
+import '../../copy_value_button.dart';
 import '../../readable_width.dart';
 import '../../shared_folder_row.dart';
 import '../../withdraw_root_dialog.dart';
@@ -48,11 +48,18 @@ class SharedFoldersPage extends StatelessWidget {
           ),
         ],
       ),
-      body: ListenableBuilder(
-        // Both notifiers: the application state holds the devices this page
-        // inverts, the view state holds this page's own outcome line.
-        listenable: Listenable.merge([controller.app.state, controller.state]),
-        builder: (context, _) => _SharedFoldersBody(controller: controller),
+      // Selectable as a page (`CopyValueButton` states the rule): the
+      // notices and the reach lines are read-only, and the toggles opt out.
+      body: SelectionArea(
+        child: ListenableBuilder(
+          // Both notifiers: the application state holds the devices this
+          // page inverts, the view state holds this page's own outcome line.
+          listenable: Listenable.merge([
+            controller.app.state,
+            controller.state,
+          ]),
+          builder: (context, _) => _SharedFoldersBody(controller: controller),
+        ),
       ),
     );
   }
@@ -162,35 +169,29 @@ class _FolderSection extends StatelessWidget {
             ],
           ),
           isThreeLine: note != null,
-          trailing: IconButton(
+          // The stored path, not the elided label: the label is what fits
+          // on a phone row, and what a person pastes into a shell or into
+          // the other host's add-folder field has to be the path the store
+          // holds byte for byte. Reading a long path off a screen and
+          // retyping it is the one way to make two hosts disagree about
+          // which folder was shared.
+          trailing: CopyValueButton(
             key: Key('shared-folder-copy-${folder.rootPath}'),
-            icon: const Icon(Icons.copy_outlined),
-            tooltip: 'Copy folder path',
-            onPressed: () => _copyPath(context),
+            value: folder.rootPath,
+            what: 'folder path',
           ),
         ),
         for (final device in folder.devices)
-          SwitchListTile(
-            key: Key('shared-folder-${folder.rootPath}-${device.deviceId}'),
-            value: device.isShared,
-            title: Text(device.name),
-            onChanged: (wanted) => _toggle(context, device, wanted: wanted),
+          SelectionContainer.disabled(
+            child: SwitchListTile(
+              key: Key('shared-folder-${folder.rootPath}-${device.deviceId}'),
+              value: device.isShared,
+              title: Text(device.name),
+              onChanged: (wanted) => _toggle(context, device, wanted: wanted),
+            ),
           ),
         const Divider(),
       ],
-    );
-  }
-
-  /// Copies the stored path, not the elided label: the label is what fits
-  /// on a phone row, and what a person pastes into a shell or into the other
-  /// host's add-folder field has to be the path the store holds byte for
-  /// byte. Reading a long path off a screen and retyping it is the one way
-  /// to make two hosts disagree about which folder was shared.
-  Future<void> _copyPath(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    await Clipboard.setData(ClipboardData(text: folder.rootPath));
-    messenger.showSnackBar(
-      const SnackBar(content: Text('Folder path copied.')),
     );
   }
 

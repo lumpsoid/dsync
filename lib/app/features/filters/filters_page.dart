@@ -402,11 +402,16 @@ class _PreviewSection extends StatelessWidget {
           ),
         FiltersPreviewFailed(:final message) => Row(
           children: [
+            // Selectable on its own, as every error line is; the rules and
+            // the listing beside it answer clicks (`CopyValueButton` states
+            // the rule).
             Expanded(
-              child: Text(
-                message,
-                key: const Key('filters-preview-failed'),
-                style: TextStyle(color: theme.colorScheme.error),
+              child: SelectionArea(
+                child: Text(
+                  message,
+                  key: const Key('filters-preview-failed'),
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
               ),
             ),
             TextButton(
@@ -767,10 +772,14 @@ class _ListingState extends State<_Listing> {
           width: ReadableWidth.list,
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Text(
-              message,
-              key: const Key('filters-folder-failed'),
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            // Selectable on its own, as every error line is: a folder that
+            // failed to list has no rows here to take the click from it.
+            child: SelectionArea(
+              child: Text(
+                message,
+                key: const Key('filters-folder-failed'),
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           ),
         ),

@@ -304,47 +304,56 @@ class _RunSetupPageState extends State<RunSetupPage> {
             ),
           ),
         ),
-        body: ListenableBuilder(
-          listenable: _controller.state,
-          builder: (context, _) => switch (_controller.state.peer) {
-            RunSetupPeerLoading() => const Center(
-              // Nothing else is on screen in this case, so the label carries
-              // the whole announcement.
-              child: CircularProgressIndicator(
-                semanticsLabel: 'Loading the device',
-              ),
-            ),
-            RunSetupPeerMissing(:final message) => ReadableColumn(
-              width: ReadableWidth.form,
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Text(
-                  message,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+        // Selectable as a page (`CopyValueButton` states the rule): the
+        // chosen paths, the notices and the refusals are read-only, and
+        // the rows, switches and buttons opt out. The fields stay in, as
+        // on Pair: a field is not part of a page's selection anyway, and
+        // the refusal under one is an error line like any other.
+        body: SelectionArea(
+          child: ListenableBuilder(
+            listenable: _controller.state,
+            builder: (context, _) => switch (_controller.state.peer) {
+              RunSetupPeerLoading() => const Center(
+                // Nothing else is on screen in this case, so the label carries
+                // the whole announcement.
+                child: CircularProgressIndicator(
+                  semanticsLabel: 'Loading the device',
                 ),
               ),
-            ),
-            RunSetupPeerLoaded(:final name) => _RunSetupForm(
-              controller: _controller,
-              deviceName: name,
-              editing: _controller.state.prefill != null,
-              remoteRoots: _remoteRoots,
-              address: _address,
-              profileName: _profileName,
-              profileNameFocus: _profileNameFocus,
-              startFocus: _startFocus,
-              onPickFolder: _pickFolder,
-              onPickFile: _pickFile,
-              onNewFile: _controller.fileChooser.namesNewFilesApart
-                  ? _newFile
-                  : null,
-              onAddEntry: () => setState(_addEntry),
-              onRemoveEntry: (index) => setState(() => _removeEntry(index)),
-              onOpenFilters: _openFilters,
-              onStart: _start,
-              onSave: _save,
-            ),
-          },
+              RunSetupPeerMissing(:final message) => ReadableColumn(
+                width: ReadableWidth.form,
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Text(
+                    message,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+              ),
+              RunSetupPeerLoaded(:final name) => _RunSetupForm(
+                controller: _controller,
+                deviceName: name,
+                editing: _controller.state.prefill != null,
+                remoteRoots: _remoteRoots,
+                address: _address,
+                profileName: _profileName,
+                profileNameFocus: _profileNameFocus,
+                startFocus: _startFocus,
+                onPickFolder: _pickFolder,
+                onPickFile: _pickFile,
+                onNewFile: _controller.fileChooser.namesNewFilesApart
+                    ? _newFile
+                    : null,
+                onAddEntry: () => setState(_addEntry),
+                onRemoveEntry: (index) => setState(() => _removeEntry(index)),
+                onOpenFilters: _openFilters,
+                onStart: _start,
+                onSave: _save,
+              ),
+            },
+          ),
         ),
       ),
     );
@@ -486,11 +495,13 @@ class _RunSetupForm extends StatelessWidget {
                 ],
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    key: const Key('run-setup-add-entry'),
-                    onPressed: starting ? null : onAddEntry,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add another folder or file'),
+                  child: SelectionContainer.disabled(
+                    child: TextButton.icon(
+                      key: const Key('run-setup-add-entry'),
+                      onPressed: starting ? null : onAddEntry,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add another folder or file'),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 24),
@@ -503,17 +514,19 @@ class _RunSetupForm extends StatelessWidget {
                 // screen, not a field. Bound to entry 0's folder, the profile's
                 // one representative (the class doc comment on `_openFilters`
                 // says why).
-                ListTile(
-                  key: const Key('run-setup-filters'),
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.filter_alt_outlined),
-                  title: const Text('Filters'),
-                  subtitle: Text(_filtersSummary(state, firstFolder)),
-                  trailing: const Icon(Icons.chevron_right),
-                  enabled: !starting && firstFolder != null,
-                  onTap: firstFolder == null
-                      ? null
-                      : () => onOpenFilters(firstFolder),
+                SelectionContainer.disabled(
+                  child: ListTile(
+                    key: const Key('run-setup-filters'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.filter_alt_outlined),
+                    title: const Text('Filters'),
+                    subtitle: Text(_filtersSummary(state, firstFolder)),
+                    trailing: const Icon(Icons.chevron_right),
+                    enabled: !starting && firstFolder != null,
+                    onTap: firstFolder == null
+                        ? null
+                        : () => onOpenFilters(firstFolder),
+                  ),
                 ),
                 const SizedBox(height: 24),
                 // The name sits with the fields it names, not with the
@@ -544,13 +557,15 @@ class _RunSetupForm extends StatelessWidget {
                   key: const Key('run-setup-options'),
                   title: 'Options',
                   children: [
-                    SwitchListTile(
-                      key: const Key('run-setup-dry-run'),
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Dry run'),
-                      subtitle: const Text('Show the plan, apply nothing.'),
-                      value: state.dryRun,
-                      onChanged: starting ? null : controller.setDryRun,
+                    SelectionContainer.disabled(
+                      child: SwitchListTile(
+                        key: const Key('run-setup-dry-run'),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Dry run'),
+                        subtitle: const Text('Show the plan, apply nothing.'),
+                        value: state.dryRun,
+                        onChanged: starting ? null : controller.setDryRun,
+                      ),
                     ),
                     const SizedBox(height: 8),
                     TextField(
@@ -668,24 +683,26 @@ class _EntrySection extends StatelessWidget {
               ),
             ],
           ),
-        SegmentedButton<RootKind>(
-          key: Key('run-setup-kind-$index'),
-          segments: const [
-            ButtonSegment(
-              value: RootKind.folder,
-              label: Text('Folder'),
-              icon: Icon(Icons.folder_outlined),
-            ),
-            ButtonSegment(
-              value: RootKind.file,
-              label: Text('File'),
-              icon: Icon(Icons.insert_drive_file_outlined),
-            ),
-          ],
-          selected: {entry.kind},
-          onSelectionChanged: starting
-              ? null
-              : (selection) => onSetKind(selection.first),
+        SelectionContainer.disabled(
+          child: SegmentedButton<RootKind>(
+            key: Key('run-setup-kind-$index'),
+            segments: const [
+              ButtonSegment(
+                value: RootKind.folder,
+                label: Text('Folder'),
+                icon: Icon(Icons.folder_outlined),
+              ),
+              ButtonSegment(
+                value: RootKind.file,
+                label: Text('File'),
+                icon: Icon(Icons.insert_drive_file_outlined),
+              ),
+            ],
+            selected: {entry.kind},
+            onSelectionChanged: starting
+                ? null
+                : (selection) => onSetKind(selection.first),
+          ),
         ),
         const SizedBox(height: 8),
         _SectionLabel('On this device'),
@@ -718,22 +735,26 @@ class _EntrySection extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            TextButton(
-              key: Key(_pickKey),
-              onPressed: starting
-                  ? null
-                  : (isFolder ? onPickFolder : onPickFile),
-              child: Text(
-                entry.localRoot == null
-                    ? (isFolder ? 'Pick a folder…' : 'Pick a file…')
-                    : 'Change',
+            SelectionContainer.disabled(
+              child: TextButton(
+                key: Key(_pickKey),
+                onPressed: starting
+                    ? null
+                    : (isFolder ? onPickFolder : onPickFile),
+                child: Text(
+                  entry.localRoot == null
+                      ? (isFolder ? 'Pick a folder…' : 'Pick a file…')
+                      : 'Change',
+                ),
               ),
             ),
             if (!isFolder && onNewFile != null)
-              TextButton(
-                key: Key(_newFileKey),
-                onPressed: starting ? null : onNewFile,
-                child: const Text('New file…'),
+              SelectionContainer.disabled(
+                child: TextButton(
+                  key: Key(_newFileKey),
+                  onPressed: starting ? null : onNewFile,
+                  child: const Text('New file…'),
+                ),
               ),
           ],
         ),
@@ -822,33 +843,35 @@ class _ActionBar extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _OutcomeLine(outcome),
-                Row(
-                  children: [
-                    TextButton(
-                      key: const Key('run-setup-save'),
-                      onPressed: starting ? null : onSave,
-                      child: Text(saveLabel),
-                    ),
-                    const Spacer(),
-                    FilledButton(
-                      key: const Key('run-setup-start'),
-                      focusNode: startFocus,
-                      onPressed: starting ? null : onStart,
-                      child: starting
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              // The spinner replaces the button's label while
-                              // the run is starting, so it has to say what the
-                              // button now is.
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                semanticsLabel: 'Starting the run',
-                              ),
-                            )
-                          : const Text('Start'),
-                    ),
-                  ],
+                SelectionContainer.disabled(
+                  child: Row(
+                    children: [
+                      TextButton(
+                        key: const Key('run-setup-save'),
+                        onPressed: starting ? null : onSave,
+                        child: Text(saveLabel),
+                      ),
+                      const Spacer(),
+                      FilledButton(
+                        key: const Key('run-setup-start'),
+                        focusNode: startFocus,
+                        onPressed: starting ? null : onStart,
+                        child: starting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                // The spinner replaces the button's label
+                                // while the run is starting, so it has to say
+                                // what the button now is.
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  semanticsLabel: 'Starting the run',
+                                ),
+                              )
+                            : const Text('Start'),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -890,10 +913,14 @@ class _Disclosure extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return ExpansionTile(
-      title: Text(
-        title,
-        style: theme.textTheme.labelLarge?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
+      // The header is the toggle, so only it opts out: what unfolds under
+      // it — a field's refusal among it — is the page's like anything else.
+      title: SelectionContainer.disabled(
+        child: Text(
+          title,
+          style: theme.textTheme.labelLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
       ),
       tilePadding: EdgeInsets.zero,

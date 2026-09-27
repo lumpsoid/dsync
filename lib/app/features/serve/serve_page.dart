@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../copy_value_button.dart';
 import '../../readable_width.dart';
 import '../../shared_folder_row.dart';
 import 'serve_controller.dart';
@@ -66,12 +67,17 @@ class _ServePageState extends State<ServePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Answer paired devices')),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([
-          _controller.app.state,
-          _controller.state,
-        ]),
-        builder: (context, _) => _ServeBody(controller: _controller),
+      // Selectable as a page (`CopyValueButton` states the rule): the
+      // folders, the warnings and the session lines are read-only, and the
+      // toggle opts out.
+      body: SelectionArea(
+        child: ListenableBuilder(
+          listenable: Listenable.merge([
+            _controller.app.state,
+            _controller.state,
+          ]),
+          builder: (context, _) => _ServeBody(controller: _controller),
+        ),
       ),
     );
   }
@@ -146,6 +152,13 @@ class _ServeBody extends StatelessWidget {
 /// The toggle and what it currently says — the only branch in this file
 /// over [ServeStatus], and it is a rendering of each case rather than a
 /// decision about any of them.
+///
+/// **Copied, not selected.** The whole tile is the switch, so its text is
+/// opted out of the page's selection — a drag that began on it would fight
+/// the tap that flips it. The two lines worth taking elsewhere get a copy
+/// button beside them instead: the address, which the user has to type on
+/// the other device, and a refused bind's own words, which are what a bug
+/// report needs verbatim.
 class _StatusTile extends StatelessWidget {
   const _StatusTile({required this.status, required this.onChanged});
 
@@ -174,20 +187,44 @@ class _StatusTile extends StatelessWidget {
       ),
       ServeFailed(:final message) => (message, 'Not answering.', false, true),
     };
-    return SwitchListTile(
-      key: const Key('serve-toggle'),
-      value: on,
-      onChanged: onChanged,
-      secondary: Icon(
-        isError ? Icons.error_outline : Icons.wifi_tethering,
-        color: isError ? theme.colorScheme.error : null,
+    final copy = switch (status) {
+      ServeListening(:final address) => CopyValueButton(
+        key: const Key('serve-address-copy'),
+        value: address,
+        what: 'address',
       ),
-      title: Text(
-        title,
-        style: isError ? TextStyle(color: theme.colorScheme.error) : null,
+      ServeFailed(:final message) => CopyValueButton(
+        key: const Key('serve-error-copy'),
+        value: message,
+        what: 'error',
       ),
-      subtitle: Text(subtitle),
-      isThreeLine: true,
+      ServeStopped() || ServeStarting() => null,
+    };
+    return SelectionContainer.disabled(
+      child: SwitchListTile(
+        key: const Key('serve-toggle'),
+        value: on,
+        onChanged: onChanged,
+        secondary: Icon(
+          isError ? Icons.error_outline : Icons.wifi_tethering,
+          color: isError ? theme.colorScheme.error : null,
+        ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                title,
+                style: isError
+                    ? TextStyle(color: theme.colorScheme.error)
+                    : null,
+              ),
+            ),
+            ?copy,
+          ],
+        ),
+        subtitle: Text(subtitle),
+        isThreeLine: true,
+      ),
     );
   }
 }

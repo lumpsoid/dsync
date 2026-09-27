@@ -10,6 +10,7 @@ import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -1377,6 +1378,25 @@ void main() {
     expect(find.byKey(const Key('run-stop')), findsNothing);
   });
 
+  testWidgets('the failure line is selectable text (task e3b418)', (
+    tester,
+  ) async {
+    await open(
+      tester,
+      runView(
+        standing: resumable,
+        phase: failedWith('No pairing for "desktop".'),
+      ),
+    );
+
+    expect(
+      SelectionContainer.maybeOf(
+        tester.element(find.text('No pairing for "desktop".')),
+      ),
+      isNotNull,
+    );
+  });
+
   testWidgets('a start the core refuses is a failure in its words, with '
       'nothing to resume', (tester) async {
     hub.reply<wire.CoreCommandStartRun>(failed('the core is not initialised'));
@@ -2492,6 +2512,46 @@ void main() {
           choice: wire.ActionChoiceView.skipped,
         ),
       ]);
+    });
+
+    testWidgets('with the page\'s text selectable, a click held on a row '
+        'still moves the cursor and leaves the keys on the list (task '
+        'e3b418)', (tester) async {
+      await openAt(tester, review());
+
+      // A mouse held on a row past the press timeout — when a selection
+      // region over it would take the focus for itself — still hands the
+      // row to the cursor and the keys to the list.
+      final click = await tester.startGesture(
+        tester.getCenter(find.text('new.txt')),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      await click.up();
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'run-review');
+      await press(tester, down);
+      await press(tester, LogicalKeyboardKey.keyS);
+      // The key landed on the row after new.txt: mirror.txt, index 2.
+      expect(intents(), const [
+        wire.RunIntentChooseAction(
+          index: 2,
+          choice: wire.ActionChoiceView.skipped,
+        ),
+      ]);
+
+      // Because the rows are in no selection, while the stage line above
+      // them is.
+      expect(
+        SelectionContainer.maybeOf(tester.element(find.text('new.txt'))),
+        isNull,
+      );
+      expect(
+        SelectionContainer.maybeOf(
+          tester.element(find.byKey(const Key('run-awaiting'))),
+        ),
+        isNotNull,
+      );
     });
 
     testWidgets('Esc asks before leaving the review, and Enter on the '
