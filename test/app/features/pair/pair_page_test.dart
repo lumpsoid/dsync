@@ -576,13 +576,16 @@ void main() {
     expect(paired, 1);
   });
 
-  testWidgets('a code that was read puts the cursor in the name, and Enter '
-      'there pairs', (tester) async {
+  testWidgets('on a phone a code that was read leaves the keyboard down, and '
+      'Enter in the name pairs', (tester) async {
     await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
-    expect(hasFocus(tester, 'pair-local-name'), isTrue);
+    // The name is filled in already: a raised keyboard would only cover
+    // the button.
+    expect(hasFocus(tester, 'pair-local-name'), isFalse);
 
+    await tester.showKeyboard(find.byKey(const Key('pair-local-name')));
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await pumpUntil(tester, () => paired > 0, what: 'the page to leave');
 

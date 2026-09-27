@@ -347,14 +347,17 @@ class _PairForm extends StatelessWidget {
         // name, and nothing to send, until one has been read.
         if (state.code is PairCodeRead) ...[
           const SizedBox(height: 24),
-          // Focused the moment it appears, which is the moment a code has
-          // been read: the name is the one thing left to check, and Enter
-          // here is the button below it.
+          // Enter here is the button below it. Where the code was typed in
+          // rather than scanned, the field is also focused the moment it
+          // appears — the moment a code has been read — since the keyboard
+          // is already under the user's hands. On a phone it is not: the
+          // name arrives filled in, and a soft keyboard raised over it
+          // would cover the one button left to press.
           TextField(
             key: const Key('pair-local-name'),
             controller: localName,
             enabled: !submitting,
-            autofocus: true,
+            autofocus: onScan == null,
             onSubmitted: (_) => onSubmit(),
             decoration: InputDecoration(
               labelText: 'Name for the other device',
