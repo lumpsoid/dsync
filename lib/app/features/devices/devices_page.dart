@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../focus_ring.dart';
 import '../../paired_device_row.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
@@ -358,7 +359,8 @@ class _DeviceTile extends StatelessWidget {
   /// the two selections on screen read as the same kind of thing.
   final bool selected;
 
-  /// The row's own focus, which the list moves along with the selection.
+  /// The row's own focus, which the list moves along with the selection,
+  /// and which wears the [FocusRing] every listing's keyboard place does.
   final FocusNode focusNode;
 
   /// Opens the device's own page.
@@ -377,55 +379,62 @@ class _DeviceTile extends StatelessWidget {
       actions: deviceRowActions(row, onRunSetup: onRunSetup),
       focusNode: focusNode,
       handle: null,
-      child: ListTile(
-        // The name, and — only once the user has confirmed this device's id —
-        // a mark beside it. Inline rather than in the tile's leading slot, so
-        // the unconfirmed rows around it are not indented past an empty
-        // square: an unconfirmed pairing is the ordinary state and costs
-        // nothing on screen, which is the whole point of the confirmation
-        // being optional.
-        title: Row(
-          children: [
-            Flexible(child: Text(row.name, overflow: TextOverflow.ellipsis)),
-            if (row.isVerified) ...[
-              const SizedBox(width: 6),
-              Icon(
-                Icons.verified,
-                key: Key('device-verified-${row.deviceId}'),
-                size: 16,
-                color: theme.colorScheme.primary,
-                semanticLabel: 'Device id confirmed',
-              ),
-            ],
-          ],
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(row.address),
-            if (savedRuns != null) Text(savedRuns),
-            if (warning != null)
-              Text(
-                warning,
-                style: TextStyle(color: theme.colorScheme.tertiary),
-              ),
-            if (sharesNothing)
-              Text(
-                _noRootsLine,
-                style: TextStyle(color: theme.colorScheme.tertiary),
-              ),
-          ],
-        ),
-        // Two lines normally; a third only when a further line is showing.
-        isThreeLine: savedRuns != null || warning != null || sharesNothing,
-        selected: selected,
-        selectedTileColor: theme.colorScheme.secondaryContainer,
-        selectedColor: theme.colorScheme.onSecondaryContainer,
+      child: FocusRingBuilder(
         focusNode: focusNode,
-        onTap: onTap,
-        trailing: TextButton(
-          onPressed: onRunSetup,
-          child: const Text(deviceRunSetupLabel),
+        builder: (context, ringed) => ListTile(
+          // The name, and — only once the user has confirmed this device's id —
+          // a mark beside it. Inline rather than in the tile's leading slot, so
+          // the unconfirmed rows around it are not indented past an empty
+          // square: an unconfirmed pairing is the ordinary state and costs
+          // nothing on screen, which is the whole point of the confirmation
+          // being optional.
+          title: Row(
+            children: [
+              Flexible(child: Text(row.name, overflow: TextOverflow.ellipsis)),
+              if (row.isVerified) ...[
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.verified,
+                  key: Key('device-verified-${row.deviceId}'),
+                  size: 16,
+                  color: theme.colorScheme.primary,
+                  semanticLabel: 'Device id confirmed',
+                ),
+              ],
+            ],
+          ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(row.address),
+              if (savedRuns != null) Text(savedRuns),
+              if (warning != null)
+                Text(
+                  warning,
+                  style: TextStyle(color: theme.colorScheme.tertiary),
+                ),
+              if (sharesNothing)
+                Text(
+                  _noRootsLine,
+                  style: TextStyle(color: theme.colorScheme.tertiary),
+                ),
+            ],
+          ),
+          // Two lines normally; a third only when a further line is showing.
+          isThreeLine: savedRuns != null || warning != null || sharesNothing,
+          selected: selected,
+          selectedTileColor: theme.colorScheme.secondaryContainer,
+          selectedColor: theme.colorScheme.onSecondaryContainer,
+          // The ring's fill is the tile's own focus highlight, drawn under
+          // the same condition as the outline.
+          shape: ringed ? FocusRing.shape(theme.colorScheme) : null,
+          focusColor: FocusRing.fill(theme.colorScheme),
+          focusNode: focusNode,
+          onTap: onTap,
+          trailing: TextButton(
+            onPressed: onRunSetup,
+            child: const Text(deviceRunSetupLabel),
+          ),
         ),
       ),
     );

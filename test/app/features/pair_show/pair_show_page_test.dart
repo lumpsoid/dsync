@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_page.dart';
 import 'package:dsync/app/features/pair_show/pair_show_scope.dart';
@@ -14,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
@@ -73,7 +75,10 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
-      MaterialApp(home: PairShowPage(onPaired: () => paired++)),
+      MaterialApp(
+        theme: appTheme(Brightness.light),
+        home: PairShowPage(onPaired: () => paired++),
+      ),
     );
     await tester.pump();
   }
@@ -144,6 +149,17 @@ void main() {
     // window: the code and its deadline stand still until something happens.
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow, before and after the code is up', (tester) async {
+    await pumpPage(tester);
+    await expectAffordances(tester);
+
+    await openWindow(tester);
+    controller.state.recordStatus(PairShowWaiting(offer()));
+    await tester.pump();
+    await expectAffordances(tester);
   });
 
   testWidgets('shows the code as a symbol and as a line', (tester) async {

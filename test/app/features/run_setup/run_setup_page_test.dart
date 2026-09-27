@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run_setup/file_chooser.dart';
@@ -17,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
@@ -104,6 +106,7 @@ void main() {
     await tester.runAsync(() async {
       await tester.pumpWidget(
         MaterialApp(
+          theme: appTheme(Brightness.light),
           home: RunSetupPage(
             source: source ?? RunSetupFromDevice(desktop.deviceId),
             onStart: started.add,
@@ -141,6 +144,14 @@ void main() {
   bool startEnabled(WidgetTester tester) => tester
       .widget<FilledButton>(find.byKey(const Key('run-setup-start')))
       .enabled;
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow, with the options open', (tester) async {
+    await pumpLoaded(tester);
+    await openDisclosure(tester, 'run-setup-options');
+
+    await expectAffordances(tester);
+  });
 
   testWidgets('loading: a progress indicator and no form', (tester) async {
     // Inside `runAsync`, like `pumpLoaded`.

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import 'app_bootstrap.dart';
 import 'app_scope.dart';
+import 'app_theme.dart';
 import 'features/archives/archives_page.dart';
 import 'features/device_detail/device_detail_page.dart';
 import 'features/device_detail/device_detail_placement.dart';
@@ -61,24 +62,18 @@ import 'shell_state.dart';
 /// causes are conditions on disk, and a user who has just fixed one should
 /// not have to relaunch to be believed.
 ///
-/// **Both schemes come off one seed.** Light and dark are the same palette
-/// under two brightnesses, so the app reads as itself either way and a
-/// colour change is still one line. Which one shows is the device's call —
-/// there is no in-app toggle and nothing to persist.
+/// **Light and dark are one theme** ([appTheme]) under two brightnesses.
+/// Which one shows is the device's call — there is no in-app toggle and
+/// nothing to persist.
 class DsyncApp extends StatelessWidget {
   const DsyncApp({super.key});
-
-  /// The single colour both schemes are derived from.
-  static const _seed = Colors.teal;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'dsync',
-      theme: ThemeData(colorScheme: .fromSeed(seedColor: _seed)),
-      darkTheme: ThemeData(
-        colorScheme: .fromSeed(seedColor: _seed, brightness: Brightness.dark),
-      ),
+      theme: appTheme(Brightness.light),
+      darkTheme: appTheme(Brightness.dark),
       themeMode: ThemeMode.system,
       home: const _BootstrapGate(),
     );

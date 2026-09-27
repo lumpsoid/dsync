@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/core_link/models/filter_folder_summary.dart';
 import 'package:dsync/app/core_link/models/filter_preview.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
@@ -13,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
@@ -129,6 +131,7 @@ void main() {
     await tester.runAsync(() async {
       await tester.pumpWidget(
         MaterialApp(
+          theme: appTheme(Brightness.light),
           navigatorKey: navigator,
           home: const Scaffold(body: SizedBox.shrink()),
         ),
@@ -147,6 +150,22 @@ void main() {
       await listed();
     });
     await tester.pumpAndSettle();
+  }
+
+  for (final (name, window) in [
+    ('a phone', _compact),
+    ('a wide window', _wide),
+  ]) {
+    testWidgets('on $name every icon button says what it does, and every '
+        'tappable keeps the arrow', (tester) async {
+      await pumpPage(tester, window: window, rules: const ['*.tmp']);
+      await expectAffordances(tester);
+
+      // And the rule dialog, with its suggestions.
+      await tester.tap(find.byKey(const Key('filters-add-rule')));
+      await tester.pumpAndSettle();
+      await expectAffordances(tester);
+    });
   }
 
   testWidgets('shows the folder being filtered and its contents', (

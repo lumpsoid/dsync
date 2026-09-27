@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../core_link/models/action_choice.dart';
 import '../../core_link/models/conflict_choice.dart';
+import '../../focus_ring.dart';
 import 'run_review_cursor.dart';
 import 'run_view_state.dart';
 
@@ -355,7 +356,7 @@ class _ReviewRowFrameState extends State<ReviewRowFrame> {
         valueListenable: widget.cursor.ring(widget.target),
         builder: (context, ringed, child) => CustomPaint(
           painter: ringed
-              ? ReviewRingPainter(Theme.of(context).colorScheme.primary)
+              ? ReviewRingPainter(Theme.of(context).colorScheme)
               : null,
           child: child,
         ),
@@ -366,35 +367,34 @@ class _ReviewRowFrameState extends State<ReviewRowFrame> {
 }
 
 /// The cursor row's ring — public so a test can tell a ringed row from
-/// one without: a rounded outline in [color] with a faint fill of
-/// it, painted behind the row and a little outside its bounds — into the
+/// one without: the [FocusRing] every listing's keyboard place wears,
+/// painted behind the row and a little outside its bounds — into the
 /// page's side padding — so the row's own content never moves for it.
 class ReviewRingPainter extends CustomPainter {
-  const ReviewRingPainter(this.color);
+  const ReviewRingPainter(this.scheme);
 
-  final Color color;
+  final ColorScheme scheme;
 
   static const _outset = EdgeInsets.symmetric(horizontal: 8, vertical: 1);
-  static const _radius = Radius.circular(8);
 
   @override
   void paint(Canvas canvas, Size size) {
     final rect = RRect.fromRectAndRadius(
       _outset.inflateRect(Offset.zero & size),
-      _radius,
+      FocusRing.radius,
     );
     canvas
-      ..drawRRect(rect, Paint()..color = color.withValues(alpha: 0.08))
+      ..drawRRect(rect, Paint()..color = FocusRing.fill(scheme))
       ..drawRRect(
-        rect.deflate(1),
+        rect.deflate(FocusRing.width / 2),
         Paint()
-          ..color = color
+          ..color = FocusRing.color(scheme)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
+          ..strokeWidth = FocusRing.width,
       );
   }
 
   @override
   bool shouldRepaint(ReviewRingPainter oldDelegate) =>
-      oldDelegate.color != color;
+      oldDelegate.scheme != scheme;
 }

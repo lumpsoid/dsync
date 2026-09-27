@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_page.dart';
 import 'package:dsync/app/features/device_detail/device_detail_placement.dart';
@@ -12,6 +13,7 @@ import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
@@ -114,6 +116,7 @@ void main() {
 
   Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
     MaterialApp(
+      theme: appTheme(Brightness.light),
       home: DeviceDetailPage(
         deviceId: phone.deviceId,
         onGone: () => gone++,
@@ -121,6 +124,19 @@ void main() {
       ),
     ),
   );
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    tester.view.physicalSize = const Size(900, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    app.state.recordDevices([
+      row(agreedRoots: const ['/home/me/notes']),
+    ]);
+    await pumpPage(tester);
+
+    await expectAffordances(tester);
+  });
 
   testWidgets('shows the address, the pairing date and the certificate', (
     tester,

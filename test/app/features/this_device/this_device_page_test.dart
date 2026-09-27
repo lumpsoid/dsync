@@ -1,6 +1,7 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/features/this_device/this_device_controller.dart';
 import 'package:dsync/app/features/this_device/this_device_page.dart';
@@ -11,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
@@ -47,8 +49,20 @@ void main() {
     ),
   );
 
-  Future<void> pumpPage(WidgetTester tester) =>
-      tester.pumpWidget(const MaterialApp(home: ThisDevicePage()));
+  Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
+    MaterialApp(
+      theme: appTheme(Brightness.light),
+      home: const ThisDevicePage(),
+    ),
+  );
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    ready();
+    await pumpPage(tester);
+
+    await expectAffordances(tester);
+  });
 
   testWidgets('shows the name, the dates and the id', (tester) async {
     ready();

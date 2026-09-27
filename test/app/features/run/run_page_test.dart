@@ -1,4 +1,5 @@
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
@@ -16,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_screen_wake.dart';
+import '../../support/affordances.dart';
 import '../../support/fake_head.dart';
 import '../../support/fake_hub.dart';
 import '../../support/path_text.dart';
@@ -64,6 +66,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
+        theme: appTheme(Brightness.light),
         home: RunPage(request: runs ?? request, onDone: () => doneTaps++),
       ),
     );
@@ -2235,6 +2238,107 @@ void main() {
     });
   });
 
+  group('affordances for a mouse and a keyboard', () {
+    // Everything the review page can show at once: the scan tally's
+    // disclosure, a conflict's two boxes, action rows with their controls
+    // and a closed record-only group.
+    wire.RunView everything() => runView(
+      phase: reviewing(apply: 2, leftOpen: 1),
+      replicas: replicas(),
+      tallies: tallies(
+        a: tally(modified: 0, total: 10, changed: 1),
+        b: tally(modified: 0, total: 10, changed: 1),
+        checked: 20,
+        changed: 2,
+      ),
+      skipped: [
+        skippedPath(
+          side: wire.SideView.b,
+          path: 'locked.txt',
+          reason: wire.SkippedReasonView.unreadable,
+          detail: 'Permission denied',
+          isFailure: true,
+        ),
+      ],
+      conflicts: [
+        conflictRow(
+          'both.txt',
+          a: modifiedFile(),
+          b: modifiedFile(),
+          offered: const [
+            wire.ConflictChoiceView.unresolved,
+            wire.ConflictChoiceView.keepA,
+            wire.ConflictChoiceView.keepB,
+            wire.ConflictChoiceView.keepBoth,
+          ],
+        ),
+      ],
+      plan: [
+        planRow(copyTo('new.txt'), reverseBytes: 1024),
+        planRow(deleteThere('gone.txt'), reverseBytes: 512),
+        planRow(recordOnly('same.txt')),
+      ],
+    );
+
+    for (final (name, size) in [
+      ('a phone', const Size(400, 2400)),
+      ('a wide window', const Size(1440, 2400)),
+    ]) {
+      testWidgets('on $name every icon button says what it does, and every '
+          'tappable keeps the arrow', (tester) async {
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: appTheme(Brightness.light),
+            home: RunPage(request: request, onDone: () => doneTaps++),
+          ),
+        );
+        await deliver(tester, everything());
+        await tester.tap(find.byKey(const Key('run-scan-tally')));
+        await tester.pump();
+
+        await expectAffordances(tester);
+      });
+    }
+
+    testWidgets('the scan tally and a conflict\'s sides answer Space and '
+        'Enter', (tester) async {
+      await open(tester, everything());
+      final tally = find.byKey(const Key('run-scan-tally'));
+      final table = find.byKey(const Key('run-scan-table'));
+
+      Focus.of(
+        tester.element(find.descendant(of: tally, matching: find.byType(Row))),
+      ).requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      expect(table, findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(table, findsNothing);
+
+      final local = find.byKey(const Key('run-conflict-local-both.txt'));
+      Focus.of(
+        tester.element(
+          find.descendant(of: local, matching: find.text('This device')),
+        ),
+      ).requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(intents(), const [
+        wire.RunIntentChooseConflict(
+          index: 0,
+          choice: wire.ConflictChoiceView.keepA,
+        ),
+      ]);
+    });
+  });
+
   group('wide windows: the plan as a table, reviewed from the keyboard', () {
     const wide = Size(1440, 900);
 
@@ -2245,6 +2349,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(
         MaterialApp(
+          theme: appTheme(Brightness.light),
           home: RunPage(request: request, onDone: () => doneTaps++),
         ),
       );
@@ -2538,10 +2643,6 @@ void main() {
         'keyboard, and the cursor walks into what it shows', (tester) async {
       await openAt(tester, review());
       final disclosure = find.byKey(const Key('run-plan-disclosure'));
-      expect(
-        tester.widget<InkWell>(disclosure).mouseCursor,
-        SystemMouseCursors.click,
-      );
 
       Focus.of(
         tester.element(
@@ -2571,6 +2672,33 @@ void main() {
           choice: wire.ActionChoiceView.skipped,
         ),
       ]);
+    });
+
+    testWidgets('a mouse click on a row rings it, an arrow moves the ring, '
+        'and a touch takes it away', (tester) async {
+      await openAt(tester, review());
+      // The review put the focus on the list, but nothing was typed yet
+      // and the platform is a phone's: no ring.
+      expect(ringed(tester), isNull);
+
+      // A mouse makes this the keyboard's highlight mode without telling
+      // anyone (Flutter reads it off the connected mouse): the ring still
+      // follows the click, and the arrow after it.
+      final mouse = await tester.startGesture(
+        tester.getCenter(find.text('new.txt')),
+        kind: PointerDeviceKind.mouse,
+      );
+      await mouse.up();
+      await tester.pump();
+      expect(ringed(tester), const ActionTarget(0));
+      await press(tester, down);
+      expect(ringed(tester), const ActionTarget(2));
+
+      // A touch is not a keyboard user: the ring goes with it.
+      await tester.tap(find.text('gone.txt'));
+      await tester.pump();
+      expect(ringed(tester), isNull);
+      await mouse.removePointer();
     });
 
     testWidgets('with the page\'s text selectable, a click held on a row '

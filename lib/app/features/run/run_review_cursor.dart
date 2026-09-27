@@ -298,6 +298,14 @@ double revealEstimate({
 /// a thumb on a phone moves the cursor as it taps and sees no ring, the
 /// way Material hides every focus highlight after a touch.
 ///
+/// **Asked afresh, never cached.** The highlight mode's own notice is not
+/// enough to follow it: on a phone or tablet the mode a fresh app starts
+/// in is decided by whether a mouse is connected, and plugging one in (or a
+/// test's first mouse gesture) flips it to keyboard mode without a word to
+/// any listener — so a first arrow key after a click, which leaves the mode
+/// where it already reads, would find a remembered "touch" and draw no
+/// ring. Every move reads the mode and the focus as they are now.
+///
 /// **Which rows are built.** Each built row's frame [attach]es its
 /// context, so the keyboard can scroll the cursor's row into view — and,
 /// for one the lazy list has not built, estimate where it is from the
@@ -313,7 +321,6 @@ class ReviewCursor {
   final FocusNode focusNode = FocusNode(debugLabel: 'run-review');
 
   ReviewTarget? _at;
-  bool _visible = false;
   final Map<ReviewTarget, ValueNotifier<bool>> _rings = {};
   final Map<ReviewTarget, BuildContext> _built = {};
 
@@ -329,7 +336,11 @@ class ReviewCursor {
 
   /// Puts the cursor on [target], or on nothing.
   void moveTo(ReviewTarget? target) {
-    if (target == _at) return;
+    if (target == _at) {
+      // A key against the end of the list still says a keyboard is in use.
+      _setRing(_at, _visible);
+      return;
+    }
     _setRing(_at, false);
     _at = target;
     _setRing(target, _visible);
@@ -360,14 +371,13 @@ class ReviewCursor {
 
   void _onHighlightMode(FocusHighlightMode _) => _syncVisible();
 
-  void _syncVisible() {
-    final visible =
-        focusNode.hasPrimaryFocus &&
-        FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
-    if (visible == _visible) return;
-    _visible = visible;
-    _setRing(_at, visible);
-  }
+  /// Whether the cursor's row shows its ring right now; see the class
+  /// comment for why this is read each time rather than remembered.
+  bool get _visible =>
+      focusNode.hasPrimaryFocus &&
+      FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
+
+  void _syncVisible() => _setRing(_at, _visible);
 
   void _setRing(ReviewTarget? target, bool value) {
     if (target == null) return;

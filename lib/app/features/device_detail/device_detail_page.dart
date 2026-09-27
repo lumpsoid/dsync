@@ -188,7 +188,14 @@ class _DeviceDetailBody extends StatelessWidget {
                     Icons.link_off,
                     color: Theme.of(context).colorScheme.error,
                   ),
-                  title: const Text('Revoke pairing'),
+                  // Icon and name in the error colour, as a row menu draws
+                  // its destructive items; the line under it stays quiet.
+                  title: Text(
+                    'Revoke pairing',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
                   subtitle: const Text(
                     'Stop trusting this device and refuse its connections.',
                   ),

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../archive_row.dart';
 import '../../destructive_confirm_dialog.dart';
+import '../../focus_ring.dart';
 import '../../keyboard_first.dart';
 import '../../path_text.dart';
 import '../../readable_width.dart';
@@ -546,56 +547,64 @@ class _ArchiveTile extends StatelessWidget {
       actions: actions,
       focusNode: focusNode,
       handle: null,
-      child: ListTile(
-        key: Key('archive-row-${row.logPath}'),
+      child: FocusRingBuilder(
         focusNode: focusNode,
-        selected: isSelected,
-        // Long press starts selecting, the platform's own gesture for it; once
-        // selecting, a plain tap is enough.
-        onLongPress: onLongPress,
-        onTap: checkbox || isSelecting ? onClick : null,
-        leading: checkbox
-            // Out of the focus order: the row is the keyboard's stop and Space
-            // on it ticks, so a second stop per row would only double the Tabs
-            // down the list.
-            ? ExcludeFocus(
-                child: Checkbox(
-                  key: Key('archive-check-${row.logPath}'),
-                  value: isSelected,
-                  onChanged: (_) => onCheck(),
+        builder: (context, ringed) => ListTile(
+          key: Key('archive-row-${row.logPath}'),
+          focusNode: focusNode,
+          // The keyboard's place in the list, as every listing marks it; the
+          // ring's fill is the tile's own focus highlight, drawn under the
+          // same condition as the outline.
+          shape: ringed ? FocusRing.shape(theme.colorScheme) : null,
+          focusColor: FocusRing.fill(theme.colorScheme),
+          selected: isSelected,
+          // Long press starts selecting, the platform's own gesture for it;
+          // once selecting, a plain tap is enough.
+          onLongPress: onLongPress,
+          onTap: checkbox || isSelecting ? onClick : null,
+          leading: checkbox
+              // Out of the focus order: the row is the keyboard's stop and
+              // Space on it ticks, so a second stop per row would only
+              // double the Tabs down the list.
+              ? ExcludeFocus(
+                  child: Checkbox(
+                    key: Key('archive-check-${row.logPath}'),
+                    value: isSelected,
+                    onChanged: (_) => onCheck(),
+                  ),
+                )
+              : isSelecting
+              ? Icon(
+                  isSelected ? Icons.check_circle : Icons.circle_outlined,
+                  color: isSelected ? theme.colorScheme.primary : null,
+                )
+              : null,
+          title: Text(row.title),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (peerLine != null) Text(peerLine),
+              // Hover-only tooltip (see [PathText]): a long-press here is the
+              // row's own, and starts selecting.
+              switch (row.rootPath) {
+                final path? => PathText(path, style: null, leafStyle: null),
+                null => const Text(ArchiveRow.unknownLocation),
+              },
+              Text('${row.sizeLabel} · last written ${row.lastWritten}'),
+              if (note != null)
+                Text(note, style: TextStyle(color: theme.colorScheme.error)),
+            ],
+          ),
+          isThreeLine: true,
+          trailing: isSelecting
+              ? null
+              : IconButton(
+                  key: Key('archive-delete-${row.logPath}'),
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: 'Delete history',
+                  onPressed: onDelete,
                 ),
-              )
-            : isSelecting
-            ? Icon(
-                isSelected ? Icons.check_circle : Icons.circle_outlined,
-                color: isSelected ? theme.colorScheme.primary : null,
-              )
-            : null,
-        title: Text(row.title),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (peerLine != null) Text(peerLine),
-            // Hover-only tooltip (see [PathText]): a long-press here is the
-            // row's own, and starts selecting.
-            switch (row.rootPath) {
-              final path? => PathText(path, style: null, leafStyle: null),
-              null => const Text(ArchiveRow.unknownLocation),
-            },
-            Text('${row.sizeLabel} · last written ${row.lastWritten}'),
-            if (note != null)
-              Text(note, style: TextStyle(color: theme.colorScheme.error)),
-          ],
         ),
-        isThreeLine: true,
-        trailing: isSelecting
-            ? null
-            : IconButton(
-                key: Key('archive-delete-${row.logPath}'),
-                icon: const Icon(Icons.delete_outline),
-                tooltip: 'Delete history',
-                onPressed: onDelete,
-              ),
       ),
     );
   }

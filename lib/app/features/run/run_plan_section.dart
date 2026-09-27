@@ -180,7 +180,7 @@ class RunPlanSection extends StatelessWidget {
 ///
 /// Whether it is open is [disclosures]' — see there — and this follows
 /// its own group's cell alone. The disclosure is an [InkWell]: a Tab stop
-/// that Enter and Space open and close, under a click cursor.
+/// that Enter and Space open and close.
 class _PlanGroupSection extends StatelessWidget {
   const _PlanGroupSection({
     required super.key,
@@ -253,7 +253,6 @@ class _PlanGroupSection extends StatelessWidget {
             SliverToBoxAdapter(
               child: InkWell(
                 key: disclosureKey,
-                mouseCursor: SystemMouseCursors.click,
                 onTap: () => disclosures.toggle(group),
                 child: Row(
                   children: [

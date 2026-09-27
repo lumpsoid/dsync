@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_page.dart';
 import 'package:dsync/app/features/serve/serve_scope.dart';
@@ -10,6 +11,7 @@ import 'package:dsync/app/paired_device_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../../support/fake_screen_wake.dart';
@@ -53,8 +55,9 @@ void main() {
         verifiedAt: null,
       );
 
-  Future<void> pumpPage(WidgetTester tester) =>
-      tester.pumpWidget(const MaterialApp(home: ServePage()));
+  Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
+    MaterialApp(theme: appTheme(Brightness.light), home: const ServePage()),
+  );
 
   testWidgets('the page binds on mount and closes on the way out', (
     tester,
@@ -133,6 +136,17 @@ void main() {
     await tester.pump();
     // One from mounting, one from the tap.
     expect(controller.starts, 2);
+  });
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    app.state.recordDevices([
+      row('desktop', roots: const ['/home/me/notes']),
+      row('laptop'),
+    ]);
+    await pumpPage(tester);
+
+    await expectAffordances(tester);
   });
 
   testWidgets('what this host serves is on the page, from the device list', (

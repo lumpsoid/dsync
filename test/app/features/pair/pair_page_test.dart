@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
@@ -12,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
@@ -121,6 +123,7 @@ void main() {
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
       MaterialApp(
+        theme: appTheme(Brightness.light),
         home: PairPage(
           onPaired: () => paired++,
           onShowOwnCode: () => showOwnCodeTaps++,
@@ -161,6 +164,15 @@ void main() {
   /// The text a field is showing, by key.
   String fieldText(WidgetTester tester, String key) =>
       tester.widget<TextField>(find.byKey(Key(key))).controller!.text;
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow, before and after a code is read', (tester) async {
+    await pumpPage(tester, scanner: noCameraAskedFor);
+    await expectAffordances(tester);
+
+    await withCode(tester);
+    await expectAffordances(tester);
+  });
 
   testWidgets('nothing read yet: two ways in, and nothing to confirm', (
     tester,

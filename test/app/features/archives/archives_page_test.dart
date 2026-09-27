@@ -1,16 +1,19 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/archive_row.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_page.dart';
 import 'package:dsync/app/features/archives/archives_scope.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
+import 'package:dsync/app/focus_ring.dart';
 import 'package:dsync/app/pop_on_escape.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
@@ -48,8 +51,9 @@ void main() {
     note: note,
   );
 
-  Future<void> pumpPage(WidgetTester tester) =>
-      tester.pumpWidget(const MaterialApp(home: ArchivesPage()));
+  Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
+    MaterialApp(theme: appTheme(Brightness.light), home: const ArchivesPage()),
+  );
 
   testWidgets('mounting asks for the listing', (tester) async {
     await pumpPage(tester);
@@ -60,7 +64,8 @@ void main() {
   /// The page under a desktop theme, where the refresh action is drawn.
   Future<void> pumpDesktopPage(WidgetTester tester) => tester.pumpWidget(
     MaterialApp(
-      theme: ThemeData(platform: TargetPlatform.linux),
+      theme: appTheme(Brightness.light)
+          .copyWith(platform: TargetPlatform.linux),
       home: const ArchivesPage(),
     ),
   );
@@ -127,6 +132,20 @@ void main() {
     expect(find.text('weekly notes'), findsOneWidget);
     expect(find.text('/on-device/notes'), findsOneWidget);
     expect(find.text('4.2 MiB · last written 2026-09-15'), findsOneWidget);
+  });
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    await pumpDesktopPage(tester);
+    controller.state.recordListing(
+      ArchivesReady([
+        row('weekly notes', note: 'The pairing is gone.', peerLine: 'desktop'),
+        row('photos'),
+      ]),
+    );
+    await tester.pump();
+
+    await expectAffordances(tester);
   });
 
   testWidgets('the total is shown above the rows', (tester) async {
@@ -685,6 +704,28 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
       await tester.pump();
       expect(focusIsWithin(Key('archive-row-$two')), isTrue);
+    });
+
+    testWidgets('the row the keys are on wears the listing ring, and a '
+        'touch takes it away', (tester) async {
+      await pumpWideDesktop(tester);
+      ShapeBorder? shapeOf(String logPath) => tester
+          .widget<ListTile>(find.byKey(Key('archive-row-$logPath')))
+          .shape;
+      final ring = FocusRing.shape(
+        Theme.of(tester.element(find.byType(ArchivesPage))).colorScheme,
+      );
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(shapeOf(one), ring);
+      expect(shapeOf(two), isNull);
+
+      await tester.tap(find.text('three'));
+      await tester.pump();
+      expect(focusIsWithin(Key('archive-row-$three')), isTrue);
+      expect(shapeOf(three), isNull);
+      expect(shapeOf(one), isNull);
     });
 
     group('the row\'s menu (task 746a4d)', () {

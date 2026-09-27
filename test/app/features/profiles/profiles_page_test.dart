@@ -1,4 +1,5 @@
 import 'package:dsync/app/app_bootstrap.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
@@ -14,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/clipboard.dart';
@@ -65,6 +67,7 @@ void main() {
 
   Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
     MaterialApp(
+      theme: appTheme(Brightness.light),
       home: ProfilesPage(
         onOpenProfile: opened.add,
         onOpenDevices: () => devicesOpened++,
@@ -125,6 +128,36 @@ void main() {
     expect(find.text('No saved sync profiles yet.'), findsOneWidget);
     expect(find.text('Sync with a device'), findsOneWidget);
     expect(find.byKey(const Key('profiles-open-devices')), findsOneWidget);
+  });
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    ready();
+    await pumpPage(tester);
+    // After the page's own read on mounting, which would empty the list.
+    await tester.pump();
+    app.state.recordProfiles([ok(), broken(), folderLost()]);
+    await tester.pump();
+    expect(find.text('weekly'), findsOneWidget);
+
+    await expectAffordances(tester);
+    // The card's own surface, not only what sits in its middle: its left
+    // edge, beside the name.
+    final card = tester.getRect(
+      find
+          .descendant(
+            of: find.ancestor(
+              of: find.text('weekly'),
+              matching: find.byType(Card),
+            ),
+            matching: find.byType(InkWell),
+          )
+          .first,
+    );
+    expect(
+      await cursorAt(tester, Offset(card.left + 6, card.center.dy)),
+      SystemMouseCursors.basic,
+    );
   });
 
   testWidgets('a new run stays one tap away once the list has rows', (

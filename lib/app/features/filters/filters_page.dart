@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../focus_ring.dart';
 import '../../keyboard_first.dart';
 import '../../path_text.dart';
 import '../../pop_on_escape.dart';
@@ -870,10 +871,9 @@ class _ListingState extends State<_Listing> {
 /// says which rule did it, so a folder that is out of the sync is visibly
 /// out while scrolling, rather than something to be read for.
 ///
-/// [ringed] draws the keyboard cursor's ring: a rounded outline with a
-/// faint fill of the primary colour, inside the row's own bounds so the
-/// row does not move for it — nor change height, which every row shares
-/// with the listing's prototype.
+/// [ringed] draws the keyboard cursor's [FocusRing] inside the row's own
+/// bounds, so the row does not move for it — nor change height, which
+/// every row shares with the listing's prototype.
 class _EntryTile extends StatelessWidget {
   const _EntryTile({
     required this.controller,
@@ -899,7 +899,6 @@ class _EntryTile extends StatelessWidget {
     final theme = Theme.of(context);
     final excluded = entry.status is FilterEntryExcluded;
     final quiet = theme.colorScheme.onSurfaceVariant;
-    final primary = theme.colorScheme.primary;
     final actions = filterRowActions(
       entry.actions,
       run: controller.runEntryAction,
@@ -918,13 +917,8 @@ class _EntryTile extends StatelessWidget {
           // The tile's own shape and colour, not a box around it: the tile
           // draws them on the Material beneath with its ink, which a
           // filled box in between would hide.
-          shape: ringed
-              ? RoundedRectangleBorder(
-                  side: BorderSide(color: primary, width: 2),
-                  borderRadius: BorderRadius.circular(8),
-                )
-              : null,
-          tileColor: ringed ? primary.withValues(alpha: 0.08) : null,
+          shape: ringed ? FocusRing.shape(theme.colorScheme) : null,
+          tileColor: ringed ? FocusRing.fill(theme.colorScheme) : null,
           leading: Icon(
             entry.isFolder
                 ? Icons.folder_outlined

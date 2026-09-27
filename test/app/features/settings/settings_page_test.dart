@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_page.dart';
 import 'package:dsync/app/features/settings/settings_scope.dart';
@@ -11,6 +12,7 @@ import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
@@ -45,8 +47,17 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  Future<void> pumpPage(WidgetTester tester) =>
-      tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+  Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
+    MaterialApp(theme: appTheme(Brightness.light), home: const SettingsPage()),
+  );
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    controller.state.recordBindAddress('10.8.0.3');
+    await pumpPage(tester);
+
+    await expectAffordances(tester);
+  });
 
   testWidgets('shows the Network section and the stored address', (
     tester,

@@ -1,4 +1,5 @@
 import 'package:dsync/app/app_bootstrap.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
@@ -6,6 +7,7 @@ import 'package:dsync/app/features/devices/devices_chrome.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
+import 'package:dsync/app/focus_ring.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
@@ -14,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
@@ -98,6 +101,7 @@ void main() {
 
   Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
     MaterialApp(
+      theme: appTheme(Brightness.light),
       home: DevicesPage(
         onOpenDevice: devicesOpened.add,
         onOpenRunSetup: opened.add,
@@ -109,6 +113,42 @@ void main() {
       ),
     ),
   );
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    ready();
+    app.state.recordDevices([
+      row('phone'),
+      row('laptop', agreedRoots: const []),
+    ]);
+    await pumpPage(tester);
+
+    await expectAffordances(tester);
+  });
+
+  testWidgets('a row the keyboard is on wears the listing ring, and a '
+      'touch takes it away', (tester) async {
+    ready();
+    app.state.recordDevices([row('phone'), row('laptop')]);
+    await pumpPage(tester);
+    ListTile tileOf(String name) => tester.widget<ListTile>(
+      find.ancestor(of: find.text(name), matching: find.byType(ListTile)),
+    );
+    final ring = FocusRing.shape(
+      Theme.of(tester.element(find.byType(DevicesPage))).colorScheme,
+    );
+
+    tileOf('laptop').focusNode!.requestFocus();
+    // Any key is the keyboard's highlight mode.
+    await tester.sendKeyEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(tileOf('laptop').shape, ring);
+    expect(tileOf('phone').shape, isNull);
+
+    await tester.tapAt(tester.getTopLeft(find.byType(Scaffold)));
+    await tester.pump();
+    expect(tileOf('laptop').shape, isNull);
+  });
 
   testWidgets('lists every row with its rendered fields', (tester) async {
     ready();

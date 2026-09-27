@@ -48,6 +48,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/fake_folder_picker.dart';
 import '../support/fake_screen_wake.dart';
 import 'features/run/run_fixtures.dart' show failedWith, resumable, runView;
+import 'support/affordances.dart';
 import 'support/fake_head.dart';
 import 'support/fake_hub.dart';
 import 'support/pump_until.dart';
@@ -595,12 +596,13 @@ void main() {
 
     /// The names on the rows the list marks as selected.
     List<String> selectedRows(WidgetTester tester) => [
-      for (final element in find
-          .descendant(
-            of: find.byType(DevicesPage),
-            matching: find.byType(ListTile),
-          )
-          .evaluate())
+      for (final element
+          in find
+              .descendant(
+                of: find.byType(DevicesPage),
+                matching: find.byType(ListTile),
+              )
+              .evaluate())
         if ((element.widget as ListTile).selected)
           for (final text in tester.widgetList<Text>(
             find.descendant(
@@ -648,6 +650,22 @@ void main() {
       }
       expect(find.byType(BackButton), findsNothing);
     });
+
+    for (final (name, size) in [
+      ('the extended rail', wide),
+      ('the narrow rail', rail),
+      ('a compact window', compact),
+    ]) {
+      testWidgets('on $name every icon button says what it does, and every '
+          'tappable keeps the arrow', (tester) async {
+        windowOf(tester, size);
+        ready();
+        pairedThree();
+        await tester.pumpWidget(const DsyncApp());
+        await step(tester);
+        await expectAffordances(tester);
+      });
+    }
 
     testWidgets('each destination shows its own page, with no back arrow', (
       tester,

@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
@@ -13,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/affordances.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/path_text.dart';
@@ -82,8 +84,12 @@ void main() {
     verifiedAt: null,
   );
 
-  Future<void> pumpPage(WidgetTester tester) =>
-      tester.pumpWidget(const MaterialApp(home: SharedFoldersPage()));
+  Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
+    MaterialApp(
+      theme: appTheme(Brightness.light),
+      home: const SharedFoldersPage(),
+    ),
+  );
 
   /// Taps a widget and waits for the write behind it to land, then settles
   /// so a dialog the tap closed has finished leaving.
@@ -96,6 +102,17 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('every icon button says what it does, and every tappable '
+      'keeps the arrow', (tester) async {
+    app.state.recordDevices([
+      row(desktop, agreedRoots: const ['/home/me/notes']),
+      row(laptop),
+    ]);
+    await pumpPage(tester);
+
+    await expectAffordances(tester);
+  });
 
   testWidgets('one row per folder, naming the devices that may reach it', (
     tester,
