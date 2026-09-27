@@ -183,13 +183,7 @@ class SyncRunController {
       scanTally: null,
       skippedSymlinks: const [],
       unreadablePaths: const [],
-      conflicts: const [],
-      plan: const [],
-      copyBytes: (toDevice: 0, toThisDevice: 0),
-      bytesToTransfer: 0,
-      results: const {},
-      actionChoices: const [],
-      conflictChoices: const [],
+      plan: const SyncRunPlanAbsent(),
       decisionSummary: null,
       progress: null,
       appliedCount: 0,
@@ -266,35 +260,37 @@ class SyncRunController {
         for (final (:line, :isFailure) in skipped)
           if (isFailure) line,
       ],
-      conflicts: [
-        for (final (index, row) in view.conflicts.indexed)
-          SyncRunConflictRow(
-            index: index,
-            path: row.conflict.path,
-            local: _conflictSide(row.conflict.a),
-            remote: _conflictSide(row.conflict.b),
-            offered: row.offered,
-          ),
-      ],
-      plan: [
-        for (final (index, row) in view.plan.indexed)
-          SyncRunPlanRow(
-            index: index,
-            path: row.proposal.path,
-            action: _actionLabel(row.proposal.action),
-            bytes: _bytes(row.proposal.action),
-            group: _group(row.proposal.action),
-            reversal: _reversal(row.proposal),
-          ),
-      ],
-      copyBytes: (
-        toDevice: view.planSummary.bytesToB,
-        toThisDevice: view.planSummary.bytesToA,
+      plan: SyncRunPlanReplaced(
+        conflicts: [
+          for (final (index, row) in view.conflicts.indexed)
+            SyncRunConflictRow(
+              index: index,
+              path: row.conflict.path,
+              local: _conflictSide(row.conflict.a),
+              remote: _conflictSide(row.conflict.b),
+              offered: row.offered,
+            ),
+        ],
+        plan: [
+          for (final (index, row) in view.plan.indexed)
+            SyncRunPlanRow(
+              index: index,
+              path: row.proposal.path,
+              action: _actionLabel(row.proposal.action),
+              bytes: _bytes(row.proposal.action),
+              group: _group(row.proposal.action),
+              reversal: _reversal(row.proposal),
+            ),
+        ],
+        copyBytes: (
+          toDevice: view.planSummary.bytesToB,
+          toThisDevice: view.planSummary.bytesToA,
+        ),
+        bytesToTransfer: view.bytesToTransfer,
+        results: results,
+        actionChoices: [for (final row in view.plan) row.choice],
+        conflictChoices: [for (final row in view.conflicts) row.choice],
       ),
-      bytesToTransfer: view.bytesToTransfer,
-      results: results,
-      actionChoices: [for (final row in view.plan) row.choice],
-      conflictChoices: [for (final row in view.conflicts) row.choice],
       decisionSummary: switch (view.phase) {
         RunReviewing(:final summary) => SyncRunDecisionSummary(
           apply: summary.apply,

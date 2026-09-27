@@ -491,6 +491,59 @@ final class SyncRunResultRow {
   int get hashCode => Object.hash(path, action, error);
 }
 
+/// What one view says about the plan, for [SyncRunViewState.show]. Sealed,
+/// for the reason [SyncRunPhase] is: a whole plan and a handful of changed
+/// rows carry different payloads, and neither can be built with the
+/// other's.
+sealed class SyncRunPlanChange {
+  const SyncRunPlanChange();
+}
+
+/// No plan: the run has none yet, or the core refused it one.
+final class SyncRunPlanAbsent extends SyncRunPlanChange {
+  const SyncRunPlanAbsent();
+}
+
+/// A whole plan, replacing whatever was shown: its [plan] and [conflicts]
+/// rows, every reported outcome by path, the core's choice for each row in
+/// their order, what the core counts the copies moving each way, and the
+/// bytes the kept actions move.
+final class SyncRunPlanReplaced extends SyncRunPlanChange {
+  const SyncRunPlanReplaced({
+    required this.plan,
+    required this.conflicts,
+    required this.results,
+    required this.actionChoices,
+    required this.conflictChoices,
+    required this.copyBytes,
+    required this.bytesToTransfer,
+  });
+
+  final List<SyncRunPlanRow> plan;
+  final List<SyncRunConflictRow> conflicts;
+  final Map<String, SyncRunResultRow> results;
+  final List<ActionChoice> actionChoices;
+  final List<ConflictChoice> conflictChoices;
+  final ({int toDevice, int toThisDevice}) copyBytes;
+  final int bytesToTransfer;
+}
+
+/// The rows of the plan already shown whose choice or outcome changed.
+/// Each entry is that row's whole mutable state — its choice, and its
+/// outcome, `null` for none — by its index into [SyncRunViewState.plan]
+/// ([actions]) or [SyncRunViewState.conflicts] ([conflicts]).
+final class SyncRunPlanRowsChanged extends SyncRunPlanChange {
+  const SyncRunPlanRowsChanged({
+    required this.actions,
+    required this.conflicts,
+  });
+
+  final List<({int index, ActionChoice choice, SyncRunResultRow? result})>
+  actions;
+  final List<({int index, ConflictChoice choice, SyncRunResultRow? result})>
+  conflicts;
+}
+
 /// The apply's progress, verbatim: [completed] of [total] kept actions.
 final class SyncRunProgress {
   const SyncRunProgress({required this.completed, required this.total});
@@ -563,9 +616,11 @@ final class SyncRunEntryNotRun extends SyncRunEntryStatus {
 ///
 /// Holds only what the page displays — see the view-state role in
 /// `app_scope.dart`: strings, ints and sealed cases. Every field is written
-/// by [show], once per view the core sends, and every one is that view's
-/// rendering: the phase, the review and the outcome are the core's
-/// decisions, and nothing here folds one view into the next.
+/// by [show], once per view the core sends: the plan is replaced when a new
+/// one arrives and folded row by row otherwise; everything else is replaced
+/// per view. The phase, the review and the outcome are the core's
+/// decisions — folding a row applies the core's word for it, never one
+/// worked out here.
 ///
 /// **Not every change wakes every listener.** The plan and the per-path
 /// rows each have a listenable of their own ([planChanged], [resultCell],
@@ -587,11 +642,11 @@ class SyncRunViewState extends ChangeNotifier {
   final ValueNotifier<List<SyncRunPlanRow>> _plan = ValueNotifier(const []);
   Map<SyncRunPlanGroup, SyncRunPlanSection> _planSections = _emptyPlanSections;
   int _bytesToTransfer = 0;
-  Map<String, SyncRunResultRow> _results = const {};
+  Map<String, SyncRunResultRow> _results = {};
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
-  List<ActionChoice> _actionChoices = const [];
+  List<ActionChoice> _actionChoices = [];
   final Map<int, ValueNotifier<ActionChoice>> _actionCells = {};
-  List<ConflictChoice> _conflictChoices = const [];
+  List<ConflictChoice> _conflictChoices = [];
   final Map<int, ValueNotifier<ConflictChoice>> _conflictCells = {};
   final ValueNotifier<SyncRunDecisionSummary?> _decisionSummary = ValueNotifier(
     null,
@@ -715,17 +770,15 @@ class SyncRunViewState extends ChangeNotifier {
   /// first one starts.
   int? get currentEntry => _currentEntry;
 
-  /// Renders one view of the run, whole. `SyncRunController` only.
+  /// Renders one view of the run. `SyncRunController` only.
   ///
-  /// Every field is replaced — a resumed attempt's view shows nothing of
-  /// the attempt before it — but a listenable is set only when its value
-  /// changed, and the cells are written rather than dropped: a built row
-  /// may be watching one. A decision cell past the end of this view's rows
-  /// belongs to a row on its way out, and keeps what it showed.
-  ///
-  /// [actionChoices] and [conflictChoices] are the core's, one per row of
-  /// [plan] and [conflicts], in their order; [copyBytes] is what the core
-  /// counts the plan's copies moving each way.
+  /// The plan is replaced when a new one arrives and folded row by row
+  /// otherwise; everything else is replaced per view — a resumed attempt's
+  /// view shows nothing of the attempt before it. A listenable is set only
+  /// when its value changed, and the cells are written rather than
+  /// dropped: a built row may be watching one. A decision cell past the
+  /// end of a new plan's rows belongs to a row on its way out, and keeps
+  /// what it showed.
   void show({
     required SyncRunPhase phase,
     required RunStanding? standing,
@@ -735,13 +788,7 @@ class SyncRunViewState extends ChangeNotifier {
     required SyncRunScanTally? scanTally,
     required List<String> skippedSymlinks,
     required List<String> unreadablePaths,
-    required List<SyncRunConflictRow> conflicts,
-    required List<SyncRunPlanRow> plan,
-    required ({int toDevice, int toThisDevice}) copyBytes,
-    required int bytesToTransfer,
-    required Map<String, SyncRunResultRow> results,
-    required List<ActionChoice> actionChoices,
-    required List<ConflictChoice> conflictChoices,
+    required SyncRunPlanChange plan,
     required SyncRunDecisionSummary? decisionSummary,
     required SyncRunProgress? progress,
     required int appliedCount,
@@ -758,27 +805,94 @@ class SyncRunViewState extends ChangeNotifier {
     _scanTally = scanTally;
     _skippedSymlinks = List.unmodifiable(skippedSymlinks);
     _unreadablePaths = List.unmodifiable(unreadablePaths);
-    _conflicts = List.unmodifiable(conflicts);
-    _bytesToTransfer = bytesToTransfer;
     _progress = progress;
     _appliedCount = appliedCount;
     _failedCount = failedCount;
-    _results = results;
-    for (final MapEntry(key: path, value: cell) in _resultCells.entries) {
-      cell.value = results[path];
-    }
-    _actionChoices = List.unmodifiable(actionChoices);
-    for (final MapEntry(key: index, value: cell) in _actionCells.entries) {
-      if (index < actionChoices.length) cell.value = actionChoices[index];
-    }
-    _conflictChoices = List.unmodifiable(conflictChoices);
-    for (final MapEntry(key: index, value: cell) in _conflictCells.entries) {
-      if (index < conflictChoices.length) cell.value = conflictChoices[index];
-    }
     _decisionSummary.value = decisionSummary;
-    if (!listEquals(plan, _plan.value)) _recordPlan(plan, copyBytes);
+    switch (plan) {
+      case SyncRunPlanAbsent():
+        _clearPlan();
+      case SyncRunPlanReplaced():
+        _replacePlan(plan);
+      case SyncRunPlanRowsChanged():
+        _foldRows(plan);
+    }
     _phase.value = phase;
     notifyListeners();
+  }
+
+  /// No plan: every row, result and choice gone, and every result cell a
+  /// built row watches written empty. [planChanged] fires only if there
+  /// was a plan to take away.
+  void _clearPlan() {
+    _conflicts = const [];
+    _bytesToTransfer = 0;
+    _results = {};
+    for (final cell in _resultCells.values) {
+      cell.value = null;
+    }
+    _actionChoices = [];
+    _conflictChoices = [];
+    _planSections = _emptyPlanSections;
+    if (_plan.value.isNotEmpty) _plan.value = const [];
+  }
+
+  /// A whole plan: its results and choices copied in — the rows fold into
+  /// them in place — and every cell written from them.
+  void _replacePlan(SyncRunPlanReplaced change) {
+    _conflicts = List.unmodifiable(change.conflicts);
+    _bytesToTransfer = change.bytesToTransfer;
+    _results = Map.of(change.results);
+    for (final MapEntry(key: path, value: cell) in _resultCells.entries) {
+      cell.value = _results[path];
+    }
+    _actionChoices = List.of(change.actionChoices);
+    for (final MapEntry(key: index, value: cell) in _actionCells.entries) {
+      if (index < _actionChoices.length) cell.value = _actionChoices[index];
+    }
+    _conflictChoices = List.of(change.conflictChoices);
+    for (final MapEntry(key: index, value: cell) in _conflictCells.entries) {
+      if (index < _conflictChoices.length) {
+        cell.value = _conflictChoices[index];
+      }
+    }
+    // The hub still sends every view whole: an unchanged plan must not be
+    // recorded again, or a 50k-row plan re-renders once a second.
+    if (!listEquals(change.plan, _plan.value)) {
+      _recordPlan(change.plan, change.copyBytes);
+    }
+  }
+
+  /// The changed rows, each replacing its row's choice and outcome and
+  /// writing only that row's cells. An action's outcome is filed under its
+  /// plan row's path, a conflict's under its conflict row's.
+  void _foldRows(SyncRunPlanRowsChanged change) {
+    final plan = _plan.value;
+    for (final (:index, :choice, :result) in change.actions) {
+      final known = index >= 0 && index < plan.length;
+      assert(known, 'no plan row $index to fold');
+      if (!known) continue;
+      _actionChoices[index] = choice;
+      _actionCells[index]?.value = choice;
+      _foldResult(plan[index].path, result);
+    }
+    for (final (:index, :choice, :result) in change.conflicts) {
+      final known = index >= 0 && index < _conflicts.length;
+      assert(known, 'no conflict row $index to fold');
+      if (!known) continue;
+      _conflictChoices[index] = choice;
+      _conflictCells[index]?.value = choice;
+      _foldResult(_conflicts[index].path, result);
+    }
+  }
+
+  void _foldResult(String path, SyncRunResultRow? result) {
+    if (result == null) {
+      _results.remove(path);
+    } else {
+      _results[path] = result;
+    }
+    _resultCells[path]?.value = result;
   }
 
   /// Replaces the plan — one notification, on [planChanged] alone.
