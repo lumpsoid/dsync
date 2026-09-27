@@ -17,7 +17,7 @@ use crate::render::{RunName, RunView};
 /// What one renderer printed: stdout, then stderr.
 fn rendered(view: &RunView, verbosity: Verbosity, events: &[RunEvent]) -> (String, String) {
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let mut renderer = HumanRenderer::new(&mut out, &mut err, verbosity, view, clock());
+    let mut renderer = HumanRenderer::new(&mut out, &mut err, verbosity, view.clone(), clock());
     for event in events {
         renderer.render(event);
     }
@@ -494,7 +494,7 @@ fn verbose_shows_everything_normal_does() {
 
 fn preamble(view: &RunView, verbosity: Verbosity) -> String {
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    HumanRenderer::new(&mut out, &mut err, verbosity, view, clock()).preamble();
+    HumanRenderer::new(&mut out, &mut err, verbosity, view.clone(), clock()).preamble();
     String::from_utf8(out).unwrap()
 }
 
@@ -539,7 +539,8 @@ fn a_dialled_peer_s_certificate_notes_sit_under_its_side() {
     };
     let view = fixtures::view();
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let mut renderer = HumanRenderer::new(&mut out, &mut err, Verbosity::Normal, &view, clock());
+    let mut renderer =
+        HumanRenderer::new(&mut out, &mut err, Verbosity::Normal, view.clone(), clock());
     renderer.peer_contacts(&[peer]);
     renderer.render(&replicas(Some(120), Some(120), false));
     let text = String::from_utf8(out).unwrap();
@@ -559,4 +560,132 @@ fn a_dialled_peer_s_certificate_notes_sit_under_its_side() {
 
 fn out_of_header() -> String {
     out(Verbosity::Normal, &[replicas(Some(120), Some(120), false)])
+}
+
+#[test]
+fn entering_an_entry_headers_it_only_when_there_is_more_than_one() {
+    let one = {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut renderer = HumanRenderer::new(
+            &mut out,
+            &mut err,
+            Verbosity::Normal,
+            fixtures::view(),
+            clock(),
+        );
+        renderer.enter_entry(0, 1, fixtures::view());
+        String::from_utf8(out).unwrap()
+    };
+    assert_eq!(one, "", "a single entry gets no heading");
+
+    let many = {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut renderer = HumanRenderer::new(
+            &mut out,
+            &mut err,
+            Verbosity::Normal,
+            fixtures::view(),
+            clock(),
+        );
+        renderer.enter_entry(1, 3, fixtures::view());
+        String::from_utf8(out).unwrap()
+    };
+    assert_eq!(many, "[2/3] /home/me/notes ↔ box:notes\n");
+}
+
+#[test]
+fn a_connect_failure_is_reported_as_the_entry_s_only_word() {
+    use dsync_core::{ConnectError, ConnectFailure};
+
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut renderer = HumanRenderer::new(
+        &mut out,
+        &mut err,
+        Verbosity::Normal,
+        fixtures::view(),
+        clock(),
+    );
+    renderer.connect_failed(&ConnectError {
+        side: Side::A,
+        failure: ConnectFailure::NoIdentity,
+    });
+    assert_eq!(String::from_utf8(out).unwrap(), "");
+    let err = String::from_utf8(err).unwrap();
+    assert!(
+        err.starts_with("error: Cannot reach replica A: peer:// locations need"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_closing_list_is_silent_for_one_entry_and_names_each_outcome_for_several() {
+    use dsync_core::{EntryFailure, EntryOutcome, EntryReport, SkipReason};
+
+    let report = |outcome| EntryReport {
+        outcome,
+        metrics: None,
+        planned: 0,
+        finished: 0,
+    };
+    let synced = report(EntryOutcome::Synced(RunSummary::default()));
+    let skipped = report(EntryOutcome::Skipped(SkipReason::Missing(
+        MissingReplicaRoot {
+            side: Side::B,
+            root_path: "photos".into(),
+            archived_files: 4,
+        },
+    )));
+    let not_run = report(EntryOutcome::NotRun);
+    let failed = report(EntryOutcome::Failed(EntryFailure::Dropped));
+
+    let one_entry = {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut renderer = HumanRenderer::new(
+            &mut out,
+            &mut err,
+            Verbosity::Normal,
+            fixtures::view(),
+            clock(),
+        );
+        renderer.entry_outcomes(&[fixtures::view()], std::slice::from_ref(&synced));
+        String::from_utf8(out).unwrap()
+    };
+    assert_eq!(one_entry, "", "a single entry gets no closing list");
+
+    let views = [
+        fixtures::view(),
+        fixtures::view(),
+        fixtures::view(),
+        fixtures::view(),
+    ];
+    let entries = [synced, skipped, failed, not_run];
+    let many_entries = {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut renderer = HumanRenderer::new(
+            &mut out,
+            &mut err,
+            Verbosity::Normal,
+            fixtures::view(),
+            clock(),
+        );
+        renderer.entry_outcomes(&views, &entries);
+        String::from_utf8(out).unwrap()
+    };
+    assert!(many_entries.starts_with("entries:\n"), "{many_entries}");
+    assert!(
+        many_entries.contains("[1/4]") && many_entries.contains("synced"),
+        "{many_entries}"
+    );
+    assert!(
+        many_entries.contains("[2/4]") && many_entries.contains("skipped: The folder photos"),
+        "{many_entries}"
+    );
+    assert!(
+        many_entries.contains("[3/4]") && many_entries.contains("failed: dropped"),
+        "{many_entries}"
+    );
+    assert!(
+        many_entries.contains("[4/4]") && many_entries.contains("not run"),
+        "{many_entries}"
+    );
 }

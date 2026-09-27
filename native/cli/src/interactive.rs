@@ -68,26 +68,37 @@ const DIRECTION: &[Answer] = &[
 pub struct InteractiveDecider<R, W> {
     input: Lines<R>,
     output: W,
-    /// Set once the plan the prompts are about has been printed, so the
-    /// legend never lands above it.
-    plan_shown: watch::Receiver<bool>,
+    /// How many plans have been put on screen so far: bumped once per
+    /// entry's plan event, across every entry of a profile run. Compared
+    /// against `reviews`, never against a plain "shown" flag - a profile's
+    /// second entry reuses this decider, and a flag once set `true` for
+    /// entry 1 would let entry 2's prompt through before entry 2's plan is
+    /// on screen.
+    plan_shown: watch::Receiver<usize>,
+    /// How many times [`InteractiveDecider::review`] has been called: one
+    /// call per entry that reaches a decider, in the same order its plan
+    /// was shown.
+    reviews: usize,
 }
 
 impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
-    pub fn new(input: R, output: W, plan_shown: watch::Receiver<bool>) -> Self {
+    pub fn new(input: R, output: W, plan_shown: watch::Receiver<usize>) -> Self {
         InteractiveDecider {
             input: input.lines(),
             output,
             plan_shown,
+            reviews: 0,
         }
     }
 
     async fn review(&mut self, plan: &Plan) -> Vec<Action> {
+        self.reviews += 1;
+        let target = self.reviews;
         let mut kept = Vec::new();
         if plan.actions.is_empty() && plan.conflicts.is_empty() {
             return kept;
         }
-        let _ = self.plan_shown.wait_for(|shown| *shown).await;
+        let _ = self.plan_shown.wait_for(|shown| *shown >= target).await;
         let _ = writeln!(self.output, "{LEGEND}");
         let mut accept_all = false;
         for conflict in &plan.conflicts {

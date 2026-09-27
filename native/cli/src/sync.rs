@@ -8,11 +8,11 @@ use std::time::SystemTime;
 
 use dsync_core::{
     BatchDecider, Connector, DeviceIdentityStore, DryRunDecider, PairedDeviceStore, PeerDialer,
-    ProfileStore, Run, RunEvent, StateDir, interface_addresses,
+    ProfileEvent, ProfileRun, ProfileStop, ProfileStore, RunEvent, StateDir, interface_addresses,
 };
 use dsync_domain::{
-    AdHocTarget, Command, DirRule, EffectiveOptions, Flags, Location, Mode, ProfileName,
-    ReplicaLocation, RunFlags, Side, StateDirChoice, SyncTarget, Tuning,
+    AdHocTarget, Command, DirRule, EffectiveOptions, Flags, Location, Mode, ReplicaLocation,
+    RunFlags, Side, StateDirChoice, SyncTarget, Tuning,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -48,7 +48,7 @@ pub async fn sync(
     }
     let state =
         StateDir::resolve(&StateDirChoice::Rule(DirRule::HOST), facts).map_err(Failure::error)?;
-    let (name, options, addresses) = resolve(&target, &flags, &state, host)?;
+    let (name, entries, addresses) = resolve(&target, &flags, &state, host)?;
 
     let tuning = Tuning {
         apply_in_flight: flags
@@ -56,10 +56,13 @@ pub async fn sync(
             .map_or(Tuning::DEFAULT.apply_in_flight, usize::from),
         ..Tuning::DEFAULT
     };
-    let view = RunView::of(name, &options, &addresses, &state);
+    let views: Vec<RunView> = entries
+        .iter()
+        .map(|options| RunView::of(name.clone(), options, &addresses, &state))
+        .collect();
     let mut connector = Connector::new(state.clone(), facts.home().map(str::to_owned), tuning)
         .with_local_addresses(addresses);
-    if dials_a_peer(&options)
+    if entries.iter().any(dials_a_peer)
         && let Some(identity) = DeviceIdentityStore::new(&state)
             .load()
             .map_err(Failure::error)?
@@ -76,79 +79,119 @@ pub async fn sync(
         offset: host.utc_offset,
     };
     let mut renderer = if flags.json {
-        Renderer::Json(JsonRenderer::new(io::stdout(), &view))
+        Renderer::Json(JsonRenderer::new(io::stdout(), views[0].clone()))
     } else {
-        let mut human =
-            HumanRenderer::new(io::stdout(), io::stderr(), flags.verbosity, &view, clock);
+        let mut human = HumanRenderer::new(
+            io::stdout(),
+            io::stderr(),
+            flags.verbosity,
+            views[0].clone(),
+            clock,
+        );
         human.preamble();
         Renderer::Human(human)
     };
 
-    let connected = connector.connect(&options).await.map_err(|error| {
-        Failure::error(format!(
-            "Cannot reach replica {}: {}",
-            crate::render::words::side(error.side),
-            error.failure
-        ))
-    })?;
-    renderer.peer_contacts(&connected.peers);
-    let (a, b) = (connected.a, connected.b);
-
     let signals = os_signals()
         .map_err(|error| Failure::error(format!("cannot trap stop signals: {error}")))?;
-    let stop = StopSequence::watch(signals, STOP_DEADLINE, exit_process);
-    let (events, received) = mpsc::channel(EVENT_BUFFER);
-    let run = Run::new(events, state, tuning);
+    let stop_sequence = StopSequence::watch(signals, STOP_DEADLINE, exit_process);
+    let profile_stop = ProfileStop::new();
     let stopping = {
-        let stopper = run.stopper();
-        let requested = stop.requested();
+        let stopper = profile_stop.clone();
+        let requested = stop_sequence.requested();
         tokio::spawn(async move {
             requested.await;
             stopper.stop();
         })
     };
-    let (plan_shown, shown) = watch::channel(false);
+    let (events, received) = mpsc::channel(EVENT_BUFFER);
+    let run = ProfileRun::new(
+        events,
+        state.clone(),
+        tuning,
+        facts.home().map(str::to_owned),
+        profile_stop,
+    );
+    let (plan_shown, shown) = watch::channel(0usize);
     let executing = async {
         match flags.mode {
-            Mode::DryRun => run.execute(a, b, &options, &mut DryRunDecider).await,
-            Mode::Batch => run.execute(a, b, &options, &mut BatchDecider).await,
+            Mode::DryRun => {
+                run.execute(
+                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    &entries,
+                    &mut DryRunDecider,
+                )
+                .await
+            }
+            Mode::Batch => {
+                run.execute(
+                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    &entries,
+                    &mut BatchDecider,
+                )
+                .await
+            }
             Mode::Interactive => {
                 let mut decider = InteractiveDecider::new(
                     tokio::io::BufReader::new(tokio::io::stdin()),
                     io::stdout(),
                     shown,
                 );
-                run.execute(a, b, &options, &mut decider).await
+                run.execute(
+                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    &entries,
+                    &mut decider,
+                )
+                .await
             }
         }
     };
-    let (report, applied) = tokio::join!(executing, show(received, &mut renderer, plan_shown));
+    let (result, ()) = tokio::join!(executing, show(received, &mut renderer, &views, plan_shown));
     stopping.abort();
 
-    let interrupted_by = stop.interrupted_by();
+    let report = match result {
+        Err(overlap) => {
+            stop_sequence.release();
+            let message = match &name {
+                RunName::Profile(profile) => format!("profile \"{profile}\": {overlap}"),
+                RunName::AdHoc => overlap.to_string(),
+            };
+            return Err(Failure::error(message));
+        }
+        Ok(report) => report,
+    };
+    renderer.entry_outcomes(&views, &report.entries);
+    let interrupted_by = stop_sequence.interrupted_by();
     let mut err = io::stderr().lock();
     if let Some(signal) = interrupted_by {
         let _ = writeln!(
             err,
             "{}",
-            interrupt_note(signal, applied.planned, applied.finished)
+            interrupt_note(signal, report.planned(), report.finished())
         );
     }
     if flags.timings {
-        let _ = write!(err, "{}", report.metrics.render());
+        for (view, entry) in views.iter().zip(&report.entries) {
+            if let Some(metrics) = &entry.metrics {
+                if views.len() > 1 {
+                    let _ = writeln!(err, "{} ↔ {}:", view.a.location, view.b.location);
+                }
+                let _ = write!(err, "{}", metrics.render());
+            }
+        }
     }
-    stop.release();
-    Ok(report.outcome(interrupted_by).exit_code())
+    stop_sequence.release();
+    Ok(report.exit_code(interrupted_by))
 }
 
-/// The run's name, options and this host's addresses (fetched only when a
-/// location's locality depends on them).
+/// The run's name, every entry's options and this host's addresses
+/// (fetched only when a location's locality depends on them).
 fn resolve(
     target: &SyncTarget,
     flags: &RunFlags,
     state: &StateDir,
     host: &Host,
-) -> Result<(RunName, EffectiveOptions, Vec<String>), Failure> {
+) -> Result<(RunName, Vec<EffectiveOptions>, Vec<String>), Failure> {
     let facts = &host.facts;
     match target {
         SyncTarget::Profile(name) => {
@@ -159,19 +202,20 @@ fn resolve(
             let entries = profile
                 .options(name, flags, facts)
                 .map_err(|error| Failure::usage(error.to_string()))?;
-            let options = only_entry(name, entries)?;
-            let consults = Side::BOTH.iter().any(|&side| {
-                options
-                    .replica(side)
-                    .to_location()
-                    .consults_local_addresses()
+            let consults = entries.iter().any(|options| {
+                Side::BOTH.iter().any(|&side| {
+                    options
+                        .replica(side)
+                        .to_location()
+                        .consults_local_addresses()
+                })
             });
             let addresses = if consults {
                 local_addresses()?
             } else {
                 Vec::new()
             };
-            Ok((RunName::Profile(name.clone()), options, addresses))
+            Ok((RunName::Profile(name.clone()), entries, addresses))
         }
         SyncTarget::AdHoc(pair) => {
             let addresses = if pair.consults_local_addresses() {
@@ -182,22 +226,8 @@ fn resolve(
             let (first, second) = pinned(pair, state)?;
             let options = EffectiveOptions::for_ad_hoc(first, second, flags, facts, &addresses)
                 .map_err(|error| Failure::usage(error.to_string()))?;
-            Ok((RunName::AdHoc, options, addresses))
+            Ok((RunName::AdHoc, vec![options], addresses))
         }
-    }
-}
-
-/// A profile's one entry. Interim, until the run sequences a profile's
-/// entries: a profile of several is refused.
-pub(crate) fn only_entry(
-    name: &ProfileName,
-    mut entries: Vec<EffectiveOptions>,
-) -> Result<EffectiveOptions, Failure> {
-    match entries.len() {
-        1 => Ok(entries.remove(0)),
-        count => Err(Failure::usage(format!(
-            "profile \"{name}\" has {count} entries; multi-entry profiles are not supported yet"
-        ))),
     }
 }
 
@@ -241,33 +271,36 @@ fn local_addresses() -> Result<Vec<String>, Failure> {
     Ok(addresses.iter().map(ToString::to_string).collect())
 }
 
-/// How far the apply got, for the interrupt note.
-#[derive(Clone, Copy, Debug, Default)]
-struct Applied {
-    /// Actions the decider approved.
-    planned: usize,
-    /// Actions that reported an outcome.
-    finished: usize,
-}
-
-/// Renders every event until the run ends, telling the interactive decider
-/// once the plan is on screen.
+/// Renders every entry's events as the profile run produces them, counting
+/// each `Plan` event so the interactive decider can wait for its own -
+/// entry 2's prompt must never precede entry 2's plan, which a plain
+/// "shown" flag left set by entry 1 could let through.
 async fn show<O: Write, E: Write>(
-    mut received: mpsc::Receiver<RunEvent>,
-    renderer: &mut Renderer<'_, O, E>,
-    plan_shown: watch::Sender<bool>,
-) -> Applied {
-    let mut applied = Applied::default();
+    mut received: mpsc::Receiver<ProfileEvent>,
+    renderer: &mut Renderer<O, E>,
+    views: &[RunView],
+    plan_shown: watch::Sender<usize>,
+) {
+    let total = views.len();
+    let mut plans_shown = 0;
     while let Some(event) = received.recv().await {
-        renderer.render(&event);
         match event {
-            RunEvent::Plan { .. } => {
-                let _ = plan_shown.send(true);
+            ProfileEvent::Entries { list } => renderer.entries_listed(&list),
+            ProfileEvent::EntryConnecting { entry } => {
+                renderer.enter_entry(entry, total, views[entry].clone());
             }
-            RunEvent::Action(_) => applied.planned += 1,
-            RunEvent::Result { .. } => applied.finished += 1,
-            _ => {}
+            ProfileEvent::EntryConnected { peers, .. } => renderer.peer_contacts(&peers),
+            ProfileEvent::EntryNotConnected { failure, .. } => {
+                renderer.connect_failed(&failure);
+            }
+            ProfileEvent::Entry { event, .. } => {
+                renderer.render(&event);
+                if matches!(event, RunEvent::Plan { .. }) {
+                    plans_shown += 1;
+                    let _ = plan_shown.send(plans_shown);
+                }
+            }
+            ProfileEvent::EntryFinished { .. } => {}
         }
     }
-    applied
 }

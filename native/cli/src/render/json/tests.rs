@@ -16,7 +16,7 @@ use crate::render::fixtures::{
 
 fn lines(view: &RunView, events: &[RunEvent]) -> Vec<Value> {
     let mut out = Vec::new();
-    let mut renderer = JsonRenderer::new(&mut out, view);
+    let mut renderer = JsonRenderer::new(&mut out, view.clone());
     for event in events {
         renderer.render(event);
     }
@@ -61,7 +61,8 @@ fn replicas_carry_each_side_location_locality_archive_and_last_commit() {
         line,
         json!({
             "type": "replicas",
-            "profileId": PROFILE_ID,
+            "entry": 0,
+            "entryId": PROFILE_ID,
             "a": {
                 "location": {"path": "/home/me/notes"},
                 "locality": "inProcess",
@@ -125,6 +126,7 @@ fn plan_actions_and_conflicts_are_shaped_like_their_own_lines() {
         line,
         json!({
             "type": "plan",
+            "entry": 0,
             "actions": [{"path": "f", "actionType": "copyAtoB", "bytes": 5}],
             "conflicts": [{"path": "c", "onA": "created", "onAReason": "created"}],
         })
@@ -162,7 +164,7 @@ fn each_skipped_reason_is_its_own_type() {
         });
         assert_eq!(
             line,
-            json!({"type": kind, "path": "x", "onA": false, "detail": "why"})
+            json!({"type": kind, "entry": 0, "path": "x", "onA": false, "detail": "why"})
         );
     }
     let line = one(RunEvent::Skipped {
@@ -185,6 +187,7 @@ fn a_conflict_carries_each_side_status_and_reason() {
         line,
         json!({
             "type": "conflict",
+            "entry": 0,
             "path": "c",
             "onA": "unchanged",
             "onAReason": "hashMatched",
@@ -210,14 +213,14 @@ fn a_conflict_over_an_uncommitted_write_is_interrupted_and_an_absent_side_omits_
 fn action_progress_result_summary_and_error_lines() {
     assert_eq!(
         one(RunEvent::Action(copy("f"))),
-        json!({"type": "action", "path": "f", "actionType": "copyAtoB", "bytes": 5})
+        json!({"type": "action", "entry": 0, "path": "f", "actionType": "copyAtoB", "bytes": 5})
     );
     assert_eq!(
         one(RunEvent::Progress {
             completed: 1,
             total: 3
         }),
-        json!({"type": "progress", "completed": 1, "total": 3})
+        json!({"type": "progress", "entry": 0, "completed": 1, "total": 3})
     );
     assert_eq!(
         one(RunEvent::Result {
@@ -227,7 +230,13 @@ fn action_progress_result_summary_and_error_lines() {
             },
             outcome: Ok(()),
         }),
-        json!({"type": "result", "path": "d", "actionType": "deleteOnB", "succeeded": true})
+        json!({
+            "type": "result",
+            "entry": 0,
+            "path": "d",
+            "actionType": "deleteOnB",
+            "succeeded": true,
+        })
     );
     assert_eq!(
         one(RunEvent::Result {
@@ -236,6 +245,7 @@ fn action_progress_result_summary_and_error_lines() {
         }),
         json!({
             "type": "result",
+            "entry": 0,
             "path": "f",
             "actionType": "copyAtoB",
             "succeeded": false,
@@ -249,6 +259,7 @@ fn action_progress_result_summary_and_error_lines() {
         }),
         json!({
             "type": "result",
+            "entry": 0,
             "path": "f",
             "actionType": "copyAtoB",
             "succeeded": false,
@@ -265,6 +276,7 @@ fn action_progress_result_summary_and_error_lines() {
         })),
         json!({
             "type": "summary",
+            "entry": 0,
             "appliedCount": 1,
             "failedCount": 4,
             "conflictCount": 3,
@@ -280,6 +292,7 @@ fn action_progress_result_summary_and_error_lines() {
         })),
         json!({
             "type": "error",
+            "entry": 0,
             "message": "replica a: hello failed: no scan exchange is open at that phase on this replica",
         })
     );
@@ -295,6 +308,7 @@ fn a_mass_delete_reports_each_side_count_share_and_sample() {
         line,
         json!({
             "type": "massDelete",
+            "entry": 0,
             "allowed": false,
             "a": {
                 "deletes": 11,
@@ -341,4 +355,71 @@ fn a_whole_run_is_one_decodable_line_per_event_in_order() {
         .map(|line| line["type"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(kinds, ["replicas", "scanTally", "plan", "summary"]);
+}
+
+#[test]
+fn entries_are_listed_by_index_kind_and_typed_sides() {
+    use dsync_core::ListedEntry;
+    use dsync_domain::{EntryId, RootKind};
+
+    let list = vec![
+        ListedEntry {
+            entry_id: EntryId::parse(PROFILE_ID).unwrap(),
+            kind: RootKind::Folder,
+            a: "~/notes".to_owned(),
+            b: "peer://phone/notes".to_owned(),
+        },
+        ListedEntry {
+            entry_id: EntryId::parse("fedcba9876543210fedcba9876543210").unwrap(),
+            kind: RootKind::File,
+            a: "~/notes.md".to_owned(),
+            b: "peer://phone/notes.md".to_owned(),
+        },
+    ];
+    let mut out = Vec::new();
+    let mut renderer = JsonRenderer::new(&mut out, fixtures::view());
+    renderer.entries_listed(&list);
+    let line: Value = serde_json::from_str(std::str::from_utf8(&out).unwrap().trim()).unwrap();
+    assert_eq!(
+        line,
+        json!({
+            "type": "entries",
+            "entries": [
+                {"index": 0, "entryId": PROFILE_ID, "kind": "folder", "a": "~/notes", "b": "peer://phone/notes"},
+                {"index": 1, "entryId": "fedcba9876543210fedcba9876543210", "kind": "file", "a": "~/notes.md", "b": "peer://phone/notes.md"},
+            ],
+        })
+    );
+}
+
+#[test]
+fn entering_an_entry_moves_every_later_event_s_entry_field() {
+    let mut out = Vec::new();
+    let mut renderer = JsonRenderer::new(&mut out, fixtures::view());
+    renderer.enter_entry(2, fixtures::view());
+    renderer.render(&RunEvent::Summary(RunSummary::default()));
+    let line: Value = serde_json::from_str(std::str::from_utf8(&out).unwrap().trim()).unwrap();
+    assert_eq!(line["entry"], 2);
+}
+
+#[test]
+fn a_connect_failure_is_an_error_line_naming_its_entry() {
+    use dsync_core::{ConnectError, ConnectFailure};
+
+    let mut out = Vec::new();
+    let mut renderer = JsonRenderer::new(&mut out, fixtures::view());
+    renderer.enter_entry(1, fixtures::view());
+    renderer.connect_failed(&ConnectError {
+        side: Side::B,
+        failure: ConnectFailure::NoIdentity,
+    });
+    let line: Value = serde_json::from_str(std::str::from_utf8(&out).unwrap().trim()).unwrap();
+    assert_eq!(line["type"], "error");
+    assert_eq!(line["entry"], 1);
+    assert!(
+        line["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("peer:// locations need")),
+        "{line}"
+    );
 }

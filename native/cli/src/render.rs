@@ -13,7 +13,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use dsync_core::{PeerContact, RunEvent, SshLaunch, StateDir};
+use dsync_core::{
+    ConnectError, EntryReport, ListedEntry, PeerContact, RunEvent, SshLaunch, StateDir,
+};
 use dsync_domain::{
     EffectiveOptions, EntryId, Locality, Location, ProfileName, ReplicaLocation, RuleSet, Side,
 };
@@ -162,12 +164,12 @@ pub struct Wallclock {
 }
 
 /// The run's renderer, as the flags chose it.
-pub enum Renderer<'v, O: Write, E: Write> {
-    Human(HumanRenderer<'v, O, E>),
-    Json(JsonRenderer<'v, O>),
+pub enum Renderer<O: Write, E: Write> {
+    Human(HumanRenderer<O, E>),
+    Json(JsonRenderer<O>),
 }
 
-impl<O: Write, E: Write> Renderer<'_, O, E> {
+impl<O: Write, E: Write> Renderer<O, E> {
     pub fn render(&mut self, event: &RunEvent) {
         match self {
             Renderer::Human(human) => human.render(event),
@@ -179,6 +181,41 @@ impl<O: Write, E: Write> Renderer<'_, O, E> {
     pub fn peer_contacts(&mut self, peers: &[PeerContact]) {
         if let Renderer::Human(human) = self {
             human.peer_contacts(peers);
+        }
+    }
+
+    /// A profile's entries, before the first is connected: `--json`'s
+    /// leading `entries` line. Human mode says it per entry instead, as
+    /// each one starts ([`Renderer::enter_entry`]).
+    pub fn entries_listed(&mut self, list: &[ListedEntry]) {
+        if let Renderer::Json(json) = self {
+            json.entries_listed(list);
+        }
+    }
+
+    /// Moves to `index`'s events, of `total`: human mode's `[i/total]`
+    /// heading, when there is more than one; either way, the view every
+    /// event after this one is read against.
+    pub fn enter_entry(&mut self, index: usize, total: usize, view: RunView) {
+        match self {
+            Renderer::Human(human) => human.enter_entry(index, total, view),
+            Renderer::Json(json) => json.enter_entry(index, view),
+        }
+    }
+
+    /// An entry's side could not be connected; its run never started.
+    pub fn connect_failed(&mut self, error: &ConnectError) {
+        match self {
+            Renderer::Human(human) => human.connect_failed(error),
+            Renderer::Json(json) => json.connect_failed(error),
+        }
+    }
+
+    /// Human mode's closing list, one line per entry, when a profile ran
+    /// more than one.
+    pub fn entry_outcomes(&mut self, views: &[RunView], entries: &[EntryReport]) {
+        if let Renderer::Human(human) = self {
+            human.entry_outcomes(views, entries);
         }
     }
 }

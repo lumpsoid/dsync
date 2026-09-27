@@ -30,6 +30,39 @@ fn pair() -> Site {
     site
 }
 
+/// Entry 2 reuses the same decider entry 1 already answered; a stale
+/// "shown" flag would let its prompt print before its own plan is on
+/// screen (plan D9).
+#[test]
+fn entry_2s_plan_prints_before_its_prompt_in_a_two_entry_profile() {
+    let site = Site::new();
+    let (a1, b1) = (site.root("i1a"), site.root("i1b"));
+    let (a2, b2) = (site.root("i2a"), site.root("i2b"));
+    site.write("i1a/one.txt", "1");
+    site.write("i2a/two.txt", "2");
+    site.profile(
+        "two",
+        &format!(
+            "[[entries]]\na = \"{a1}\"\nb = \"{b1}\"\n[[entries]]\na = \"{a2}\"\nb = \"{b2}\"\n"
+        ),
+    );
+    let mut pty = Pty::open();
+    pty.type_line("y");
+    pty.type_line("y");
+    let mut sync = site.spawn_with(&["sync", "two"], pty.stdin(), None);
+    let (code, _) = sync.exit(DEADLINE);
+    assert_eq!(code, Some(0));
+    let stdout = sync.stdout();
+    let heading = stdout.find("[2/2]").expect("entry 2's heading");
+    let after = &stdout[heading..];
+    let plan = after.find("plan:").expect("entry 2's plan");
+    let legend = after.find("Interactive review").expect("entry 2's legend");
+    assert!(
+        plan < legend,
+        "entry 2's prompt came before its plan:\n{stdout}"
+    );
+}
+
 #[test]
 fn accepting_the_one_proposed_action_copies_it_and_exits_0() {
     let site = pair();

@@ -9,6 +9,7 @@ mod agent_stdio;
 mod archive;
 mod commands;
 mod dirs;
+mod entries;
 #[cfg(unix)]
 mod folder_in_use;
 #[cfg(unix)]

@@ -56,3 +56,24 @@ fn a_run_prints_its_report_on_stderr_after_the_summary() {
         "{finished:#?}"
     );
 }
+
+/// A two-entry profile's report cannot merge - `RunMetrics` is one run's -
+/// so each entry gets its own report, under its own heading.
+#[test]
+fn a_two_entry_profile_prints_one_timings_report_per_entry() {
+    let site = Site::new();
+    let (a1, b1) = (site.root("t1a"), site.root("t1b"));
+    let (a2, b2) = (site.root("t2a"), site.root("t2b"));
+    site.write("t1a/one.txt", "1");
+    site.write("t2a/two.txt", "2");
+    site.profile(
+        "two",
+        &format!(
+            "[[entries]]\na = \"{a1}\"\nb = \"{b1}\"\n[[entries]]\na = \"{a2}\"\nb = \"{b2}\"\n"
+        ),
+    );
+    let finished = site.run(&["sync", "two", "--batch", "--timings"]);
+    finished.exits(0);
+    let reports: Vec<_> = finished.stderr.match_indices("run: ").collect();
+    assert_eq!(reports.len(), 2, "{}", finished.stderr);
+}

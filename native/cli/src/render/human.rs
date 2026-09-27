@@ -7,7 +7,10 @@ use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
 
-use dsync_core::{LockError, PeerContact, ReplicaError, RunError, RunEvent};
+use dsync_core::{
+    ConnectError, EntryFailure, EntryOutcome, EntryReport, LockError, PeerContact, ReplicaError,
+    RunError, RunEvent, SkipReason,
+};
 use dsync_domain::{
     Action, Conflict, ReplicaInfo, RunSummary, ScanTally, Side, SkippedPath, SkippedReason, Status,
     Verbosity,
@@ -18,25 +21,25 @@ use time::macros::format_description;
 use super::words;
 use super::{RunName, RunView, Wallclock};
 
-pub struct HumanRenderer<'v, O: Write, E: Write> {
+pub struct HumanRenderer<O: Write, E: Write> {
     out: O,
     err: E,
     verbosity: Verbosity,
-    view: &'v RunView,
+    view: RunView,
     clock: Wallclock,
     /// Lines under each side's header row: SPEC §4.4's certificate expiry
     /// warnings for a `peer://` side, known once it is dialled.
     notes: Vec<(Side, String)>,
 }
 
-impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
+impl<O: Write, E: Write> HumanRenderer<O, E> {
     pub fn new(
         out: O,
         err: E,
         verbosity: Verbosity,
-        view: &'v RunView,
+        view: RunView,
         clock: Wallclock,
-    ) -> HumanRenderer<'v, O, E> {
+    ) -> HumanRenderer<O, E> {
         HumanRenderer {
             out,
             err,
@@ -57,6 +60,56 @@ impl<'v, O: Write, E: Write> HumanRenderer<'v, O, E> {
                     .map(|expiry| (peer.side, expiry.to_string()))
             })
             .collect();
+    }
+
+    /// Moves on to entry `index` of `total`: a `[index/total]` heading
+    /// naming its two sides, when the profile has more than one - a single
+    /// entry (a one-entry profile, or an ad-hoc run) looks exactly as
+    /// before. Resets the peer notes: they are the new entry's to learn.
+    pub fn enter_entry(&mut self, index: usize, total: usize, view: RunView) {
+        if total > 1 {
+            let _ = writeln!(
+                self.out,
+                "[{}/{total}] {} ↔ {}",
+                index + 1,
+                view.a.location,
+                view.b.location
+            );
+        }
+        self.view = view;
+        self.notes = Vec::new();
+    }
+
+    /// An entry's side could not be connected: its run never started, so
+    /// this is the only word of it. Worded as a lone ad-hoc run's connect
+    /// failure always was, so that case is unchanged.
+    pub fn connect_failed(&mut self, error: &ConnectError) {
+        let _ = writeln!(
+            self.err,
+            "error: Cannot reach replica {}: {}",
+            words::side(error.side),
+            error.failure
+        );
+    }
+
+    /// One line per entry, after every entry has run: only for a profile
+    /// of more than one, so a one-entry run's output gains nothing here.
+    pub fn entry_outcomes(&mut self, views: &[RunView], entries: &[EntryReport]) {
+        if entries.len() <= 1 {
+            return;
+        }
+        let _ = writeln!(self.out, "entries:");
+        for (index, (view, entry)) in views.iter().zip(entries).enumerate() {
+            let _ = writeln!(
+                self.out,
+                "  [{}/{}] {} ↔ {}  {}",
+                index + 1,
+                entries.len(),
+                view.a.location,
+                view.b.location,
+                outcome_text(&entry.outcome)
+            );
+        }
     }
 
     /// `--verbose` only: the merged rules, and how each side is reached.
@@ -411,6 +464,20 @@ pub fn summary_line(summary: &RunSummary) -> String {
         "summary: applied={} skipped={} conflicts={} failed={} unreadable={}",
         summary.applied, summary.skipped, summary.conflicts, summary.failed, summary.unreadable
     )
+}
+
+/// The closing list's one-word (or one-line) verdict on an entry.
+fn outcome_text(outcome: &EntryOutcome) -> String {
+    match outcome {
+        EntryOutcome::Synced(_) => "synced".to_owned(),
+        EntryOutcome::Skipped(SkipReason::Missing(missing)) => format!("skipped: {missing}"),
+        EntryOutcome::Failed(EntryFailure::Connect(error)) => format!("failed: {error}"),
+        EntryOutcome::Failed(EntryFailure::Run(error)) => format!("failed: {error}"),
+        EntryOutcome::Failed(EntryFailure::Dropped) => {
+            "failed: dropped by a second stop".to_owned()
+        }
+        EntryOutcome::NotRun => "not run".to_owned(),
+    }
 }
 
 #[cfg(test)]

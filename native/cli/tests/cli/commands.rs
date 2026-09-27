@@ -148,31 +148,6 @@ fn a_profile_runs_by_name_and_status_exits_1_until_it_is_synced() {
     );
 }
 
-/// Interim, until `sync` runs a profile's entries in turn.
-#[test]
-fn a_two_entry_profile_is_refused_for_now_and_touches_nothing() {
-    let site = Site::new();
-    let [a, b, c, d] = ["a", "b", "c", "d"].map(|leaf| site.root(leaf));
-    site.write("a/kept.txt", "kept");
-    site.profile(
-        "two",
-        &format!("[[entries]]\na = \"{a}\"\nb = \"{b}\"\n[[entries]]\na = \"{c}\"\nb = \"{d}\"\n"),
-    );
-    let refused = site.run(&["sync", "two", "--batch"]);
-    refused.exits(3);
-    assert!(
-        refused
-            .stderr
-            .contains("multi-entry profiles are not supported yet"),
-        "{refused:#?}"
-    );
-    assert!(!site.path("b/kept.txt").exists());
-    // Positive control: its first entry alone runs.
-    site.profile("one", &format!("[[entries]]\na = \"{a}\"\nb = \"{b}\"\n"));
-    site.run(&["sync", "one", "--batch"]).exits(0);
-    assert_eq!(site.read("b/kept.txt"), "kept");
-}
-
 #[test]
 fn every_refused_agent_argument_exits_3() {
     let site = Site::new();

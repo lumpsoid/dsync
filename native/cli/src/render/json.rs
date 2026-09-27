@@ -6,7 +6,7 @@
 
 use std::io::Write;
 
-use dsync_core::RunEvent;
+use dsync_core::{ConnectError, ListedEntry, RunEvent};
 use dsync_domain::{Action, Conflict, Location, MassDelete, ReplicaInfo, ScanTally, Side, Status};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
@@ -14,18 +14,61 @@ use time::format_description::well_known::Rfc3339;
 
 use super::{RunView, words};
 
-pub struct JsonRenderer<'v, O: Write> {
+pub struct JsonRenderer<O: Write> {
     out: O,
-    view: &'v RunView,
+    view: RunView,
+    /// The entry the events rendered from here on belong to, set by
+    /// [`JsonRenderer::enter_entry`]; `0` before the first.
+    entry: usize,
 }
 
-impl<'v, O: Write> JsonRenderer<'v, O> {
-    pub fn new(out: O, view: &'v RunView) -> JsonRenderer<'v, O> {
-        JsonRenderer { out, view }
+impl<O: Write> JsonRenderer<O> {
+    pub fn new(out: O, view: RunView) -> JsonRenderer<O> {
+        JsonRenderer {
+            out,
+            view,
+            entry: 0,
+        }
+    }
+
+    /// The profile's entries, before the first connects: `[{index,
+    /// entryId, kind, a, b}]`, in run order.
+    pub fn entries_listed(&mut self, list: &[ListedEntry]) {
+        let entries: Vec<Value> = list
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                json!({
+                    "index": index,
+                    "entryId": entry.entry_id.as_str(),
+                    "kind": entry.kind.key(),
+                    "a": entry.a,
+                    "b": entry.b,
+                })
+            })
+            .collect();
+        let line = json!({"type": "entries", "entries": entries});
+        let _ = writeln!(self.out, "{line}");
+    }
+
+    /// Moves on to entry `index`: every event from here on carries it.
+    pub fn enter_entry(&mut self, index: usize, view: RunView) {
+        self.entry = index;
+        self.view = view;
+    }
+
+    /// An entry's side could not be connected: its run never started, so
+    /// this is the only line of it.
+    pub fn connect_failed(&mut self, error: &ConnectError) {
+        let line = json!({"type": "error", "entry": self.entry, "message": error.to_string()});
+        let _ = writeln!(self.out, "{line}");
     }
 
     pub fn render(&mut self, event: &RunEvent) {
-        let line = self.line(event);
+        let mut line = self.line(event);
+        if let Value::Object(fields) = &mut line {
+            fields.insert("entry".into(), json!(self.entry));
+        }
         let _ = writeln!(self.out, "{line}");
     }
 
@@ -37,7 +80,7 @@ impl<'v, O: Write> JsonRenderer<'v, O> {
                 last_run_unfinished,
             } => json!({
                 "type": "replicas",
-                "profileId": self.view.entry_id.as_str(),
+                "entryId": self.view.entry_id.as_str(),
                 "a": self.replica(Side::A, a),
                 "b": self.replica(Side::B, b),
                 "firstSync": a.last_commit.is_none() || b.last_commit.is_none(),

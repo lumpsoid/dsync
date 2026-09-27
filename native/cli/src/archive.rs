@@ -16,7 +16,6 @@ use crate::args::{ArchiveClearArgs, ArchiveCommand, ClearTarget, ListArgs, State
 use crate::failure::Failure;
 use crate::host::Host;
 use crate::render::rfc3339;
-use crate::sync::only_entry;
 
 /// Runs `dsync archive <command>`, returning its exit code.
 pub fn archive(command: ArchiveCommand, host: &Host) -> Result<u8, Failure> {
@@ -79,7 +78,7 @@ fn archive_line(archive: &StoredArchive) -> String {
 fn archive_json(archive: &StoredArchive) -> Value {
     json!({
         "type": "archive",
-        "profileId": archive.entry_id.as_str(),
+        "entryId": archive.entry_id.as_str(),
         "side": archive.side.key(),
         "logPath": archive.log_path.to_string_lossy(),
         "rootPath": archive.root_path,
@@ -99,10 +98,10 @@ fn clear(args: &ArchiveClearArgs, host: &Host) -> Result<u8, Failure> {
     let doomed: Vec<StoredArchive> = match &target {
         ClearTarget::All => archives,
         ClearTarget::Profile(named) => {
-            let id = entry_id(named, host)?;
+            let ids = entry_ids(named, host)?;
             archives
                 .into_iter()
-                .filter(|archive| Some(&archive.entry_id) == id.as_ref())
+                .filter(|archive| ids.contains(&archive.entry_id))
                 .collect()
         }
     };
@@ -141,15 +140,15 @@ fn clear(args: &ArchiveClearArgs, host: &Host) -> Result<u8, Failure> {
     println!("freed: {freed} byte(s)");
     println!(
         "The next run over {} rescans and rehashes from scratch. No replica file was touched.",
-        subject(&doomed)
+        subject(&target, &doomed)
     );
     Ok(0)
 }
 
-/// The profile `named` names: a profile of that name, else an id as
-/// `archive list` prints it. `None` when it is neither, which has no
-/// archive by definition.
-fn entry_id(named: &str, host: &Host) -> Result<Option<EntryId>, Failure> {
+/// The profile `named` names: every current entry's id, in profile order;
+/// else the one id `named` itself is, as `archive list` prints it. Empty
+/// when it is neither, which has no archive by definition.
+fn entry_ids(named: &str, host: &Host) -> Result<Vec<EntryId>, Failure> {
     if let Ok(name) = ProfileName::parse(named) {
         let facts = &host.facts;
         let store = ProfileStore::resolve(&DirRule::HOST, facts).map_err(Failure::error)?;
@@ -160,22 +159,32 @@ fn entry_id(named: &str, host: &Host) -> Result<Option<EntryId>, Failure> {
                 let entries = profile
                     .options(&name, &flags, facts)
                     .map_err(Failure::error)?;
-                return only_entry(&name, entries).map(|options| Some(options.entry_id));
+                return Ok(entries
+                    .into_iter()
+                    .map(|options| options.entry_id)
+                    .collect());
             }
             Err(ProfileStoreError::NotFound { .. }) => {}
             Err(error) => return Err(Failure::error(error)),
         }
     }
-    Ok(EntryId::parse(named).ok())
+    Ok(EntryId::parse(named).into_iter().collect())
 }
 
-/// What the next run is: over the one profile cleared, or over each of
-/// the profiles `--all` turned out to cover.
-fn subject(doomed: &[StoredArchive]) -> String {
-    let profiles: BTreeSet<&EntryId> = doomed.iter().map(|archive| &archive.entry_id).collect();
-    match profiles.len() {
-        1 => "this profile".to_owned(),
-        count => format!("each of these {count} profiles"),
+/// What the next run is: over the one profile cleared - whether it named
+/// one entry or several, it is still one profile - or over each of the
+/// profiles `--all` turned out to cover.
+fn subject(target: &ClearTarget, doomed: &[StoredArchive]) -> String {
+    match target {
+        ClearTarget::Profile(_) => "this profile".to_owned(),
+        ClearTarget::All => {
+            let profiles: BTreeSet<&EntryId> =
+                doomed.iter().map(|archive| &archive.entry_id).collect();
+            match profiles.len() {
+                1 => "this profile".to_owned(),
+                count => format!("each of these {count} profiles"),
+            }
+        }
     }
 }
 
@@ -220,7 +229,7 @@ mod tests {
     fn a_json_line_writes_an_unreadable_root_as_null() {
         let line = archive_json(&archive(P1, Side::B, None));
         assert_eq!(line["type"], "archive");
-        assert_eq!(line["profileId"], P1);
+        assert_eq!(line["entryId"], P1);
         assert_eq!(line["side"], "b");
         assert_eq!(line["logPath"], format!("/state/{P1}-b.jsonl"));
         assert_eq!(line["sizeBytes"], 42);
@@ -230,8 +239,18 @@ mod tests {
     #[test]
     fn the_next_run_names_one_profile_or_counts_them() {
         let one = [archive(P1, Side::A, None), archive(P1, Side::B, None)];
-        assert_eq!(subject(&one), "this profile");
+        assert_eq!(subject(&ClearTarget::All, &one), "this profile");
         let two = [archive(P1, Side::A, None), archive(P2, Side::A, None)];
-        assert_eq!(subject(&two), "each of these 2 profiles");
+        assert_eq!(subject(&ClearTarget::All, &two), "each of these 2 profiles");
+    }
+
+    #[test]
+    fn clearing_a_named_profile_is_always_this_profile_even_across_several_entries() {
+        let entries = [archive(P1, Side::A, None), archive(P2, Side::A, None)];
+        assert_eq!(
+            subject(&ClearTarget::Profile("two".to_owned()), &entries),
+            "this profile",
+            "two entries of one named profile are still one profile"
+        );
     }
 }

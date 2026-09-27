@@ -16,7 +16,7 @@ fn copy(at: &str, from: Side, bytes: u64) -> Action {
 
 /// What the decider kept, and what it printed, answering `script`.
 async fn review(plan: &Plan, script: &str) -> (Vec<Action>, String) {
-    let (_shown, plan_shown) = watch::channel(true);
+    let (_shown, plan_shown) = watch::channel(1);
     let mut output = Vec::new();
     let mut decider = InteractiveDecider::new(script.as_bytes(), &mut output, plan_shown);
     let kept = with_deadline("the review", decider.decide(plan)).await;
@@ -29,6 +29,38 @@ fn actions(actions: Vec<Action>) -> Plan {
         actions: proposed(actions),
         conflicts: vec![],
     }
+}
+
+/// A profile's second entry reuses this decider; its plan is a fresh
+/// `RunEvent::Plan` the renderer has not shown yet, so its review must wait
+/// for its own count, not the one entry 1 already satisfied.
+#[tokio::test]
+async fn a_later_review_waits_for_its_own_plan_not_an_earlier_ones() {
+    use std::time::Duration;
+
+    let (shown, plan_shown) = watch::channel(1);
+    let mut output = Vec::new();
+    let mut decider = InteractiveDecider::new(&b"y\ny\n"[..], &mut output, plan_shown);
+
+    // Entry 1: the channel already reads 1, so this proceeds at once.
+    let first = actions(vec![copy("a", Side::A, 1)]);
+    let kept = with_deadline("entry 1", decider.decide(&first)).await;
+    assert_eq!(kept, [copy("a", Side::A, 1)]);
+
+    // Entry 2: nothing has bumped the count past 1 yet - a stale `true`
+    // flag would answer this at once; the count must not.
+    let second = actions(vec![copy("b", Side::A, 1)]);
+    let waiting = decider.decide(&second);
+    tokio::pin!(waiting);
+    let premature = tokio::time::timeout(Duration::from_millis(50), &mut waiting).await;
+    assert!(
+        premature.is_err(),
+        "entry 2 answered before its plan was shown"
+    );
+
+    shown.send(2).unwrap();
+    let kept = with_deadline("entry 2", waiting).await;
+    assert_eq!(kept, [copy("b", Side::A, 1)]);
 }
 
 #[tokio::test]
@@ -196,7 +228,7 @@ async fn batch_keeps_every_action_and_resolves_no_conflict() {
 
 /// The delete guard's answer to `script`, and what was printed.
 async fn confirm(script: &str) -> (bool, String) {
-    let (_shown, plan_shown) = watch::channel(true);
+    let (_shown, plan_shown) = watch::channel(1);
     let mut output = Vec::new();
     let mut decider = InteractiveDecider::new(script.as_bytes(), &mut output, plan_shown);
     let verdict = mass_delete(Side::B, 12, 12);

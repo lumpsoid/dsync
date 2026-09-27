@@ -45,7 +45,7 @@ fn list_json_is_one_object_per_archive_then_a_total() {
         .collect();
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0]["type"], "archive");
-    assert_eq!(lines[0]["profileId"], P1);
+    assert_eq!(lines[0]["entryId"], P1);
     assert_eq!(lines[0]["side"], "a");
     assert_eq!(lines[0]["rootPath"], "/home/me/notes");
     assert_eq!(lines[0]["logPath"], log.to_str().unwrap());
@@ -63,7 +63,7 @@ fn a_log_with_no_readable_header_still_lists_with_a_null_root() {
     let listed = site.run(&["archive", "list", "--json"]);
     listed.exits(0);
     let first: Value = serde_json::from_str(listed.stdout.lines().next().unwrap()).unwrap();
-    assert_eq!(first["profileId"], P2);
+    assert_eq!(first["entryId"], P2);
     assert!(first["rootPath"].is_null(), "{first}");
 }
 
@@ -101,6 +101,43 @@ fn clear_finds_a_profile_by_its_name() {
             .iter()
             .any(|name| name.starts_with(id) && name.ends_with(".jsonl")),
         "{left:?}"
+    );
+    assert!(other.exists(), "cleared another profile's archive");
+}
+
+#[test]
+fn clear_finds_every_entry_of_a_two_entry_profile() {
+    let site = Site::new();
+    let (a0, b0, a1, b1) = (
+        site.root("a0"),
+        site.root("b0"),
+        site.root("a1"),
+        site.root("b1"),
+    );
+    site.profile(
+        "two",
+        &format!(
+            "[[entries]]\na = \"{a0}\"\nb = \"{b0}\"\n[[entries]]\na = \"{a1}\"\nb = \"{b1}\"\n"
+        ),
+    );
+    site.write("a0/one.txt", "1");
+    site.write("a1/two.txt", "2");
+    site.run(&["sync", "two", "--batch"]).exits(0);
+    let before = crate::support::archives(&site.state_dir());
+    assert_eq!(before.len(), 4, "one archive per side per entry");
+    let other = seed_log(&site.state_dir(), P2, "a", "/n", 1);
+
+    let cleared = site.run(&["archive", "clear", "two"]);
+    cleared.exits(0);
+    assert!(
+        cleared.stdout.contains("The next run over this profile"),
+        "two entries of one named profile are still one profile: {cleared:#?}"
+    );
+    let left = site.listing(&site.state_dir());
+    assert!(
+        left.iter()
+            .all(|name| !name.ends_with(".jsonl") || name.starts_with(P2)),
+        "an entry's archive survived: {left:?}"
     );
     assert!(other.exists(), "cleared another profile's archive");
 }
