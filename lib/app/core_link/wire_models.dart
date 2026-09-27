@@ -1,10 +1,12 @@
 import '../rust/bindings/bindings.dart' as wire;
 import 'models/action_choice.dart';
 import 'models/action_result.dart';
+import 'models/action_row_update.dart';
 import 'models/archive_info.dart';
 import 'models/conflict_choice.dart';
 import 'models/conflict_info.dart';
 import 'models/conflict_row.dart';
+import 'models/conflict_row_update.dart';
 import 'models/decision_summary.dart';
 import 'models/entry_issue.dart';
 import 'models/entry_run.dart';
@@ -31,6 +33,8 @@ import 'models/replica_side.dart';
 import 'models/root_kind.dart';
 import 'models/run_intent.dart';
 import 'models/run_phase.dart';
+import 'models/run_plan.dart';
+import 'models/run_plan_update.dart';
 import 'models/run_standing.dart';
 import 'models/run_summary_info.dart';
 import 'models/run_target.dart';
@@ -279,38 +283,7 @@ RunView runView(wire.RunView view) => RunView(
     null => null,
   },
   skipped: [for (final skipped in view.skipped) _skipped(skipped)],
-  conflicts: [
-    for (final row in view.conflicts)
-      ConflictRow(
-        conflict: _conflict(row.conflict),
-        offered: [for (final choice in row.offered) _conflictChoice(choice)],
-        choice: _conflictChoice(row.choice),
-        outcome: _outcome(row.outcome),
-      ),
-  ],
-  plan: [
-    for (final row in view.plan)
-      PlanRow(
-        proposal: PlanProposal(
-          _action(row.proposal.action),
-          reverseBytes: switch (row.proposal.reverseBytes) {
-            final bytes? => _n(bytes),
-            null => null,
-          },
-        ),
-        choice: switch (row.choice) {
-          wire.ActionChoiceView.proposed => ActionChoice.proposed,
-          wire.ActionChoiceView.reversed => ActionChoice.reversed,
-          wire.ActionChoiceView.skipped => ActionChoice.skipped,
-        },
-        outcome: _outcome(row.outcome),
-      ),
-  ],
-  bytesToTransfer: _n(view.bytesToTransfer),
-  planSummary: (
-    bytesToA: _n(view.planSummary.bytesToA),
-    bytesToB: _n(view.planSummary.bytesToB),
-  ),
+  plan: _planUpdate(view.plan),
   progress: switch (view.progress) {
     final p? => (completed: _n(p.completed), total: _n(p.total)),
     null => null,
@@ -319,6 +292,69 @@ RunView runView(wire.RunView view) => RunView(
   failed: _n(view.failed),
   timings: view.timings,
 );
+
+RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
+  wire.PlanUpdateViewAbsent() => const RunPlanAbsent(),
+  wire.PlanUpdateViewNew(value: final plan) => RunPlanNew(
+    RunPlan(
+      actions: [
+        for (final row in plan.actions)
+          PlanRow(
+            proposal: PlanProposal(
+              _action(row.proposal.action),
+              reverseBytes: switch (row.proposal.reverseBytes) {
+                final bytes? => _n(bytes),
+                null => null,
+              },
+            ),
+            choice: _actionChoice(row.choice),
+            outcome: _outcome(row.outcome),
+          ),
+      ],
+      conflicts: [
+        for (final row in plan.conflicts)
+          ConflictRow(
+            conflict: _conflict(row.conflict),
+            offered: [
+              for (final choice in row.offered) _conflictChoice(choice),
+            ],
+            choice: _conflictChoice(row.choice),
+            outcome: _outcome(row.outcome),
+          ),
+      ],
+      bytesToTransfer: _n(plan.bytesToTransfer),
+      summary: (
+        bytesToA: _n(plan.summary.bytesToA),
+        bytesToB: _n(plan.summary.bytesToB),
+      ),
+    ),
+  ),
+  wire.PlanUpdateViewSame(:final actions, :final conflicts) => RunPlanSame(
+    actions: [
+      for (final row in actions)
+        ActionRowUpdate(
+          index: row.index,
+          choice: _actionChoice(row.choice),
+          outcome: _outcome(row.outcome),
+        ),
+    ],
+    conflicts: [
+      for (final row in conflicts)
+        ConflictRowUpdate(
+          index: row.index,
+          choice: _conflictChoice(row.choice),
+          outcome: _outcome(row.outcome),
+        ),
+    ],
+  ),
+  _ => throw StateError('unknown plan update: $update'),
+};
+
+ActionChoice _actionChoice(wire.ActionChoiceView choice) => switch (choice) {
+  wire.ActionChoiceView.proposed => ActionChoice.proposed,
+  wire.ActionChoiceView.reversed => ActionChoice.reversed,
+  wire.ActionChoiceView.skipped => ActionChoice.skipped,
+};
 
 ActionResult? _outcome(wire.ResultView? result) => switch (result) {
   final result? => ActionResult(

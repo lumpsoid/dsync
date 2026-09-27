@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:dsync/app/core_link/core_channel.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
@@ -30,6 +32,9 @@ import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 /// Sessions are driven by the test: a session starter is recorded and
 /// answered, the request's id is its session ([sessionOf]), and the test
 /// feeds its snapshots with [emitRun], [emitServe] and [emitPairing].
+/// A run view is described whole ([WholeRunView]); [emitRun] sends its
+/// plan as the update the head needs, the way the hub does, and
+/// [emitWireRun] sends a wire view exactly as given.
 final class FakeHub implements CoreChannel {
   /// Every request sent, in order.
   final List<wire.CoreRequest> requests = [];
@@ -87,9 +92,26 @@ final class FakeHub implements CoreChannel {
   @override
   Stream<wire.PairingSnapshot> get pairingSnapshots => _pairingSnapshots.stream;
 
-  /// Delivers [view] to the run in [session], as the hub's snapshot;
-  /// [last] marks the session's final one.
-  void emitRun(int session, wire.RunView view, {required bool last}) =>
+  /// The plan each run session's head last received whole or updated.
+  final Map<int, wire.PlanView> _plans = {};
+
+  /// Delivers [view] to the run in [session], as the hub's snapshot, its
+  /// plan sent as [planUpdate] makes it of the one this session last
+  /// emitted; [last] marks the session's final one.
+  void emitRun(int session, WholeRunView view, {required bool last}) {
+    final update = planUpdate(_plans[session], view.plan);
+    switch (update) {
+      case wire.PlanUpdateViewAbsent():
+        _plans.remove(session);
+      default:
+        _plans[session] = view.plan;
+    }
+    emitWireRun(session, view.withPlan(update), last: last);
+  }
+
+  /// Delivers [view] to the run in [session] exactly as given, with no
+  /// plan remembered or diffed; [last] marks the session's final one.
+  void emitWireRun(int session, wire.RunView view, {required bool last}) =>
       _runSnapshots.add(
         wire.RunSnapshot(session: _id(session), view: view, last: last),
       );
@@ -120,6 +142,79 @@ final class FakeHub implements CoreChannel {
     _replies.add(wire.CoreReply(id: request.id, result: result));
   }
 }
+
+/// A run view as a test describes it: every field the hub sends, with
+/// its plan whole. [FakeHub.emitRun] sends the plan as an update.
+final class WholeRunView {
+  const WholeRunView({required this._view, required this.plan});
+
+  /// Every field but the plan; its own `plan` is never read.
+  final wire.RunView _view;
+
+  /// The plan whole; no actions and no conflicts is no plan.
+  final wire.PlanView plan;
+
+  /// The wire view carrying [update] as its plan.
+  wire.RunView withPlan(wire.PlanUpdateView update) =>
+      _view.copyWith(plan: update);
+}
+
+/// What the hub sends for [plan] to a head that last received [held]:
+/// `Absent` for no plan rows, `New` for a plan whose fixed facts (its
+/// proposals, conflicts and offers, and its sizes) are not [held]'s, and
+/// otherwise `Same` with exactly the rows whose choice or outcome
+/// changed.
+///
+/// Unlike the hub, an identical plan after a resume goes `Same`, and an
+/// empty plan goes `Absent` rather than `New` with no rows.
+wire.PlanUpdateView planUpdate(wire.PlanView? held, wire.PlanView plan) {
+  if (plan.actions.isEmpty && plan.conflicts.isEmpty) {
+    return const wire.PlanUpdateViewAbsent();
+  }
+  if (held == null || !_sameFacts(held, plan)) {
+    return wire.PlanUpdateViewNew(value: plan);
+  }
+  return wire.PlanUpdateViewSame(
+    actions: [
+      for (final (index, row) in plan.actions.indexed)
+        if (row.choice != held.actions[index].choice ||
+            row.outcome != held.actions[index].outcome)
+          wire.ActionRowUpdateView(
+            index: index,
+            choice: row.choice,
+            outcome: row.outcome,
+          ),
+    ],
+    conflicts: [
+      for (final (index, row) in plan.conflicts.indexed)
+        if (row.choice != held.conflicts[index].choice ||
+            row.outcome != held.conflicts[index].outcome)
+          wire.ConflictRowUpdateView(
+            index: index,
+            choice: row.choice,
+            outcome: row.outcome,
+          ),
+    ],
+  );
+}
+
+/// Whether [a] and [b] are one plan: the same rows, sizes and offers,
+/// whatever their choices and outcomes.
+bool _sameFacts(wire.PlanView a, wire.PlanView b) =>
+    a.bytesToTransfer == b.bytesToTransfer &&
+    a.summary == b.summary &&
+    listEquals(
+      [for (final row in a.actions) row.proposal],
+      [for (final row in b.actions) row.proposal],
+    ) &&
+    listEquals(
+      [for (final row in a.conflicts) row.conflict],
+      [for (final row in b.conflicts) row.conflict],
+    ) &&
+    [
+      for (final (index, row) in a.conflicts.indexed)
+        listEquals(row.offered, b.conflicts[index].offered),
+    ].every((same) => same);
 
 /// A test's reply to commands of kind [C].
 final class _Script<C extends wire.CoreCommand> {

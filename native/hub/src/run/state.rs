@@ -26,7 +26,7 @@ use crate::signals::RunIntent;
 use crate::throttle::Urgency;
 use crate::views::{
     ActionChoiceView, ConflictChoiceView, DecisionSummaryView, EntryIssueView, EntryRunView,
-    EntryStatusView, MassDeleteView, PlanSummaryView, ProgressView, ReplicasView, ResultView,
+    EntryStatusView, MassDeleteView, PlanUpdateView, ProgressView, ReplicasView, ResultView,
     RunPhaseView, RunStandingView, RunView, SkippedView, SummaryView, TalliesView,
 };
 
@@ -816,7 +816,6 @@ impl RunState {
     /// once, the choices and the outcomes, shared or copied here cheaply.
     pub(crate) fn snapshot(&self) -> Snapshot {
         let entry = &self.entry;
-        let plan = entry.plan.as_deref();
         let view = RunView {
             dry_run: self.dry_run,
             phase: self.phase_view(),
@@ -840,16 +839,7 @@ impl RunState {
                 .iter()
                 .map(|(side, skipped)| SkippedView::of(*side, skipped))
                 .collect(),
-            conflicts: Vec::new(),
-            plan: Vec::new(),
-            bytes_to_transfer: plan.map_or(0, PlanRows::bytes_to_transfer),
-            plan_summary: plan.map_or(
-                PlanSummaryView {
-                    bytes_to_a: 0,
-                    bytes_to_b: 0,
-                },
-                PlanRows::summary,
-            ),
+            plan: PlanUpdateView::Absent,
             progress: entry.progress.map(|(completed, total)| ProgressView {
                 completed: count(completed),
                 total: count(total),
@@ -922,8 +912,7 @@ impl Snapshot {
             outcomes,
         }) = &self.rows
         {
-            view.plan = plan.plan_rows(choices, outcomes);
-            view.conflicts = plan.conflict_rows(choices, outcomes);
+            view.plan = PlanUpdateView::New(plan.view(choices, outcomes));
         }
         view
     }
@@ -948,8 +937,8 @@ mod tests {
     use crate::signals::RunIntent;
     use crate::throttle::Urgency;
     use crate::views::{
-        ActionChoiceView, ConflictChoiceView, EntryStatusView, HistoryView, RunPhaseView,
-        RunStandingView, RunView, SideView,
+        ActionChoiceView, ConflictChoiceView, EntryStatusView, HistoryView, PlanUpdateView,
+        RunPhaseView, RunStandingView, RunView, SideView,
     };
 
     const PEER: &str = "Phone";
@@ -1153,13 +1142,18 @@ mod tests {
         assert_eq!((total.apply, total.skipped, total.left_open), (2, 0, 1));
         assert!(
             view.plan
+                .new_plan()
+                .actions
                 .iter()
                 .all(|row| row.choice == ActionChoiceView::Proposed)
         );
         // Only the reversible row carries a reverse.
-        assert_eq!(view.plan[0].proposal.reverse_bytes, Some(7));
-        assert_eq!(view.plan[1].proposal.reverse_bytes, None);
-        let conflict = &view.conflicts[0];
+        assert_eq!(
+            view.plan.new_plan().actions[0].proposal.reverse_bytes,
+            Some(7)
+        );
+        assert_eq!(view.plan.new_plan().actions[1].proposal.reverse_bytes, None);
+        let conflict = &view.plan.new_plan().conflicts[0];
         assert_eq!(conflict.choice, ConflictChoiceView::Unresolved);
         assert_eq!(
             conflict.offered,
@@ -1221,7 +1215,7 @@ mod tests {
             "one version only"
         );
         assert_eq!(
-            state.view().conflicts[0].offered,
+            state.view().plan.new_plan().conflicts[0].offered,
             [ConflictChoiceView::Unresolved, ConflictChoiceView::KeepB]
         );
         assert_eq!(
@@ -1233,9 +1227,18 @@ mod tests {
             Steer::Changed
         );
         let view = state.view();
-        assert_eq!(view.plan[0].choice, ActionChoiceView::Reversed);
-        assert_eq!(view.plan[1].choice, ActionChoiceView::Proposed);
-        assert_eq!(view.conflicts[0].choice, ConflictChoiceView::KeepB);
+        assert_eq!(
+            view.plan.new_plan().actions[0].choice,
+            ActionChoiceView::Reversed
+        );
+        assert_eq!(
+            view.plan.new_plan().actions[1].choice,
+            ActionChoiceView::Proposed
+        );
+        assert_eq!(
+            view.plan.new_plan().conflicts[0].choice,
+            ConflictChoiceView::KeepB
+        );
     }
 
     #[test]
@@ -1297,8 +1300,14 @@ mod tests {
         let choices = choices_of(state.steer(RunIntent::AcceptAll));
         assert_eq!(choices.actions(&plan, PEER), [copy("r"), copy("p")]);
         let view = state.view();
-        assert_eq!(view.plan[1].choice, ActionChoiceView::Proposed);
-        assert_eq!(view.conflicts[0].choice, ConflictChoiceView::Unresolved);
+        assert_eq!(
+            view.plan.new_plan().actions[1].choice,
+            ActionChoiceView::Proposed
+        );
+        assert_eq!(
+            view.plan.new_plan().conflicts[0].choice,
+            ConflictChoiceView::Unresolved
+        );
     }
 
     #[test]
@@ -1389,9 +1398,9 @@ mod tests {
             Urgency::Routine
         );
         let view: RunView = state.view();
-        assert!(view.plan[0].outcome.is_some());
-        assert!(view.plan[1].outcome.is_none());
-        assert!(view.conflicts[0].outcome.is_some());
+        assert!(view.plan.new_plan().actions[0].outcome.is_some());
+        assert!(view.plan.new_plan().actions[1].outcome.is_none());
+        assert!(view.plan.new_plan().conflicts[0].outcome.is_some());
         assert_eq!((view.applied, view.failed), (2, 0));
         let progress = view.progress.unwrap_or_else(|| panic!("progress"));
         assert_eq!((progress.completed, progress.total), (2, 2));
@@ -1458,7 +1467,7 @@ mod tests {
         assert_eq!(state.steer(RunIntent::Foreground), Steer::Restart);
         let view = state.view();
         assert!(matches!(view.phase, RunPhaseView::Connecting));
-        assert!(view.plan.is_empty() && view.connected_at_ms.is_none());
+        assert!(matches!(view.plan, PlanUpdateView::Absent) && view.connected_at_ms.is_none());
         assert_eq!(
             state.steer(RunIntent::Resume),
             Steer::Ignored,
@@ -1624,10 +1633,11 @@ mod tests {
             ],
             conflicts: Vec::new(),
         };
-        let summary = reviewing(&plan).view().plan_summary;
+        let view = reviewing(&plan).view();
+        let summary = &view.plan.new_plan().summary;
         assert_eq!((summary.bytes_to_a, summary.bytes_to_b), (7, 2));
-        let before = RunState::new(false).view().plan_summary;
-        assert_eq!((before.bytes_to_a, before.bytes_to_b), (0, 0));
+        let before = RunState::new(false).view().plan;
+        assert!(matches!(before, PlanUpdateView::Absent), "no plan yet");
     }
 
     #[test]
@@ -1641,8 +1651,14 @@ mod tests {
             panic!("a reviewed plan has rows");
         };
         assert!(Arc::ptr_eq(&was.plan, &now.plan));
-        assert_eq!(before.view().plan[1].choice, ActionChoiceView::Proposed);
-        assert_eq!(after.view().plan[1].choice, ActionChoiceView::Skipped);
+        assert_eq!(
+            before.view().plan.new_plan().actions[1].choice,
+            ActionChoiceView::Proposed
+        );
+        assert_eq!(
+            after.view().plan.new_plan().actions[1].choice,
+            ActionChoiceView::Skipped
+        );
     }
 
     #[test]
@@ -1656,9 +1672,9 @@ mod tests {
             outcome: Ok(()),
         });
         let after = state.snapshot();
-        assert!(before.view().plan[1].outcome.is_none());
+        assert!(before.view().plan.new_plan().actions[1].outcome.is_none());
         let view = after.view();
-        assert!(view.plan[1].outcome.is_some());
+        assert!(view.plan.new_plan().actions[1].outcome.is_some());
         assert_eq!(view.applied, 1);
     }
 
@@ -1905,7 +1921,7 @@ mod tests {
         let view = state.view();
         assert!(matches!(view.phase, RunPhaseView::Connecting));
         assert_eq!(view.current, None);
-        assert!(view.plan.is_empty() && view.timings.is_none());
+        assert!(matches!(view.plan, PlanUpdateView::Absent) && view.timings.is_none());
         assert_eq!(view.entries[1].local_root, "/e1/a", "the roots stay listed");
         assert_eq!(
             statuses(&state),
@@ -1934,7 +1950,7 @@ mod tests {
         finish(&mut state, 0, synced(1));
         start(&mut state, 1);
         assert!(
-            state.view().plan.is_empty(),
+            matches!(state.view().plan, PlanUpdateView::Absent),
             "the first entry's rows are gone"
         );
         let second = plan();

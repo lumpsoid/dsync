@@ -196,6 +196,52 @@ void main() {
   group('what follows the latest view', () {
     setUp(() => harness.start());
 
+    test('a view naming changed rows lands each on its own cell, the '
+        'others as they were', () async {
+      await harness.show(
+        runView(
+          phase: applying,
+          plan: [planRow(copyTo('a.txt')), planRow(copyTo('b.txt'))],
+          conflicts: [conflictRow('c.txt', offered: offersAll)],
+        ),
+      );
+      final state = harness.state;
+      final a = state.plan[0], b = state.plan[1];
+      final c = state.conflicts.single;
+
+      harness.hub.emitWireRun(
+        harness.session,
+        runView(phase: applying).withPlan(
+          wire.PlanUpdateViewSame(
+            actions: [
+              wire.ActionRowUpdateView(
+                index: 1,
+                choice: wire.ActionChoiceView.skipped,
+                outcome: outcome(copyTo('b.txt'), failure: 'disk full'),
+              ),
+            ],
+            conflicts: const [
+              wire.ConflictRowUpdateView(
+                index: 0,
+                choice: wire.ConflictChoiceView.keepA,
+                outcome: null,
+              ),
+            ],
+          ),
+        ),
+        last: false,
+      );
+      await pump();
+
+      expect(state.actionDecisionCell(b).value, ActionChoice.skipped);
+      expect(state.resultCell('b.txt').value?.error, 'disk full');
+      expect(state.conflictDecisionCell(c).value, ConflictChoice.keepA);
+      // Positive control's other half: the row not named keeps its state.
+      expect(state.actionDecisionCell(a).value, ActionChoice.proposed);
+      expect(state.resultCell('a.txt').value, isNull);
+      expect(state.plan.map((row) => row.path), ['a.txt', 'b.txt']);
+    });
+
     test(
       'the screen is held for exactly as long as the view is live',
       () async {

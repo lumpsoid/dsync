@@ -9,7 +9,7 @@ use dsync_domain::{Conflict, Plan, RelPath, Side};
 
 use crate::views::{
     ActionChoiceView, ConflictChoiceView, ConflictRowView, ConflictView, PlanRowView,
-    PlanSummaryView, ProposalView, ResultView,
+    PlanSummaryView, PlanView, ProposalView, ResultView,
 };
 
 use super::state::Choices;
@@ -98,6 +98,16 @@ impl PlanRows {
         self.conflicts
             .get(at)
             .is_some_and(|row| row.offered.contains(&choice))
+    }
+
+    /// The plan whole, its rows with `choices` and `outcomes`.
+    pub(super) fn view(&self, choices: &Choices, outcomes: &Outcomes) -> PlanView {
+        PlanView {
+            actions: self.plan_rows(choices, outcomes),
+            conflicts: self.conflict_rows(choices, outcomes),
+            bytes_to_transfer: self.bytes_to_transfer(),
+            summary: self.summary(),
+        }
     }
 
     /// The action rows, with `choices` and `outcomes`.

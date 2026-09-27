@@ -7,10 +7,10 @@ use dsync_domain::{DIR_LEAF, Location, Platform, ProfileName, ReplicaLocation};
 use hub::signals::{CoreCommand, ReplyResult, RunIntent, RunTarget};
 use hub::views::{
     ActionChoiceView, ActionView, ConflictChoiceView, EntryStatusView, RunPhaseView,
-    RunStandingView, RunView,
+    RunStandingView,
 };
 
-use crate::support::{Head, one_entry, read, write};
+use crate::support::{FoldedRunView, Head, one_entry, read, write};
 
 /// Saves `name` as a local-to-local profile over `a` and `b` under the
 /// head's temp dir, as the CLI would write one.
@@ -46,7 +46,7 @@ fn steer(session: u64, intent: RunIntent) -> CoreCommand {
 }
 
 /// The phase's name, for asserting the order phases came in.
-fn stage(view: &RunView) -> &'static str {
+fn stage(view: &FoldedRunView) -> &'static str {
     match view.phase {
         RunPhaseView::Connecting => "connecting",
         RunPhaseView::Scanning => "scanning",
@@ -65,7 +65,7 @@ fn stage(view: &RunView) -> &'static str {
 }
 
 /// The phases `views` went through, each once per stretch.
-fn stages(views: &[RunView]) -> Vec<&'static str> {
+fn stages(views: &[FoldedRunView]) -> Vec<&'static str> {
     let mut stages: Vec<&'static str> = Vec::new();
     for view in views {
         let stage = stage(view);
@@ -76,12 +76,12 @@ fn stages(views: &[RunView]) -> Vec<&'static str> {
     stages
 }
 
-fn is(wanted: &'static str) -> impl Fn(&RunView) -> bool {
+fn is(wanted: &'static str) -> impl Fn(&FoldedRunView) -> bool {
     move |view| stage(view) == wanted
 }
 
 /// The attempt is over: its timings report is in.
-fn ended(view: &RunView) -> bool {
+fn ended(view: &FoldedRunView) -> bool {
     view.timings.is_some()
 }
 
@@ -99,7 +99,7 @@ fn index(at: usize) -> u32 {
 }
 
 /// Where the plan in `view` has the action on `path`.
-fn row(view: &RunView, path: &str) -> u32 {
+fn row(view: &FoldedRunView, path: &str) -> u32 {
     let at = view
         .plan
         .iter()
@@ -463,7 +463,7 @@ fn entries_profile(head: &Head, name: &str, pairs: &[(&str, &str)]) {
     write(&profiles.join(format!("{name}.toml")), &text);
 }
 
-fn statuses(view: &RunView) -> Vec<EntryStatusView> {
+fn statuses(view: &FoldedRunView) -> Vec<EntryStatusView> {
     view.entries
         .iter()
         .map(|entry| entry.status.clone())
@@ -471,7 +471,7 @@ fn statuses(view: &RunView) -> Vec<EntryStatusView> {
 }
 
 /// Every snapshot but the last is live: no entry ends the session.
-fn live_until_the_end(views: &[RunView]) {
+fn live_until_the_end(views: &[FoldedRunView]) {
     let (_, running) = views
         .split_last()
         .unwrap_or_else(|| unreachable!("some views"));
@@ -573,7 +573,7 @@ async fn a_pause_in_the_second_entry_resumes_from_the_first() {
     }
     entries_profile(&head, "two", &[("a", "b"), ("c", "d")]);
     let (session, _) = head.ok(start("two", false)).await;
-    let second = |view: &RunView| is("reviewing")(view) && view.current == Some(1);
+    let second = |view: &FoldedRunView| is("reviewing")(view) && view.current == Some(1);
     head.run_until(session, second).await;
     head.ok(steer(session, RunIntent::Pause)).await;
     let paused = head.run_until(session, is("paused")).await;

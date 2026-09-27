@@ -1,8 +1,7 @@
-import 'conflict_row.dart';
 import 'entry_run.dart';
-import 'plan_row.dart';
 import 'replica_info.dart';
 import 'run_phase.dart';
+import 'run_plan_update.dart';
 import 'run_standing.dart';
 import 'scan_tally.dart';
 import 'skipped_path_info.dart';
@@ -24,10 +23,7 @@ final class RunView {
     required this.replicas,
     required this.tallies,
     required this.skipped,
-    required this.conflicts,
     required this.plan,
-    required this.bytesToTransfer,
-    required this.planSummary,
     required this.progress,
     required this.applied,
     required this.failed,
@@ -60,13 +56,8 @@ final class RunView {
   /// Paths either scan skipped or could not read, side A's first.
   final List<SkippedPathInfo> skipped;
 
-  final List<ConflictRow> conflicts;
-  final List<PlanRow> plan;
-  final int bytesToTransfer;
-
-  /// The bytes the plan's copies write onto each side; zero before it is
-  /// made.
-  final ({int bytesToA, int bytesToB}) planSummary;
+  /// The entry's plan, if it has one yet.
+  final RunPlanUpdate plan;
 
   /// The apply's latest progress.
   final ({int completed, int total})? progress;

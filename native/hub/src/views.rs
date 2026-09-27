@@ -703,13 +703,8 @@ pub struct RunView {
     pub tally: Option<TalliesView>,
     /// Paths either scan skipped or could not read, side A's first.
     pub skipped: Vec<SkippedView>,
-    /// The conflicts, in the plan's order.
-    pub conflicts: Vec<ConflictRowView>,
-    /// The plan's actions, in its order; empty before it is made.
-    pub plan: Vec<PlanRowView>,
-    pub bytes_to_transfer: u64,
-    /// What the plan's copies write where; all zero before it is made.
-    pub plan_summary: PlanSummaryView,
+    /// The entry's plan, if it has one yet.
+    pub plan: PlanUpdateView,
     /// The apply's latest progress: completed of total.
     pub progress: Option<ProgressView>,
     /// How many of the reported outcomes landed, and how many failed.
@@ -909,9 +904,67 @@ pub struct ProgressView {
     pub total: u64,
 }
 
+/// A run view's plan, as an update to the one the head holds.
+#[derive(Serialize, SignalPiece)]
+pub enum PlanUpdateView {
+    /// No plan in this entry's attempt yet (or any more: a new entry or
+    /// a resume began). The head drops whatever plan it held.
+    Absent,
+    /// A plan the head has not seen, whole: every row with its current
+    /// choice and outcome.
+    New(PlanView),
+    /// The plan the head already holds; the rows whose choice or outcome
+    /// changed since the last view it received. Empty when none did.
+    Same {
+        actions: Vec<ActionRowUpdateView>,
+        conflicts: Vec<ConflictRowUpdateView>,
+    },
+}
+
+#[cfg(test)]
+impl PlanUpdateView {
+    /// The plan this update carries whole; panics on any other variant.
+    pub fn new_plan(&self) -> &PlanView {
+        match self {
+            PlanUpdateView::New(plan) => plan,
+            _ => panic!("the view carries no new plan"),
+        }
+    }
+}
+
+/// A plan whole: its rows and the fixed facts about it.
+#[derive(Serialize, SignalPiece)]
+pub struct PlanView {
+    /// The plan's actions, in its order.
+    pub actions: Vec<PlanRowView>,
+    /// The conflicts, in the plan's order.
+    pub conflicts: Vec<ConflictRowView>,
+    pub bytes_to_transfer: u64,
+    /// What the plan's copies write where.
+    pub summary: PlanSummaryView,
+}
+
+/// An action row's whole mutable state: its choice and its outcome, for
+/// the row at `index` of the plan's actions.
+#[derive(Serialize, SignalPiece)]
+pub struct ActionRowUpdateView {
+    pub index: u32,
+    pub choice: ActionChoiceView,
+    pub outcome: Option<ResultView>,
+}
+
+/// A conflict row's whole mutable state: its choice and its outcome, for
+/// the row at `index` of the plan's conflicts.
+#[derive(Serialize, SignalPiece)]
+pub struct ConflictRowUpdateView {
+    pub index: u32,
+    pub choice: ConflictChoiceView,
+    pub outcome: Option<ResultView>,
+}
+
 /// One planned action: the proposal, what the review chose for it, and its
 /// outcome once reported.
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub struct PlanRowView {
     pub proposal: ProposalView,
     pub choice: ActionChoiceView,
@@ -921,7 +974,7 @@ pub struct PlanRowView {
 /// One conflict: the conflict, the choices it offers (a side with no
 /// record of the path cannot be kept; keeping both needs a file on both
 /// sides), what the review chose, and the outcome of what that applied.
-#[derive(Serialize, SignalPiece)]
+#[derive(Clone, Serialize, SignalPiece)]
 pub struct ConflictRowView {
     pub conflict: ConflictView,
     pub offered: Vec<ConflictChoiceView>,

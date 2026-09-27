@@ -20,10 +20,7 @@ class RunView {
     this.replicas,
     this.tally,
     required this.skipped,
-    required this.conflicts,
     required this.plan,
-    required this.bytesToTransfer,
-    required this.planSummary,
     this.progress,
     required this.applied,
     required this.failed,
@@ -42,10 +39,7 @@ class RunView {
       replicas: TraitHelpers.deserializeOptionReplicasView(deserializer),
       tally: TraitHelpers.deserializeOptionTalliesView(deserializer),
       skipped: TraitHelpers.deserializeVectorSkippedView(deserializer),
-      conflicts: TraitHelpers.deserializeVectorConflictRowView(deserializer),
-      plan: TraitHelpers.deserializeVectorPlanRowView(deserializer),
-      bytesToTransfer: deserializer.deserializeUint64(),
-      planSummary: PlanSummaryView.deserialize(deserializer),
+      plan: PlanUpdateView.deserialize(deserializer),
       progress: TraitHelpers.deserializeOptionProgressView(deserializer),
       applied: deserializer.deserializeUint64(),
       failed: deserializer.deserializeUint64(),
@@ -73,10 +67,7 @@ class RunView {
   final ReplicasView? replicas;
   final TalliesView? tally;
   final List<SkippedView> skipped;
-  final List<ConflictRowView> conflicts;
-  final List<PlanRowView> plan;
-  final Uint64 bytesToTransfer;
-  final PlanSummaryView planSummary;
+  final PlanUpdateView plan;
   final ProgressView? progress;
   final Uint64 applied;
   final Uint64 failed;
@@ -92,10 +83,7 @@ class RunView {
     ReplicasView? Function()? replicas,
     TalliesView? Function()? tally,
     List<SkippedView>? skipped,
-    List<ConflictRowView>? conflicts,
-    List<PlanRowView>? plan,
-    Uint64? bytesToTransfer,
-    PlanSummaryView? planSummary,
+    PlanUpdateView? plan,
     ProgressView? Function()? progress,
     Uint64? applied,
     Uint64? failed,
@@ -111,10 +99,7 @@ class RunView {
       replicas: replicas == null ? this.replicas : replicas(),
       tally: tally == null ? this.tally : tally(),
       skipped: skipped ?? this.skipped,
-      conflicts: conflicts ?? this.conflicts,
       plan: plan ?? this.plan,
-      bytesToTransfer: bytesToTransfer ?? this.bytesToTransfer,
-      planSummary: planSummary ?? this.planSummary,
       progress: progress == null ? this.progress : progress(),
       applied: applied ?? this.applied,
       failed: failed ?? this.failed,
@@ -133,10 +118,7 @@ class RunView {
     TraitHelpers.serializeOptionReplicasView(replicas, serializer);
     TraitHelpers.serializeOptionTalliesView(tally, serializer);
     TraitHelpers.serializeVectorSkippedView(skipped, serializer);
-    TraitHelpers.serializeVectorConflictRowView(conflicts, serializer);
-    TraitHelpers.serializeVectorPlanRowView(plan, serializer);
-    serializer.serializeUint64(bytesToTransfer);
-    planSummary.serialize(serializer);
+    plan.serialize(serializer);
     TraitHelpers.serializeOptionProgressView(progress, serializer);
     serializer.serializeUint64(applied);
     serializer.serializeUint64(failed);
@@ -165,10 +147,7 @@ class RunView {
       && replicas == other.replicas
       && tally == other.tally
       && listEquals(skipped, other.skipped)
-      && listEquals(conflicts, other.conflicts)
-      && listEquals(plan, other.plan)
-      && bytesToTransfer == other.bytesToTransfer
-      && planSummary == other.planSummary
+      && plan == other.plan
       && progress == other.progress
       && applied == other.applied
       && failed == other.failed
@@ -186,10 +165,7 @@ class RunView {
         replicas,
         tally,
         skipped,
-        conflicts,
         plan,
-        bytesToTransfer,
-        planSummary,
         progress,
         applied,
         failed,
@@ -211,10 +187,7 @@ class RunView {
         'replicas: $replicas, '
         'tally: $tally, '
         'skipped: $skipped, '
-        'conflicts: $conflicts, '
         'plan: $plan, '
-        'bytesToTransfer: $bytesToTransfer, '
-        'planSummary: $planSummary, '
         'progress: $progress, '
         'applied: $applied, '
         'failed: $failed, '

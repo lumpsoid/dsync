@@ -15,6 +15,7 @@ import '../../core_link/models/plan_proposal.dart';
 import '../../core_link/models/replica_side.dart';
 import '../../core_link/models/run_intent.dart';
 import '../../core_link/models/run_phase.dart';
+import '../../core_link/models/run_plan_update.dart';
 import '../../core_link/models/run_session.dart';
 import '../../core_link/models/run_standing.dart';
 import '../../core_link/models/run_view.dart';
@@ -207,14 +208,6 @@ class SyncRunController {
       null => null,
     };
     final phase = _phase(view.phase, view.entries, entry);
-    final results = <String, SyncRunResultRow>{
-      for (final row in view.plan)
-        if (row.outcome case final outcome?)
-          row.proposal.path: _result(outcome),
-      for (final row in view.conflicts)
-        if (row.outcome case final outcome?)
-          row.conflict.path: _result(outcome),
-    };
     final skipped = [
       for (final skipped in view.skipped)
         (line: _skippedLine(skipped), isFailure: skipped.isFailure),
@@ -260,37 +253,7 @@ class SyncRunController {
         for (final (:line, :isFailure) in skipped)
           if (isFailure) line,
       ],
-      plan: SyncRunPlanReplaced(
-        conflicts: [
-          for (final (index, row) in view.conflicts.indexed)
-            SyncRunConflictRow(
-              index: index,
-              path: row.conflict.path,
-              local: _conflictSide(row.conflict.a),
-              remote: _conflictSide(row.conflict.b),
-              offered: row.offered,
-            ),
-        ],
-        plan: [
-          for (final (index, row) in view.plan.indexed)
-            SyncRunPlanRow(
-              index: index,
-              path: row.proposal.path,
-              action: _actionLabel(row.proposal.action),
-              bytes: _bytes(row.proposal.action),
-              group: _group(row.proposal.action),
-              reversal: _reversal(row.proposal),
-            ),
-        ],
-        copyBytes: (
-          toDevice: view.planSummary.bytesToB,
-          toThisDevice: view.planSummary.bytesToA,
-        ),
-        bytesToTransfer: view.bytesToTransfer,
-        results: results,
-        actionChoices: [for (final row in view.plan) row.choice],
-        conflictChoices: [for (final row in view.conflicts) row.choice],
-      ),
+      plan: _planChange(view.plan),
       decisionSummary: switch (view.phase) {
         RunReviewing(:final summary) => SyncRunDecisionSummary(
           apply: summary.apply,
@@ -416,6 +379,78 @@ class SyncRunController {
     String two(int n) => n.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} '
         '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  /// [update] as the change it makes to the plan this page shows.
+  SyncRunPlanChange _planChange(RunPlanUpdate update) {
+    switch (update) {
+      case RunPlanAbsent():
+        return const SyncRunPlanAbsent();
+      case RunPlanNew(:final plan):
+        return SyncRunPlanReplaced(
+          conflicts: [
+            for (final (index, row) in plan.conflicts.indexed)
+              SyncRunConflictRow(
+                index: index,
+                path: row.conflict.path,
+                local: _conflictSide(row.conflict.a),
+                remote: _conflictSide(row.conflict.b),
+                offered: row.offered,
+              ),
+          ],
+          plan: [
+            for (final (index, row) in plan.actions.indexed)
+              SyncRunPlanRow(
+                index: index,
+                path: row.proposal.path,
+                action: _actionLabel(row.proposal.action),
+                bytes: _bytes(row.proposal.action),
+                group: _group(row.proposal.action),
+                reversal: _reversal(row.proposal),
+              ),
+          ],
+          copyBytes: (
+            toDevice: plan.summary.bytesToB,
+            toThisDevice: plan.summary.bytesToA,
+          ),
+          bytesToTransfer: plan.bytesToTransfer,
+          results: {
+            for (final row in plan.actions)
+              if (row.outcome case final outcome?)
+                row.proposal.path: _result(outcome),
+            for (final row in plan.conflicts)
+              if (row.outcome case final outcome?)
+                row.conflict.path: _result(outcome),
+          },
+          actionChoices: [for (final row in plan.actions) row.choice],
+          conflictChoices: [for (final row in plan.conflicts) row.choice],
+        );
+      case RunPlanSame(:final actions, :final conflicts):
+        return SyncRunPlanRowsChanged(
+          actions: [
+            for (final row in actions)
+              (
+                index: row.index,
+                choice: row.choice,
+                result: switch (row.outcome) {
+                  final outcome? => _result(outcome),
+                  null => null,
+                },
+              ),
+          ],
+          conflicts: [
+            for (final row in conflicts)
+              (
+                index: row.index,
+                choice: row.choice,
+                result: switch (row.outcome) {
+                  final outcome? => _result(outcome),
+                  null => null,
+                },
+              ),
+          ],
+        );
+    }
   }
 
   SyncRunConflictSide _conflictSide(FileStatus? status) {

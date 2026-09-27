@@ -79,7 +79,7 @@ void main() {
 
   /// Delivers [view] as the core's latest, and lets it render: folded in
   /// one pump, on screen after the next.
-  Future<void> deliver(WidgetTester tester, wire.RunView view) async {
+  Future<void> deliver(WidgetTester tester, WholeRunView view) async {
     hub.emitRun(session(), view, last: false);
     await tester.pump();
     await tester.pump();
@@ -88,7 +88,7 @@ void main() {
   /// The page, showing [view].
   Future<void> open(
     WidgetTester tester,
-    wire.RunView view, {
+    WholeRunView view, {
     RunRequest? runs,
   }) async {
     await pump(tester, runs: runs);
@@ -1507,7 +1507,7 @@ void main() {
   group('the inline review', () {
     // Two reversible actions, one that is not (a mirror row: the core
     // offers no reverse for it), a two-sided conflict and a one-sided one.
-    wire.RunView review({
+    WholeRunView review({
       List<wire.ActionChoiceView> actions = const [
         wire.ActionChoiceView.proposed,
         wire.ActionChoiceView.proposed,
@@ -1971,7 +1971,7 @@ void main() {
     // Pushed onto a route of its own, which is what gives the page the
     // back arrow (and what makes `maybePop` — the same path the OS back
     // gesture takes — reach the page's `PopScope`).
-    Future<void> pumpPushed(WidgetTester tester, wire.RunView view) async {
+    Future<void> pumpPushed(WidgetTester tester, WholeRunView view) async {
       tester.view.physicalSize = const Size(800, 2400);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -2242,7 +2242,7 @@ void main() {
     // Everything the review page can show at once: the scan tally's
     // disclosure, a conflict's two boxes, action rows with their controls
     // and a closed record-only group.
-    wire.RunView everything() => runView(
+    WholeRunView everything() => runView(
       phase: reviewing(apply: 2, leftOpen: 1),
       replicas: replicas(),
       tallies: tallies(
@@ -2357,7 +2357,7 @@ void main() {
 
     Future<void> openAt(
       WidgetTester tester,
-      wire.RunView view, {
+      WholeRunView view, {
       Size size = wide,
     }) async {
       await pumpAt(tester, size);
@@ -2368,7 +2368,7 @@ void main() {
     // disclosure. The cursor walks them in page order: both.txt,
     // theirs.txt, then To the remote (new.txt, mirror.txt), then
     // Deletions (gone.txt); same.txt only once its group is open.
-    wire.RunView review({
+    WholeRunView review({
       wire.ActionChoiceView mirror = wire.ActionChoiceView.proposed,
       wire.RunPhaseView? phase,
     }) => runView(

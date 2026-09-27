@@ -68,7 +68,7 @@ class RunHarness {
 
   /// Delivers [view] to the session and lets it render; [last] marks it
   /// the session's final one.
-  Future<void> show(wire.RunView view, {bool last = false}) async {
+  Future<void> show(WholeRunView view, {bool last = false}) async {
     hub.emitRun(session, view, last: last);
     await pump();
   }
@@ -106,13 +106,14 @@ wire.EntryRunView entryRun({
   status: status,
 );
 
-/// A view of the run as the core sends it. Every field has a plain
+/// A view of the run as the core sends it, its plan whole: [FakeHub.emitRun]
+/// sends the plan as the update the head needs. Every field has a plain
 /// default, so a test names only what it is about: by default the session
 /// runs the one entry [localRoot] with [remoteRoot]. Nothing is worked out
 /// from anything else: a test that shows a finished run names its
 /// [standing], one whose plan moves bytes names [bytesToTransfer] and the
 /// two sides' [bytesToA] and [bytesToB], as the core would send them.
-wire.RunView runView({
+WholeRunView runView({
   bool dryRun = false,
   wire.RunPhaseView phase = const wire.RunPhaseViewScanning(),
   wire.RunStandingView standing = live,
@@ -131,33 +132,35 @@ wire.RunView runView({
   int applied = 0,
   int failed = 0,
   String? timings,
-}) => wire.RunView(
-  dryRun: dryRun,
-  phase: phase,
-  standing: standing,
-  entries: entries ?? [entryRun()],
-  current: current,
-  connectedAtMs: connectedAt?.millisecondsSinceEpoch,
-  replicas: replicas,
-  tally: tallies,
-  skipped: skipped,
-  conflicts: conflicts,
-  plan: plan,
-  bytesToTransfer: n(bytesToTransfer),
-  planSummary: wire.PlanSummaryView(
-    bytesToA: n(bytesToA),
-    bytesToB: n(bytesToB),
+}) => WholeRunView(
+  view: wire.RunView(
+    dryRun: dryRun,
+    phase: phase,
+    standing: standing,
+    entries: entries ?? [entryRun()],
+    current: current,
+    connectedAtMs: connectedAt?.millisecondsSinceEpoch,
+    replicas: replicas,
+    tally: tallies,
+    skipped: skipped,
+    plan: const wire.PlanUpdateViewAbsent(),
+    progress: switch (progress) {
+      (:final completed, :final total) => wire.ProgressView(
+        completed: n(completed),
+        total: n(total),
+      ),
+      null => null,
+    },
+    applied: n(applied),
+    failed: n(failed),
+    timings: timings,
   ),
-  progress: switch (progress) {
-    (:final completed, :final total) => wire.ProgressView(
-      completed: n(completed),
-      total: n(total),
-    ),
-    null => null,
-  },
-  applied: n(applied),
-  failed: n(failed),
-  timings: timings,
+  plan: wire.PlanView(
+    actions: plan,
+    conflicts: conflicts,
+    bytesToTransfer: n(bytesToTransfer),
+    summary: wire.PlanSummaryView(bytesToA: n(bytesToA), bytesToB: n(bytesToB)),
+  ),
 );
 
 const live = wire.RunStandingView.live;

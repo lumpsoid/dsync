@@ -2,14 +2,17 @@
 //! support directory (the mobile rule, so nothing touches this machine's
 //! real state), commands in, replies and stream signals out.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use dsync_domain::{DIR_LEAF, Entry, HostFacts, Platform, Profile, ReplicaLocation};
 use hub::signals::{CoreCommand, PairingSnapshot, ReplyResult, ServeSnapshot};
-use hub::views::{PairingView, RunView, ServeView};
+use hub::views::{
+    ConflictRowView, EntryRunView, PairingView, PlanRowView, PlanUpdateView, PlanView,
+    ReplicasView, RunPhaseView, RunStandingView, RunView, ServeView,
+};
 use hub::{Core, Outbox, Outgoing};
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -30,6 +33,8 @@ pub struct Head {
     outgoing: UnboundedReceiver<Outgoing>,
     /// Stream signals read past while waiting for another kind.
     unread: VecDeque<Outgoing>,
+    /// Each run session's plan as folded from its views so far.
+    plans: HashMap<u64, PlanView>,
     next_id: u64,
 }
 
@@ -45,6 +50,7 @@ impl Head {
             dir,
             outgoing,
             unread: VecDeque::new(),
+            plans: HashMap::new(),
             next_id: 0,
         };
         let support_dir = Some(head.path("support").to_string_lossy().into_owned());
@@ -117,20 +123,59 @@ impl Head {
         }
     }
 
-    pub async fn run_view(&mut self, session: u64) -> RunView {
+    /// The session's next run view, its plan update folded onto the plan
+    /// this head holds for the session.
+    pub async fn run_view(&mut self, session: u64) -> FoldedRunView {
         let wanted = |out: &Outgoing| matches!(out, Outgoing::Run(s) if s.session == session);
-        match self.next_matching(wanted).await {
+        let view = match self.next_matching(wanted).await {
             Outgoing::Run(snapshot) => snapshot.view,
             _ => unreachable!("matched a run snapshot"),
+        };
+        let RunView {
+            dry_run,
+            phase,
+            standing,
+            entries,
+            current,
+            connected_at_ms,
+            replicas,
+            plan,
+            applied,
+            failed,
+            timings,
+            ..
+        } = view;
+        let plan = fold(self.plans.remove(&session), plan);
+        let folded = FoldedRunView {
+            dry_run,
+            phase,
+            standing,
+            entries,
+            current,
+            connected_at_ms,
+            replicas,
+            plan: plan
+                .as_ref()
+                .map_or_else(Vec::new, |plan| plan.actions.clone()),
+            conflicts: plan
+                .as_ref()
+                .map_or_else(Vec::new, |plan| plan.conflicts.clone()),
+            applied,
+            failed,
+            timings,
+        };
+        if let Some(plan) = plan {
+            self.plans.insert(session, plan);
         }
+        folded
     }
 
     /// Every run snapshot up to and including the one `stop` accepts.
     pub async fn run_until(
         &mut self,
         session: u64,
-        stop: impl Fn(&RunView) -> bool,
-    ) -> Vec<RunView> {
+        stop: impl Fn(&FoldedRunView) -> bool,
+    ) -> Vec<FoldedRunView> {
         let mut seen = Vec::new();
         loop {
             let view = self.run_view(session).await;
@@ -184,4 +229,51 @@ pub fn one_entry(a: ReplicaLocation, b: ReplicaLocation) -> Profile {
         .map_err(|error| error.to_string())
         .and_then(|entry| Profile::new(vec![entry]).map_err(|error| error.to_string()))
         .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// A run view with its plan folded whole, as the head shows it: the
+/// fields of [`RunView`] these tests read, and the plan's rows (empty
+/// while there is none).
+pub struct FoldedRunView {
+    pub dry_run: bool,
+    pub phase: RunPhaseView,
+    pub standing: RunStandingView,
+    pub entries: Vec<EntryRunView>,
+    pub current: Option<u32>,
+    pub connected_at_ms: Option<i64>,
+    pub replicas: Option<ReplicasView>,
+    pub plan: Vec<PlanRowView>,
+    pub conflicts: Vec<ConflictRowView>,
+    pub applied: u64,
+    pub failed: u64,
+    pub timings: Option<String>,
+}
+
+/// `update` applied to the plan `held`, strictly: a `Same` with no plan
+/// held, or naming a row the plan does not have, is the hub's bug.
+fn fold(held: Option<PlanView>, update: PlanUpdateView) -> Option<PlanView> {
+    match update {
+        PlanUpdateView::Absent => None,
+        PlanUpdateView::New(plan) => Some(plan),
+        PlanUpdateView::Same { actions, conflicts } => {
+            let Some(mut plan) = held else {
+                panic!("a `Same` plan update arrived with no plan held");
+            };
+            for update in actions {
+                let Some(row) = plan.actions.get_mut(update.index as usize) else {
+                    panic!("a `Same` update names action row {}", update.index);
+                };
+                row.choice = update.choice;
+                row.outcome = update.outcome;
+            }
+            for update in conflicts {
+                let Some(row) = plan.conflicts.get_mut(update.index as usize) else {
+                    panic!("a `Same` update names conflict row {}", update.index);
+                };
+                row.choice = update.choice;
+                row.outcome = update.outcome;
+            }
+            Some(plan)
+        }
+    }
 }

@@ -181,6 +181,18 @@ class TraitHelpers {
     }
   }
 
+  static void serializeVectorActionRowUpdateView(List<ActionRowUpdateView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<ActionRowUpdateView> deserializeVectorActionRowUpdateView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => ActionRowUpdateView.deserialize(deserializer));
+  }
+
   static void serializeVectorArchiveView(List<ArchiveView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -203,6 +215,18 @@ class TraitHelpers {
   static List<ConflictChoiceView> deserializeVectorConflictChoiceView(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => ConflictChoiceViewExtension.deserialize(deserializer));
+  }
+
+  static void serializeVectorConflictRowUpdateView(List<ConflictRowUpdateView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<ConflictRowUpdateView> deserializeVectorConflictRowUpdateView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => ConflictRowUpdateView.deserialize(deserializer));
   }
 
   static void serializeVectorConflictRowView(List<ConflictRowView> value, BinarySerializer serializer) {

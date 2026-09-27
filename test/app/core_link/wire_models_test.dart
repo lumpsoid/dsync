@@ -7,13 +7,17 @@ import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/run_intent.dart';
 import 'package:dsync/app/core_link/models/run_phase.dart';
+import 'package:dsync/app/core_link/models/run_plan.dart';
+import 'package:dsync/app/core_link/models/run_plan_update.dart';
 import 'package:dsync/app/core_link/models/run_standing.dart';
+import 'package:dsync/app/core_link/models/run_view.dart';
 import 'package:dsync/app/core_link/models/sync_history.dart';
 import 'package:dsync/app/core_link/wire_models.dart' as link;
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../features/run/run_fixtures.dart';
+import '../support/fake_hub.dart';
 
 /// The generated signal classes read as the head's models, and the head's
 /// intents written back: plain values both ways, no native library.
@@ -42,9 +46,9 @@ void main() {
       bytesToTransfer: 5,
     );
 
-    final read = link.runView(view);
+    final read = planOf(decode(view));
     expect(read.bytesToTransfer, 5);
-    final [a, b] = read.plan;
+    final [a, b] = read.actions;
     expect(
       a.proposal.action,
       isA<CopyAction>()
@@ -71,7 +75,7 @@ void main() {
   });
 
   test('a copy aside in an outcome reads with the path it wrote', () {
-    final read = link.runView(
+    final read = decode(
       runView(
         conflicts: [
           conflictRow(
@@ -89,7 +93,7 @@ void main() {
         ],
       ),
     );
-    final result = read.conflicts.single.outcome!;
+    final result = planOf(read).conflicts.single.outcome!;
     expect(
       result.action,
       isA<CopyAsideAction>()
@@ -107,7 +111,7 @@ void main() {
 
   test('each phase reads as its own, with what it carries', () {
     RunPhase phase(wire.RunPhaseView phase) =>
-        link.runView(runView(phase: phase)).phase;
+        decode(runView(phase: phase)).phase;
 
     expect(
       phase(reviewing(apply: 3, reversed: 1, leftOpen: 2)),
@@ -144,7 +148,7 @@ void main() {
 
   test('a session\'s entries read with their roots, statuses and the one '
       'running', () {
-    final read = link.runView(
+    final read = decode(
       runView(
         entries: [
           entryRun(status: const wire.EntryStatusViewSkipped(reason: 'gone')),
@@ -177,7 +181,7 @@ void main() {
 
   test('the header\'s facts, the progress and the timings read as sent', () {
     final at = DateTime(2026, 9, 16, 12);
-    final read = link.runView(
+    final read = decode(
       runView(
         connectedAt: at,
         replicas: replicas(lastA: at),
@@ -198,7 +202,7 @@ void main() {
   test('the core\'s verdicts read as sent: standing, history, totals and '
       'the plan\'s bytes', () {
     final at = DateTime(2026, 9, 16, 12);
-    final read = link.runView(
+    final read = decode(
       runView(
         phase: paused(1),
         standing: resumable,
@@ -223,17 +227,65 @@ void main() {
     );
     expect((read.tallies!.a.total, read.tallies!.b.changed), (11, 5));
     expect((read.tallies!.checked, read.tallies!.changed), (25, 7));
-    expect(read.planSummary, (bytesToA: 3, bytesToB: 10));
+    expect(planOf(read).summary, (bytesToA: 3, bytesToB: 10));
+    expect(
+      decode(
+        runView(
+          replicas: replicas(lastA: at, lastB: at, history: synced(at, at)),
+        ),
+      ).replicas!.history,
+      isA<LastSynced>().having((h) => h.b, 'b', at),
+    );
+  });
+
+  test('a view with no plan reads as absent', () {
+    expect(decode(runView()).plan, isA<RunPlanAbsent>());
+  });
+
+  test('a view naming its changed rows reads each with its index, choice '
+      'and outcome', () {
+    final read = link.runView(
+      runView().withPlan(
+        wire.PlanUpdateViewSame(
+          actions: [
+            wire.ActionRowUpdateView(
+              index: 3,
+              choice: wire.ActionChoiceView.skipped,
+              outcome: outcome(copyTo('a.txt'), failure: 'disk full'),
+            ),
+          ],
+          conflicts: const [
+            wire.ConflictRowUpdateView(
+              index: 1,
+              choice: wire.ConflictChoiceView.keepA,
+              outcome: null,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final same = read.plan as RunPlanSame;
+    final action = same.actions.single;
+    expect((action.index, action.choice), (3, ActionChoice.skipped));
+    expect(action.outcome!.action, isA<CopyAction>());
+    expect(action.outcome!.failure, 'disk full');
+    final conflict = same.conflicts.single;
+    expect(
+      (conflict.index, conflict.choice, conflict.outcome),
+      (1, ConflictChoice.keepA, null),
+    );
     expect(
       link
           .runView(
-            runView(
-              replicas: replicas(lastA: at, lastB: at, history: synced(at, at)),
+            runView().withPlan(
+              const wire.PlanUpdateViewSame(actions: [], conflicts: []),
             ),
           )
-          .replicas!
-          .history,
-      isA<LastSynced>().having((h) => h.b, 'b', at),
+          .plan,
+      isA<RunPlanSame>()
+          .having((s) => s.actions, 'actions', isEmpty)
+          .having((s) => s.conflicts, 'conflicts', isEmpty),
     );
   });
 
@@ -259,3 +311,13 @@ void main() {
     expect(link.wireIntent(const CloseRun()), const wire.RunIntentClose());
   });
 }
+
+/// [view] as the first the head receives: its plan whole, or absent.
+RunView decode(WholeRunView view) =>
+    link.runView(view.withPlan(planUpdate(null, view.plan)));
+
+/// The plan [view] carries whole.
+RunPlan planOf(RunView view) => switch (view.plan) {
+  RunPlanNew(:final plan) => plan,
+  final other => throw StateError('no whole plan: $other'),
+};
