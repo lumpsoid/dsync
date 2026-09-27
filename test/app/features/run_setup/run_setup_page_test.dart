@@ -910,7 +910,9 @@ void main() {
     });
 
     testWidgets('Enter walks the remote roots in order, then the profile '
-        'name, and Enter there is Start', (tester) async {
+        'name, then Start without pressing it; Enter there starts', (
+      tester,
+    ) async {
       await pumpPushed(tester, platform: TargetPlatform.linux);
       await tester.tap(find.byKey(const Key('run-setup-add-entry')));
       await tester.pump();
@@ -928,7 +930,15 @@ void main() {
       await tester.pump();
       expect(focusIsWithin(profileName), isTrue);
 
-      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pump();
+      expect(focusIsWithin(const Key('run-setup-start')), isTrue);
+      // Start did not run: starting a sync is an explicit act, so the form
+      // shows no refusal yet.
+      expect(controller.state.entries[0].localFolderError, isNull);
+      expect(controller.state.entries[0].remoteRootError, isNull);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       // Start ran: with nothing filled in it refuses, field by field — both
       // entries' — the same as a click on the button does.

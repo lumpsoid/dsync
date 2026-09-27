@@ -45,8 +45,11 @@ import 'run_setup_view_state.dart';
 /// **The keyboard walks the fields in the order they are drawn.** Enter in
 /// an entry's remote root moves to the next entry's, then to the profile
 /// name; Enter in the profile name — the last field outside the Options
-/// fold — or in the address inside it starts the run, as the filled button
-/// does. Tab walks every control in reading order. The first remote root
+/// fold — or in the address inside it moves on to Start, and a second Enter
+/// (or Space) there starts the run. Enter moves toward the primary action;
+/// it never starts a sync by itself, because starting one is an explicit
+/// act, not the side effect of finishing a field. Tab walks every control
+/// in reading order. The first remote root
 /// takes the focus on arrival where the keyboard comes first
 /// ([keyboardFirst]); on a phone nothing does, because the first thing to
 /// do is pick a folder, not type. Esc backs out like the arrow
@@ -92,6 +95,10 @@ class _RunSetupPageState extends State<RunSetupPage> {
   /// Where Enter in the last remote root lands.
   final _profileNameFocus = FocusNode();
 
+  /// Where Enter in the profile name or the address lands — the button, not
+  /// the run: see the class doc comment.
+  final _startFocus = FocusNode();
+
   /// Listens for the app coming back from the Settings page the refusal's
   /// snackbar opened — and only then: armed by [_openAccessSettings],
   /// disposed on the first resume and with the page.
@@ -135,6 +142,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
     _address.dispose();
     _profileName.dispose();
     _profileNameFocus.dispose();
+    _startFocus.dispose();
     super.dispose();
   }
 
@@ -321,6 +329,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
               address: _address,
               profileName: _profileName,
               profileNameFocus: _profileNameFocus,
+              startFocus: _startFocus,
               onPickFolder: _pickFolder,
               onPickFile: _pickFile,
               onAddEntry: () => setState(_addEntry),
@@ -364,6 +373,7 @@ class _RunSetupForm extends StatelessWidget {
     required this.address,
     required this.profileName,
     required this.profileNameFocus,
+    required this.startFocus,
     required this.onPickFolder,
     required this.onPickFile,
     required this.onAddEntry,
@@ -387,6 +397,9 @@ class _RunSetupForm extends StatelessWidget {
   final TextEditingController address;
   final TextEditingController profileName;
   final FocusNode profileNameFocus;
+
+  /// Where Enter in the form's last fields moves: the Start button.
+  final FocusNode startFocus;
   final void Function(int index) onPickFolder;
   final void Function(int index) onPickFile;
   final VoidCallback onAddEntry;
@@ -496,9 +509,10 @@ class _RunSetupForm extends StatelessWidget {
                   controller: profileName,
                   focusNode: profileNameFocus,
                   enabled: !starting,
-                  // The last field outside the fold: Enter is Start.
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => onStart(),
+                  // The last field outside the fold: Enter moves to Start,
+                  // and never presses it.
+                  textInputAction: TextInputAction.next,
+                  onEditingComplete: startFocus.requestFocus,
                   decoration: InputDecoration(
                     labelText: editing
                         ? 'Profile name'
@@ -528,8 +542,8 @@ class _RunSetupForm extends StatelessWidget {
                       key: const Key('run-setup-address'),
                       controller: address,
                       enabled: !starting,
-                      textInputAction: TextInputAction.done,
-                      onSubmitted: (_) => onStart(),
+                      textInputAction: TextInputAction.next,
+                      onEditingComplete: startFocus.requestFocus,
                       decoration: InputDecoration(
                         labelText: 'Address (optional)',
                         hintText: 'host or host:port',
@@ -550,6 +564,7 @@ class _RunSetupForm extends StatelessWidget {
           outcome: state.outcome,
           starting: starting,
           saveLabel: editing ? 'Save changes' : 'Save profile',
+          startFocus: startFocus,
           onSave: onSave,
           onStart: onStart,
         ),
@@ -747,6 +762,7 @@ class _ActionBar extends StatelessWidget {
     required this.outcome,
     required this.starting,
     required this.saveLabel,
+    required this.startFocus,
     required this.onSave,
     required this.onStart,
   });
@@ -754,6 +770,7 @@ class _ActionBar extends StatelessWidget {
   final RunSetupOutcome outcome;
   final bool starting;
   final String saveLabel;
+  final FocusNode startFocus;
   final VoidCallback onSave;
   final VoidCallback onStart;
 
@@ -784,6 +801,7 @@ class _ActionBar extends StatelessWidget {
                     const Spacer(),
                     FilledButton(
                       key: const Key('run-setup-start'),
+                      focusNode: startFocus,
                       onPressed: starting ? null : onStart,
                       child: starting
                           ? const SizedBox(
