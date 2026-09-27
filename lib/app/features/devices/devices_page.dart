@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../paired_device_row.dart';
 import '../../readable_width.dart';
@@ -28,7 +29,9 @@ import 'devices_scope.dart';
 /// to routes, so this page needs no `Navigator` of its own.
 ///
 /// [chrome] says whether This device and Shared folders are in this page's
-/// app bar or, on a wide window, destinations of the app shell's rail.
+/// app bar or, on a wide window, destinations of the app shell's rail — and
+/// whether the list is the left pane of two, marking the device selected
+/// beside it and moving that selection with Up and Down.
 class DevicesPage extends StatelessWidget {
   const DevicesPage({
     super.key,
@@ -96,6 +99,7 @@ class DevicesPage extends StatelessWidget {
           ]),
           builder: (context, _) => _DevicesBody(
             controller: controller,
+            chrome: chrome,
             onOpenDevice: onOpenDevice,
             onOpenRunSetup: onOpenRunSetup,
             onOpenPair: onOpenPair,
@@ -106,26 +110,112 @@ class DevicesPage extends StatelessWidget {
   }
 }
 
-class _DevicesBody extends StatelessWidget {
+/// The list itself. Stateful only for the keyboard: beside a device's page
+/// ([DevicesBesideDetailChrome]) focus follows the selection from row to
+/// row, so each row's focus is kept here by device id.
+class _DevicesBody extends StatefulWidget {
   const _DevicesBody({
     required this.controller,
+    required this.chrome,
     required this.onOpenDevice,
     required this.onOpenRunSetup,
     required this.onOpenPair,
   });
 
   final DevicesController controller;
+  final DevicesChrome chrome;
   final void Function(String deviceId) onOpenDevice;
   final void Function(String deviceId) onOpenRunSetup;
   final VoidCallback onOpenPair;
 
   @override
+  State<_DevicesBody> createState() => _DevicesBodyState();
+}
+
+class _DevicesBodyState extends State<_DevicesBody> {
+  /// Each row's focus, by device id. A node outlives a revoked row until
+  /// this page goes: a list of paired devices is short, and disposing a
+  /// node in the frame its row is still unmounting in would pull it from
+  /// under the row.
+  final _rowFocus = <String, FocusNode>{};
+
+  FocusNode _focusOf(String deviceId) => _rowFocus.putIfAbsent(
+    deviceId,
+    () => FocusNode(debugLabel: 'device row $deviceId'),
+  );
+
+  @override
+  void dispose() {
+    for (final node in _rowFocus.values) {
+      node.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Selects [deviceId] beside the list and puts focus on its row, so the
+  /// next Up or Down moves on from there whether the row was clicked or
+  /// reached by key.
+  FocusNode _select(String deviceId) {
+    widget.onOpenDevice(deviceId);
+    return _focusOf(deviceId)..requestFocus();
+  }
+
+  /// Up or Down beside a device's page: from the row with focus when a row
+  /// has it (a user who tabbed down the list moves on from where they are),
+  /// else from the selection.
+  void _step(String? selectedDeviceId, int step) {
+    String? from = selectedDeviceId;
+    for (final MapEntry(key: deviceId, value: node) in _rowFocus.entries) {
+      if (node.hasPrimaryFocus) from = deviceId;
+    }
+    final next = widget.controller.deviceBeside(from, step);
+    if (next == null) return;
+    final node = _select(next);
+    // Scrolled to once the row is laid out: its bottom edge into view
+    // moving down, its top moving up, and nothing when it is in view.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final row = node.context;
+      if (row == null || !row.mounted) return;
+      Scrollable.ensureVisible(
+        row,
+        alignmentPolicy: step < 0
+            ? ScrollPositionAlignmentPolicy.keepVisibleAtStart
+            : ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      );
+    });
+  }
+
+  /// [row]'s tile: marked and focus-following beside a device's page, a
+  /// plain link to the device's page everywhere else.
+  Widget _tileFor(PairedDeviceRow row, String? savedRunLine) {
+    final (bool selected, VoidCallback onTap) = switch (widget.chrome) {
+      DevicesBesideDetailChrome(:final selectedDeviceId) => (
+        row.deviceId == selectedDeviceId,
+        () => _select(row.deviceId),
+      ),
+      DevicesOwnChrome() || DevicesShellChrome() => (
+        false,
+        () => widget.onOpenDevice(row.deviceId),
+      ),
+    };
+    return _DeviceTile(
+      row: row,
+      savedRunLine: savedRunLine,
+      selected: selected,
+      focusNode: _focusOf(row.deviceId),
+      onTap: onTap,
+      onRunSetup: () => widget.onOpenRunSetup(row.deviceId),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
     final devices = controller.app.state.devices;
     final error = controller.state.error;
     final ownWarning = controller.ownCertificateWarning;
     final savedRunLines = controller.savedRunLines;
-    return RefreshIndicator(
+    final list = RefreshIndicator(
       onRefresh: controller.refresh,
       child: ReadableScrollPadding(
         width: ReadableWidth.list,
@@ -139,19 +229,26 @@ class _DevicesBody extends StatelessWidget {
             if (error != null) _NoticeTile(error, isError: true),
             if (ownWarning != null) _NoticeTile(ownWarning, isError: false),
             if (devices.isEmpty)
-              _EmptyState(onOpenPair: onOpenPair)
+              _EmptyState(onOpenPair: widget.onOpenPair)
             else
               for (final row in devices)
-                _DeviceTile(
-                  row: row,
-                  savedRunLine: savedRunLines[row.deviceId],
-                  onTap: () => onOpenDevice(row.deviceId),
-                  onRunSetup: () => onOpenRunSetup(row.deviceId),
-                ),
+                _tileFor(row, savedRunLines[row.deviceId]),
           ],
         ),
       ),
     );
+    return switch (widget.chrome) {
+      DevicesBesideDetailChrome(:final selectedDeviceId) => CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
+              _step(selectedDeviceId, -1),
+          const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
+              _step(selectedDeviceId, 1),
+        },
+        child: list,
+      ),
+      DevicesOwnChrome() || DevicesShellChrome() => list,
+    };
   }
 }
 
@@ -239,6 +336,8 @@ class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
     required this.row,
     required this.savedRunLine,
+    required this.selected,
+    required this.focusNode,
     required this.onTap,
     required this.onRunSetup,
   });
@@ -248,6 +347,14 @@ class _DeviceTile extends StatelessWidget {
   /// How many saved runs name this device, already rendered, or `null`
   /// when none do.
   final String? savedRunLine;
+
+  /// Whether this is the device whose page is beside the list. Marked in
+  /// the colour the shell's rail marks its selected destination with, so
+  /// the two selections on screen read as the same kind of thing.
+  final bool selected;
+
+  /// The row's own focus, which the list moves along with the selection.
+  final FocusNode focusNode;
 
   /// Opens the device's own page.
   final VoidCallback onTap;
@@ -299,6 +406,10 @@ class _DeviceTile extends StatelessWidget {
       ),
       // Two lines normally; a third only when a further line is showing.
       isThreeLine: savedRuns != null || warning != null || sharesNothing,
+      selected: selected,
+      selectedTileColor: theme.colorScheme.secondaryContainer,
+      selectedColor: theme.colorScheme.onSecondaryContainer,
+      focusNode: focusNode,
       onTap: onTap,
       trailing: TextButton(
         onPressed: onRunSetup,

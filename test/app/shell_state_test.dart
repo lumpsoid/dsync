@@ -14,6 +14,7 @@ void main() {
   const thisDevice = ShellDestinationRoot(ShellDestination.thisDevice);
   const settings = ShellDestinationRoot(ShellDestination.settings);
   const phone = ShellDeviceDetail('a1b2:c3d4');
+  const listDetail = ShellDevicesListDetail();
 
   group('ShellLayout.forWidth', () {
     test('a phone-sized window is compact, up to the rail breakpoint', () {
@@ -42,12 +43,46 @@ void main() {
       expect(state.pages(ShellLayout.rail), [thisDevice]);
     });
 
-    test('an open device is over Devices on both layouts', () {
+    test('an open device is over Devices on a compact window and beside '
+        'a narrow rail', () {
       final state = ShellState.home.openDevice(phone.deviceId);
 
       expect(state.destination, ShellDestination.devices);
       expect(state.pages(ShellLayout.compact), [profiles, devices, phone]);
-      expect(state.pages(ShellLayout.extendedRail), [devices, phone]);
+      expect(state.pages(ShellLayout.rail), [devices, phone]);
+    });
+
+    test('with the extended rail, Devices is one page of two panes, with '
+        'a device open or not', () {
+      final list = ShellState.home.select(ShellDestination.devices);
+      final open = list.openDevice(phone.deviceId);
+
+      expect(list.pages(ShellLayout.extendedRail), [listDetail]);
+      expect(open.pages(ShellLayout.extendedRail), [listDetail]);
+      // The pane beside the list shows the one selection there is.
+      expect(list.openDeviceId, isNull);
+      expect(open.openDeviceId, phone.deviceId);
+    });
+
+    test('with the extended rail, every other destination is its own page '
+        'alone', () {
+      final state = ShellState.home
+          .openDevice(phone.deviceId)
+          .select(ShellDestination.thisDevice);
+
+      expect(state.pages(ShellLayout.extendedRail), [thisDevice]);
+      expect(ShellState.home.pages(ShellLayout.extendedRail), [profiles]);
+    });
+
+    test('the open device survives every layout it is laid out for', () {
+      final state = ShellState.home.openDevice(phone.deviceId);
+
+      // One state, three windows: beside the list, over it, and stacked
+      // over the home — the device is the same one on each.
+      expect(state.pages(ShellLayout.extendedRail), [listDetail]);
+      expect(state.pages(ShellLayout.rail), [devices, phone]);
+      expect(state.pages(ShellLayout.compact), [profiles, devices, phone]);
+      expect(state.openDeviceId, phone.deviceId);
     });
 
     test('an open device is kept, not shown, while elsewhere', () {
@@ -98,6 +133,16 @@ void main() {
       expect(state.pages(ShellLayout.rail), [devices]);
     });
 
+    test('choosing another device beside the list replaces the selection',
+        () {
+      final state = ShellState.home
+          .openDevice(phone.deviceId)
+          .openDevice('e5f6:0000');
+
+      expect(state.openDeviceId, 'e5f6:0000');
+      expect(state.pages(ShellLayout.extendedRail), [listDetail]);
+    });
+
     test('closing a device keeps the destination on screen', () {
       final state = ShellState.home.openDevice(phone.deviceId).closeDevice();
 
@@ -129,6 +174,12 @@ void main() {
 
     test('the home never pops', () {
       expect(ShellState.home.popped(profiles), ShellState.home);
+    });
+
+    test('the two panes never pop, and keep the device beside the list', () {
+      final state = ShellState.home.openDevice(phone.deviceId);
+
+      expect(state.popped(listDetail), state);
     });
 
     test('back through a compact stack walks the steps that built it', () {

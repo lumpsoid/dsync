@@ -11,6 +11,7 @@ import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
@@ -358,6 +359,60 @@ void main() {
     // Pairing acts on this list whatever the layout.
     await tester.tap(find.byKey(const Key('devices-open-pair')));
     expect(pairOpened, 1);
+  });
+
+  testWidgets('beside a device\'s page the list marks the selected row and '
+      'Up and Down ask for its neighbours', (tester) async {
+    ready();
+    app.state.recordDevices([row('phone'), row('laptop'), row('tablet')]);
+    Future<void> pumpBeside(String? selected) => tester.pumpWidget(
+      MaterialApp(
+        home: DevicesPage(
+          onOpenDevice: devicesOpened.add,
+          onOpenRunSetup: opened.add,
+          onOpenPair: () => pairOpened++,
+          chrome: DevicesBesideDetailChrome(selectedDeviceId: selected),
+        ),
+      ),
+    );
+    bool marked(String name) =>
+        tester.widget<ListTile>(find.widgetWithText(ListTile, name)).selected;
+
+    await pumpBeside(null);
+    expect(marked('phone'), isFalse);
+
+    await tester.tap(find.text('laptop'));
+    expect(devicesOpened, ['a1b2:c3d4:laptop']);
+    // The shell answers with the selection; the list only reports it back.
+    await pumpBeside('a1b2:c3d4:laptop');
+    expect(marked('laptop'), isTrue);
+    expect(marked('phone'), isFalse);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(devicesOpened, [
+      'a1b2:c3d4:laptop',
+      'a1b2:c3d4:tablet',
+      // Not yet answered by a new selection, so Up goes on from the row
+      // focus moved to.
+      'a1b2:c3d4:laptop',
+    ]);
+  });
+
+  testWidgets('opened over the list, a row is a link: nothing is marked and '
+      'the arrow keys select nothing', (tester) async {
+    ready();
+    app.state.recordDevices([row('phone'), row('laptop')]);
+    await pumpPage(tester);
+
+    await tester.tap(find.text('phone'));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+
+    expect(devicesOpened, ['a1b2:c3d4:phone']);
+    expect(
+      tester.widget<ListTile>(find.widgetWithText(ListTile, 'phone')).selected,
+      isFalse,
+    );
   });
 
   testWidgets('the row does not offer revoke', (tester) async {

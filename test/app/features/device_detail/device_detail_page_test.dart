@@ -2,6 +2,7 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_page.dart';
+import 'package:dsync/app/features/device_detail/device_detail_placement.dart';
 import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
@@ -112,7 +113,11 @@ void main() {
 
   Future<void> pumpPage(WidgetTester tester) => tester.pumpWidget(
     MaterialApp(
-      home: DeviceDetailPage(deviceId: phone.deviceId, onGone: () => gone++),
+      home: DeviceDetailPage(
+        deviceId: phone.deviceId,
+        onGone: () => gone++,
+        placement: DeviceDetailPlacement.overList,
+      ),
     ),
   );
 
@@ -587,6 +592,27 @@ void main() {
 
     expect(find.text('This device is no longer paired.'), findsOneWidget);
     await tester.tap(find.byKey(const Key('device-detail-back')));
+    expect(gone, 1);
+  });
+
+  testWidgets('beside the list, a revoked device\'s way out closes the pane '
+      'rather than going back to a list already in view', (tester) async {
+    app.state.recordDevices([row()]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DeviceDetailPage(
+          deviceId: phone.deviceId,
+          onGone: () => gone++,
+          placement: DeviceDetailPlacement.besideList,
+        ),
+      ),
+    );
+
+    app.state.recordDevices(const []);
+    await tester.pump();
+
+    expect(find.text('Back to devices'), findsNothing);
+    await tester.tap(find.widgetWithText(FilledButton, 'Close'));
     expect(gone, 1);
   });
 

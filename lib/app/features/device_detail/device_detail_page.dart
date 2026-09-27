@@ -6,6 +6,7 @@ import '../../readable_width.dart';
 import '../../withdraw_root_dialog.dart';
 import '../run_setup/file_chooser.dart';
 import 'device_detail_controller.dart';
+import 'device_detail_placement.dart';
 import 'device_detail_scope.dart';
 import 'device_detail_view_state.dart';
 
@@ -25,20 +26,26 @@ import 'device_detail_view_state.dart';
 /// [onGone] is the seam back: it fires once the device this page was opened
 /// for is no longer paired, which is what a revoke produces. The page does
 /// not pop itself — it has no `Navigator` of its own, per this head's
-/// navigation rule — and the entrypoint wires it to one.
+/// navigation rule — and the entrypoint wires it to one. [placement] says
+/// whether that closes a page over the list or the pane beside it, so the
+/// way out is named for what it does.
 class DeviceDetailPage extends StatefulWidget {
   const DeviceDetailPage({
     super.key,
     required this.deviceId,
     required this.onGone,
+    required this.placement,
   });
 
   /// Which device this page is about — the whole of the handoff.
   final String deviceId;
 
-  /// Called when the device stops being paired, so the route that pushed
-  /// this page can leave it.
+  /// Called when the device stops being paired, so the shell can close
+  /// this page.
   final VoidCallback onGone;
+
+  /// Whether this page is over the device list or beside it.
+  final DeviceDetailPlacement placement;
 
   @override
   State<DeviceDetailPage> createState() => _DeviceDetailPageState();
@@ -62,17 +69,26 @@ class _DeviceDetailPageState extends State<DeviceDetailPage> {
       listenable: Listenable.merge([_controller.app.state, _controller.state]),
       builder: (context, _) => Scaffold(
         appBar: AppBar(title: Text(_controller.device?.name ?? 'Device')),
-        body: _DeviceDetailBody(controller: _controller, onGone: widget.onGone),
+        body: _DeviceDetailBody(
+          controller: _controller,
+          onGone: widget.onGone,
+          placement: widget.placement,
+        ),
       ),
     );
   }
 }
 
 class _DeviceDetailBody extends StatelessWidget {
-  const _DeviceDetailBody({required this.controller, required this.onGone});
+  const _DeviceDetailBody({
+    required this.controller,
+    required this.onGone,
+    required this.placement,
+  });
 
   final DeviceDetailController controller;
   final VoidCallback onGone;
+  final DeviceDetailPlacement placement;
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +97,7 @@ class _DeviceDetailBody extends StatelessWidget {
       // Revoked — here, or in another window against the same store. The
       // page has nothing left to show, so it says so and offers the way
       // back rather than popping under the user's finger.
-      return _Gone(onGone: onGone);
+      return _Gone(onGone: onGone, placement: placement);
     }
     final confirmedAt = device.verifiedAt;
     return ReadableScrollPadding(
@@ -748,11 +764,14 @@ class _RevokeDialog extends StatelessWidget {
   }
 }
 
-/// What is left once the device is no longer paired.
+/// What is left once the device is no longer paired, and the way out —
+/// "Back to devices" from a page over the list, "Close" for the pane
+/// beside it, where the list is already in view and nothing is behind.
 class _Gone extends StatelessWidget {
-  const _Gone({required this.onGone});
+  const _Gone({required this.onGone, required this.placement});
 
   final VoidCallback onGone;
+  final DeviceDetailPlacement placement;
 
   @override
   Widget build(BuildContext context) {
@@ -767,7 +786,10 @@ class _Gone extends StatelessWidget {
             FilledButton(
               key: const Key('device-detail-back'),
               onPressed: onGone,
-              child: const Text('Back to devices'),
+              child: Text(switch (placement) {
+                DeviceDetailPlacement.overList => 'Back to devices',
+                DeviceDetailPlacement.besideList => 'Close',
+              }),
             ),
           ],
         ),

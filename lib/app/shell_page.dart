@@ -31,7 +31,8 @@ final class ShellDestinationRoot extends ShellPage {
 }
 
 /// One paired device's own page, opened over Devices, by id — the handoff
-/// carries the id and the page loads the rest.
+/// carries the id and the page loads the rest. Only where the window has
+/// no room for it beside the list ([ShellDevicesListDetail]).
 final class ShellDeviceDetail extends ShellPage {
   const ShellDeviceDetail(this.deviceId);
 
@@ -46,4 +47,30 @@ final class ShellDeviceDetail extends ShellPage {
 
   @override
   String toString() => 'ShellDeviceDetail($deviceId)';
+}
+
+/// Devices' own page on a window wide enough for two panes: the device list,
+/// and beside it the device `ShellState.openDeviceId` names — or a line
+/// saying none is open.
+///
+/// **A page of its own rather than [ShellDestinationRoot] with a flag,** so
+/// crossing into or out of this layout replaces the bottom of the stack: the
+/// shell lays that out as a resize, with no push or pop animated, rather
+/// than as the device page being closed or opened under the user.
+///
+/// **It carries no device id.** The open device is the shell state's, read
+/// there when the page is drawn. An id here would make every change of
+/// selection a different page, and so a new route — the list would lose
+/// its keyboard focus on every arrow press.
+final class ShellDevicesListDetail extends ShellPage {
+  const ShellDevicesListDetail();
+
+  @override
+  bool operator ==(Object other) => other is ShellDevicesListDetail;
+
+  @override
+  int get hashCode => (ShellDevicesListDetail).hashCode;
+
+  @override
+  String toString() => 'ShellDevicesListDetail()';
 }

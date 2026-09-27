@@ -24,6 +24,7 @@ import 'package:dsync/app/features/this_device/this_device_scope.dart';
 import 'package:flutter/services.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
+import 'package:dsync/app/features/devices/no_device_selected.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_page.dart';
@@ -547,6 +548,8 @@ void main() {
     }
 
     const wide = Size(1440, 900);
+    // A rail, but short of the room for Devices' two panes.
+    const rail = Size(1000, 700);
     const compact = Size(800, 600);
 
     Finder onRail(String label) => find.descendant(
@@ -561,19 +564,56 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
     }
 
-    void pairedDesktop() => app.state.recordDevices([
-      PairedDeviceRow(
-        name: 'desktop',
-        deviceId: 'a1b2:c3d4',
-        address: '10.0.0.7:28771',
-        pairedAt: DateTime(2026, 9, 15),
-        agreedRootLabels: const {'/srv/notes': '/srv/notes'},
-        certificateIssuedAt: DateTime(2026, 1, 1),
-        certificateExpiresAt: DateTime(2027, 1, 1),
-        certificateWarning: null,
-        verifiedAt: null,
-      ),
+    PairedDeviceRow device(String name, String deviceId) => PairedDeviceRow(
+      name: name,
+      deviceId: deviceId,
+      address: '10.0.0.7:28771',
+      pairedAt: DateTime(2026, 9, 15),
+      agreedRootLabels: const {'/srv/notes': '/srv/notes'},
+      certificateIssuedAt: DateTime(2026, 1, 1),
+      certificateExpiresAt: DateTime(2027, 1, 1),
+      certificateWarning: null,
+      verifiedAt: null,
+    );
+
+    void pairedDesktop() =>
+        app.state.recordDevices([device('desktop', 'a1b2:c3d4')]);
+
+    void pairedThree() => app.state.recordDevices([
+      device('desktop', 'a1b2:c3d4'),
+      device('laptop', 'e5f6:0000'),
+      device('phone', '9999:8888'),
     ]);
+
+    /// [name] on its row in the device list, not the same name in the pane
+    /// beside it: the name, not the row's middle, which the test font's
+    /// wide glyphs put under "Set up run" in a 360px column.
+    Finder rowOf(String name) => find.descendant(
+      of: find.byType(DevicesPage),
+      matching: find.text(name),
+    );
+
+    /// The names on the rows the list marks as selected.
+    List<String> selectedRows(WidgetTester tester) => [
+      for (final element in find
+          .descendant(
+            of: find.byType(DevicesPage),
+            matching: find.byType(ListTile),
+          )
+          .evaluate())
+        if ((element.widget as ListTile).selected)
+          for (final text in tester.widgetList<Text>(
+            find.descendant(
+              of: find.byElementPredicate((e) => e == element),
+              matching: find.byType(Text),
+            ),
+          ))
+            ?text.data,
+    ];
+
+    /// The device whose page is on screen.
+    String detailOn(WidgetTester tester) =>
+        tester.widget<DeviceDetailPage>(find.byType(DeviceDetailPage)).deviceId;
 
     testWidgets('a wide window gets the rail, and the home drops the chrome '
         'it replaces', (tester) async {
@@ -665,7 +705,7 @@ void main() {
 
     testWidgets('a device opened from Devices keeps the rail, and back or Esc '
         'closes only the device', (tester) async {
-      windowOf(tester, wide);
+      windowOf(tester, rail);
       ready();
       pairedDesktop();
       await tester.pumpWidget(const DsyncApp());
@@ -714,9 +754,9 @@ void main() {
       expect(find.byType(NavigationRail), findsNothing);
     });
 
-    testWidgets('resizing wide → compact → wide keeps the destination and '
+    testWidgets('resizing rail → compact → rail keeps the destination and '
         'the open device, with its state', (tester) async {
-      windowOf(tester, wide);
+      windowOf(tester, rail);
       ready();
       pairedDesktop();
       await tester.pumpWidget(const DsyncApp());
@@ -733,7 +773,7 @@ void main() {
       expect(tester.state(find.byType(DeviceDetailPage)), same(opened));
       expect(find.byType(BackButton), findsOneWidget);
 
-      windowOf(tester, wide);
+      windowOf(tester, rail);
       await step(tester);
       expect(find.byType(NavigationRail), findsOneWidget);
       expect(find.byType(DeviceDetailPage), findsOneWidget);
@@ -745,6 +785,189 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(DevicesPage), findsOneWidget);
       expect(find.byType(BackButton), findsNothing);
+    });
+
+    testWidgets('Devices on a wide window is the list beside a pane that '
+        'says nothing is selected', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedThree();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+
+      expect(find.byType(DevicesPage), findsOneWidget);
+      expect(find.byType(NoDeviceSelected), findsOneWidget);
+      expect(
+        find.text(
+          'Select a device in the list to see its folders, its certificate '
+          'and its name here.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(DeviceDetailPage), findsNothing);
+      expect(selectedRows(tester), isEmpty);
+      // The list keeps a phone's column; the pane takes the rest.
+      expect(tester.getSize(find.byType(DevicesPage)).width, 360);
+    });
+
+    testWidgets('a device tapped on a wide window opens beside the list, its '
+        'row marked, with no back arrow', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedThree();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+
+      await tester.tap(rowOf('laptop'));
+      await step(tester);
+
+      expect(find.byType(DevicesPage), findsOneWidget);
+      expect(detailOn(tester), 'e5f6:0000');
+      expect(find.byType(NoDeviceSelected), findsNothing);
+      expect(selectedRows(tester), contains('laptop'));
+      expect(selectedRows(tester), isNot(contains('desktop')));
+      expect(find.byType(BackButton), findsNothing);
+      // The pane's bar still names the device.
+      expect(
+        find.descendant(
+          of: find.byType(DeviceDetailPage),
+          matching: find.widgetWithText(AppBar, 'laptop'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(rowOf('desktop'));
+      await step(tester);
+      expect(detailOn(tester), 'a1b2:c3d4');
+      expect(selectedRows(tester), contains('desktop'));
+      expect(selectedRows(tester), isNot(contains('laptop')));
+    });
+
+    testWidgets('Up and Down move the selection beside the list, and stop at '
+        'its ends', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedThree();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+      await tester.tap(rowOf('desktop'));
+      await step(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await step(tester);
+      expect(detailOn(tester), 'e5f6:0000');
+      expect(selectedRows(tester), contains('laptop'));
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await step(tester);
+      expect(detailOn(tester), '9999:8888');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await step(tester);
+      expect(detailOn(tester), '9999:8888');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await step(tester);
+      expect(detailOn(tester), 'e5f6:0000');
+      expect(selectedRows(tester), contains('laptop'));
+      expect(selectedRows(tester), isNot(contains('phone')));
+    });
+
+    testWidgets('Esc beside the list leaves the device open', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedThree();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+      await tester.tap(rowOf('laptop'));
+      await step(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      expect(detailOn(tester), 'e5f6:0000');
+      expect(find.byType(DevicesPage), findsOneWidget);
+    });
+
+    testWidgets('a device revoked beside the list closes its pane, not the '
+        'list', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedThree();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+      await tester.tap(rowOf('laptop'));
+      await step(tester);
+
+      // What a revoke leaves in the application state: the row is gone.
+      app.state.recordDevices([
+        device('desktop', 'a1b2:c3d4'),
+        device('phone', '9999:8888'),
+      ]);
+      await step(tester);
+      expect(find.text('This device is no longer paired.'), findsOneWidget);
+      expect(find.text('Back to devices'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('device-detail-back')));
+      await step(tester);
+
+      expect(find.byType(DeviceDetailPage), findsNothing);
+      expect(find.byType(NoDeviceSelected), findsOneWidget);
+      expect(find.byType(DevicesPage), findsOneWidget);
+      expect(selectedRows(tester), isEmpty);
+    });
+
+    testWidgets('resizing two panes, rail, compact and back keeps the '
+        'selected device, with its state', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedThree();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+      await tester.tap(rowOf('laptop'));
+      await step(tester);
+      final opened = tester.state(find.byType(DeviceDetailPage));
+
+      // A rail too narrow for two panes: the device is over the list.
+      windowOf(tester, rail);
+      await step(tester);
+      expect(find.byType(NavigationRail), findsOneWidget);
+      expect(detailOn(tester), 'e5f6:0000');
+      expect(tester.state(find.byType(DeviceDetailPage)), same(opened));
+      expect(find.byType(BackButton), findsOneWidget);
+
+      windowOf(tester, compact);
+      await step(tester);
+      expect(find.byType(NavigationRail), findsNothing);
+      expect(tester.state(find.byType(DeviceDetailPage)), same(opened));
+      expect(find.byType(BackButton), findsOneWidget);
+
+      windowOf(tester, wide);
+      await step(tester);
+      expect(find.byType(DevicesPage), findsOneWidget);
+      expect(tester.state(find.byType(DeviceDetailPage)), same(opened));
+      expect(selectedRows(tester), contains('laptop'));
+      expect(find.byType(BackButton), findsNothing);
+
+      // Straight from two panes to compact, where back closes the device,
+      // and the pane beside the list is empty once there is room again.
+      windowOf(tester, compact);
+      await step(tester);
+      expect(tester.state(find.byType(DeviceDetailPage)), same(opened));
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(DevicesPage), findsOneWidget);
+      expect(find.byType(DeviceDetailPage), findsNothing);
+
+      windowOf(tester, wide);
+      await step(tester);
+      expect(find.byType(NoDeviceSelected), findsOneWidget);
     });
 
     testWidgets('the rail fits the shortest window at either width, labels '

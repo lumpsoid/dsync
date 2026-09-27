@@ -7,8 +7,10 @@ import 'app_bootstrap.dart';
 import 'app_scope.dart';
 import 'features/archives/archives_page.dart';
 import 'features/device_detail/device_detail_page.dart';
+import 'features/device_detail/device_detail_placement.dart';
 import 'features/devices/devices_chrome.dart';
 import 'features/devices/devices_page.dart';
+import 'features/devices/no_device_selected.dart';
 import 'features/pair/pair_page.dart';
 import 'features/pair/scan_code_page.dart';
 import 'features/pair_show/pair_show_page.dart';
@@ -43,8 +45,9 @@ import 'shell_state.dart';
 /// **So is the layout.** Whether the window gets a navigation rail or the
 /// phone's stack of pushed pages is decided once, by `_AppShell`, from the
 /// window's width; where the user is ([ShellState]) is a plain value it
-/// owns, laid out for whichever layout applies. A page learns only whether
-/// it draws its own way to the other destinations.
+/// owns, laid out for whichever layout applies. A page learns only how the
+/// shell has placed it: whether it draws its own way to the other
+/// destinations, and whether it sits beside another page or over it.
 ///
 /// **Nothing routes before the gate is ready.** `AppController.bootstrap()`
 /// is started by `main()`, before `runApp`; this widget only renders what
@@ -137,6 +140,15 @@ class _BootstrapGate extends StatelessWidget {
 /// again, the pages it keeps keep their routes (they are keyed by
 /// [ShellPage]), and an open device page stays open with its state.
 ///
+/// **Devices is list and detail side by side where the window has room**
+/// ([ShellLayout.extendedRail]): one route, [ShellDevicesListDetail], draws
+/// the list in a fixed column and the open device beside it, and on a
+/// narrower window the same device is a route over the list. Crossing that
+/// width swaps one route for the other, so the device list and the device's
+/// page are each built under a global key (`_deviceList`, [_DeviceDetailKey])
+/// and carried across with their state — the scroll offset, the page's last
+/// outcome line — rather than rebuilt.
+///
 /// **Two navigators, one job each.** The pane's holds the destinations and
 /// what is opened over them, so drilling into a device keeps the rail in
 /// view. The app's root navigator holds the step-by-step flows — Pair and
@@ -167,6 +179,9 @@ class _AppShellState extends State<_AppShell> {
   final _pane = GlobalKey<NavigatorState>();
 
   late final _escape = _PopPaneAction(_pane);
+
+  /// The device list, whichever route it is drawn in.
+  final _deviceList = GlobalKey();
 
   ShellState _shell = ShellState.home;
 
@@ -247,15 +262,57 @@ class _AppShellState extends State<_AppShell> {
       destination,
       layout,
     ),
-    // One paired device's own page: its certificate, the folders this host
-    // shares with it, its name here, and the revoke. Carries the device id
-    // and nothing else, per the handoff rule; `onGone` closes it once the
-    // device stops being paired, which a revoke there produces.
-    ShellDeviceDetail(:final deviceId) => DeviceDetailPage(
-      deviceId: deviceId,
-      onGone: () => _move((shell) => shell.closeDevice()),
+    ShellDeviceDetail(:final deviceId) => _deviceDetail(
+      deviceId,
+      DeviceDetailPlacement.overList,
+    ),
+    // The open device is read here, from the one selection there is, not
+    // carried by the page: see [ShellDevicesListDetail].
+    ShellDevicesListDetail() => _DevicesListDetail(
+      list: _devicesPage(layout),
+      detail: switch (_shell.openDeviceId) {
+        null => const NoDeviceSelected(),
+        final deviceId => _deviceDetail(
+          deviceId,
+          DeviceDetailPlacement.besideList,
+        ),
+      },
     ),
   };
+
+  /// One paired device's own page: its certificate, the folders this host
+  /// shares with it, its name here, and the revoke. Carries the device id
+  /// and nothing else, per the handoff rule; `onGone` closes it once the
+  /// device stops being paired, which a revoke there produces — over the
+  /// list that is back to the list, beside it the pane empties.
+  Widget _deviceDetail(String deviceId, DeviceDetailPlacement placement) =>
+      DeviceDetailPage(
+        key: _DeviceDetailKey(deviceId),
+        deviceId: deviceId,
+        onGone: () => _move((shell) => shell.closeDevice()),
+        placement: placement,
+      );
+
+  /// The device list. Beside a device's page it marks the one the shell has
+  /// open, and a click or an arrow key there is the same `openDevice` a tap
+  /// is anywhere else — the selection is [ShellState.openDeviceId] and no
+  /// copy of it.
+  Widget _devicesPage(ShellLayout layout) => DevicesPage(
+    key: _deviceList,
+    onOpenDevice: (deviceId) => _move((shell) => shell.openDevice(deviceId)),
+    onOpenRunSetup: (deviceId) => _openRunSetup(RunSetupFromDevice(deviceId)),
+    onOpenPair: _openPair,
+    chrome: switch (layout) {
+      ShellLayout.compact => DevicesOwnChrome(
+        onOpenThisDevice: () => _select(ShellDestination.thisDevice),
+        onOpenSharedFolders: () => _select(ShellDestination.sharedFolders),
+      ),
+      ShellLayout.rail => const DevicesShellChrome(),
+      ShellLayout.extendedRail => DevicesBesideDetailChrome(
+        selectedDeviceId: _shell.openDeviceId,
+      ),
+    },
+  );
 
   /// [destination]'s own page. The leaves take no callbacks because
   /// nothing leads anywhere from them, and hold no id because each is about
@@ -286,21 +343,7 @@ class _AppShellState extends State<_AppShell> {
           ShellLayout.extendedRail => const ProfilesShellChrome(),
         },
       ),
-      ShellDestination.devices => DevicesPage(
-        onOpenDevice: (deviceId) =>
-            _move((shell) => shell.openDevice(deviceId)),
-        onOpenRunSetup: (deviceId) =>
-            _openRunSetup(RunSetupFromDevice(deviceId)),
-        onOpenPair: _openPair,
-        chrome: switch (layout) {
-          ShellLayout.compact => DevicesOwnChrome(
-            onOpenThisDevice: () => _select(ShellDestination.thisDevice),
-            onOpenSharedFolders: () => _select(ShellDestination.sharedFolders),
-          ),
-          ShellLayout.rail ||
-          ShellLayout.extendedRail => const DevicesShellChrome(),
-        },
-      ),
+      ShellDestination.devices => _devicesPage(layout),
       ShellDestination.sharedFolders => const SharedFoldersPage(),
       ShellDestination.archives => const ArchivesPage(),
       ShellDestination.serve => const ServePage(),
@@ -365,13 +408,63 @@ class _AppShellState extends State<_AppShell> {
   }
 }
 
+/// Devices' two panes: the device list in a fixed column, and [detail] —
+/// the open device's page, or the line saying none is — in the rest.
+///
+/// The list keeps a phone's width because its rows are a phone's rows (a
+/// name, an address, "Set up run"); widening it would only push the run
+/// action away from the name it belongs to and take the room from the pane
+/// that has paragraphs in it.
+class _DevicesListDetail extends StatelessWidget {
+  const _DevicesListDetail({required this.list, required this.detail});
+
+  static const _listWidth = 360.0;
+
+  final Widget list;
+  final Widget detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(width: _listWidth, child: list),
+        const VerticalDivider(width: 1, thickness: 1),
+        Expanded(child: detail),
+      ],
+    );
+  }
+}
+
+/// The key a device's own page is built under on every layout.
+///
+/// Global, so the page and its state move with the device when a resize
+/// carries it between a route of its own and the pane beside the list. By
+/// value, so the key is the device: the same id finds the same page, and
+/// selecting another device builds that one a page of its own — the page
+/// points its controller at its device once, when it is first built.
+final class _DeviceDetailKey extends GlobalKey {
+  const _DeviceDetailKey(this.deviceId) : super.constructor();
+
+  final String deviceId;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _DeviceDetailKey && other.deviceId == deviceId;
+
+  @override
+  int get hashCode => Object.hash(_DeviceDetailKey, deviceId);
+}
+
 /// How the pane's routes come and go when [ShellState.pages] changes.
 ///
 /// Opening or closing something over a destination animates as a push or
 /// a pop, as it always has. Replacing the bottom of the stack does not:
 /// that is a rail click moving to another destination, or a resize laying
 /// the same place out for the other layout, and neither is a step forward
-/// or back — the new page is simply there.
+/// or back — the new page is simply there. It is also what lets a page
+/// under a global key move between routes: a route that animated out would
+/// still be drawing it.
 class _ShellTransitions extends TransitionDelegate<void> {
   const _ShellTransitions();
 
@@ -429,6 +522,11 @@ class _ShellTransitions extends TransitionDelegate<void> {
 /// belongs to the field, and a half-typed name should not vanish with the
 /// page under it. Dialogs and the step-by-step flows are on the root
 /// navigator, outside the pane, and keep their own Esc handling.
+///
+/// So beside the device list Esc leaves the selected device alone: the
+/// two panes are one destination's own page, with nothing open over it. A
+/// device there is where the user is, not a step taken from the list, and
+/// Esc swapping it for the empty pane would lose their place for nothing.
 /// Esc, pressed inside the shell's pane.
 class _PopPaneIntent extends Intent {
   const _PopPaneIntent();

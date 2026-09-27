@@ -3,6 +3,7 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/format_path.dart';
+import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -170,6 +171,47 @@ void main() {
       ]);
 
       expect(controller.savedRunLines['aaaa'], '2 saved runs');
+    });
+  });
+
+  group('deviceBeside', () {
+    PairedDeviceRow row(String deviceId) => PairedDeviceRow(
+      name: deviceId,
+      deviceId: deviceId,
+      address: '10.0.0.7:28771',
+      pairedAt: DateTime(2026, 9, 15),
+      agreedRootLabels: const {},
+      certificateIssuedAt: DateTime(2026, 1, 1),
+      certificateExpiresAt: DateTime(2027, 1, 1),
+      certificateWarning: null,
+      verifiedAt: null,
+    );
+
+    setUp(() => app.state.recordDevices([row('a'), row('b'), row('c')]));
+
+    test('steps along the list in its order', () {
+      expect(controller.deviceBeside('b', 1), 'c');
+      expect(controller.deviceBeside('b', -1), 'a');
+    });
+
+    test('stops at either end rather than wrapping', () {
+      expect(controller.deviceBeside('c', 1), isNull);
+      expect(controller.deviceBeside('a', -1), isNull);
+    });
+
+    test('starts at the first row from nothing selected, either way', () {
+      expect(controller.deviceBeside(null, 1), 'a');
+      expect(controller.deviceBeside(null, -1), 'a');
+    });
+
+    test('starts at the first row from a device no longer listed', () {
+      expect(controller.deviceBeside('revoked', 1), 'a');
+    });
+
+    test('has nowhere to go on an empty list', () {
+      app.state.recordDevices(const []);
+
+      expect(controller.deviceBeside(null, 1), isNull);
     });
   });
 }

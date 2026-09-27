@@ -80,6 +80,22 @@ class DevicesController {
     };
   }
 
+  /// The device [step] rows from [deviceId] in the list as it stands now —
+  /// what Up (`-1`) and Down (`1`) select beside a device's page — or
+  /// `null` past either end, where the selection stays put.
+  ///
+  /// From a device that is not on the list — none selected yet, or the
+  /// selected one just revoked — either key starts at the first row, the
+  /// way a desktop list with nothing selected does.
+  String? deviceBeside(String? deviceId, int step) {
+    final ids = [for (final row in app.state.devices) row.deviceId];
+    if (ids.isEmpty) return null;
+    final at = deviceId == null ? -1 : ids.indexOf(deviceId);
+    if (at < 0) return ids.first;
+    final next = at + step;
+    return next >= 0 && next < ids.length ? ids[next] : null;
+  }
+
   /// Re-reads the store into `AppState.devices`, for a pull-to-refresh or
   /// to pick up a change made behind this process's back. A store that has
   /// gone corrupt since bootstrap lands on [DevicesViewState.error] rather
