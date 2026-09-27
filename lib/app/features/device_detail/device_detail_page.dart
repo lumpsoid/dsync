@@ -365,24 +365,13 @@ class _RootsSection extends StatelessWidget {
       context: context,
       builder: (context) => _GrantDialog(
         onBrowse: controller.picker.pick,
-        onBrowseFile: () => _browseFile(context),
+        // A file's path, chosen the platform's way (D6, R4, `chooseFile`).
+        // Giving up leaves the dialog's typed field untouched; a file not
+        // there yet is typed there.
+        onBrowseFile: () => chooseFile(context, controller.fileChooser),
       ),
     );
     if (path != null) await controller.grantRoot(path);
-  }
-
-  /// A file's path, chosen through [FileChooser] (D6, R4): the folder
-  /// chooser for where it lives, then a page over that folder's listing.
-  /// `null` at either step leaves the dialog's typed field untouched.
-  Future<String?> _browseFile(BuildContext context) async {
-    final chooser = controller.fileChooser;
-    final root = await chooser.chooseFolder();
-    if (root == null || !context.mounted) return null;
-    return Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => FileChooserPage(chooser: chooser, root: root),
-      ),
-    );
   }
 
   /// Confirms, then withdraws by the *stored* path — [label] is only what
@@ -429,8 +418,9 @@ class _GrantDialog extends StatefulWidget {
   /// dialog without a platform channel.
   final Future<String?> Function() onBrowse;
 
-  /// [onBrowse]'s file counterpart (D6, R4): the folder chooser, then a
-  /// browse of it, ending in a file's path rather than a folder's.
+  /// [onBrowse]'s file counterpart (D6, R4): the platform's file dialog, or
+  /// the folder chooser then a browse of it, ending in a file's path rather
+  /// than a folder's.
   final Future<String?> Function() onBrowseFile;
 
   @override
@@ -463,8 +453,8 @@ class _GrantDialogState extends State<_GrantDialog> {
     if (picked != null) navigator.pop(picked);
   }
 
-  /// [_browse]'s file counterpart: a page is pushed to browse the chosen
-  /// folder, so this waits for it rather than popping straight away.
+  /// [_browse]'s file counterpart: on a phone a page is pushed to browse
+  /// the chosen folder, so this waits for the whole flow before popping.
   Future<void> _browseFile() async {
     final navigator = Navigator.of(context);
     final String? picked;

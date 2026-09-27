@@ -1,5 +1,6 @@
 import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
+import 'package:dsync/app/features/run_setup/file_choice.dart';
 import 'package:dsync/app/features/run_setup/file_chooser.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
@@ -144,5 +145,109 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(result, '/picked/new.txt');
+  });
+
+  /// [FileChooser.start]: which first step the picker's platform takes, as
+  /// plain values (task abb68b).
+  group('start', () {
+    late FakeFolderPicker picker;
+
+    setUp(() {
+      picker = FakeFolderPicker();
+      chooser = FileChooser(CoreLink(core), picker: picker);
+    });
+
+    test('on a desktop the file dialog answers with the file itself', () async {
+      picker
+        ..picksFilesNatively = true
+        ..onPickFile = () => '/home/me/todo.txt';
+
+      final choice = await chooser.start();
+
+      expect(
+        choice,
+        isA<FileChosen>().having((c) => c.path, 'path', '/home/me/todo.txt'),
+      );
+      expect(picker.pickCount, 0);
+      expect(chooser.namesNewFilesApart, isTrue);
+    });
+
+    test('on a desktop a dismissed file dialog is nothing chosen', () async {
+      picker.picksFilesNatively = true;
+
+      expect(await chooser.start(), isA<FileDismissed>());
+      expect(picker.pickFileCount, 1);
+    });
+
+    test('on a phone the folder chooser answers with a folder to browse, '
+        'never the file dialog', () async {
+      picker.onPick = () => '/storage/emulated/0/notes';
+
+      final choice = await chooser.start();
+
+      expect(
+        choice,
+        isA<FileBrowse>().having(
+          (c) => c.root,
+          'root',
+          '/storage/emulated/0/notes',
+        ),
+      );
+      expect(picker.pickFileCount, 0);
+      expect(chooser.namesNewFilesApart, isFalse);
+    });
+
+    test('on a phone a dismissed folder chooser is nothing chosen', () async {
+      expect(await chooser.start(), isA<FileDismissed>());
+    });
+  });
+
+  group('nameNewFile', () {
+    Future<void> pumpNaming(WidgetTester tester) async {
+      chooser = FileChooser(
+        CoreLink(core),
+        picker: FakeFolderPicker()..onPick = () => '/home/me/notes',
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () async {
+                result = await nameNewFile(context, chooser);
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('Enter in the name joins it to the chosen folder', (
+      tester,
+    ) async {
+      await pumpNaming(tester);
+
+      await tester.enterText(find.byKey(const Key('new-file-name')), ' a.txt ');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+
+      expect(result, '/home/me/notes/a.txt');
+    });
+
+    testWidgets('a blank name is not taken, and Cancel is nothing', (
+      tester,
+    ) async {
+      await pumpNaming(tester);
+
+      await tester.tap(find.byKey(const Key('new-file-use')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('new-file-name')), findsOneWidget);
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(result, isNull);
+    });
   });
 }

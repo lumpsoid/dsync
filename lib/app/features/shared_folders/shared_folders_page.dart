@@ -69,29 +69,15 @@ class SharedFoldersPage extends StatelessWidget {
       builder: (context) => _AddFolderDialog(
         devices: controller.devicesForNewFolder,
         onBrowse: controller.chooseFolder,
-        onBrowseFile: () => _browseFile(context, controller),
+        // A file's path, chosen the platform's way (D6, R4, `chooseFile`).
+        // Giving up leaves the dialog's typed field untouched; a file not
+        // there yet is typed there.
+        onBrowseFile: () => chooseFile(context, controller.fileChooser),
       ),
     );
     if (share != null) {
       await controller.shareNewFolder(share.path, share.deviceIds);
     }
-  }
-
-  /// A file's path, chosen through [FileChooser] (D6, R4): the folder
-  /// chooser for where it lives, then a page over that folder's listing.
-  /// `null` at either step leaves the dialog's typed field untouched.
-  Future<String?> _browseFile(
-    BuildContext context,
-    SharedFoldersController controller,
-  ) async {
-    final chooser = controller.fileChooser;
-    final root = await chooser.chooseFolder();
-    if (root == null || !context.mounted) return null;
-    return Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => FileChooserPage(chooser: chooser, root: root),
-      ),
-    );
   }
 }
 
@@ -272,8 +258,9 @@ class _AddFolderDialog extends StatefulWidget {
   /// dialog without a platform channel.
   final Future<String?> Function() onBrowse;
 
-  /// [onBrowse]'s file counterpart (D6, R4): the folder chooser, then a
-  /// browse of it, ending in a file's path rather than a folder's.
+  /// [onBrowse]'s file counterpart (D6, R4): the platform's file dialog, or
+  /// the folder chooser then a browse of it, ending in a file's path rather
+  /// than a folder's.
   final Future<String?> Function() onBrowseFile;
 
   @override

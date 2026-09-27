@@ -3,14 +3,17 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-/// The platform's folder chooser, and the OS grant that decides whether what
-/// it hands back is a folder this head can actually use.
+/// The platform's folder chooser, its file dialog where that hands back a
+/// real path, and the OS grant that decides whether what they hand back is a
+/// folder this head can actually use.
 ///
-/// An interface because neither half can run in a test: both are platform
+/// An interface because none of it can run in a test: all of it is platform
 /// channels (the abstraction-at-the-border rule in `CLAUDE.md`). It is one
 /// interface rather than two because the two calls are one story — a picked
 /// folder that cannot be read is a grant problem, and the code that picks is
-/// the code that has to ask — and because the platform decides both.
+/// the code that has to ask — and because the platform decides both. The
+/// file dialog sits here for the same reason: whether it answers with a
+/// real path is decided by the same platform fact, at the same edge.
 ///
 /// **It deliberately does not say whether a folder is usable.** That is what
 /// `RunSetupController` asks the core to check — list the folder, write and
@@ -36,6 +39,21 @@ abstract interface class FolderPicker {
   /// who refused it and changed their mind.
   Future<void> openSettings();
 
+  /// Whether [pickFile] is this platform's way to choose a single file: a
+  /// native file dialog that answers with the file's own path. True on
+  /// Linux, macOS and Windows. False on Android and iOS, where the file
+  /// dialog answers with a copy of the file in the app's cache (`file_picker`
+  /// 13.1.0 `FileUtils.kt:741-760`) — a root built from it would sync the
+  /// copy — so a file is chosen there by browsing a [pick]ed folder instead
+  /// (`FileChooser`).
+  bool get picksFilesNatively;
+
+  /// The absolute path of the file the user chose in the platform's file
+  /// dialog, or `null` if they dismissed it. Only where [picksFilesNatively];
+  /// elsewhere it throws [UnsupportedError] rather than hand back a path
+  /// that is not the file's. May throw whatever the platform channel throws.
+  Future<String?> pickFile();
+
   /// Whether this platform has that grant at all — a Settings page where
   /// the user can give it. Where it does not, [requestAccess] and
   /// [openSettings] are inert, and a picked path the core refuses stays
@@ -59,22 +77,42 @@ abstract interface class FolderPicker {
 /// refusal from the core's folder check stands as the final answer, which is
 /// exactly what it is.
 final class PlatformFolderPicker implements FolderPicker {
-  const PlatformFolderPicker({required this.asksForFileAccess});
+  const PlatformFolderPicker({
+    required this.asksForFileAccess,
+    required this.picksFilesNatively,
+  });
 
   /// Reads the platform at this one edge and hands a plain value down, the
   /// way `supportDirForThisDevice` does. Production only;
   /// a test constructs the case it is about with the plain constructor.
-  factory PlatformFolderPicker.forThisHost() => PlatformFolderPicker(
-    asksForFileAccess: Platform.isAndroid || Platform.isIOS,
-  );
+  factory PlatformFolderPicker.forThisHost() {
+    final phone = Platform.isAndroid || Platform.isIOS;
+    return PlatformFolderPicker(
+      asksForFileAccess: phone,
+      picksFilesNatively: !phone,
+    );
+  }
 
   /// Whether this platform has a file-access grant to ask for — see the
   /// class doc comment.
   @override
   final bool asksForFileAccess;
 
+  /// Whether the file dialog hands back the file's own path — see
+  /// [FolderPicker.picksFilesNatively].
+  @override
+  final bool picksFilesNatively;
+
   @override
   Future<String?> pick() => FilePicker.getDirectoryPath();
+
+  @override
+  Future<String?> pickFile() async {
+    if (!picksFilesNatively) {
+      throw UnsupportedError('This platform picks a file by browsing a folder');
+    }
+    return (await FilePicker.pickFile())?.path;
+  }
 
   @override
   Future<bool> requestAccess() async {

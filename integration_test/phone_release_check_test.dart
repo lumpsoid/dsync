@@ -550,6 +550,14 @@ final class _ScriptedPicker implements FolderPicker {
 
   @override
   bool get asksForFileAccess => true;
+
+  /// A phone: a file is chosen by browsing a picked folder, never here.
+  @override
+  bool get picksFilesNatively => false;
+
+  @override
+  Future<String?> pickFile() async =>
+      throw UnsupportedError('a phone has no native file dialog');
 }
 
 /// What the phone shows: nothing to do there.

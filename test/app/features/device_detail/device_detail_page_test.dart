@@ -267,6 +267,61 @@ void main() {
     );
   });
 
+  group('granting a file on a desktop (task abb68b)', () {
+    late FakeFolderPicker picker;
+
+    Future<void> openGrant(WidgetTester tester) async {
+      picker = FakeFolderPicker()..picksFilesNatively = true;
+      final fileController = DeviceDetailController(app, picker: picker);
+      fileController.select(phone.deviceId);
+      deviceDetailScope.setController(fileController);
+      addTearDown(fileController.dispose);
+      app.state.recordDevices([row()]);
+      await pumpPage(tester);
+      await tapAction(tester, const Key('device-grant-root'));
+    }
+
+    testWidgets('the native file dialog grants the file it answers with, '
+        'no browser between', (tester) async {
+      await openGrant(tester);
+      picker.onPickFile = () => '/home/me/notes.txt';
+      core.reply<wire.CoreCommandGrantRoot>(
+        devicesReply([
+          pairedDevice(
+            deviceId: phone.deviceId,
+            name: 'desktop',
+            grantedRoots: const ['/home/me/notes', '/home/me/notes.txt'],
+          ),
+        ]),
+      );
+
+      await tester.tap(find.byKey(const Key('device-grant-browse-file')));
+      await tester.pumpAndSettle();
+
+      expect(core.sent<wire.CoreCommandGrantRoot>(), [
+        wire.CoreCommandGrantRoot(
+          deviceId: phone.deviceId,
+          path: '/home/me/notes.txt',
+        ),
+      ]);
+      expect(core.sent<wire.CoreCommandListFilterFolder>(), isEmpty);
+      expect(picker.pickCount, 0);
+    });
+
+    testWidgets('dismissing it leaves the dialog open and grants nothing', (
+      tester,
+    ) async {
+      await openGrant(tester);
+
+      await tester.tap(find.byKey(const Key('device-grant-browse-file')));
+      await tester.pumpAndSettle();
+
+      expect(picker.pickFileCount, 1);
+      expect(find.byKey(const Key('device-grant-path-field')), findsOneWidget);
+      expect(core.sent<wire.CoreCommandGrantRoot>(), isEmpty);
+    });
+  });
+
   testWidgets('withdrawing a folder asks first, and a cancel keeps it', (
     tester,
   ) async {
@@ -655,4 +710,10 @@ class _NoPicker implements FolderPicker {
 
   @override
   bool get asksForFileAccess => false;
+
+  @override
+  bool get picksFilesNatively => false;
+
+  @override
+  Future<String?> pickFile() async => throw UnimplementedError();
 }

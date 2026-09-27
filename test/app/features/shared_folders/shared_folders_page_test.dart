@@ -335,6 +335,47 @@ void main() {
     expect(hub.sent<wire.CoreCommandListFilterFolder>().single.ignore, isEmpty);
   });
 
+  testWidgets('on a desktop a file comes from the native file dialog, no '
+      'browser between (task abb68b)', (tester) async {
+    picker
+      ..picksFilesNatively = true
+      ..pickedFile = '/home/me/notes.txt';
+    app.state.recordDevices([row(desktop), row(laptop)]);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('shared-folders-add')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('shared-folders-browse-file')));
+    await tester.pumpAndSettle();
+
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('shared-folders-path-field')),
+    );
+    expect(field.controller?.text, '/home/me/notes.txt');
+    expect(hub.sent<wire.CoreCommandListFilterFolder>(), isEmpty);
+  });
+
+  testWidgets('on a desktop a dismissed file dialog leaves the typed path '
+      'as it was', (tester) async {
+    picker.picksFilesNatively = true;
+    app.state.recordDevices([row(desktop), row(laptop)]);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('shared-folders-add')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('shared-folders-path-field')),
+      '~/Sync',
+    );
+    await tester.tap(find.byKey(const Key('shared-folders-browse-file')));
+    await tester.pumpAndSettle();
+
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('shared-folders-path-field')),
+    );
+    expect(field.controller?.text, '~/Sync');
+  });
+
   testWidgets('a folder added for two devices lands on both', (tester) async {
     // The core expands `~` the way `dsync pair grant` does.
     hub.reply<wire.CoreCommandGrantRoot>(
@@ -419,4 +460,15 @@ class _FakePicker implements FolderPicker {
 
   @override
   bool get asksForFileAccess => false;
+
+  /// A desktop when set: [pickFile] answers [pickedFile].
+  @override
+  bool picksFilesNatively = false;
+  String? pickedFile;
+
+  @override
+  Future<String?> pickFile() async {
+    if (!picksFilesNatively) throw UnimplementedError();
+    return pickedFile;
+  }
 }

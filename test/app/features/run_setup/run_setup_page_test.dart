@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
+import 'package:dsync/app/features/run_setup/file_chooser.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
@@ -845,6 +847,91 @@ void main() {
 
       expect(find.text('No file chosen'), findsOneWidget);
       expect(find.text('Pick a file…'), findsOneWidget);
+    });
+
+    group('on a desktop (task abb68b)', () {
+      setUp(() => picker.picksFilesNatively = true);
+
+      Future<void> pumpFileEntry(WidgetTester tester) async {
+        await pumpLoaded(tester);
+        await tester.tap(find.text('File'));
+        await tester.pump();
+      }
+
+      testWidgets('Pick a file… is the native file dialog, and the file it '
+          'answers with is the local side', (tester) async {
+        picker.onPickFile = () => '/home/me/notes/todo.txt';
+        await pumpFileEntry(tester);
+
+        await pickFolder(
+          tester,
+          until: () =>
+              controller.state.entries[0].localRoot ==
+              '/home/me/notes/todo.txt',
+          what: 'the picked file to become the local root',
+        );
+
+        expect(picker.pickFileCount, 1);
+        expect(picker.pickCount, 0);
+        expect(controller.state.entries[0].kind, RootKind.file);
+        expect(find.text('/home/me/notes/todo.txt'), findsOneWidget);
+        // No browser was pushed over the form.
+        expect(find.byType(FileChooserPage), findsNothing);
+      });
+
+      testWidgets('dismissing the file dialog changes nothing', (tester) async {
+        await pumpFileEntry(tester);
+
+        await tester.runAsync(() async {
+          await tester.tap(find.byKey(const Key('run-setup-pick-folder')));
+        });
+        await tester.pumpAndSettle();
+
+        expect(picker.pickFileCount, 1);
+        expect(controller.state.entries[0].localRoot, isNull);
+        expect(core.sent<wire.CoreCommandCheckFolder>(), isEmpty);
+        expect(find.text('No file chosen'), findsOneWidget);
+      });
+
+      testWidgets('New file… names a file not there yet: a folder, then a '
+          'name', (tester) async {
+        picker.onPick = () => '/home/me/notes';
+        await pumpFileEntry(tester);
+
+        await tester.tap(find.byKey(const Key('run-setup-new-file')));
+        await tester.pumpAndSettle();
+        expect(find.text('In /home/me/notes'), findsOneWidget);
+
+        await tester.enterText(
+          find.byKey(const Key('new-file-name')),
+          'todo.txt',
+        );
+        // The flow was started outside `runAsync`, so the dialog's answer
+        // reaches it on a pump; the core's check then runs in real time.
+        await tester.tap(find.byKey(const Key('new-file-use')));
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          await settleUntil(
+            () =>
+                controller.state.entries[0].localRoot ==
+                '/home/me/notes/todo.txt',
+            what: 'the named file to become the local root',
+          );
+        });
+        await tester.pumpAndSettle();
+
+        expect(picker.pickFileCount, 0);
+        expect(find.text('/home/me/notes/todo.txt'), findsOneWidget);
+      });
+    });
+
+    testWidgets('on a phone there is no New file…: the browser takes a '
+        'typed name', (tester) async {
+      await pumpLoaded(tester);
+      await tester.tap(find.text('File'));
+      await tester.pump();
+
+      expect(find.byKey(const Key('run-setup-new-file')), findsNothing);
     });
   });
 

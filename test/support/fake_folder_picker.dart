@@ -21,7 +21,17 @@ class FakeFolderPicker implements FolderPicker {
   @override
   bool asksForFileAccess = true;
 
+  /// Whether this stands in for a desktop, whose file dialog answers with a
+  /// real path, rather than a phone, where a file is chosen by browsing a
+  /// picked folder.
+  @override
+  bool picksFilesNatively = false;
+
+  /// What the file dialog returns; `null` is the user dismissing it.
+  String? Function() onPickFile = () => null;
+
   int pickCount = 0;
+  int pickFileCount = 0;
   int requestAccessCount = 0;
   int openSettingsCount = 0;
 
@@ -29,6 +39,15 @@ class FakeFolderPicker implements FolderPicker {
   Future<String?> pick() async {
     pickCount++;
     return onPick();
+  }
+
+  /// Refuses where [picksFilesNatively] is false, the way the real picker
+  /// does, so a phone-path test cannot reach the file dialog unnoticed.
+  @override
+  Future<String?> pickFile() async {
+    if (!picksFilesNatively) throw UnsupportedError('no native file dialog');
+    pickFileCount++;
+    return onPickFile();
   }
 
   @override

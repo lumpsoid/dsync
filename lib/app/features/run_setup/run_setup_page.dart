@@ -166,27 +166,30 @@ class _RunSetupPageState extends State<RunSetupPage> {
     _showRefusal();
   }
 
-  /// Opens the folder chooser, then the browser over what it returned
-  /// (R4), and takes the file the user picked or typed as entry [index]'s
-  /// local side.
-  Future<void> _pickFile(int index) async {
-    final chooser = _controller.fileChooser;
-    final String? root;
+  /// Chooses a file the platform's way (R4, `chooseFile`) and takes it as
+  /// entry [index]'s local side.
+  Future<void> _pickFile(int index) =>
+      _takeFile(index, () => chooseFile(context, _controller.fileChooser));
+
+  /// Names a file not on this device yet (`nameNewFile`) and takes it as
+  /// entry [index]'s local side — offered only where [_pickFile] cannot
+  /// name one itself (`FileChooser.namesNewFilesApart`).
+  Future<void> _newFile(int index) =>
+      _takeFile(index, () => nameNewFile(context, _controller.fileChooser));
+
+  /// Takes the path [choose] ends in as entry [index]'s local side; a
+  /// chooser that would not open is a snackbar, and giving up is nothing.
+  Future<void> _takeFile(int index, Future<String?> Function() choose) async {
+    final String? path;
     try {
-      root = await chooser.chooseFolder();
+      path = await choose();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open the folder chooser: $error')),
+        SnackBar(content: Text('Could not open the file chooser: $error')),
       );
       return;
     }
-    if (root == null || !mounted) return;
-    final path = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => FileChooserPage(chooser: chooser, root: root!),
-      ),
-    );
     if (path == null || !mounted) return;
     await _controller.setLocalFile(index, path);
     if (!mounted) return;
@@ -332,6 +335,9 @@ class _RunSetupPageState extends State<RunSetupPage> {
               startFocus: _startFocus,
               onPickFolder: _pickFolder,
               onPickFile: _pickFile,
+              onNewFile: _controller.fileChooser.namesNewFilesApart
+                  ? _newFile
+                  : null,
               onAddEntry: () => setState(_addEntry),
               onRemoveEntry: (index) => setState(() => _removeEntry(index)),
               onOpenFilters: _openFilters,
@@ -376,6 +382,7 @@ class _RunSetupForm extends StatelessWidget {
     required this.startFocus,
     required this.onPickFolder,
     required this.onPickFile,
+    required this.onNewFile,
     required this.onAddEntry,
     required this.onRemoveEntry,
     required this.onOpenFilters,
@@ -402,6 +409,10 @@ class _RunSetupForm extends StatelessWidget {
   final FocusNode startFocus;
   final void Function(int index) onPickFolder;
   final void Function(int index) onPickFile;
+
+  /// Names a file not on this device yet, where that is a step of its own;
+  /// `null` where [onPickFile] already offers it.
+  final void Function(int index)? onNewFile;
   final VoidCallback onAddEntry;
   final void Function(int index) onRemoveEntry;
 
@@ -463,6 +474,10 @@ class _RunSetupForm extends StatelessWidget {
                     removable: entries.length > 1,
                     onPickFolder: () => onPickFolder(index),
                     onPickFile: () => onPickFile(index),
+                    onNewFile: switch (onNewFile) {
+                      final onNewFile? => () => onNewFile(index),
+                      null => null,
+                    },
                     onSetKind: (kind) => controller.setKind(index, kind),
                     onRemove: () => onRemoveEntry(index),
                     onRemoteRootChanged: controller.remoteRootChanged,
@@ -590,6 +605,7 @@ class _EntrySection extends StatelessWidget {
     required this.removable,
     required this.onPickFolder,
     required this.onPickFile,
+    required this.onNewFile,
     required this.onSetKind,
     required this.onRemove,
     required this.onRemoteRootChanged,
@@ -613,6 +629,11 @@ class _EntrySection extends StatelessWidget {
   final bool removable;
   final VoidCallback onPickFolder;
   final VoidCallback onPickFile;
+
+  /// Names a file not on this device yet — a button of its own beside
+  /// [onPickFile]'s where set; `null` where the file chooser already takes
+  /// a typed name.
+  final VoidCallback? onNewFile;
   final void Function(RootKind kind) onSetKind;
   final VoidCallback onRemove;
   final void Function(String text) onRemoteRootChanged;
@@ -621,6 +642,8 @@ class _EntrySection extends StatelessWidget {
       index == 0 ? 'run-setup-local-folder' : 'run-setup-local-folder-$index';
   String get _pickKey =>
       index == 0 ? 'run-setup-pick-folder' : 'run-setup-pick-folder-$index';
+  String get _newFileKey =>
+      index == 0 ? 'run-setup-new-file' : 'run-setup-new-file-$index';
   String get _remoteKey =>
       index == 0 ? 'run-setup-remote-root' : 'run-setup-remote-root-$index';
 
@@ -670,7 +693,9 @@ class _EntrySection extends StatelessWidget {
         // The chosen path shown as a value, not a control: there is one way
         // to set it — the platform chooser, or the file chooser over it —
         // so there is no list to choose from and nothing to type. The
-        // button beside it is that one way, in the open.
+        // button beside it is that one way, in the open; on a desktop a
+        // file not there yet has a second, since its file dialog only
+        // opens files that exist.
         Row(
           children: [
             Expanded(
@@ -704,6 +729,12 @@ class _EntrySection extends StatelessWidget {
                     : 'Change',
               ),
             ),
+            if (!isFolder && onNewFile != null)
+              TextButton(
+                key: Key(_newFileKey),
+                onPressed: starting ? null : onNewFile,
+                child: const Text('New file…'),
+              ),
           ],
         ),
         const SizedBox(height: 24),

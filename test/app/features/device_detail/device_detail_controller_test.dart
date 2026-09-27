@@ -456,4 +456,10 @@ class _FakePicker implements FolderPicker {
 
   @override
   bool get asksForFileAccess => false;
+
+  @override
+  bool get picksFilesNatively => false;
+
+  @override
+  Future<String?> pickFile() async => throw UnimplementedError();
 }
