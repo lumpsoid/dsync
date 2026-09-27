@@ -238,7 +238,7 @@ class RunSetupController {
     } catch (error) {
       // A platform channel that fails is not a folder the user chose badly.
       state.recordFolderAccessError(
-        _refusal('Could not open the folder chooser: $error'),
+        RunSetupRefusalFinal('Could not open the folder chooser: $error'),
       );
       return;
     }
@@ -257,7 +257,7 @@ class RunSetupController {
     try {
       refusal = await _usableRefusal(path, kind);
     } on CoreFailure catch (e) {
-      state.recordFolderAccessError(_refusal(e.message));
+      state.recordFolderAccessError(RunSetupRefusalFinal(e.message));
       return;
     }
     if (refusal != null) {
@@ -279,13 +279,6 @@ class RunSetupController {
     if (refusal == null || !await picker.requestAccess()) return refusal;
     return app.core.checkFolder(path, kind);
   }
-
-  /// [message] as this platform can answer it: a refusal Settings may
-  /// lift where [picker] has a grant to give, the last word where it does
-  /// not — see [RunSetupRefusal].
-  RunSetupRefusal _refusal(String message) => picker.asksForFileAccess
-      ? RunSetupRefusalGrantable(message)
-      : RunSetupRefusalFinal(message);
 
   /// The core's [line] refusing a picked path of [kind]. Where Settings can
   /// grant access, the page's Settings action is the way out and the line
@@ -331,16 +324,17 @@ class RunSetupController {
     final waiting = _refused;
     if (waiting is! _AwaitingGrant) return false;
     state.recordFolderAccessError(null);
-    String? refusal;
+    RunSetupRefusal? refusal;
     try {
-      refusal = await app.core.checkFolder(waiting.path, waiting.kind);
+      final line = await app.core.checkFolder(waiting.path, waiting.kind);
+      if (line != null) refusal = _pathRefusal(line, waiting.kind);
     } on CoreFailure catch (e) {
-      refusal = e.message;
+      refusal = RunSetupRefusalFinal(e.message);
     }
     if (!identical(_refused, waiting)) return false;
     if (refusal != null) {
       _refused = _PathRefused(waiting.index, waiting.path, waiting.kind);
-      state.recordFolderAccessError(_pathRefusal(refusal, waiting.kind));
+      state.recordFolderAccessError(refusal);
       return true;
     }
     _refused = const _NothingRefused();

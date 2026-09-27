@@ -132,10 +132,10 @@ final class RunSetupStarted extends RunSetupOutcome {
 }
 
 /// Why the folder or file the user just picked was not taken, and whether
-/// the platform has a way past it. Sealed so "offer Settings" cannot be set
-/// on a host that has no Settings page to offer: which case is recorded is
-/// decided once, from `FolderPicker.asksForFileAccess`, and the page only
-/// switches over it.
+/// a file-access grant could be the way past it. Sealed so "offer Settings"
+/// cannot be set on a refusal Settings cannot fix: `RunSetupController`
+/// decides the case where it knows the cause, and the page only switches
+/// over it.
 sealed class RunSetupRefusal {
   const RunSetupRefusal(this.message);
 
@@ -143,15 +143,18 @@ sealed class RunSetupRefusal {
   final String message;
 }
 
-/// Refused on a host with a file-access grant (Android, iOS): the OS
+/// The core refused the path on a host that has a file-access grant
+/// (`FolderPicker.asksForFileAccess`) the user has not given: the OS
 /// Settings page may give it, and a return from there checks the path
 /// again.
 final class RunSetupRefusalGrantable extends RunSetupRefusal {
   const RunSetupRefusalGrantable(super.message);
 }
 
-/// Refused on a host with nothing to grant (desktop): the filesystem said
-/// no, so [message] is the last word and says what the user can do instead.
+/// Refused for a reason no grant can lift — the chooser failed, the core
+/// failed, or the core refused the path on a host with no grant to give —
+/// so [message] is the last word, and says what the user can do instead
+/// where there is something to say.
 final class RunSetupRefusalFinal extends RunSetupRefusal {
   const RunSetupRefusalFinal(super.message);
 }

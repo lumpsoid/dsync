@@ -348,6 +348,24 @@ void main() {
     expect(picker.openSettingsCount, 1);
   });
 
+  testWidgets('a chooser that fails on a phone offers no Settings — no '
+      'grant fixes it (task 9e50c1)', (tester) async {
+    picker.onPick = () => throw StateError('no activity');
+    await pumpLoaded(tester);
+
+    await pickFolder(
+      tester,
+      until: () => controller.state.folderAccessError != null,
+      what: 'the chooser failure to be recorded',
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(picker.asksForFileAccess, isTrue);
+    expect(find.textContaining('no activity'), findsOneWidget);
+    expect(find.byType(SnackBarAction), findsNothing);
+    expect(find.byIcon(Icons.close), findsOneWidget);
+  });
+
   group('back from Settings (task 65e723)', () {
     /// The platform's own sequences, one state at a time — the way
     /// `AppLifecycleListener` expects them, as the Run page's tests drive

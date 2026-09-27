@@ -300,6 +300,11 @@ void main() {
         controller.state.folderAccessError?.message,
         contains('no activity'),
       );
+      expect(
+        controller.state.folderAccessError,
+        isA<RunSetupRefusalFinal>(),
+        reason: 'no grant fixes a failing chooser, even on a phone',
+      );
       expect(controller.state.entries[0].localRoot, isNull);
     });
 
