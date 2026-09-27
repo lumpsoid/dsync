@@ -69,8 +69,8 @@ class _ScanCodePageState extends State<ScanCodePage> {
           Padding(
             padding: const EdgeInsets.all(24),
             child: Text(
-              'Point the camera at the QR code that `dsync pair show` '
-              'prints on the desktop.',
+              'Point the camera at the QR code the other device is '
+              'showing.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium,
             ),

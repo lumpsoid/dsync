@@ -127,6 +127,6 @@ class PairController {
   void dispose() => state.dispose();
 }
 
-const _localNameRequired = 'Give the desktop a name to show it as here.';
+const _localNameRequired = 'Give the other device a name to show it as here.';
 const _codeRequired =
     'Scan or paste a pairing code from `dsync pair show` first.';

@@ -247,8 +247,9 @@ class _PairForm extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       children: [
         const Text(
-          'On the desktop, run `dsync pair show`. Scan the QR code it '
-          'prints, or paste the `dsync-pair:1.0:` line beside it.',
+          "On the other device, open Show this device's code, or run "
+          '`dsync pair show` in a terminal. Scan the QR code it shows, or '
+          'paste the `dsync-pair:1.0:` line beside it.',
         ),
         const SizedBox(height: 16),
         switch (state.code) {
@@ -296,10 +297,10 @@ class _PairForm extends StatelessWidget {
             controller: localName,
             enabled: !submitting,
             decoration: InputDecoration(
-              labelText: 'Name for the desktop',
+              labelText: 'Name for the other device',
               helperText:
-                  'What this device will show it as. What the desktop '
-                  'calls this device is its own choice, made there.',
+                  'What this device will show it as. What the other device '
+                  'calls this one is its own choice, made there.',
               errorText: state.localNameError,
             ),
           ),
@@ -494,8 +495,8 @@ class _OwnIdCard extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'The desktop is asking whoever is there to confirm the id it was '
-          'presented, before it records the pairing. This device is:',
+          'The other device is asking whoever is there to confirm the id it '
+          'was presented, before it records the pairing. This device is:',
         ),
         const SizedBox(height: 12),
         Card(
@@ -515,7 +516,7 @@ class _OwnIdCard extends StatelessWidget {
         const SizedBox(height: 12),
         Text(
           'Read it out group by group. If every group matches what the '
-          'desktop shows, it is this device that redeemed the code.',
+          'other device shows, it is this device that redeemed the code.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
