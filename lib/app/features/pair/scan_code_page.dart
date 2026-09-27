@@ -15,6 +15,24 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 /// is decide anything about what it read.
 typedef PairScanner = Widget Function(ValueChanged<String> onScanned);
 
+/// The camera this build can scan with, or `null` where there is none —
+/// read from the platform at this one edge and handed down as a plain value,
+/// the way `PlatformFolderPicker.forThisHost` is. Production only; a test
+/// hands the Pair page the case it is about directly.
+///
+/// A camera is behind the plugin on the two platforms this head ships on
+/// (`app` is Android and iOS, SPEC §3), and only those. The plugin also
+/// carries macOS and web code, but neither is a v1 target for the head;
+/// turning macOS on is a matter of naming it here, and the Pair page follows
+/// without a second platform check. Anywhere else, building the preview
+/// against a channel nothing answers is a thrown platform exception rather
+/// than a failure [QrScanner] could render — so where this is `null`, the
+/// Pair page offers no scan and no scan route.
+PairScanner? cameraForThisHost() => switch (defaultTargetPlatform) {
+  TargetPlatform.android || TargetPlatform.iOS => QrScanner.new,
+  _ => null,
+};
+
 /// The camera on a page of its own: opened by the Pair page, and closed by
 /// the first code it reads, carrying that code's text back as the route's
 /// result.
@@ -101,10 +119,10 @@ class _ScanCodePageState extends State<ScanCodePage> {
 ///   showing the answer for a code that turns out not to be ours.
 ///
 /// When the camera cannot be used, the widget renders why in place of the
-/// preview: a denied permission, no camera at all, or a platform the plugin
-/// has no implementation for — which is checked rather than discovered from
-/// a failed channel call, since nothing on Linux or Windows answers one and
-/// an unanswered platform channel throws.
+/// preview: a denied permission, or a camera that would not start. It is
+/// only ever built where the plugin has a camera behind it
+/// ([cameraForThisHost]): nothing on Linux or Windows answers its channel,
+/// and an unanswered platform channel throws.
 class QrScanner extends StatefulWidget {
   const QrScanner(this.onScanned, {super.key});
 
@@ -145,7 +163,6 @@ class _QrScannerState extends State<QrScanner> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_cameraPlatform) return const _CameraNote(_noCameraHere);
     return ValueListenableBuilder<MobileScannerState>(
       valueListenable: _controller,
       builder: (context, state, _) {
@@ -159,20 +176,6 @@ class _QrScannerState extends State<QrScanner> {
     );
   }
 }
-
-/// Whether a camera is behind the plugin on this build: the two platforms
-/// this head ships on (`app` is Android and iOS, SPEC §3), and only those.
-/// The plugin also carries macOS and web code, but neither is a v1 target
-/// for the head, and building the preview against a channel nothing answers
-/// is a thrown platform exception rather than a failure this widget could
-/// render.
-bool get _cameraPlatform =>
-    defaultTargetPlatform == TargetPlatform.android ||
-    defaultTargetPlatform == TargetPlatform.iOS;
-
-const _noCameraHere =
-    'This build has no camera access, so the QR code cannot be scanned. '
-    'Go back and paste the `dsync-pair:1.0:` line instead.';
 
 /// What to say for a camera that is there and would not start. A denied
 /// permission is the one case with a fix the user has to go and perform, so

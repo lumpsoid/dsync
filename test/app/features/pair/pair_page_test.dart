@@ -106,7 +106,12 @@ void main() {
         child: const Text('scan'),
       );
 
-  Future<void> pumpPage(WidgetTester tester, {PairScanner? scanner}) async {
+  /// [scanner] is `null` for a platform with no camera, as
+  /// `cameraForThisHost` hands it over on a desktop.
+  Future<void> pumpPage(
+    WidgetTester tester, {
+    required PairScanner? scanner,
+  }) async {
     // Tall enough to hold the whole form: a `ListView` does not build what
     // it cannot show, so a short surface would have a test asserting
     // against a page the user cannot see either.
@@ -118,7 +123,7 @@ void main() {
         home: PairPage(
           onPaired: () => paired++,
           onShowOwnCode: () => showOwnCodeTaps++,
-          scanner: scanner ?? noCameraAskedFor,
+          scanner: scanner,
         ),
       ),
     );
@@ -141,6 +146,17 @@ void main() {
     await tester.pump();
   }
 
+  /// Whether the field under [key] holds the keyboard focus.
+  bool hasFocus(WidgetTester tester, String key) => tester
+      .widget<EditableText>(
+        find.descendant(
+          of: find.byKey(Key(key)),
+          matching: find.byType(EditableText),
+        ),
+      )
+      .focusNode
+      .hasFocus;
+
   /// The text a field is showing, by key.
   String fieldText(WidgetTester tester, String key) =>
       tester.widget<TextField>(find.byKey(Key(key))).controller!.text;
@@ -148,11 +164,13 @@ void main() {
   testWidgets('nothing read yet: two ways in, and nothing to confirm', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
 
     expect(find.byKey(const Key('pair-scan')), findsOneWidget);
     expect(find.byKey(const Key('pair-paste')), findsOneWidget);
     expect(find.textContaining('dsync pair show'), findsOneWidget);
+    // A phone leads with its camera, not with a field to type into.
+    expect(find.byKey(const Key('pair-line')), findsNothing);
     // Nothing to name and nothing to send until a code is there — and no
     // camera mounted merely by opening the page.
     expect(find.byKey(const Key('pair-local-name')), findsNothing);
@@ -163,7 +181,7 @@ void main() {
   testWidgets('the other way round is offered until a code is read', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
 
     await tester.tap(find.byKey(const Key('pair-show-own-code')));
     await tester.pump();
@@ -177,7 +195,7 @@ void main() {
 
   testWidgets('a code that was read says which device and where, before '
       'anything is sent', (tester) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
 
     await withCode(tester);
 
@@ -197,7 +215,7 @@ void main() {
   testWidgets('the name arrives filled in from the code it read', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     // The common name of the certificate the payload carries.
@@ -207,7 +225,7 @@ void main() {
   testWidgets('a name the user typed survives a second code arriving', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     await tester.enterText(
@@ -226,7 +244,7 @@ void main() {
   testWidgets('emptying a name shows its line straight away, with no submit', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
     expect(controller.state.localNameError, isNull);
 
@@ -252,7 +270,7 @@ void main() {
           ? <String, dynamic>{'text': '  $payloadText\n'}
           : null,
     );
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
 
     await tester.tap(find.byKey(const Key('pair-paste')));
     await tester.pump();
@@ -323,7 +341,7 @@ void main() {
   });
 
   testWidgets('a code can be put back for a different one', (tester) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     await tester.tap(find.byKey(const Key('pair-clear-code')));
@@ -337,7 +355,7 @@ void main() {
   testWidgets('submitting: inputs and button disabled, progress shown', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     controller.state.recordOutcome(const PairSubmitting());
@@ -367,7 +385,7 @@ void main() {
   testWidgets("submitting: this device's own id is on screen to compare", (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     // Nothing to compare before anything is sent: the desktop has not been
@@ -391,7 +409,7 @@ void main() {
   testWidgets('failed: the id stays up, which is when it is read out', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     controller.state.recordOwnDeviceId('a1b2:c3d4:e5f6:0718');
@@ -404,7 +422,7 @@ void main() {
   testWidgets('submitting draws nothing while the other device is asked', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     controller.state.recordOutcome(const PairSubmitting());
@@ -421,7 +439,7 @@ void main() {
   testWidgets('failed: shows the rendered message and re-enables the button', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
     expect(find.text('Could not reach 10.0.0.9:4242'), findsNothing);
 
@@ -440,7 +458,7 @@ void main() {
 
   testWidgets('opening the page again starts over: no code, no verdict from '
       'the last visit', (tester) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
     controller.state.recordOutcome(
       const PairFailed('Could not reach 10.0.0.9:4242'),
@@ -451,7 +469,7 @@ void main() {
     // Left and come back: the controller is the cached scope instance and
     // outlived the page, so the page is what has to say where it starts.
     await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
 
     expect(find.text('Could not reach 10.0.0.9:4242'), findsNothing);
     expect(find.text('local missing'), findsNothing);
@@ -460,7 +478,7 @@ void main() {
   });
 
   testWidgets('a field error renders under the field', (tester) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
     expect(find.text('local missing'), findsNothing);
 
@@ -479,7 +497,7 @@ void main() {
 
   testWidgets('tapping Pair with an emptied name shows the field error and '
       'does not leave', (tester) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     await tester.enterText(find.byKey(const Key('pair-local-name')), '');
@@ -493,7 +511,7 @@ void main() {
   });
 
   testWidgets('a stale success does not leave by itself', (tester) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     controller.state.recordOutcome(const PairSucceeded('desktop'));
@@ -509,7 +527,7 @@ void main() {
   testWidgets('a submit that succeeds leaves through onPaired, once', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, scanner: noCameraAskedFor);
     await withCode(tester);
 
     await tester.enterText(find.byKey(const Key('pair-local-name')), 'desktop');
@@ -530,17 +548,20 @@ void main() {
       'pairs', (tester) async {
     await pumpPage(
       tester,
-      // What a builder hands back when there is no camera to show — the
+      // What a builder hands back when the camera would not start — the
       // test's stand-in for `QrScanner`'s own note.
       scanner: (onScanned) => const Text(
-        'This build has no camera access, so the QR code cannot be '
-        'scanned. Go back and paste the `dsync-pair:1.0:` line instead.',
+        'Dsync is not allowed to use the camera. Go back and paste the '
+        '`dsync-pair:1.0:` line instead.',
       ),
     );
 
     await tester.tap(find.byKey(const Key('pair-scan')));
     await tester.pumpAndSettle();
-    expect(find.textContaining('no camera'), findsOneWidget);
+    expect(
+      find.textContaining('not allowed to use the camera'),
+      findsOneWidget,
+    );
 
     // Back out of the camera, and the other way in is untouched: the flow
     // is not blocked on it.
@@ -553,5 +574,92 @@ void main() {
 
     expect(enrolCalls(), 1);
     expect(paired, 1);
+  });
+
+  testWidgets('a code that was read puts the cursor in the name, and Enter '
+      'there pairs', (tester) async {
+    await pumpPage(tester, scanner: noCameraAskedFor);
+    await withCode(tester);
+
+    expect(hasFocus(tester, 'pair-local-name'), isTrue);
+
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await pumpUntil(tester, () => paired > 0, what: 'the page to leave');
+
+    expect(enrolCalls(), 1);
+  });
+
+  group('no camera on this platform', () {
+    testWidgets('leads with a field for the line, and offers no scan', (
+      tester,
+    ) async {
+      await pumpPage(tester, scanner: null);
+
+      expect(find.byKey(const Key('pair-line')), findsOneWidget);
+      expect(hasFocus(tester, 'pair-line'), isTrue);
+      expect(find.byKey(const Key('pair-scan')), findsNothing);
+      expect(find.textContaining('Scan'), findsNothing);
+      expect(find.textContaining('dsync pair show'), findsOneWidget);
+    });
+
+    testWidgets('a line typed in and Enter reads it, and the cursor moves to '
+        'the name', (tester) async {
+      await pumpPage(tester, scanner: null);
+
+      await tester.enterText(
+        find.byKey(const Key('pair-line')),
+        '  $payloadText ',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      await tester.pump();
+
+      expect(controller.state.code, isA<PairCodeRead>());
+      expect(find.byKey(const Key('pair-code-card')), findsOneWidget);
+      expect(find.byKey(const Key('pair-line')), findsNothing);
+      expect(fieldText(tester, 'pair-local-name'), 'desktop');
+      expect(hasFocus(tester, 'pair-local-name'), isTrue);
+      // Read, not sent.
+      expect(enrolCalls(), 0);
+    });
+
+    testWidgets('a line that is not a payload is refused under the field, '
+        'which keeps it', (tester) async {
+      const refusal = 'Not a dsync pairing payload: expected "dsync-pair:"';
+      core.reply<wire.CoreCommandReadPairCode>(
+        const wire.ReplyResultPairCode(
+          value: wire.PairCodeViewUnreadable(message: refusal),
+        ),
+      );
+      await pumpPage(tester, scanner: null);
+
+      await tester.enterText(find.byKey(const Key('pair-line')), 'dsync-pa');
+      await tester.tap(find.byKey(const Key('pair-line-read')));
+      await tester.pump();
+      await tester.pump();
+
+      final field = tester.widget<TextField>(
+        find.byKey(const Key('pair-line')),
+      );
+      expect(field.decoration?.errorText, refusal);
+      expect(field.controller!.text, 'dsync-pa');
+      expect(find.byKey(const Key('pair-submit')), findsNothing);
+    });
+
+    testWidgets('putting a code back empties the field for the next one', (
+      tester,
+    ) async {
+      await pumpPage(tester, scanner: null);
+      await tester.enterText(find.byKey(const Key('pair-line')), payloadText);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('pair-clear-code')));
+      await tester.pump();
+
+      expect(fieldText(tester, 'pair-line'), isEmpty);
+      expect(find.byKey(const Key('pair-scan')), findsNothing);
+    });
   });
 }

@@ -48,13 +48,20 @@ import 'scan_code_page.dart';
 /// `dsync pair accept` prints its own id at the same point, for the same
 /// reason.
 ///
+/// **Whether there is a camera is known before the page is built.** The
+/// route hands over [PairPage.scanner] only where one can run
+/// (`cameraForThisHost`), so the page never offers a scan it cannot make:
+/// with a camera it leads with the scan and keeps Paste beside it, and
+/// without one — a desktop — the first thing on it is a field to type or
+/// paste the line into, and no scan button or scan route exists at all.
+///
 /// **The camera is mounted by the tap, and on a route of its own.** Starting
 /// `MobileScanner` is what asks the OS for the camera, so a page that built
 /// it unconditionally would put a permission prompt in front of someone who
-/// came to paste a line. Every way the camera can fail — denied, no camera,
-/// no plugin for this platform — lands as a line on that page saying so,
-/// with this one, and its Paste button, still underneath. Nothing here is
-/// ever blocked on the camera.
+/// came to paste a line. A camera that is there and still fails — denied, or
+/// would not start — lands as a line on that page saying so, with this one,
+/// and its Paste button, still underneath. Nothing here is ever blocked on
+/// the camera.
 ///
 /// **The other end of the same exchange is one tap away.** `Show this
 /// device's code` leads to the page that binds an endpoint here and offers
@@ -88,8 +95,9 @@ class PairPage extends StatefulWidget {
   /// The camera, handed on to [ScanCodePage] when the user asks for it —
   /// named at the route the way the scope names the real `enrolWithPeer`,
   /// so the real one is what a production build gets and a fake cannot
-  /// arrive by omission.
-  final PairScanner scanner;
+  /// arrive by omission. `null` where this platform has no camera to scan
+  /// with: the page then offers no scan at all and leads with the line.
+  final PairScanner? scanner;
 
   @override
   State<PairPage> createState() => _PairPageState();
@@ -97,6 +105,11 @@ class PairPage extends StatefulWidget {
 
 class _PairPageState extends State<PairPage> {
   final _localName = TextEditingController();
+
+  /// The pairing line as typed or pasted, where there is no camera. Owned
+  /// here rather than by the field so an unreadable line stays in it to be
+  /// corrected, beside the reason it was refused.
+  final _line = TextEditingController();
 
   /// The desktop name this page last put in the field itself, so it can tell
   /// its own offer from a name the user typed — and never overwrite the
@@ -139,10 +152,10 @@ class _PairPageState extends State<PairPage> {
   /// The camera, on a page of its own, which closes on the first code it
   /// reads and hands its text back. Nothing is sent: what comes back fills
   /// this page in, and the user still presses the button.
-  Future<void> _scan() async {
+  Future<void> _scan(PairScanner scanner) async {
     final raw = await Navigator.of(context).push<String>(
       MaterialPageRoute(
-        builder: (_) => ScanCodePage(scanner: widget.scanner),
+        builder: (_) => ScanCodePage(scanner: scanner),
         fullscreenDialog: true,
       ),
     );
@@ -164,9 +177,26 @@ class _PairPageState extends State<PairPage> {
     await _codeEntered(text);
   }
 
+  /// The line in the field, read on Enter or the button. Trimmed for the
+  /// same reason a paste is: a line copied out of a terminal carries the
+  /// newline that ended it, which a one-line field turns into a space.
+  Future<void> _readLine() async {
+    final text = _line.text.trim();
+    if (text.isEmpty) return;
+    await _codeEntered(text);
+  }
+
+  /// Back to no code. The field is emptied with it: the line it holds is the
+  /// one the user just turned down.
+  void _clearCode() {
+    _line.clear();
+    pairScope.controller.clearCode();
+  }
+
   @override
   void dispose() {
     _localName.dispose();
+    _line.dispose();
     super.dispose();
   }
 
@@ -208,10 +238,15 @@ class _PairPageState extends State<PairPage> {
         listenable: controller.state,
         builder: (context, _) => _PairForm(
           state: controller.state,
-          onScan: _scan,
+          onScan: switch (widget.scanner) {
+            final scanner? => () => _scan(scanner),
+            null => null,
+          },
           onPaste: _paste,
+          line: _line,
+          onReadLine: _readLine,
           onShowOwnCode: widget.onShowOwnCode,
-          onClearCode: controller.clearCode,
+          onClearCode: _clearCode,
           localName: _localName,
           onSubmit: _submit,
         ),
@@ -225,6 +260,8 @@ class _PairForm extends StatelessWidget {
     required this.state,
     required this.onScan,
     required this.onPaste,
+    required this.line,
+    required this.onReadLine,
     required this.onShowOwnCode,
     required this.onClearCode,
     required this.localName,
@@ -233,8 +270,11 @@ class _PairForm extends StatelessWidget {
 
   final PairViewState state;
 
-  final VoidCallback onScan;
+  /// `null` where there is no camera: the page then leads with [line].
+  final VoidCallback? onScan;
   final VoidCallback onPaste;
+  final TextEditingController line;
+  final VoidCallback onReadLine;
   final VoidCallback onShowOwnCode;
   final VoidCallback onClearCode;
   final TextEditingController localName;
@@ -246,28 +286,43 @@ class _PairForm extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text(
-          "On the other device, open Show this device's code, or run "
-          '`dsync pair show` in a terminal. Scan the QR code it shows, or '
-          'paste the `dsync-pair:1.0:` line beside it.',
+        Text(
+          onScan == null
+              ? "On the other device, open Show this device's code, or run "
+                    '`dsync pair show` in a terminal, and copy the '
+                    '`dsync-pair:1.0:` line it shows into the field below.'
+              : "On the other device, open Show this device's code, or run "
+                    '`dsync pair show` in a terminal. Scan the QR code it '
+                    'shows, or paste the `dsync-pair:1.0:` line beside it.',
         ),
         const SizedBox(height: 16),
-        switch (state.code) {
-          PairCodeMissing() => _CodeActions(
-            onScan: onScan,
-            onPaste: onPaste,
-            enabled: !submitting,
-          ),
-          PairCodeUnreadable(:final message) => _UnreadableCode(
-            message: message,
-            onScan: onScan,
-            onPaste: onPaste,
-            enabled: !submitting,
-          ),
-          PairCodeRead(:final desktopName, :final address) => _CodeCard(
+        switch ((state.code, onScan)) {
+          (PairCodeRead(:final desktopName, :final address), _) => _CodeCard(
             desktopName: desktopName,
             address: address,
             onClear: submitting ? null : onClearCode,
+          ),
+          (PairCodeMissing(), final onScan?) => _CodeActions(
+            onScan: onScan,
+            onPaste: onPaste,
+            enabled: !submitting,
+          ),
+          (PairCodeUnreadable(:final message), final onScan?) =>
+            _UnreadableCode(
+              message: message,
+              onScan: onScan,
+              onPaste: onPaste,
+              enabled: !submitting,
+            ),
+          (PairCodeMissing(), null) => _CodeLine(
+            line: line,
+            error: null,
+            onRead: onReadLine,
+          ),
+          (PairCodeUnreadable(:final message), null) => _CodeLine(
+            line: line,
+            error: message,
+            onRead: onReadLine,
           ),
         },
         // The way round this page is not for, offered only while it is
@@ -292,10 +347,15 @@ class _PairForm extends StatelessWidget {
         // name, and nothing to send, until one has been read.
         if (state.code is PairCodeRead) ...[
           const SizedBox(height: 24),
+          // Focused the moment it appears, which is the moment a code has
+          // been read: the name is the one thing left to check, and Enter
+          // here is the button below it.
           TextField(
             key: const Key('pair-local-name'),
             controller: localName,
             enabled: !submitting,
+            autofocus: true,
+            onSubmitted: (_) => onSubmit(),
             decoration: InputDecoration(
               labelText: 'Name for the other device',
               helperText:
@@ -361,6 +421,55 @@ class _CodeActions extends StatelessWidget {
             icon: const Icon(Icons.content_paste),
             label: const Text('Paste line'),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The way in where there is no camera: a field for the line, taking
+/// typing and the platform's own paste, read on Enter or by the button
+/// under it. Focused on arrival, so a desktop user who has the line on the
+/// clipboard gets to the next step with a paste and Enter.
+///
+/// A line that is not a payload is refused under the field it is still in,
+/// so the fix — a line copied whole this time — happens in the same place.
+class _CodeLine extends StatelessWidget {
+  const _CodeLine({
+    required this.line,
+    required this.error,
+    required this.onRead,
+  });
+
+  final TextEditingController line;
+
+  /// The core's reading of the last line that could not be used, if any.
+  final String? error;
+  final VoidCallback onRead;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          key: const Key('pair-line'),
+          controller: line,
+          autofocus: true,
+          onSubmitted: (_) => onRead(),
+          style: const TextStyle(fontFamily: 'monospace'),
+          decoration: InputDecoration(
+            labelText: 'Pairing line',
+            hintText: 'dsync-pair:1.0:…',
+            errorText: error,
+            errorMaxLines: 3,
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton(
+          key: const Key('pair-line-read'),
+          onPressed: onRead,
+          child: const Text('Read code'),
         ),
       ],
     );
