@@ -226,6 +226,27 @@ void main() {
       expect(harness.screenWake.held, isTrue);
     });
 
+    test('an attempt that stops being live tells the app, once', () async {
+      await harness.show(runView(phase: connecting));
+      await harness.show(runView(phase: applying));
+      expect(harness.hub.sent<wire.CoreCommandListProfiles>(), isEmpty);
+
+      await harness.show(runView(standing: over, phase: finished()));
+      await harness.show(runView(standing: over, phase: finished()));
+
+      expect(harness.hub.sent<wire.CoreCommandListProfiles>(), hasLength(1));
+    });
+
+    test('a paused attempt tells the app too, and so does the resumed '
+        'one ending', () async {
+      await harness.show(runView(phase: applying));
+      await harness.show(runView(standing: resumable, phase: paused(3)));
+      await harness.show(runView(phase: connecting));
+      await harness.show(runView(standing: over, phase: finished()));
+
+      expect(harness.hub.sent<wire.CoreCommandListProfiles>(), hasLength(2));
+    });
+
     test('the timings sheet\'s report is the view\'s', () async {
       await harness.show(runView(phase: applying));
       expect(controller().timings.value, isNull);
@@ -252,6 +273,20 @@ void main() {
 
       expect(harness.screenWake.held, isFalse);
       expect(harness.intents, const [wire.RunIntentClose()]);
+    });
+
+    test('a page left mid-run still tells the app when the run winds '
+        'down', () async {
+      await harness.start();
+      await harness.show(runView(phase: applying));
+
+      controller().dispose();
+      await pump();
+      expect(harness.hub.sent<wire.CoreCommandListProfiles>(), isEmpty);
+
+      await harness.show(runView(standing: over, phase: stopped(2)));
+
+      expect(harness.hub.sent<wire.CoreCommandListProfiles>(), hasLength(1));
     });
   });
 }

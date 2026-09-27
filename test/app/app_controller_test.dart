@@ -332,6 +332,7 @@ void main() {
 
       expect(core.commands.skip(3), const [
         wire.CoreCommandRenameDevice(deviceId: 'phone-id', name: 'pocket'),
+        wire.CoreCommandListProfiles(),
         wire.CoreCommandGrantRoot(deviceId: 'phone-id', path: '/srv/notes'),
         wire.CoreCommandSetDeviceAddress(
           deviceId: 'phone-id',
@@ -341,6 +342,127 @@ void main() {
         wire.CoreCommandClearVerification(deviceId: 'phone-id'),
         wire.CoreCommandWithdrawGrant(deviceId: 'phone-id', root: '/srv/notes'),
       ]);
+    });
+  });
+
+  group('writes a profile row shows', () {
+    final phone = pairedDevice(deviceId: 'phone-id', name: 'phone');
+
+    setUp(() async {
+      core.reply<wire.CoreCommandListDevices>(devicesReply([phone]));
+      await controller.bootstrap();
+    });
+
+    test('a rename re-reads the profiles after the write, so a row prints '
+        'the new name', () async {
+      core
+        ..reply<wire.CoreCommandRenameDevice>(
+          devicesReply([pairedDevice(deviceId: 'phone-id', name: 'pocket')]),
+        )
+        ..reply<wire.CoreCommandListProfiles>(
+          profilesReply([headProfile(peerName: 'pocket')]),
+        );
+
+      expect(await controller.renameDevice('phone-id', 'pocket'), isNull);
+
+      expect(core.kinds.skip(3), [
+        wire.CoreCommandRenameDevice,
+        wire.CoreCommandListProfiles,
+      ]);
+      expect(controller.state.profiles.single.peerName, 'pocket');
+    });
+
+    test('a revoke re-reads the profiles, so a row naming the device '
+        'renders broken', () async {
+      core
+        ..reply<wire.CoreCommandRevokeDevice>(devicesReply([]))
+        ..reply<wire.CoreCommandListProfiles>(
+          profilesReply([headProfile(peerName: null)]),
+        );
+
+      expect(await controller.revoke('phone-id'), isNull);
+
+      expect(core.kinds.last, wire.CoreCommandListProfiles);
+      expect(
+        controller.state.profiles.single.breakage,
+        isA<ProfileDeviceUnpaired>(),
+      );
+    });
+
+    test('a refused revoke changed nothing a profile shows, so the '
+        'profiles are not re-read', () async {
+      core.reply<wire.CoreCommandRevokeDevice>(failed('no such device'));
+
+      expect(await controller.revoke('phone-id'), 'no such device');
+
+      expect(core.sent<wire.CoreCommandListProfiles>(), isEmpty);
+    });
+
+    test('a profiles re-read that fails does not fail the write it '
+        'follows, and the rows stay as they were', () async {
+      core.reply<wire.CoreCommandListProfiles>(
+        profilesReply([headProfile(peerName: 'phone')]),
+      );
+      await controller.refreshProfiles();
+      core
+        ..reply<wire.CoreCommandRenameDevice>(
+          devicesReply([pairedDevice(deviceId: 'phone-id', name: 'pocket')]),
+        )
+        ..reply<wire.CoreCommandListProfiles>(failed('profiles unreadable'));
+
+      expect(await controller.renameDevice('phone-id', 'pocket'), isNull);
+
+      expect(core.kinds.last, wire.CoreCommandListProfiles);
+      expect(controller.state.devices.single.name, 'pocket');
+      expect(controller.state.profiles.single.peerName, 'phone');
+    });
+
+    test('a pairing re-reads the devices, then the profiles', () async {
+      core
+        ..reply<wire.CoreCommandListDevices>(
+          devicesReply([
+            phone,
+            pairedDevice(deviceId: 'laptop-id', name: 'laptop'),
+          ]),
+        )
+        ..reply<wire.CoreCommandListProfiles>(
+          profilesReply([headProfile(peerName: 'laptop')]),
+        );
+
+      await controller.devicePaired();
+
+      expect(core.kinds.skip(3), [
+        wire.CoreCommandListDevices,
+        wire.CoreCommandListProfiles,
+      ]);
+      expect(controller.state.devices, hasLength(2));
+      expect(controller.state.profiles.single.breakage, isNull);
+    });
+
+    test('a pairing whose devices cannot be re-read throws, as '
+        'refreshDevices does', () async {
+      core.reply<wire.CoreCommandListDevices>(failed('devices unreadable'));
+
+      await expectLater(controller.devicePaired(), throwsA(isA<CoreFailure>()));
+    });
+
+    test('a run ending re-reads the profiles, so the run marker the core '
+        'wrote or cleared shows', () async {
+      core.reply<wire.CoreCommandListProfiles>(
+        profilesReply([headProfile(lastRunUnfinished: true)]),
+      );
+
+      await controller.runEnded();
+
+      expect(controller.state.profiles.single.lastRunUnfinished, isTrue);
+    });
+
+    test('a run ending whose profiles cannot be re-read does not '
+        'throw', () async {
+      core.reply<wire.CoreCommandListProfiles>(failed('profiles unreadable'));
+
+      await expectLater(controller.runEnded(), completes);
+      expect(core.kinds.last, wire.CoreCommandListProfiles);
     });
   });
 

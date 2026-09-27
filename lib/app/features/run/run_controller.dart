@@ -62,6 +62,11 @@ import 'run_view_state.dart';
 /// **The screen is held awake while a run is live** ([ScreenWake],
 /// injected) — live as the core says, from connecting to applying — and
 /// released the moment it stops being live, including while paused.
+///
+/// **The app is told each time an attempt stops being live**
+/// (`AppController.runEnded`): that is when the core writes or clears the
+/// run marker the home list warns with. A page that leaves a live run
+/// keeps listening, and only for that, until the run winds down.
 class SyncRunController {
   SyncRunController(this.app, {required this.screenWake});
 
@@ -83,6 +88,7 @@ class SyncRunController {
   Future<RunSession?>? _session;
   StreamSubscription<RunView>? _views;
   bool _screenHeld = false;
+  bool _live = false;
   bool _disposed = false;
 
   /// Opens [request]'s run session. One per instance — the reason the page
@@ -145,7 +151,9 @@ class SyncRunController {
     // Not awaited: the rest of the run belongs to the core, not to the
     // page that just left.
     unawaited(_steer(const CloseRun()));
-    unawaited(_views?.cancel());
+    // A live run is still winding down in the core, and its end still
+    // changes the home list: [_show] cancels once it stops being live.
+    if (!_live) unawaited(_views?.cancel());
     // The page is gone, so there is no screen of this head's to hold on.
     _syncScreenWake(live: false);
     timings.dispose();
@@ -195,7 +203,11 @@ class SyncRunController {
   /// Renders [view]: the core's values in this page's words, nothing
   /// decided. The header and the roots named are the running entry's.
   void _show(RunView view) {
-    if (_disposed) return;
+    _trackLive(view.standing);
+    if (_disposed) {
+      if (!_live) unawaited(_views?.cancel());
+      return;
+    }
     final entry = switch (view.current) {
       final index? => view.entries[index],
       null => null,
@@ -316,6 +328,14 @@ class SyncRunController {
     );
     timings.value = view.timings;
     _syncScreenWake(live: view.standing == RunStanding.live);
+  }
+
+  /// Tells the app when the run goes from live to not; see the class doc
+  /// comment.
+  void _trackLive(RunStanding standing) {
+    final live = standing == RunStanding.live;
+    if (_live && !live) unawaited(app.runEnded());
+    _live = live;
   }
 
   void _syncScreenWake({required bool live}) {

@@ -213,7 +213,7 @@ class PairShowController {
 
   Future<void> _recordPaired(String name, Completer<void> stopped) async {
     try {
-      await app.refreshDevices();
+      await app.devicePaired();
     } on CoreFailure catch (e) {
       _record(
         stopped,

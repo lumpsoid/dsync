@@ -123,9 +123,10 @@ class AppController {
   }
 
   /// Renames the device with [deviceId] to [name] (SPEC §4.4: this host's
-  /// own label for the peer).
+  /// own label for the peer). A profile row prints its device's name, so
+  /// the profiles are re-read after it.
   Future<String?> renameDevice(String deviceId, String name) =>
-      _deviceWrite(() => core.renameDevice(deviceId, name));
+      _deviceWriteShownOnProfiles(() => core.renameDevice(deviceId, name));
 
   /// Authorizes the device to reach [rootPath] on this host (SPEC §4.4,
   /// `dsync pair grant`); the core expands `~` before it stores it.
@@ -150,9 +151,26 @@ class AppController {
   Future<String?> clearDeviceVerification(String deviceId) =>
       _deviceWrite(() => core.clearVerification(deviceId));
 
-  /// Revokes the device (SPEC §4.4): local only, nothing is sent to it.
+  /// Revokes the device (SPEC §4.4): local only, nothing is sent to it. A
+  /// profile naming it now renders broken, so the profiles are re-read
+  /// after it.
   Future<String?> revoke(String deviceId) =>
-      _deviceWrite(() => core.revokeDevice(deviceId));
+      _deviceWriteShownOnProfiles(() => core.revokeDevice(deviceId));
+
+  /// A pairing the core has just recorded: the new device joins the list,
+  /// and a profile naming it — one left broken by an earlier revoke — can
+  /// be run again. Throws `CoreFailure` when the devices cannot be re-read,
+  /// as [refreshDevices] does; the profiles' re-read never throws.
+  Future<void> devicePaired() async {
+    await refreshDevices();
+    await _refreshProfilesAfterWrite();
+  }
+
+  /// A run's attempt has stopped being live — finished, stopped, paused or
+  /// failed — which is when the core writes or clears the run marker a
+  /// profile row warns with (SPEC §7.6). Never throws: the run feature
+  /// tells this in passing and has nothing to show a failure on.
+  Future<void> runEnded() => _refreshProfilesAfterWrite();
 
   /// One change to the paired devices, answered with the list as it now
   /// stands. A refusal is the message to show, and the list is re-read on
@@ -168,6 +186,33 @@ class AppController {
       return e.message;
     }
     return null;
+  }
+
+  /// A [_deviceWrite] whose change a profile row also shows (its device's
+  /// name, or whether it is still paired). The profiles are read after
+  /// the write lands, since the core lists them from the device store as
+  /// it now stands; the devices' own list is the write's answer, so there
+  /// is nothing to order between the two lists. A refusal changed nothing
+  /// a profile shows, so only a success re-reads them.
+  Future<String?> _deviceWriteShownOnProfiles(
+    Future<List<PairedDeviceInfo>> Function() write,
+  ) async {
+    final failure = await _deviceWrite(write);
+    if (failure == null) await _refreshProfilesAfterWrite();
+    return failure;
+  }
+
+  /// Re-reads the profiles after a write elsewhere changed what their rows
+  /// show. The write has already landed, so a store that cannot be read
+  /// does not turn it into a failure: the list keeps its last rows, and
+  /// the Profiles page's own [refreshProfiles] surfaces the store's message
+  /// on its next read.
+  Future<void> _refreshProfilesAfterWrite() async {
+    try {
+      await refreshProfiles();
+    } on CoreFailure {
+      // Left for the Profiles page's own read to surface; see above.
+    }
   }
 
   /// Re-reads the paired devices into [AppState.devices]. Throws

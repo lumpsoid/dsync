@@ -108,7 +108,7 @@ class PairController {
       return;
     }
     try {
-      await app.refreshDevices();
+      await app.devicePaired();
     } on CoreFailure catch (e) {
       state.recordOutcome(
         PairFailed('Paired, but the device list could not be re-read: $e'),
