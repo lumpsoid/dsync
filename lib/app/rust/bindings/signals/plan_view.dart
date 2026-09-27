@@ -8,6 +8,7 @@ class PlanView {
     required this.actions,
     required this.conflicts,
     required this.bytesToTransfer,
+    this.exceededWarnSizeBytes,
     required this.summary,
   });
 
@@ -17,6 +18,7 @@ class PlanView {
       actions: TraitHelpers.deserializeVectorPlanRowView(deserializer),
       conflicts: TraitHelpers.deserializeVectorConflictRowView(deserializer),
       bytesToTransfer: deserializer.deserializeUint64(),
+      exceededWarnSizeBytes: TraitHelpers.deserializeOptionU64(deserializer),
       summary: PlanSummaryView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
@@ -35,18 +37,21 @@ class PlanView {
   final List<PlanRowView> actions;
   final List<ConflictRowView> conflicts;
   final Uint64 bytesToTransfer;
+  final Uint64? exceededWarnSizeBytes;
   final PlanSummaryView summary;
 
   PlanView copyWith({
     List<PlanRowView>? actions,
     List<ConflictRowView>? conflicts,
     Uint64? bytesToTransfer,
+    Uint64? Function()? exceededWarnSizeBytes,
     PlanSummaryView? summary,
   }) {
     return PlanView(
       actions: actions ?? this.actions,
       conflicts: conflicts ?? this.conflicts,
       bytesToTransfer: bytesToTransfer ?? this.bytesToTransfer,
+      exceededWarnSizeBytes: exceededWarnSizeBytes == null ? this.exceededWarnSizeBytes : exceededWarnSizeBytes(),
       summary: summary ?? this.summary,
     );
   }
@@ -56,6 +61,7 @@ class PlanView {
     TraitHelpers.serializeVectorPlanRowView(actions, serializer);
     TraitHelpers.serializeVectorConflictRowView(conflicts, serializer);
     serializer.serializeUint64(bytesToTransfer);
+    TraitHelpers.serializeOptionU64(exceededWarnSizeBytes, serializer);
     summary.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -75,6 +81,7 @@ class PlanView {
       && listEquals(actions, other.actions)
       && listEquals(conflicts, other.conflicts)
       && bytesToTransfer == other.bytesToTransfer
+      && exceededWarnSizeBytes == other.exceededWarnSizeBytes
       && summary == other.summary;
   }
 
@@ -83,6 +90,7 @@ class PlanView {
         actions,
         conflicts,
         bytesToTransfer,
+        exceededWarnSizeBytes,
         summary,
       );
 
@@ -95,6 +103,7 @@ class PlanView {
         'actions: $actions, '
         'conflicts: $conflicts, '
         'bytesToTransfer: $bytesToTransfer, '
+        'exceededWarnSizeBytes: $exceededWarnSizeBytes, '
         'summary: $summary'
         ')';
       return true;

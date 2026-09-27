@@ -35,11 +35,13 @@ pub(super) struct PlanRows {
     /// By path: a plan's action and a conflict's own path never coincide.
     rows: HashMap<RelPath, Row>,
     bytes_to_transfer: u64,
+    exceeded_warn_size_bytes: Option<u64>,
     summary: PlanSummaryView,
 }
 
 impl PlanRows {
-    pub(super) fn of(plan: &Plan) -> PlanRows {
+    /// `plan`'s rows, warning when it moves more than `warn_size_bytes`.
+    pub(super) fn of(plan: &Plan, warn_size_bytes: Option<u64>) -> PlanRows {
         let actions = plan
             .actions
             .iter()
@@ -62,6 +64,8 @@ impl PlanRows {
                 .collect(),
             rows: actions.chain(conflicts).collect(),
             bytes_to_transfer: plan.bytes_to_transfer(),
+            exceeded_warn_size_bytes: warn_size_bytes
+                .filter(|_| plan.exceeds_warn_size(warn_size_bytes)),
             summary: PlanSummaryView::from(plan),
         }
     }
@@ -107,6 +111,7 @@ impl PlanRows {
             actions: self.plan_rows(choices, outcomes),
             conflicts: self.conflict_rows(choices, outcomes),
             bytes_to_transfer: self.bytes_to_transfer(),
+            exceeded_warn_size_bytes: self.exceeded_warn_size_bytes,
             summary: self.summary(),
         }
     }

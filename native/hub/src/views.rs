@@ -944,6 +944,9 @@ pub struct PlanView {
     /// The conflicts, in the plan's order.
     pub conflicts: Vec<ConflictRowView>,
     pub bytes_to_transfer: u64,
+    /// The warn size (SPEC §10) `bytes_to_transfer` is over; `None` when
+    /// it is not, or no size is set.
+    pub exceeded_warn_size_bytes: Option<u64>,
     /// What the plan's copies write where.
     pub summary: PlanSummaryView,
 }

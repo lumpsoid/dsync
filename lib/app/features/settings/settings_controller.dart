@@ -5,6 +5,7 @@ import '../../app_settings.dart';
 import '../../app_settings_store.dart';
 import '../../peer_port.dart';
 import '../../theme_preference.dart';
+import '../../warn_size.dart';
 import 'settings_view_state.dart';
 
 /// Input methods of the Settings page: read what is stored, and store what
@@ -96,6 +97,39 @@ class SettingsController {
         'the next pairing code it shows tells the other device to dial it '
         'there. Devices already paired still dial the port they recorded.',
       ),
+    );
+  }
+
+  /// Stores [text] as the size a run's plan review warns above when its
+  /// profile sets none, refusing anything `WarnSize.parse` refuses; empty
+  /// turns the warning off.
+  Future<void> saveWarnSize(String text) async {
+    final WarnSize size;
+    try {
+      size = WarnSize.parse(text);
+    } on FormatException catch (e) {
+      state.recordOutcome(SettingsFailed(e.message));
+      return;
+    }
+
+    state.recordOutcome(const SettingsWorking());
+    final failure = await _change(
+      (settings) => settings.withWarnSize(size),
+      unchanged: 'The warn size is unchanged.',
+    );
+    if (failure != null) {
+      state.recordOutcome(SettingsFailed(failure));
+      return;
+    }
+    state.recordOutcome(
+      SettingsSaved(switch (size) {
+        WarnSizeOff() =>
+          'A sync warns about its size only when its profile sets one.',
+        final WarnSizeAbove size =>
+          'From the next sync, a plan that moves more than '
+              '${size.label} warns before you apply it, unless its '
+              'profile sets a size of its own.',
+      }),
     );
   }
 

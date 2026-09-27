@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../readable_width.dart';
 import '../../theme_preference.dart';
+import '../../warn_size.dart';
 import 'settings_controller.dart';
 import 'settings_scope.dart';
 import 'settings_view_state.dart';
@@ -9,16 +10,17 @@ import 'settings_view_state.dart';
 /// What this installation keeps for itself, in sections: **Network**,
 /// holding the address the pairing listener binds (task 2b26ac's `--bind`,
 /// as the head's own setting) and the port this device serves on,
-/// **Appearance**, holding the theme, and
-/// **Power**, holding whether runs and serve keep the screen awake.
+/// **Appearance**, holding the theme,
+/// **Power**, holding whether runs and serve keep the screen awake, and
+/// **Sync**, holding the size a run's review warns above.
 ///
 /// Widgets only, per the page role in `app_scope.dart`: the stored settings
 /// arrive as one value the controller has already parsed, and the only
 /// branches here are over whether they were read and the sealed
 /// [SettingsOutcome]. Nothing on this page decides what a bind address or
-/// a port may be — the dialog hands what was typed to the controller, and
-/// the refusal it shows is `parseBindAddress`'s or `PeerPort.parse`'s own
-/// words.
+/// a port or a warn size may be — the dialog hands what was typed to the
+/// controller, and the refusal it shows is `parseBindAddress`'s,
+/// `PeerPort.parse`'s or `WarnSize.parse`'s own words.
 ///
 /// A leaf: nothing leads anywhere from this page, so it takes no callbacks.
 class SettingsPage extends StatefulWidget {
@@ -67,6 +69,7 @@ class _SettingsBody extends StatelessWidget {
     final peerPort = state.settings?.peerPort;
     final theme = state.settings?.theme;
     final keepScreenAwake = state.settings?.keepScreenAwake;
+    final warnSize = state.settings?.warnSize;
     return ReadableScrollPadding(
       width: ReadableWidth.list,
       padding: null,
@@ -174,6 +177,30 @@ class _SettingsBody extends StatelessWidget {
               ),
             },
           ),
+          const _SectionHeader('Sync'),
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('settings-warn-size'),
+              leading: const Icon(Icons.data_usage_outlined),
+              title: const Text('Warn about large transfers'),
+              subtitle: Text(switch (warnSize) {
+                null => 'Unavailable — see below.',
+                WarnSizeOff() =>
+                  'Off\nA sync warns before it applies only when its '
+                      'profile sets a size.',
+                final WarnSizeAbove size =>
+                  'Above ${size.label}\nA sync that '
+                      'moves more warns before you apply it, unless its '
+                      'profile sets a size of its own.',
+              }),
+              isThreeLine: warnSize != null,
+              enabled: !working && warnSize != null,
+              onTap: () => _editWarnSize(context, switch (warnSize) {
+                final WarnSizeAbove size => size.typed,
+                WarnSizeOff() || null => '',
+              }),
+            ),
+          ),
           switch (outcome) {
             SettingsSaved(:final message) => _NoticeTile(
               message,
@@ -229,6 +256,24 @@ class _SettingsBody extends StatelessWidget {
     );
     if (typed != null) await controller.savePeerPort(typed);
   }
+
+  Future<void> _editWarnSize(BuildContext context, String current) async {
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (context) => _TypedValueDialog(
+        title: 'Warn about large transfers',
+        label: 'Size',
+        help:
+            'Warn when a sync moves more than this — e.g. 500 MB or 2 GiB; '
+            'empty for off. A '
+            'profile\'s own warn size, where it sets one, is used instead.',
+        keyPrefix: 'settings-warn-size',
+        initialValue: current,
+        keyboardType: TextInputType.number,
+      ),
+    );
+    if (typed != null) await controller.saveWarnSize(typed);
+  }
 }
 
 const _keepScreenAwakeTitle = 'Keep screen awake during runs and serve';
@@ -255,7 +300,8 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-/// A typed setting — the bind address or the peer port — popped as text.
+/// A typed setting — the bind address, the peer port or the warn size —
+/// popped as text.
 /// Pops nothing at all when cancelled, and does not judge what was typed:
 /// the refusal belongs to the value's own parse through
 /// `SettingsController`, so there is one rule about each value rather than

@@ -506,8 +506,9 @@ final class SyncRunPlanAbsent extends SyncRunPlanChange {
 
 /// A whole plan, replacing whatever was shown: its [plan] and [conflicts]
 /// rows, every reported outcome by path, the core's choice for each row in
-/// their order, what the core counts the copies moving each way, and the
-/// bytes the kept actions move.
+/// their order, what the core counts the copies moving each way, the
+/// bytes the kept actions move, and the line warning that they are over
+/// the warn size (SPEC §10), if they are.
 final class SyncRunPlanReplaced extends SyncRunPlanChange {
   const SyncRunPlanReplaced({
     required this.plan,
@@ -517,6 +518,7 @@ final class SyncRunPlanReplaced extends SyncRunPlanChange {
     required this.conflictChoices,
     required this.copyBytes,
     required this.bytesToTransfer,
+    required this.sizeWarning,
   });
 
   final List<SyncRunPlanRow> plan;
@@ -526,6 +528,7 @@ final class SyncRunPlanReplaced extends SyncRunPlanChange {
   final List<ConflictChoice> conflictChoices;
   final ({int toDevice, int toThisDevice}) copyBytes;
   final int bytesToTransfer;
+  final String? sizeWarning;
 }
 
 /// The rows of the plan already shown whose choice or outcome changed.
@@ -642,6 +645,7 @@ class SyncRunViewState extends ChangeNotifier {
   final ValueNotifier<List<SyncRunPlanRow>> _plan = ValueNotifier(const []);
   Map<SyncRunPlanGroup, SyncRunPlanSection> _planSections = _emptyPlanSections;
   int _bytesToTransfer = 0;
+  String? _sizeWarning;
   Map<String, SyncRunResultRow> _results = {};
   final Map<String, ValueNotifier<SyncRunResultRow?>> _resultCells = {};
   List<ActionChoice> _actionChoices = [];
@@ -713,6 +717,10 @@ class SyncRunViewState extends ChangeNotifier {
   Map<SyncRunPlanGroup, SyncRunPlanSection> get planSections => _planSections;
 
   int get bytesToTransfer => _bytesToTransfer;
+
+  /// SPEC §10's warning that the plan moves more than the warn size;
+  /// `null` when it does not, or no size is set. Fixed with the plan.
+  String? get sizeWarning => _sizeWarning;
 
   /// The result for [path], as something the row for that path can watch.
   /// One result is one row's news: [show] writes it here when it changes
@@ -827,6 +835,7 @@ class SyncRunViewState extends ChangeNotifier {
   void _clearPlan() {
     _conflicts = const [];
     _bytesToTransfer = 0;
+    _sizeWarning = null;
     _results = {};
     for (final cell in _resultCells.values) {
       cell.value = null;
@@ -843,6 +852,7 @@ class SyncRunViewState extends ChangeNotifier {
   void _replacePlan(SyncRunPlanReplaced change) {
     _conflicts = List.unmodifiable(change.conflicts);
     _bytesToTransfer = change.bytesToTransfer;
+    _sizeWarning = change.sizeWarning;
     _results = Map.of(change.results);
     for (final MapEntry(key: path, value: cell) in _resultCells.entries) {
       cell.value = _results[path];

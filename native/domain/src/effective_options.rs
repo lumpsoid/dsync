@@ -16,9 +16,10 @@ use crate::side::Side;
 use crate::ssh_access::SshAccess;
 
 /// One run's replicas, rules and knobs, merged: an ad-hoc pair, or one
-/// entry of a profile. `warn_size_bytes` and
-/// `jobs` stay `None` when neither a flag nor the profile sets them; the
-/// caller's default (`Tuning`) applies then.
+/// entry of a profile. `warn_size_bytes` stays `None` when neither a
+/// flag, the profile nor the head's default sets it; `jobs` when neither a
+/// flag nor the profile does, and the caller's default (`Tuning`) applies
+/// then.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EffectiveOptions {
     a: ReplicaLocation,
@@ -41,7 +42,8 @@ impl EffectiveOptions {
     /// already canonicalized and checked by [`Profile::options`]. The
     /// entry's a/b order is kept as written, even remote-first. `--ignore`
     /// and `--ssh-option` add to the profile's; `--warn-size`, `--jobs` and
-    /// `--remote-dsync` override it. Each side keeps its own
+    /// `--remote-dsync` override it. The head's default warn size applies
+    /// only when neither the flag nor the profile sets one. Each side keeps its own
     /// `[ssh.a]`/`[ssh.b]`.
     pub(crate) fn for_entry(
         profile: &Profile,
@@ -60,7 +62,10 @@ impl EffectiveOptions {
             kind: entry.kind(),
             as_path: entry.as_path(),
             rules: profile.rules().merged_with(&flag_rules(flags)),
-            warn_size_bytes: flags.warn_size_bytes.or(profile.warn_size_bytes()),
+            warn_size_bytes: flags
+                .warn_size_bytes
+                .or(profile.warn_size_bytes())
+                .or(flags.default_warn_size_bytes),
             jobs: flags.jobs.or(profile.jobs()),
             allow_mass_delete: flags.allow_mass_delete,
             entry_id: EntryId::for_entry(entry.kind(), canonical_a, canonical_b),
@@ -111,7 +116,7 @@ impl EffectiveOptions {
             kind: RootKind::Folder,
             as_path: None,
             rules: flag_rules(flags),
-            warn_size_bytes: flags.warn_size_bytes,
+            warn_size_bytes: flags.warn_size_bytes.or(flags.default_warn_size_bytes),
             jobs: flags.jobs,
             allow_mass_delete: flags.allow_mass_delete,
             entry_id: EntryId::for_pair(&canonical_first, &canonical_second),

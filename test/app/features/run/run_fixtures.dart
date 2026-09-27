@@ -8,6 +8,7 @@ import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:dsync/app/warn_size.dart';
 
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
@@ -43,6 +44,7 @@ class RunHarness {
   RunHarness({
     DateTime Function()? now,
     Future<bool> Function()? keepScreenAwake,
+    Future<WarnSize> Function()? defaultWarnSize,
   }) : hub = FakeHub(),
        screenWake = FakeScreenWake() {
     app = fakeApp(hub, now: now);
@@ -50,6 +52,7 @@ class RunHarness {
       app,
       screenWake: screenWake,
       keepScreenAwake: keepScreenAwake ?? () async => true,
+      defaultWarnSize: defaultWarnSize ?? () async => const WarnSizeOff(),
     );
   }
 
@@ -118,7 +121,8 @@ wire.EntryRunView entryRun({
 /// runs the one entry [localRoot] with [remoteRoot]. Nothing is worked out
 /// from anything else: a test that shows a finished run names its
 /// [standing], one whose plan moves bytes names [bytesToTransfer] and the
-/// two sides' [bytesToA] and [bytesToB], as the core would send them.
+/// two sides' [bytesToA] and [bytesToB], as the core would send them, and
+/// one over its warn size names [exceededWarnSizeBytes].
 WholeRunView runView({
   bool dryRun = false,
   wire.RunPhaseView phase = const wire.RunPhaseViewScanning(),
@@ -132,6 +136,7 @@ WholeRunView runView({
   List<wire.ConflictRowView> conflicts = const [],
   List<wire.PlanRowView> plan = const [],
   int bytesToTransfer = 0,
+  int? exceededWarnSizeBytes,
   int bytesToA = 0,
   int bytesToB = 0,
   ({int completed, int total})? progress,
@@ -165,6 +170,10 @@ WholeRunView runView({
     actions: plan,
     conflicts: conflicts,
     bytesToTransfer: n(bytesToTransfer),
+    exceededWarnSizeBytes: switch (exceededWarnSizeBytes) {
+      final bytes? => n(bytes),
+      null => null,
+    },
     summary: wire.PlanSummaryView(bytesToA: n(bytesToA), bytesToB: n(bytesToB)),
   ),
 );

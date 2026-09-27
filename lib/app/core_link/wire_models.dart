@@ -323,6 +323,10 @@ RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
           ),
       ],
       bytesToTransfer: _n(plan.bytesToTransfer),
+      exceededWarnSizeBytes: switch (plan.exceededWarnSizeBytes) {
+        final bytes? => _n(bytes),
+        null => null,
+      },
       summary: (
         bytesToA: _n(plan.summary.bytesToA),
         bytesToB: _n(plan.summary.bytesToB),

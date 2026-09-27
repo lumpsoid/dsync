@@ -181,6 +181,45 @@ fn with_no_flag_the_profile_warn_size_bytes_is_kept() {
 }
 
 #[test]
+fn the_profile_warn_size_bytes_beats_the_default() {
+    let run = flags(Flags {
+        default_warn_size_bytes: Some(7),
+        ..Flags::default()
+    });
+    assert_eq!(work(&run).warn_size_bytes, Some(500));
+}
+
+#[test]
+fn a_flag_beats_the_default_warn_size_bytes() {
+    let run = flags(Flags {
+        warn_size: Some(999),
+        default_warn_size_bytes: Some(7),
+        ..Flags::default()
+    });
+    assert_eq!(work(&run).warn_size_bytes, Some(999));
+    assert_eq!(
+        ad_hoc("/home/me/a", "/home/me/b", &run).warn_size_bytes,
+        Some(999)
+    );
+}
+
+#[test]
+fn with_neither_a_flag_nor_a_profile_value_the_default_warn_size_bytes_applies() {
+    let run = flags(Flags {
+        default_warn_size_bytes: Some(7),
+        ..Flags::default()
+    });
+    assert_eq!(
+        single("bare", &profile(BARE), &run).warn_size_bytes,
+        Some(7)
+    );
+    assert_eq!(
+        ad_hoc("/home/me/a", "/home/me/b", &run).warn_size_bytes,
+        Some(7)
+    );
+}
+
+#[test]
 fn a_flag_beats_the_profile_for_jobs() {
     let run = flags(Flags {
         jobs: Some(8),

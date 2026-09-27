@@ -28,6 +28,9 @@ pub struct Flags {
     pub quiet: bool,
     pub ignore: Vec<String>,
     pub warn_size: Option<i64>,
+    /// Not a CLI flag: the head's own setting, the size to warn above when
+    /// neither `--warn-size` nor the profile sets one.
+    pub default_warn_size_bytes: Option<u64>,
     pub jobs: Option<i64>,
     /// Hidden; benchmarks only.
     pub apply_concurrency: Option<i64>,
@@ -64,6 +67,8 @@ pub struct RunFlags {
     pub verbosity: Verbosity,
     pub ignore: Vec<Glob>,
     pub warn_size_bytes: Option<u64>,
+    /// Below `warn_size_bytes` and the profile's own: the head's default.
+    pub default_warn_size_bytes: Option<u64>,
     pub jobs: Option<Jobs>,
     /// `None` leaves the apply at its own default (`Tuning::writers`).
     pub apply_concurrency: Option<NonZeroUsize>,
@@ -134,6 +139,7 @@ impl RunFlags {
             verbosity,
             ignore,
             warn_size_bytes,
+            default_warn_size_bytes: flags.default_warn_size_bytes,
             jobs,
             apply_concurrency,
             ssh_options,
@@ -163,6 +169,7 @@ mod tests {
         assert_eq!(flags.verbosity, Verbosity::Normal);
         assert!(!flags.json);
         assert_eq!(flags.warn_size_bytes, None);
+        assert_eq!(flags.default_warn_size_bytes, None);
         assert_eq!(flags.jobs, None);
         assert_eq!(flags.apply_concurrency, None);
         assert!(!flags.allow_mass_delete);

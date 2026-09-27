@@ -2,16 +2,17 @@ import 'dart:io';
 
 import 'peer_port.dart';
 import 'theme_preference.dart';
+import 'warn_size.dart';
 
 /// What the head's Settings page owns: the preferences this installation
 /// keeps for itself, as already-parsed values.
 ///
-/// Four settings — [bindAddress], [peerPort], [theme] and
-/// [keepScreenAwake] — held as one model because the thing the Settings
-/// page edits and [AppSettingsStore] writes is "the settings", one whole
+/// Five settings — [bindAddress], [peerPort], [theme], [keepScreenAwake]
+/// and [warnSize] — held as one model because the thing the Settings page
+/// edits and [AppSettingsStore] writes is "the settings", one whole
 /// document: changing one of them is [withBindAddress], [withPeerPort],
-/// [withTheme] or [withKeepScreenAwake] on what is stored, so a save never
-/// drops the others.
+/// [withTheme], [withKeepScreenAwake] or [withWarnSize] on what is stored,
+/// so a save never drops the others.
 ///
 /// **Parsed, not textual.** A bind address that reached here as a string
 /// would be re-validated by everything that read it; [parseBindAddress] is
@@ -26,6 +27,7 @@ class AppSettings {
     required this.peerPort,
     required this.theme,
     required this.keepScreenAwake,
+    required this.warnSize,
   });
 
   /// Which address the pairing listener binds — the head's equivalent of
@@ -45,12 +47,17 @@ class AppSettings {
   /// (`ScreenWake`).
   final bool keepScreenAwake;
 
+  /// The size a run's plan review warns above when the profile sets none
+  /// of its own.
+  final WarnSize warnSize;
+
   /// These settings with the bind address changed to [address].
   AppSettings withBindAddress(InternetAddress address) => AppSettings(
     bindAddress: address,
     peerPort: peerPort,
     theme: theme,
     keepScreenAwake: keepScreenAwake,
+    warnSize: warnSize,
   );
 
   /// These settings with the peer port changed to [port].
@@ -59,6 +66,7 @@ class AppSettings {
     peerPort: port,
     theme: theme,
     keepScreenAwake: keepScreenAwake,
+    warnSize: warnSize,
   );
 
   /// These settings with the theme changed to [preference].
@@ -67,6 +75,7 @@ class AppSettings {
     peerPort: peerPort,
     theme: preference,
     keepScreenAwake: keepScreenAwake,
+    warnSize: warnSize,
   );
 
   /// These settings with keeping the screen awake turned [on] or off.
@@ -75,6 +84,16 @@ class AppSettings {
     peerPort: peerPort,
     theme: theme,
     keepScreenAwake: on,
+    warnSize: warnSize,
+  );
+
+  /// These settings with the default warn size changed to [size].
+  AppSettings withWarnSize(WarnSize size) => AppSettings(
+    bindAddress: bindAddress,
+    peerPort: peerPort,
+    theme: theme,
+    keepScreenAwake: keepScreenAwake,
+    warnSize: size,
   );
 
   /// What an installation that has never opened Settings runs with:
@@ -82,12 +101,14 @@ class AppSettings {
   /// listen in the same place until somebody says otherwise;
   /// [defaultPeerPort], the CLI's `--port` default, for the same reason; the
   /// device's own light or dark; and the screen held awake while a run or
-  /// serve is live, as it was before this was a setting.
+  /// serve is live, as it was before this was a setting; and no warn
+  /// size, as the CLI without `--warn-size`.
   static final AppSettings defaults = AppSettings(
     bindAddress: InternetAddress.anyIPv4,
     peerPort: PeerPort(defaultPeerPort),
     theme: ThemePreference.system,
     keepScreenAwake: true,
+    warnSize: const WarnSizeOff(),
   );
 }
 

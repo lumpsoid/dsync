@@ -31,7 +31,7 @@ impl Hub {
     pub(crate) async fn save_profile(&self, name: &str, draft: ProfileDraft) -> Handled {
         let name = ProfileName::parse(name).map_err(text)?;
         let profile = self.draft_profile(&draft)?;
-        let flags = run_flags(false, Vec::new(), None)?;
+        let flags = run_flags(false, Vec::new(), None, None)?;
         profile.options(&name, &flags, &self.facts).map_err(text)?;
         let listing = self.listing();
         blocking(move || {
@@ -220,7 +220,7 @@ impl Listing {
     /// Every entry's id, in entry order, or `None` when the profile's
     /// options are refused on this host.
     fn entry_ids(&self, name: &ProfileName, profile: &Profile) -> Option<Vec<EntryId>> {
-        let flags = run_flags(false, Vec::new(), None).ok()?;
+        let flags = run_flags(false, Vec::new(), None, None).ok()?;
         let options = profile.options(name, &flags, &self.facts).ok()?;
         Some(
             options

@@ -231,7 +231,7 @@ impl From<Failure> for Phase {
 }
 
 /// One entry of a session as the head lists it: its kind and its two
-/// roots' paths.
+/// roots' paths, and the size its plan warns above.
 pub(crate) struct EntryRoots {
     pub(crate) kind: RootKind,
     /// Side A's path on this device.
@@ -241,6 +241,8 @@ pub(crate) struct EntryRoots {
     /// Side B's [`dsync_domain::Location::device_label`], naming a
     /// keep-both copy.
     pub(crate) peer_label: String,
+    /// The entry's effective warn size (SPEC §10); `None` warns never.
+    pub(crate) warn_size_bytes: Option<u64>,
 }
 
 /// Where one entry of the session stands.
@@ -303,6 +305,8 @@ struct EntryRunState {
 /// The running entry, as the head sees it: begun afresh as each entry
 /// starts.
 struct EntryState {
+    /// The size its plan warns above.
+    warn_size_bytes: Option<u64>,
     /// The head declined the delete guard's deletions.
     declined: bool,
     /// The run's summary, once reported; what a lone entry ends as is
@@ -329,8 +333,9 @@ struct EntryState {
 }
 
 impl EntryState {
-    fn new() -> EntryState {
+    fn new(warn_size_bytes: Option<u64>) -> EntryState {
         EntryState {
+            warn_size_bytes,
             declined: false,
             summary: None,
             failure: None,
@@ -353,7 +358,7 @@ impl EntryState {
         if let Some(taken) = &self.plan {
             return taken.clone();
         }
-        let taken = Arc::new(PlanRows::of(plan));
+        let taken = Arc::new(PlanRows::of(plan, self.warn_size_bytes));
         self.choices = Choices::as_planned(&taken);
         self.outcomes = Arc::new(Outcomes::over(&taken));
         self.plan = Some(taken.clone());
@@ -451,7 +456,7 @@ impl RunState {
             entries: Vec::new(),
             current: None,
             completed_earlier: 0,
-            entry: EntryState::new(),
+            entry: EntryState::new(None),
             timings: None,
         }
     }
@@ -523,7 +528,11 @@ impl RunState {
             ProfileEvent::Entries { .. } => Urgency::Unseen,
             ProfileEvent::EntryConnecting { entry } => {
                 self.completed_earlier += self.entry.completed();
-                self.entry = EntryState::new();
+                let warn_size_bytes = self
+                    .entries
+                    .get(entry)
+                    .and_then(|listed| listed.roots.warn_size_bytes);
+                self.entry = EntryState::new(warn_size_bytes);
                 self.current = Some(entry);
                 self.phase = Phase::Connecting;
                 if let Some(listed) = self.entries.get_mut(entry) {
@@ -953,6 +962,7 @@ mod tests {
                 local_root: format!("/e{index}/a"),
                 remote_root: format!("~/e{index}/b"),
                 peer_label: format!("b{index}"),
+                warn_size_bytes: None,
             })
             .collect()
     }
@@ -1131,6 +1141,27 @@ mod tests {
         let view = state.view();
         assert!(matches!(view.phase, RunPhaseView::Scanning));
         assert_eq!(view.connected_at_ms, Some(42));
+    }
+
+    /// The running entry's warn size is the plan's: over it the view
+    /// names the size, at it or with none set it names nothing.
+    #[test]
+    fn the_plan_names_the_entry_warn_size_it_is_over() {
+        let plan = plan();
+        let bytes = plan.bytes_to_transfer();
+        let exceeded = |warn_size_bytes| {
+            let mut state = RunState::new(false);
+            let mut listed = roots(1);
+            listed[0].warn_size_bytes = warn_size_bytes;
+            state.listed(listed);
+            state.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
+            state.connected(1);
+            state.review(&plan);
+            state.view().plan.new_plan().exceeded_warn_size_bytes
+        };
+        assert_eq!(exceeded(Some(bytes - 1)), Some(bytes - 1));
+        assert_eq!(exceeded(Some(bytes)), None);
+        assert_eq!(exceeded(None), None);
     }
 
     #[test]

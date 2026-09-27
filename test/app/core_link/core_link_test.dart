@@ -30,6 +30,7 @@ void main() {
         ),
       ),
       dryRun: false,
+      defaultWarnSizeBytes: null,
     );
     final views = <RunView>[];
     final listening = run.views.listen(views.add);
@@ -74,6 +75,7 @@ void main() {
         ),
       ),
       dryRun: false,
+      defaultWarnSizeBytes: null,
     );
     final views = run.views.toList();
     hub

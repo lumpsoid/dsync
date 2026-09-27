@@ -140,13 +140,17 @@ pub enum CoreCommand {
     },
 
     /// Starts a run: session id = request id. `address` overrides where
-    /// the peer is dialled (`host` or `host:port`). Answered `Done` at
+    /// the peer is dialled (`host` or `host:port`).
+    /// `default_warn_size_bytes` is the head's setting: the plan review
+    /// warns above it when neither a flag nor the profile sets a size.
+    /// Answered `Done` at
     /// once; everything after, a target that will not resolve included,
     /// is the session's [`RunSnapshot`]s.
     StartRun {
         target: RunTarget,
         dry_run: bool,
         address: Option<String>,
+        default_warn_size_bytes: Option<u64>,
     },
     /// What the user did to the run in `session`.
     SteerRun {

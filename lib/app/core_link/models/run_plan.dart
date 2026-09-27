@@ -8,12 +8,17 @@ final class RunPlan {
     required this.actions,
     required this.conflicts,
     required this.bytesToTransfer,
+    required this.exceededWarnSizeBytes,
     required this.summary,
   });
 
   final List<PlanRow> actions;
   final List<ConflictRow> conflicts;
   final int bytesToTransfer;
+
+  /// The warn size (SPEC §10) [bytesToTransfer] is over; `null` when it
+  /// is not, or no size is set.
+  final int? exceededWarnSizeBytes;
 
   /// The bytes the plan's copies write onto each side.
   final ({int bytesToA, int bytesToB}) summary;

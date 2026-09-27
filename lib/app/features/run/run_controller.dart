@@ -23,8 +23,10 @@ import '../../core_link/models/run_view.dart';
 import '../../core_link/models/scan_tally.dart';
 import '../../core_link/models/skipped_path_info.dart';
 import '../../core_link/models/sync_history.dart';
+import '../../format_bytes.dart';
 import '../../run_request.dart';
 import '../../screen_wake.dart';
+import '../../warn_size.dart';
 import 'run_view_state.dart';
 
 /// Input methods of the Run page: a run session in the core, the latest
@@ -67,6 +69,12 @@ import 'run_view_state.dart';
 /// released the moment it stops being live, including while paused. The
 /// Settings page can turn this off; the switch is read when the run starts.
 ///
+/// **The Settings page's warn size is read when the run starts, too**, and
+/// handed to the core as the size below a profile's own; the core says
+/// whether the plan is over it, and the review shows the warning line.
+/// A settings file that cannot be read means no default size, not a run
+/// that fails.
+///
 /// **The app is told each time an attempt stops being live**
 /// (`AppController.runEnded`): that is when the core writes or clears the
 /// run marker the home list warns with. A page that leaves a live run
@@ -76,6 +84,7 @@ class SyncRunController {
     this.app, {
     required this.screenWake,
     required this.keepScreenAwake,
+    required this.defaultWarnSize,
   });
 
   final AppController app;
@@ -88,6 +97,11 @@ class SyncRunController {
   /// so a change applies from the next run. Throws
   /// `AppSettingsStoreException` when the settings file cannot be read.
   final Future<bool> Function() keepScreenAwake;
+
+  /// The Settings page's warn size, read once per [start] like
+  /// [keepScreenAwake]. Throws `AppSettingsStoreException` when the
+  /// settings file cannot be read.
+  final Future<WarnSize> Function() defaultWarnSize;
 
   /// The view state this controller renders into; owned here, disposed here.
   final SyncRunViewState state = SyncRunViewState();
@@ -113,11 +127,16 @@ class SyncRunController {
     final opened = Completer<RunSession?>();
     _session = opened.future;
     _screenWanted = await _readKeepScreenAwake();
+    final warnSize = await _readDefaultWarnSize();
     try {
       final session = await app.core.startRun(
         request.target,
         dryRun: request.dryRun,
         address: request.address,
+        defaultWarnSizeBytes: switch (warnSize) {
+          WarnSizeOff() => null,
+          WarnSizeAbove(:final bytes) => bytes,
+        },
       );
       opened.complete(session);
       if (_disposed) return;
@@ -329,6 +348,16 @@ class SyncRunController {
     }
   }
 
+  /// A damaged settings file warns about no size: the run goes ahead as
+  /// if the setting were off.
+  Future<WarnSize> _readDefaultWarnSize() async {
+    try {
+      return await defaultWarnSize();
+    } on AppSettingsStoreException {
+      return const WarnSizeOff();
+    }
+  }
+
   SyncRunPhase _phase(
     RunPhase phase,
     List<EntryRun> entries,
@@ -440,6 +469,10 @@ class SyncRunController {
             toThisDevice: plan.summary.bytesToA,
           ),
           bytesToTransfer: plan.bytesToTransfer,
+          sizeWarning: switch (plan.exceededWarnSizeBytes) {
+            final limit? => sizeWarning(plan.bytesToTransfer, limit),
+            null => null,
+          },
           results: {
             for (final row in plan.actions)
               if (row.outcome case final outcome?)
@@ -521,6 +554,11 @@ const firstSyncWarning =
     'First sync: with no archive, a file present on one side only is '
     'copied, never deleted — there is no way yet to tell a new file from a '
     'deleted one.';
+
+/// SPEC §10's warning, for a plan that moves [bytes], more than [limit].
+String sizeWarning(int bytes, int limit) =>
+    'Large sync: this plan moves ${formatBytes(bytes)}, more than the '
+    '${formatBytes(limit)} warn size.';
 
 /// A skipped path's line: the path, which side (SPEC §16 fixes `a` as this
 /// device's folder and `b` as the peer's), and the scan's own reason.

@@ -5,6 +5,7 @@ import 'app_settings.dart';
 import 'atomic_write.dart';
 import 'peer_port.dart';
 import 'theme_preference.dart';
+import 'warn_size.dart';
 
 /// The preferences this head keeps for itself (the Settings page's store).
 /// Persisted in the core's state directory (SPEC §8.3), beside the
@@ -52,9 +53,14 @@ import 'theme_preference.dart';
 /// **1.3 added `network.peerPort`.** A document without it — every 1.0 to
 /// 1.2 one — reads as [defaultPeerPort], the port this head always served
 /// on; a present one that is not a whole number from 1 to 65535 is damage.
+///
+/// **1.4 added `sync.warnSizeBytes`.** A document without the `sync`
+/// section — every 1.0 to 1.3 one — reads as [WarnSizeOff], no warning as
+/// before; a present one is `null` for off or a whole number above 0, and
+/// anything else is damage.
 class AppSettingsStore {
   /// The version this build writes, `major.minor`.
-  static const formatVersion = '1.3';
+  static const formatVersion = '1.4';
 
   final File _file;
 
@@ -98,6 +104,12 @@ class AppSettingsStore {
       },
       'appearance': {'theme': settings.theme.name},
       'power': {'keepScreenAwake': settings.keepScreenAwake},
+      'sync': {
+        'warnSizeBytes': switch (settings.warnSize) {
+          WarnSizeOff() => null,
+          WarnSizeAbove(:final bytes) => bytes,
+        },
+      },
     };
     await writeFileAtomically(_file, jsonEncode(document));
   }
@@ -129,7 +141,27 @@ class AppSettingsStore {
       peerPort: _parsePeerPort(network),
       theme: _parseTheme(decoded['appearance']),
       keepScreenAwake: _parseKeepScreenAwake(decoded['power']),
+      warnSize: _parseWarnSize(decoded['sync']),
     );
+  }
+
+  /// The `sync` section's warn size: off when the section is absent (a 1.0
+  /// to 1.3 document) or says `null`, a size [WarnSizeAbove] accepts
+  /// otherwise.
+  static WarnSize _parseWarnSize(Object? sync) {
+    if (sync == null) return const WarnSizeOff();
+    if (sync is! Map<String, dynamic>) {
+      throw const FormatException('"sync" is not a JSON object');
+    }
+    if (!sync.containsKey('warnSizeBytes')) {
+      throw const FormatException('"sync.warnSizeBytes" is missing');
+    }
+    final bytes = sync['warnSizeBytes'];
+    if (bytes == null) return const WarnSizeOff();
+    if (bytes is! int) {
+      throw const FormatException('"sync.warnSizeBytes" is not a whole number');
+    }
+    return WarnSizeAbove(bytes);
   }
 
   /// The `network` section's peer port: [defaultPeerPort] when it is absent
@@ -192,7 +224,7 @@ sealed class AppSettingsStoreException implements Exception {
 /// Thrown by [AppSettingsStore.load] when its file exists but cannot be
 /// read as this store's document: truncated, malformed JSON, or
 /// well-formed JSON of the wrong shape, version text, bind address, peer
-/// port, theme or keep-awake switch.
+/// port, theme, keep-awake switch or warn size.
 class AppSettingsStoreCorruptException extends AppSettingsStoreException {
   final String path;
   final String detail;

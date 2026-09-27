@@ -45,6 +45,7 @@ import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:dsync/app/warn_size.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -438,6 +439,7 @@ void main() {
         app,
         screenWake: FakeScreenWake(),
         keepScreenAwake: () async => true,
+        defaultWarnSize: () async => const WarnSizeOff(),
       );
     });
     Future<void> failTheRun() async {

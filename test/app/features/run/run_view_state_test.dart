@@ -181,6 +181,7 @@ void main() {
       conflictChoices: [for (final _ in conflicts) ConflictChoice.unresolved],
       copyBytes: (toDevice: actions.length, toThisDevice: 0),
       bytesToTransfer: actions.length,
+      sizeWarning: null,
     );
 
     test('an action\'s outcome wakes that row\'s result cell and nothing '

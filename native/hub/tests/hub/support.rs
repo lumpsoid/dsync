@@ -147,6 +147,7 @@ impl Head {
         } = view;
         let plan = fold(self.plans.remove(&session), plan);
         let folded = FoldedRunView {
+            exceeded_warn_size_bytes: plan.as_ref().and_then(|plan| plan.exceeded_warn_size_bytes),
             dry_run,
             phase,
             standing,
@@ -244,6 +245,7 @@ pub struct FoldedRunView {
     pub replicas: Option<ReplicasView>,
     pub plan: Vec<PlanRowView>,
     pub conflicts: Vec<ConflictRowView>,
+    pub exceeded_warn_size_bytes: Option<u64>,
     pub applied: u64,
     pub failed: u64,
     pub timings: Option<String>,

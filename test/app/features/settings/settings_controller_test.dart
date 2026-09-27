@@ -6,6 +6,7 @@ import 'package:dsync/app/features/settings/settings_view_state.dart';
 import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/theme_preference.dart';
+import 'package:dsync/app/warn_size.dart';
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -162,6 +163,47 @@ void main() {
           contains('from 1 to 65535'),
         );
         expect(controller.state.settings?.peerPort.value, 28771);
+        expect((await settingsFile()).existsSync(), isFalse);
+      });
+    }
+  });
+
+  group('saveWarnSize', () {
+    test('stores a size, keeping the other settings, and says when it '
+        'applies; empty turns it off', () async {
+      await controller.savePeerPort('9000');
+
+      await controller.saveWarnSize(' 1 MiB ');
+
+      expect(controller.state.settings?.warnSize, WarnSizeAbove(1048576));
+      final outcome = controller.state.outcome;
+      expect(outcome, isA<SettingsSaved>());
+      expect((outcome as SettingsSaved).message, contains('than 1 MiB'));
+      final second = SettingsController(app);
+      await second.load();
+      expect(second.state.settings?.warnSize, WarnSizeAbove(1048576));
+      expect(second.state.settings?.peerPort, PeerPort(9000));
+      second.dispose();
+
+      await controller.saveWarnSize('');
+      expect(controller.state.settings?.warnSize, const WarnSizeOff());
+      expect(controller.state.outcome, isA<SettingsSaved>());
+    });
+
+    for (final typed in ['0', '-1', '5 XB', '1.5']) {
+      test('refuses "$typed" in WarnSize.parse\'s own words, writing '
+          'nothing', () async {
+        await controller.load();
+
+        await controller.saveWarnSize(typed);
+
+        final outcome = controller.state.outcome;
+        expect(outcome, isA<SettingsFailed>());
+        expect(
+          (outcome as SettingsFailed).message,
+          contains('e.g. 500 MB or 2 GiB'),
+        );
+        expect(controller.state.settings?.warnSize, const WarnSizeOff());
         expect((await settingsFile()).existsSync(), isFalse);
       });
     }

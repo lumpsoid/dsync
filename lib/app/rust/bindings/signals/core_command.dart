@@ -1403,6 +1403,7 @@ class CoreCommandStartRun extends CoreCommand {
     required this.target,
     required this.dryRun,
     this.address,
+    this.defaultWarnSizeBytes,
   }) : super();
 
   static CoreCommandStartRun load(BinaryDeserializer deserializer) {
@@ -1411,6 +1412,7 @@ class CoreCommandStartRun extends CoreCommand {
       target: RunTarget.deserialize(deserializer),
       dryRun: deserializer.deserializeBool(),
       address: TraitHelpers.deserializeOptionStr(deserializer),
+      defaultWarnSizeBytes: TraitHelpers.deserializeOptionU64(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -1419,16 +1421,19 @@ class CoreCommandStartRun extends CoreCommand {
   final RunTarget target;
   final bool dryRun;
   final String? address;
+  final Uint64? defaultWarnSizeBytes;
 
   CoreCommandStartRun copyWith({
     RunTarget? target,
     bool? dryRun,
     String? Function()? address,
+    Uint64? Function()? defaultWarnSizeBytes,
   }) {
     return CoreCommandStartRun(
       target: target ?? this.target,
       dryRun: dryRun ?? this.dryRun,
       address: address == null ? this.address : address(),
+      defaultWarnSizeBytes: defaultWarnSizeBytes == null ? this.defaultWarnSizeBytes : defaultWarnSizeBytes(),
     );
   }
 
@@ -1438,6 +1443,7 @@ class CoreCommandStartRun extends CoreCommand {
     target.serialize(serializer);
     serializer.serializeBool(dryRun);
     TraitHelpers.serializeOptionStr(address, serializer);
+    TraitHelpers.serializeOptionU64(defaultWarnSizeBytes, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -1449,7 +1455,8 @@ class CoreCommandStartRun extends CoreCommand {
     return other is CoreCommandStartRun
       && target == other.target
       && dryRun == other.dryRun
-      && address == other.address;
+      && address == other.address
+      && defaultWarnSizeBytes == other.defaultWarnSizeBytes;
   }
 
   @override
@@ -1457,6 +1464,7 @@ class CoreCommandStartRun extends CoreCommand {
         target,
         dryRun,
         address,
+        defaultWarnSizeBytes,
       );
 
   @override
@@ -1467,7 +1475,8 @@ class CoreCommandStartRun extends CoreCommand {
       fullString = '$runtimeType('
         'target: $target, '
         'dryRun: $dryRun, '
-        'address: $address'
+        'address: $address, '
+        'defaultWarnSizeBytes: $defaultWarnSizeBytes'
         ')';
       return true;
     }());

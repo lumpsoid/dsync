@@ -10,6 +10,7 @@ import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:dsync/app/warn_size.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -50,6 +51,7 @@ void main() {
       fakeApp(hub, now: () => clock),
       screenWake: screenWake,
       keepScreenAwake: () async => true,
+      defaultWarnSize: () async => const WarnSizeOff(),
     );
     appScope.setController(controller.app);
     runScope.setController(controller);
@@ -1614,6 +1616,43 @@ void main() {
             .right,
         lessThan(apply.left),
       );
+    });
+
+    testWidgets('a plan over its warn size warns in the review bar, by '
+        'Apply; one under it does not', (tester) async {
+      await open(
+        tester,
+        runView(
+          phase: reviewing(apply: 1),
+          plan: [planRow(copyTo('big.bin'))],
+          bytesToTransfer: 3 * 1024 * 1024,
+          exceededWarnSizeBytes: 1024 * 1024,
+        ),
+      );
+
+      final warning = find.byKey(const Key('run-size-warning'));
+      expect(warning, findsOneWidget);
+      expect(
+        find.descendant(
+          of: warning,
+          matching: find.text(sizeWarning(3 * 1024 * 1024, 1024 * 1024)),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester.getRect(warning).bottom,
+        lessThan(tester.getRect(find.byKey(const Key('run-confirm'))).top),
+      );
+
+      await deliver(
+        tester,
+        runView(
+          phase: reviewing(apply: 1),
+          plan: [planRow(copyTo('small.bin'))],
+          bytesToTransfer: 10,
+        ),
+      );
+      expect(find.byKey(const Key('run-size-warning')), findsNothing);
     });
 
     testWidgets('the review fits a phone-width screen', (tester) async {

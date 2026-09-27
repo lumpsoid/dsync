@@ -91,7 +91,8 @@ class _RunPageState extends State<RunPage> {
   /// pauses would pause a controller nobody owns any more.
   late final AppLifecycleListener _lifecycle;
 
-  /// What the body's plan section follows: the plan itself, and the phase
+  /// What the body's plan section and the review bar follow: the plan
+  /// itself (the bar's size warning is fixed with it), and the phase
   /// that turns its rows into the review and collapses them while applying. Built once and not per
   /// build, so a rebuild does not swap the section's listeners.
   late final Listenable _planSection = Listenable.merge([
@@ -263,13 +264,15 @@ class _RunPageState extends State<RunPage> {
       // answers, under the rows being reviewed rather than over them. A
       // plain bottom bar of fixed height, so the body needs no padding
       // measured off it; it follows the phase to appear and disappear, and
+      // the plan for its size warning — the plan section's listenable — and
       // its total follows its own cell, so a tap does not rebuild it from
       // the view state.
       bottomNavigationBar: ListenableBuilder(
-        listenable: state.phaseChanged,
+        listenable: _planSection,
         builder: (context, _) => switch (state.phase) {
           SyncRunAwaitingDecisions() => _ReviewBar(
             summary: state.decisionSummary,
+            sizeWarning: state.sizeWarning,
             controller: _controller,
             layout: layout,
             conflicts: state.conflicts.isNotEmpty,
@@ -1192,6 +1195,10 @@ class _FinishedCounts extends StatelessWidget {
 /// row and nothing else. One line of total, ellipsised, so its height never
 /// depends on what was chosen.
 ///
+/// Over the total, when the plan moves more than its warn size (SPEC
+/// §10), the warning line: fixed with the plan, and right above Apply so
+/// it is read before the answer is given.
+///
 /// In the table [layout] — a desk, a keyboard — it also lists the review's
 /// keys, one line under the total, so they are learnt from the page rather
 /// than from a help screen; the conflict keys only where there are
@@ -1199,12 +1206,16 @@ class _FinishedCounts extends StatelessWidget {
 class _ReviewBar extends StatelessWidget {
   const _ReviewBar({
     required this.summary,
+    required this.sizeWarning,
     required this.controller,
     required this.layout,
     required this.conflicts,
   });
 
   final ValueListenable<SyncRunDecisionSummary?> summary;
+
+  /// SPEC §10's warning, over the answers so it is read before Apply.
+  final String? sizeWarning;
   final SyncRunController controller;
   final RunLayout layout;
   final bool conflicts;
@@ -1226,6 +1237,14 @@ class _ReviewBar extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (sizeWarning case final warning?)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _NoticeLine.warning(
+                      warning,
+                      key: const Key('run-size-warning'),
+                    ),
+                  ),
                 ValueListenableBuilder<SyncRunDecisionSummary?>(
                   valueListenable: summary,
                   builder: (context, summary, _) => Text(

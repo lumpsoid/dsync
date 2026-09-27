@@ -293,12 +293,15 @@ final class CoreLink {
       _ask(wire.CoreCommandDeleteProfile(name: name), _profiles);
 
   /// Opens a run session for [target]. [address] overrides where the peer
-  /// is dialled. The core resolves, connects and runs it; what it comes to
-  /// — a target that will not resolve included — is the session's views.
+  /// is dialled. [defaultWarnSizeBytes] is the size the plan review warns
+  /// above when the profile sets none; `null` for none. The core resolves,
+  /// connects and runs it; what it comes to — a target that will not
+  /// resolve included — is the session's views.
   Future<RunSession> startRun(
     RunTarget target, {
     required bool dryRun,
     String? address,
+    required int? defaultWarnSizeBytes,
   }) async {
     late int session;
     late Stream<RunView> views;
@@ -308,6 +311,10 @@ final class CoreLink {
           target: wireTarget(target),
           dryRun: dryRun,
           address: address,
+          defaultWarnSizeBytes: switch (defaultWarnSizeBytes) {
+            final bytes? => wire.Uint64(BigInt.from(bytes)),
+            null => null,
+          },
         ),
         opening: (id) {
           session = id;

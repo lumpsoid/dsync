@@ -7,6 +7,7 @@ import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:dsync/app/warn_size.dart';
 import 'package:test/test.dart';
 
 import '../../support/fake_hub.dart';
@@ -335,6 +336,67 @@ void main() {
       await harness.show(runView(phase: applying));
 
       expect(harness.screenWake.held, isTrue);
+    });
+  });
+
+  group('the warn size setting', () {
+    Future<wire.CoreCommandStartRun> startedWith(
+      Future<WarnSize> Function() defaultWarnSize,
+    ) async {
+      harness.dispose();
+      harness = RunHarness(defaultWarnSize: defaultWarnSize);
+      await harness.start();
+      return harness.hub.sent<wire.CoreCommandStartRun>().single;
+    }
+
+    test(
+      'a stored size is sent as the default under the profile\'s own',
+      () async {
+        final asked = await startedWith(() async => WarnSizeAbove(500));
+        expect(asked.defaultWarnSizeBytes, n(500));
+      },
+    );
+
+    test('off sends no size', () async {
+      final asked = await startedWith(() async => const WarnSizeOff());
+      expect(asked.defaultWarnSizeBytes, isNull);
+    });
+
+    test('a settings file it cannot be read from sends no size, and the '
+        'run still starts', () async {
+      final asked = await startedWith(
+        () async =>
+            throw const AppSettingsStoreCorruptException('/s.json', 'bad'),
+      );
+      expect(asked.defaultWarnSizeBytes, isNull);
+    });
+
+    test('a plan over its warn size says so, one under it says '
+        'nothing', () async {
+      await harness.start();
+      await harness.show(
+        runView(
+          phase: reviewing(),
+          plan: [planRow(copyTo('big.bin'))],
+          bytesToTransfer: 3 * 1024 * 1024,
+          exceededWarnSizeBytes: 1024 * 1024,
+        ),
+      );
+      expect(
+        harness.state.sizeWarning,
+        sizeWarning(3 * 1024 * 1024, 1024 * 1024),
+      );
+      expect(harness.state.sizeWarning, contains('3.0 MiB'));
+
+      await harness.show(runView(phase: scanning));
+      await harness.show(
+        runView(
+          phase: reviewing(),
+          plan: [planRow(copyTo('small.bin'))],
+          bytesToTransfer: 10,
+        ),
+      );
+      expect(harness.state.sizeWarning, isNull);
     });
   });
 

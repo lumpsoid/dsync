@@ -12,6 +12,7 @@ import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:dsync/app/warn_size.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -135,6 +136,60 @@ void main() {
     expect(controller.saved, isEmpty);
   });
 
+  testWidgets('shows the warn size off, then the stored one, in the Sync '
+      'section', (tester) async {
+    controller.state.recordSettings(AppSettings.defaults);
+    await pumpPage(tester);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings-warn-size')),
+      100,
+    );
+
+    expect(find.text('Warn about large transfers'), findsOneWidget);
+    expect(find.textContaining('Off'), findsOneWidget);
+
+    controller.state.recordSettings(
+      AppSettings.defaults.withWarnSize(WarnSizeAbove(1048576)),
+    );
+    await tester.pump();
+    expect(find.textContaining('Above 1 MiB'), findsOneWidget);
+
+    controller.state.recordSettings(
+      AppSettings.defaults.withWarnSize(WarnSizeAbove(1234567)),
+    );
+    await tester.pump();
+    expect(find.textContaining('Above 1.2 MiB'), findsOneWidget);
+  });
+
+  testWidgets('a typed warn size is handed to the controller', (tester) async {
+    controller.state.recordSettings(
+      AppSettings.defaults.withWarnSize(WarnSizeAbove(5000)),
+    );
+    await pumpPage(tester);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings-warn-size')),
+      100,
+    );
+
+    await tester.tap(find.byKey(const Key('settings-warn-size')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('settings-warn-size-field')))
+          .controller!
+          .text,
+      '5 KB',
+    );
+    await tester.enterText(
+      find.byKey(const Key('settings-warn-size-field')),
+      '',
+    );
+    await tester.tap(find.byKey(const Key('settings-warn-size-save')));
+    await tester.pumpAndSettle();
+
+    expect(controller.warnSizes, ['']);
+  });
+
   testWidgets('cancelling the dialog stores nothing', (tester) async {
     controller.state.recordSettings(at('0.0.0.0'));
     await pumpPage(tester);
@@ -195,12 +250,16 @@ void main() {
     controller.state.recordOutcome(
       const SettingsFailed('Settings file at /tmp/settings.json is damaged'),
     );
+    // Tall enough for every section and the notice under them at once.
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
 
     await pumpPage(tester);
 
     expect(find.textContaining('is damaged'), findsOneWidget);
     // Every setting: none shows a default the file did not say.
-    expect(find.textContaining('Unavailable'), findsNWidgets(4));
+    expect(find.textContaining('Unavailable'), findsNWidgets(5));
     expect(find.byType(Switch), findsNothing);
   });
 
@@ -295,4 +354,9 @@ class _RecordingController extends SettingsController {
 
   @override
   Future<void> saveKeepScreenAwake(bool on) async => keepScreenAwake.add(on);
+
+  final warnSizes = <String>[];
+
+  @override
+  Future<void> saveWarnSize(String text) async => warnSizes.add(text);
 }

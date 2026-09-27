@@ -55,6 +55,7 @@ impl Hub {
         target: RunTarget,
         dry_run: bool,
         address: Option<String>,
+        default_warn_size_bytes: Option<u64>,
     ) -> Handled {
         let (wake, wakes) = mpsc::unbounded_channel();
         let control = Arc::new(RunControl {
@@ -75,6 +76,7 @@ impl Hub {
             target,
             dry_run,
             address,
+            default_warn_size_bytes,
         };
         let running = run_session(control.clone(), self.clone(), launch, wakes);
         self.sessions
@@ -102,6 +104,9 @@ struct Launch {
     target: RunTarget,
     dry_run: bool,
     address: Option<String>,
+    /// The head's setting: warn above this when neither a flag nor the
+    /// profile sets a size.
+    default_warn_size_bytes: Option<u64>,
 }
 
 /// One attempt's wiring.
@@ -136,7 +141,7 @@ impl Launch {
                 hub.draft_profile(draft)?,
             ),
         };
-        let flags = run_flags(self.dry_run, Vec::new(), None)?;
+        let flags = run_flags(self.dry_run, Vec::new(), None, self.default_warn_size_bytes)?;
         let entries = profile.options(&name, &flags, facts).map_err(text)?;
         let mut connector = Connector::new(
             hub.state.clone(),
@@ -170,6 +175,7 @@ fn roots(options: &EffectiveOptions) -> EntryRoots {
             .to_location()
             .device_label()
             .to_owned(),
+        warn_size_bytes: options.warn_size_bytes,
     }
 }
 
@@ -195,11 +201,13 @@ fn timings(entries: &[EffectiveOptions], report: &ProfileReport) -> Option<Strin
 }
 
 /// The head's run flags: interactive (the head decides) unless a dry run,
-/// the draft's ignore patterns and jobs as `--ignore`/`--jobs` would be.
+/// the draft's ignore patterns and jobs as `--ignore`/`--jobs` would be,
+/// and the head's default warn size under the profile's own.
 pub(crate) fn run_flags(
     dry_run: bool,
     ignore: Vec<String>,
     jobs: Option<u32>,
+    default_warn_size_bytes: Option<u64>,
 ) -> Result<RunFlags, String> {
     RunFlags::validate(
         Command::Sync,
@@ -207,6 +215,7 @@ pub(crate) fn run_flags(
             dry_run,
             ignore,
             jobs: jobs.map(i64::from),
+            default_warn_size_bytes,
             ..Flags::default()
         },
     )
@@ -731,8 +740,8 @@ mod tests {
         let home = dir.to_string_lossy().into_owned();
         let facts = HostFacts::new(Platform::HOST, Some(home.clone()), Vec::new(), home);
         let name = ProfileName::parse("two").unwrap_or_else(|error| panic!("{error}"));
-        let flags =
-            super::run_flags(false, Vec::new(), None).unwrap_or_else(|error| panic!("{error}"));
+        let flags = super::run_flags(false, Vec::new(), None, None)
+            .unwrap_or_else(|error| panic!("{error}"));
         profile
             .options(&name, &flags, &facts)
             .unwrap_or_else(|error| panic!("{error}"))

@@ -5,6 +5,7 @@ import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/atomic_write.dart';
 import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/theme_preference.dart';
+import 'package:dsync/app/warn_size.dart';
 import 'package:test/test.dart';
 
 /// Covers `AppSettingsStore` against real temporary directories (SPEC §14),
@@ -42,14 +43,15 @@ void main() {
         expect(settings.theme, ThemePreference.system);
         expect(settings.keepScreenAwake, isTrue);
         expect(settings.peerPort, PeerPort(defaultPeerPort));
+        expect(settings.warnSize, const WarnSizeOff());
         expect(storeFile().existsSync(), isFalse);
       },
     );
 
-    test('reads back what was saved, written as version 1.3', () async {
+    test('reads back what was saved, written as version 1.4', () async {
       await store().save(at('10.8.0.3'));
 
-      expect(storeFile().readAsStringSync(), contains('"version":"1.3"'));
+      expect(storeFile().readAsStringSync(), contains('"version":"1.4"'));
       expect((await store().load()).bindAddress.address, '10.8.0.3');
     });
 
@@ -86,6 +88,59 @@ void main() {
       expect(settings.keepScreenAwake, isFalse);
       expect(settings.bindAddress.address, '10.8.0.3');
     });
+
+    test('the warn size survives the round trip beside the others', () async {
+      await store().save(
+        at('10.8.0.3')
+            .withWarnSize(WarnSizeAbove(500000000))
+            .withPeerPort(PeerPort(9000)),
+      );
+
+      expect(
+        storeFile().readAsStringSync(),
+        contains('"warnSizeBytes":500000000'),
+      );
+      final settings = await store().load();
+      expect(settings.warnSize, WarnSizeAbove(500000000));
+      expect(settings.peerPort, PeerPort(9000));
+      expect(settings.bindAddress.address, '10.8.0.3');
+
+      await store().save(settings.withWarnSize(const WarnSizeOff()));
+      expect((await store().load()).warnSize, const WarnSizeOff());
+    });
+
+    test('a 1.3 document, which has no sync section, warns about no '
+        'size', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.3", "network": '
+        '{"bindAddress": "10.8.0.3", "peerPort": 9000}}',
+      );
+
+      final settings = await store().load();
+      expect(settings.warnSize, const WarnSizeOff());
+      expect(settings.peerPort, PeerPort(9000));
+    });
+
+    for (final sync in [
+      '{"warnSizeBytes": 0}',
+      '{"warnSizeBytes": -5}',
+      '{"warnSizeBytes": "500"}',
+      '{"warnSizeBytes": 1.5}',
+      '{}',
+      '[]',
+    ]) {
+      test('a sync section of $sync is corruption', () async {
+        await storeFile().writeAsString(
+          '{"version": "1.4", "network": {"bindAddress": "0.0.0.0"}, '
+          '"sync": $sync}',
+        );
+
+        await expectLater(
+          store().load(),
+          throwsA(isA<AppSettingsStoreCorruptException>()),
+        );
+      });
+    }
 
     test('a 1.2 document, which has no peer port, serves on the default '
         'one', () async {
@@ -232,7 +287,7 @@ void main() {
             allOf(
               contains(storeFile().path),
               contains('format 2.0'),
-              contains('(format 1.3)'),
+              contains('(format 1.4)'),
               contains('reads format 2.x'),
             ),
           ),
