@@ -25,6 +25,7 @@ import 'dart:io';
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/core_link/models/entry_draft.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
@@ -36,6 +37,7 @@ import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' show assignRustSignal;
 import 'package:dsync/app/screen_wake.dart';
@@ -87,6 +89,7 @@ void main() {
     final pairShow = PairShowController(
       app,
       bindAddress: () async => InternetAddress.loopbackIPv4,
+      peerPort: () async => PeerPort(defaultPeerPort),
     );
     final showing = pairShow.show(peerName: 'desktop');
     final waiting = await _until(

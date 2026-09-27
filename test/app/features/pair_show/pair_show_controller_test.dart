@@ -6,6 +6,7 @@ import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
@@ -32,7 +33,11 @@ void main() {
     core = FakeHub();
     app = fakeApp(core);
     await app.bootstrap();
-    controller = PairShowController(app, bindAddress: _loopbackBind);
+    controller = PairShowController(
+      app,
+      bindAddress: _loopbackBind,
+      peerPort: _defaultPort,
+    );
   });
 
   tearDown(() {
@@ -133,6 +138,19 @@ void main() {
         servicePort: defaultPeerPort,
       ),
     ]);
+  });
+
+  test('the code names the stored peer port as the serving port', () async {
+    controller.dispose();
+    controller = PairShowController(
+      app,
+      bindAddress: _loopbackBind,
+      peerPort: () async => PeerPort(9000),
+    );
+
+    await openWindow();
+
+    expect(core.sent<wire.CoreCommandShowPairing>().single.servicePort, 9000);
   });
 
   test('offers the core\'s payload as a line, a symbol and an address, and '
@@ -326,6 +344,7 @@ void main() {
       app,
       bindAddress: () async =>
           throw const AppSettingsStoreCorruptException('/s.json', 'bad'),
+      peerPort: _defaultPort,
     );
 
     await controller.show(peerName: 'peer laptop');
@@ -339,3 +358,7 @@ void main() {
 /// The bind address every controller in this file is built with. A
 /// callback because the production one is a settings read.
 Future<InternetAddress> _loopbackBind() async => InternetAddress.loopbackIPv4;
+
+/// The peer port every controller in this file is built with, unless a
+/// test names another.
+Future<PeerPort> _defaultPort() async => PeerPort(defaultPeerPort);

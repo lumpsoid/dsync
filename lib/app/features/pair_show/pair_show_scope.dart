@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import '../../app_scope.dart';
+import '../../peer_port.dart';
 import 'pair_show_controller.dart';
 
 /// The cell for [PairShowController]; see the scope contract in
@@ -27,6 +28,7 @@ final class PairShowScope extends Scope<PairShowController> {
         () => PairShowController(
           appScope.controller,
           bindAddress: storedBindAddress,
+          peerPort: storedPeerPort,
         ),
       );
 }
@@ -37,6 +39,13 @@ final class PairShowScope extends Scope<PairShowController> {
 /// than binding the defaults on a file it cannot trust.
 Future<InternetAddress> storedBindAddress() async =>
     (await (await appScope.controller.settings).load()).bindAddress;
+
+/// The stored peer port, freshly read, like [storedBindAddress] and for
+/// the same reason: the port a code names and the port serve binds are one
+/// setting and must not disagree. Throws `AppSettingsStoreException` when
+/// the settings file cannot be read.
+Future<PeerPort> storedPeerPort() async =>
+    (await (await appScope.controller.settings).load()).peerPort;
 
 /// The single Show-this-device's-code scope.
 final pairShowScope = PairShowScope();

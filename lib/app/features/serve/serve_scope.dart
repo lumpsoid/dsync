@@ -13,16 +13,17 @@ import 'serve_controller.dart';
 /// The default factory names the same [PlatformScreenWake] and
 /// [storedKeepScreenAwake] the Run feature uses: one switch covers both.
 ///
-/// The bind address is [storedBindAddress], the Pair-show scope's own
-/// reader, rather than a second copy of the same three lines: it is one
-/// setting, edited in one place, and the two listeners this head binds must
-/// not be able to disagree about it.
+/// The bind address and port are [storedBindAddress] and [storedPeerPort],
+/// the Pair-show scope's own readers, rather than a second copy of the same
+/// three lines: each is one setting, edited in one place, and the port a
+/// pairing code names must be the one serve binds.
 final class ServeScope extends Scope<ServeController> {
   ServeScope()
     : super(
         () => ServeController(
           appScope.controller,
           bindAddress: storedBindAddress,
+          peerPort: storedPeerPort,
           screenWake: const PlatformScreenWake(),
           keepScreenAwake: storedKeepScreenAwake,
         ),

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/theme_preference.dart';
 import 'package:test/test.dart';
@@ -125,6 +126,45 @@ void main() {
       expect(controller.state.outcome, isA<SettingsFailed>());
       expect((await settingsFile()).existsSync(), isFalse);
     });
+  });
+
+  group('savePeerPort', () {
+    test('stores a port, keeping the other settings, and says when it '
+        'applies', () async {
+      await controller.saveBindAddress('10.8.0.3');
+      await controller.saveKeepScreenAwake(false);
+
+      await controller.savePeerPort(' 9000 ');
+
+      expect(controller.state.settings?.peerPort, PeerPort(9000));
+      final outcome = controller.state.outcome;
+      expect(outcome, isA<SettingsSaved>());
+      expect((outcome as SettingsSaved).message, contains('port 9000'));
+      final second = SettingsController(app);
+      await second.load();
+      expect(second.state.settings?.peerPort, PeerPort(9000));
+      expect(second.state.settings?.bindAddress.address, '10.8.0.3');
+      expect(second.state.settings?.keepScreenAwake, isFalse);
+      second.dispose();
+    });
+
+    for (final typed in ['0', '65536', 'http', '']) {
+      test('refuses "$typed" in PeerPort.parse\'s own words, writing '
+          'nothing', () async {
+        await controller.load();
+
+        await controller.savePeerPort(typed);
+
+        final outcome = controller.state.outcome;
+        expect(outcome, isA<SettingsFailed>());
+        expect(
+          (outcome as SettingsFailed).message,
+          contains('from 1 to 65535'),
+        );
+        expect(controller.state.settings?.peerPort.value, 28771);
+        expect((await settingsFile()).existsSync(), isFalse);
+      });
+    }
   });
 
   group('saveTheme', () {

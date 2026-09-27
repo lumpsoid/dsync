@@ -8,6 +8,7 @@ import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_page.dart';
 import 'package:dsync/app/features/settings/settings_scope.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -97,6 +98,43 @@ void main() {
     expect(controller.saved, ['10.8.0.3']);
   });
 
+  testWidgets('shows the stored peer port in the Network section', (
+    tester,
+  ) async {
+    controller.state.recordSettings(
+      AppSettings.defaults.withPeerPort(PeerPort(9000)),
+    );
+
+    await pumpPage(tester);
+
+    expect(find.text('Peer port'), findsOneWidget);
+    expect(find.textContaining('9000'), findsOneWidget);
+  });
+
+  testWidgets('a typed port is handed to the controller', (tester) async {
+    controller.state.recordSettings(AppSettings.defaults);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('settings-peer-port')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('settings-peer-port-field')))
+          .controller!
+          .text,
+      '28771',
+    );
+    await tester.enterText(
+      find.byKey(const Key('settings-peer-port-field')),
+      '9000',
+    );
+    await tester.tap(find.byKey(const Key('settings-peer-port-save')));
+    await tester.pumpAndSettle();
+
+    expect(controller.ports, ['9000']);
+    expect(controller.saved, isEmpty);
+  });
+
   testWidgets('cancelling the dialog stores nothing', (tester) async {
     controller.state.recordSettings(at('0.0.0.0'));
     await pumpPage(tester);
@@ -142,6 +180,11 @@ void main() {
     );
 
     await pumpPage(tester);
+    // The line follows every section, below the test window's fold.
+    await tester.scrollUntilVisible(
+      find.textContaining('is not an IP address'),
+      200,
+    );
 
     expect(find.textContaining('is not an IP address'), findsOneWidget);
   });
@@ -157,7 +200,7 @@ void main() {
 
     expect(find.textContaining('is damaged'), findsOneWidget);
     // Every setting: none shows a default the file did not say.
-    expect(find.textContaining('Unavailable'), findsNWidgets(3));
+    expect(find.textContaining('Unavailable'), findsNWidgets(4));
     expect(find.byType(Switch), findsNothing);
   });
 
@@ -244,6 +287,11 @@ class _RecordingController extends SettingsController {
   Future<void> saveTheme(ThemePreference theme) async => themes.add(theme);
 
   final keepScreenAwake = <bool>[];
+
+  final ports = <String>[];
+
+  @override
+  Future<void> savePeerPort(String text) async => ports.add(text);
 
   @override
   Future<void> saveKeepScreenAwake(bool on) async => keepScreenAwake.add(on);

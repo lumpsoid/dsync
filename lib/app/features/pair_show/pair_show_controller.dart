@@ -2,11 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import '../../app_controller.dart';
-import '../../app_settings.dart';
 import '../../app_settings_store.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/pairing_view.dart';
 import '../../core_link/models/pairing_window.dart';
+import '../../peer_port.dart';
 import 'pair_show_view_state.dart';
 import 'pairing_offer.dart';
 
@@ -46,7 +46,11 @@ import 'pairing_offer.dart';
 /// changes nothing the core sends: it must not close a window the
 /// legitimate peer is still walking across the room to use.
 class PairShowController {
-  PairShowController(this.app, {required this.bindAddress});
+  PairShowController(
+    this.app, {
+    required this.bindAddress,
+    required this.peerPort,
+  });
 
   final AppController app;
 
@@ -54,6 +58,11 @@ class PairShowController {
   /// equivalent of `dsync pair show --bind` (task 2b26ac), read from
   /// Settings by the scope. The core decides what to advertise from it.
   final Future<InternetAddress> Function() bindAddress;
+
+  /// The port the code names for this device's sync service — where the
+  /// device that redeems it will dial — read from Settings per window like
+  /// [bindAddress].
+  final Future<PeerPort> Function() peerPort;
 
   /// The view state this controller renders into; owned here, disposed here.
   final PairShowViewState state = PairShowViewState();
@@ -74,8 +83,10 @@ class PairShowController {
     _record(stopped, const PairShowStarting());
 
     final InternetAddress bindTo;
+    final PeerPort servicePort;
     try {
       bindTo = await bindAddress();
+      servicePort = await peerPort();
     } on AppSettingsStoreException catch (e) {
       // The settings file exists and cannot be read. Binding the defaults
       // instead would be reading damaged bytes as a decision the user never
@@ -89,7 +100,7 @@ class PairShowController {
       window = await app.core.showPairing(
         name: peerName,
         bind: bindTo.address,
-        servicePort: defaultPeerPort,
+        servicePort: servicePort.value,
       );
     } on CoreFailure catch (e) {
       _record(

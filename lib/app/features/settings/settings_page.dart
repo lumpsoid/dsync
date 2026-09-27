@@ -8,15 +8,17 @@ import 'settings_view_state.dart';
 
 /// What this installation keeps for itself, in sections: **Network**,
 /// holding the address the pairing listener binds (task 2b26ac's `--bind`,
-/// as the head's own setting), **Appearance**, holding the theme, and
+/// as the head's own setting) and the port this device serves on,
+/// **Appearance**, holding the theme, and
 /// **Power**, holding whether runs and serve keep the screen awake.
 ///
 /// Widgets only, per the page role in `app_scope.dart`: the stored settings
 /// arrive as one value the controller has already parsed, and the only
 /// branches here are over whether they were read and the sealed
-/// [SettingsOutcome]. Nothing on this page decides what a bind address may
-/// be — the dialog hands what was typed to the controller, and the refusal
-/// it shows is `parseBindAddress`'s own words.
+/// [SettingsOutcome]. Nothing on this page decides what a bind address or
+/// a port may be — the dialog hands what was typed to the controller, and
+/// the refusal it shows is `parseBindAddress`'s or `PeerPort.parse`'s own
+/// words.
 ///
 /// A leaf: nothing leads anywhere from this page, so it takes no callbacks.
 class SettingsPage extends StatefulWidget {
@@ -62,6 +64,7 @@ class _SettingsBody extends StatelessWidget {
     final outcome = state.outcome;
     final working = outcome is SettingsWorking;
     final bindAddress = state.settings?.bindAddress.address;
+    final peerPort = state.settings?.peerPort;
     final theme = state.settings?.theme;
     final keepScreenAwake = state.settings?.keepScreenAwake;
     return ReadableScrollPadding(
@@ -87,6 +90,23 @@ class _SettingsBody extends StatelessWidget {
               isThreeLine: bindAddress != null,
               enabled: !working && bindAddress != null,
               onTap: () => _editBindAddress(context, bindAddress ?? ''),
+            ),
+          ),
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('settings-peer-port'),
+              leading: const Icon(Icons.settings_ethernet_outlined),
+              title: const Text('Peer port'),
+              subtitle: Text(
+                peerPort == null
+                    ? 'Unavailable — see below.'
+                    : '$peerPort\nThe port this device serves paired devices '
+                          'on, and the one its pairing codes tell them to '
+                          'dial.',
+              ),
+              isThreeLine: peerPort != null,
+              enabled: !working && peerPort != null,
+              onTap: () => _editPeerPort(context, '${peerPort ?? ''}'),
             ),
           ),
           const _SectionHeader('Appearance'),
@@ -179,9 +199,35 @@ class _SettingsBody extends StatelessWidget {
   Future<void> _editBindAddress(BuildContext context, String current) async {
     final typed = await showDialog<String>(
       context: context,
-      builder: (context) => _BindAddressDialog(initialValue: current),
+      builder: (context) => _TypedValueDialog(
+        title: 'Pairing bind address',
+        label: 'Address',
+        help:
+            'An address this device has, not a name: 0.0.0.0 for every IPv4 '
+            'interface, :: for every interface of either family, or one '
+            'interface\'s own address to pair over just that network.',
+        keyPrefix: 'settings-bind-address',
+        initialValue: current,
+      ),
     );
     if (typed != null) await controller.saveBindAddress(typed);
+  }
+
+  Future<void> _editPeerPort(BuildContext context, String current) async {
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (context) => _TypedValueDialog(
+        title: 'Peer port',
+        label: 'Port',
+        help:
+            'A number from 1 to 65535. Devices paired before a change still '
+            'dial the port they recorded, until their address is edited.',
+        keyPrefix: 'settings-peer-port',
+        initialValue: current,
+        keyboardType: TextInputType.number,
+      ),
+    );
+    if (typed != null) await controller.savePeerPort(typed);
   }
 }
 
@@ -209,20 +255,35 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-/// The typed address, popped as text. Pops nothing at all when cancelled,
-/// and does not judge what was typed: the refusal belongs to
-/// `parseBindAddress` through `SettingsController`, so there is one rule
-/// about a bind address rather than two.
-class _BindAddressDialog extends StatefulWidget {
-  const _BindAddressDialog({required this.initialValue});
+/// A typed setting — the bind address or the peer port — popped as text.
+/// Pops nothing at all when cancelled, and does not judge what was typed:
+/// the refusal belongs to the value's own parse through
+/// `SettingsController`, so there is one rule about each value rather than
+/// two.
+class _TypedValueDialog extends StatefulWidget {
+  const _TypedValueDialog({
+    required this.title,
+    required this.label,
+    required this.help,
+    required this.keyPrefix,
+    required this.initialValue,
+    this.keyboardType,
+  });
 
+  final String title;
+  final String label;
+  final String help;
+
+  /// The field is `$keyPrefix-field`, the save button `$keyPrefix-save`.
+  final String keyPrefix;
   final String initialValue;
+  final TextInputType? keyboardType;
 
   @override
-  State<_BindAddressDialog> createState() => _BindAddressDialogState();
+  State<_TypedValueDialog> createState() => _TypedValueDialogState();
 }
 
-class _BindAddressDialogState extends State<_BindAddressDialog> {
+class _TypedValueDialogState extends State<_TypedValueDialog> {
   late final TextEditingController _value = TextEditingController(
     text: widget.initialValue,
   );
@@ -236,23 +297,20 @@ class _BindAddressDialogState extends State<_BindAddressDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Pairing bind address'),
+      title: Text(widget.title),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           TextField(
-            key: const Key('settings-bind-address-field'),
+            key: Key('${widget.keyPrefix}-field'),
             controller: _value,
             autofocus: true,
-            decoration: const InputDecoration(labelText: 'Address'),
+            keyboardType: widget.keyboardType,
+            decoration: InputDecoration(labelText: widget.label),
             onSubmitted: (value) => Navigator.of(context).pop(value),
           ),
           const SizedBox(height: 16),
-          const Text(
-            'An address this device has, not a name: 0.0.0.0 for every IPv4 '
-            'interface, :: for every interface of either family, or one '
-            'interface\'s own address to pair over just that network.',
-          ),
+          Text(widget.help),
         ],
       ),
       actions: [
@@ -261,7 +319,7 @@ class _BindAddressDialogState extends State<_BindAddressDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          key: const Key('settings-bind-address-save'),
+          key: Key('${widget.keyPrefix}-save'),
           onPressed: () => Navigator.of(context).pop(_value.text),
           child: const Text('Save'),
         ),

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/atomic_write.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:test/test.dart';
 
@@ -40,14 +41,15 @@ void main() {
         expect(settings.bindAddress.address, '0.0.0.0');
         expect(settings.theme, ThemePreference.system);
         expect(settings.keepScreenAwake, isTrue);
+        expect(settings.peerPort, PeerPort(defaultPeerPort));
         expect(storeFile().existsSync(), isFalse);
       },
     );
 
-    test('reads back what was saved, written as version 1.2', () async {
+    test('reads back what was saved, written as version 1.3', () async {
       await store().save(at('10.8.0.3'));
 
-      expect(storeFile().readAsStringSync(), contains('"version":"1.2"'));
+      expect(storeFile().readAsStringSync(), contains('"version":"1.3"'));
       expect((await store().load()).bindAddress.address, '10.8.0.3');
     });
 
@@ -72,6 +74,44 @@ void main() {
       expect(settings.theme, ThemePreference.dark);
       expect(settings.bindAddress.address, '10.8.0.3');
     });
+
+    test('the peer port survives the round trip beside the others', () async {
+      await store().save(
+        at('10.8.0.3').withPeerPort(PeerPort(9000)).withKeepScreenAwake(false),
+      );
+
+      expect(storeFile().readAsStringSync(), contains('"peerPort":9000'));
+      final settings = await store().load();
+      expect(settings.peerPort, PeerPort(9000));
+      expect(settings.keepScreenAwake, isFalse);
+      expect(settings.bindAddress.address, '10.8.0.3');
+    });
+
+    test('a 1.2 document, which has no peer port, serves on the default '
+        'one', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.2", "network": {"bindAddress": "10.8.0.3"}, '
+        '"power": {"keepScreenAwake": false}}',
+      );
+
+      final settings = await store().load();
+      expect(settings.peerPort, PeerPort(defaultPeerPort));
+      expect(settings.keepScreenAwake, isFalse);
+    });
+
+    for (final port in ['0', '65536', '-1', '"9000"', '9000.5', 'null']) {
+      test('a peer port of $port is corruption', () async {
+        await storeFile().writeAsString(
+          '{"version": "1.3", "network": '
+          '{"bindAddress": "0.0.0.0", "peerPort": $port}}',
+        );
+
+        await expectLater(
+          store().load(),
+          throwsA(isA<AppSettingsStoreCorruptException>()),
+        );
+      });
+    }
 
     test('a 1.1 document, which has no power section, keeps the screen '
         'awake', () async {
@@ -192,7 +232,7 @@ void main() {
             allOf(
               contains(storeFile().path),
               contains('format 2.0'),
-              contains('(format 1.2)'),
+              contains('(format 1.3)'),
               contains('reads format 2.x'),
             ),
           ),

@@ -2,12 +2,14 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_page.dart';
 import 'package:dsync/app/features/serve/serve_scope.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -270,6 +272,7 @@ class _FakeServeController extends ServeController {
         bindAddress: _loopback,
         screenWake: FakeScreenWake(),
         keepScreenAwake: () async => true,
+        peerPort: () async => PeerPort(defaultPeerPort),
       );
 
   int starts = 0;

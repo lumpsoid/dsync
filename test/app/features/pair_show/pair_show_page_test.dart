@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_page.dart';
@@ -10,6 +11,7 @@ import 'package:dsync/app/features/pair_show/pair_show_scope.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
 import 'package:dsync/app/features/pair_show/pairing_offer.dart';
 import 'package:dsync/app/features/pair_show/qr_symbol.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -41,7 +43,11 @@ void main() {
     core = FakeHub()
       ..hold<wire.CoreCommandShowPairing>(Completer<void>().future);
     app = fakeApp(core);
-    controller = PairShowController(app, bindAddress: _loopbackBind);
+    controller = PairShowController(
+      app,
+      bindAddress: _loopbackBind,
+      peerPort: _defaultPort,
+    );
     appScope.setController(app);
     pairShowScope.setController(controller);
     paired = 0;
@@ -400,7 +406,8 @@ void main() {
 /// this device's identity off disk, which a widget test's clock does not
 /// wait for.
 class _RecordingController extends PairShowController {
-  _RecordingController(super.app) : super(bindAddress: _loopbackBind);
+  _RecordingController(super.app)
+    : super(bindAddress: _loopbackBind, peerPort: _defaultPort);
 
   String? shownFor;
 
@@ -420,3 +427,5 @@ class _RecordingController extends PairShowController {
 /// loopback interface. A callback because the production one is a store
 /// read.
 Future<InternetAddress> _loopbackBind() async => InternetAddress.loopbackIPv4;
+
+Future<PeerPort> _defaultPort() async => PeerPort(defaultPeerPort);

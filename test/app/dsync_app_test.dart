@@ -4,6 +4,7 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/dsync_app.dart';
 import 'package:dsync/app/features/archives/archives_page.dart';
@@ -40,6 +41,7 @@ import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -560,6 +562,7 @@ void main() {
           bindAddress: () async => InternetAddress.loopbackIPv4,
           screenWake: FakeScreenWake(),
           keepScreenAwake: () async => true,
+          peerPort: () async => PeerPort(defaultPeerPort),
         ),
       );
     });

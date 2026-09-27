@@ -38,6 +38,7 @@ import 'dart:io';
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/core_link/core_channel.dart';
 import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
@@ -54,6 +55,7 @@ import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' show assignRustSignal;
 import 'package:dsync/app/screen_wake.dart';
@@ -216,7 +218,11 @@ class _Session {
   /// Shows a pairing code for the driver's `dsync pair accept`, confirms
   /// the id it presents, and answers the desktop as this app lists it.
   Future<({String deviceId, String name})> pair() async {
-    final pairShow = PairShowController(app, bindAddress: _lanAddress);
+    final pairShow = PairShowController(
+      app,
+      bindAddress: _lanAddress,
+      peerPort: () async => PeerPort(defaultPeerPort),
+    );
     final showing = pairShow.show(peerName: _desktopName);
     await _until(
       () async => pairShow.state.status is PairShowWaiting,
@@ -296,6 +302,7 @@ class _Session {
       bindAddress: _lanAddress,
       screenWake: const PlatformScreenWake(),
       keepScreenAwake: () async => true,
+      peerPort: () async => PeerPort(defaultPeerPort),
     );
     await serve.start();
     await _until(

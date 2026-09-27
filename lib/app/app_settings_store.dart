@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'app_settings.dart';
 import 'atomic_write.dart';
+import 'peer_port.dart';
 import 'theme_preference.dart';
 
 /// The preferences this head keeps for itself (the Settings page's store).
@@ -47,9 +48,13 @@ import 'theme_preference.dart';
 /// **1.2 added `power.keepScreenAwake`.** A document without the `power`
 /// section — every 1.0 and 1.1 one — reads as on, the screen held awake as
 /// it always was; a present one that is not a boolean is damage.
+///
+/// **1.3 added `network.peerPort`.** A document without it — every 1.0 to
+/// 1.2 one — reads as [defaultPeerPort], the port this head always served
+/// on; a present one that is not a whole number from 1 to 65535 is damage.
 class AppSettingsStore {
   /// The version this build writes, `major.minor`.
-  static const formatVersion = '1.2';
+  static const formatVersion = '1.3';
 
   final File _file;
 
@@ -87,7 +92,10 @@ class AppSettingsStore {
   Future<void> save(AppSettings settings) async {
     final document = {
       'version': formatVersion,
-      'network': {'bindAddress': settings.bindAddress.address},
+      'network': {
+        'bindAddress': settings.bindAddress.address,
+        'peerPort': settings.peerPort.value,
+      },
       'appearance': {'theme': settings.theme.name},
       'power': {'keepScreenAwake': settings.keepScreenAwake},
     };
@@ -118,9 +126,21 @@ class AppSettingsStore {
     // Settings page refuses a hostname with — not a second copy of it.
     return AppSettings(
       bindAddress: parseBindAddress(bindAddress),
+      peerPort: _parsePeerPort(network),
       theme: _parseTheme(decoded['appearance']),
       keepScreenAwake: _parseKeepScreenAwake(decoded['power']),
     );
+  }
+
+  /// The `network` section's peer port: [defaultPeerPort] when it is absent
+  /// (a 1.0 to 1.2 document), a port [PeerPort] accepts when it is present.
+  static PeerPort _parsePeerPort(Map<String, dynamic> network) {
+    if (!network.containsKey('peerPort')) return PeerPort(defaultPeerPort);
+    final peerPort = network['peerPort'];
+    if (peerPort is! int) {
+      throw const FormatException('"network.peerPort" is not a whole number');
+    }
+    return PeerPort(peerPort);
   }
 
   /// The `power` section's keep-awake switch: on when the section is
@@ -171,8 +191,8 @@ sealed class AppSettingsStoreException implements Exception {
 
 /// Thrown by [AppSettingsStore.load] when its file exists but cannot be
 /// read as this store's document: truncated, malformed JSON, or
-/// well-formed JSON of the wrong shape, version text, bind address, theme
-/// or keep-awake switch.
+/// well-formed JSON of the wrong shape, version text, bind address, peer
+/// port, theme or keep-awake switch.
 class AppSettingsStoreCorruptException extends AppSettingsStoreException {
   final String path;
   final String detail;

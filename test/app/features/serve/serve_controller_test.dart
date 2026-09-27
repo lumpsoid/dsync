@@ -6,6 +6,7 @@ import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/features/serve/serve_controller.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
@@ -31,13 +32,13 @@ void main() {
   ServeController build({
     Future<InternetAddress> Function()? bindAddress,
     Future<bool> Function()? keepScreenAwake,
-    int port = defaultPeerPort,
+    Future<PeerPort> Function()? peerPort,
   }) => ServeController(
     app,
     bindAddress: bindAddress ?? (() async => InternetAddress.loopbackIPv4),
     screenWake: screenWake,
     keepScreenAwake: keepScreenAwake ?? () async => true,
-    port: port,
+    peerPort: peerPort ?? () async => PeerPort(defaultPeerPort),
   );
 
   setUp(() {
@@ -121,6 +122,22 @@ void main() {
     expect((status as ServeListening).address, '192.168.1.5:$defaultPeerPort');
     expect(controller.boundPort, defaultPeerPort);
     expect(screenWake.held, isTrue);
+  });
+
+  test('start serves on the stored port, read when it starts', () async {
+    var stored = PeerPort(9000);
+    controller.dispose();
+    controller = build(peerPort: () async => stored);
+
+    await controller.start();
+    await controller.stop();
+    stored = PeerPort(9001);
+    await controller.start();
+
+    expect(core.sent<wire.CoreCommandStartServe>(), const [
+      wire.CoreCommandStartServe(bind: '127.0.0.1', port: 9000),
+      wire.CoreCommandStartServe(bind: '127.0.0.1', port: 9001),
+    ]);
   });
 
   test(

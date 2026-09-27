@@ -3,6 +3,7 @@ import 'dart:io';
 import '../../app_controller.dart';
 import '../../app_settings.dart';
 import '../../app_settings_store.dart';
+import '../../peer_port.dart';
 import '../../theme_preference.dart';
 import 'settings_view_state.dart';
 
@@ -67,6 +68,35 @@ class SettingsController {
       return;
     }
     state.recordOutcome(SettingsSaved(_saved(address)));
+  }
+
+  /// Stores [text] as the port this device serves on and its pairing codes
+  /// name, refusing anything `PeerPort.parse` refuses.
+  Future<void> savePeerPort(String text) async {
+    final PeerPort port;
+    try {
+      port = PeerPort.parse(text);
+    } on FormatException catch (e) {
+      state.recordOutcome(SettingsFailed(e.message));
+      return;
+    }
+
+    state.recordOutcome(const SettingsWorking());
+    final failure = await _change(
+      (settings) => settings.withPeerPort(port),
+      unchanged: 'The peer port is unchanged.',
+    );
+    if (failure != null) {
+      state.recordOutcome(SettingsFailed(failure));
+      return;
+    }
+    state.recordOutcome(
+      SettingsSaved(
+        'This device serves on port $port from the next time it serves, and '
+        'the next pairing code it shows tells the other device to dial it '
+        'there. Devices already paired still dial the port they recorded.',
+      ),
+    );
   }
 
   /// Stores [theme] and has the app draw in it at once. No line says so:

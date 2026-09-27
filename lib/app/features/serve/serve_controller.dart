@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import '../../app_controller.dart';
-import '../../app_settings.dart';
 import '../../app_settings_store.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/serve_event.dart';
@@ -10,6 +9,7 @@ import '../../core_link/models/serve_line.dart';
 import '../../core_link/models/serve_phase.dart';
 import '../../core_link/models/serve_session.dart';
 import '../../core_link/models/serve_view.dart';
+import '../../peer_port.dart';
 import '../../screen_wake.dart';
 import '../../shared_folder_row.dart';
 import 'serve_view_state.dart';
@@ -49,17 +49,16 @@ import 'serve_view_state.dart';
 /// A session's views are shown only while it is the one serving or
 /// stopping, so a stopped session's late news never lands on a fresh one.
 ///
-/// **The port is fixed at [defaultPeerPort].** Both sides of a pairing
-/// already record that port for each other and this head's own pairing
-/// payload advertises it. [port] is a parameter only so a test can serve on
-/// another one.
+/// **The port is the Settings page's** ([peerPort]), the same one this
+/// head's pairing codes name, so a device paired from one of them dials
+/// where this serves.
 class ServeController {
   ServeController(
     this.app, {
     required this.bindAddress,
     required this.screenWake,
     required this.keepScreenAwake,
-    this.port = defaultPeerPort,
+    required this.peerPort,
   });
 
   final AppController app;
@@ -78,7 +77,10 @@ class ServeController {
   /// when the settings file cannot be read.
   final Future<bool> Function() keepScreenAwake;
 
-  final int port;
+  /// Which port to listen on — `dsync agent --serve --port` — read once
+  /// per [start] like [bindAddress]. Throws `AppSettingsStoreException`
+  /// when the settings file cannot be read.
+  final Future<PeerPort> Function() peerPort;
 
   /// The view state this controller renders into; owned here, disposed here.
   final ServeViewState state = ServeViewState();
@@ -105,7 +107,7 @@ class ServeController {
     _Idle() || _Binding() || _Abandoned() || _Stopping() || _Disposed() => null,
   };
 
-  /// Starts serving on the stored bind address. A second call while serving
+  /// Starts serving on the stored bind address and port. A second call while serving
   /// or binding is ignored; one while the last session is still stopping
   /// starts afresh, and that session's last view is not shown.
   Future<void> start() async {
@@ -121,8 +123,10 @@ class ServeController {
     state.recordStatus(const ServeStarting());
     _screenWanted = await _readKeepScreenAwake();
     final InternetAddress address;
+    final PeerPort port;
     try {
       address = await bindAddress();
+      port = await peerPort();
     } on AppSettingsStoreException catch (e) {
       // Binding the defaults instead would be reading damaged bytes as a
       // decision the user never made — the same refusal
@@ -133,9 +137,12 @@ class ServeController {
 
     final ServeSession session;
     try {
-      session = await app.core.startServe(bind: address.address, port: port);
+      session = await app.core.startServe(
+        bind: address.address,
+        port: port.value,
+      );
     } on CoreFailure catch (e) {
-      _bindFailed(ServeFailed(_bindRefusal(address, e.message)));
+      _bindFailed(ServeFailed(_bindRefusal(address, port, e.message)));
       return;
     }
     // Only this call leaves binding: a stop meanwhile abandoned it, and a
@@ -256,7 +263,7 @@ class ServeController {
     return '$hh:$mm:$ss  $text';
   }
 
-  String _bindRefusal(InternetAddress address, String cause) =>
+  String _bindRefusal(InternetAddress address, PeerPort port, String cause) =>
       'This device could not answer on ${address.address}:$port: $cause. '
       'Either a `dsync agent --serve` on this machine already holds that '
       'port, or ${address.address} is not an address this device has.';
