@@ -552,30 +552,20 @@ class _EntrySection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Numbered only past the first entry: the common case — one entry —
-        // reads exactly as it always has, with no count to draw.
-        if (index > 0)
+        // Numbered only past one entry: the common case — one entry — reads
+        // exactly as it always has, with no count to draw. Past one, every
+        // entry is numbered, the first included, and every one removable.
+        if (removable)
           Row(
             children: [
               Expanded(child: _SectionLabel('Entry ${index + 1}')),
-              if (removable)
-                IconButton(
-                  key: Key('run-setup-remove-entry-$index'),
-                  icon: const Icon(Icons.close),
-                  tooltip: 'Remove this entry',
-                  onPressed: starting ? null : onRemove,
-                ),
+              IconButton(
+                key: Key('run-setup-remove-entry-$index'),
+                icon: const Icon(Icons.close),
+                tooltip: 'Remove this entry',
+                onPressed: starting ? null : onRemove,
+              ),
             ],
-          )
-        else if (removable)
-          Align(
-            alignment: Alignment.centerRight,
-            child: IconButton(
-              key: const Key('run-setup-remove-entry-0'),
-              icon: const Icon(Icons.close),
-              tooltip: 'Remove this entry',
-              onPressed: starting ? null : onRemove,
-            ),
           ),
         SegmentedButton<RootKind>(
           key: Key('run-setup-kind-$index'),
