@@ -21,7 +21,7 @@ use dsync_domain::{
     SideDeletes, SkippedPath, Status,
 };
 
-use super::rows::{Outcomes, PlanRows};
+use super::rows::{Delivered, Outcomes, PlanRows};
 use crate::signals::RunIntent;
 use crate::throttle::Urgency;
 use crate::views::{
@@ -859,10 +859,11 @@ impl RunState {
         }
     }
 
-    /// Everything the head shows, as it now stands.
+    /// Everything the head shows, as it now stands, to a head given
+    /// nothing yet: the plan, if any, whole.
     #[cfg(test)]
     pub(crate) fn view(&self) -> RunView {
-        self.snapshot().view()
+        self.snapshot().view(&mut Delivered::default())
     }
 }
 
@@ -902,18 +903,19 @@ impl Snapshot {
         self.last
     }
 
-    /// Everything the head shows: the plan's rows are built here, away
-    /// from the session's lock.
-    pub(crate) fn view(self) -> RunView {
+    /// Everything the head shows, to a head that was last given
+    /// `delivered`, which this records as given: the plan's rows are built
+    /// here, away from the session's lock, and only those that changed
+    /// since, unless the plan is new to the head.
+    pub(super) fn view(self, delivered: &mut Delivered) -> RunView {
         let mut view = self.view;
-        if let Some(Rows {
-            plan,
-            choices,
-            outcomes,
-        }) = &self.rows
-        {
-            view.plan = PlanUpdateView::New(plan.view(choices, outcomes));
-        }
+        view.plan = delivered.update(self.rows.map(
+            |Rows {
+                 plan,
+                 choices,
+                 outcomes,
+             }| (plan, choices, outcomes),
+        ));
         view
     }
 }
@@ -933,7 +935,7 @@ mod tests {
         ScanTally, Side, Status,
     };
 
-    use super::{Choices, EntryRoots, Review, RunState, Steer};
+    use super::{Choices, Delivered, EntryRoots, Review, RunState, Steer};
     use crate::signals::RunIntent;
     use crate::throttle::Urgency;
     use crate::views::{
@@ -1652,11 +1654,21 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&was.plan, &now.plan));
         assert_eq!(
-            before.view().plan.new_plan().actions[1].choice,
+            before
+                .view(&mut Delivered::default())
+                .plan
+                .new_plan()
+                .actions[1]
+                .choice,
             ActionChoiceView::Proposed
         );
         assert_eq!(
-            after.view().plan.new_plan().actions[1].choice,
+            after
+                .view(&mut Delivered::default())
+                .plan
+                .new_plan()
+                .actions[1]
+                .choice,
             ActionChoiceView::Skipped
         );
     }
@@ -1672,10 +1684,195 @@ mod tests {
             outcome: Ok(()),
         });
         let after = state.snapshot();
-        assert!(before.view().plan.new_plan().actions[1].outcome.is_none());
-        let view = after.view();
+        assert!(
+            before
+                .view(&mut Delivered::default())
+                .plan
+                .new_plan()
+                .actions[1]
+                .outcome
+                .is_none()
+        );
+        let view = after.view(&mut Delivered::default());
         assert!(view.plan.new_plan().actions[1].outcome.is_some());
         assert_eq!(view.applied, 1);
+    }
+
+    /// The plan update `state` comes to for a head last given `delivered`,
+    /// recorded as given.
+    fn deliver(state: &RunState, delivered: &mut Delivered) -> PlanUpdateView {
+        state.snapshot().view(delivered).plan
+    }
+
+    /// An action row update: its index, choice, and whether it carries an
+    /// outcome.
+    type ActionRow = (u32, ActionChoiceView, bool);
+    type ConflictRow = (u32, ConflictChoiceView, bool);
+
+    /// The rows a `Same` update carries; panics on any other variant.
+    fn changed(update: PlanUpdateView) -> (Vec<ActionRow>, Vec<ConflictRow>) {
+        let PlanUpdateView::Same { actions, conflicts } = update else {
+            panic!("expected the same plan's changed rows");
+        };
+        (
+            actions
+                .into_iter()
+                .map(|row| (row.index, row.choice, row.outcome.is_some()))
+                .collect(),
+            conflicts
+                .into_iter()
+                .map(|row| (row.index, row.choice, row.outcome.is_some()))
+                .collect(),
+        )
+    }
+
+    fn landed(action: Action) -> RunEvent {
+        RunEvent::Result {
+            action,
+            outcome: Ok(()),
+        }
+    }
+
+    #[test]
+    fn the_plan_goes_whole_once_then_only_what_changed() {
+        let plan = plan();
+        let state = reviewing(&plan);
+        let mut delivered = Delivered::default();
+        let first = deliver(&state, &mut delivered);
+        let whole = first.new_plan();
+        assert_eq!((whole.actions.len(), whole.conflicts.len()), (2, 1));
+        assert_eq!(
+            changed(deliver(&state, &mut delivered)),
+            (vec![], vec![]),
+            "nothing changed"
+        );
+    }
+
+    #[test]
+    fn a_result_sends_its_row_alone() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        state.steer(RunIntent::Confirm);
+        let mut delivered = Delivered::default();
+        deliver(&state, &mut delivered);
+        state.event(landed(copy("p")));
+        assert_eq!(
+            changed(deliver(&state, &mut delivered)),
+            (vec![(1, ActionChoiceView::Proposed, true)], vec![])
+        );
+        state.event(landed(plan.conflicts[0].resolve(Side::A)));
+        assert_eq!(
+            changed(deliver(&state, &mut delivered)),
+            (vec![], vec![(0, ConflictChoiceView::Unresolved, true)])
+        );
+    }
+
+    #[test]
+    fn a_choice_sends_its_row_and_accept_all_the_rows_it_puts_back() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        let mut delivered = Delivered::default();
+        deliver(&state, &mut delivered);
+        choose(&mut state, 1, ActionChoiceView::Skipped);
+        assert_eq!(
+            changed(deliver(&state, &mut delivered)),
+            (vec![(1, ActionChoiceView::Skipped, false)], vec![])
+        );
+        choose(&mut state, 0, ActionChoiceView::Reversed);
+        settle(&mut state, 0, ConflictChoiceView::KeepA);
+        deliver(&state, &mut delivered);
+        state.steer(RunIntent::AcceptAll);
+        assert_eq!(
+            changed(deliver(&state, &mut delivered)),
+            (
+                vec![
+                    (0, ActionChoiceView::Proposed, false),
+                    (1, ActionChoiceView::Proposed, false)
+                ],
+                vec![(0, ConflictChoiceView::Unresolved, false)]
+            )
+        );
+    }
+
+    #[test]
+    fn a_snapshot_never_sent_loses_nothing_to_the_next() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        let mut delivered = Delivered::default();
+        deliver(&state, &mut delivered);
+        choose(&mut state, 0, ActionChoiceView::Skipped);
+        drop(state.snapshot());
+        settle(&mut state, 0, ConflictChoiceView::KeepB);
+        assert_eq!(
+            changed(deliver(&state, &mut delivered)),
+            (
+                vec![(0, ActionChoiceView::Skipped, false)],
+                vec![(0, ConflictChoiceView::KeepB, false)]
+            ),
+            "both changes, against what was sent"
+        );
+    }
+
+    #[test]
+    fn a_new_entry_drops_the_plan_and_sends_its_own_whole() {
+        let plan = plan();
+        let mut state = RunState::new(false);
+        state.listed(roots(3));
+        start(&mut state, 0);
+        state.review(&plan);
+        let mut delivered = Delivered::default();
+        deliver(&state, &mut delivered).new_plan();
+        start(&mut state, 1);
+        assert!(matches!(
+            deliver(&state, &mut delivered),
+            PlanUpdateView::Absent
+        ));
+        state.review(&plan);
+        deliver(&state, &mut delivered).new_plan();
+        start(&mut state, 2);
+        state.review(&plan);
+        assert_eq!(
+            deliver(&state, &mut delivered).new_plan().actions.len(),
+            2,
+            "no view between: the new entry's plan whole"
+        );
+    }
+
+    #[test]
+    fn a_resume_sends_the_plan_whole_again_though_its_rows_are_the_same() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        let mut delivered = Delivered::default();
+        deliver(&state, &mut delivered);
+        state.steer(RunIntent::Pause);
+        state.ended(ran());
+        assert_eq!(state.steer(RunIntent::Resume), Steer::Restart);
+        assert!(matches!(
+            deliver(&state, &mut delivered),
+            PlanUpdateView::Absent
+        ));
+        state.listed(roots(1));
+        start(&mut state, 0);
+        state.review(&plan);
+        deliver(&state, &mut delivered).new_plan();
+    }
+
+    #[test]
+    fn the_last_view_carries_its_changed_rows_and_is_marked_last() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        state.steer(RunIntent::Confirm);
+        let mut delivered = Delivered::default();
+        deliver(&state, &mut delivered);
+        state.event(landed(copy("r")));
+        state.event(summary(1));
+        state.ended(ran());
+        let snapshot = state.snapshot();
+        assert!(snapshot.is_last());
+        assert_eq!(
+            changed(snapshot.view(&mut delivered).plan),
+            (vec![(0, ActionChoiceView::Proposed, true)], vec![])
+        );
     }
 
     /// Rows in the snapshot-cost measurement: a large first sync.
@@ -1703,7 +1900,7 @@ mod tests {
         let mut snapshots: Vec<_> = (0..11).map(|_| state.snapshot()).collect();
         let build = median_us(11, || {
             if let Some(snapshot) = snapshots.pop() {
-                std::hint::black_box(snapshot.view());
+                std::hint::black_box(snapshot.view(&mut Delivered::default()));
             }
         });
         let snapshot = crate::signals::RunSnapshot {
@@ -1722,6 +1919,43 @@ mod tests {
         );
     }
 
+    /// Times, mid-apply, against a view just sent: the first result after
+    /// it (the outcomes cloned under the lock, the sent view holding
+    /// them), and building the next view, ten rows changed since, which
+    /// it also encodes.
+    fn delta_cost(label: &str, state: &mut RunState, plan: &Plan) {
+        let (mut first, mut build, mut bytes) = (Vec::new(), Vec::new(), 0);
+        for run in 0..11 {
+            let mut delivered = Delivered::default();
+            deliver(state, &mut delivered);
+            for (k, at) in (0..10).map(|k| (k, (run * 10 + k) * 397 % COST_ROWS)) {
+                let started = std::time::Instant::now();
+                state.event(landed(plan.actions[at].action.clone()));
+                if k == 0 {
+                    first.push(started.elapsed().as_micros());
+                }
+            }
+            let snapshot = state.snapshot();
+            let started = std::time::Instant::now();
+            let view = snapshot.view(&mut delivered);
+            build.push(started.elapsed().as_micros());
+            let snapshot = crate::signals::RunSnapshot {
+                session: 1,
+                view,
+                last: false,
+            };
+            bytes = rinf::serialize(&snapshot)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .len();
+        }
+        first.sort_unstable();
+        build.sort_unstable();
+        eprintln!(
+            "{label}, 10 new outcomes: first result after a send {} us (locked), build {} us, {bytes} bytes",
+            first[5], build[5]
+        );
+    }
+
     /// Not a gate: run with `cargo test --release -p hub --lib -- --ignored
     /// --nocapture snapshot_cost` to see what a large plan's snapshots cost.
     #[test]
@@ -1737,6 +1971,7 @@ mod tests {
         choose(&mut state, 7, ActionChoiceView::Skipped);
         cost("per tap (reviewing)", &state);
         state.steer(RunIntent::Confirm);
+        delta_cost("per refresh (applying)", &mut state, &plan);
         for proposal in &plan.actions {
             state.event(RunEvent::Result {
                 action: proposal.action.clone(),
@@ -1744,6 +1979,7 @@ mod tests {
             });
         }
         cost("per refresh (applied)", &state);
+        delta_cost("per refresh (every row reported)", &mut state, &plan);
     }
 
     #[test]

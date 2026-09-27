@@ -10,11 +10,12 @@
 //! lands, so no update is lost to the race.
 //!
 //! Streams are plain Rust->Dart signals tagged with their session. A run
-//! sends [`RunSnapshot`]s: the whole view after every change, so the head
-//! renders the latest and decides nothing; what the user does goes back as
-//! a [`RunIntent`] in [`CoreCommand::SteerRun`]. Serving sends
-//! [`ServeSnapshot`]s and a pairing window [`PairingSnapshot`]s the same
-//! way. Every snapshot says whether it is its session's `last`: the head
+//! sends [`RunSnapshot`]s after every change: the view whole but for its
+//! plan, which goes whole once and then as the rows that changed since
+//! the snapshot before, so the head folds those in, renders the latest,
+//! and decides nothing; what the user does goes back as a [`RunIntent`]
+//! in [`CoreCommand::SteerRun`]. Serving sends [`ServeSnapshot`]s and a
+//! pairing window [`PairingSnapshot`]s, each one whole. Every snapshot says whether it is its session's `last`: the head
 //! closes the session's stream on it and asks nothing of its own.
 
 use rinf::{DartSignal, RustSignal, SignalPiece};
@@ -291,8 +292,9 @@ pub enum ReplyResult {
     },
 }
 
-/// The run in `session`, whole, as it now stands. `last`: the session is
-/// over - finished, stopped, or the page left - and sends nothing more.
+/// The run in `session` as it now stands, its plan as an update to the
+/// one the snapshot before carried (see [`RunView`]). `last`: the session
+/// is over - finished, stopped, or the page left - and sends nothing more.
 #[derive(Serialize, RustSignal)]
 pub struct RunSnapshot {
     pub session: u64,

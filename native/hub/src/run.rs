@@ -2,8 +2,9 @@
 //! [`ProfileRun`] connecting and running each entry in turn under a
 //! decider, report), one attempt after another in one session, and
 //! the run's state - [`RunState`], the one place its phase, review and
-//! outcome are decided - sent whole as `session`'s snapshots. What the
-//! user does arrives as intents; the state says what each one means.
+//! outcome are decided - sent as `session`'s snapshots, the plan whole
+//! once and then only the rows that changed. What the user does arrives
+//! as intents; the state says what each one means.
 //!
 //! Snapshots go out as the session's [`Throttle`] says: at once on a
 //! phase change, a question or a tap, and otherwise (progress, the scan's
@@ -34,6 +35,7 @@ use crate::signals::{ReplyResult, RunIntent, RunTarget};
 use crate::throttle::{Throttle, Urgency, Verdict};
 use crate::views::millis;
 
+use rows::Delivered;
 use sending::Sending;
 use state::{Choices, EntryRoots, Review, RunState, Snapshot, Steer};
 
@@ -65,6 +67,7 @@ impl Hub {
                 pending: None,
                 throttle: Throttle::new(),
                 sending: Sending::Idle,
+                delivered: Delivered::default(),
             }),
         });
         control.update(|_| Urgency::Now);
@@ -231,6 +234,13 @@ struct Shared {
     pending: Option<Pending>,
     throttle: Throttle,
     sending: Sending<Snapshot>,
+    /// What the head was last given of the plan, so a view sends only the
+    /// rows that changed since. Between sends it is exactly what the
+    /// outbox was last given (a session's views all reach the head, in
+    /// order); while one is on its way the sender holds it, and here it is
+    /// empty. A sender that panics holding it leaves it empty, and the
+    /// next view sends the plan whole: larger, still right.
+    delivered: Delivered,
 }
 
 /// A run session: its state, the live attempt's handles, and where its
@@ -283,19 +293,27 @@ impl RunControl {
     /// Takes the state as it stands under the lock, cheaply, and builds
     /// and sends it once the lock is released, so the run's events are
     /// not held up by a large plan's rows; see [`Sending`] for the order.
+    ///
+    /// The sender holds [`Shared::delivered`] while it sends, and puts it
+    /// back in the same lock that finds nothing left to send.
     fn send(&self, mut shared: MutexGuard<'_, Shared>) {
         let taken = shared.state.snapshot();
         let Some(mut snapshot) = shared.sending.offer(taken) else {
             return;
         };
+        let mut delivered = std::mem::take(&mut shared.delivered);
         drop(shared);
         loop {
             let last = snapshot.is_last();
-            self.out.run(self.session, snapshot.view(), last);
-            let next = self.lock().sending.sent();
-            match next {
+            self.out
+                .run(self.session, snapshot.view(&mut delivered), last);
+            let mut shared = self.lock();
+            match shared.sending.sent() {
                 Some(waiting) => snapshot = waiting,
-                None => return,
+                None => {
+                    shared.delivered = delivered;
+                    return;
+                }
             }
         }
     }
@@ -525,16 +543,16 @@ mod tests {
 
     use dsync_core::{BatchDecider, Connector, ProfileRun, ProfileStop, RunEvent, StateDir};
     use dsync_domain::{
-        Action, EffectiveOptions, Entry, HostFacts, Location, Platform, Profile, ProfileName,
-        RelPath, ReplicaLocation, RunSummary, Side, Tuning,
+        Action, EffectiveOptions, Entry, HostFacts, Location, Plan, Platform, Profile, ProfileName,
+        Proposal, RelPath, ReplicaLocation, RunSummary, Side, Tuning,
     };
     use tokio::sync::mpsc;
 
-    use super::{RunControl, RunState, Sending, Shared, forward};
+    use super::{Delivered, RunControl, RunState, Sending, Shared, forward};
     use crate::outbox::{Outbox, Outgoing};
     use crate::signals::RunIntent;
     use crate::throttle::{REFRESH_INTERVAL, Throttle, Urgency};
-    use crate::views::{EntryStatusView, RunPhaseView, RunStandingView, RunView};
+    use crate::views::{EntryStatusView, PlanUpdateView, RunPhaseView, RunStandingView, RunView};
 
     fn control() -> (Arc<RunControl>, mpsc::UnboundedReceiver<Outgoing>) {
         let (out, outgoing) = Outbox::channel();
@@ -549,6 +567,7 @@ mod tests {
                 pending: None,
                 throttle: Throttle::new(),
                 sending: Sending::Idle,
+                delivered: Delivered::default(),
             }),
         });
         (control, outgoing)
@@ -563,16 +582,74 @@ mod tests {
         views
     }
 
+    fn copy(index: usize) -> Action {
+        Action::Copy {
+            path: RelPath::parse(&format!("f{index}")).unwrap_or_else(|error| panic!("{error}")),
+            from: Side::A,
+            bytes: 1,
+        }
+    }
+
     fn result(index: usize) -> RunEvent {
         RunEvent::Result {
-            action: Action::Copy {
-                path: RelPath::parse(&format!("f{index}"))
-                    .unwrap_or_else(|error| panic!("{error}")),
-                from: Side::A,
-                bytes: 1,
-            },
+            action: copy(index),
             outcome: Ok(()),
         }
+    }
+
+    /// The indexes of the action rows `view` says changed, each with an
+    /// outcome; panics unless it is the same plan's update.
+    fn changed_actions(view: &RunView) -> Vec<u32> {
+        let PlanUpdateView::Same { actions, conflicts } = &view.plan else {
+            panic!("expected the same plan's changed rows");
+        };
+        assert!(conflicts.is_empty());
+        assert!(actions.iter().all(|row| row.outcome.is_some()));
+        actions.iter().map(|row| row.index).collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_the_plan_a_burst_of_results_goes_out_as_only_their_rows() {
+        let (control, mut outgoing) = control();
+        control.update(|state| state.connected(1));
+        let plan = Plan {
+            actions: (0..20)
+                .map(|index| Proposal {
+                    action: copy(index),
+                    reverse_bytes: None,
+                })
+                .collect(),
+            conflicts: Vec::new(),
+        };
+        control.update(|state| {
+            state.event(RunEvent::Plan {
+                plan,
+                exceeds_warn_size: false,
+            })
+        });
+        let views = sent(&mut outgoing);
+        assert!(matches!(
+            views.last().map(|view| &view.plan),
+            Some(PlanUpdateView::New(_))
+        ));
+        for index in [3, 5, 8, 13, 17] {
+            control.update(|state| state.event(result(index)));
+        }
+        tokio::time::sleep(REFRESH_INTERVAL + Duration::from_millis(1)).await;
+        let flushed = sent(&mut outgoing);
+        let [burst] = &flushed[..] else {
+            panic!("one view for the burst, got {}", flushed.len());
+        };
+        assert_eq!(changed_actions(burst), [3, 5, 8, 13, 17]);
+        tokio::time::sleep(REFRESH_INTERVAL * 3).await;
+        assert!(sent(&mut outgoing).is_empty(), "nothing new, nothing sent");
+        control.update(|state| state.event(result(1)));
+        tokio::time::sleep(REFRESH_INTERVAL + Duration::from_millis(1)).await;
+        let flushed = sent(&mut outgoing);
+        let [next] = &flushed[..] else {
+            panic!("one view, got {}", flushed.len());
+        };
+        assert_eq!(changed_actions(next), [1]);
     }
 
     #[tokio::test(start_paused = true)]

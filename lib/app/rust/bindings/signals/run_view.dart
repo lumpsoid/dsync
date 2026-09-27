@@ -1,9 +1,13 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// A run as the head shows it, whole: sent after every change, so each
-/// one stands alone and the head renders the latest without folding
-/// anything. Built by the run's own state in `run/state.rs`.
+/// A run as the head shows it, sent after every change. Everything but
+/// the plan's rows is whole in every view. The plan is sent whole once -
+/// the first view after the hub takes it - and thereafter each view says
+/// either the same plan with the rows changed since the view before, no
+/// plan, or a new plan, whole: a session's views all reach the head, in
+/// order, so it folds each into the last. Built by the run's own state in
+/// `run/state.rs`.
 ///
 /// A session runs a profile's entries one after another: `entries` lists
 /// them all, `current` is the one running (or that ran last), and every

@@ -1,6 +1,6 @@
 //! Runs through the hub: started by command, steered by the head's
-//! intents, and seen as the session's snapshots - each one the whole view,
-//! the phase, the review and the outcome all decided here.
+//! intents, and seen as the session's snapshots, the plan folded in as
+//! the head does - the phase, the review and the outcome all decided here.
 
 use dsync_core::ProfileStore;
 use dsync_domain::{DIR_LEAF, Location, Platform, ProfileName, ReplicaLocation};

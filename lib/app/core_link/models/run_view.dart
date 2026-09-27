@@ -7,8 +7,9 @@ import 'scan_tally.dart';
 import 'skipped_path_info.dart';
 import 'sync_history.dart';
 
-/// A run, whole, as the core sends it after every change: what to show,
-/// every decision in it already made. Each one stands alone.
+/// A run as the core sends it after every change: what to show, every
+/// decision in it already made. Whole but for its [plan], which comes
+/// whole once and then as the rows that changed since the view before.
 ///
 /// A session runs a profile's [entries] in turn; everything from
 /// [connectedAt] on describes the [current] one alone.

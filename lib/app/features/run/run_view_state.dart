@@ -837,8 +837,9 @@ class SyncRunViewState extends ChangeNotifier {
     if (_plan.value.isNotEmpty) _plan.value = const [];
   }
 
-  /// A whole plan: its results and choices copied in — the rows fold into
-  /// them in place — and every cell written from them.
+  /// A new plan, whole — the core sends one only when the plan is new: its
+  /// results and choices copied in — the rows fold into them in place —
+  /// and every cell written from them.
   void _replacePlan(SyncRunPlanReplaced change) {
     _conflicts = List.unmodifiable(change.conflicts);
     _bytesToTransfer = change.bytesToTransfer;
@@ -856,11 +857,7 @@ class SyncRunViewState extends ChangeNotifier {
         cell.value = _conflictChoices[index];
       }
     }
-    // The hub still sends every view whole: an unchanged plan must not be
-    // recorded again, or a 50k-row plan re-renders once a second.
-    if (!listEquals(change.plan, _plan.value)) {
-      _recordPlan(change.plan, change.copyBytes);
-    }
+    _recordPlan(change.plan, change.copyBytes);
   }
 
   /// The changed rows, each replacing its row's choice and outcome and

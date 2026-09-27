@@ -1,6 +1,6 @@
 //! The plan as the head shows it, built once when the run takes the plan:
-//! it does not change after, so a snapshot only copies its rows and adds
-//! what did change - the review's choices and the outcomes reported.
+//! it does not change after, so the head is sent it whole once and then
+//! only what did change - the review's choices and the outcomes reported.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,8 +8,9 @@ use std::sync::Arc;
 use dsync_domain::{Conflict, Plan, RelPath, Side};
 
 use crate::views::{
-    ActionChoiceView, ConflictChoiceView, ConflictRowView, ConflictView, PlanRowView,
-    PlanSummaryView, PlanView, ProposalView, ResultView,
+    ActionChoiceView, ActionRowUpdateView, ConflictChoiceView, ConflictRowUpdateView,
+    ConflictRowView, ConflictView, PlanRowView, PlanSummaryView, PlanUpdateView, PlanView,
+    ProposalView, ResultView,
 };
 
 use super::state::Choices;
@@ -192,4 +193,95 @@ impl Outcomes {
 /// The outcome shown on row `at` of `slots`.
 fn shown(slots: &[Option<Arc<ResultView>>], at: usize) -> Option<ResultView> {
     slots.get(at).and_then(|slot| slot.as_deref().cloned())
+}
+
+/// Whether slot `at` holds the same outcome in `was` and `now`: both
+/// empty, or the very same report.
+fn same_outcome(
+    was: &[Option<Arc<ResultView>>],
+    now: &[Option<Arc<ResultView>>],
+    at: usize,
+) -> bool {
+    match (was.get(at), now.get(at)) {
+        (Some(Some(was)), Some(Some(now))) => Arc::ptr_eq(was, now),
+        (Some(None), Some(None)) | (None, None) => true,
+        _ => false,
+    }
+}
+
+/// A plan's rows with their choices and outcomes, as one view showed them.
+pub(super) type Shown = (Arc<PlanRows>, Choices, Arc<Outcomes>);
+
+/// What the head was last given of a session's plan, so the next view
+/// sends only what changed since.
+///
+/// Diffed at send time, not tracked as changes happen: a snapshot taken
+/// while another is on its way can be replaced unsent, and its changes
+/// would be lost with it; against what was actually sent, the next one
+/// carries them too. It holds the `Arc`s, not their addresses, so a plan
+/// dropped can never be followed by a new one at the same address that
+/// passes for it.
+#[derive(Default)]
+pub(super) struct Delivered {
+    rows: Option<Shown>,
+}
+
+impl Delivered {
+    /// The update that brings the head from what it was last given to
+    /// `now`, which it is given next: none, the plan whole when it is not
+    /// the one given last, and otherwise the rows whose choice or outcome
+    /// changed.
+    pub(super) fn update(&mut self, now: Option<Shown>) -> PlanUpdateView {
+        let update = match (&now, &self.rows) {
+            (None, _) => PlanUpdateView::Absent,
+            (Some((plan, choices, outcomes)), Some((was, was_choices, was_outcomes)))
+                if Arc::ptr_eq(plan, was) =>
+            {
+                plan.changes((was_choices, was_outcomes), (choices, outcomes))
+            }
+            (Some((plan, choices, outcomes)), _) => {
+                PlanUpdateView::New(plan.view(choices, outcomes))
+            }
+        };
+        self.rows = now;
+        update
+    }
+}
+
+impl PlanRows {
+    /// The rows whose choice or outcome differs between `was` and `now`,
+    /// each with its whole current state. Unchanged rows cost a compare.
+    fn changes(
+        &self,
+        (was_choices, was): (&Choices, &Outcomes),
+        (choices, now): (&Choices, &Outcomes),
+    ) -> PlanUpdateView {
+        let actions = (0..self.actions())
+            .filter(|&at| {
+                was_choices.action(at) != choices.action(at)
+                    || !same_outcome(&was.actions, &now.actions, at)
+            })
+            .map(|at| ActionRowUpdateView {
+                index: index_view(at),
+                choice: choices.action(at),
+                outcome: shown(&now.actions, at),
+            })
+            .collect();
+        let conflicts = (0..self.conflicts())
+            .filter(|&at| {
+                was_choices.conflict(at) != choices.conflict(at)
+                    || !same_outcome(&was.conflicts, &now.conflicts, at)
+            })
+            .map(|at| ConflictRowUpdateView {
+                index: index_view(at),
+                choice: choices.conflict(at),
+                outcome: shown(&now.conflicts, at),
+            })
+            .collect();
+        PlanUpdateView::Same { actions, conflicts }
+    }
+}
+
+fn index_view(at: usize) -> u32 {
+    u32::try_from(at).unwrap_or(u32::MAX)
 }

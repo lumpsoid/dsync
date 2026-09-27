@@ -1,8 +1,8 @@
 import 'run_view.dart';
 
 /// A run session the core opened: its id, which every intent names, and
-/// its [views] — the whole run after every change, the latest one what to
-/// show.
+/// its [views] — the run after every change, its plan whole once and then
+/// as the rows that changed, the latest one what to show.
 final class RunSession {
   const RunSession({required this.session, required this.views});
 

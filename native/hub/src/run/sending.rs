@@ -1,8 +1,9 @@
 //! Snapshots leave a session one at a time and in the order they were
 //! taken, though each is built and sent away from the session's lock. One
-//! taken while another is on its way waits, and a later one replaces it:
-//! every snapshot stands alone, so the head loses nothing but a state it
-//! would have drawn over at once.
+//! taken while another is on its way waits, and a later one replaces it.
+//! The replaced one is never sent, and the next is diffed against what
+//! was (`rows.rs`'s `Delivered`), so nothing it changed is lost: the head
+//! misses only a state it would have drawn over at once.
 
 /// Whether a snapshot is on its way, and the one waiting behind it.
 pub(super) enum Sending<T> {

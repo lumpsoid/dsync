@@ -32,9 +32,10 @@ import 'run_view_state.dart';
 /// Named `SyncRunController` for the page it serves; the file keeps the
 /// `<feature>_controller.dart` name of the layout in `app_scope.dart`.
 ///
-/// **The core owns the run.** It sends the whole run after every change —
-/// the phase, the plan and the review's choices, the delete guard's
-/// question, the outcome — and this renders the latest view and decides
+/// **The core owns the run.** It sends the run after every change — the
+/// phase, the plan and the review's choices, the delete guard's question,
+/// the outcome; the plan whole once, then the rows that changed, which
+/// the view state folds in — and this renders the latest view and decides
 /// nothing: every input method is an intent the core weighs where the run
 /// stands, and one it cannot take changes nothing. What stays here is
 /// wording and layout.

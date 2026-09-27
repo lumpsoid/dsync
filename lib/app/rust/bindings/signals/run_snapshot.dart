@@ -1,8 +1,9 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// The run in `session`, whole, as it now stands. `last`: the session is
-/// over - finished, stopped, or the page left - and sends nothing more.
+/// The run in `session` as it now stands, its plan as an update to the
+/// one the snapshot before carried (see [`RunView`]). `last`: the session
+/// is over - finished, stopped, or the page left - and sends nothing more.
 @immutable
 class RunSnapshot {
   /// An async broadcast stream that listens for signals from Rust.
