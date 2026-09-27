@@ -13,8 +13,8 @@
 
 mod archives;
 mod devices;
-mod diagnostics;
 mod dispatch;
+mod folders;
 mod outbox;
 mod pairing;
 mod profiles;

@@ -11,8 +11,8 @@ use dsync_domain::{
 };
 
 use crate::devices::device;
-use crate::diagnostics::ignore_rules;
 use crate::dispatch::{Handled, Hub, blocking, text};
+use crate::folders::ignore_rules;
 use crate::run::run_flags;
 use crate::signals::{ProfileDraft, ReplyResult};
 use crate::views::{EntryView, OtherEntryView, ProfileEntry, ProfileView};

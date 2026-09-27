@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use dsync_core::{ProfileStore, StateDir};
 use dsync_domain::{DirPath, DirRule, HostFacts, StateDirChoice, Tuning};
 
-use crate::diagnostics::check_ignore_pattern;
+use crate::folders::check_ignore_pattern;
 use crate::outbox::Outbox;
 use crate::sessions::Sessions;
 use crate::signals::{CoreCommand, CoreReply, ReplyResult};
