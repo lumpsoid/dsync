@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../copy_value_button.dart';
+import '../../path_text.dart';
 import '../../readable_width.dart';
 import '../../shared_folder_row.dart';
 import 'serve_controller.dart';
@@ -242,7 +243,7 @@ class _FolderTile extends StatelessWidget {
     return ListTile(
       key: Key('serve-folder-${folder.rootPath}'),
       leading: const Icon(Icons.folder_shared_outlined),
-      title: Text(folder.label),
+      title: PathText(folder.rootPath, style: null, leafStyle: null),
       subtitle: Text(folder.reachSummary),
     );
   }

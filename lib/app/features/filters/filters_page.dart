@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../keyboard_first.dart';
+import '../../path_text.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import 'filters_controller.dart';
@@ -93,13 +94,14 @@ class _FiltersPageState extends State<FiltersPage> {
                         // the page a user may want to take elsewhere — a
                         // terminal, a file manager — and it is often too
                         // long to retype.
+                        // Shortened from the middle to the bar's width;
+                        // a selection still copies the whole path.
                         child: SelectionArea(
-                          child: Text(
+                          child: PathText(
                             _controller.state.rootPath,
                             key: const Key('filters-root-path'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.bodySmall,
+                            leafStyle: null,
                           ),
                         ),
                       ),

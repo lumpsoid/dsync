@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../archive_row.dart';
 import '../../destructive_confirm_dialog.dart';
 import '../../keyboard_first.dart';
+import '../../path_text.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
 import 'archives_controller.dart';
@@ -546,7 +547,12 @@ class _ArchiveTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (peerLine != null) Text(peerLine),
-          Text(row.location, overflow: TextOverflow.ellipsis),
+          // Hover-only tooltip (see [PathText]): a long-press here is the
+          // row's own, and starts selecting.
+          switch (row.rootPath) {
+            final path? => PathText(path, style: null, leafStyle: null),
+            null => const Text(ArchiveRow.unknownLocation),
+          },
           Text('${row.sizeLabel} · last written ${row.lastWritten}'),
           if (note != null)
             Text(note, style: TextStyle(color: theme.colorScheme.error)),

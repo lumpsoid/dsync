@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
+import '../../support/path_text.dart';
 
 /// Rendering tests for the Archives page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controller is pinned with
@@ -40,7 +41,7 @@ void main() {
     entryId: title,
     title: title,
     peerLine: peerLine,
-    location: '/on-device/notes',
+    rootPath: '/on-device/notes',
     sizeLabel: '4.2 MiB',
     sizeBytes: 4404019,
     lastWritten: '2026-09-15',
@@ -709,6 +710,38 @@ void main() {
     await tester.longPress(
       find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
     );
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 selected'), findsOneWidget);
+  });
+
+  testWidgets('on a phone, a long-press on a shortened path still picks the '
+      'row: its tooltip takes no long-press of its own', (tester) async {
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    const long = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
+    await pumpPage(tester);
+    controller.state.recordListing(
+      const ArchivesReady([
+        ArchiveRow(
+          logPath: '/state/dsync/one-a.jsonl',
+          entryId: 'one',
+          title: 'one',
+          peerLine: null,
+          rootPath: long,
+          sizeLabel: '4.2 MiB',
+          sizeBytes: 4404019,
+          lastWritten: '2026-09-15',
+          note: null,
+        ),
+      ]),
+    );
+    await tester.pump();
+
+    expect(shownPath(tester, long), isNot(long));
+    expect(find.byTooltip(long), findsOneWidget);
+    await tester.longPress(pathText(long));
     await tester.pumpAndSettle();
 
     expect(find.text('1 selected'), findsOneWidget);

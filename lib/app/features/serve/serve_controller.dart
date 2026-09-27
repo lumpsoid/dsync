@@ -85,7 +85,7 @@ class ServeController {
   /// until a folder is shared with them.
   List<String> get devicesReachingNothing => [
     for (final row in app.state.devices)
-      if (row.agreedRootLabels.isEmpty) row.name,
+      if (row.agreedRoots.isEmpty) row.name,
   ];
 
   _Lifecycle _lifecycle = const _Idle();

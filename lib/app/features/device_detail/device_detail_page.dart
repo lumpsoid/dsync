@@ -4,6 +4,7 @@ import '../../copy_value_button.dart';
 import '../../destructive_confirm_dialog.dart';
 import '../../format_date.dart';
 import '../../paired_device_row.dart';
+import '../../path_text.dart';
 import '../../readable_width.dart';
 import '../../withdraw_root_dialog.dart';
 import '../run_setup/file_chooser.dart';
@@ -340,10 +341,9 @@ class _IdentityTile extends StatelessWidget {
 /// authorizing are deliberately two steps — and the row above it says
 /// nothing about which.
 ///
-/// Each row shows the *elided* label off the device's own row and is keyed
-/// and withdrawn by the stored path beside it: the label is for reading,
-/// the path is what the write is addressed by, and the two travel together
-/// from `PairedDeviceRow.agreedRootLabels` so nothing here computes either.
+/// Each row is keyed and withdrawn by the stored path and draws that same
+/// path through [PathText], shortened only as far as the row's width
+/// requires — the page's `SelectionArea` copies it whole either way.
 ///
 /// Withdrawing asks first, through [WithdrawRootDialog] — the same
 /// confirmation the host-level Shared folders page asks, because it is the
@@ -375,22 +375,22 @@ class _RootsSection extends StatelessWidget {
             onPressed: () => _grant(context),
           ),
         ),
-        if (device.agreedRootLabels.isEmpty)
+        if (device.agreedRoots.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Text('No folders shared with this device.'),
           )
         else
-          for (final root in device.agreedRootLabels.entries)
+          for (final root in device.agreedRoots)
             ListTile(
-              key: Key('device-root-${root.key}'),
+              key: Key('device-root-$root'),
               leading: const Icon(Icons.folder_shared_outlined),
-              title: Text(root.value, overflow: TextOverflow.ellipsis),
+              title: PathText(root, style: null, leafStyle: null),
               trailing: IconButton(
-                key: Key('device-withdraw-${root.key}'),
+                key: Key('device-withdraw-$root'),
                 icon: const Icon(Icons.remove_circle_outline),
                 tooltip: 'Stop sharing',
-                onPressed: () => _withdraw(context, root.key, root.value),
+                onPressed: () => _withdraw(context, root),
               ),
             ),
       ],
@@ -411,17 +411,12 @@ class _RootsSection extends StatelessWidget {
     if (path != null) await controller.grantRoot(path);
   }
 
-  /// Confirms, then withdraws by the *stored* path — [label] is only what
-  /// the dialog names the folder as.
-  Future<void> _withdraw(
-    BuildContext context,
-    String rootPath,
-    String label,
-  ) async {
+  /// Confirms, then withdraws by the stored path.
+  Future<void> _withdraw(BuildContext context, String rootPath) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) =>
-          WithdrawRootDialog(rootLabel: label, deviceName: device.name),
+          WithdrawRootDialog(rootPath: rootPath, deviceName: device.name),
     );
     if (confirmed ?? false) await controller.revokeRoot(rootPath);
   }

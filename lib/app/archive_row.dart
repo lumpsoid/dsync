@@ -1,11 +1,11 @@
 import 'core_link/models/archive_info.dart';
 import 'format_bytes.dart';
-import 'format_path.dart';
 import 'profile_row.dart';
 
 /// One archive log as the Archives page shows it: already-rendered values
 /// only, per the view-state role in `app_scope.dart`. The page draws these
-/// strings and branches on nothing.
+/// strings and branches only on whether [rootPath] is known — a path is
+/// shortened to its row's width, which only the page has.
 ///
 /// [render] is where the two facts the head has are joined: `core`'s
 /// [ArchiveInfo] — what is on disk — and the saved run one of whose
@@ -48,13 +48,21 @@ class ArchiveRow {
   /// this host still knows the peer by once the pairing is gone.
   final String? peerLine;
 
-  /// The replica root this archive records, or why it cannot be named.
+  /// The replica root this archive records, byte for byte, or `null` when
+  /// the log has no readable header to name it by — the page then says so
+  /// in [unknownLocation]'s words.
   ///
-  /// A path here is middle-elided by [elidePath]: two archives of the same
-  /// run differ only at the end of their root, so the end is what this line
-  /// has to show. The "no readable header" sentence is prose, not a path,
-  /// and is left whole.
-  final String location;
+  /// Left whole here: the page draws it through `PathText`, which takes the
+  /// middle out only as far as the row's width requires — two archives of
+  /// the same run differ only at the end of their root, so the end is what
+  /// the line has to keep. A label cut here would be cut before any width
+  /// is known.
+  final String? rootPath;
+
+  /// What the location line says when [rootPath] is `null`. Prose, not a
+  /// path, so it is never elided.
+  static const unknownLocation =
+      'Folder unknown — this log has no readable header';
 
   /// What the log costs on disk, as a person reads it.
   final String sizeLabel;
@@ -76,7 +84,7 @@ class ArchiveRow {
     required this.entryId,
     required this.title,
     required this.peerLine,
-    required this.location,
+    required this.rootPath,
     required this.sizeLabel,
     required this.sizeBytes,
     required this.lastWritten,
@@ -89,7 +97,6 @@ class ArchiveRow {
     ArchiveInfo archive, {
     required ProfileRow? profile,
   }) {
-    final rootPath = archive.rootPath;
     return ArchiveRow(
       logPath: archive.logPath,
       entryId: archive.entryId,
@@ -100,9 +107,7 @@ class ArchiveRow {
         ProfileRow(:final peerDeviceId) =>
           'syncs with unpaired device $peerDeviceId',
       },
-      location: rootPath == null
-          ? 'Folder unknown — this log has no readable header'
-          : elidePath(rootPath),
+      rootPath: archive.rootPath,
       sizeLabel: formatBytes(archive.sizeBytes),
       sizeBytes: archive.sizeBytes,
       lastWritten: _formatDay(archive.lastModified),

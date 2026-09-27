@@ -1,5 +1,4 @@
 import 'package:dsync/app/archive_row.dart';
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
@@ -29,8 +28,6 @@ void main() {
         kind: RootKind.folder,
         localRootPath: '/on-device/notes',
         remoteRootPath: '~/notes',
-        localRootLabel: PathLabel.of('/on-device/notes'),
-        remoteRootLabel: PathLabel.of('~/notes'),
         localRootRefusal: null,
       ),
     ],
@@ -66,17 +63,17 @@ void main() {
   test('a log with no readable header still names its device', () {
     final row = ArchiveRow.render(archive(), profile: profile());
 
-    expect(row.location, contains('no readable header'));
+    expect(row.rootPath, isNull);
     expect(row.peerLine, 'syncs with desktop');
   });
 
-  test('a readable root is elided, and the size rendered both ways', () {
+  test('a readable root is carried whole, and the size rendered both ways', () {
     final row = ArchiveRow.render(
       archive(rootPath: '/on-device/notes'),
       profile: profile(),
     );
 
-    expect(row.location, '/on-device/notes');
+    expect(row.rootPath, '/on-device/notes');
     expect(row.sizeBytes, 4404019);
     expect(row.lastWritten, '2026-09-15');
   });

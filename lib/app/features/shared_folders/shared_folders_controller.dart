@@ -174,7 +174,7 @@ class SharedFoldersController {
   bool _isLastShare(String rootPath) {
     var holders = 0;
     for (final row in app.state.devices) {
-      if (row.agreedRootLabels.containsKey(rootPath)) holders++;
+      if (row.agreedRoots.contains(rootPath)) holders++;
     }
     return holders == 1;
   }

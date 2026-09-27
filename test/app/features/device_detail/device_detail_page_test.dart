@@ -7,7 +7,6 @@ import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
 import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
@@ -16,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
+import '../../support/path_text.dart';
 import '../../support/pump_until.dart';
 import '../../../support/fake_folder_picker.dart';
 
@@ -57,7 +57,7 @@ void main() {
     deviceId: phone.deviceId,
     address: '10.0.0.7:28771',
     pairedAt: DateTime(2026, 9, 15),
-    agreedRootLabels: {for (final root in agreedRoots) root: elidePath(root)},
+    agreedRoots: agreedRoots,
     certificateIssuedAt: DateTime(2026, 1, 15),
     certificateExpiresAt: DateTime(2027, 1, 15),
     certificateWarning: certificateWarning,
@@ -165,10 +165,26 @@ void main() {
     await scrollTo(tester, const Key('device-root-$long'));
 
     // The row is keyed by the stored path — what a withdrawal is addressed
-    // by — but reads as the elided label, which keeps the leaf.
-    expect(find.text(long), findsNothing);
-    expect(find.text(elidePath(long)), findsOneWidget);
-    expect(find.textContaining('notes'), findsWidgets);
+    // by — and, too wide for the row, reads as a label cut from the middle,
+    // which keeps the leaf; hovering it shows the whole path.
+    final shown = shownPath(tester, long);
+    expect(shown, isNot(long));
+    expect(shown, startsWith('/…/'));
+    expect(shown, endsWith('/files/notes'));
+    expect(find.byTooltip(long), findsOneWidget);
+  });
+
+  testWidgets('withdrawing a long folder names it in full in the dialog, '
+      'whatever the row had room for', (tester) async {
+    const long = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
+    app.state.recordDevices([
+      row(agreedRoots: const [long]),
+    ]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-withdraw-$long'));
+
+    expect(find.text('Stop sharing $long?'), findsOneWidget);
   });
 
   testWidgets('a device with no grants says so, rather than showing nothing', (

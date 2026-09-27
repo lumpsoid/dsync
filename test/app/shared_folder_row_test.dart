@@ -1,4 +1,3 @@
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/shared_folder_row.dart';
 import 'package:test/test.dart';
@@ -12,7 +11,7 @@ void main() {
     deviceId: 'id-$name',
     address: '10.0.0.7:28771',
     pairedAt: DateTime.utc(2026, 9, 15),
-    agreedRootLabels: {for (final root in roots) root: elidePath(root)},
+    agreedRoots: roots,
     certificateIssuedAt: DateTime.utc(2026, 1, 1),
     certificateExpiresAt: DateTime.utc(2027, 1, 1),
     certificateWarning: null,
@@ -75,15 +74,13 @@ void main() {
     expect(two.note, isNull);
   });
 
-  test('the label is elided and the path beside it is not', () {
+  test('the path is carried whole; shortening it is the page width\'s', () {
     const long = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
     final row = SharedFolderRow.renderAll([
       device('desktop', [long]),
     ]).single;
 
     expect(row.rootPath, long);
-    expect(row.label, elidePath(long));
-    expect(row.label, isNot(long));
   });
 
   test('no devices means no folders, rather than an empty-named one', () {

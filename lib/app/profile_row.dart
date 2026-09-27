@@ -1,7 +1,6 @@
 import 'core_link/models/entry_view.dart';
 import 'core_link/models/profile_entry.dart';
 import 'core_link/models/root_kind.dart';
-import 'format_path.dart';
 import 'profile_breakage.dart';
 
 /// One saved profile as the head's home list displays it: every field is
@@ -90,12 +89,6 @@ class ProfileRow {
 
   /// The first entry's side `b`, unexpanded.
   String get remoteRootPath => entries.first.remoteRootPath;
-
-  /// [localRootPath] as the row prints it.
-  PathLabel get localRootLabel => entries.first.localRootLabel;
-
-  /// [remoteRootPath] as the row prints it.
-  PathLabel get remoteRootLabel => entries.first.remoteRootLabel;
 }
 
 /// One entry of a [ProfileRow], already rendered: both its sides, and
@@ -106,8 +99,6 @@ class ProfileEntryRow {
     required this.kind,
     required this.localRootPath,
     required this.remoteRootPath,
-    required this.localRootLabel,
-    required this.remoteRootLabel,
     required this.localRootRefusal,
   });
 
@@ -116,8 +107,6 @@ class ProfileEntryRow {
     kind: entry.kind,
     localRootPath: entry.localRoot,
     remoteRootPath: entry.remoteRoot,
-    localRootLabel: PathLabel.of(entry.localRoot),
-    remoteRootLabel: PathLabel.of(entry.remoteRoot),
     localRootRefusal: entry.localRootRefusal,
   );
 
@@ -125,8 +114,6 @@ class ProfileEntryRow {
   final RootKind kind;
   final String localRootPath;
   final String remoteRootPath;
-  final PathLabel localRootLabel;
-  final PathLabel remoteRootLabel;
 
   /// Why this entry's local root cannot be a replica root now, or `null`
   /// while it can.

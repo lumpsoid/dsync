@@ -21,6 +21,7 @@ import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
+import '../../support/path_text.dart';
 
 /// Rendering tests for the Run setup page, driven the way the scope
 /// contract in `app_scope.dart` intends: the controllers are pinned with
@@ -352,8 +353,31 @@ void main() {
     );
 
     expect(picker.pickCount, 1);
-    expect(find.text(picked), findsOneWidget);
+    expect(pathText(picked), findsOneWidget);
     expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('a chosen folder too long for its field is cut from the '
+      'middle, never at its end, and hovering it shows the whole path', (
+    tester,
+  ) async {
+    final picked =
+        '${tempDir.path}/${'a-rather-long-folder-name/' * 3}camera-roll';
+    Directory(picked).createSync(recursive: true);
+    picker.onPick = () => picked;
+    await pumpLoaded(tester);
+
+    await pickFolder(
+      tester,
+      until: () => controller.state.entries[0].localRoot == picked,
+      what: 'the picked folder to become the local root',
+    );
+
+    final shown = shownPath(tester, picked);
+    expect(shown, isNot(picked));
+    expect(shown, startsWith('/…/'));
+    expect(shown, endsWith('/camera-roll'));
+    expect(find.byTooltip(picked), findsOneWidget);
   });
 
   testWidgets('a folder the head cannot use is a snackbar with a way to fix '
@@ -473,7 +497,7 @@ void main() {
       });
       await tester.pump(const Duration(seconds: 1));
 
-      expect(find.text(refused), findsOneWidget);
+      expect(pathText(refused), findsOneWidget);
       expect(find.text('No folder chosen'), findsNothing);
       expect(find.byType(SnackBar), findsNothing);
       expect(picker.pickCount, 1);
@@ -575,7 +599,7 @@ void main() {
       await tester.pump();
 
       expect(checks(), before, reason: 'the refused folder was replaced');
-      expect(find.text(other), findsOneWidget);
+      expect(pathText(other), findsOneWidget);
     });
   });
 
@@ -740,7 +764,7 @@ void main() {
       until: () => controller.state.entries[0].localRoot == picked,
       what: 'the picked folder to become the local root',
     );
-    expect(find.text(picked), findsOneWidget);
+    expect(pathText(picked), findsOneWidget);
 
     await tester.enterText(
       find.byKey(const Key('run-setup-remote-root')),
@@ -874,7 +898,7 @@ void main() {
         expect(picker.pickFileCount, 1);
         expect(picker.pickCount, 0);
         expect(controller.state.entries[0].kind, RootKind.file);
-        expect(find.text('/home/me/notes/todo.txt'), findsOneWidget);
+        expect(pathText('/home/me/notes/todo.txt'), findsOneWidget);
         // No browser was pushed over the form.
         expect(find.byType(FileChooserPage), findsNothing);
       });
@@ -921,7 +945,7 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(picker.pickFileCount, 0);
-        expect(find.text('/home/me/notes/todo.txt'), findsOneWidget);
+        expect(pathText('/home/me/notes/todo.txt'), findsOneWidget);
       });
     });
 

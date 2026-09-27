@@ -40,13 +40,13 @@ void main() {
   tearDown(serveScope.reset);
   tearDown(() => app.dispose());
 
-  PairedDeviceRow row(String name, {Map<String, String> roots = const {}}) =>
+  PairedDeviceRow row(String name, {List<String> roots = const []}) =>
       PairedDeviceRow(
         name: name,
         deviceId: 'aaaa:bbbb',
         address: '10.0.0.7:28771',
         pairedAt: DateTime.utc(2026, 9, 15),
-        agreedRootLabels: roots,
+        agreedRoots: roots,
         certificateIssuedAt: DateTime.utc(2026, 1, 1),
         certificateExpiresAt: DateTime.utc(2027, 1, 1),
         certificateWarning: null,
@@ -139,7 +139,7 @@ void main() {
     tester,
   ) async {
     app.state.recordDevices([
-      row('desktop', roots: const {'/home/me/notes': 'notes'}),
+      row('desktop', roots: const ['/home/me/notes']),
     ]);
     await pumpPage(tester);
 

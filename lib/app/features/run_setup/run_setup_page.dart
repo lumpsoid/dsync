@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core_link/models/root_kind.dart';
 import '../../keyboard_first.dart';
+import '../../path_text.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import '../../run_request.dart';
@@ -721,17 +722,24 @@ class _EntrySection extends StatelessWidget {
                   labelText: isFolder ? 'Folder' : 'File',
                   errorText: entry.localFolderError,
                 ),
-                child: Text(
-                  key: Key(_localKey),
-                  entry.localRoot ??
-                      (isFolder ? 'No folder chosen' : 'No file chosen'),
-                  overflow: TextOverflow.ellipsis,
-                  style: entry.localRoot == null
-                      ? TextStyle(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        )
-                      : null,
-                ),
+                // Shortened from the middle to the field's width, never cut
+                // at its end: the leaf is the folder the user just chose.
+                child: switch (entry.localRoot) {
+                  final path? => PathText(
+                    key: Key(_localKey),
+                    path,
+                    style: null,
+                    leafStyle: null,
+                  ),
+                  null => Text(
+                    key: Key(_localKey),
+                    isFolder ? 'No folder chosen' : 'No file chosen',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                },
               ),
             ),
             const SizedBox(width: 8),

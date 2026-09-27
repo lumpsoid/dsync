@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../destructive_confirm_dialog.dart';
-import '../../format_path.dart';
+import '../../path_text.dart';
 import '../../profile_breakage.dart';
 import '../../profile_row.dart';
 import '../../readable_width.dart';
@@ -322,12 +322,12 @@ class _ProfileTile extends StatelessWidget {
               // as it always has: no numbering, one pair of blocks.
               for (final (index, entry) in _shown(row.entries).indexed) ...[
                 if (index > 0) const SizedBox(height: 8),
-                _PairSide(label: 'On this device', path: entry.localRootLabel),
+                _PairSide(label: 'On this device', path: entry.localRootPath),
                 const SizedBox(height: 8),
                 _PairSide(
                   label:
                       'On ${row.peerName ?? 'unpaired device ${row.peerDeviceId}'}',
-                  path: entry.remoteRootLabel,
+                  path: entry.remoteRootPath,
                 ),
               ],
               if (row.entries.length > 2) ...[
@@ -392,23 +392,21 @@ List<ProfileEntryRow> _shown(List<ProfileEntryRow> entries) =>
 
 /// One side of the pair: where it is, and the folder it is.
 ///
-/// The path is drawn in two weights out of [PathLabel] — the parent quiet,
-/// the leaf in the body colour and bolder. Every folder on a device shares
-/// a long prefix, so printed at one weight the shared part is what the eye
-/// lands on and the leaf, the only part that tells two saved runs apart, is
-/// what it has to hunt for. Two weights put the distinguishing part first
-/// in reading order without moving it in the path.
+/// The path is drawn in two weights — the parent quiet, the leaf in the
+/// body colour and bolder ([PathText.leafStyle]). Every folder on a device
+/// shares a long prefix, so printed at one weight the shared part is what
+/// the eye lands on and the leaf, the only part that tells two saved runs
+/// apart, is what it has to hunt for. Two weights put the distinguishing
+/// part first in reading order without moving it in the path.
 ///
-/// One `Text.rich`, not two `Text`s in a `Row`: the pair is one path and
-/// wants one text layout, so the line breaks where a path line should and
-/// the parent's elision stays the character-budget one `PathLabel` already
-/// applied, with `ellipsis` as the backstop for the width a character count
-/// cannot know about.
+/// Shortened to the row's width by [PathText], the full path on hover: a
+/// row is a click target in a listing outside any `SelectionArea`, so the
+/// tooltip is how the whole path is read here.
 class _PairSide extends StatelessWidget {
   const _PairSide({required this.label, required this.path});
 
   final String label;
-  final PathLabel path;
+  final String path;
 
   @override
   Widget build(BuildContext context) {
@@ -423,22 +421,15 @@ class _PairSide extends StatelessWidget {
           ),
           overflow: TextOverflow.ellipsis,
         ),
-        Text.rich(
-          TextSpan(
-            children: [
-              TextSpan(
-                text: path.parent,
-                style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
-              ),
-              TextSpan(
-                text: path.leaf,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ],
-            style: theme.textTheme.bodyMedium,
+        PathText(
+          path,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
           ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+          leafStyle: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: theme.textTheme.bodyMedium?.color,
+          ),
         ),
       ],
     );

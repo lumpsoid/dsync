@@ -43,6 +43,73 @@ void main() {
     expect(elidePath(''), '');
   });
 
+  test('a budget narrower than the root marker keeps a short leaf whole', () {
+    // Positive control for the guard: this used to throw a RangeError.
+    expect(elidePath('/x/ab', maxLength: 3), 'ab');
+    expect(elidePath('/x/ab', maxLength: 1), 'b');
+  });
+
+  group('elidePathToFit', () {
+    // A stand-in for a text layout: a label "fits" when it is at most
+    // [width] characters, and every call is counted.
+    ({bool Function(String) fits, List<String> asked}) within(int width) {
+      final asked = <String>[];
+      return (
+        fits: (label) {
+          asked.add(label);
+          return label.length <= width;
+        },
+        asked: asked,
+      );
+    }
+
+    const path = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
+
+    test('a path with room for all of it is shown whole, asked once', () {
+      final probe = within(path.length);
+
+      expect(elidePathToFit(path, probe.fits), path);
+      expect(probe.asked, [path]);
+    });
+
+    test('a path without room is the widest elided label that fits', () {
+      final probe = within(20);
+      final label = elidePathToFit(path, probe.fits);
+
+      expect(label, '/…/files/notes');
+      // Widest: one more segment would not have fitted.
+      expect('/…/dev.dsync/files/notes'.length, greaterThan(20));
+    });
+
+    test('the label tracks the room, not a fixed budget', () {
+      expect(
+        elidePathToFit(path, within(30).fits),
+        '/…/data/dev.dsync/files/notes',
+      );
+      expect(elidePathToFit(path, within(10).fits), '/…/notes');
+    });
+
+    test('a leaf wider than the room keeps its end', () {
+      expect(elidePathToFit(path, within(6).fits), '/…/tes');
+    });
+
+    test('the search asks about log2 of the length, not every budget', () {
+      final probe = within(20);
+      elidePathToFit(path, probe.fits);
+
+      // One whole-path check, then a binary search over 0..length.
+      expect(probe.asked.length, lessThanOrEqualTo(1 + 7));
+    });
+
+    test('no room at all is an empty label', () {
+      expect(elidePathToFit(path, within(0).fits), '');
+    });
+
+    test('an empty path is empty', () {
+      expect(elidePathToFit('', within(0).fits), '');
+    });
+  });
+
   group('PathLabel', () {
     test('stacked: a long leaf leaves the parent its own whole budget', () {
       const leaf =

@@ -16,13 +16,11 @@
 /// long to fit is the one case that must be cut mid-word, and it is cut
 /// from its left, again to keep the end.
 ///
-/// Known limitation: [maxLength] counts characters, not measured width, so
-/// this is not the same elision a text painter would do — a wide font or a
-/// narrow screen can still overflow, which is why callers keep
-/// `TextOverflow.ellipsis` on as a backstop. Measuring needs a `TextPainter`
-/// and therefore a widget test with a pumped frame; counting is a pure rule
-/// testable with plain strings, and this project values that more (CLAUDE.md,
-/// "Testable").
+/// [maxLength] counts characters, not measured width. A label on screen is
+/// shortened by [elidePathToFit], which searches this function's budgets
+/// against the width the label actually has; a character count on its own
+/// is what the Run review's stacked parent line still uses
+/// ([PathLabel.stacked]).
 String elidePath(String path, {int maxLength = defaultPathLabelLength}) {
   if (path.length <= maxLength) return path;
   final marker = path.startsWith('~/')
@@ -47,8 +45,51 @@ String elidePath(String path, {int maxLength = defaultPathLabelLength}) {
   // Not even the last segment fits beside the marker: keep its end.
   final last = segments.isEmpty ? path : segments.last;
   final budget = maxLength - head.length;
-  if (budget <= 0) return last.substring(last.length - maxLength);
+  // Too narrow for the marker: the leaf's end alone, or the whole leaf when
+  // it is shorter than the budget (the marker is what did not fit).
+  if (budget <= 0) {
+    return last.length <= maxLength
+        ? last
+        : last.substring(last.length - maxLength);
+  }
   return '$head${last.substring(last.length - budget)}';
+}
+
+/// The longest form of [path] that [fits] accepts: [path] itself when it
+/// fits whole, otherwise [elidePath] at the widest character budget whose
+/// label still fits.
+///
+/// **Shortened only when the room requires it.** A fixed budget cuts a path
+/// on a wide window that had space for all of it and still overflows a
+/// narrow one; asking [fits] — in the app, "does this lay out in the width
+/// the label has" (`PathText`) — cuts exactly as much as the space takes.
+/// The elision itself stays [elidePath]'s, so a measured label keeps the
+/// same shape as every other: the root marker, whole segments dropped from
+/// the middle, and the leaf kept for as long as any of it can be.
+///
+/// **A binary search over the budget**, so a label costs about log₂ of its
+/// length in [fits] calls rather than one per character — a measured call
+/// is a text layout, and a list builds a label per row it scrolls in. The
+/// search relies on [elidePath] growing with its budget (a wider budget
+/// never yields a shorter label), which holds by construction: every extra
+/// character either lengthens the cut leaf or admits one more segment.
+///
+/// When not even a one-character budget fits, the answer is the empty
+/// string: there is no honest shorter path to draw.
+String elidePathToFit(String path, bool Function(String label) fits) {
+  if (fits(path)) return path;
+  // [fitting] fits (or is the empty budget); [tooWide] does not.
+  var fitting = 0;
+  var tooWide = path.length;
+  while (tooWide - fitting > 1) {
+    final budget = (fitting + tooWide) ~/ 2;
+    if (fits(elidePath(path, maxLength: budget))) {
+      fitting = budget;
+    } else {
+      tooWide = budget;
+    }
+  }
+  return elidePath(path, maxLength: fitting);
 }
 
 /// How long a path label may be before [elidePath] takes its middle out.

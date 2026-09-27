@@ -7,6 +7,7 @@ import '../../destructive_confirm_dialog.dart';
 import '../../format_bytes.dart';
 import '../../format_count.dart';
 import '../../format_path.dart';
+import '../../path_text.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import '../../run_request.dart';
@@ -667,11 +668,76 @@ class _ApplyProgress extends StatelessWidget {
   }
 }
 
+/// One of the header's roots: its [label], then the path in whatever
+/// width the label leaves — shortened only when that width requires it.
+class _RootLine extends StatelessWidget {
+  const _RootLine({required this.label, required this.path});
+
+  final String label;
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Text(label),
+        Flexible(child: PathText(path, style: null, leafStyle: null)),
+      ],
+    );
+  }
+}
+
+/// An entry's two roots on one line, `local ⇄ remote`, each whole when the
+/// line holds both. When it does not, the line is shared by
+/// [sharePathWidths] — a short side keeps all of itself and the long side
+/// gets the rest — and each side is middle-elided by its [PathText] into
+/// its share.
+class _RootPair extends StatelessWidget {
+  const _RootPair({
+    required this.local,
+    required this.remote,
+    required this.style,
+  });
+
+  final String local;
+  final String remote;
+  final TextStyle? style;
+
+  static const _arrow = ' ⇄ ';
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final arrow = PathText.wholeWidth(context, _arrow, style: style);
+        final widths = sharePathWidths(
+          (constraints.maxWidth - arrow).clamp(0, double.infinity),
+          first: PathText.wholeWidth(context, local, style: style),
+          second: PathText.wholeWidth(context, remote, style: style),
+        );
+        return Row(
+          children: [
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: widths.first),
+              child: PathText(local, style: style, leafStyle: null),
+            ),
+            Text(_arrow, style: style),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: widths.second),
+              child: PathText(remote, style: style, leafStyle: null),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 /// The header card (Design C.1): `This device ⇄ <device>`, then the two
-/// roots — each middle-elided by [elidePath] rather than tail-clipped, so
-/// the leaf that tells two saved runs apart survives a long Android path
-/// — then the last-synced line and, if either side has no archive, the
-/// first-sync warning.
+/// roots — each a [PathText], whole when the card has room and otherwise
+/// middle-elided rather than tail-clipped, so the leaf that tells two
+/// saved runs apart survives a long Android path — then the last-synced
+/// line and, if either side has no archive, the first-sync warning.
 class _Header extends StatelessWidget {
   const _Header(this.header);
 
@@ -689,8 +755,8 @@ class _Header extends StatelessWidget {
             'This device ⇄ Remote',
             style: Theme.of(context).textTheme.titleMedium,
           ),
-          Text('This device: ${elidePath(header.localRoot)}'),
-          Text('Remote: ${elidePath(header.remoteRoot)}'),
+          _RootLine(label: 'This device: ', path: header.localRoot),
+          _RootLine(label: 'Remote: ', path: header.remoteRoot),
           const SizedBox(height: 4),
           Text(header.history),
           if (header.firstSyncWarning case final warning?)
@@ -798,8 +864,9 @@ class _EntryRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '${elidePath(entry.localRoot)} ⇄ ${elidePath(entry.remoteRoot)}',
+                _RootPair(
+                  local: entry.localRoot,
+                  remote: entry.remoteRoot,
                   style: isCurrent
                       ? theme.textTheme.bodyMedium?.copyWith(
                           fontWeight: FontWeight.bold,
@@ -1257,7 +1324,10 @@ class _DeletesBar extends StatelessWidget {
                     '${formatCount(side.deletes)} of the '
                     '${formatCount(side.archived)} files on ${side.where}'
                     '${switch (side.root) {
-                      final root? => ' (${elidePath(root)})',
+                      // In full: this is the line that asks the user to
+                      // check which folder is about to be emptied, and it
+                      // wraps.
+                      final root? => ' ($root)',
                       null => '',
                     }} would be deleted.',
                   ),

@@ -156,7 +156,8 @@ class _NewFileDialogState extends State<_NewFileDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('In ${widget.folder}', overflow: TextOverflow.ellipsis),
+          // In full: the dialog is about this folder, and it wraps.
+          Text('In ${widget.folder}'),
           const SizedBox(height: 8),
           TextField(
             key: const Key('new-file-name'),

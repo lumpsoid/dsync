@@ -30,13 +30,16 @@ import 'destructive_confirm_dialog.dart';
 class WithdrawRootDialog extends StatelessWidget {
   const WithdrawRootDialog({
     super.key,
-    required this.rootLabel,
+    required this.rootPath,
     required this.deviceName,
   });
 
-  /// The folder as the row above showed it — the elided label, not the
-  /// stored path, so the dialog names the same thing the user tapped.
-  final String rootLabel;
+  /// The folder, as stored — in full, never the label the row above may
+  /// have shortened to its width. The dialog is the one place the user
+  /// stops to check *which* folder, and the rows it is asked from differ
+  /// only where a shortened label takes its cut. The title wraps, so the
+  /// whole path is read here however long it is.
+  final String rootPath;
 
   /// This host's own name for the device losing the grant.
   final String deviceName;
@@ -44,7 +47,7 @@ class WithdrawRootDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DestructiveConfirmDialog(
-      title: 'Stop sharing $rootLabel?',
+      title: 'Stop sharing $rootPath?',
       message:
           '$deviceName will no longer be allowed to reach this folder. The '
           'next time it asks for it, this device refuses.\n\n'

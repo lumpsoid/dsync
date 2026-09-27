@@ -4,7 +4,6 @@ import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -63,8 +62,6 @@ void main() {
     kind: RootKind.folder,
     localRootPath: '/on-device/notes',
     remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of('/on-device/notes'),
-    remoteRootLabel: PathLabel.of('~/notes'),
     localRootRefusal: null,
   );
 

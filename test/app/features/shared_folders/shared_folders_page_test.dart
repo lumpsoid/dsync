@@ -7,7 +7,6 @@ import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart
 import 'package:dsync/app/features/shared_folders/shared_folders_page.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_scope.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_view_state.dart';
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
@@ -16,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
+import '../../support/path_text.dart';
 import '../../support/pump_until.dart';
 
 /// The Shared folders page as a rendering test: devices are pushed into
@@ -75,7 +75,7 @@ void main() {
     deviceId: device.deviceId,
     address: '10.0.0.7:28771',
     pairedAt: DateTime(2026, 9, 15),
-    agreedRootLabels: {for (final root in agreedRoots) root: elidePath(root)},
+    agreedRoots: agreedRoots,
     certificateIssuedAt: DateTime(2026, 1, 1),
     certificateExpiresAt: DateTime(2027, 1, 1),
     certificateWarning: null,
@@ -118,9 +118,8 @@ void main() {
     expect(find.text('laptop'), findsOneWidget);
   });
 
-  testWidgets('a long folder keeps its end, not its shared prefix', (
-    tester,
-  ) async {
+  testWidgets('a long folder too wide for its row keeps its end, not its '
+      'shared prefix, and hovering it shows the whole path', (tester) async {
     const long = '/storage/emulated/0/Android/data/dev.dsync/files/notes';
     app.state.recordDevices([
       row(desktop, agreedRoots: const [long]),
@@ -129,8 +128,11 @@ void main() {
 
     await pumpPage(tester);
 
-    expect(find.text(long), findsNothing);
-    expect(find.text(elidePath(long)), findsOneWidget);
+    final shown = shownPath(tester, long);
+    expect(shown, isNot(long));
+    expect(shown, startsWith('/…/'));
+    expect(shown, endsWith('/files/notes'));
+    expect(find.byTooltip(long), findsOneWidget);
   });
 
   testWidgets('copying a folder gives the stored path, not the label', (

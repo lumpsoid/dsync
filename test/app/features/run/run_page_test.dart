@@ -1,6 +1,5 @@
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_review_cursor.dart';
@@ -19,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 import '../../support/fake_hub.dart';
+import '../../support/path_text.dart';
 import 'run_fixtures.dart' hide pump;
 
 /// Rendering tests for the Run page, driven the way the scope contract in
@@ -511,8 +511,11 @@ void main() {
 
     expect(find.byKey(const Key('run-header')), findsOneWidget);
     expect(find.text('This device ⇄ Remote'), findsOneWidget);
-    expect(find.text('This device: /data/notes'), findsOneWidget);
-    expect(find.text('Remote: ~/notes'), findsOneWidget);
+    // Each root is its label, then the path in the width the label leaves.
+    expect(inHeader('This device: '), findsOneWidget);
+    expect(inHeader('/data/notes'), findsOneWidget);
+    expect(inHeader('Remote: '), findsOneWidget);
+    expect(inHeader('~/notes'), findsOneWidget);
     expect(find.text('First sync of this pair.'), findsOneWidget);
     expect(find.text(firstSyncWarning), findsOneWidget);
     expect(find.textContaining('wiped'), findsNothing);
@@ -824,14 +827,14 @@ void main() {
 
       expect(
         find.text(
-          '12 of the 12 files on this device (${elidePath('/data/notes')}) '
+          '12 of the 12 files on this device (/data/notes) '
           'would be deleted.',
         ),
         findsOneWidget,
       );
       expect(
         find.text(
-          '40 of the 50 files on the remote (${elidePath('~/notes')}) '
+          '40 of the 50 files on the remote (~/notes) '
           'would be deleted.',
         ),
         findsOneWidget,
@@ -912,7 +915,8 @@ void main() {
     });
   });
 
-  testWidgets('a long root is middle-elided, never shown raw', (tester) async {
+  testWidgets('a long root too wide for the header is middle-elided, and '
+      'hovering it shows the whole path', (tester) async {
     const longRoot =
         '/storage/emulated/0/Android/data/com.example.app/files/notes/'
         'deeply/nested/folder';
@@ -930,8 +934,19 @@ void main() {
       ),
     );
 
-    expect(find.text('This device: $longRoot'), findsNothing);
-    expect(find.text('This device: ${elidePath(longRoot)}'), findsOneWidget);
+    // 80 characters of the test font do not fit the header's width: the
+    // label is cut from the middle, keeping the root marker and the leaf.
+    final shown = shownPath(tester, longRoot);
+    expect(shown, isNot(longRoot));
+    expect(shown, startsWith('/…/'));
+    expect(shown, endsWith('/nested/folder'));
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('run-header')),
+        matching: find.byTooltip(longRoot),
+      ),
+      findsOneWidget,
+    );
   });
 
   group('the plan list is built on demand', () {
@@ -1358,6 +1373,50 @@ void main() {
     expect(find.byKey(const Key('run-resume')), findsOneWidget);
     expect(find.byKey(const Key('run-done')), findsOneWidget);
     expect(find.byKey(const Key('run-stop')), findsNothing);
+  });
+
+  testWidgets('an entry whose roots do not both fit keeps the short side '
+      'whole and cuts the long one from the middle', (tester) async {
+    const longRemote =
+        '~/storage/emulated/0/Android/data/com.example.app/files/notes/'
+        'deeply/nested/folder';
+    await open(
+      tester,
+      runView(
+        standing: resumable,
+        phase: finishedWithIssues(0, 'the folder /data/gone is missing'),
+        entries: [
+          entryRun(
+            local: '/data/gone',
+            remote: longRemote,
+            status: const wire.EntryStatusViewSkipped(
+              reason: 'the folder /data/gone is missing',
+            ),
+          ),
+          entryRun(status: const wire.EntryStatusViewSynced()),
+        ],
+        current: 1,
+      ),
+    );
+
+    final entry = find.byKey(const Key('run-entry-0'));
+    expect(
+      find.descendant(of: entry, matching: find.text('/data/gone')),
+      findsOneWidget,
+    );
+    final remote = tester.widget<Text>(
+      find.descendant(
+        of: find.descendant(of: entry, matching: pathText(longRemote)),
+        matching: find.byType(Text),
+      ),
+    );
+    expect(remote.data, isNot(longRemote));
+    expect(remote.data, startsWith('~/…/'));
+    expect(remote.data, endsWith('/nested/folder'));
+    expect(
+      find.descendant(of: entry, matching: find.byTooltip(longRemote)),
+      findsOneWidget,
+    );
   });
 
   testWidgets('failed: the message and Done', (tester) async {
@@ -2124,7 +2183,7 @@ void main() {
       expect(find.byKey(const Key('run-deletes-bar')), findsOneWidget);
       expect(
         find.text(
-          '40 of the 50 files on the remote (${elidePath('~/notes')}) '
+          '40 of the 50 files on the remote (~/notes) '
           'would be deleted.',
         ),
         findsOneWidget,
@@ -2662,3 +2721,9 @@ void main() {
     });
   });
 }
+
+/// [text] drawn inside the run header card.
+Finder inHeader(String text) => find.descendant(
+  of: find.byKey(const Key('run-header')),
+  matching: find.text(text),
+);

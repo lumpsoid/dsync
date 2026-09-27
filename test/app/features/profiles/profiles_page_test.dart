@@ -7,7 +7,6 @@ import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/profile_breakage.dart';
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/material.dart';
@@ -83,8 +82,6 @@ void main() {
     kind: RootKind.folder,
     localRootPath: localRootPath,
     remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of(localRootPath),
-    remoteRootLabel: PathLabel.of('~/notes'),
     localRootRefusal: null,
   );
 
@@ -257,8 +254,6 @@ void main() {
             kind: RootKind.folder,
             localRootPath: '/on-device/second',
             remoteRootPath: '~/second',
-            localRootLabel: PathLabel.of('/on-device/second'),
-            remoteRootLabel: PathLabel.of('~/second'),
             localRootRefusal: null,
           ),
           entry('p3'),
@@ -406,8 +401,6 @@ void main() {
             kind: RootKind.folder,
             localRootPath: '/on-device/gone',
             remoteRootPath: '~/notes3',
-            localRootLabel: PathLabel.of('/on-device/gone'),
-            remoteRootLabel: PathLabel.of('~/notes3'),
             localRootRefusal: 'gone',
           ),
         ],

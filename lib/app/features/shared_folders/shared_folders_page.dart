@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../copy_value_button.dart';
+import '../../path_text.dart';
 import '../../readable_width.dart';
 import '../../shared_folder_row.dart';
 import '../../withdraw_root_dialog.dart';
@@ -159,7 +160,7 @@ class _FolderSection extends StatelessWidget {
         ListTile(
           key: Key('shared-folder-${folder.rootPath}'),
           leading: const Icon(Icons.folder_shared_outlined),
-          title: Text(folder.label, overflow: TextOverflow.ellipsis),
+          title: PathText(folder.rootPath, style: null, leafStyle: null),
           subtitle: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -169,12 +170,11 @@ class _FolderSection extends StatelessWidget {
             ],
           ),
           isThreeLine: note != null,
-          // The stored path, not the elided label: the label is what fits
-          // on a phone row, and what a person pastes into a shell or into
-          // the other host's add-folder field has to be the path the store
-          // holds byte for byte. Reading a long path off a screen and
-          // retyping it is the one way to make two hosts disagree about
-          // which folder was shared.
+          // The stored path, whatever the title had room for: what a person
+          // pastes into a shell or into the other host's add-folder field
+          // has to be the path the store holds byte for byte. Reading a
+          // long path off a screen and retyping it is the one way to make
+          // two hosts disagree about which folder was shared.
           trailing: CopyValueButton(
             key: Key('shared-folder-copy-${folder.rootPath}'),
             value: folder.rootPath,
@@ -212,8 +212,10 @@ class _FolderSection extends StatelessWidget {
     }
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) =>
-          WithdrawRootDialog(rootLabel: folder.label, deviceName: device.name),
+      builder: (context) => WithdrawRootDialog(
+        rootPath: folder.rootPath,
+        deviceName: device.name,
+      ),
     );
     if (confirmed ?? false) {
       await controller.withdraw(device.deviceId, folder.rootPath);

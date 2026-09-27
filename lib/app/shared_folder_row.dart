@@ -1,4 +1,3 @@
-import 'format_path.dart';
 import 'paired_device_row.dart';
 
 /// One folder this host serves, and every paired device's standing against
@@ -23,7 +22,6 @@ import 'paired_device_row.dart';
 class SharedFolderRow {
   const SharedFolderRow({
     required this.rootPath,
-    required this.label,
     required this.devices,
     required this.reachSummary,
     required this.note,
@@ -31,13 +29,10 @@ class SharedFolderRow {
 
   /// The stored path, byte for byte as it sits in every device's root set —
   /// what a grant or a withdrawal is addressed by, and what a `hello`
-  /// handler compares a requested root against. Never elided.
+  /// handler compares a requested root against. Never elided here: a page
+  /// draws it through `PathText`, which shortens it to the room its row
+  /// has.
   final String rootPath;
-
-  /// [rootPath] as a one-line label, middle-elided by [elidePath]: folders
-  /// on one host share a long prefix, so the end is what tells two rows
-  /// apart.
-  final String label;
 
   /// Every paired device, each carrying whether this folder is granted to
   /// it. The whole list rather than only the devices that may reach it,
@@ -67,19 +62,17 @@ class SharedFolderRow {
   /// off toggle on every row, which is what makes this page a way of
   /// granting rather than only a way of reviewing.
   static List<SharedFolderRow> renderAll(List<PairedDeviceRow> rows) {
-    final roots = <String>{
-      for (final row in rows) ...row.agreedRootLabels.keys,
-    }.toList()..sort();
+    final roots = <String>{for (final row in rows) ...row.agreedRoots}.toList()
+      ..sort();
     final folders = <SharedFolderRow>[];
     for (final root in roots) {
       final names = [
         for (final row in rows)
-          if (row.agreedRootLabels.containsKey(root)) row.name,
+          if (row.agreedRoots.contains(root)) row.name,
       ];
       folders.add(
         SharedFolderRow(
           rootPath: root,
-          label: elidePath(root),
           devices: devicesOf(rows, rootPath: root),
           reachSummary: _summarize(names),
           note: _noteFor(names),
@@ -101,8 +94,7 @@ class SharedFolderRow {
         SharedFolderDevice(
           deviceId: row.deviceId,
           name: row.name,
-          isShared:
-              rootPath != null && row.agreedRootLabels.containsKey(rootPath),
+          isShared: rootPath != null && row.agreedRoots.contains(rootPath),
         ),
     ];
   }

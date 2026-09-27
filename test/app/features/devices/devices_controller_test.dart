@@ -2,7 +2,6 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
-import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
@@ -125,8 +124,6 @@ void main() {
           kind: RootKind.folder,
           localRootPath: '/on-device/notes',
           remoteRootPath: '~/notes',
-          localRootLabel: PathLabel.of('/on-device/notes'),
-          remoteRootLabel: PathLabel.of('~/notes'),
           localRootRefusal: null,
         ),
       ],
@@ -180,7 +177,7 @@ void main() {
       deviceId: deviceId,
       address: '10.0.0.7:28771',
       pairedAt: DateTime(2026, 9, 15),
-      agreedRootLabels: const {},
+      agreedRoots: const [],
       certificateIssuedAt: DateTime(2026, 1, 1),
       certificateExpiresAt: DateTime(2027, 1, 1),
       certificateWarning: null,
