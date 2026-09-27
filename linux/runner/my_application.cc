@@ -65,6 +65,11 @@ static void my_application_activate(GApplication* application) {
   gdk_rgba_parse(&background_color, "#000000");
   fl_view_set_background_color(view, &background_color);
   gtk_widget_show(GTK_WIDGET(view));
+  // The smallest the app is laid out for: a 360-wide phone column (the
+  // compact layout's design width), 600 tall so a page's app bar, a few
+  // rows and a bottom bar all fit. Asked of the view rather than the window
+  // so a header bar is added on top of it, not taken out of it.
+  gtk_widget_set_size_request(GTK_WIDGET(view), 360, 600);
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));
 
   // Show the window when Flutter renders.
