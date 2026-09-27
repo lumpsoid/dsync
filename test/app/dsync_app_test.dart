@@ -348,7 +348,7 @@ void main() {
     // controller's selection.
     expect(fieldText(tester, 'run-setup-profile-name'), 'weekly');
     expect(fieldText(tester, 'run-setup-remote-root'), '~/notes');
-    expect(runSetup.state.localRoot, localRoot.path);
+    expect(runSetup.state.entries[0].localRoot, localRoot.path);
     // The per-run choices did not come along: the address is empty and the
     // switch is off. Both live under Options, a disclosure below the
     // required pair, so it is opened before the field can be read.
@@ -434,7 +434,7 @@ void main() {
     await tester.tap(find.byKey(const Key('run-setup-pick-folder')));
     await pumpUntil(
       tester,
-      () => runSetup.state.localRoot == localRoot.path,
+      () => runSetup.state.entries[0].localRoot == localRoot.path,
       what: 'the picked folder',
     );
     await tester.pump();
@@ -475,7 +475,7 @@ void main() {
     // form it holds is the one the user left.
     expect(find.byType(RunSetupPage), findsOneWidget);
     expect(find.byType(RunPage), findsNothing);
-    expect(runSetup.state.localRoot, localRoot.path);
+    expect(runSetup.state.entries[0].localRoot, localRoot.path);
     expect(fieldText(tester, 'run-setup-remote-root'), '~/notes');
     expect(fieldText(tester, 'run-setup-address'), '10.0.0.9:4242');
 

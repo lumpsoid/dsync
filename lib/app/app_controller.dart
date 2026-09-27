@@ -211,13 +211,14 @@ class AppController {
     _recordProfiles(await core.saveProfile(name, draft));
   }
 
-  /// Points the profile [name]'s first entry at [localRootPath], keeping
-  /// the rest, and re-renders the list —
-  /// the remedy the home list offers on a row broken by a lost folder
-  /// grant. The caller has already proved the folder usable. Returns
-  /// `null` on success, or the message to show.
+  /// Points the profile [name]'s entry at [entryIndex] at [localRootPath],
+  /// keeping the rest, and re-renders the list — the remedy the home list
+  /// offers on a row broken by a lost folder grant. The caller has already
+  /// proved the folder usable. Returns `null` on success, or the message to
+  /// show.
   Future<String?> relocateProfile(
     String name, {
+    required int entryIndex,
     required String localRootPath,
   }) async {
     try {
@@ -239,7 +240,9 @@ class AppController {
               for (final (index, entry) in saved.entries.indexed)
                 EntryDraft(
                   kind: entry.kind,
-                  localRoot: index == 0 ? localRootPath : entry.localRoot,
+                  localRoot: index == entryIndex
+                      ? localRootPath
+                      : entry.localRoot,
                   remoteRoot: entry.remoteRoot,
                 ),
             ],

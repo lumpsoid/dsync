@@ -9,6 +9,7 @@ import '../../core_link/models/action_result.dart';
 import '../../core_link/models/conflict_choice.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/entry_run.dart';
+import '../../core_link/models/entry_run_status.dart';
 import '../../core_link/models/file_status.dart';
 import '../../core_link/models/plan_action.dart';
 import '../../core_link/models/plan_proposal.dart';
@@ -188,6 +189,8 @@ class SyncRunController {
       progress: null,
       appliedCount: 0,
       failedCount: 0,
+      entries: const [],
+      currentEntry: null,
     );
     _syncScreenWake(live: false);
   }
@@ -307,6 +310,16 @@ class SyncRunController {
       },
       appliedCount: view.applied,
       failedCount: view.failed,
+      entries: [
+        for (final e in view.entries)
+          SyncRunEntryRow(
+            kind: e.kind,
+            localRoot: e.localRoot,
+            remoteRoot: e.remoteRoot,
+            status: _entryStatus(e.status),
+          ),
+      ],
+      currentEntry: view.current,
     );
     timings.value = view.timings;
     _syncScreenWake(live: view.standing == RunStanding.live);
@@ -430,6 +443,16 @@ String _folder(EntryRun entry) => switch (entry.kind) {
 
 /// [entry] as an issue line names it: both its roots.
 String _entryName(EntryRun entry) => '${entry.localRoot} ⇄ ${entry.remoteRoot}';
+
+/// The core's status for one entry, in this page's words.
+SyncRunEntryStatus _entryStatus(EntryRunStatus status) => switch (status) {
+  EntryPending() => const SyncRunEntryPending(),
+  EntryRunning() => const SyncRunEntryRunning(),
+  EntrySynced() => const SyncRunEntrySynced(),
+  EntrySkipped(:final reason) => SyncRunEntrySkipped(reason),
+  EntryFailed(:final message) => SyncRunEntryFailed(message),
+  EntryNotRun() => const SyncRunEntryNotRun(),
+};
 
 const firstSyncWarning =
     'First sync: with no archive, a file present on one side only is '

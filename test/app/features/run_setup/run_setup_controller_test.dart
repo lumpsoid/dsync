@@ -55,7 +55,7 @@ void main() {
   Future<void> pickNotes() async {
     Directory(notes()).createSync(recursive: true);
     picker.onPick = notes;
-    await controller.pickLocalFolder();
+    await controller.pickLocalFolder(0);
   }
 
   Future<void> loadDesktop() =>
@@ -140,21 +140,21 @@ void main() {
       await loadDesktop();
       await pickNotes();
       controller.setDryRun(true);
-      await controller.start(remoteRoot: '', address: '', profileName: '');
-      expect(controller.state.remoteRootError, isNotNull);
+      await controller.start(remoteRoots: [''], address: '', profileName: '');
+      expect(controller.state.entries[0].remoteRootError, isNotNull);
 
       await loadDesktop();
 
-      expect(controller.state.localRoot, isNull);
-      expect(controller.state.remoteRootError, isNull);
+      expect(controller.state.entries[0].localRoot, isNull);
+      expect(controller.state.entries[0].remoteRootError, isNull);
       expect(controller.state.dryRun, isFalse);
     });
 
     test('a blank form starts with no folder: the page guesses none', () async {
       await loadDesktop();
 
-      expect(controller.state.localRoot, isNull);
-      expect(controller.state.localFolderError, isNull);
+      expect(controller.state.entries[0].localRoot, isNull);
+      expect(controller.state.entries[0].localFolderError, isNull);
     });
   });
 
@@ -168,11 +168,11 @@ void main() {
       await pickNotes();
       picker.onPick = () => null;
 
-      await controller.pickLocalFolder();
+      await controller.pickLocalFolder(0);
 
       expect(picker.pickCount, 2);
       expect(picker.requestAccessCount, 0);
-      expect(controller.state.localRoot, notes());
+      expect(controller.state.entries[0].localRoot, notes());
       expect(controller.state.folderAccessError, isNull);
     });
 
@@ -181,10 +181,10 @@ void main() {
       final picked = elsewhere('camera');
       picker.onPick = () => picked;
 
-      await controller.pickLocalFolder();
+      await controller.pickLocalFolder(0);
 
       expect(controller.state.folderAccessError, isNull);
-      expect(controller.state.localRoot, picked);
+      expect(controller.state.entries[0].localRoot, picked);
       expect(picker.requestAccessCount, 0, reason: 'the check already passed');
       expect(core.sent<wire.CoreCommandCheckFolder>(), [
         wire.CoreCommandCheckFolder(
@@ -208,13 +208,13 @@ void main() {
         ),
       );
 
-      await controller.pickLocalFolder();
+      await controller.pickLocalFolder(0);
 
       expect(controller.state.folderAccessError, contains(picked));
       expect(controller.state.folderAccessError, contains('all files'));
       expect(picker.requestAccessCount, 1);
       expect(
-        controller.state.localRoot,
+        controller.state.entries[0].localRoot,
         notes(),
         reason: 'the refusal leaves the folder that was already chosen',
       );
@@ -229,10 +229,10 @@ void main() {
         const wire.ReplyResultFolderChecked(refusal: 'refused'),
       );
 
-      await controller.pickLocalFolder();
+      await controller.pickLocalFolder(0);
 
       expect(controller.state.folderAccessError, 'refused');
-      expect(controller.state.localRoot, isNull);
+      expect(controller.state.entries[0].localRoot, isNull);
     });
 
     test(
@@ -252,12 +252,12 @@ void main() {
           return true;
         };
 
-        await controller.pickLocalFolder();
+        await controller.pickLocalFolder(0);
 
         expect(controller.state.folderAccessError, isNull);
         expect(picker.requestAccessCount, 1);
         expect(core.sent<wire.CoreCommandCheckFolder>(), hasLength(2));
-        expect(controller.state.localRoot, picked);
+        expect(controller.state.entries[0].localRoot, picked);
       },
     );
 
@@ -265,22 +265,22 @@ void main() {
       await loadDesktop();
       picker.onPick = () => throw StateError('no activity');
 
-      await controller.pickLocalFolder();
+      await controller.pickLocalFolder(0);
 
       expect(controller.state.folderAccessError, contains('no activity'));
-      expect(controller.state.localRoot, isNull);
+      expect(controller.state.entries[0].localRoot, isNull);
     });
 
     test('a second load drops the folder picked in the last visit', () async {
       await loadDesktop();
       final picked = elsewhere('camera');
       picker.onPick = () => picked;
-      await controller.pickLocalFolder();
-      expect(controller.state.localRoot, picked);
+      await controller.pickLocalFolder(0);
+      expect(controller.state.entries[0].localRoot, picked);
 
       await loadDesktop();
 
-      expect(controller.state.localRoot, isNull);
+      expect(controller.state.entries[0].localRoot, isNull);
     });
 
     test('openAccessSettings goes to the platform', () async {
@@ -305,7 +305,7 @@ void main() {
 
     Future<void> pickRefused() async {
       picker.onPick = () => refused;
-      await controller.pickLocalFolder();
+      await controller.pickLocalFolder(0);
       expect(controller.state.folderAccessError, 'no grant yet');
     }
 
@@ -319,7 +319,7 @@ void main() {
 
       expect(await controller.recheckAfterSettings(), isTrue);
 
-      expect(controller.state.localRoot, refused);
+      expect(controller.state.entries[0].localRoot, refused);
       expect(controller.state.folderAccessError, isNull);
       expect(picker.pickCount, 1, reason: 'not made to pick it again');
       expect(
@@ -346,7 +346,7 @@ void main() {
       expect(await controller.recheckAfterSettings(), isTrue);
 
       expect(controller.state.folderAccessError, 'still no grant');
-      expect(controller.state.localRoot, notes());
+      expect(controller.state.entries[0].localRoot, notes());
       final checks = core.sent<wire.CoreCommandCheckFolder>().length;
       expect(await controller.recheckAfterSettings(), isFalse);
       expect(core.sent<wire.CoreCommandCheckFolder>(), hasLength(checks));
@@ -366,7 +366,7 @@ void main() {
       expect(await controller.recheckAfterSettings(), isFalse);
 
       expect(core.sent<wire.CoreCommandCheckFolder>(), hasLength(checks));
-      expect(controller.state.localRoot, isNull);
+      expect(controller.state.entries[0].localRoot, isNull);
     });
 
     test('a folder picked after Settings was opened wins', () async {
@@ -379,7 +379,7 @@ void main() {
 
       expect(await controller.recheckAfterSettings(), isFalse);
 
-      expect(controller.state.localRoot, notes());
+      expect(controller.state.entries[0].localRoot, notes());
     });
 
     test('a folder picked while the re-check is in flight wins', () async {
@@ -396,12 +396,12 @@ void main() {
       final recheck = controller.recheckAfterSettings();
       Directory(notes()).createSync(recursive: true);
       picker.onPick = notes;
-      final pick = controller.pickLocalFolder();
+      final pick = controller.pickLocalFolder(0);
       release.complete();
 
       expect(await recheck, isFalse);
       await pick;
-      expect(controller.state.localRoot, notes());
+      expect(controller.state.entries[0].localRoot, notes());
     });
 
     test('a new visit forgets the refused folder', () async {
@@ -413,14 +413,14 @@ void main() {
       await loadDesktop();
 
       expect(await controller.recheckAfterSettings(), isFalse);
-      expect(controller.state.localRoot, isNull);
+      expect(controller.state.entries[0].localRoot, isNull);
     });
   });
 
   group('start', () {
     test('before load: a failure line, no request', () async {
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '',
       );
@@ -433,13 +433,13 @@ void main() {
       await loadDesktop();
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '',
       );
 
-      expect(controller.state.localFolderError, isNotNull);
-      expect(controller.state.remoteRootError, isNull);
+      expect(controller.state.entries[0].localFolderError, isNotNull);
+      expect(controller.state.entries[0].remoteRootError, isNull);
       expect(controller.state.outcome, isA<RunSetupIdle>());
       expect(requests(), isEmpty);
     });
@@ -448,10 +448,10 @@ void main() {
       await loadDesktop();
       await pickNotes();
 
-      await controller.start(remoteRoot: '  ', address: '', profileName: '');
+      await controller.start(remoteRoots: ['  '], address: '', profileName: '');
 
-      expect(controller.state.remoteRootError, isNotNull);
-      expect(controller.state.localFolderError, isNull);
+      expect(controller.state.entries[0].remoteRootError, isNotNull);
+      expect(controller.state.entries[0].localFolderError, isNull);
       expect(requests(), isEmpty);
     });
 
@@ -465,14 +465,14 @@ void main() {
       });
 
       await controller.start(
-        remoteRoot: ' ~/notes ',
+        remoteRoots: [' ~/notes '],
         address: '',
         profileName: '',
       );
 
       expect(started, 1);
-      expect(controller.state.localFolderError, isNull);
-      expect(controller.state.remoteRootError, isNull);
+      expect(controller.state.entries[0].localFolderError, isNull);
+      expect(controller.state.entries[0].remoteRootError, isNull);
       expect(controller.state.addressError, isNull);
       final request = requests().single;
       expect(request.deviceName, 'desktop');
@@ -495,7 +495,7 @@ void main() {
       await pickNotes();
 
       await controller.start(
-        remoteRoot: '/srv/notes',
+        remoteRoots: ['/srv/notes'],
         address: ' 10.0.0.9:4242 ',
         profileName: '',
       );
@@ -511,7 +511,7 @@ void main() {
       Directory(notes()).deleteSync();
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '',
       );
@@ -535,7 +535,7 @@ void main() {
       controller.setDryRun(true);
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '',
       );
@@ -556,7 +556,7 @@ void main() {
 
       controller.setDryRun(true);
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '',
       );
@@ -575,7 +575,7 @@ void main() {
       savesAs([weekly()]);
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: 'weekly',
       );
@@ -610,7 +610,7 @@ void main() {
       controller.setIgnorePatterns(const ['**/.thumbnails', 'cache']);
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '',
       );
@@ -620,7 +620,7 @@ void main() {
       ]);
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: 'weekly',
       );
@@ -656,7 +656,7 @@ void main() {
       await pickNotes();
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '   ',
       );
@@ -669,7 +669,7 @@ void main() {
       await loadDesktop();
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: 'weekly',
       );
@@ -686,7 +686,7 @@ void main() {
       );
 
       await controller.start(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: 'a/b',
       );
@@ -711,10 +711,10 @@ void main() {
       final peer = controller.state.peer as RunSetupPeerLoaded;
       expect(peer.name, 'desktop');
       expect(controller.state.prefill!.profileName, 'weekly');
-      expect(controller.state.prefill!.remoteRoot, '~/notes');
+      expect(controller.state.prefill!.remoteRoots, ['~/notes']);
       // The profile's root is the form's value, not a re-pick: a profile
       // that did not show the folder it syncs would force one every visit.
-      expect(controller.state.localRoot, notes());
+      expect(controller.state.entries[0].localRoot, notes());
       expect(controller.state.dryRun, isFalse);
     });
 
@@ -737,7 +737,7 @@ void main() {
       // The name and remote root retyped in the form: the profile the user
       // edited is the one updated, renamed rather than copied.
       await controller.start(
-        remoteRoot: '~/notes/sub',
+        remoteRoots: ['~/notes/sub'],
         address: '',
         profileName: 'weekly retyped',
       );
@@ -759,7 +759,7 @@ void main() {
       savesAs([weekly()]);
 
       await controller.save(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: 'weekly',
       );
@@ -778,12 +778,12 @@ void main() {
       await pickNotes();
 
       await controller.save(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: 'weekly',
       );
       await controller.save(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: 'weekly renamed',
       );
@@ -802,9 +802,13 @@ void main() {
       await loadDesktop();
       await pickNotes();
 
-      await controller.save(remoteRoot: '', address: '', profileName: 'weekly');
+      await controller.save(
+        remoteRoots: [''],
+        address: '',
+        profileName: 'weekly',
+      );
 
-      expect(controller.state.remoteRootError, isNotNull);
+      expect(controller.state.entries[0].remoteRootError, isNotNull);
       expect(saves(), isEmpty);
       expect(controller.state.outcome, isA<RunSetupIdle>());
     });
@@ -814,7 +818,7 @@ void main() {
       await pickNotes();
 
       await controller.save(
-        remoteRoot: '~/notes',
+        remoteRoots: ['~/notes'],
         address: '',
         profileName: '   ',
       );
@@ -828,7 +832,7 @@ void main() {
       await controller.load(const RunSetupFromProfile('weekly'));
 
       await controller.save(
-        remoteRoot: '~/notes/sub',
+        remoteRoots: ['~/notes/sub'],
         address: '',
         profileName: 'weekly retyped',
       );
@@ -863,8 +867,213 @@ void main() {
         await loadDesktop();
 
         expect(controller.state.prefill, isNull);
-        expect(controller.state.localRoot, isNull);
+        expect(controller.state.entries[0].localRoot, isNull);
       },
     );
+  });
+
+  group('entries (D10)', () {
+    test('a blank form starts with exactly one folder entry', () async {
+      await loadDesktop();
+
+      expect(controller.state.entries, hasLength(1));
+      expect(controller.state.entries.single.kind, RootKind.folder);
+    });
+
+    test('addEntry appends a blank folder entry', () async {
+      await loadDesktop();
+      await pickNotes();
+
+      controller.addEntry();
+
+      expect(controller.state.entries, hasLength(2));
+      expect(controller.state.entries[1].kind, RootKind.folder);
+      expect(controller.state.entries[1].localRoot, isNull);
+      // The first entry is untouched.
+      expect(controller.state.entries[0].localRoot, notes());
+    });
+
+    test('removeEntry drops the entry at that index', () async {
+      await loadDesktop();
+      controller.addEntry();
+      controller.addEntry();
+
+      controller.removeEntry(1);
+
+      expect(controller.state.entries, hasLength(2));
+    });
+
+    test('removeEntry never drops the last entry — a profile is never '
+        'empty', () async {
+      await loadDesktop();
+
+      controller.removeEntry(0);
+
+      expect(controller.state.entries, hasLength(1));
+    });
+
+    test(
+      'setKind switches the entry and clears its chosen local side',
+      () async {
+        await loadDesktop();
+        await pickNotes();
+
+        controller.setKind(0, RootKind.file);
+
+        expect(controller.state.entries[0].kind, RootKind.file);
+        expect(controller.state.entries[0].localRoot, isNull);
+      },
+    );
+
+    test('pickLocalFolder and setLocalFile each affect only their own '
+        'entry', () async {
+      await loadDesktop();
+      controller.addEntry();
+      await pickNotes();
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: null),
+      );
+
+      await controller.setLocalFile(1, '${tempDir.path}/picked/todo.txt');
+
+      expect(controller.state.entries[0].localRoot, notes());
+      expect(controller.state.entries[0].kind, RootKind.folder);
+      expect(
+        controller.state.entries[1].localRoot,
+        '${tempDir.path}/picked/todo.txt',
+      );
+      expect(controller.state.entries[1].kind, RootKind.file);
+      expect(core.sent<wire.CoreCommandCheckFolder>(), [
+        wire.CoreCommandCheckFolder(
+          path: notes(),
+          kind: wire.RootKindView.folder,
+        ),
+        wire.CoreCommandCheckFolder(
+          path: '${tempDir.path}/picked/todo.txt',
+          kind: wire.RootKindView.file,
+        ),
+      ]);
+    });
+
+    test('a file the core refuses is not taken, and leaves the other '
+        'entries alone', () async {
+      await loadDesktop();
+      controller.addEntry();
+      await pickNotes();
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: 'not a file'),
+      );
+
+      await controller.setLocalFile(1, '${tempDir.path}/picked/todo.txt');
+
+      expect(controller.state.folderAccessError, 'not a file');
+      expect(controller.state.entries[1].localRoot, isNull);
+      expect(controller.state.entries[0].localRoot, notes());
+    });
+
+    test('start validates every entry, each against its own remote root, '
+        'and neither error leaks onto the other entry', () async {
+      await loadDesktop();
+      controller.addEntry();
+      await pickNotes();
+
+      await controller.start(
+        remoteRoots: ['~/notes', ''],
+        address: '',
+        profileName: '',
+      );
+
+      expect(controller.state.entries[0].remoteRootError, isNull);
+      expect(controller.state.entries[1].remoteRootError, isNotNull);
+      expect(
+        controller.state.entries[1].localFolderError,
+        isNotNull,
+        reason: 'entry 1 has neither a folder nor a file chosen',
+      );
+      expect(controller.state.entries[0].localFolderError, isNull);
+      expect(requests(), isEmpty);
+    });
+
+    test('a two-entry draft sends both entries', () async {
+      await loadDesktop();
+      controller.addEntry();
+      await pickNotes();
+      final second = '${tempDir.path}/picked/second';
+      Directory(second).createSync(recursive: true);
+      picker.onPick = () => second;
+      await controller.pickLocalFolder(1);
+
+      await controller.start(
+        remoteRoots: ['~/notes', '~/second'],
+        address: '',
+        profileName: '',
+      );
+
+      final draft = (requests().single.target as DraftTarget).draft;
+      expect(draft.entries, hasLength(2));
+      expect(draft.entries[0].localRoot, notes());
+      expect(draft.entries[0].remoteRoot, '~/notes');
+      expect(draft.entries[1].localRoot, second);
+      expect(draft.entries[1].remoteRoot, '~/second');
+    });
+
+    test('an overlap the hub refuses at save time is the outcome line, '
+        'naming the entries', () async {
+      await loadDesktop();
+      controller.addEntry();
+      await pickNotes();
+      picker.onPick = notes;
+      await controller.pickLocalFolder(1);
+      core.reply<wire.CoreCommandSaveProfile>(
+        failed('entries[1].a overlaps entries[0].a'),
+      );
+
+      await controller.start(
+        remoteRoots: ['~/notes', '~/notes2'],
+        address: '',
+        profileName: 'weekly',
+      );
+
+      expect(
+        controller.state.outcome,
+        isA<RunSetupFailed>().having(
+          (f) => f.message,
+          'message',
+          'entries[1].a overlaps entries[0].a',
+        ),
+      );
+      expect(requests(), isEmpty);
+    });
+
+    test('a profile with several entries loads them all, pre-filling every '
+        'remote root', () async {
+      listing([
+        headProfile(
+          name: 'weekly',
+          peerDeviceId: desktop.deviceId,
+          peerName: desktop.name,
+          entries: [
+            entryView(entryId: 'p1', localRoot: notes(), remoteRoot: '~/notes'),
+            entryView(
+              entryId: 'p2',
+              kind: RootKind.file,
+              localRoot: '${tempDir.path}/picked/todo.txt',
+              remoteRoot: '~/todo.txt',
+            ),
+          ],
+        ),
+      ]);
+
+      await controller.load(const RunSetupFromProfile('weekly'));
+
+      expect(controller.state.entries, hasLength(2));
+      expect(controller.state.entries[0].localRoot, notes());
+      expect(controller.state.entries[1].kind, RootKind.file);
+      expect(
+        controller.state.entries[1].localRoot,
+        '${tempDir.path}/picked/todo.txt',
+      );
+      expect(controller.state.prefill!.remoteRoots, ['~/notes', '~/todo.txt']);
+    });
   });
 }

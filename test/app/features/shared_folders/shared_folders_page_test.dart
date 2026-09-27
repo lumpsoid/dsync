@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart';
@@ -297,6 +298,41 @@ void main() {
     );
     expect(field.controller?.text, '/media/usb/sync');
     expect(find.byKey(const Key('shared-folders-add-confirm')), findsOneWidget);
+  });
+
+  testWidgets('granting a file: the same chooser, then a browse, ends in '
+      'root/path (D6, R4)', (tester) async {
+    picker.picked = '/media/usb';
+    hub.reply<wire.CoreCommandListFilterFolder>(
+      folderRows(const [
+        FilterRow(
+          path: 'notes.txt',
+          name: 'notes.txt',
+          size: 12,
+          isFolder: false,
+          excludedBy: null,
+          syncs: true,
+        ),
+      ]),
+    );
+    app.state.recordDevices([row(desktop), row(laptop)]);
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('shared-folders-add')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('shared-folders-browse-file')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('notes.txt'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('file-chooser-row-notes.txt')));
+    await tester.pumpAndSettle();
+
+    // Back on the add dialog, with the file's path filled in.
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('shared-folders-path-field')),
+    );
+    expect(field.controller?.text, '/media/usb/notes.txt');
+    expect(hub.sent<wire.CoreCommandListFilterFolder>().single.ignore, isEmpty);
   });
 
   testWidgets('a folder added for two devices lands on both', (tester) async {

@@ -198,6 +198,49 @@ void main() {
       expect(controller.folders.single.rootPath, '/not/here/yet');
       expect(controller.state.outcome, isA<SharedFoldersDone>());
     });
+
+    test('grants what it can and reports which device was refused, rather '
+        'than stopping at the first refusal (D6)', () async {
+      final (desktop, laptop) = await pairTwo(roots: const []);
+      // The refused device is asked *first*: a "stop at the first
+      // refusal" implementation would never reach the desktop at all.
+      core.answer<wire.CoreCommandGrantRoot>(
+        (command) => command.deviceId == laptop
+            ? failed(
+                'cannot grant ~/Sync: it overlaps ~/, already granted to '
+                'this device (grants never nest)',
+              )
+            : devices(['~/Sync'], const []),
+      );
+      core.reply<wire.CoreCommandListDevices>(devices(['~/Sync'], const []));
+
+      await controller.shareNewFolder('~/Sync', [laptop, desktop]);
+
+      // Both devices were asked — the laptop's refusal did not stop the
+      // loop before it reached the desktop.
+      expect(core.sent<wire.CoreCommandGrantRoot>(), const [
+        wire.CoreCommandGrantRoot(deviceId: 'laptop-id', path: '~/Sync'),
+        wire.CoreCommandGrantRoot(deviceId: 'desktop-id', path: '~/Sync'),
+      ]);
+      // The rows reflect the real, partial outcome: only the desktop holds
+      // it.
+      expect(controller.folders.single.shareCount, 1);
+      expect(failure(), contains('laptop'));
+      expect(failure(), contains('grants never nest'));
+    });
+
+    test('every device refused is one failure line, naming each', () async {
+      final (desktop, laptop) = await pairTwo(roots: const []);
+      core.answer<wire.CoreCommandGrantRoot>(
+        (command) => failed('cannot grant ~/Sync for ${command.deviceId}'),
+      );
+
+      await controller.shareNewFolder('~/Sync', [desktop, laptop]);
+
+      expect(failure(), contains('desktop'));
+      expect(failure(), contains('laptop'));
+      expect(controller.folders, isEmpty);
+    });
   });
 
   group('chooseFolder', () {

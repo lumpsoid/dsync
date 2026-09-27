@@ -2,6 +2,7 @@ import '../../app_controller.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/peer_probe_outcome.dart';
 import '../../paired_device_row.dart';
+import '../run_setup/file_chooser.dart';
 import '../run_setup/folder_picker.dart';
 import 'device_detail_view_state.dart';
 
@@ -52,6 +53,11 @@ class DeviceDetailController {
 
   /// The view state this controller renders into; owned here, disposed here.
   final DeviceDetailViewState state = DeviceDetailViewState();
+
+  /// A file's chooser (D6, R4): [picker]'s folder chooser, then the core's
+  /// own listing of it — a grant is authorized the same way whether it is a
+  /// folder or a file.
+  FileChooser get fileChooser => FileChooser(app.core, picker: picker);
 
   String? _deviceId;
 

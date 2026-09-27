@@ -25,12 +25,16 @@ final class ProfileDeviceUnpaired extends ProfileBreakage {
       'again to run this profile.';
 }
 
-/// The profile's local root no longer passes the core's folder check — the
-/// grant was withdrawn, or the folder moved. The remedy is to point the
-/// profile at a folder this head can read and write, which the home list
-/// does with the same chooser Run setup uses.
+/// An entry's local root no longer passes the core's folder check — the
+/// grant was withdrawn, or the folder moved. The remedy is to point that
+/// entry at a folder this head can read and write, which the home list does
+/// with the same chooser Run setup uses.
 final class ProfileLocalRootUnusable extends ProfileBreakage {
-  const ProfileLocalRootUnusable();
+  const ProfileLocalRootUnusable(this.entryIndex);
+
+  /// Which of the profile's entries fails the check — the first one that
+  /// does, and where the remedy's repick is aimed.
+  final int entryIndex;
 
   @override
   String get message =>

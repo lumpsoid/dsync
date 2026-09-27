@@ -168,12 +168,15 @@ class _Session {
     }
     final picker = _ScriptedPicker(_appRoot, step: 'a', grantAsked: true);
     final setup = RunSetupController(app, picker: picker);
-    await setup.pickLocalFolder();
+    await setup.pickLocalFolder(0);
     final shown =
         setup.state.folderAccessError ??
         _fail('a', 'Run setup took $_appRoot without the grant');
-    if (setup.state.localRoot != null) {
-      _fail('a', 'Run setup holds ${setup.state.localRoot} after refusing it');
+    if (setup.state.entries[0].localRoot != null) {
+      _fail(
+        'a',
+        'Run setup holds ${setup.state.entries[0].localRoot} after refusing it',
+      );
     }
     if (picker.grantRequests != 1) {
       _fail('a', 'Run setup asked for the grant ${picker.grantRequests} times');
@@ -196,14 +199,17 @@ class _Session {
   Future<void> pickedPath() async {
     final picker = _ScriptedPicker(_appRoot, step: 'b', grantAsked: false);
     final setup = RunSetupController(app, picker: picker);
-    await setup.pickLocalFolder();
+    await setup.pickLocalFolder(0);
     if (setup.state.folderAccessError case final error?) {
       _fail('b', 'the granted folder was refused: ${_oneLine(error)}');
     }
-    if (setup.state.localRoot != _appRoot) {
-      _fail('b', 'the form holds ${setup.state.localRoot}, not $_appRoot');
+    if (setup.state.entries[0].localRoot != _appRoot) {
+      _fail(
+        'b',
+        'the form holds ${setup.state.entries[0].localRoot}, not $_appRoot',
+      );
     }
-    _mark('b|ok|${setup.state.localRoot}');
+    _mark('b|ok|${setup.state.entries[0].localRoot}');
     setup.dispose();
   }
 

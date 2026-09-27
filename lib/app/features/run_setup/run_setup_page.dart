@@ -1,28 +1,30 @@
 import 'package:flutter/material.dart';
 
+import '../../core_link/models/root_kind.dart';
 import '../../run_request.dart';
 import '../diagnostics/diagnostics_page.dart';
 import '../filters/filters_page.dart';
 import '../filters/filters_view_state.dart';
+import 'file_chooser.dart';
 import 'run_setup_controller.dart';
 import 'run_setup_scope.dart';
 import 'run_setup_view_state.dart';
 
-/// The Run setup page: pick the two locations a run syncs (SPEC §2, §4.4,
-/// §11.2). Widgets only, per the page role in `app_scope.dart`: the chosen
-/// folder with the button that changes it, three text fields, a switch, two
-/// buttons, and switches over the rendered [RunSetupPeer] and
-/// [RunSetupOutcome].
+/// The Run setup page: pick the entries a run syncs (SPEC §2, §4.4, §11.2,
+/// D10). Widgets only, per the page role in `app_scope.dart`: one section
+/// per entry — the chosen folder or file with the button that changes it,
+/// a kind toggle, a remote root field — a way to add and remove entries,
+/// three whole-form text fields, a switch, two buttons, and switches over
+/// the rendered [RunSetupPeer] and [RunSetupOutcome].
 ///
 /// The layout is the decision order, in flat sections with no box drawn
 /// around them — the heading groups the fields under it, as the Run page's
-/// sections do. The two locations a run needs come first, at equal weight:
-/// neither is optional and neither is a disclosure. What is optional (the
-/// dry-run switch, SPEC §4.4's address hatch) is folded under a single
-/// "Options". The two ways out are pinned in an action bar so neither
-/// scrolls away, with Start filled and Save a text button beside it; the
-/// profile name they both read is a field up in the form, so it belongs to
-/// neither button.
+/// sections do. The entries come first, at equal weight: none is optional
+/// and none is a disclosure. What is optional (the dry-run switch, SPEC
+/// §4.4's address hatch) is folded under a single "Options". The two ways
+/// out are pinned in an action bar so neither scrolls away, with Start
+/// filled and Save a text button beside it; the profile name they both read
+/// is a field up in the form, so it belongs to neither button.
 ///
 /// Opened from a [RunSetupSource] — a device (blank form) or a saved
 /// profile (pre-filled, editable) — and `RunSetupController.load` reads
@@ -31,9 +33,12 @@ import 'run_setup_view_state.dart';
 /// `create()`: `load` is asynchronous, and a controller disposed by a page
 /// that left early would have its view state written to after disposal.
 ///
-/// The pre-fill lands in this `State`'s own `TextEditingController`s, read
-/// once from the view state after `load` completes — the text fields are
-/// the page's, not the view state's (`RunSetupViewState`'s doc comment).
+/// **One remote-root `TextEditingController` per entry.** The text fields
+/// are the page's, not the view state's (`RunSetupViewState`'s doc
+/// comment); [_RunSetupPageState] keeps a list the same length as
+/// `RunSetupController`'s entries, rebuilt whenever that count changes
+/// (`load`, adding or removing an entry) and left alone otherwise, so a
+/// keystroke in one field never disturbs another's.
 ///
 /// [onStart] is the seam to the Run feature: it fires once with the
 /// [RunRequest] the controller built, and the entrypoint wires it to the
@@ -65,7 +70,9 @@ class RunSetupPage extends StatefulWidget {
 
 class _RunSetupPageState extends State<RunSetupPage> {
   final RunSetupController _controller = runSetupScope.controller;
-  final _remoteRoot = TextEditingController();
+
+  /// One remote-root text controller per entry — see the class doc comment.
+  final List<TextEditingController> _remoteRoots = [TextEditingController()];
   final _address = TextEditingController();
   final _profileName = TextEditingController();
 
@@ -87,26 +94,77 @@ class _RunSetupPageState extends State<RunSetupPage> {
     await _controller.load(widget.source);
     if (!mounted) return;
     final prefill = _controller.state.prefill;
-    if (prefill != null) {
-      _profileName.text = prefill.profileName;
-      _remoteRoot.text = prefill.remoteRoot;
+    _profileName.text = prefill?.profileName ?? '';
+    _syncRemoteRoots(prefill?.remoteRoots ?? const ['']);
+  }
+
+  /// Rebuilds [_remoteRoots] so it holds exactly [texts].length
+  /// controllers, seeded with [texts] — called whenever the entry count
+  /// changes, never for a keystroke in one of them.
+  void _syncRemoteRoots(List<String> texts) {
+    for (final controller in _remoteRoots) {
+      controller.dispose();
     }
+    _remoteRoots
+      ..clear()
+      ..addAll([for (final text in texts) TextEditingController(text: text)]);
   }
 
   @override
   void dispose() {
     _backFromSettings?.dispose();
-    _remoteRoot.dispose();
+    for (final controller in _remoteRoots) {
+      controller.dispose();
+    }
     _address.dispose();
     _profileName.dispose();
     super.dispose();
   }
 
-  /// A refused folder is a snackbar, not a line in the form: it never became
-  /// one of the choices, so there is no field it belongs under. The action
-  /// is the way out — the OS page where access to all files is granted.
-  Future<void> _pickFolder() async {
-    await _controller.pickLocalFolder();
+  void _addEntry() {
+    _controller.addEntry();
+    _remoteRoots.add(TextEditingController());
+  }
+
+  void _removeEntry(int index) {
+    if (_remoteRoots.length <= 1) return;
+    _controller.removeEntry(index);
+    _remoteRoots.removeAt(index).dispose();
+  }
+
+  /// A refused folder or file is a snackbar, not a line in the form: it
+  /// never became one of the entries, so there is no field it belongs
+  /// under. The action is the way out — the OS page where access to all
+  /// files is granted.
+  Future<void> _pickFolder(int index) async {
+    await _controller.pickLocalFolder(index);
+    if (!mounted) return;
+    _showRefusal();
+  }
+
+  /// Opens the folder chooser, then the browser over what it returned
+  /// (R4), and takes the file the user picked or typed as entry [index]'s
+  /// local side.
+  Future<void> _pickFile(int index) async {
+    final chooser = _controller.fileChooser;
+    final String? root;
+    try {
+      root = await chooser.chooseFolder();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open the folder chooser: $error')),
+      );
+      return;
+    }
+    if (root == null || !mounted) return;
+    final path = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => FileChooserPage(chooser: chooser, root: root!),
+      ),
+    );
+    if (path == null || !mounted) return;
+    await _controller.setLocalFile(index, path);
     if (!mounted) return;
     _showRefusal();
   }
@@ -127,8 +185,8 @@ class _RunSetupPageState extends State<RunSetupPage> {
   }
 
   /// Opens Settings and, when the app comes back, has the controller check
-  /// the refused folder again: granting access there is the fix the
-  /// snackbar offered, so the user is not made to pick the folder twice.
+  /// the refused path again: granting access there is the fix the
+  /// snackbar offered, so the user is not made to pick it twice.
   Future<void> _openAccessSettings() {
     _backFromSettings?.dispose();
     _backFromSettings = AppLifecycleListener(onResume: _backFromSettingsPage);
@@ -143,9 +201,13 @@ class _RunSetupPageState extends State<RunSetupPage> {
     _showRefusal();
   }
 
+  List<String> _remoteRootTexts() => [
+    for (final controller in _remoteRoots) controller.text,
+  ];
+
   Future<void> _start() async {
     await _controller.start(
-      remoteRoot: _remoteRoot.text,
+      remoteRoots: _remoteRootTexts(),
       address: _address.text,
       profileName: _profileName.text,
     );
@@ -157,7 +219,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
 
   Future<void> _save() async {
     await _controller.save(
-      remoteRoot: _remoteRoot.text,
+      remoteRoots: _remoteRootTexts(),
       address: _address.text,
       profileName: _profileName.text,
     );
@@ -165,12 +227,16 @@ class _RunSetupPageState extends State<RunSetupPage> {
     if (_controller.state.outcome is RunSetupSaved) widget.onSaved();
   }
 
-  /// The Filters page, over the folder the form currently holds and the
-  /// rules it currently holds — values, not an id, because a form that has
-  /// not been saved has no id to hand over (see `FiltersArgs`). Pushed
-  /// from here rather than from `dsync_app.dart` for the same reason
-  /// Diagnostics is: it is a detail of this form, opened over this form's
-  /// in-flight values, and the entrypoint knows about neither.
+  /// The Filters page, over entry 0's folder and the profile's rules —
+  /// values, not an id, because a form that has not been saved has no id to
+  /// hand over (see `FiltersArgs`). Pushed from here rather than from
+  /// `dsync_app.dart` for the same reason Diagnostics is: it is a detail of
+  /// this form, opened over this form's in-flight values, and the
+  /// entrypoint knows about neither.
+  ///
+  /// Bound to entry 0 rather than offered per entry: the ignore rules are
+  /// profile-wide (D1), and a file entry offers no preview at all (D8) — so
+  /// one representative folder is enough to see what the rules do.
   ///
   /// The result comes back through `onDone`, which fires however the page
   /// leaves — including the system back gesture — so there is no way out
@@ -198,7 +264,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
     return Scaffold(
       appBar: AppBar(
         // The title says what the page is, not what is on it: the form
-        // already names the device and both folders, so repeating them in
+        // already names the device and every folder, so repeating them in
         // the chrome would only take the room a long device name needs.
         title: ListenableBuilder(
           listenable: _controller.state,
@@ -212,13 +278,15 @@ class _RunSetupPageState extends State<RunSetupPage> {
           // this is the only place a measurement can be taken *before* a
           // sync, which is when the question is usually asked.
           //
-          // It needs the folder the probes would measure, so it waits for
-          // one to be chosen rather than opening a page with nothing to
-          // point at.
+          // Bound to entry 0's folder, the same representative entry
+          // Filters uses — a file entry offers no scan probe (D8).
           ListenableBuilder(
             listenable: _controller.state,
             builder: (context, _) {
-              final rootPath = _controller.state.localRoot;
+              final first = _controller.state.entries.first;
+              final rootPath = first.kind == RootKind.folder
+                  ? first.localRoot
+                  : null;
               return IconButton(
                 key: const Key('run-setup-diagnostics'),
                 icon: const Icon(Icons.biotech_outlined),
@@ -254,10 +322,13 @@ class _RunSetupPageState extends State<RunSetupPage> {
             controller: _controller,
             deviceName: name,
             editing: _controller.state.prefill != null,
-            remoteRoot: _remoteRoot,
+            remoteRoots: _remoteRoots,
             address: _address,
             profileName: _profileName,
             onPickFolder: _pickFolder,
+            onPickFile: _pickFile,
+            onAddEntry: () => setState(_addEntry),
+            onRemoveEntry: (index) => setState(() => _removeEntry(index)),
             onOpenFilters: _openFilters,
             onStart: _start,
             onSave: _save,
@@ -273,29 +344,32 @@ class _RunSetupPageState extends State<RunSetupPage> {
 /// not "Edit …": the page is the profile, and every field on it says which
 /// device and which folders. A blank form has no profile yet, so it stays
 /// "Run setup".
+String _title(RunSetupViewState state) =>
+    state.prefill != null ? 'Profile' : 'Run setup';
+
 /// The Filters row's second line: what the rules do, in the language of
 /// the outcome rather than of the rules — a count of patterns would be
 /// counting the mechanism.
-String _filtersSummary(RunSetupViewState state) {
-  if (state.localRoot == null) return 'Pick a folder first.';
+String _filtersSummary(RunSetupViewState state, String? rootPath) {
+  if (rootPath == null) return 'Pick a folder first.';
   final rules = state.ignorePatterns.length;
   if (rules == 0) return 'Everything in this folder syncs.';
   return '$rules ${rules == 1 ? 'rule keeps' : 'rules keep'} files out of '
       'the sync.';
 }
 
-String _title(RunSetupViewState state) =>
-    state.prefill != null ? 'Profile' : 'Run setup';
-
 class _RunSetupForm extends StatelessWidget {
   const _RunSetupForm({
     required this.controller,
     required this.deviceName,
     required this.editing,
-    required this.remoteRoot,
+    required this.remoteRoots,
     required this.address,
     required this.profileName,
     required this.onPickFolder,
+    required this.onPickFile,
+    required this.onAddEntry,
+    required this.onRemoveEntry,
     required this.onOpenFilters,
     required this.onStart,
     required this.onSave,
@@ -308,10 +382,16 @@ class _RunSetupForm extends StatelessWidget {
   /// is called and says — an edit writes back over the one profile — and
   /// nothing else: the fields and the rules are the same either way.
   final bool editing;
-  final TextEditingController remoteRoot;
+
+  /// One text controller per entry, in order — [_RunSetupPageState] keeps
+  /// this in step with `RunSetupController`'s entries.
+  final List<TextEditingController> remoteRoots;
   final TextEditingController address;
   final TextEditingController profileName;
-  final VoidCallback onPickFolder;
+  final void Function(int index) onPickFolder;
+  final void Function(int index) onPickFile;
+  final VoidCallback onAddEntry;
+  final void Function(int index) onRemoveEntry;
 
   /// Opens the Filters page over the folder that has been chosen. Takes
   /// the path rather than reading it back off the view state, so the row
@@ -325,9 +405,9 @@ class _RunSetupForm extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = controller.state;
     final starting = state.outcome is RunSetupStarting;
-    // Read once so the Filters row's tap handler closes over a promoted
-    // local instead of asserting the field is non-null a second time.
-    final localRoot = state.localRoot;
+    final entries = state.entries;
+    final first = entries.first;
+    final firstFolder = first.kind == RootKind.folder ? first.localRoot : null;
     return Column(
       children: [
         Expanded(
@@ -351,79 +431,52 @@ class _RunSetupForm extends StatelessWidget {
               // page's own sections read the same way (`_Section` there),
               // and a form whose fields are boxed inside a box inside a
               // disclosure is three frames drawn around two decisions.
-              _SectionLabel('On this device'),
-              const SizedBox(height: 8),
-              // The chosen folder shown as a value, not a control: there
-              // is one way to set it — the platform chooser — so there is
-              // no list to choose from and nothing to type. The button
-              // beside it is that one way, in the open.
-              Row(
-                children: [
-                  Expanded(
-                    child: InputDecorator(
-                      decoration: InputDecoration(
-                        labelText: 'Folder',
-                        errorText: state.localFolderError,
-                      ),
-                      child: Text(
-                        key: const Key('run-setup-local-folder'),
-                        state.localRoot ?? 'No folder chosen',
-                        overflow: TextOverflow.ellipsis,
-                        style: state.localRoot == null
-                            ? TextStyle(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
-                              )
-                            : null,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  TextButton(
-                    key: const Key('run-setup-pick-folder'),
-                    onPressed: starting ? null : onPickFolder,
-                    child: Text(
-                      state.localRoot == null ? 'Pick a folder…' : 'Change',
-                    ),
-                  ),
-                ],
+              for (final (index, entry) in entries.indexed) ...[
+                _EntrySection(
+                  index: index,
+                  entry: entry,
+                  deviceName: deviceName,
+                  remoteRoot: remoteRoots[index],
+                  starting: starting,
+                  removable: entries.length > 1,
+                  onPickFolder: () => onPickFolder(index),
+                  onPickFile: () => onPickFile(index),
+                  onSetKind: (kind) => controller.setKind(index, kind),
+                  onRemove: () => onRemoveEntry(index),
+                  onRemoteRootChanged: controller.remoteRootChanged,
+                ),
+                const SizedBox(height: 24),
+              ],
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: const Key('run-setup-add-entry'),
+                  onPressed: starting ? null : onAddEntry,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add another folder or file'),
+                ),
               ),
-              // Filtering sits with the folder it filters, not under
+              const SizedBox(height: 24),
+              // Filtering sits with the entries it filters, not under
               // "Options": what a run leaves out is part of *what* is
               // being synced, and a user who has just pointed at a folder
               // full of caches should meet it here rather than find it
               // folded away. It stays a row leading to its own page —
               // choosing rules means looking at real files, which is a
-              // screen, not a field.
+              // screen, not a field. Bound to entry 0's folder, the profile's
+              // one representative (the class doc comment on `_openFilters`
+              // says why).
               ListTile(
                 key: const Key('run-setup-filters'),
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.filter_alt_outlined),
                 title: const Text('Filters'),
-                subtitle: Text(_filtersSummary(state)),
+                subtitle: Text(_filtersSummary(state, firstFolder)),
                 trailing: const Icon(Icons.chevron_right),
-                enabled: !starting && localRoot != null,
-                onTap: localRoot == null
+                enabled: !starting && firstFolder != null,
+                onTap: firstFolder == null
                     ? null
-                    : () => onOpenFilters(localRoot),
-              ),
-              const SizedBox(height: 24),
-              _SectionLabel('On $deviceName'),
-              const SizedBox(height: 8),
-              TextField(
-                key: const Key('run-setup-remote-root'),
-                controller: remoteRoot,
-                enabled: !starting,
-                onChanged: controller.remoteRootChanged,
-                decoration: InputDecoration(
-                  labelText: 'Folder',
-                  hintText: '~/notes',
-                  helperText:
-                      'Exactly as granted there with `dsync pair grant`.',
-                  helperMaxLines: 4,
-                  errorText: state.remoteRootError,
-                ),
+                    : () => onOpenFilters(firstFolder),
               ),
               const SizedBox(height: 24),
               // The name sits with the fields it names, not with the
@@ -483,6 +536,160 @@ class _RunSetupForm extends StatelessWidget {
           saveLabel: editing ? 'Save changes' : 'Save profile',
           onSave: onSave,
           onStart: onStart,
+        ),
+      ],
+    );
+  }
+}
+
+/// One entry's section: which of its two sides is a folder or a file, the
+/// value picked for each, and its own validation lines. Keyed for entry 0
+/// exactly as the page's single entry always was (`run-setup-local-folder`,
+/// `run-setup-pick-folder`, `run-setup-remote-root`); every other entry's
+/// keys carry its index, so the first entry's tests need no change.
+class _EntrySection extends StatelessWidget {
+  const _EntrySection({
+    required this.index,
+    required this.entry,
+    required this.deviceName,
+    required this.remoteRoot,
+    required this.starting,
+    required this.removable,
+    required this.onPickFolder,
+    required this.onPickFile,
+    required this.onSetKind,
+    required this.onRemove,
+    required this.onRemoteRootChanged,
+  });
+
+  final int index;
+  final RunEntryForm entry;
+  final String deviceName;
+  final TextEditingController remoteRoot;
+  final bool starting;
+
+  /// Whether this entry can be removed — never the last one (D1).
+  final bool removable;
+  final VoidCallback onPickFolder;
+  final VoidCallback onPickFile;
+  final void Function(RootKind kind) onSetKind;
+  final VoidCallback onRemove;
+  final void Function(String text) onRemoteRootChanged;
+
+  String get _localKey =>
+      index == 0 ? 'run-setup-local-folder' : 'run-setup-local-folder-$index';
+  String get _pickKey =>
+      index == 0 ? 'run-setup-pick-folder' : 'run-setup-pick-folder-$index';
+  String get _remoteKey =>
+      index == 0 ? 'run-setup-remote-root' : 'run-setup-remote-root-$index';
+
+  @override
+  Widget build(BuildContext context) {
+    final isFolder = entry.kind == RootKind.folder;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Numbered only past the first entry: the common case — one entry —
+        // reads exactly as it always has, with no count to draw.
+        if (index > 0)
+          Row(
+            children: [
+              Expanded(child: _SectionLabel('Entry ${index + 1}')),
+              if (removable)
+                IconButton(
+                  key: Key('run-setup-remove-entry-$index'),
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Remove this entry',
+                  onPressed: starting ? null : onRemove,
+                ),
+            ],
+          )
+        else if (removable)
+          Align(
+            alignment: Alignment.centerRight,
+            child: IconButton(
+              key: const Key('run-setup-remove-entry-0'),
+              icon: const Icon(Icons.close),
+              tooltip: 'Remove this entry',
+              onPressed: starting ? null : onRemove,
+            ),
+          ),
+        SegmentedButton<RootKind>(
+          key: Key('run-setup-kind-$index'),
+          segments: const [
+            ButtonSegment(
+              value: RootKind.folder,
+              label: Text('Folder'),
+              icon: Icon(Icons.folder_outlined),
+            ),
+            ButtonSegment(
+              value: RootKind.file,
+              label: Text('File'),
+              icon: Icon(Icons.insert_drive_file_outlined),
+            ),
+          ],
+          selected: {entry.kind},
+          onSelectionChanged: starting
+              ? null
+              : (selection) => onSetKind(selection.first),
+        ),
+        const SizedBox(height: 8),
+        _SectionLabel('On this device'),
+        const SizedBox(height: 8),
+        // The chosen path shown as a value, not a control: there is one way
+        // to set it — the platform chooser, or the file chooser over it —
+        // so there is no list to choose from and nothing to type. The
+        // button beside it is that one way, in the open.
+        Row(
+          children: [
+            Expanded(
+              child: InputDecorator(
+                decoration: InputDecoration(
+                  labelText: isFolder ? 'Folder' : 'File',
+                  errorText: entry.localFolderError,
+                ),
+                child: Text(
+                  key: Key(_localKey),
+                  entry.localRoot ??
+                      (isFolder ? 'No folder chosen' : 'No file chosen'),
+                  overflow: TextOverflow.ellipsis,
+                  style: entry.localRoot == null
+                      ? TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        )
+                      : null,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              key: Key(_pickKey),
+              onPressed: starting
+                  ? null
+                  : (isFolder ? onPickFolder : onPickFile),
+              child: Text(
+                entry.localRoot == null
+                    ? (isFolder ? 'Pick a folder…' : 'Pick a file…')
+                    : 'Change',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+        _SectionLabel('On $deviceName'),
+        const SizedBox(height: 8),
+        TextField(
+          key: Key(_remoteKey),
+          controller: remoteRoot,
+          enabled: !starting,
+          onChanged: onRemoteRootChanged,
+          decoration: InputDecoration(
+            labelText: isFolder ? 'Folder' : 'File',
+            hintText: isFolder ? '~/notes' : '~/notes/todo.txt',
+            helperText: 'Exactly as granted there with `dsync pair grant`.',
+            helperMaxLines: 4,
+            errorText: entry.remoteRootError,
+          ),
         ),
       ],
     );

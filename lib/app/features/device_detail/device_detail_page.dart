@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../format_date.dart';
 import '../../paired_device_row.dart';
 import '../../withdraw_root_dialog.dart';
+import '../run_setup/file_chooser.dart';
 import 'device_detail_controller.dart';
 import 'device_detail_scope.dart';
 import 'device_detail_view_state.dart';
@@ -340,9 +341,26 @@ class _RootsSection extends StatelessWidget {
   Future<void> _grant(BuildContext context) async {
     final path = await showDialog<String>(
       context: context,
-      builder: (context) => _GrantDialog(onBrowse: controller.picker.pick),
+      builder: (context) => _GrantDialog(
+        onBrowse: controller.picker.pick,
+        onBrowseFile: () => _browseFile(context),
+      ),
     );
     if (path != null) await controller.grantRoot(path);
+  }
+
+  /// A file's path, chosen through [FileChooser] (D6, R4): the folder
+  /// chooser for where it lives, then a page over that folder's listing.
+  /// `null` at either step leaves the dialog's typed field untouched.
+  Future<String?> _browseFile(BuildContext context) async {
+    final chooser = controller.fileChooser;
+    final root = await chooser.chooseFolder();
+    if (root == null || !context.mounted) return null;
+    return Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => FileChooserPage(chooser: chooser, root: root),
+      ),
+    );
   }
 
   /// Confirms, then withdraws by the *stored* path — [label] is only what
@@ -382,12 +400,16 @@ class _RootsSection extends StatelessWidget {
 /// so `~/Sync` chosen here and `~/Sync` typed into `dsync pair grant`
 /// record the same string.
 class _GrantDialog extends StatefulWidget {
-  const _GrantDialog({required this.onBrowse});
+  const _GrantDialog({required this.onBrowse, required this.onBrowseFile});
 
   /// Opens the platform chooser and returns what was picked. Taken as a
   /// callback rather than reached for here, so a widget test drives this
   /// dialog without a platform channel.
   final Future<String?> Function() onBrowse;
+
+  /// [onBrowse]'s file counterpart (D6, R4): the folder chooser, then a
+  /// browse of it, ending in a file's path rather than a folder's.
+  final Future<String?> Function() onBrowseFile;
 
   @override
   State<_GrantDialog> createState() => _GrantDialogState();
@@ -419,6 +441,19 @@ class _GrantDialogState extends State<_GrantDialog> {
     if (picked != null) navigator.pop(picked);
   }
 
+  /// [_browse]'s file counterpart: a page is pushed to browse the chosen
+  /// folder, so this waits for it rather than popping straight away.
+  Future<void> _browseFile() async {
+    final navigator = Navigator.of(context);
+    final String? picked;
+    try {
+      picked = await widget.onBrowseFile();
+    } catch (_) {
+      return;
+    }
+    if (picked != null) navigator.pop(picked);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -428,11 +463,26 @@ class _GrantDialogState extends State<_GrantDialog> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          FilledButton.icon(
-            key: const Key('device-grant-browse'),
-            onPressed: _browse,
-            icon: const Icon(Icons.folder_open),
-            label: const Text('Choose folder'),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  key: const Key('device-grant-browse'),
+                  onPressed: _browse,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('Choose folder'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  key: const Key('device-grant-browse-file'),
+                  onPressed: _browseFile,
+                  icon: const Icon(Icons.insert_drive_file_outlined),
+                  label: const Text('Choose a file'),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           Text(

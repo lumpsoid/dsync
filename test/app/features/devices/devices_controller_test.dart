@@ -4,6 +4,7 @@ import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
@@ -115,13 +116,19 @@ void main() {
   group('savedRunLines', () {
     ProfileRow profile(String id, {required String peerDeviceId}) => ProfileRow(
       name: 'run $id',
-      entryIds: [id],
       peerDeviceId: peerDeviceId,
       peerName: 'phone',
-      localRootPath: '/on-device/notes',
-      remoteRootPath: '~/notes',
-      localRootLabel: PathLabel.of('/on-device/notes'),
-      remoteRootLabel: PathLabel.of('~/notes'),
+      entries: [
+        ProfileEntryRow(
+          entryId: id,
+          kind: RootKind.folder,
+          localRootPath: '/on-device/notes',
+          remoteRootPath: '~/notes',
+          localRootLabel: PathLabel.of('/on-device/notes'),
+          remoteRootLabel: PathLabel.of('~/notes'),
+          localRootRefusal: null,
+        ),
+      ],
       breakage: null,
       lastRunUnfinished: false,
     );

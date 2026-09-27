@@ -309,6 +309,11 @@ class _RunPageState extends State<RunPage> {
                   builder: (context, _) => SliverMainAxisGroup(
                     slivers: [
                       SliverToBoxAdapter(child: _StageStrip(state)),
+                      // Only past one entry: a single-entry run reads
+                      // exactly as it always has, with no list to draw
+                      // above its own header and plan (D10).
+                      if (state.entries.length > 1)
+                        SliverToBoxAdapter(child: _EntriesSection(state)),
                       if (state.header case final header?)
                         SliverToBoxAdapter(child: _Header(header)),
                       SliverToBoxAdapter(child: _CountsRow(state)),
@@ -638,6 +643,119 @@ class _Header extends StatelessWidget {
                 key: const Key('run-first-sync-warning'),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The profile's entries, above the current one's own header and plan
+/// (D10): each entry's two roots and how it stands, so the user can see at
+/// a glance which have synced, which are left, and which did not — without
+/// waiting for the whole profile to finish. Shown only past one entry (the
+/// page's caller gates it); the current entry's row is the one the rest of
+/// the page describes.
+class _EntriesSection extends StatelessWidget {
+  const _EntriesSection(this.state);
+
+  final SyncRunViewState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = state.currentEntry;
+    return Padding(
+      key: const Key('run-entries'),
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (index, entry) in state.entries.indexed)
+            _EntryRow(index: index, entry: entry, isCurrent: index == current),
+        ],
+      ),
+    );
+  }
+}
+
+/// One entry's line: both its roots, elided the way the header elides them,
+/// and a status word coloured and iconed the way every other notice on this
+/// page is — never colour alone (see [_NoticeLine]).
+class _EntryRow extends StatelessWidget {
+  const _EntryRow({
+    required this.index,
+    required this.entry,
+    required this.isCurrent,
+  });
+
+  final int index;
+  final SyncRunEntryRow entry;
+  final bool isCurrent;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final (icon, color, label) = switch (entry.status) {
+      SyncRunEntryPending() => (
+        Icons.circle_outlined,
+        theme.colorScheme.outline,
+        'pending',
+      ),
+      SyncRunEntryRunning() => (
+        Icons.sync,
+        theme.colorScheme.primary,
+        'running',
+      ),
+      SyncRunEntrySynced() => (
+        Icons.check_circle,
+        theme.colorScheme.primary,
+        'synced',
+      ),
+      SyncRunEntrySkipped(:final reason) => (
+        Icons.remove_circle_outline,
+        theme.colorScheme.tertiary,
+        'skipped: $reason',
+      ),
+      SyncRunEntryFailed(:final message) => (
+        Icons.error_outline,
+        theme.colorScheme.error,
+        'failed: $message',
+      ),
+      SyncRunEntryNotRun() => (
+        Icons.circle_outlined,
+        theme.colorScheme.outline,
+        'not run',
+      ),
+    };
+    return Padding(
+      key: Key('run-entry-$index'),
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2, right: 6),
+            child: Icon(icon, size: 16, color: color),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${elidePath(entry.localRoot)} ⇄ ${elidePath(entry.remoteRoot)}',
+                  style: isCurrent
+                      ? theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        )
+                      : theme.textTheme.bodyMedium,
+                ),
+                Text(
+                  label,
+                  key: Key('run-entry-status-$index'),
+                  style: theme.textTheme.bodySmall?.copyWith(color: color),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );

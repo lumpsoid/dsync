@@ -79,10 +79,10 @@ class ProfilesController {
     }
   }
 
-  /// Re-points the profile [name] at a folder the user picks,
-  /// the remedy for a row broken by a withdrawn folder grant — in place of
-  /// the round trip through Devices and Run setup that deleting and saving
-  /// it again would cost.
+  /// Re-points the profile [name]'s entry at [entryIndex] at a folder the
+  /// user picks, the remedy for a row broken by a withdrawn folder grant —
+  /// in place of the round trip through Devices and Run setup that deleting
+  /// and saving it again would cost.
   ///
   /// A dismissed chooser changes nothing. A picked folder is *probed*, not
   /// trusted, and the grant its refusal prompts for is asked once before
@@ -91,7 +91,7 @@ class ProfilesController {
   /// its own message on [ProfilesViewState.error] and the profile keeps the
   /// root it had. Only a folder that passes is saved, and the list is
   /// re-rendered, which is what clears the row's breakage.
-  Future<void> repickLocalFolder(String name) async {
+  Future<void> repickLocalFolder(String name, int entryIndex) async {
     // The last failure's line is about the last attempt, not this one.
     state.clearError();
     final String? picked;
@@ -114,7 +114,11 @@ class ProfilesController {
         state.recordError(refusal);
         return;
       }
-      failure = await app.relocateProfile(name, localRootPath: picked);
+      failure = await app.relocateProfile(
+        name,
+        entryIndex: entryIndex,
+        localRootPath: picked,
+      );
     } on CoreFailure catch (e) {
       state.recordError(e.message);
       return;

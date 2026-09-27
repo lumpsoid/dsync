@@ -3,6 +3,7 @@ import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:test/test.dart';
 
 /// [ArchiveRow.render] over plain values: the join between a log on disk
@@ -20,13 +21,19 @@ void main() {
 
   ProfileRow profile({String? peerName = 'desktop'}) => ProfileRow(
     name: 'weekly notes',
-    entryIds: const ['p1'],
     peerDeviceId: 'a1b2:c3d4',
     peerName: peerName,
-    localRootPath: '/on-device/notes',
-    remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of('/on-device/notes'),
-    remoteRootLabel: PathLabel.of('~/notes'),
+    entries: [
+      ProfileEntryRow(
+        entryId: 'p1',
+        kind: RootKind.folder,
+        localRootPath: '/on-device/notes',
+        remoteRootPath: '~/notes',
+        localRootLabel: PathLabel.of('/on-device/notes'),
+        remoteRootLabel: PathLabel.of('~/notes'),
+        localRootRefusal: null,
+      ),
+    ],
     breakage: null,
     lastRunUnfinished: false,
   );

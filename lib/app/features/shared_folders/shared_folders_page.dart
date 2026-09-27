@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../shared_folder_row.dart';
 import '../../withdraw_root_dialog.dart';
+import '../run_setup/file_chooser.dart';
 import 'shared_folders_controller.dart';
 import 'shared_folders_scope.dart';
 import 'shared_folders_view_state.dart';
@@ -67,11 +68,29 @@ class SharedFoldersPage extends StatelessWidget {
       builder: (context) => _AddFolderDialog(
         devices: controller.devicesForNewFolder,
         onBrowse: controller.chooseFolder,
+        onBrowseFile: () => _browseFile(context, controller),
       ),
     );
     if (share != null) {
       await controller.shareNewFolder(share.path, share.deviceIds);
     }
+  }
+
+  /// A file's path, chosen through [FileChooser] (D6, R4): the folder
+  /// chooser for where it lives, then a page over that folder's listing.
+  /// `null` at either step leaves the dialog's typed field untouched.
+  Future<String?> _browseFile(
+    BuildContext context,
+    SharedFoldersController controller,
+  ) async {
+    final chooser = controller.fileChooser;
+    final root = await chooser.chooseFolder();
+    if (root == null || !context.mounted) return null;
+    return Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => FileChooserPage(chooser: chooser, root: root),
+      ),
+    );
   }
 }
 
@@ -233,7 +252,11 @@ class _NewShare {
 /// exist yet on the host that will serve it. A grant is authorization, not
 /// reachability, and nothing here probes the folder.
 class _AddFolderDialog extends StatefulWidget {
-  const _AddFolderDialog({required this.devices, required this.onBrowse});
+  const _AddFolderDialog({
+    required this.devices,
+    required this.onBrowse,
+    required this.onBrowseFile,
+  });
 
   /// Every paired device, toggles off — the list to tick.
   final List<SharedFolderDevice> devices;
@@ -242,6 +265,10 @@ class _AddFolderDialog extends StatefulWidget {
   /// callback rather than reached for here, so a widget test drives this
   /// dialog without a platform channel.
   final Future<String?> Function() onBrowse;
+
+  /// [onBrowse]'s file counterpart (D6, R4): the folder chooser, then a
+  /// browse of it, ending in a file's path rather than a folder's.
+  final Future<String?> Function() onBrowseFile;
 
   @override
   State<_AddFolderDialog> createState() => _AddFolderDialogState();
@@ -262,6 +289,11 @@ class _AddFolderDialogState extends State<_AddFolderDialog> {
     if (picked != null) _path.text = picked;
   }
 
+  Future<void> _browseFile() async {
+    final picked = await widget.onBrowseFile();
+    if (picked != null) _path.text = picked;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -272,11 +304,26 @@ class _AddFolderDialogState extends State<_AddFolderDialog> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
-            FilledButton.icon(
-              key: const Key('shared-folders-browse'),
-              onPressed: _browse,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Choose folder'),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    key: const Key('shared-folders-browse'),
+                    onPressed: _browse,
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('Choose folder'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    key: const Key('shared-folders-browse-file'),
+                    onPressed: _browseFile,
+                    icon: const Icon(Icons.insert_drive_file_outlined),
+                    label: const Text('Choose a file'),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             Text(

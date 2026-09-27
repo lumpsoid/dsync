@@ -8,6 +8,7 @@ import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -71,42 +72,43 @@ void main() {
     ),
   );
 
+  ProfileEntryRow entry(
+    String id, {
+    String localRootPath = '/on-device/notes',
+  }) => ProfileEntryRow(
+    entryId: id,
+    kind: RootKind.folder,
+    localRootPath: localRootPath,
+    remoteRootPath: '~/notes',
+    localRootLabel: PathLabel.of(localRootPath),
+    remoteRootLabel: PathLabel.of('~/notes'),
+    localRootRefusal: null,
+  );
+
   ProfileRow ok() => ProfileRow(
     name: 'weekly',
-    entryIds: const ['p1'],
     peerDeviceId: 'a1b2:c3d4',
     peerName: 'desktop',
-    localRootPath: '/on-device/notes',
-    remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of('/on-device/notes'),
-    remoteRootLabel: PathLabel.of('~/notes'),
+    entries: [entry('p1')],
     breakage: null,
     lastRunUnfinished: false,
   );
 
   ProfileRow broken() => ProfileRow(
     name: 'revoked',
-    entryIds: const ['p2'],
     peerDeviceId: 'dead:beef',
     peerName: null,
-    localRootPath: '/on-device/notes',
-    remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of('/on-device/notes'),
-    remoteRootLabel: PathLabel.of('~/notes'),
+    entries: [entry('p2')],
     breakage: const ProfileDeviceUnpaired(),
     lastRunUnfinished: false,
   );
 
   ProfileRow folderLost() => ProfileRow(
     name: 'no folder',
-    entryIds: const ['p3'],
     peerDeviceId: 'a1b2:c3d4',
     peerName: 'desktop',
-    localRootPath: '/on-device/gone',
-    remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of('/on-device/gone'),
-    remoteRootLabel: PathLabel.of('~/notes'),
-    breakage: const ProfileLocalRootUnusable(),
+    entries: [entry('p3', localRootPath: '/on-device/gone')],
+    breakage: const ProfileLocalRootUnusable(0),
     lastRunUnfinished: false,
   );
 
@@ -209,6 +211,39 @@ void main() {
     expect(find.textContaining('no longer paired'), findsNothing);
   });
 
+  testWidgets('a multi-entry profile shows the first two pairs and folds the '
+      'rest into a count', (tester) async {
+    ready();
+    app.state.recordProfiles([
+      ProfileRow(
+        name: 'many',
+        peerDeviceId: 'a1b2:c3d4',
+        peerName: 'desktop',
+        entries: [
+          entry('p1'),
+          ProfileEntryRow(
+            entryId: 'p2',
+            kind: RootKind.folder,
+            localRootPath: '/on-device/second',
+            remoteRootPath: '~/second',
+            localRootLabel: PathLabel.of('/on-device/second'),
+            remoteRootLabel: PathLabel.of('~/second'),
+            localRootRefusal: null,
+          ),
+          entry('p3'),
+        ],
+        breakage: null,
+        lastRunUnfinished: false,
+      ),
+    ]);
+    await pumpPage(tester);
+
+    expect(find.text('/on-device/notes', findRichText: true), findsOneWidget);
+    expect(find.text('/on-device/second', findRichText: true), findsOneWidget);
+    // The third entry is not drawn, only counted.
+    expect(find.text('and 1 more'), findsOneWidget);
+  });
+
   testWidgets('a revoked device is named in its side\'s heading, by id', (
     tester,
   ) async {
@@ -237,13 +272,9 @@ void main() {
     app.state.recordProfiles([
       ProfileRow(
         name: 'weekly',
-        entryIds: const ['p1'],
         peerDeviceId: 'a1b2:c3d4',
         peerName: 'desktop',
-        localRootPath: '/on-device/notes',
-        remoteRootPath: '~/notes',
-        localRootLabel: PathLabel.of('/on-device/notes'),
-        remoteRootLabel: PathLabel.of('~/notes'),
+        entries: [entry('p1')],
         breakage: null,
         lastRunUnfinished: true,
       ),
@@ -323,9 +354,45 @@ void main() {
 
     // The row asks its own controller, by id, and nothing navigates away
     // to do it. What the ask then does is `profiles_controller_test.dart`'s.
-    expect(controller.repicked, ['no folder']);
+    expect(controller.repicked, [(name: 'no folder', entryIndex: 0)]);
     expect(opened, isEmpty);
     expect(devicesOpened, 0);
+  });
+
+  testWidgets('a broken entry past the first two still gets its own remedy, '
+      'aimed at it', (tester) async {
+    ready();
+    app.state.recordProfiles([
+      ProfileRow(
+        name: 'many',
+        peerDeviceId: 'a1b2:c3d4',
+        peerName: 'desktop',
+        entries: [
+          entry('p1'),
+          entry('p2'),
+          ProfileEntryRow(
+            entryId: 'p3',
+            kind: RootKind.folder,
+            localRootPath: '/on-device/gone',
+            remoteRootPath: '~/notes3',
+            localRootLabel: PathLabel.of('/on-device/gone'),
+            remoteRootLabel: PathLabel.of('~/notes3'),
+            localRootRefusal: 'gone',
+          ),
+        ],
+        breakage: const ProfileLocalRootUnusable(2),
+        lastRunUnfinished: false,
+      ),
+    ]);
+    await pumpPage(tester);
+
+    // Past the fold ("and 1 more"), but the remedy still names it.
+    expect(find.text('and 1 more'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('profile-pick-folder-many')));
+    await tester.pumpAndSettle();
+
+    expect(controller.repicked, [(name: 'many', entryIndex: 2)]);
   });
 
   testWidgets('the error line shows above the rows and clears on success', (
@@ -370,8 +437,9 @@ void main() {
 class _RecordingProfilesController extends ProfilesController {
   _RecordingProfilesController(super.app, {required super.picker});
 
-  final List<String> repicked = [];
+  final List<({String name, int entryIndex})> repicked = [];
 
   @override
-  Future<void> repickLocalFolder(String name) async => repicked.add(name);
+  Future<void> repickLocalFolder(String name, int entryIndex) async =>
+      repicked.add((name: name, entryIndex: entryIndex));
 }

@@ -1,6 +1,7 @@
 import '../../app_controller.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../shared_folder_row.dart';
+import '../run_setup/file_chooser.dart';
 import '../run_setup/folder_picker.dart';
 import 'shared_folders_view_state.dart';
 
@@ -48,6 +49,11 @@ class SharedFoldersController {
   /// here.
   final SharedFoldersViewState state = SharedFoldersViewState();
 
+  /// A file's chooser (D6, R4): [picker]'s folder chooser, then the core's
+  /// own listing of it — a grant is authorized the same way whether it is a
+  /// folder or a file.
+  FileChooser get fileChooser => FileChooser(app.core, picker: picker);
+
   /// One row per folder this host serves, each carrying every paired device
   /// and whether that device may reach it. Derived on read — see the class
   /// doc for why there is no copy.
@@ -90,17 +96,21 @@ class SharedFoldersController {
     );
   }
 
-  /// Shares a folder that is not on the page yet: [rawPath] granted to each
-  /// of [deviceIds], the core expanding `~` as `dsync pair grant` does.
+  /// Shares a folder or file that is not on the page yet: [rawPath] granted
+  /// to each of [deviceIds], the core expanding `~` as `dsync pair grant`
+  /// does.
   ///
   /// At least one device is required, and that is not a nicety. A root is
   /// stored per device; granting it to nobody would write nothing at all,
   /// and the user would be looking at a page that did not gain the folder
   /// they just added with no refusal to explain it.
   ///
-  /// Stops at the first device the store refuses — the rest of the list is
-  /// re-rendered from the store anyway, and going on would leave the user
-  /// with a partly-applied change and one message about it.
+  /// **Runs every device, even once one is refused** (D6): a nesting
+  /// refusal is about that one device's grants, not about [rawPath] itself,
+  /// so the rest can still gain it. A partial grant is reported, naming
+  /// which devices were refused and why, rather than hidden behind the
+  /// first refusal — the rows already on screen (re-rendered from the
+  /// store) show which of them actually gained it.
   Future<void> shareNewFolder(String rawPath, List<String> deviceIds) async {
     final trimmed = rawPath.trim();
     if (trimmed.isEmpty) {
@@ -116,15 +126,30 @@ class SharedFoldersController {
       );
       return;
     }
+    final failures = <String>[];
     for (final deviceId in deviceIds) {
-      await _write(
-        () => app.grantRoot(deviceId, trimmed),
-        done: deviceIds.length == 1
-            ? 'Sharing $trimmed with ${_nameOf(deviceId)}.'
-            : 'Sharing $trimmed with ${deviceIds.length} devices.',
-      );
-      if (state.outcome is SharedFoldersFailed) return;
+      final failure = await app.grantRoot(deviceId, trimmed);
+      if (failure != null) failures.add('${_nameOf(deviceId)}: $failure');
     }
+    if (failures.isEmpty) {
+      state.recordOutcome(
+        SharedFoldersDone(
+          deviceIds.length == 1
+              ? 'Sharing $trimmed with ${_nameOf(deviceIds.single)}.'
+              : 'Sharing $trimmed with ${deviceIds.length} devices.',
+        ),
+      );
+      return;
+    }
+    final succeeded = deviceIds.length - failures.length;
+    state.recordOutcome(
+      SharedFoldersFailed(
+        succeeded == 0
+            ? failures.join('\n')
+            : 'Shared $trimmed with $succeeded of ${deviceIds.length} '
+                  'devices. Refused for ${failures.join('; ')}',
+      ),
+    );
   }
 
   /// Opens the platform folder chooser and returns what was picked, or

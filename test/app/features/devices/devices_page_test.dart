@@ -8,6 +8,7 @@ import 'package:dsync/app/features/devices/devices_scope.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -65,13 +66,19 @@ void main() {
 
   ProfileRow profile(String id, {required String peerDeviceId}) => ProfileRow(
     name: 'run $id',
-    entryIds: [id],
     peerDeviceId: peerDeviceId,
     peerName: 'phone',
-    localRootPath: '/on-device/notes',
-    remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of('/on-device/notes'),
-    remoteRootLabel: PathLabel.of('~/notes'),
+    entries: [
+      ProfileEntryRow(
+        entryId: id,
+        kind: RootKind.folder,
+        localRootPath: '/on-device/notes',
+        remoteRootPath: '~/notes',
+        localRootLabel: PathLabel.of('/on-device/notes'),
+        remoteRootLabel: PathLabel.of('~/notes'),
+        localRootRefusal: null,
+      ),
+    ],
     breakage: null,
     lastRunUnfinished: false,
   );

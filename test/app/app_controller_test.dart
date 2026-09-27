@@ -474,6 +474,7 @@ void main() {
 
       final failure = await controller.relocateProfile(
         'weekly',
+        entryIndex: 0,
         localRootPath: '/sdcard/Moved',
       );
 
@@ -500,6 +501,7 @@ void main() {
     test('relocating a profile that is gone is a message', () async {
       final failure = await controller.relocateProfile(
         'gone',
+        entryIndex: 0,
         localRootPath: '/sdcard/Moved',
       );
 

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../core_link/models/action_choice.dart';
 import '../../core_link/models/conflict_choice.dart';
+import '../../core_link/models/root_kind.dart';
 import '../../core_link/models/run_standing.dart';
 
 /// Where the run stands. Sealed, for the reason `PairOutcome` and
@@ -488,6 +489,65 @@ final class SyncRunProgress {
   final int total;
 }
 
+/// One entry of the profile's run, as the header strip lists it above the
+/// current entry's own plan (D10): its kind and both roots as typed, and
+/// how it stands.
+final class SyncRunEntryRow {
+  const SyncRunEntryRow({
+    required this.kind,
+    required this.localRoot,
+    required this.remoteRoot,
+    required this.status,
+  });
+
+  final RootKind kind;
+  final String localRoot;
+  final String remoteRoot;
+  final SyncRunEntryStatus status;
+}
+
+/// Where one entry of the run stands. Sealed, for the reason [SyncRunPhase]
+/// is: [SyncRunEntrySkipped] and [SyncRunEntryFailed] each carry the line
+/// that says why, and a status with the wrong payload cannot be
+/// constructed.
+sealed class SyncRunEntryStatus {
+  const SyncRunEntryStatus();
+}
+
+/// Not reached yet — waits behind an earlier entry still running.
+final class SyncRunEntryPending extends SyncRunEntryStatus {
+  const SyncRunEntryPending();
+}
+
+/// The entry the current plan and tallies describe.
+final class SyncRunEntryRunning extends SyncRunEntryStatus {
+  const SyncRunEntryRunning();
+}
+
+final class SyncRunEntrySynced extends SyncRunEntryStatus {
+  const SyncRunEntrySynced();
+}
+
+/// Not there to sync — a missing or wrong-kind root, a kind mismatch;
+/// nothing was written for it.
+final class SyncRunEntrySkipped extends SyncRunEntryStatus {
+  const SyncRunEntrySkipped(this.reason);
+
+  final String reason;
+}
+
+/// Ran and reported an error — a refused connection, a lock held elsewhere.
+final class SyncRunEntryFailed extends SyncRunEntryStatus {
+  const SyncRunEntryFailed(this.message);
+
+  final String message;
+}
+
+/// The run stopped, or the user stopped it, before this entry started.
+final class SyncRunEntryNotRun extends SyncRunEntryStatus {
+  const SyncRunEntryNotRun();
+}
+
 /// The rendered values of the Run page: the latest view of the run the
 /// core sent, as something a widget can display (SPEC §9, §11.4).
 ///
@@ -531,6 +591,8 @@ class SyncRunViewState extends ChangeNotifier {
   int _failedCount = 0;
   SyncRunProgress? _progress;
   String? _startedAt;
+  List<SyncRunEntryRow> _entries = const [];
+  int? _currentEntry;
 
   SyncRunPhase get phase => _phase.value;
 
@@ -639,6 +701,16 @@ class SyncRunViewState extends ChangeNotifier {
   /// repaint every second of a scan to stay true.
   String? get startedAt => _startedAt;
 
+  /// The profile's entries, in the order they run; empty until the target
+  /// resolves. The page draws this list above the current entry's plan only
+  /// when there is more than one (D10) — a single-entry run reads exactly
+  /// as it always has.
+  List<SyncRunEntryRow> get entries => _entries;
+
+  /// Which of [entries] the plan and tallies describe; `null` before the
+  /// first one starts.
+  int? get currentEntry => _currentEntry;
+
   /// Renders one view of the run, whole. `SyncRunController` only.
   ///
   /// Every field is replaced — a resumed attempt's view shows nothing of
@@ -671,12 +743,16 @@ class SyncRunViewState extends ChangeNotifier {
     required SyncRunProgress? progress,
     required int appliedCount,
     required int failedCount,
+    required List<SyncRunEntryRow> entries,
+    required int? currentEntry,
   }) {
     _standing = standing;
     _dryRun = dryRun;
     _startedAt = startedAt;
     _header = header;
     _diagnosticsRoot = diagnosticsRoot;
+    _entries = List.unmodifiable(entries);
+    _currentEntry = currentEntry;
     _scanTally = scanTally;
     _skippedSymlinks = List.unmodifiable(skippedSymlinks);
     _unreadablePaths = List.unmodifiable(unreadablePaths);

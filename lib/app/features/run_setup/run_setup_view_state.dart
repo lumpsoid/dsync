@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../../core_link/models/root_kind.dart';
 import '../../run_request.dart';
 
 /// Where the Run setup page was opened from — the sum type that keeps
@@ -35,12 +36,15 @@ final class RunSetupFromProfile extends RunSetupSource {
 class RunSetupPrefill {
   const RunSetupPrefill({
     required this.profileName,
-    required this.remoteRoot,
+    required this.remoteRoots,
     required this.lastRunUnfinished,
   });
 
   final String profileName;
-  final String remoteRoot;
+
+  /// Every entry's remote root, in the same order as
+  /// `RunSetupViewState.entries` — one text field's initial value each.
+  final List<String> remoteRoots;
 
   /// Whether the profile's run marker (SPEC §7.6) was still there when the
   /// page opened: its last run died or aborted mid-apply, and the run this
@@ -127,25 +131,50 @@ final class RunSetupStarted extends RunSetupOutcome {
   final RunRequest request;
 }
 
-/// The rendered values of the Run setup page: picking the two locations a
-/// run syncs (SPEC §2, §4.4, §11.2).
+/// One entry of the form: which kind its local side is, the folder or file
+/// chosen for it, and the two fields' own validation lines. The remote
+/// root's *text* is not here — see `RunSetupViewState`'s doc comment — only
+/// what the last validation said about it.
+///
+/// [localRoot] *is* here, unlike the remote root text, because the
+/// controller writes it: the platform chooser or the file chooser is the
+/// only thing that sets it, so the page has no editable copy of its own.
+class RunEntryForm {
+  const RunEntryForm({
+    this.kind = RootKind.folder,
+    this.localRoot,
+    this.localFolderError,
+    this.remoteRootError,
+  });
+
+  final RootKind kind;
+
+  /// The absolute path of the folder or file this entry syncs on this
+  /// device, or `null` when none has been chosen yet.
+  final String? localRoot;
+
+  /// The line under this entry's folder picker, or `null` when it
+  /// validated.
+  final String? localFolderError;
+
+  /// The line under this entry's remote root field, or `null` when it
+  /// validated.
+  final String? remoteRootError;
+}
+
+/// The rendered values of the Run setup page: picking the entries a run
+/// syncs (SPEC §2, §4.4, §11.2, D10).
 ///
 /// Holds only what the page displays — see the view-state role in
-/// `app_scope.dart`: the peer's rendered case, the folder chosen as the
-/// local replica, each field's validation line, the dry-run switch's
-/// position, and the [outcome] of the last start. The remote root and
-/// address text are the widgets' (`TextEditingController`s), not copied
-/// here.
-///
-/// [localRoot] *is* here, unlike the text fields, because the controller
-/// writes it: the platform chooser is the only thing that sets it, so the
-/// page has no editable copy of its own.
+/// `app_scope.dart`: the peer's rendered case, every entry's chosen local
+/// side and validation lines, the dry-run switch's position, and the
+/// [outcome] of the last start. Every entry's remote root and the address
+/// text are the widgets' (`TextEditingController`s, one per entry for the
+/// remote root), not copied here.
 class RunSetupViewState extends ChangeNotifier {
   RunSetupPeer _peer = const RunSetupPeerLoading();
-  String? _localRoot;
-  String? _localFolderError;
+  List<RunEntryForm> _entries = const [RunEntryForm()];
   String? _folderAccessError;
-  String? _remoteRootError;
   String? _addressError;
   bool _dryRun = false;
   List<String> _ignorePatterns = const [];
@@ -154,24 +183,17 @@ class RunSetupViewState extends ChangeNotifier {
 
   RunSetupPeer get peer => _peer;
 
-  /// The absolute path of the folder this run would sync on this device,
-  /// or `null` when none has been chosen. Whole path, not a name: the user
-  /// picks it through the platform chooser, so it is anywhere on the
-  /// device, and the path is the only part of it they chose.
-  String? get localRoot => _localRoot;
+  /// Every entry the form edits, in order — always at least one (a profile
+  /// is never empty).
+  List<RunEntryForm> get entries => _entries;
 
-  /// The line under the folder picker, or `null` when it validated.
-  String? get localFolderError => _localFolderError;
-
-  /// Why the folder the user just picked cannot be used, or `null` when the
-  /// last pick worked or there has not been one. Shown transiently — the
-  /// page reads it after `RunSetupController.pickLocalFolder`, or
-  /// `recheckAfterSettings`, returns and raises a snackbar — because it is about a folder that never made it
-  /// [localRoot], so there is no field to hang it under.
+  /// Why the folder or file the user just picked cannot be used, or `null`
+  /// when the last pick worked or there has not been one. Shown transiently
+  /// — the page reads it after a pick, or `recheckAfterSettings`, returns
+  /// and raises a snackbar — because it is about a path that never made it
+  /// into an entry, so there is no field to hang it under. Not per entry:
+  /// only one pick can be in flight at a time, whichever entry it was for.
   String? get folderAccessError => _folderAccessError;
-
-  /// The line under the remote root field, or `null` when it validated.
-  String? get remoteRootError => _remoteRootError;
 
   /// The line under the address field, or `null` when it validated.
   String? get addressError => _addressError;
@@ -181,9 +203,10 @@ class RunSetupViewState extends ChangeNotifier {
   bool get dryRun => _dryRun;
 
   /// SPEC §9 `ignore` globs this run would apply, as the Filters page left
-  /// them. Here rather than on the page, for the same reason [localRoot]
-  /// is: the form has no editable copy of its own — the value comes back
-  /// from another screen, and both ways out of this page read it.
+  /// them. Here rather than on the page, for the same reason [entries] is:
+  /// the form has no editable copy of its own — the value comes back from
+  /// another screen, and both ways out of this page read it. Profile-wide,
+  /// not per entry (D1).
   ///
   /// Empty is the ordinary case: sync everything in the folder.
   List<String> get ignorePatterns => _ignorePatterns;
@@ -192,7 +215,7 @@ class RunSetupViewState extends ChangeNotifier {
 
   /// The saved profile's initial values, or `null` on a blank form. Read
   /// once by the page after `load` completes, to fill its text fields; the
-  /// local root needs no entry here — the controller selects it directly.
+  /// local roots need no entry here — the controller selects them directly.
   RunSetupPrefill? get prefill => _prefill;
 
   /// Records the peer's case. `RunSetupController` only.
@@ -201,30 +224,51 @@ class RunSetupViewState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Records the folder this run would sync on this device, or clears it.
-  /// `RunSetupController` only.
-  void recordLocalRoot(String? path) {
-    _localRoot = path;
+  /// Replaces the whole entry list — a fresh visit, or a profile's entries
+  /// loaded in. `RunSetupController` only.
+  void recordEntries(List<RunEntryForm> entries) {
+    _entries = List.unmodifiable(entries);
     notifyListeners();
   }
 
-  /// Records every field's validation line at once — one notification for
-  /// one validation pass. `RunSetupController` only.
-  void recordFieldErrors({
+  /// Replaces the entry at [index] with what [update] makes of it.
+  /// `RunSetupController` only.
+  void updateEntry(int index, RunEntryForm Function(RunEntryForm) update) {
+    final next = [..._entries];
+    next[index] = update(next[index]);
+    _entries = List.unmodifiable(next);
+    notifyListeners();
+  }
+
+  /// Records the entry at [index]'s two field-validation lines at once, its
+  /// kind and local root unchanged. `RunSetupController` only.
+  void recordEntryFieldErrors(
+    int index, {
     required String? localFolder,
     required String? remoteRoot,
-    required String? address,
   }) {
-    _localFolderError = localFolder;
-    _remoteRootError = remoteRoot;
-    _addressError = address;
-    notifyListeners();
+    updateEntry(
+      index,
+      (entry) => RunEntryForm(
+        kind: entry.kind,
+        localRoot: entry.localRoot,
+        localFolderError: localFolder,
+        remoteRootError: remoteRoot,
+      ),
+    );
   }
 
-  /// Records why a picked folder was refused, or clears it.
+  /// Records why a picked folder or file was refused, or clears it.
   /// `RunSetupController` only.
   void recordFolderAccessError(String? message) {
     _folderAccessError = message;
+    notifyListeners();
+  }
+
+  /// Records the address field's validation line, or clears it.
+  /// `RunSetupController` only.
+  void recordAddressError(String? message) {
+    _addressError = message;
     notifyListeners();
   }
 

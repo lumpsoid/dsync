@@ -167,7 +167,8 @@ class _ProfilesBody extends StatelessWidget {
                     ? () => onOpenProfile(row.name)
                     : null,
                 onRunAgain: () => onOpenProfile(row.name),
-                onPickFolder: () => controller.repickLocalFolder(row.name),
+                onPickFolder: (entryIndex) =>
+                    controller.repickLocalFolder(row.name, entryIndex),
                 onPairAgain: onOpenDevices,
                 onDelete: () => _confirmDelete(context, row),
               ),
@@ -247,9 +248,9 @@ class _ProfileTile extends StatelessWidget {
   /// 99f404): the same hop a tap makes, named for what it is for.
   final VoidCallback onRunAgain;
 
-  /// Re-picks this profile's local folder — the remedy for
-  /// [ProfileLocalRootUnusable].
-  final VoidCallback onPickFolder;
+  /// Re-picks the local folder of the entry at the given index — the remedy
+  /// for [ProfileLocalRootUnusable], aimed at its `entryIndex`.
+  final void Function(int entryIndex) onPickFolder;
 
   /// Opens Devices, where the revoked peer can be paired with again — the
   /// remedy for [ProfileDeviceUnpaired].
@@ -296,13 +297,30 @@ class _ProfileTile extends StatelessWidget {
               // device has no name on this host any more, only an id, and
               // the heading says so rather than leaving a blank where a
               // name was.
-              _PairSide(label: 'On this device', path: row.localRootLabel),
-              const SizedBox(height: 8),
-              _PairSide(
-                label:
-                    'On ${row.peerName ?? 'unpaired device ${row.peerDeviceId}'}',
-                path: row.remoteRootLabel,
-              ),
+              //
+              // Only the first two entries are drawn in full — a row is a
+              // summary, not the editor — with the rest folded into a count.
+              // A single-entry profile (still the common case) reads exactly
+              // as it always has: no numbering, one pair of blocks.
+              for (final (index, entry) in _shown(row.entries).indexed) ...[
+                if (index > 0) const SizedBox(height: 8),
+                _PairSide(label: 'On this device', path: entry.localRootLabel),
+                const SizedBox(height: 8),
+                _PairSide(
+                  label:
+                      'On ${row.peerName ?? 'unpaired device ${row.peerDeviceId}'}',
+                  path: entry.remoteRootLabel,
+                ),
+              ],
+              if (row.entries.length > 2) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'and ${row.entries.length - 2} more',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
               if (row.lastRunUnfinished) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -328,9 +346,9 @@ class _ProfileTile extends StatelessWidget {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: switch (breakage) {
-                    ProfileLocalRootUnusable() => TextButton(
+                    ProfileLocalRootUnusable(:final entryIndex) => TextButton(
                       key: Key('profile-pick-folder-${row.name}'),
-                      onPressed: onPickFolder,
+                      onPressed: () => onPickFolder(entryIndex),
                       child: const Text('Choose folder'),
                     ),
                     ProfileDeviceUnpaired() => TextButton(
@@ -348,6 +366,11 @@ class _ProfileTile extends StatelessWidget {
     );
   }
 }
+
+/// The entries a row draws in full: the first two, so a long profile still
+/// fits on a row sized for one.
+List<ProfileEntryRow> _shown(List<ProfileEntryRow> entries) =>
+    entries.length <= 2 ? entries : entries.sublist(0, 2);
 
 /// One side of the pair: where it is, and the folder it is.
 ///

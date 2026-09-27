@@ -1300,7 +1300,17 @@ void main() {
       find.text('/data/gone ⇄ ~/gone: the folder /data/gone is missing'),
       findsOneWidget,
     );
-    expect(find.textContaining(localRoot), findsNothing, reason: 'synced');
+    // The entry list (D10): both entries, each with its own status — the
+    // one that did not sync, and the one that did.
+    expect(find.byKey(const Key('run-entries')), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('run-entry-status-0'))).data,
+      contains('skipped'),
+    );
+    expect(
+      tester.widget<Text>(find.byKey(const Key('run-entry-status-1'))).data,
+      'synced',
+    );
     expect(find.byKey(const Key('run-resume')), findsOneWidget);
     expect(find.byKey(const Key('run-done')), findsOneWidget);
     expect(find.byKey(const Key('run-stop')), findsNothing);

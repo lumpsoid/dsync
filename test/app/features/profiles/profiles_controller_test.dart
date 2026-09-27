@@ -152,7 +152,7 @@ void main() {
           ]),
         );
 
-        await controller.repickLocalFolder('weekly');
+        await controller.repickLocalFolder('weekly', 0);
 
         expect(core.sent<wire.CoreCommandSaveProfile>(), [
           wire.CoreCommandSaveProfile(
@@ -180,7 +180,7 @@ void main() {
       await givenABrokenFolder();
       picker.onPick = () => null;
 
-      await controller.repickLocalFolder('weekly');
+      await controller.repickLocalFolder('weekly', 0);
 
       expect(core.sent<wire.CoreCommandCheckFolder>(), isEmpty);
       expect(core.sent<wire.CoreCommandSaveProfile>(), isEmpty);
@@ -198,7 +198,7 @@ void main() {
         ),
       );
 
-      await controller.repickLocalFolder('weekly');
+      await controller.repickLocalFolder('weekly', 0);
 
       // The grant was asked for once, then the check was repeated.
       expect(picker.requestAccessCount, 1);
@@ -231,7 +231,7 @@ void main() {
         return true;
       };
 
-      await controller.repickLocalFolder('weekly');
+      await controller.repickLocalFolder('weekly', 0);
 
       expect(
         core
@@ -250,7 +250,7 @@ void main() {
       await givenABrokenFolder();
       picker.onPick = () => throw StateError('no chooser here');
 
-      await controller.repickLocalFolder('weekly');
+      await controller.repickLocalFolder('weekly', 0);
 
       expect(controller.state.error, contains('Could not open the folder'));
     });
@@ -259,7 +259,7 @@ void main() {
       picker.onPick = () => '/storage/emulated/0/Elsewhere';
       await controller.refresh();
 
-      await controller.repickLocalFolder('never-was');
+      await controller.repickLocalFolder('never-was', 0);
 
       expect(controller.state.error, contains('never-was'));
       expect(app.state.profiles, isEmpty);

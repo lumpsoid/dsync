@@ -286,7 +286,10 @@ void main() {
     expect(find.text('No folder chosen'), findsOneWidget);
     expect(find.text('Pick a folder…'), findsOneWidget);
 
-    controller.state.recordLocalRoot('/sdcard/photos');
+    controller.state.updateEntry(
+      0,
+      (entry) => RunEntryForm(kind: entry.kind, localRoot: '/sdcard/photos'),
+    );
     await tester.pump();
 
     expect(find.text('/sdcard/photos'), findsOneWidget);
@@ -305,7 +308,7 @@ void main() {
 
     await pickFolder(
       tester,
-      until: () => controller.state.localRoot == picked,
+      until: () => controller.state.entries[0].localRoot == picked,
       what: 'the picked folder to become the local root',
     );
 
@@ -407,7 +410,7 @@ void main() {
       await tester.runAsync(() async {
         drive(tester, back);
         await settleUntil(
-          () => controller.state.localRoot == refused,
+          () => controller.state.entries[0].localRoot == refused,
           what: 'the re-checked folder to become the local root',
         );
       });
@@ -472,7 +475,7 @@ void main() {
       );
       await pickFolder(
         tester,
-        until: () => controller.state.localRoot == other,
+        until: () => controller.state.entries[0].localRoot == other,
         what: 'the other folder to become the local root',
       );
       final before = checks();
@@ -491,10 +494,10 @@ void main() {
     await openDisclosure(tester, 'run-setup-options');
     expect(find.text('folder missing'), findsNothing);
 
-    controller.state.recordFieldErrors(
+    controller.state.recordEntryFieldErrors(
+      0,
       localFolder: 'folder missing',
       remoteRoot: 'remote missing',
-      address: null,
     );
     await tester.pump();
 
@@ -601,9 +604,15 @@ void main() {
     await tester.tap(find.byKey(const Key('run-setup-start')));
     await tester.pump();
 
-    expect(controller.state.localFolderError, isNotNull);
-    expect(find.text(controller.state.localFolderError!), findsOneWidget);
-    expect(find.text(controller.state.remoteRootError!), findsOneWidget);
+    expect(controller.state.entries[0].localFolderError, isNotNull);
+    expect(
+      find.text(controller.state.entries[0].localFolderError!),
+      findsOneWidget,
+    );
+    expect(
+      find.text(controller.state.entries[0].remoteRootError!),
+      findsOneWidget,
+    );
     expect(started, isEmpty);
   });
 
@@ -638,7 +647,7 @@ void main() {
 
     await pickFolder(
       tester,
-      until: () => controller.state.localRoot == picked,
+      until: () => controller.state.entries[0].localRoot == picked,
       what: 'the picked folder to become the local root',
     );
     expect(find.text(picked), findsOneWidget);
@@ -695,7 +704,7 @@ void main() {
       await pumpLoaded(tester);
       await pickFolder(
         tester,
-        until: () => controller.state.localRoot == picked,
+        until: () => controller.state.entries[0].localRoot == picked,
         what: 'the picked folder to become the local root',
       );
 
@@ -708,6 +717,99 @@ void main() {
             .widget<FilledButton>(find.byKey(const Key('scan-cost-run')))
             .onPressed,
         isNotNull,
+      );
+    });
+  });
+
+  group('entries (D10)', () {
+    testWidgets('adding an entry gives it its own keyed fields, entry 0 '
+        'untouched', (tester) async {
+      await pumpLoaded(tester);
+
+      expect(find.byKey(const Key('run-setup-local-folder-1')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('run-setup-add-entry')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('run-setup-local-folder')), findsOneWidget);
+      expect(find.byKey(const Key('run-setup-local-folder-1')), findsOneWidget);
+      expect(find.byKey(const Key('run-setup-remote-root-1')), findsOneWidget);
+      expect(find.byKey(const Key('run-setup-pick-folder-1')), findsOneWidget);
+    });
+
+    testWidgets('removing an entry drops its fields', (tester) async {
+      await pumpLoaded(tester);
+      await tester.tap(find.byKey(const Key('run-setup-add-entry')));
+      await tester.pump();
+      expect(find.byKey(const Key('run-setup-local-folder-1')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('run-setup-remove-entry-1')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('run-setup-local-folder-1')), findsNothing);
+    });
+
+    testWidgets('the only entry offers no way to remove itself', (
+      tester,
+    ) async {
+      await pumpLoaded(tester);
+
+      expect(find.byKey(const Key('run-setup-remove-entry-0')), findsNothing);
+    });
+
+    testWidgets('tapping Start with entry 1 empty shows its own field '
+        'errors, not entry 0\'s', (tester) async {
+      final picked = '${tempDir.path}/elsewhere/notes';
+      Directory(picked).createSync(recursive: true);
+      picker.onPick = () => picked;
+      await pumpLoaded(tester);
+      await tester.tap(find.byKey(const Key('run-setup-add-entry')));
+      await tester.pump();
+      await pickFolder(
+        tester,
+        until: () => controller.state.entries[0].localRoot == picked,
+        what: 'the picked folder to become entry 0\'s local root',
+      );
+      await tester.enterText(
+        find.byKey(const Key('run-setup-remote-root')),
+        '~/notes',
+      );
+
+      await tester.tap(find.byKey(const Key('run-setup-start')));
+      await tester.pump();
+
+      expect(controller.state.entries[0].localFolderError, isNull);
+      expect(controller.state.entries[0].remoteRootError, isNull);
+      expect(controller.state.entries[1].localFolderError, isNotNull);
+      expect(
+        find.text(controller.state.entries[1].localFolderError!),
+        findsOneWidget,
+      );
+      expect(started, isEmpty);
+    });
+
+    testWidgets('a File entry offers no scan probe or filter preview', (
+      tester,
+    ) async {
+      await pumpLoaded(tester);
+
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('run-setup-diagnostics')))
+            .onPressed,
+        isNull,
+      );
+
+      await tester.tap(find.text('File'));
+      await tester.pump();
+
+      expect(find.text('No file chosen'), findsOneWidget);
+      expect(find.text('Pick a file…'), findsOneWidget);
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('run-setup-diagnostics')))
+            .onPressed,
+        isNull,
       );
     });
   });

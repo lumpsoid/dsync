@@ -4,6 +4,7 @@ import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
 import 'package:dsync/app/features/device_detail/device_detail_page.dart';
 import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
 import 'package:dsync/app/features/device_detail/device_detail_view_state.dart';
+import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/paired_device_row.dart';
@@ -14,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/pump_until.dart';
+import '../../../support/fake_folder_picker.dart';
 
 /// The Device page as a rendering test: rows are pushed into `AppState`
 /// already rendered and the page is pumped directly, per the scope
@@ -207,6 +209,57 @@ void main() {
     expect(browse, findsOneWidget);
     // The chooser is the filled button; typing is the fallback under it.
     expect(tester.widget(browse), isA<FilledButton>());
+  });
+
+  testWidgets('granting a file: the same chooser, then a browse, ends in '
+      'root/path (D6, R4)', (tester) async {
+    final picker = FakeFolderPicker()..onPick = () => '/media/usb';
+    final fileController = DeviceDetailController(app, picker: picker);
+    fileController.select(phone.deviceId);
+    deviceDetailScope.setController(fileController);
+    addTearDown(fileController.dispose);
+    core.reply<wire.CoreCommandListFilterFolder>(
+      folderRows(const [
+        FilterRow(
+          path: 'notes.txt',
+          name: 'notes.txt',
+          size: 12,
+          isFolder: false,
+          excludedBy: null,
+          syncs: true,
+        ),
+      ]),
+    );
+    core.reply<wire.CoreCommandGrantRoot>(
+      devicesReply([
+        pairedDevice(
+          deviceId: phone.deviceId,
+          name: 'desktop',
+          grantedRoots: const ['/home/me/notes', '/media/usb/notes.txt'],
+        ),
+      ]),
+    );
+    app.state.recordDevices([row()]);
+    await pumpPage(tester);
+
+    await tapAction(tester, const Key('device-grant-root'));
+    await tester.tap(find.byKey(const Key('device-grant-browse-file')));
+    await tester.pumpAndSettle();
+    expect(find.text('notes.txt'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('file-chooser-row-notes.txt')));
+    await tester.pumpAndSettle();
+
+    expect(core.sent<wire.CoreCommandGrantRoot>(), [
+      wire.CoreCommandGrantRoot(
+        deviceId: phone.deviceId,
+        path: '/media/usb/notes.txt',
+      ),
+    ]);
+    expect(
+      core.sent<wire.CoreCommandListFilterFolder>().single.ignore,
+      isEmpty,
+    );
   });
 
   testWidgets('withdrawing a folder asks first, and a cancel keeps it', (

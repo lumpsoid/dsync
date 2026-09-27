@@ -6,6 +6,7 @@ import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -57,6 +58,16 @@ void main() {
       clear.entryId,
   ];
 
+  ProfileEntryRow entry(String id) => ProfileEntryRow(
+    entryId: id,
+    kind: RootKind.folder,
+    localRootPath: '/on-device/notes',
+    remoteRootPath: '~/notes',
+    localRootLabel: PathLabel.of('/on-device/notes'),
+    remoteRootLabel: PathLabel.of('~/notes'),
+    localRootRefusal: null,
+  );
+
   ProfileRow profile(
     String id,
     String name, {
@@ -64,13 +75,9 @@ void main() {
     List<String> moreIds = const [],
   }) => ProfileRow(
     name: name,
-    entryIds: [id, ...moreIds],
     peerDeviceId: 'a1b2:c3d4',
     peerName: peerName,
-    localRootPath: '/on-device/notes',
-    remoteRootPath: '~/notes',
-    localRootLabel: PathLabel.of('/on-device/notes'),
-    remoteRootLabel: PathLabel.of('~/notes'),
+    entries: [entry(id), for (final more in moreIds) entry(more)],
     breakage: null,
     lastRunUnfinished: false,
   );
