@@ -2,8 +2,9 @@
 //! own code (task 1a341e), by walking one tree once per
 //! [`ScanProbeLayer`], each rung one named step more than the one below.
 //!
-//! Instrumentation, not a feature: nothing in a run calls it; the head's
-//! diagnostics page does, on the device being measured. It reports no
+//! Instrumentation, not a feature: nothing in a run calls it; the
+//! developer tool `dsync-scan-probe` (native/scan_probe) does, on the
+//! device being measured. It reports no
 //! failures - an unreadable folder is passed over silently by the walking
 //! rungs - because correctness is the scanner's job and this measures cost.
 

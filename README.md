@@ -417,6 +417,8 @@ native/
   hub/      the rinf bridge: intent-named commands in, one reply per command,
             and each session (run, serve, pairing window) out as whole-view
             snapshots, over dsync-core
+  scan_probe/  dsync-scan-probe — developer tool, not shipped: what scanning
+            a tree costs on this device (desktop or over adb; its README)
 lib/app/
   core_link/   CoreChannel (the one interface: rinf's signals) and the
                concrete CoreLink over it — the only place rinf is imported

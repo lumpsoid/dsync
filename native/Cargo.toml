@@ -9,7 +9,10 @@
 
 [workspace]
 resolver = "3"
-members = ["domain", "core", "cli", "hub"]
+members = ["domain", "core", "cli", "hub", "scan_probe"]
+# `scan_probe` is a developer tool, not shipped: `--workspace` builds it,
+# a plain `cargo build` here does not.
+default-members = ["domain", "core", "cli", "hub"]
 
 [workspace.dependencies]
 dsync-domain = { path = "domain" }

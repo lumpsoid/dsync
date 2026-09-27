@@ -1,0 +1,19 @@
+[package]
+name = "dsync-scan-probe"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# A developer tool, never shipped: what scanning a tree costs on this device,
+# through core's `ScanProbe`, and whether its filesystem folds case. Outside
+# the workspace's `default-members`, so a plain `cargo build` in native/ skips
+# it; `--workspace` gates still build and lint it. See README.md.
+[[bin]]
+name = "dsync-scan-probe"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+dsync-core.workspace = true
+dsync-domain.workspace = true
