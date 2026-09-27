@@ -303,16 +303,13 @@ class _Offer extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 24),
+        // Still, not a spinner: the wait is the operator walking to the
+        // other device, which no animation here can speed up or report on.
+        // What they can use is the deadline, and the page changes by itself
+        // the moment a device uses the code.
         Row(
           children: [
-            const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                semanticsLabel: 'Waiting for the other device',
-              ),
-            ),
+            const Icon(Icons.schedule, size: 20),
             const SizedBox(width: 12),
             Expanded(
               child: Text(

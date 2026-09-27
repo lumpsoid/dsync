@@ -83,6 +83,8 @@ class PairViewState extends ChangeNotifier {
   /// Records the name field's validation line — on submit, and again as the
   /// field is typed in. `PairController` only.
   void recordLocalNameError(String? error) {
+    // Re-recorded per keystroke; an unchanged line must not rebuild the page.
+    if (error == _localNameError) return;
     _localNameError = error;
     notifyListeners();
   }

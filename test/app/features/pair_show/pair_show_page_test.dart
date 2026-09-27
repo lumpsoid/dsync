@@ -128,6 +128,23 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 
+  testWidgets('waiting for a device to use the code draws nothing', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await openWindow(tester);
+
+    controller.state.recordStatus(PairShowWaiting(offer()));
+    await tester.pump();
+    // Whatever the switch itself set moving has finished by now.
+    await tester.pump(const Duration(seconds: 1));
+
+    // The operator is walking to the other device for up to the whole
+    // window: the code and its deadline stand still until something happens.
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
   testWidgets('shows the code as a symbol and as a line', (tester) async {
     await pumpPage(tester);
     await openWindow(tester);

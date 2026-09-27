@@ -99,6 +99,17 @@ void main() {
 
       expect(controller.state.localNameError, isNull);
     });
+
+    test('a keystroke that leaves the line as it was notifies nobody', () {
+      var notified = 0;
+      controller.state.addListener(() => notified++);
+
+      controller.localNameEdited('s');
+      controller.localNameEdited('st');
+      controller.localNameEdited('stu');
+
+      expect(notified, 0);
+    });
   });
 
   group('a code coming in', () {

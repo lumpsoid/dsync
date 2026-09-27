@@ -312,21 +312,13 @@ class _PairForm extends StatelessWidget {
           ],
           const SizedBox(height: 24),
           _OutcomeLine(state.outcome),
+          // No spinner while submitting: almost all of that wait is the
+          // operator confirming on the other device, so the button says where
+          // the next step is instead of animating over it.
           FilledButton(
             key: const Key('pair-submit'),
             onPressed: submitting ? null : onSubmit,
-            child: submitting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    // The spinner stands in for the button's 'Pair' label
-                    // while the request is in flight.
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      semanticsLabel: 'Pairing',
-                    ),
-                  )
-                : const Text('Pair'),
+            child: Text(submitting ? 'Confirm on the other device' : 'Pair'),
           ),
         ],
       ],
@@ -553,7 +545,11 @@ class _OutcomeLine extends StatelessWidget {
       ),
       PairSubmitting() => const Padding(
         padding: EdgeInsets.only(bottom: 16),
-        child: Text('Connecting to the desktop…'),
+        child: Text(
+          'Now go to the other device: it shows an id and asks whether it is '
+          "this device's. This page finishes by itself once it is confirmed "
+          'there.',
+        ),
       ),
       PairIdle() || PairSucceeded() => const SizedBox.shrink(),
     };

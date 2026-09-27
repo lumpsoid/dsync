@@ -354,8 +354,8 @@ void main() {
           .enabled,
       isFalse,
     );
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    expect(find.text('Connecting to the desktop…'), findsOneWidget);
+    expect(find.text('Confirm on the other device'), findsOneWidget);
+    expect(find.textContaining('Now go to the other device'), findsOneWidget);
     expect(
       tester
           .widget<TextField>(find.byKey(const Key('pair-local-name')))
@@ -401,21 +401,21 @@ void main() {
     expect(find.byKey(const Key('pair-own-device-id')), findsOneWidget);
   });
 
-  testWidgets('submitting: the spinner stands in for the button\'s label', (
+  testWidgets('submitting draws nothing while the other device is asked', (
     tester,
   ) async {
-    final semantics = tester.ensureSemantics();
     await pumpPage(tester);
     await withCode(tester);
 
     controller.state.recordOutcome(const PairSubmitting());
     await tester.pump();
+    // Whatever the switch itself set moving has finished by now.
+    await tester.pump(const Duration(seconds: 1));
 
-    expect(
-      tester.getSemantics(find.byType(CircularProgressIndicator)),
-      isSemantics(label: 'Pairing'),
-    );
-    semantics.dispose();
+    // The wait is a person confirming on the other screen, for as long as
+    // that takes: nothing on this one animates through it.
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
   testWidgets('failed: shows the rendered message and re-enables the button', (
