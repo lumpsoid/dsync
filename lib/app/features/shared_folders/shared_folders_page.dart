@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../readable_width.dart';
 import '../../shared_folder_row.dart';
 import '../../withdraw_root_dialog.dart';
 import '../run_setup/file_chooser.dart';
@@ -103,38 +104,43 @@ class _SharedFoldersBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final folders = controller.folders;
     final hasDevices = controller.devicesForNewFolder.isNotEmpty;
-    return ListView(
-      children: [
-        switch (controller.state.outcome) {
-          SharedFoldersDone(:final message) => _NoticeTile(
-            message,
-            isError: false,
-          ),
-          SharedFoldersFailed(:final message) => _NoticeTile(
-            message,
-            isError: true,
-          ),
-          SharedFoldersIdle() => const SizedBox.shrink(),
-        },
-        if (!hasDevices)
-          const _EmptyState(
-            key: Key('shared-folders-no-devices'),
-            message:
-                'No paired devices. A folder is shared with a device, so '
-                'there is nothing to share until one is paired.',
-          )
-        else if (folders.isEmpty)
-          const _EmptyState(
-            key: Key('shared-folders-empty'),
-            message:
-                'This device shares no folders. Paired devices can reach '
-                'nothing here until a folder is added.',
-          )
-        else
-          for (final folder in folders)
-            _FolderSection(folder: folder, controller: controller),
-        const _Explanation(),
-      ],
+    return ReadableScrollPadding(
+      width: ReadableWidth.list,
+      padding: null,
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          switch (controller.state.outcome) {
+            SharedFoldersDone(:final message) => _NoticeTile(
+              message,
+              isError: false,
+            ),
+            SharedFoldersFailed(:final message) => _NoticeTile(
+              message,
+              isError: true,
+            ),
+            SharedFoldersIdle() => const SizedBox.shrink(),
+          },
+          if (!hasDevices)
+            const _EmptyState(
+              key: Key('shared-folders-no-devices'),
+              message:
+                  'No paired devices. A folder is shared with a device, so '
+                  'there is nothing to share until one is paired.',
+            )
+          else if (folders.isEmpty)
+            const _EmptyState(
+              key: Key('shared-folders-empty'),
+              message:
+                  'This device shares no folders. Paired devices can reach '
+                  'nothing here until a folder is added.',
+            )
+          else
+            for (final folder in folders)
+              _FolderSection(folder: folder, controller: controller),
+          const _Explanation(),
+        ],
+      ),
     );
   }
 }

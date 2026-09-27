@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../format_date.dart';
 import '../../paired_device_row.dart';
+import '../../readable_width.dart';
 import '../../withdraw_root_dialog.dart';
 import '../run_setup/file_chooser.dart';
 import 'device_detail_controller.dart';
@@ -83,90 +84,95 @@ class _DeviceDetailBody extends StatelessWidget {
       return _Gone(onGone: onGone);
     }
     final confirmedAt = device.verifiedAt;
-    return ListView(
-      children: [
-        _IdentityTile(device),
-        if (device.certificateWarning case final warning?)
-          _NoticeTile(warning, isError: false),
-        switch (controller.state.outcome) {
-          DeviceDetailDone(:final message) => _NoticeTile(
-            message,
-            isError: false,
+    return ReadableScrollPadding(
+      width: ReadableWidth.list,
+      padding: null,
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          _IdentityTile(device),
+          if (device.certificateWarning case final warning?)
+            _NoticeTile(warning, isError: false),
+          switch (controller.state.outcome) {
+            DeviceDetailDone(:final message) => _NoticeTile(
+              message,
+              isError: false,
+            ),
+            DeviceDetailFailed(:final message) => _NoticeTile(
+              message,
+              isError: true,
+            ),
+            DeviceDetailIdle() => const SizedBox.shrink(),
+          },
+          const Divider(),
+          ListTile(
+            key: const Key('device-rename'),
+            leading: const Icon(Icons.edit_outlined),
+            title: const Text('Rename'),
+            subtitle: const Text(
+              'What this device is called here. The other device is not told '
+              'and keeps its own name for this one.',
+            ),
+            onTap: () => _rename(context, device),
           ),
-          DeviceDetailFailed(:final message) => _NoticeTile(
-            message,
-            isError: true,
+          ListTile(
+            key: const Key('device-address'),
+            leading: const Icon(Icons.wifi_tethering),
+            title: const Text('Address'),
+            subtitle: const Text(
+              'Where this device is reached. Correct it here when it has '
+              'moved, and it is remembered — there is no need to re-enter it '
+              'for each run.',
+            ),
+            onTap: () => _editAddress(context, device),
           ),
-          DeviceDetailIdle() => const SizedBox.shrink(),
-        },
-        const Divider(),
-        ListTile(
-          key: const Key('device-rename'),
-          leading: const Icon(Icons.edit_outlined),
-          title: const Text('Rename'),
-          subtitle: const Text(
-            'What this device is called here. The other device is not told '
-            'and keeps its own name for this one.',
+          ListTile(
+            key: const Key('device-test-connection'),
+            leading: const Icon(Icons.network_check),
+            title: const Text('Test connection'),
+            subtitle: const Text(
+              'Dial this device at the address above and report what answered.',
+            ),
+            onTap: controller.testConnection,
           ),
-          onTap: () => _rename(context, device),
-        ),
-        ListTile(
-          key: const Key('device-address'),
-          leading: const Icon(Icons.wifi_tethering),
-          title: const Text('Address'),
-          subtitle: const Text(
-            'Where this device is reached. Correct it here when it has '
-            'moved, and it is remembered — there is no need to re-enter it '
-            'for each run.',
+          ListTile(
+            key: const Key('device-verify'),
+            leading: const Icon(Icons.fingerprint),
+            title: Text(
+              confirmedAt == null ? 'Check device id' : 'Device id confirmed',
+            ),
+            subtitle: Text(
+              confirmedAt == null
+                  ? 'Compare the id above with the one this device shows on '
+                        'its own This-device page.'
+                  : 'You confirmed this id on ${formatDate(confirmedAt)}.',
+            ),
+            onTap: () => _verify(context, device),
           ),
-          onTap: () => _editAddress(context, device),
-        ),
-        ListTile(
-          key: const Key('device-test-connection'),
-          leading: const Icon(Icons.network_check),
-          title: const Text('Test connection'),
-          subtitle: const Text(
-            'Dial this device at the address above and report what answered.',
+          ListTile(
+            key: const Key('device-revoke'),
+            leading: Icon(
+              Icons.link_off,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            title: const Text('Revoke pairing'),
+            subtitle: const Text(
+              'Stop trusting this device and refuse its connections.',
+            ),
+            onTap: () => _revoke(context, device),
           ),
-          onTap: controller.testConnection,
-        ),
-        ListTile(
-          key: const Key('device-verify'),
-          leading: const Icon(Icons.fingerprint),
-          title: Text(
-            confirmedAt == null ? 'Check device id' : 'Device id confirmed',
-          ),
-          subtitle: Text(
-            confirmedAt == null
-                ? 'Compare the id above with the one this device shows on '
-                      'its own This-device page.'
-                : 'You confirmed this id on ${formatDate(confirmedAt)}.',
-          ),
-          onTap: () => _verify(context, device),
-        ),
-        ListTile(
-          key: const Key('device-revoke'),
-          leading: Icon(
-            Icons.link_off,
-            color: Theme.of(context).colorScheme.error,
-          ),
-          title: const Text('Revoke pairing'),
-          subtitle: const Text(
-            'Stop trusting this device and refuse its connections.',
-          ),
-          onTap: () => _revoke(context, device),
-        ),
-        const Divider(),
-        // Last on the page, and the one section that grows without bound.
-        // Every other tile here is a single action against the pairing as a
-        // whole; this is a list as long as the grants are, and when it sat
-        // between them a scroll that overshot a folder's "Stop sharing"
-        // landed on "Revoke pairing" — two taps apart, one destroying a
-        // grant and the other the pairing. Below everything, an overshoot
-        // runs out of page instead, and reaching the pairing-wide actions
-        // from here means scrolling back up past the section header.
-        _RootsSection(device: device, controller: controller),
-      ],
+          const Divider(),
+          // Last on the page, and the one section that grows without bound.
+          // Every other tile here is a single action against the pairing as a
+          // whole; this is a list as long as the grants are, and when it sat
+          // between them a scroll that overshot a folder's "Stop sharing"
+          // landed on "Revoke pairing" — two taps apart, one destroying a
+          // grant and the other the pairing. Below everything, an overshoot
+          // runs out of page instead, and reaching the pairing-wide actions
+          // from here means scrolling back up past the section header.
+          _RootsSection(device: device, controller: controller),
+        ],
+      ),
     );
   }
 

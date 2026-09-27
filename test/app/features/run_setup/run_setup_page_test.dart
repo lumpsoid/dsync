@@ -8,6 +8,7 @@ import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
 import 'package:dsync/app/features/run_setup/run_setup_page.dart';
 import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
+import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
@@ -223,6 +224,40 @@ void main() {
     expect(startEnabled(tester), isTrue);
     expect(find.textContaining('dsync pair grant'), findsOneWidget);
     expect(find.textContaining('has not granted this device'), findsNothing);
+  });
+
+  testWidgets('a wide window holds the form, and Save and Start under it, to '
+      'one centred column', (tester) async {
+    await pumpLoaded(tester);
+    tester.view.physicalSize = const Size(2560, 1440);
+    await tester.pump();
+
+    const column = ReadableWidth.form;
+    final left = (2560 - column.maxWidth) / 2;
+    final right = left + column.maxWidth;
+    final field = tester.getRect(
+      find.byKey(const Key('run-setup-remote-root')),
+    );
+    expect(field.width, column.maxWidth - 32);
+    expect(field.center.dx, 1280);
+    // The two exits sit at the column's edges, under the fields, rather
+    // than at the window's.
+    final save = tester.getRect(find.byKey(const Key('run-setup-save')));
+    final start = tester.getRect(find.byKey(const Key('run-setup-start')));
+    expect(save.left, left + 16);
+    expect(start.right, right - 16);
+  });
+
+  testWidgets('on a phone the form keeps the window width', (tester) async {
+    await pumpLoaded(tester);
+    tester.view.physicalSize = const Size(400, 2400);
+    await tester.pump();
+
+    final field = tester.getRect(
+      find.byKey(const Key('run-setup-remote-root')),
+    );
+    expect(field.left, 16);
+    expect(field.width, 400 - 32);
   });
 
   testWidgets('a blank form is Run setup, and saving offers a profile', (

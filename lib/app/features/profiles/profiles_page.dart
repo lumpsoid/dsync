@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../format_path.dart';
 import '../../profile_breakage.dart';
 import '../../profile_row.dart';
+import '../../readable_width.dart';
 import '../../refresh_action.dart';
 import 'profiles_controller.dart';
 import 'profiles_scope.dart';
@@ -160,28 +161,33 @@ class _ProfilesBody extends StatelessWidget {
     final error = controller.state.error;
     return RefreshIndicator(
       onRefresh: controller.refresh,
-      child: ListView(
-        // Scrollable even when short, so pull-to-refresh works on an empty
-        // or one-row list.
-        physics: const AlwaysScrollableScrollPhysics(),
-        children: [
-          if (error != null) _NoticeTile(error),
-          if (profiles.isEmpty)
-            _EmptyState(onOpenDevices: onOpenDevices)
-          else
-            for (final row in profiles)
-              _ProfileTile(
-                row: row,
-                onTap: row.breakage == null
-                    ? () => onOpenProfile(row.name)
-                    : null,
-                onRunAgain: () => onOpenProfile(row.name),
-                onPickFolder: (entryIndex) =>
-                    controller.repickLocalFolder(row.name, entryIndex),
-                onPairAgain: onOpenDevices,
-                onDelete: () => _confirmDelete(context, row),
-              ),
-        ],
+      child: ReadableScrollPadding(
+        width: ReadableWidth.list,
+        padding: null,
+        builder: (context, padding) => ListView(
+          padding: padding,
+          // Scrollable even when short, so pull-to-refresh works on an empty
+          // or one-row list.
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            if (error != null) _NoticeTile(error),
+            if (profiles.isEmpty)
+              _EmptyState(onOpenDevices: onOpenDevices)
+            else
+              for (final row in profiles)
+                _ProfileTile(
+                  row: row,
+                  onTap: row.breakage == null
+                      ? () => onOpenProfile(row.name)
+                      : null,
+                  onRunAgain: () => onOpenProfile(row.name),
+                  onPickFolder: (entryIndex) =>
+                      controller.repickLocalFolder(row.name, entryIndex),
+                  onPairAgain: onOpenDevices,
+                  onDelete: () => _confirmDelete(context, row),
+                ),
+          ],
+        ),
       ),
     );
   }

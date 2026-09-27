@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../archive_row.dart';
+import '../../readable_width.dart';
 import '../../refresh_action.dart';
 import 'archives_controller.dart';
 import 'archives_scope.dart';
@@ -140,33 +141,38 @@ class _ArchivesBody extends StatelessWidget {
     final error = controller.state.error;
     return RefreshIndicator(
       onRefresh: controller.refresh,
-      child: ListView(
-        // Scrollable even when short, so pull-to-refresh works on an empty
-        // or one-row list.
-        physics: const AlwaysScrollableScrollPhysics(),
-        children: [
-          if (error != null) _NoticeTile(error),
-          ...switch (controller.state.listing) {
-            ArchivesLoading() => const [_LoadingTile()],
-            ArchivesFailed(:final message) => [_NoticeTile(message)],
-            ArchivesReady(:final rows) when rows.isEmpty => const [
-              _EmptyState(),
-            ],
-            ArchivesReady(:final rows, :final totalLabel) => [
-              _TotalTile(totalLabel: totalLabel, count: rows.length),
-              for (final row in rows)
-                _ArchiveTile(
-                  row: row,
-                  isSelecting: controller.state.isSelecting,
-                  isSelected: controller.state.isSelected(row.logPath),
-                  onToggleSelection: () =>
-                      controller.toggleSelection(row.logPath),
-                  onDelete: () => _confirmDelete(context, row),
-                ),
-              const _Explanation(),
-            ],
-          },
-        ],
+      child: ReadableScrollPadding(
+        width: ReadableWidth.list,
+        padding: null,
+        builder: (context, padding) => ListView(
+          padding: padding,
+          // Scrollable even when short, so pull-to-refresh works on an empty
+          // or one-row list.
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            if (error != null) _NoticeTile(error),
+            ...switch (controller.state.listing) {
+              ArchivesLoading() => const [_LoadingTile()],
+              ArchivesFailed(:final message) => [_NoticeTile(message)],
+              ArchivesReady(:final rows) when rows.isEmpty => const [
+                _EmptyState(),
+              ],
+              ArchivesReady(:final rows, :final totalLabel) => [
+                _TotalTile(totalLabel: totalLabel, count: rows.length),
+                for (final row in rows)
+                  _ArchiveTile(
+                    row: row,
+                    isSelecting: controller.state.isSelecting,
+                    isSelected: controller.state.isSelected(row.logPath),
+                    onToggleSelection: () =>
+                        controller.toggleSelection(row.logPath),
+                    onDelete: () => _confirmDelete(context, row),
+                  ),
+                const _Explanation(),
+              ],
+            },
+          ],
+        ),
       ),
     );
   }

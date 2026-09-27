@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../readable_width.dart';
 import '../../shared_folder_row.dart';
 import 'serve_controller.dart';
 import 'serve_scope.dart';
@@ -87,51 +88,57 @@ class _ServeBody extends StatelessWidget {
     final folders = controller.folders;
     final reachingNothing = controller.devicesReachingNothing;
     final sessions = controller.state.sessions;
-    return ListView(
-      children: [
-        _StatusTile(
-          status: status,
-          onChanged: (on) => on ? controller.start() : controller.stop(),
-        ),
-        const _SectionHeader('What this device serves'),
-        if (folders.isEmpty)
-          const ListTile(
-            key: Key('serve-no-folders'),
-            leading: Icon(Icons.folder_off_outlined),
-            title: Text('No folder is shared with anyone.'),
-            subtitle: Text(
-              'A paired device that dials this one is refused every folder '
-              'until it is shared from the Shared folders page. The refusal '
-              'it sees says nothing about why.',
-            ),
-            isThreeLine: true,
-          )
-        else
-          for (final folder in folders) _FolderTile(folder),
-        if (reachingNothing.isNotEmpty)
-          ListTile(
-            key: const Key('serve-devices-reaching-nothing'),
-            leading: const Icon(Icons.report_problem_outlined),
-            title: Text(
-              reachingNothing.length == 1
-                  ? '${reachingNothing.single} may reach nothing here.'
-                  : '${reachingNothing.join(', ')} may reach nothing here.',
-            ),
-            subtitle: const Text(
-              'They are paired, so they can connect — and every folder they '
-              'ask for is refused. Share a folder with them first.',
-            ),
-            isThreeLine: true,
+    return ReadableScrollPadding(
+      width: ReadableWidth.list,
+      padding: null,
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          _StatusTile(
+            status: status,
+            onChanged: (on) => on ? controller.start() : controller.stop(),
           ),
-        const _SectionHeader('Sessions'),
-        if (sessions.isEmpty)
-          const ListTile(
-            key: Key('serve-no-sessions'),
-            title: Text('Nothing has connected since this page opened.'),
-          )
-        else
-          for (final line in sessions) ListTile(dense: true, title: Text(line)),
-      ],
+          const _SectionHeader('What this device serves'),
+          if (folders.isEmpty)
+            const ListTile(
+              key: Key('serve-no-folders'),
+              leading: Icon(Icons.folder_off_outlined),
+              title: Text('No folder is shared with anyone.'),
+              subtitle: Text(
+                'A paired device that dials this one is refused every folder '
+                'until it is shared from the Shared folders page. The refusal '
+                'it sees says nothing about why.',
+              ),
+              isThreeLine: true,
+            )
+          else
+            for (final folder in folders) _FolderTile(folder),
+          if (reachingNothing.isNotEmpty)
+            ListTile(
+              key: const Key('serve-devices-reaching-nothing'),
+              leading: const Icon(Icons.report_problem_outlined),
+              title: Text(
+                reachingNothing.length == 1
+                    ? '${reachingNothing.single} may reach nothing here.'
+                    : '${reachingNothing.join(', ')} may reach nothing here.',
+              ),
+              subtitle: const Text(
+                'They are paired, so they can connect — and every folder they '
+                'ask for is refused. Share a folder with them first.',
+              ),
+              isThreeLine: true,
+            ),
+          const _SectionHeader('Sessions'),
+          if (sessions.isEmpty)
+            const ListTile(
+              key: Key('serve-no-sessions'),
+              title: Text('Nothing has connected since this page opened.'),
+            )
+          else
+            for (final line in sessions)
+              ListTile(dense: true, title: Text(line)),
+        ],
+      ),
     );
   }
 }

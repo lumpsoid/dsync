@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../readable_width.dart';
 import 'pair_code.dart';
 import 'pair_controller.dart';
 import 'pair_scope.dart';
@@ -283,109 +284,113 @@ class _PairForm extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final submitting = state.outcome is PairSubmitting;
-    return ListView(
+    return ReadableScrollPadding(
+      width: ReadableWidth.form,
       padding: const EdgeInsets.all(16),
-      children: [
-        Text(
-          onScan == null
-              ? "On the other device, open Show this device's code, or run "
-                    '`dsync pair show` in a terminal, and copy the '
-                    '`dsync-pair:1.0:` line it shows into the field below.'
-              : "On the other device, open Show this device's code, or run "
-                    '`dsync pair show` in a terminal. Scan the QR code it '
-                    'shows, or paste the `dsync-pair:1.0:` line beside it.',
-        ),
-        const SizedBox(height: 16),
-        switch ((state.code, onScan)) {
-          (PairCodeRead(:final desktopName, :final address), _) => _CodeCard(
-            desktopName: desktopName,
-            address: address,
-            onClear: submitting ? null : onClearCode,
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          Text(
+            onScan == null
+                ? "On the other device, open Show this device's code, or run "
+                      '`dsync pair show` in a terminal, and copy the '
+                      '`dsync-pair:1.0:` line it shows into the field below.'
+                : "On the other device, open Show this device's code, or run "
+                      '`dsync pair show` in a terminal. Scan the QR code it '
+                      'shows, or paste the `dsync-pair:1.0:` line beside it.',
           ),
-          (PairCodeMissing(), final onScan?) => _CodeActions(
-            onScan: onScan,
-            onPaste: onPaste,
-            enabled: !submitting,
-          ),
-          (PairCodeUnreadable(:final message), final onScan?) =>
-            _UnreadableCode(
-              message: message,
+          const SizedBox(height: 16),
+          switch ((state.code, onScan)) {
+            (PairCodeRead(:final desktopName, :final address), _) => _CodeCard(
+              desktopName: desktopName,
+              address: address,
+              onClear: submitting ? null : onClearCode,
+            ),
+            (PairCodeMissing(), final onScan?) => _CodeActions(
               onScan: onScan,
               onPaste: onPaste,
               enabled: !submitting,
             ),
-          (PairCodeMissing(), null) => _CodeLine(
-            line: line,
-            error: null,
-            onRead: onReadLine,
-          ),
-          (PairCodeUnreadable(:final message), null) => _CodeLine(
-            line: line,
-            error: message,
-            onRead: onReadLine,
-          ),
-        },
-        // The way round this page is not for, offered only while it is
-        // still open which way round this pairing goes: once a code has been
-        // read, showing one instead would throw it away.
-        if (state.code is! PairCodeRead) ...[
-          const SizedBox(height: 24),
-          const Divider(),
-          const SizedBox(height: 8),
-          const Text(
-            'No code to hand? Let the other device scan this one instead.',
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            key: const Key('pair-show-own-code'),
-            onPressed: onShowOwnCode,
-            icon: const Icon(Icons.qr_code_2),
-            label: const Text("Show this device's code"),
-          ),
-        ],
-        // The name and the button belong to a code: there is nothing to
-        // name, and nothing to send, until one has been read.
-        if (state.code is PairCodeRead) ...[
-          const SizedBox(height: 24),
-          // Enter here is the button below it. Where the code was typed in
-          // rather than scanned, the field is also focused the moment it
-          // appears — the moment a code has been read — since the keyboard
-          // is already under the user's hands. On a phone it is not: the
-          // name arrives filled in, and a soft keyboard raised over it
-          // would cover the one button left to press.
-          TextField(
-            key: const Key('pair-local-name'),
-            controller: localName,
-            enabled: !submitting,
-            autofocus: onScan == null,
-            onSubmitted: (_) => onSubmit(),
-            decoration: InputDecoration(
-              labelText: 'Name for the other device',
-              helperText:
-                  'What this device will show it as. What the other device '
-                  'calls this one is its own choice, made there.',
-              errorText: state.localNameError,
+            (PairCodeUnreadable(:final message), final onScan?) =>
+              _UnreadableCode(
+                message: message,
+                onScan: onScan,
+                onPaste: onPaste,
+                enabled: !submitting,
+              ),
+            (PairCodeMissing(), null) => _CodeLine(
+              line: line,
+              error: null,
+              onRead: onReadLine,
             ),
-          ),
-          // The other half of the confirmation the desktop is putting in
-          // front of whoever is standing there. It appears with the submit,
-          // because that is when the desktop asks.
-          if (state.ownDeviceId case final ownDeviceId?) ...[
+            (PairCodeUnreadable(:final message), null) => _CodeLine(
+              line: line,
+              error: message,
+              onRead: onReadLine,
+            ),
+          },
+          // The way round this page is not for, offered only while it is
+          // still open which way round this pairing goes: once a code has been
+          // read, showing one instead would throw it away.
+          if (state.code is! PairCodeRead) ...[
             const SizedBox(height: 24),
-            _OwnIdCard(ownDeviceId),
+            const Divider(),
+            const SizedBox(height: 8),
+            const Text(
+              'No code to hand? Let the other device scan this one instead.',
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const Key('pair-show-own-code'),
+              onPressed: onShowOwnCode,
+              icon: const Icon(Icons.qr_code_2),
+              label: const Text("Show this device's code"),
+            ),
           ],
-          const SizedBox(height: 24),
-          _OutcomeLine(state.outcome),
-          // No spinner while submitting: almost all of that wait is the
-          // operator confirming on the other device, so the button says where
-          // the next step is instead of animating over it.
-          FilledButton(
-            key: const Key('pair-submit'),
-            onPressed: submitting ? null : onSubmit,
-            child: Text(submitting ? 'Confirm on the other device' : 'Pair'),
-          ),
+          // The name and the button belong to a code: there is nothing to
+          // name, and nothing to send, until one has been read.
+          if (state.code is PairCodeRead) ...[
+            const SizedBox(height: 24),
+            // Enter here is the button below it. Where the code was typed in
+            // rather than scanned, the field is also focused the moment it
+            // appears — the moment a code has been read — since the keyboard
+            // is already under the user's hands. On a phone it is not: the
+            // name arrives filled in, and a soft keyboard raised over it
+            // would cover the one button left to press.
+            TextField(
+              key: const Key('pair-local-name'),
+              controller: localName,
+              enabled: !submitting,
+              autofocus: onScan == null,
+              onSubmitted: (_) => onSubmit(),
+              decoration: InputDecoration(
+                labelText: 'Name for the other device',
+                helperText:
+                    'What this device will show it as. What the other device '
+                    'calls this one is its own choice, made there.',
+                errorText: state.localNameError,
+              ),
+            ),
+            // The other half of the confirmation the desktop is putting in
+            // front of whoever is standing there. It appears with the submit,
+            // because that is when the desktop asks.
+            if (state.ownDeviceId case final ownDeviceId?) ...[
+              const SizedBox(height: 24),
+              _OwnIdCard(ownDeviceId),
+            ],
+            const SizedBox(height: 24),
+            _OutcomeLine(state.outcome),
+            // No spinner while submitting: almost all of that wait is the
+            // operator confirming on the other device, so the button says where
+            // the next step is instead of animating over it.
+            FilledButton(
+              key: const Key('pair-submit'),
+              onPressed: submitting ? null : onSubmit,
+              child: Text(submitting ? 'Confirm on the other device' : 'Pair'),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }

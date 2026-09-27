@@ -6,6 +6,7 @@ import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_page.dart';
 import 'package:dsync/app/features/settings/settings_scope.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
+import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -117,6 +118,36 @@ void main() {
 
     expect(find.textContaining('is damaged'), findsOneWidget);
     expect(find.textContaining('Unavailable'), findsOneWidget);
+  });
+
+  group('width', () {
+    /// Pumps the page into a [width]-wide window, reset after the test.
+    Future<void> pumpAt(WidgetTester tester, double width) async {
+      tester.view.physicalSize = Size(width, 1440);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      controller.state.recordBindAddress('10.8.0.3');
+      await pumpPage(tester);
+    }
+
+    Rect row(WidgetTester tester) =>
+        tester.getRect(find.byKey(const Key('settings-bind-address')));
+
+    testWidgets('a wide window holds the rows to a centred list column', (
+      tester,
+    ) async {
+      await pumpAt(tester, 2560);
+
+      expect(row(tester).width, ReadableWidth.list.maxWidth);
+      expect(row(tester).center.dx, 1280);
+    });
+
+    testWidgets('a phone keeps the rows as wide as the window', (tester) async {
+      await pumpAt(tester, 400);
+
+      expect(row(tester).left, 0);
+      expect(row(tester).width, 400);
+    });
   });
 }
 

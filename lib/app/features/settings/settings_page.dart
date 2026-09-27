@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../readable_width.dart';
 import 'settings_controller.dart';
 import 'settings_scope.dart';
 import 'settings_view_state.dart';
@@ -54,37 +55,48 @@ class _SettingsBody extends StatelessWidget {
     final state = controller.state;
     final outcome = state.outcome;
     final working = outcome is SettingsWorking;
-    return ListView(
-      children: [
-        const _SectionHeader('Network'),
-        ListTile(
-          key: const Key('settings-bind-address'),
-          leading: const Icon(Icons.lan_outlined),
-          title: const Text('Pairing bind address'),
-          subtitle: Text(
-            state.bindAddress == null
-                ? 'Unavailable — see below.'
-                : '${state.bindAddress}\nWhich of this device\'s addresses '
-                      'the pairing code listens on. 0.0.0.0 is every IPv4 '
-                      'interface; one interface\'s own address is also what '
-                      'the code advertises.',
-          ),
-          isThreeLine: state.bindAddress != null,
-          enabled: !working && state.bindAddress != null,
-          onTap: () => _editBindAddress(context, state.bindAddress ?? ''),
-        ),
-        switch (outcome) {
-          SettingsSaved(:final message) => _NoticeTile(message, isError: false),
-          SettingsFailed(:final message) => _NoticeTile(message, isError: true),
-          SettingsIdle() || SettingsWorking() => const SizedBox.shrink(),
-        },
-        if (working)
-          const ListTile(
-            title: LinearProgressIndicator(
-              semanticsLabel: 'Saving the bind address',
+    return ReadableScrollPadding(
+      width: ReadableWidth.list,
+      padding: null,
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          const _SectionHeader('Network'),
+          ListTile(
+            key: const Key('settings-bind-address'),
+            leading: const Icon(Icons.lan_outlined),
+            title: const Text('Pairing bind address'),
+            subtitle: Text(
+              state.bindAddress == null
+                  ? 'Unavailable — see below.'
+                  : '${state.bindAddress}\nWhich of this device\'s addresses '
+                        'the pairing code listens on. 0.0.0.0 is every IPv4 '
+                        'interface; one interface\'s own address is also what '
+                        'the code advertises.',
             ),
+            isThreeLine: state.bindAddress != null,
+            enabled: !working && state.bindAddress != null,
+            onTap: () => _editBindAddress(context, state.bindAddress ?? ''),
           ),
-      ],
+          switch (outcome) {
+            SettingsSaved(:final message) => _NoticeTile(
+              message,
+              isError: false,
+            ),
+            SettingsFailed(:final message) => _NoticeTile(
+              message,
+              isError: true,
+            ),
+            SettingsIdle() || SettingsWorking() => const SizedBox.shrink(),
+          },
+          if (working)
+            const ListTile(
+              title: LinearProgressIndicator(
+                semanticsLabel: 'Saving the bind address',
+              ),
+            ),
+        ],
+      ),
     );
   }
 

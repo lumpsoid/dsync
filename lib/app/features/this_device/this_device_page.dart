@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../device_identity_row.dart';
 import '../../format_date.dart';
+import '../../readable_width.dart';
 import 'this_device_controller.dart';
 import 'this_device_scope.dart';
 import 'this_device_view_state.dart';
@@ -71,50 +72,59 @@ class _ThisDeviceBody extends StatelessWidget {
     }
     final outcome = controller.state.outcome;
     final working = outcome is IdentityWorking;
-    return ListView(
-      children: [
-        _IdentityCard(identity),
-        if (identity.certificateWarning case final warning?)
-          _NoticeTile(warning, isError: false),
-        switch (outcome) {
-          IdentitySucceeded(:final message) => _NoticeTile(
-            message,
-            isError: false,
-          ),
-          IdentityFailed(:final message) => _NoticeTile(message, isError: true),
-          IdentityIdle() || IdentityWorking() => const SizedBox.shrink(),
-        },
-        const Divider(),
-        ListTile(
-          key: const Key('this-device-rename'),
-          leading: const Icon(Icons.edit_outlined),
-          title: const Text('Rename this device'),
-          subtitle: const Text(
-            'The name offered to devices you pair with from now on. Devices '
-            'already paired keep the name they gave this one.',
-          ),
-          enabled: !working,
-          onTap: () => _rename(context, identity),
-        ),
-        ListTile(
-          key: const Key('this-device-renew'),
-          leading: const Icon(Icons.autorenew),
-          title: const Text('Renew certificate'),
-          subtitle: const Text(
-            'Re-issue it under the same key, with a fresh expiry date. The '
-            'device id does not change.',
-          ),
-          enabled: !working,
-          onTap: () => _renew(context),
-        ),
-        if (working)
-          const ListTile(
-            title: LinearProgressIndicator(
-              semanticsLabel: 'Re-issuing the certificate',
+    return ReadableScrollPadding(
+      width: ReadableWidth.list,
+      padding: null,
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          _IdentityCard(identity),
+          if (identity.certificateWarning case final warning?)
+            _NoticeTile(warning, isError: false),
+          switch (outcome) {
+            IdentitySucceeded(:final message) => _NoticeTile(
+              message,
+              isError: false,
             ),
+            IdentityFailed(:final message) => _NoticeTile(
+              message,
+              isError: true,
+            ),
+            IdentityIdle() || IdentityWorking() => const SizedBox.shrink(),
+          },
+          const Divider(),
+          ListTile(
+            key: const Key('this-device-rename'),
+            leading: const Icon(Icons.edit_outlined),
+            title: const Text('Rename this device'),
+            subtitle: const Text(
+              'The name offered to devices you pair with from now on. Devices '
+              'already paired keep the name they gave this one.',
+            ),
+            enabled: !working,
+            onTap: () => _rename(context, identity),
           ),
-        if (controller.state.stateDirPath case final path?) _StateDirTile(path),
-      ],
+          ListTile(
+            key: const Key('this-device-renew'),
+            leading: const Icon(Icons.autorenew),
+            title: const Text('Renew certificate'),
+            subtitle: const Text(
+              'Re-issue it under the same key, with a fresh expiry date. The '
+              'device id does not change.',
+            ),
+            enabled: !working,
+            onTap: () => _renew(context),
+          ),
+          if (working)
+            const ListTile(
+              title: LinearProgressIndicator(
+                semanticsLabel: 'Re-issuing the certificate',
+              ),
+            ),
+          if (controller.state.stateDirPath case final path?)
+            _StateDirTile(path),
+        ],
+      ),
     );
   }
 

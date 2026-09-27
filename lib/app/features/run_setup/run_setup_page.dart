@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core_link/models/root_kind.dart';
+import '../../readable_width.dart';
 import '../../run_request.dart';
 import '../filters/filters_page.dart';
 import '../filters/filters_view_state.dart';
@@ -282,11 +283,14 @@ class _RunSetupPageState extends State<RunSetupPage> {
               semanticsLabel: 'Loading the device',
             ),
           ),
-          RunSetupPeerMissing(:final message) => Padding(
-            padding: const EdgeInsets.all(32),
-            child: Text(
-              message,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+          RunSetupPeerMissing(:final message) => ReadableColumn(
+            width: ReadableWidth.form,
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Text(
+                message,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           ),
           RunSetupPeerLoaded(:final name) => _RunSetupForm(
@@ -382,123 +386,129 @@ class _RunSetupForm extends StatelessWidget {
     return Column(
       children: [
         Expanded(
-          child: ListView(
+          child: ReadableScrollPadding(
+            width: ReadableWidth.form,
             padding: const EdgeInsets.all(16),
-            children: [
-              if (state.prefill case RunSetupPrefill(
-                lastRunUnfinished: true,
-              )) ...[
-                Text(
-                  key: const Key('run-setup-last-run-unfinished'),
-                  'The last run of this profile did not finish. Starting it '
-                  'again sorts out what it left: files it never reached sync '
-                  'as usual, and a file it stopped mid-write comes back as a '
-                  'conflict marked interrupted.',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-                const SizedBox(height: 24),
-              ],
-              // Flat sections, no card: the page is the container. The Run
-              // page's own sections read the same way (`_Section` there),
-              // and a form whose fields are boxed inside a box inside a
-              // disclosure is three frames drawn around two decisions.
-              for (final (index, entry) in entries.indexed) ...[
-                _EntrySection(
-                  index: index,
-                  entry: entry,
-                  deviceName: deviceName,
-                  remoteRoot: remoteRoots[index],
-                  starting: starting,
-                  removable: entries.length > 1,
-                  onPickFolder: () => onPickFolder(index),
-                  onPickFile: () => onPickFile(index),
-                  onSetKind: (kind) => controller.setKind(index, kind),
-                  onRemove: () => onRemoveEntry(index),
-                  onRemoteRootChanged: controller.remoteRootChanged,
-                ),
-                const SizedBox(height: 24),
-              ],
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  key: const Key('run-setup-add-entry'),
-                  onPressed: starting ? null : onAddEntry,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add another folder or file'),
-                ),
-              ),
-              const SizedBox(height: 24),
-              // Filtering sits with the entries it filters, not under
-              // "Options": what a run leaves out is part of *what* is
-              // being synced, and a user who has just pointed at a folder
-              // full of caches should meet it here rather than find it
-              // folded away. It stays a row leading to its own page —
-              // choosing rules means looking at real files, which is a
-              // screen, not a field. Bound to entry 0's folder, the profile's
-              // one representative (the class doc comment on `_openFilters`
-              // says why).
-              ListTile(
-                key: const Key('run-setup-filters'),
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.filter_alt_outlined),
-                title: const Text('Filters'),
-                subtitle: Text(_filtersSummary(state, firstFolder)),
-                trailing: const Icon(Icons.chevron_right),
-                enabled: !starting && firstFolder != null,
-                onTap: firstFolder == null
-                    ? null
-                    : () => onOpenFilters(firstFolder),
-              ),
-              const SizedBox(height: 24),
-              // The name sits with the fields it names, not with the
-              // buttons: it is part of what gets saved, and both ways out
-              // of the page read it.
-              TextField(
-                key: const Key('run-setup-profile-name'),
-                controller: profileName,
-                enabled: !starting,
-                decoration: InputDecoration(
-                  labelText: editing
-                      ? 'Profile name'
-                      : 'Save as profile (optional)',
-                  helperText: editing
-                      ? 'Saving updates this profile on the home list.'
-                      : 'Name this run and it lands on the home list, ready '
-                            'to re-run with no typing.',
-                  helperMaxLines: 2,
-                ),
-              ),
-              const SizedBox(height: 16),
-              _Disclosure(
-                key: const Key('run-setup-options'),
-                title: 'Options',
-                children: [
-                  SwitchListTile(
-                    key: const Key('run-setup-dry-run'),
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Dry run'),
-                    subtitle: const Text('Show the plan, apply nothing.'),
-                    value: state.dryRun,
-                    onChanged: starting ? null : controller.setDryRun,
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    key: const Key('run-setup-address'),
-                    controller: address,
-                    enabled: !starting,
-                    decoration: InputDecoration(
-                      labelText: 'Address (optional)',
-                      hintText: 'host or host:port',
-                      helperText:
-                          'Leave empty to use the address $deviceName was '
-                          'last reached at.',
-                      helperMaxLines: 3,
-                      errorText: state.addressError,
+            builder: (context, padding) => ListView(
+              padding: padding,
+              children: [
+                if (state.prefill case RunSetupPrefill(
+                  lastRunUnfinished: true,
+                )) ...[
+                  Text(
+                    key: const Key('run-setup-last-run-unfinished'),
+                    'The last run of this profile did not finish. Starting it '
+                    'again sorts out what it left: files it never reached sync '
+                    'as usual, and a file it stopped mid-write comes back as a '
+                    'conflict marked interrupted.',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
                     ),
                   ),
+                  const SizedBox(height: 24),
                 ],
-              ),
-            ],
+                // Flat sections, no card: the page is the container. The Run
+                // page's own sections read the same way (`_Section` there),
+                // and a form whose fields are boxed inside a box inside a
+                // disclosure is three frames drawn around two decisions.
+                for (final (index, entry) in entries.indexed) ...[
+                  _EntrySection(
+                    index: index,
+                    entry: entry,
+                    deviceName: deviceName,
+                    remoteRoot: remoteRoots[index],
+                    starting: starting,
+                    removable: entries.length > 1,
+                    onPickFolder: () => onPickFolder(index),
+                    onPickFile: () => onPickFile(index),
+                    onSetKind: (kind) => controller.setKind(index, kind),
+                    onRemove: () => onRemoveEntry(index),
+                    onRemoteRootChanged: controller.remoteRootChanged,
+                  ),
+                  const SizedBox(height: 24),
+                ],
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    key: const Key('run-setup-add-entry'),
+                    onPressed: starting ? null : onAddEntry,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add another folder or file'),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                // Filtering sits with the entries it filters, not under
+                // "Options": what a run leaves out is part of *what* is
+                // being synced, and a user who has just pointed at a folder
+                // full of caches should meet it here rather than find it
+                // folded away. It stays a row leading to its own page —
+                // choosing rules means looking at real files, which is a
+                // screen, not a field. Bound to entry 0's folder, the profile's
+                // one representative (the class doc comment on `_openFilters`
+                // says why).
+                ListTile(
+                  key: const Key('run-setup-filters'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.filter_alt_outlined),
+                  title: const Text('Filters'),
+                  subtitle: Text(_filtersSummary(state, firstFolder)),
+                  trailing: const Icon(Icons.chevron_right),
+                  enabled: !starting && firstFolder != null,
+                  onTap: firstFolder == null
+                      ? null
+                      : () => onOpenFilters(firstFolder),
+                ),
+                const SizedBox(height: 24),
+                // The name sits with the fields it names, not with the
+                // buttons: it is part of what gets saved, and both ways out
+                // of the page read it.
+                TextField(
+                  key: const Key('run-setup-profile-name'),
+                  controller: profileName,
+                  enabled: !starting,
+                  decoration: InputDecoration(
+                    labelText: editing
+                        ? 'Profile name'
+                        : 'Save as profile (optional)',
+                    helperText: editing
+                        ? 'Saving updates this profile on the home list.'
+                        : 'Name this run and it lands on the home list, ready '
+                              'to re-run with no typing.',
+                    helperMaxLines: 2,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _Disclosure(
+                  key: const Key('run-setup-options'),
+                  title: 'Options',
+                  children: [
+                    SwitchListTile(
+                      key: const Key('run-setup-dry-run'),
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Dry run'),
+                      subtitle: const Text('Show the plan, apply nothing.'),
+                      value: state.dryRun,
+                      onChanged: starting ? null : controller.setDryRun,
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      key: const Key('run-setup-address'),
+                      controller: address,
+                      enabled: !starting,
+                      decoration: InputDecoration(
+                        labelText: 'Address (optional)',
+                        hintText: 'host or host:port',
+                        helperText:
+                            'Leave empty to use the address $deviceName was '
+                            'last reached at.',
+                        helperMaxLines: 3,
+                        errorText: state.addressError,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
         _ActionBar(
@@ -686,41 +696,46 @@ class _ActionBar extends StatelessWidget {
       elevation: 3,
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _OutcomeLine(outcome),
-              Row(
-                children: [
-                  TextButton(
-                    key: const Key('run-setup-save'),
-                    onPressed: starting ? null : onSave,
-                    child: Text(saveLabel),
-                  ),
-                  const Spacer(),
-                  FilledButton(
-                    key: const Key('run-setup-start'),
-                    onPressed: starting ? null : onStart,
-                    child: starting
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            // The spinner replaces the button's label while
-                            // the run is starting, so it has to say what the
-                            // button now is.
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              semanticsLabel: 'Starting the run',
-                            ),
-                          )
-                        : const Text('Start'),
-                  ),
-                ],
-              ),
-            ],
+        // Held to the form's column, so Save and Start sit under the fields
+        // they act on rather than at opposite edges of a wide window.
+        child: ReadableColumn(
+          width: ReadableWidth.form,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _OutcomeLine(outcome),
+                Row(
+                  children: [
+                    TextButton(
+                      key: const Key('run-setup-save'),
+                      onPressed: starting ? null : onSave,
+                      child: Text(saveLabel),
+                    ),
+                    const Spacer(),
+                    FilledButton(
+                      key: const Key('run-setup-start'),
+                      onPressed: starting ? null : onStart,
+                      child: starting
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              // The spinner replaces the button's label while
+                              // the run is starting, so it has to say what the
+                              // button now is.
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                semanticsLabel: 'Starting the run',
+                              ),
+                            )
+                          : const Text('Start'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),

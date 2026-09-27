@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import '../../core_link/core_link.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/filter_row.dart';
+import '../../readable_width.dart';
 import 'folder_picker.dart';
 
 /// Picks a single file to sync as a file entry (Resolved R4): the platform
@@ -130,47 +131,60 @@ class _FileChooserPageState extends State<FileChooserPage> {
         children: [
           Expanded(
             child: switch ((_error, _rows)) {
-              (final error?, _) => Center(child: Text(error)),
+              (final error?, _) => Center(
+                child: ReadableColumn(
+                  width: ReadableWidth.list,
+                  child: Text(error),
+                ),
+              ),
               (null, null) => const Center(child: CircularProgressIndicator()),
-              (null, final rows?) => ListView(
-                children: [
-                  for (final row in rows)
-                    ListTile(
-                      key: Key('file-chooser-row-${row.path}'),
-                      leading: Icon(
-                        row.isFolder
-                            ? Icons.folder_outlined
-                            : Icons.insert_drive_file_outlined,
+              (null, final rows?) => ReadableScrollPadding(
+                width: ReadableWidth.list,
+                padding: null,
+                builder: (context, padding) => ListView(
+                  padding: padding,
+                  children: [
+                    for (final row in rows)
+                      ListTile(
+                        key: Key('file-chooser-row-${row.path}'),
+                        leading: Icon(
+                          row.isFolder
+                              ? Icons.folder_outlined
+                              : Icons.insert_drive_file_outlined,
+                        ),
+                        title: Text(row.name),
+                        onTap: () => _open(row),
                       ),
-                      title: Text(row.name),
-                      onTap: () => _open(row),
-                    ),
-                ],
+                  ],
+                ),
               ),
             },
           ),
           const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    key: const Key('file-chooser-typed-name'),
-                    controller: _typed,
-                    decoration: const InputDecoration(
-                      labelText: 'Or type a name not listed here yet',
+          ReadableColumn(
+            width: ReadableWidth.list,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const Key('file-chooser-typed-name'),
+                      controller: _typed,
+                      decoration: const InputDecoration(
+                        labelText: 'Or type a name not listed here yet',
+                      ),
+                      onSubmitted: (_) => _useTyped(),
                     ),
-                    onSubmitted: (_) => _useTyped(),
                   ),
-                ),
-                const SizedBox(width: 8),
-                TextButton(
-                  key: const Key('file-chooser-use-typed'),
-                  onPressed: _useTyped,
-                  child: const Text('Use'),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  TextButton(
+                    key: const Key('file-chooser-use-typed'),
+                    onPressed: _useTyped,
+                    child: const Text('Use'),
+                  ),
+                ],
+              ),
             ),
           ),
         ],

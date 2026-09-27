@@ -18,6 +18,7 @@ import 'features/settings/settings_page.dart';
 import 'features/shared_folders/shared_folders_page.dart';
 import 'features/this_device/this_device_page.dart';
 import 'features/run_setup/run_setup_view_state.dart';
+import 'readable_width.dart';
 import 'run_request.dart';
 
 /// The Flutter head's root: the bootstrap gate and the routes between the
@@ -254,7 +255,9 @@ class _BootstrapShell extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('dsync')),
-      body: Center(child: child),
+      body: Center(
+        child: ReadableColumn(width: ReadableWidth.form, child: child),
+      ),
     );
   }
 }

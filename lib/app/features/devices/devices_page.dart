@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../paired_device_row.dart';
+import '../../readable_width.dart';
 import '../../refresh_action.dart';
 import 'devices_controller.dart';
 import 'devices_scope.dart';
@@ -127,24 +128,29 @@ class _DevicesBody extends StatelessWidget {
     final savedRunLines = controller.savedRunLines;
     return RefreshIndicator(
       onRefresh: controller.refresh,
-      child: ListView(
-        // Scrollable even when short, so pull-to-refresh works on an empty
-        // or one-row list.
-        physics: const AlwaysScrollableScrollPhysics(),
-        children: [
-          if (error != null) _NoticeTile(error, isError: true),
-          if (ownWarning != null) _NoticeTile(ownWarning, isError: false),
-          if (devices.isEmpty)
-            _EmptyState(onOpenPair: onOpenPair)
-          else
-            for (final row in devices)
-              _DeviceTile(
-                row: row,
-                savedRunLine: savedRunLines[row.deviceId],
-                onTap: () => onOpenDevice(row.deviceId),
-                onRunSetup: () => onOpenRunSetup(row.deviceId),
-              ),
-        ],
+      child: ReadableScrollPadding(
+        width: ReadableWidth.list,
+        padding: null,
+        builder: (context, padding) => ListView(
+          padding: padding,
+          // Scrollable even when short, so pull-to-refresh works on an empty
+          // or one-row list.
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            if (error != null) _NoticeTile(error, isError: true),
+            if (ownWarning != null) _NoticeTile(ownWarning, isError: false),
+            if (devices.isEmpty)
+              _EmptyState(onOpenPair: onOpenPair)
+            else
+              for (final row in devices)
+                _DeviceTile(
+                  row: row,
+                  savedRunLine: savedRunLines[row.deviceId],
+                  onTap: () => onOpenDevice(row.deviceId),
+                  onRunSetup: () => onOpenRunSetup(row.deviceId),
+                ),
+          ],
+        ),
       ),
     );
   }

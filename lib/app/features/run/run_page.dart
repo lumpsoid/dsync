@@ -5,6 +5,7 @@ import '../../core_link/models/conflict_choice.dart';
 import '../../format_bytes.dart';
 import '../../format_count.dart';
 import '../../format_path.dart';
+import '../../readable_width.dart';
 import '../../run_request.dart';
 import 'run_controller.dart';
 import 'run_plan_section.dart';
@@ -258,77 +259,80 @@ class _RunPageState extends State<RunPage> {
       // comment and `RunPlanRow` (`run_plan_section.dart`).
       body: CustomScrollView(
         slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.all(16),
-            sliver: SliverMainAxisGroup(
-              slivers: [
-                ListenableBuilder(
-                  listenable: _topSection,
-                  builder: (context, _) => SliverMainAxisGroup(
-                    slivers: [
-                      SliverToBoxAdapter(child: _StageStrip(state)),
-                      // Only past one entry: a single-entry run reads
-                      // exactly as it always has, with no list to draw
-                      // above its own header and plan (D10).
-                      if (state.entries.length > 1)
-                        SliverToBoxAdapter(child: _EntriesSection(state)),
-                      if (state.header case final header?)
-                        SliverToBoxAdapter(child: _Header(header)),
-                      SliverToBoxAdapter(child: _CountsRow(state)),
-                      if (state.scanTally case final tally?)
-                        SliverToBoxAdapter(child: _ScanTally(tally)),
-                      if (state.unreadablePaths.isNotEmpty)
-                        RunListSection(
-                          sectionKey: const Key('run-unreadable'),
-                          title: 'Could not read',
-                          itemCount: state.unreadablePaths.length,
-                          itemBuilder: (context, index) => Text(
-                            state.unreadablePaths[index],
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
+          SliverReadableColumn(
+            width: ReadableWidth.list,
+            sliver: SliverPadding(
+              padding: const EdgeInsets.all(16),
+              sliver: SliverMainAxisGroup(
+                slivers: [
+                  ListenableBuilder(
+                    listenable: _topSection,
+                    builder: (context, _) => SliverMainAxisGroup(
+                      slivers: [
+                        SliverToBoxAdapter(child: _StageStrip(state)),
+                        // Only past one entry: a single-entry run reads
+                        // exactly as it always has, with no list to draw
+                        // above its own header and plan (D10).
+                        if (state.entries.length > 1)
+                          SliverToBoxAdapter(child: _EntriesSection(state)),
+                        if (state.header case final header?)
+                          SliverToBoxAdapter(child: _Header(header)),
+                        SliverToBoxAdapter(child: _CountsRow(state)),
+                        if (state.scanTally case final tally?)
+                          SliverToBoxAdapter(child: _ScanTally(tally)),
+                        if (state.unreadablePaths.isNotEmpty)
+                          RunListSection(
+                            sectionKey: const Key('run-unreadable'),
+                            title: 'Could not read',
+                            itemCount: state.unreadablePaths.length,
+                            itemBuilder: (context, index) => Text(
+                              state.unreadablePaths[index],
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
                             ),
                           ),
-                        ),
-                      if (state.skippedSymlinks.isNotEmpty)
-                        RunListSection(
-                          sectionKey: const Key('run-symlinks'),
-                          title: 'Symlinks not followed',
-                          itemCount: state.skippedSymlinks.length,
-                          itemBuilder: (context, index) =>
-                              Text(state.skippedSymlinks[index]),
-                        ),
-                      // First of the plan area (Design C.5): during the
-                      // review each row carries its own control, and after
-                      // it each follows its own result.
-                      if (state.conflicts.isNotEmpty)
-                        RunListSection(
-                          sectionKey: const Key('run-conflicts'),
-                          title:
-                              'Conflicts (${formatCount(state.conflicts.length)})',
-                          itemCount: state.conflicts.length,
-                          itemBuilder: (context, index) {
-                            final row = state.conflicts[index];
-                            return _ConflictRow(
-                              row,
-                              state: state,
-                              offered: switch (state.phase) {
-                                SyncRunAwaitingDecisions() => row.offered,
-                                _ => null,
-                              },
-                              onResolve: _controller.resolveConflict,
-                            );
-                          },
-                        ),
-                    ],
+                        if (state.skippedSymlinks.isNotEmpty)
+                          RunListSection(
+                            sectionKey: const Key('run-symlinks'),
+                            title: 'Symlinks not followed',
+                            itemCount: state.skippedSymlinks.length,
+                            itemBuilder: (context, index) =>
+                                Text(state.skippedSymlinks[index]),
+                          ),
+                        // First of the plan area (Design C.5): during the
+                        // review each row carries its own control, and after
+                        // it each follows its own result.
+                        if (state.conflicts.isNotEmpty)
+                          RunListSection(
+                            sectionKey: const Key('run-conflicts'),
+                            title:
+                                'Conflicts (${formatCount(state.conflicts.length)})',
+                            itemCount: state.conflicts.length,
+                            itemBuilder: (context, index) {
+                              final row = state.conflicts[index];
+                              return _ConflictRow(
+                                row,
+                                state: state,
+                                offered: switch (state.phase) {
+                                  SyncRunAwaitingDecisions() => row.offered,
+                                  _ => null,
+                                },
+                                onResolve: _controller.resolveConflict,
+                              );
+                            },
+                          ),
+                      ],
+                    ),
                   ),
-                ),
-                ListenableBuilder(
-                  listenable: _planSection,
-                  builder: (context, _) => state.plan.isEmpty
-                      ? const SliverToBoxAdapter(child: SizedBox.shrink())
-                      : RunPlanSection(state, onChoose: _controller.choose),
-                ),
-              ],
+                  ListenableBuilder(
+                    listenable: _planSection,
+                    builder: (context, _) => state.plan.isEmpty
+                        ? const SliverToBoxAdapter(child: SizedBox.shrink())
+                        : RunPlanSection(state, onChoose: _controller.choose),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -1036,49 +1040,54 @@ class _ReviewBar extends StatelessWidget {
       elevation: 8,
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ValueListenableBuilder<SyncRunDecisionSummary?>(
-                valueListenable: summary,
-                builder: (context, summary, _) => Text(
-                  summary == null ? '' : _summaryLine(summary),
-                  key: const Key('run-review-summary'),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleSmall,
+        // Held to the body's column, so the answers sit under the rows
+        // being reviewed rather than at the far edge of a wide window.
+        child: ReadableColumn(
+          width: ReadableWidth.list,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ValueListenableBuilder<SyncRunDecisionSummary?>(
+                  valueListenable: summary,
+                  builder: (context, summary, _) => Text(
+                    summary == null ? '' : _summaryLine(summary),
+                    key: const Key('run-review-summary'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              // Wraps rather than overflowing on a narrow phone; its height
-              // follows the screen's width, never the choices.
-              // Full width, so the end alignment has room to push the
-              // buttons right: a bare Wrap in this start-aligned column
-              // shrinks to its buttons and sits on the left.
-              SizedBox(
-                width: double.infinity,
-                child: Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: [
-                    TextButton(
-                      key: const Key('run-sync-all-except-conflicts'),
-                      onPressed: controller.acceptAll,
-                      child: const Text('Sync all except conflicts'),
-                    ),
-                    FilledButton(
-                      key: const Key('run-confirm'),
-                      onPressed: controller.confirm,
-                      child: const Text('Apply'),
-                    ),
-                  ],
+                const SizedBox(height: 8),
+                // Wraps rather than overflowing on a narrow phone; its height
+                // follows the screen's width, never the choices.
+                // Full width, so the end alignment has room to push the
+                // buttons right: a bare Wrap in this start-aligned column
+                // shrinks to its buttons and sits on the left.
+                SizedBox(
+                  width: double.infinity,
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      TextButton(
+                        key: const Key('run-sync-all-except-conflicts'),
+                        onPressed: controller.acceptAll,
+                        child: const Text('Sync all except conflicts'),
+                      ),
+                      FilledButton(
+                        key: const Key('run-confirm'),
+                        onPressed: controller.confirm,
+                        child: const Text('Apply'),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -1105,57 +1114,60 @@ class _DeletesBar extends StatelessWidget {
       elevation: 8,
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'This sync deletes most of a folder',
-                style: theme.textTheme.titleSmall,
-              ),
-              const SizedBox(height: 4),
-              for (final side in sides)
+        child: ReadableColumn(
+          width: ReadableWidth.list,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Text(
-                  '${formatCount(side.deletes)} of the '
-                  '${formatCount(side.archived)} files on ${side.where}'
-                  '${switch (side.root) {
-                    final root? => ' (${elidePath(root)})',
-                    null => '',
-                  }} would be deleted.',
+                  'This sync deletes most of a folder',
+                  style: theme.textTheme.titleSmall,
                 ),
-              const SizedBox(height: 4),
-              const Text(
-                'If a folder was emptied, moved or unmounted by mistake, '
-                "don't delete.",
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: [
-                    TextButton(
-                      key: const Key('run-deletes-decline'),
-                      onPressed: controller.declineDeletes,
-                      child: const Text("Don't delete"),
-                    ),
-                    FilledButton(
-                      key: const Key('run-deletes-confirm'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: theme.colorScheme.error,
-                        foregroundColor: theme.colorScheme.onError,
+                const SizedBox(height: 4),
+                for (final side in sides)
+                  Text(
+                    '${formatCount(side.deletes)} of the '
+                    '${formatCount(side.archived)} files on ${side.where}'
+                    '${switch (side.root) {
+                      final root? => ' (${elidePath(root)})',
+                      null => '',
+                    }} would be deleted.',
+                  ),
+                const SizedBox(height: 4),
+                const Text(
+                  'If a folder was emptied, moved or unmounted by mistake, '
+                  "don't delete.",
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      TextButton(
+                        key: const Key('run-deletes-decline'),
+                        onPressed: controller.declineDeletes,
+                        child: const Text("Don't delete"),
                       ),
-                      onPressed: controller.confirmDeletes,
-                      child: Text('Delete ${formatCount(total)} files'),
-                    ),
-                  ],
+                      FilledButton(
+                        key: const Key('run-deletes-confirm'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: theme.colorScheme.error,
+                          foregroundColor: theme.colorScheme.onError,
+                        ),
+                        onPressed: controller.confirmDeletes,
+                        child: Text('Delete ${formatCount(total)} files'),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

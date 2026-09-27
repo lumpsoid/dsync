@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../readable_width.dart';
 import 'pair_show_controller.dart';
 import 'pair_show_scope.dart';
 import 'pair_show_view_state.dart';
@@ -200,35 +201,39 @@ class _NameField extends StatelessWidget {
       listenable: name,
       builder: (context, _) {
         final ready = name.text.trim().isNotEmpty;
-        return ListView(
+        return ReadableScrollPadding(
+          width: ReadableWidth.form,
           padding: const EdgeInsets.all(16),
-          children: [
-            const Text(
-              'What should this device call the one you are about to pair? '
-              'The name is local to this device, and it is how you will '
-              'pick that device out of the list later.',
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              key: const Key('pair-show-name'),
-              controller: name,
-              autofocus: true,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) {
-                if (ready) onShow();
-              },
-              decoration: const InputDecoration(
-                labelText: 'Name for the other device',
-                border: OutlineInputBorder(),
+          builder: (context, padding) => ListView(
+            padding: padding,
+            children: [
+              const Text(
+                'What should this device call the one you are about to pair? '
+                'The name is local to this device, and it is how you will '
+                'pick that device out of the list later.',
               ),
-            ),
-            const SizedBox(height: 24),
-            FilledButton(
-              key: const Key('pair-show-start'),
-              onPressed: ready ? onShow : null,
-              child: const Text('Show code'),
-            ),
-          ],
+              const SizedBox(height: 16),
+              TextField(
+                key: const Key('pair-show-name'),
+                controller: name,
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) {
+                  if (ready) onShow();
+                },
+                decoration: const InputDecoration(
+                  labelText: 'Name for the other device',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 24),
+              FilledButton(
+                key: const Key('pair-show-start'),
+                onPressed: ready ? onShow : null,
+                child: const Text('Show code'),
+              ),
+            ],
+          ),
         );
       },
     );
@@ -247,87 +252,91 @@ class _Offer extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final symbol = offer.symbol;
-    return ListView(
+    return ReadableScrollPadding(
+      width: ReadableWidth.form,
       padding: const EdgeInsets.all(16),
-      children: [
-        const Text(
-          'On the other device, open Pair a device and scan this code — or '
-          'copy the line below and run `dsync pair accept <line>` there.',
-        ),
-        const SizedBox(height: 16),
-        if (symbol != null)
-          Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 280),
-              child: Card(
-                key: const Key('pair-show-symbol'),
-                clipBehavior: Clip.antiAlias,
-                margin: EdgeInsets.zero,
-                child: QrSymbol(symbol),
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          const Text(
+            'On the other device, open Pair a device and scan this code — or '
+            'copy the line below and run `dsync pair accept <line>` there.',
+          ),
+          const SizedBox(height: 16),
+          if (symbol != null)
+            Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 280),
+                child: Card(
+                  key: const Key('pair-show-symbol'),
+                  clipBehavior: Clip.antiAlias,
+                  margin: EdgeInsets.zero,
+                  child: QrSymbol(symbol),
+                ),
+              ),
+            )
+          else
+            Text(
+              'This code is too large to show as a QR symbol — use the line '
+              'below instead.',
+              style: TextStyle(color: theme.colorScheme.error),
+            ),
+          const SizedBox(height: 16),
+          Card(
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SelectableText(
+                    offer.payloadLine,
+                    key: const Key('pair-show-line'),
+                    maxLines: 3,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const Key('pair-show-copy'),
+                      onPressed: onCopy,
+                      icon: const Icon(Icons.content_copy),
+                      label: const Text('Copy line'),
+                    ),
+                  ),
+                ],
               ),
             ),
-          )
-        else
+          ),
+          const SizedBox(height: 24),
+          // Still, not a spinner: the wait is the operator walking to the
+          // other device, which no animation here can speed up or report on.
+          // What they can use is the deadline, and the page changes by itself
+          // the moment a device uses the code.
+          Row(
+            children: [
+              const Icon(Icons.schedule, size: 20),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Waiting for a device to use this code. It stops working at '
+                  '${_clockTime(offer.expiresAt)}.',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
           Text(
-            'This code is too large to show as a QR symbol — use the line '
-            'below instead.',
-            style: TextStyle(color: theme.colorScheme.error),
-          ),
-        const SizedBox(height: 16),
-        Card(
-          margin: EdgeInsets.zero,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SelectableText(
-                  offer.payloadLine,
-                  key: const Key('pair-show-line'),
-                  maxLines: 3,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    key: const Key('pair-show-copy'),
-                    onPressed: onCopy,
-                    icon: const Icon(Icons.content_copy),
-                    label: const Text('Copy line'),
-                  ),
-                ),
-              ],
+            'This device is answering at ${offer.address}. Both devices have '
+            'to be on the same network.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
-        ),
-        const SizedBox(height: 24),
-        // Still, not a spinner: the wait is the operator walking to the
-        // other device, which no animation here can speed up or report on.
-        // What they can use is the deadline, and the page changes by itself
-        // the moment a device uses the code.
-        Row(
-          children: [
-            const Icon(Icons.schedule, size: 20),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Waiting for a device to use this code. It stops working at '
-                '${_clockTime(offer.expiresAt)}.',
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'This device is answering at ${offer.address}. Both devices have '
-          'to be on the same network.',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -355,57 +364,61 @@ class _Confirm extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return ListView(
+    return ReadableScrollPadding(
+      width: ReadableWidth.form,
       padding: const EdgeInsets.all(16),
-      children: [
-        const Text(
-          'A device used the code. Before it is paired, check that it is '
-          'the one you meant: this is the id it presented.',
-        ),
-        const SizedBox(height: 16),
-        Card(
-          margin: EdgeInsets.zero,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: SelectableText(
-              deviceId,
-              key: const Key('pair-show-device-id'),
-              style: theme.textTheme.bodyMedium?.copyWith(
-                fontFamily: 'monospace',
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          const Text(
+            'A device used the code. Before it is paired, check that it is '
+            'the one you meant: this is the id it presented.',
+          ),
+          const SizedBox(height: 16),
+          Card(
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: SelectableText(
+                deviceId,
+                key: const Key('pair-show-device-id'),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontFamily: 'monospace',
+                ),
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'That device shows the same id on its own screen. Pair only if '
-          'every group matches — if it does not, somebody else got to the '
-          'code first. Paired, it will be listed here as "$peerName".',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
+          const SizedBox(height: 16),
+          Text(
+            'That device shows the same id on its own screen. Pair only if '
+            'every group matches — if it does not, somebody else got to the '
+            'code first. Paired, it will be listed here as "$peerName".',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
-        ),
-        const SizedBox(height: 24),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                key: const Key('pair-show-refuse'),
-                onPressed: () => onAnswer(false),
-                child: const Text('Not my device'),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  key: const Key('pair-show-refuse'),
+                  onPressed: () => onAnswer(false),
+                  child: const Text('Not my device'),
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: FilledButton(
-                key: const Key('pair-show-confirm'),
-                onPressed: () => onAnswer(true),
-                child: const Text('Ids match — pair'),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  key: const Key('pair-show-confirm'),
+                  onPressed: () => onAnswer(true),
+                  child: const Text('Ids match — pair'),
+                ),
               ),
-            ),
-          ],
-        ),
-      ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -427,34 +440,38 @@ class _Ended extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return ListView(
+    return ReadableScrollPadding(
+      width: ReadableWidth.form,
       padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              isError ? Icons.error_outline : Icons.timer_off_outlined,
-              color: isError ? theme.colorScheme.error : null,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                message,
-                style: isError
-                    ? TextStyle(color: theme.colorScheme.error)
-                    : null,
+      builder: (context, padding) => ListView(
+        padding: padding,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                isError ? Icons.error_outline : Icons.timer_off_outlined,
+                color: isError ? theme.colorScheme.error : null,
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 24),
-        FilledButton(
-          key: const Key('pair-show-retry'),
-          onPressed: onRetry,
-          child: const Text('Show a new code'),
-        ),
-      ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  message,
+                  style: isError
+                      ? TextStyle(color: theme.colorScheme.error)
+                      : null,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          FilledButton(
+            key: const Key('pair-show-retry'),
+            onPressed: onRetry,
+            child: const Text('Show a new code'),
+          ),
+        ],
+      ),
     );
   }
 }

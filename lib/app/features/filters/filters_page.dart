@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../readable_width.dart';
 import 'filters_controller.dart';
 import 'filters_scope.dart';
 import 'filters_view_state.dart';
@@ -82,14 +83,23 @@ class _FiltersPageState extends State<FiltersPage> {
           listenable: _controller.state,
           builder: (context, _) => Column(
             children: [
-              _RulesSection(
-                controller: _controller,
-                onAdd: () => _addRule(context),
+              ReadableColumn(
+                width: ReadableWidth.list,
+                child: _RulesSection(
+                  controller: _controller,
+                  onAdd: () => _addRule(context),
+                ),
               ),
               const Divider(height: 1),
-              _PreviewSection(controller: _controller),
+              ReadableColumn(
+                width: ReadableWidth.list,
+                child: _PreviewSection(controller: _controller),
+              ),
               const Divider(height: 1),
-              _PathBar(controller: _controller),
+              ReadableColumn(
+                width: ReadableWidth.list,
+                child: _PathBar(controller: _controller),
+              ),
               Expanded(child: _Listing(controller: _controller)),
             ],
           ),
@@ -395,23 +405,38 @@ class _Listing extends StatelessWidget {
       FiltersFolderLoading() => const Center(
         child: CircularProgressIndicator(semanticsLabel: 'Opening the folder'),
       ),
-      FiltersFolderFailed(:final message) => Padding(
-        padding: const EdgeInsets.all(24),
-        child: Text(
-          message,
-          key: const Key('filters-folder-failed'),
-          style: TextStyle(color: Theme.of(context).colorScheme.error),
+      FiltersFolderFailed(:final message) => ReadableColumn(
+        width: ReadableWidth.list,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            message,
+            key: const Key('filters-folder-failed'),
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
         ),
       ),
-      FiltersFolderListed(:final entries) when entries.isEmpty => const Padding(
-        padding: EdgeInsets.all(24),
-        child: Text('This folder is empty.', key: Key('filters-folder-empty')),
-      ),
-      FiltersFolderListed(:final entries) => ListView(
-        children: [
-          for (final entry in entries)
-            _EntryTile(controller: controller, entry: entry),
-        ],
+      FiltersFolderListed(:final entries) when entries.isEmpty =>
+        const ReadableColumn(
+          width: ReadableWidth.list,
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'This folder is empty.',
+              key: Key('filters-folder-empty'),
+            ),
+          ),
+        ),
+      FiltersFolderListed(:final entries) => ReadableScrollPadding(
+        width: ReadableWidth.list,
+        padding: null,
+        builder: (context, padding) => ListView(
+          padding: padding,
+          children: [
+            for (final entry in entries)
+              _EntryTile(controller: controller, entry: entry),
+          ],
+        ),
       ),
     };
   }
