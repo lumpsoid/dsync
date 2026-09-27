@@ -133,8 +133,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
 
   /// A refused folder or file is a snackbar, not a line in the form: it
   /// never became one of the entries, so there is no field it belongs
-  /// under. The action is the way out — the OS page where access to all
-  /// files is granted.
+  /// under. See [_showRefusal] for the way out it offers.
   Future<void> _pickFolder(int index) async {
     await _controller.pickLocalFolder(index);
     if (!mounted) return;
@@ -168,17 +167,26 @@ class _RunSetupPageState extends State<RunSetupPage> {
     _showRefusal();
   }
 
+  /// Raises the last refusal, if there is one. A grantable one carries the
+  /// way out as its action — the OS page where access to all files is
+  /// granted. A final one has no page to send the user to: its line says
+  /// what to do, and a close button dismisses it, since there is no action
+  /// that would.
   void _showRefusal() {
     final refusal = _controller.state.folderAccessError;
     if (refusal == null) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(refusal),
+        content: Text(refusal.message),
         duration: const Duration(seconds: 8),
-        action: SnackBarAction(
-          label: 'Settings',
-          onPressed: _openAccessSettings,
-        ),
+        action: switch (refusal) {
+          RunSetupRefusalGrantable() => SnackBarAction(
+            label: 'Settings',
+            onPressed: _openAccessSettings,
+          ),
+          RunSetupRefusalFinal() => null,
+        },
+        showCloseIcon: refusal is RunSetupRefusalFinal,
       ),
     );
   }

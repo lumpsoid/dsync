@@ -416,4 +416,7 @@ class _FakePicker implements FolderPicker {
 
   @override
   Future<void> openSettings() async {}
+
+  @override
+  bool get asksForFileAccess => false;
 }

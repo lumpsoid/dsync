@@ -16,6 +16,11 @@ class FakeFolderPicker implements FolderPicker {
   /// What asking for the grant does, and whether it was given.
   Future<bool> Function() onRequestAccess = () async => false;
 
+  /// Whether this stands in for a phone, which has a grant and a Settings
+  /// page to give it on, or for a desktop, which has neither.
+  @override
+  bool asksForFileAccess = true;
+
   int pickCount = 0;
   int requestAccessCount = 0;
   int openSettingsCount = 0;

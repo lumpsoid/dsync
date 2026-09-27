@@ -210,8 +210,11 @@ void main() {
 
       await controller.pickLocalFolder(0);
 
-      expect(controller.state.folderAccessError, contains(picked));
-      expect(controller.state.folderAccessError, contains('all files'));
+      expect(controller.state.folderAccessError?.message, contains(picked));
+      expect(
+        controller.state.folderAccessError?.message,
+        contains('all files'),
+      );
       expect(picker.requestAccessCount, 1);
       expect(
         controller.state.entries[0].localRoot,
@@ -231,7 +234,33 @@ void main() {
 
       await controller.pickLocalFolder(0);
 
-      expect(controller.state.folderAccessError, 'refused');
+      expect(controller.state.folderAccessError?.message, 'refused');
+      expect(
+        controller.state.folderAccessError,
+        isA<RunSetupRefusalGrantable>(),
+        reason: 'a phone has a grant Settings can give',
+      );
+      expect(controller.state.entries[0].localRoot, isNull);
+    });
+
+    test('on desktop a refusal is final and says what to try instead '
+        '(task 9e50c1)', () async {
+      picker.asksForFileAccess = false;
+      await loadDesktop();
+      final picked = elsewhere('locked');
+      picker.onPick = () => picked;
+      core.reply<wire.CoreCommandCheckFolder>(
+        wire.ReplyResultFolderChecked(
+          refusal: 'dsync cannot use $picked: permission denied',
+        ),
+      );
+
+      await controller.pickLocalFolder(0);
+
+      final refusal = controller.state.folderAccessError;
+      expect(refusal, isA<RunSetupRefusalFinal>());
+      expect(refusal?.message, contains('permission denied'));
+      expect(refusal?.message, contains('Choose another folder'));
       expect(controller.state.entries[0].localRoot, isNull);
     });
 
@@ -267,7 +296,10 @@ void main() {
 
       await controller.pickLocalFolder(0);
 
-      expect(controller.state.folderAccessError, contains('no activity'));
+      expect(
+        controller.state.folderAccessError?.message,
+        contains('no activity'),
+      );
       expect(controller.state.entries[0].localRoot, isNull);
     });
 
@@ -306,7 +338,7 @@ void main() {
     Future<void> pickRefused() async {
       picker.onPick = () => refused;
       await controller.pickLocalFolder(0);
-      expect(controller.state.folderAccessError, 'no grant yet');
+      expect(controller.state.folderAccessError?.message, 'no grant yet');
     }
 
     test('back from Settings with the grant given: the core checks the '
@@ -345,7 +377,7 @@ void main() {
 
       expect(await controller.recheckAfterSettings(), isTrue);
 
-      expect(controller.state.folderAccessError, 'still no grant');
+      expect(controller.state.folderAccessError?.message, 'still no grant');
       expect(controller.state.entries[0].localRoot, notes());
       final checks = core.sent<wire.CoreCommandCheckFolder>().length;
       expect(await controller.recheckAfterSettings(), isFalse);
@@ -966,7 +998,7 @@ void main() {
 
       await controller.setLocalFile(1, '${tempDir.path}/picked/todo.txt');
 
-      expect(controller.state.folderAccessError, 'not a file');
+      expect(controller.state.folderAccessError?.message, 'not a file');
       expect(controller.state.entries[1].localRoot, isNull);
       expect(controller.state.entries[0].localRoot, notes());
     });

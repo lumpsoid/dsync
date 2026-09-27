@@ -35,6 +35,12 @@ abstract interface class FolderPicker {
   /// Opens the OS settings page where that grant can be given, for the user
   /// who refused it and changed their mind.
   Future<void> openSettings();
+
+  /// Whether this platform has that grant at all — a Settings page where
+  /// the user can give it. Where it does not, [requestAccess] and
+  /// [openSettings] are inert, and a picked path the core refuses stays
+  /// refused until the user changes something outside this app.
+  bool get asksForFileAccess;
 }
 
 /// [FolderPicker] over `file_picker` and `permission_handler` — the one
@@ -64,6 +70,7 @@ final class PlatformFolderPicker implements FolderPicker {
 
   /// Whether this platform has a file-access grant to ask for — see the
   /// class doc comment.
+  @override
   final bool asksForFileAccess;
 
   @override

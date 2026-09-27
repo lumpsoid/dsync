@@ -433,7 +433,9 @@ void main() {
       await tester.runAsync(() async {
         drive(tester, back);
         await settleUntil(
-          () => controller.state.folderAccessError == 'still not granted',
+          () =>
+              controller.state.folderAccessError?.message ==
+              'still not granted',
           what: 'the re-check to refuse again',
         );
       });
@@ -458,6 +460,37 @@ void main() {
       await tester.pump();
 
       expect(checks(), before);
+      expect(find.text('No folder chosen'), findsOneWidget);
+    });
+
+    testWidgets('on desktop a refusal offers no Settings, says what to do, '
+        'and a return to the window checks nothing (task 9e50c1)', (
+      tester,
+    ) async {
+      picker.asksForFileAccess = false;
+      await refuseThenOpenSettings(tester, openSettings: false);
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(find.textContaining('Choose another folder'), findsOneWidget);
+      expect(find.byType(SnackBarAction), findsNothing);
+      expect(find.text('Settings'), findsNothing);
+      expect(
+        find.byIcon(Icons.close),
+        findsOneWidget,
+        reason: 'with no action to dismiss it, the snackbar has a close button',
+      );
+
+      core.reply<wire.CoreCommandCheckFolder>(
+        const wire.ReplyResultFolderChecked(refusal: null),
+      );
+      final before = checks();
+      drive(tester, away);
+      drive(tester, back);
+      await tester.pump();
+
+      expect(checks(), before);
+      expect(picker.openSettingsCount, 0);
       expect(find.text('No folder chosen'), findsOneWidget);
     });
 

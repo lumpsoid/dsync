@@ -170,7 +170,7 @@ class _Session {
     final setup = RunSetupController(app, picker: picker);
     await setup.pickLocalFolder(0);
     final shown =
-        setup.state.folderAccessError ??
+        setup.state.folderAccessError?.message ??
         _fail('a', 'Run setup took $_appRoot without the grant');
     if (setup.state.entries[0].localRoot != null) {
       _fail(
@@ -201,7 +201,7 @@ class _Session {
     final setup = RunSetupController(app, picker: picker);
     await setup.pickLocalFolder(0);
     if (setup.state.folderAccessError case final error?) {
-      _fail('b', 'the granted folder was refused: ${_oneLine(error)}');
+      _fail('b', 'the granted folder was refused: ${_oneLine(error.message)}');
     }
     if (setup.state.entries[0].localRoot != _appRoot) {
       _fail(
@@ -547,6 +547,9 @@ final class _ScriptedPicker implements FolderPicker {
   @override
   Future<void> openSettings() async =>
       _fail(step, 'Run setup opened Settings, which needs a person');
+
+  @override
+  bool get asksForFileAccess => true;
 }
 
 /// What the phone shows: nothing to do there.

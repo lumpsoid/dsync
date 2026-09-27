@@ -42,7 +42,9 @@ import 'run_setup_view_state.dart';
 /// `content://` tree URI it returns and *not* the path that URI converts
 /// to, which is openable only under All-files access
 /// (`MANAGE_EXTERNAL_STORAGE`), so a failed check is met by asking for that
-/// grant once (`FolderPicker.requestAccess`) and checking again. There is
+/// grant once (`FolderPicker.requestAccess`) and checking again. On desktop
+/// there is no grant to ask for (`FolderPicker.asksForFileAccess`), so the
+/// refusal is final and says what the user can do instead. There is
 /// deliberately no fallback to a path the user did not choose.
 ///
 /// A picked path lasts the visit unless the run is saved: [start] stores it
@@ -236,8 +238,7 @@ class RunSetupController {
     } catch (error) {
       // A platform channel that fails is not a folder the user chose badly.
       state.recordFolderAccessError(
-        'Could not open the folder chooser: '
-        '$error',
+        _refusal('Could not open the folder chooser: $error'),
       );
       return;
     }
@@ -256,12 +257,12 @@ class RunSetupController {
     try {
       refusal = await _usableRefusal(path, kind);
     } on CoreFailure catch (e) {
-      state.recordFolderAccessError(e.message);
+      state.recordFolderAccessError(_refusal(e.message));
       return;
     }
     if (refusal != null) {
       _refused = _PathRefused(index, path, kind);
-      state.recordFolderAccessError(refusal);
+      state.recordFolderAccessError(_pathRefusal(refusal, kind));
       return;
     }
     state.updateEntry(
@@ -279,9 +280,35 @@ class RunSetupController {
     return app.core.checkFolder(path, kind);
   }
 
+  /// [message] as this platform can answer it: a refusal Settings may
+  /// lift where [picker] has a grant to give, the last word where it does
+  /// not — see [RunSetupRefusal].
+  RunSetupRefusal _refusal(String message) => picker.asksForFileAccess
+      ? RunSetupRefusalGrantable(message)
+      : RunSetupRefusalFinal(message);
+
+  /// The core's [line] refusing a picked path of [kind]. Where Settings can
+  /// grant access, the page's Settings action is the way out and the line
+  /// stands alone. On desktop there is no grant — the process runs as the
+  /// user, so the filesystem itself said no — and the line says what is
+  /// left to try.
+  RunSetupRefusal _pathRefusal(String line, RootKind kind) =>
+      picker.asksForFileAccess
+      ? RunSetupRefusalGrantable(line)
+      : RunSetupRefusalFinal(switch (kind) {
+          RootKind.folder =>
+            '$line\nChoose another folder, or give your user account '
+                'permission to read and write this one.',
+          RootKind.file =>
+            '$line\nChoose another file, or give your user account '
+                'permission to read it and to write in its folder.',
+        });
+
   /// Opens the OS settings page that grants access to folders outside the
-  /// app's own container — what the page's snackbar offers after a refusal.
-  /// The refused path then waits for [recheckAfterSettings].
+  /// app's own container — what the page's snackbar offers after a
+  /// [RunSetupRefusalGrantable], and only then: a [RunSetupRefusalFinal]
+  /// has no Settings page to open. The refused path then waits for
+  /// [recheckAfterSettings].
   Future<void> openAccessSettings() {
     if (_refused case _PathRefused(:final index, :final path, :final kind)) {
       _refused = _AwaitingGrant(index, path, kind);
@@ -313,7 +340,7 @@ class RunSetupController {
     if (!identical(_refused, waiting)) return false;
     if (refusal != null) {
       _refused = _PathRefused(waiting.index, waiting.path, waiting.kind);
-      state.recordFolderAccessError(refusal);
+      state.recordFolderAccessError(_pathRefusal(refusal, waiting.kind));
       return true;
     }
     _refused = const _NothingRefused();

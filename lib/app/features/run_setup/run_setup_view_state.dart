@@ -131,6 +131,31 @@ final class RunSetupStarted extends RunSetupOutcome {
   final RunRequest request;
 }
 
+/// Why the folder or file the user just picked was not taken, and whether
+/// the platform has a way past it. Sealed so "offer Settings" cannot be set
+/// on a host that has no Settings page to offer: which case is recorded is
+/// decided once, from `FolderPicker.asksForFileAccess`, and the page only
+/// switches over it.
+sealed class RunSetupRefusal {
+  const RunSetupRefusal(this.message);
+
+  /// The whole line to show.
+  final String message;
+}
+
+/// Refused on a host with a file-access grant (Android, iOS): the OS
+/// Settings page may give it, and a return from there checks the path
+/// again.
+final class RunSetupRefusalGrantable extends RunSetupRefusal {
+  const RunSetupRefusalGrantable(super.message);
+}
+
+/// Refused on a host with nothing to grant (desktop): the filesystem said
+/// no, so [message] is the last word and says what the user can do instead.
+final class RunSetupRefusalFinal extends RunSetupRefusal {
+  const RunSetupRefusalFinal(super.message);
+}
+
 /// One entry of the form: which kind its local side is, the folder or file
 /// chosen for it, and the two fields' own validation lines. The remote
 /// root's *text* is not here — see `RunSetupViewState`'s doc comment — only
@@ -174,7 +199,7 @@ class RunEntryForm {
 class RunSetupViewState extends ChangeNotifier {
   RunSetupPeer _peer = const RunSetupPeerLoading();
   List<RunEntryForm> _entries = const [RunEntryForm()];
-  String? _folderAccessError;
+  RunSetupRefusal? _folderAccessError;
   String? _addressError;
   bool _dryRun = false;
   List<String> _ignorePatterns = const [];
@@ -193,7 +218,7 @@ class RunSetupViewState extends ChangeNotifier {
   /// and raises a snackbar — because it is about a path that never made it
   /// into an entry, so there is no field to hang it under. Not per entry:
   /// only one pick can be in flight at a time, whichever entry it was for.
-  String? get folderAccessError => _folderAccessError;
+  RunSetupRefusal? get folderAccessError => _folderAccessError;
 
   /// The line under the address field, or `null` when it validated.
   String? get addressError => _addressError;
@@ -260,8 +285,8 @@ class RunSetupViewState extends ChangeNotifier {
 
   /// Records why a picked folder or file was refused, or clears it.
   /// `RunSetupController` only.
-  void recordFolderAccessError(String? message) {
-    _folderAccessError = message;
+  void recordFolderAccessError(RunSetupRefusal? refusal) {
+    _folderAccessError = refusal;
     notifyListeners();
   }
 
