@@ -352,6 +352,9 @@ final class SyncRunConflictRow {
   final SyncRunConflictSide local;
   final SyncRunConflictSide remote;
   final List<ConflictChoice> offered;
+
+  /// Whether [choice] is one the core offered for this conflict.
+  bool offers(ConflictChoice choice) => offered.contains(choice);
 }
 
 /// One side of a conflict: its [status], and — for a side with a file on
@@ -423,6 +426,13 @@ final class SyncRunPlanRow {
   final int bytes;
   final SyncRunPlanGroup group;
   final SyncRunPlanReversal? reversal;
+
+  /// Whether [choice] can be made for this action: as planned and skipped
+  /// always, reversed only where the core offers a [reversal].
+  bool offers(ActionChoice choice) => switch (choice) {
+    ActionChoice.proposed || ActionChoice.skipped => true,
+    ActionChoice.reversed => reversal != null,
+  };
 
   @override
   bool operator ==(Object other) =>

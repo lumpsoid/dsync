@@ -3,8 +3,11 @@ import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/format_path.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
+import 'package:dsync/app/features/run/run_review_cursor.dart';
+import 'package:dsync/app/features/run/run_review_keyboard.dart';
 import 'package:dsync/app/features/run/run_scope.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
+import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
@@ -2036,6 +2039,452 @@ void main() {
       await tester.pump();
 
       expect(find.byKey(const Key('run-deletes-confirm')), findsOneWidget);
+    });
+  });
+
+  group('wide windows: the plan as a table, reviewed from the keyboard', () {
+    const wide = Size(1440, 900);
+
+    Future<void> pumpAt(WidgetTester tester, Size size) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RunPage(request: request, onDone: () => doneTaps++),
+        ),
+      );
+    }
+
+    Future<void> openAt(
+      WidgetTester tester,
+      wire.RunView view, {
+      Size size = wide,
+    }) async {
+      await pumpAt(tester, size);
+      await deliver(tester, view);
+    }
+
+    // The inline review's rows, and a record-only one behind its
+    // disclosure. The cursor walks them in page order: both.txt,
+    // theirs.txt, then To the remote (new.txt, mirror.txt), then
+    // Deletions (gone.txt); same.txt only once its group is open.
+    wire.RunView review({
+      wire.ActionChoiceView mirror = wire.ActionChoiceView.proposed,
+      wire.RunPhaseView? phase,
+    }) => runView(
+      phase: phase ?? reviewing(apply: 4, leftOpen: 2),
+      conflicts: [
+        conflictRow(
+          'both.txt',
+          a: modifiedFile(),
+          b: modifiedFile(),
+          offered: offersAll,
+        ),
+        conflictRow(
+          'theirs.txt',
+          b: modifiedFile(),
+          offered: const [
+            wire.ConflictChoiceView.unresolved,
+            wire.ConflictChoiceView.keepB,
+          ],
+        ),
+      ],
+      plan: [
+        planRow(copyTo('new.txt'), reverseBytes: 1024),
+        planRow(deleteThere('gone.txt'), reverseBytes: 512),
+        planRow(copyTo('mirror.txt', bytes: 10), choice: mirror),
+        planRow(recordOnly('same.txt')),
+      ],
+    );
+
+    final ring = find.byWidgetPredicate(
+      (widget) => widget is CustomPaint && widget.painter is ReviewRingPainter,
+    );
+
+    /// The row the focus ring is drawn on, if any.
+    ReviewTarget? ringed(WidgetTester tester) {
+      if (ring.evaluate().isEmpty) return null;
+      expect(ring, findsOneWidget);
+      return tester
+          .widget<ReviewRowFrame>(
+            find.ancestor(of: ring, matching: find.byType(ReviewRowFrame)),
+          )
+          .target;
+    }
+
+    /// Presses [key] and gives a reveal the frames it may take to reach a
+    /// row the list had not built.
+    Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
+      await tester.sendKeyEvent(key);
+      for (var i = 0; i < 10; i++) {
+        await tester.pump();
+      }
+    }
+
+    Future<void> pressAll(
+      WidgetTester tester,
+      List<LogicalKeyboardKey> keys,
+    ) async {
+      for (final key in keys) {
+        await press(tester, key);
+      }
+    }
+
+    const down = LogicalKeyboardKey.arrowDown;
+
+    testWidgets('the plan reads as a table: column names per group, and '
+        'each column lines up down the page', (tester) async {
+      await openAt(tester, review());
+
+      // A header over each open group's rows; record-only is closed.
+      expect(find.text('Path'), findsNWidgets(2));
+      expect(find.text('Choice'), findsNWidgets(2));
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('run-plan')),
+          matching: find.byType(ListTile),
+        ),
+        findsNothing,
+      );
+
+      // The action column starts at one x, across groups too...
+      final copies = find.text('copy to the remote');
+      expect(copies, findsNWidgets(2));
+      final actionX = tester.getTopLeft(copies.first).dx;
+      expect(tester.getTopLeft(copies.last).dx, actionX);
+      expect(tester.getTopLeft(find.text('delete on the remote')).dx, actionX);
+      // ...the sizes end at one x...
+      expect(
+        tester.getTopRight(find.text('2.0 KiB')).dx,
+        moreOrLessEquals(tester.getTopRight(find.text('10 B')).dx),
+      );
+      // ...and every control ends at the column's edge, where the bar's
+      // Apply ends too: the answers sit under the choices they send.
+      final column = ReadableWidth.table.gutters(wide.width).right + 16;
+      for (final path in ['new.txt', 'mirror.txt', 'gone.txt']) {
+        expect(
+          tester.getTopRight(find.byKey(Key('decision-$path'))).dx,
+          moreOrLessEquals(wide.width - column),
+        );
+      }
+      expect(
+        tester.getTopRight(find.byKey(const Key('run-confirm'))).dx,
+        moreOrLessEquals(wide.width - column),
+      );
+
+      // The keys are shown where the choices are: in the tooltips, and
+      // in the bar's legend.
+      expect(find.byTooltip('Reverse (R)'), findsNWidgets(2));
+      expect(find.byTooltip('Skip (S)'), findsNWidgets(3));
+      final legend = tester
+          .widget<Text>(find.byKey(const Key('run-review-keys')))
+          .data!;
+      expect(legend, contains('A as planned, R reverse, S skip'));
+      expect(
+        legend,
+        contains('conflicts: T this device, R remote, B both, S skip'),
+      );
+      expect(legend, contains('Ctrl+Enter sync all except conflicts'));
+    });
+
+    testWidgets('below the large window class the rows stay the phone\'s', (
+      tester,
+    ) async {
+      await openAt(tester, review(), size: const Size(1100, 900));
+
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('run-plan')),
+          matching: find.byType(ListTile),
+        ),
+        findsNWidgets(3),
+      );
+      expect(find.text('Path'), findsNothing);
+      expect(find.byKey(const Key('run-review-keys')), findsNothing);
+      expect(find.byTooltip('Reverse'), findsNWidgets(2));
+      expect(find.byTooltip('Reverse (R)'), findsNothing);
+      // The list's own column, as before.
+      expect(
+        tester.getTopRight(find.byKey(const Key('run-confirm'))).dx,
+        moreOrLessEquals(1100 - ReadableWidth.list.gutters(1100).right - 16),
+      );
+    });
+
+    testWidgets('the focus lands on the review, and the arrows, paging, '
+        'Home and End walk the rows in page order', (tester) async {
+      await openAt(tester, review());
+
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'run-review');
+
+      // It started on the first row: one step down is the second.
+      await press(tester, down);
+      expect(ringed(tester), const ConflictTarget(1));
+      await pressAll(tester, [down, down]);
+      expect(ringed(tester), const ActionTarget(2)); // mirror.txt
+      await pressAll(tester, [down, down]);
+      expect(ringed(tester), const ActionTarget(1)); // gone.txt, the last
+      await press(tester, LogicalKeyboardKey.arrowUp);
+      expect(ringed(tester), const ActionTarget(2));
+      await press(tester, LogicalKeyboardKey.home);
+      expect(ringed(tester), const ConflictTarget(0));
+      await press(tester, LogicalKeyboardKey.end);
+      expect(ringed(tester), const ActionTarget(1));
+      await press(tester, LogicalKeyboardKey.pageUp);
+      expect(ringed(tester), const ConflictTarget(0));
+      await press(tester, LogicalKeyboardKey.pageDown);
+      expect(ringed(tester), isNot(const ConflictTarget(0)));
+    });
+
+    testWidgets('a letter picks the cursor row\'s choice, only where the row '
+        'offers it and does not already hold it', (tester) async {
+      await openAt(tester, review());
+
+      // both.txt: every choice offered.
+      await press(tester, LogicalKeyboardKey.keyB);
+      // theirs.txt: this device has no record, so T is not offered; S is
+      // what it already holds.
+      await pressAll(tester, [
+        down,
+        LogicalKeyboardKey.keyT,
+        LogicalKeyboardKey.keyS,
+        LogicalKeyboardKey.keyR,
+      ]);
+      // new.txt: reversible; A is what it already holds.
+      await pressAll(tester, [
+        down,
+        LogicalKeyboardKey.keyA,
+        LogicalKeyboardKey.keyR,
+      ]);
+      // mirror.txt: no reverse offered.
+      await pressAll(tester, [
+        down,
+        LogicalKeyboardKey.keyR,
+        LogicalKeyboardKey.keyS,
+      ]);
+
+      expect(intents(), const [
+        wire.RunIntentChooseConflict(
+          index: 0,
+          choice: wire.ConflictChoiceView.keepBoth,
+        ),
+        wire.RunIntentChooseConflict(
+          index: 1,
+          choice: wire.ConflictChoiceView.keepB,
+        ),
+        wire.RunIntentChooseAction(
+          index: 0,
+          choice: wire.ActionChoiceView.reversed,
+        ),
+        wire.RunIntentChooseAction(
+          index: 2,
+          choice: wire.ActionChoiceView.skipped,
+        ),
+      ]);
+    });
+
+    testWidgets('Enter applies the review; Ctrl+Enter syncs all except '
+        'conflicts', (tester) async {
+      await openAt(tester, review());
+
+      await press(tester, LogicalKeyboardKey.enter);
+      expect(intents(), const [wire.RunIntentConfirm()]);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await press(tester, LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      expect(intents(), const [
+        wire.RunIntentConfirm(),
+        wire.RunIntentAcceptAll(),
+      ]);
+    });
+
+    testWidgets('a key rebuilds no row: the ring moves, and a choice the '
+        'core holds rebuilds its own row alone', (tester) async {
+      await openAt(tester, review());
+      Text text(String data) => tester.widget<Text>(find.text(data));
+      final newRow = text('new.txt');
+      final mirror = text('mirror.txt');
+      final gone = text('gone.txt');
+      final header = tester.widget<Text>(
+        find.textContaining('To the remote (2'),
+      );
+
+      // Over new.txt and on to mirror.txt: two rows ringed in turn, and
+      // neither rebuilt for it.
+      await pressAll(tester, [down, down, down]);
+      expect(ringed(tester), const ActionTarget(2));
+      expect(text('new.txt'), same(newRow));
+      expect(text('mirror.txt'), same(mirror));
+      expect(text('gone.txt'), same(gone));
+
+      await press(tester, LogicalKeyboardKey.keyS);
+      await deliver(
+        tester,
+        review(
+          mirror: wire.ActionChoiceView.skipped,
+          phase: reviewing(apply: 3, skipped: 1, leftOpen: 2),
+        ),
+      );
+
+      // Positive control: the picked row is a new widget.
+      expect(text('mirror.txt'), isNot(same(mirror)));
+      expect(text('mirror.txt').style?.decoration, TextDecoration.lineThrough);
+      expect(text('new.txt'), same(newRow));
+      expect(text('gone.txt'), same(gone));
+      expect(
+        tester.widget<Text>(find.textContaining('To the remote (2')),
+        same(header),
+      );
+      // The ring stayed where it was.
+      expect(ringed(tester), const ActionTarget(2));
+    });
+
+    testWidgets('the record-only disclosure opens and closes from the '
+        'keyboard, and the cursor walks into what it shows', (tester) async {
+      await openAt(tester, review());
+      final disclosure = find.byKey(const Key('run-plan-disclosure'));
+      expect(
+        tester.widget<InkWell>(disclosure).mouseCursor,
+        SystemMouseCursors.click,
+      );
+
+      Focus.of(
+        tester.element(
+          find.descendant(of: disclosure, matching: find.byType(Row)),
+        ),
+      ).requestFocus();
+      await tester.pump();
+      await press(tester, LogicalKeyboardKey.space);
+      expect(find.text('same.txt'), findsOneWidget);
+      await press(tester, LogicalKeyboardKey.enter);
+      expect(find.text('same.txt'), findsNothing);
+      // Enter was the disclosure's, not the review's Apply.
+      expect(intents(), isEmpty);
+      await press(tester, LogicalKeyboardKey.space);
+      expect(find.text('same.txt'), findsOneWidget);
+
+      // A click on a row puts the cursor there and the keys back on the
+      // list, and the open group is part of the walk.
+      await tester.tap(find.text('gone.txt'));
+      await tester.pump();
+      await press(tester, down);
+      expect(ringed(tester), const ActionTarget(3));
+      await press(tester, LogicalKeyboardKey.keyS);
+      expect(intents(), const [
+        wire.RunIntentChooseAction(
+          index: 3,
+          choice: wire.ActionChoiceView.skipped,
+        ),
+      ]);
+    });
+
+    testWidgets('Esc asks before leaving the review, and Enter on the '
+        'question keeps syncing', (tester) async {
+      // Pushed onto a route of its own, as the app pushes it, so there is
+      // somewhere to go back to.
+      tester.view.physicalSize = wide;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        RunPage(request: request, onDone: () => doneTaps++),
+                  ),
+                ),
+                child: const Text('open run'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open run'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await deliver(tester, review());
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'run-review');
+
+      await press(tester, LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byKey(const Key('run-abort-dialog')), findsOneWidget);
+
+      await press(tester, LogicalKeyboardKey.enter);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byKey(const Key('run-abort-dialog')), findsNothing);
+      expect(find.byType(RunPage), findsOneWidget);
+      // Enter answered the question, not the review.
+      expect(intents(), isEmpty);
+
+      await press(tester, LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.byKey(const Key('run-abort-confirm')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byType(RunPage), findsNothing);
+    });
+
+    testWidgets('a few thousand rows: End and Home reach rows the list had '
+        'not built, and a run of arrows stays quick', (tester) async {
+      const rows = 3000;
+      await openAt(
+        tester,
+        runView(
+          phase: reviewing(apply: rows),
+          plan: [
+            for (var i = 0; i < rows; i++)
+              planRow(copyTo('file-$i.txt', bytes: 0)),
+          ],
+        ),
+      );
+      final screen = tester.view.physicalSize / tester.view.devicePixelRatio;
+      bool onScreen(String path) {
+        final rect = tester.getRect(find.byKey(Key('decision-$path')));
+        return rect.top >= 0 && rect.bottom <= screen.height;
+      }
+
+      final jumps = Stopwatch()..start();
+      await press(tester, LogicalKeyboardKey.end);
+      expect(ringed(tester), const ActionTarget(rows - 1));
+      expect(onScreen('file-${rows - 1}.txt'), isTrue);
+      // Back to the top: rows of one height put row 0 where it is without
+      // building the 3,000 in between.
+      await press(tester, LogicalKeyboardKey.home);
+      expect(ringed(tester), const ActionTarget(0));
+      expect(onScreen('file-0.txt'), isTrue);
+      await press(tester, LogicalKeyboardKey.pageDown);
+      final paged = ringed(tester);
+      expect(paged, isA<ActionTarget>());
+      expect(onScreen('file-${(paged! as ActionTarget).position}.txt'), isTrue);
+      await press(tester, LogicalKeyboardKey.home);
+      jumps.stop();
+
+      final arrows = Stopwatch()..start();
+      for (var i = 0; i < 300; i++) {
+        await tester.sendKeyEvent(down);
+        await tester.pump();
+      }
+      arrows.stop();
+      expect(ringed(tester), const ActionTarget(300));
+      expect(onScreen('file-300.txt'), isTrue);
+      // Only what the viewport holds is built, however far the cursor
+      // walked.
+      expect(find.byType(ReviewRowFrame).evaluate().length, lessThan(60));
+      // Measured at ~0.3 s for the jumps and ~2.5 s for the 300 arrows
+      // (each a frame); a jump back over rows of their own heights took
+      // ~9 s here before the table's rows got one height. The bound is
+      // loose so a slow machine does not flake, and tight enough to catch
+      // a jump that builds the rows in between again.
+      expect(
+        jumps.elapsed + arrows.elapsed,
+        lessThan(const Duration(seconds: 10)),
+      );
     });
   });
 }

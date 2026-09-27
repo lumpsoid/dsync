@@ -24,7 +24,16 @@ enum ReadableWidth {
   /// than [form] because a row carries a title, a subtitle and a control
   /// side by side, yet narrow enough that the control stays in reach of the
   /// label it answers.
-  list(800);
+  list(800),
+
+  /// Rows read across aligned columns — a path, what happens to it, its
+  /// size and its choice — and scanned down them. Wider than [list]
+  /// because the path is one column of four here rather than the row's
+  /// whole title: at this width the path column keeps about the room a
+  /// [list] row's title had, so going to columns never costs the part
+  /// that tells two rows apart. Wider still would only push the choice
+  /// further from the path it answers.
+  table(1200);
 
   const ReadableWidth(this.maxWidth);
 

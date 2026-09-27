@@ -1,14 +1,20 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core_link/models/conflict_choice.dart';
+import '../../destructive_confirm_dialog.dart';
 import '../../format_bytes.dart';
 import '../../format_count.dart';
 import '../../format_path.dart';
+import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import '../../run_request.dart';
 import 'run_controller.dart';
+import 'run_layout.dart';
 import 'run_plan_section.dart';
+import 'run_review_cursor.dart';
+import 'run_review_keyboard.dart';
 import 'run_scope.dart';
 import 'run_timings_sheet.dart';
 import 'run_view_state.dart';
@@ -51,6 +57,16 @@ import 'run_view_state.dart';
 /// [onDone] is the navigation seam: it fires when the user taps Done on a
 /// finished, stopped or failed run, and the entrypoint decides where that
 /// leads. This page holds no `Navigator` of its own.
+///
+/// **Its width is read once, here.** The page is pushed over the app
+/// shell, so it decides its own [RunLayout] from the window's width and
+/// hands the plain value down: the plan as a table on a wide window, the
+/// phone's rows otherwise, and the page's column to match.
+///
+/// **The review works from the keyboard** ([RunReviewKeyboard]), and Esc
+/// anywhere on the page does what the system back does ([PopOnEscape]) —
+/// through the same [PopScope], so a live run still asks before it is
+/// left.
 class RunPage extends StatefulWidget {
   const RunPage({super.key, required this.request, required this.onDone});
 
@@ -86,6 +102,11 @@ class _RunPageState extends State<RunPage> {
   /// group counts before it notifies.
   Listenable get _topSection => _controller.state;
 
+  /// The review's keyboard cursor, and which plan groups are open — the
+  /// page's, because the cursor walks the rows the open groups show.
+  final ReviewCursor _cursor = ReviewCursor();
+  final PlanDisclosures _disclosures = PlanDisclosures();
+
   @override
   void initState() {
     super.initState();
@@ -99,6 +120,8 @@ class _RunPageState extends State<RunPage> {
   @override
   void dispose() {
     _lifecycle.dispose();
+    _cursor.dispose();
+    _disclosures.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -124,21 +147,35 @@ class _RunPageState extends State<RunPage> {
     // there is no session to lose, so back pops with no prompt. Stop stays
     // the deliberate path and is untouched: this only closes the silent
     // one.
-    return ListenableBuilder(
-      listenable: state,
-      builder: (context, child) => PopScope(
-        canPop: !state.live,
-        onPopInvokedWithResult: (didPop, _) {
-          if (didPop) return;
-          _confirmAbort();
-        },
-        child: child!,
-      ),
-      child: _buildScaffold(context, state),
+    //
+    // Esc is that same back, from the keyboard ([PopOnEscape]): it goes
+    // through this PopScope, so it asks exactly when back asks. The review
+    // list takes the focus once there is a review, and Esc bubbles up from
+    // it — the list does not take the key.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final layout = RunLayout.forWidth(constraints.maxWidth);
+        return ListenableBuilder(
+          listenable: state,
+          builder: (context, child) => PopScope(
+            canPop: !state.live,
+            onPopInvokedWithResult: (didPop, _) {
+              if (didPop) return;
+              _confirmAbort();
+            },
+            child: child!,
+          ),
+          child: PopOnEscape(child: _buildScaffold(context, state, layout)),
+        );
+      },
     );
   }
 
-  Widget _buildScaffold(BuildContext context, SyncRunViewState state) {
+  Widget _buildScaffold(
+    BuildContext context,
+    SyncRunViewState state,
+    RunLayout layout,
+  ) {
     return Scaffold(
       appBar: AppBar(
         title: Text('Sync with ${widget.request.deviceName}'),
@@ -224,10 +261,13 @@ class _RunPageState extends State<RunPage> {
           SyncRunAwaitingDecisions() => _ReviewBar(
             summary: state.decisionSummary,
             controller: _controller,
+            layout: layout,
+            conflicts: state.conflicts.isNotEmpty,
           ),
           SyncRunConfirmingDeletes(:final sides) => _DeletesBar(
             sides: sides,
             controller: _controller,
+            layout: layout,
           ),
           SyncRunIdle() ||
           SyncRunConnecting() ||
@@ -259,83 +299,114 @@ class _RunPageState extends State<RunPage> {
       // comment and `RunPlanRow` (`run_plan_section.dart`).
       body: CustomScrollView(
         slivers: [
-          SliverReadableColumn(
-            width: ReadableWidth.list,
-            sliver: SliverPadding(
-              padding: const EdgeInsets.all(16),
-              sliver: SliverMainAxisGroup(
+          RunReviewKeyboard(
+            state: state,
+            cursor: _cursor,
+            order: () => reviewOrder(state, _disclosures),
+            onChoose: _controller.choose,
+            onResolve: _controller.resolveConflict,
+            onApply: _controller.confirm,
+            onSyncAllExceptConflicts: _controller.acceptAll,
+            sliver: _buildColumn(state, layout),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildColumn(SyncRunViewState state, RunLayout layout) {
+    return SliverReadableColumn(
+      width: layout.width,
+      sliver: SliverPadding(
+        padding: const EdgeInsets.all(16),
+        sliver: SliverMainAxisGroup(
+          slivers: [
+            ListenableBuilder(
+              listenable: _topSection,
+              builder: (context, _) => SliverMainAxisGroup(
                 slivers: [
-                  ListenableBuilder(
-                    listenable: _topSection,
-                    builder: (context, _) => SliverMainAxisGroup(
-                      slivers: [
-                        SliverToBoxAdapter(child: _StageStrip(state)),
-                        // Only past one entry: a single-entry run reads
-                        // exactly as it always has, with no list to draw
-                        // above its own header and plan (D10).
-                        if (state.entries.length > 1)
-                          SliverToBoxAdapter(child: _EntriesSection(state)),
-                        if (state.header case final header?)
-                          SliverToBoxAdapter(child: _Header(header)),
-                        SliverToBoxAdapter(child: _CountsRow(state)),
-                        if (state.scanTally case final tally?)
-                          SliverToBoxAdapter(child: _ScanTally(tally)),
-                        if (state.unreadablePaths.isNotEmpty)
-                          RunListSection(
-                            sectionKey: const Key('run-unreadable'),
-                            title: 'Could not read',
-                            itemCount: state.unreadablePaths.length,
-                            itemBuilder: (context, index) => Text(
-                              state.unreadablePaths[index],
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.error,
-                              ),
-                            ),
-                          ),
-                        if (state.skippedSymlinks.isNotEmpty)
-                          RunListSection(
-                            sectionKey: const Key('run-symlinks'),
-                            title: 'Symlinks not followed',
-                            itemCount: state.skippedSymlinks.length,
-                            itemBuilder: (context, index) =>
-                                Text(state.skippedSymlinks[index]),
-                          ),
-                        // First of the plan area (Design C.5): during the
-                        // review each row carries its own control, and after
-                        // it each follows its own result.
-                        if (state.conflicts.isNotEmpty)
-                          RunListSection(
-                            sectionKey: const Key('run-conflicts'),
-                            title:
-                                'Conflicts (${formatCount(state.conflicts.length)})',
-                            itemCount: state.conflicts.length,
-                            itemBuilder: (context, index) {
-                              final row = state.conflicts[index];
-                              return _ConflictRow(
-                                row,
-                                state: state,
-                                offered: switch (state.phase) {
-                                  SyncRunAwaitingDecisions() => row.offered,
-                                  _ => null,
-                                },
-                                onResolve: _controller.resolveConflict,
-                              );
-                            },
-                          ),
-                      ],
+                  SliverToBoxAdapter(child: _StageStrip(state)),
+                  // Only past one entry: a single-entry run reads
+                  // exactly as it always has, with no list to draw
+                  // above its own header and plan (D10).
+                  if (state.entries.length > 1)
+                    SliverToBoxAdapter(child: _EntriesSection(state)),
+                  if (state.header case final header?)
+                    SliverToBoxAdapter(child: _Header(header)),
+                  SliverToBoxAdapter(child: _CountsRow(state)),
+                  if (state.scanTally case final tally?)
+                    SliverToBoxAdapter(child: _ScanTally(tally)),
+                  if (state.unreadablePaths.isNotEmpty)
+                    RunListSection(
+                      sectionKey: const Key('run-unreadable'),
+                      title: 'Could not read',
+                      header: null,
+                      itemExtent: null,
+                      itemCount: state.unreadablePaths.length,
+                      itemBuilder: (context, index) => Text(
+                        state.unreadablePaths[index],
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
                     ),
-                  ),
-                  ListenableBuilder(
-                    listenable: _planSection,
-                    builder: (context, _) => state.plan.isEmpty
-                        ? const SliverToBoxAdapter(child: SizedBox.shrink())
-                        : RunPlanSection(state, onChoose: _controller.choose),
-                  ),
+                  if (state.skippedSymlinks.isNotEmpty)
+                    RunListSection(
+                      sectionKey: const Key('run-symlinks'),
+                      title: 'Symlinks not followed',
+                      header: null,
+                      itemExtent: null,
+                      itemCount: state.skippedSymlinks.length,
+                      itemBuilder: (context, index) =>
+                          Text(state.skippedSymlinks[index]),
+                    ),
+                  // First of the plan area (Design C.5): during the
+                  // review each row carries its own control and its
+                  // frame for the keyboard's cursor, and after it
+                  // each follows its own result.
+                  if (state.conflicts.isNotEmpty)
+                    RunListSection(
+                      sectionKey: const Key('run-conflicts'),
+                      title:
+                          'Conflicts (${formatCount(state.conflicts.length)})',
+                      header: null,
+                      itemExtent: null,
+                      itemCount: state.conflicts.length,
+                      itemBuilder: (context, index) {
+                        final row = state.conflicts[index];
+                        final reviewing =
+                            state.phase is SyncRunAwaitingDecisions;
+                        final conflict = _ConflictRow(
+                          row,
+                          state: state,
+                          offered: reviewing ? row.offered : null,
+                          onResolve: _controller.resolveConflict,
+                        );
+                        if (!reviewing) return conflict;
+                        return ReviewRowFrame(
+                          cursor: _cursor,
+                          target: ConflictTarget(index),
+                          child: conflict,
+                        );
+                      },
+                    ),
                 ],
               ),
             ),
-          ),
-        ],
+            ListenableBuilder(
+              listenable: _planSection,
+              builder: (context, _) => state.plan.isEmpty
+                  ? const SliverToBoxAdapter(child: SizedBox.shrink())
+                  : RunPlanSection(
+                      state,
+                      onChoose: _controller.choose,
+                      layout: layout,
+                      cursor: _cursor,
+                      disclosures: _disclosures,
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1028,14 +1099,27 @@ class _FinishedCounts extends StatelessWidget {
 /// choices). Follows [summary] alone, so a tap rebuilds this and the tapped
 /// row and nothing else. One line of total, ellipsised, so its height never
 /// depends on what was chosen.
+///
+/// In the table [layout] — a desk, a keyboard — it also lists the review's
+/// keys, one line under the total, so they are learnt from the page rather
+/// than from a help screen; the conflict keys only where there are
+/// [conflicts] to use them on.
 class _ReviewBar extends StatelessWidget {
-  const _ReviewBar({required this.summary, required this.controller});
+  const _ReviewBar({
+    required this.summary,
+    required this.controller,
+    required this.layout,
+    required this.conflicts,
+  });
 
   final ValueListenable<SyncRunDecisionSummary?> summary;
   final SyncRunController controller;
+  final RunLayout layout;
+  final bool conflicts;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Material(
       elevation: 8,
       child: SafeArea(
@@ -1043,7 +1127,7 @@ class _ReviewBar extends StatelessWidget {
         // Held to the body's column, so the answers sit under the rows
         // being reviewed rather than at the far edge of a wide window.
         child: ReadableColumn(
-          width: ReadableWidth.list,
+          width: layout.width,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             child: Column(
@@ -1060,6 +1144,17 @@ class _ReviewBar extends StatelessWidget {
                     style: Theme.of(context).textTheme.titleSmall,
                   ),
                 ),
+                if (layout == RunLayout.table)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      _keyLegend(conflicts: conflicts),
+                      key: const Key('run-review-keys'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.outline,
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 // Wraps rather than overflowing on a narrow phone; its height
                 // follows the screen's width, never the choices.
@@ -1100,10 +1195,15 @@ class _ReviewBar extends StatelessWidget {
 /// which folder — and the two answers. Not a dialog: like the review, it
 /// is the run's own next step, and Stop stays one tap away above it.
 class _DeletesBar extends StatelessWidget {
-  const _DeletesBar({required this.sides, required this.controller});
+  const _DeletesBar({
+    required this.sides,
+    required this.controller,
+    required this.layout,
+  });
 
   final List<SyncRunDeletesOnSide> sides;
   final SyncRunController controller;
+  final RunLayout layout;
 
   @override
   Widget build(BuildContext context) {
@@ -1115,7 +1215,7 @@ class _DeletesBar extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: ReadableColumn(
-          width: ReadableWidth.list,
+          width: layout.width,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             child: Column(
@@ -1191,6 +1291,37 @@ String _summaryLine(SyncRunDecisionSummary summary) => [
 
 String _conflicts(int count) => count == 1 ? 'conflict' : 'conflicts';
 
+/// "↑ ↓ PgUp PgDn Home End move · A as planned, R reverse, S skip ·
+/// conflicts: T this device, … · Enter apply · …": the review's keys, the
+/// choice keys read from the very maps the keyboard picks by, so the
+/// legend cannot promise a key the review does not take.
+String _keyLegend({required bool conflicts}) => [
+  '↑ ↓ PgUp PgDn Home End move',
+  _choiceKeys(actionChoiceKeys, actionChoiceName),
+  if (conflicts)
+    'conflicts: ${_choiceKeys(conflictChoiceKeys, _conflictChoiceName)}',
+  'Enter apply',
+  'Ctrl+Enter sync all except conflicts',
+  'Esc leave',
+].join(' · ');
+
+String _choiceKeys<C>(
+  Map<C, LogicalKeyboardKey> keys,
+  String Function(C choice) name,
+) => [
+  for (final MapEntry(key: choice, value: key) in keys.entries)
+    '${key.keyLabel} ${name(choice).toLowerCase()}',
+].join(', ');
+
+/// A conflict's choice said back in words: above the side boxes that make
+/// it, and in the review bar's key legend.
+String _conflictChoiceName(ConflictChoice choice) => switch (choice) {
+  ConflictChoice.unresolved => 'Skip',
+  ConflictChoice.keepA => 'This device',
+  ConflictChoice.keepB => 'Remote',
+  ConflictChoice.keepBoth => 'Both',
+};
+
 /// One conflict (SPEC §6): the file's name, then each side's status boxed
 /// side by side — and, while the review is up ([offered] set), those two
 /// boxes are the choice. Tapping a side keeps it; tapping both keeps both;
@@ -1261,7 +1392,7 @@ class _ConflictRow extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.only(left: 8),
                         child: Text(
-                          _label(choice),
+                          _conflictChoiceName(choice),
                           key: Key('decision-${row.path}'),
                           style: theme.textTheme.labelLarge?.copyWith(
                             color: choice == ConflictChoice.unresolved
@@ -1361,14 +1492,6 @@ class _ConflictRow extends StatelessWidget {
       ],
     );
   }
-
-  /// The choice said back in words, above the boxes that make it.
-  static String _label(ConflictChoice choice) => switch (choice) {
-    ConflictChoice.unresolved => 'Skip',
-    ConflictChoice.keepA => 'This device',
-    ConflictChoice.keepB => 'Remote',
-    ConflictChoice.keepBoth => 'Both',
-  };
 }
 
 /// Which side boxes [choice] selects.
@@ -1545,34 +1668,26 @@ class _NoticeLine extends StatelessWidget {
   }
 }
 
-/// The confirmation the system back gesture puts in front of a live run:
-/// leaving is an abort, worded as one, and the cancel is the default way
-/// out. Stop is not offered here — it is one tap away in the app bar, and
-/// this dialog's only job is to make the silent path deliberate.
+/// The confirmation the system back gesture — or Esc — puts in front of a
+/// live run: leaving is an abort, worded as one, and the cancel is the
+/// default way out, focused so Enter keeps the run going. Stop is not
+/// offered here — it is one tap away in the app bar, and this dialog's
+/// only job is to make the silent path deliberate.
 class _AbortDialog extends StatelessWidget {
   const _AbortDialog();
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      key: const Key('run-abort-dialog'),
-      title: const Text('Leave and stop this sync?'),
-      content: const Text(
-        'This sync is still running. Leaving stops it where it is; '
-        'anything already applied stays applied.',
-      ),
-      actions: [
-        TextButton(
-          key: const Key('run-abort-cancel'),
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Keep syncing'),
-        ),
-        FilledButton(
-          key: const Key('run-abort-confirm'),
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Leave and stop'),
-        ),
-      ],
+    return const DestructiveConfirmDialog(
+      key: Key('run-abort-dialog'),
+      title: 'Leave and stop this sync?',
+      message:
+          'This sync is still running. Leaving stops it where it is; '
+          'anything already applied stays applied.',
+      cancelLabel: 'Keep syncing',
+      confirmLabel: 'Leave and stop',
+      cancelKey: Key('run-abort-cancel'),
+      confirmKey: Key('run-abort-confirm'),
     );
   }
 }
