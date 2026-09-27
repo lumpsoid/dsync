@@ -75,6 +75,8 @@ class FiltersController {
     _folderPath = '';
     _report = null;
     state.recordRootPath(args.rootPath);
+    // The last visit's rows are another folder's, whatever their path.
+    state.recordFolder(const FiltersFolderLoading());
     state.recordAddError(null);
     state.recordPreview(const FiltersPreviewIdle(), ruleCounts: const {});
     state.recordRules(args.ignorePatterns);
@@ -142,6 +144,15 @@ class FiltersController {
     ]);
     _relist();
   }
+
+  /// Carries out one of a row's [FilterEntryRow.actions] — the one entry
+  /// every control that offers them goes through, so a menu and a button
+  /// for the same action cannot do different things.
+  void runEntryAction(FilterEntryAction action) => switch (action) {
+    ExcludeEveryNamed(:final name) => excludeEverywhere(name),
+    ExcludeOnlyThis(:final path) => excludeExactly(path),
+    IncludeAgain(:final pattern) => removeRule(pattern),
+  };
 
   /// Counts what the current rules keep and drop, by walking the whole
   /// root — what the Preview button asks for. See the class doc comment
@@ -212,7 +223,15 @@ class FiltersController {
     if (_disposed) return;
     final generation = ++_generation;
     _folderPath = relativePath;
-    state.recordFolder(const FiltersFolderLoading());
+    // A re-listing of the folder on screen — a rule changed — leaves its
+    // rows up until the new verdicts land: the rows are the same rows, and
+    // swapping them for a spinner would throw away the user's scroll
+    // position and keyboard place for every rule they add while browsing.
+    final onScreen = switch (state.folder) {
+      FiltersFolderListed(:final path) => path == relativePath,
+      FiltersFolderLoading() || FiltersFolderFailed() => false,
+    };
+    if (!onScreen) state.recordFolder(const FiltersFolderLoading());
 
     final List<FilterRow> entries;
     try {

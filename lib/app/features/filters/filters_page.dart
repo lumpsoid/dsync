@@ -1,8 +1,13 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../../keyboard_first.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import 'filters_controller.dart';
+import 'filters_layout.dart';
+import 'filters_listing_keys.dart';
 import 'filters_scope.dart';
 import 'filters_view_state.dart';
 
@@ -17,6 +22,13 @@ import 'filters_view_state.dart';
 /// counted summary between them, against the button that counts it. The
 /// listing takes the room that is left because it is the part the user
 /// works in: rules are made by pointing at rows in it.
+///
+/// **On a wide window the rules and the preview move into a side pane**
+/// ([FiltersLayout]) and the listing takes the rest, so adding a rule shows
+/// its effect on the rows and on the counts while the user carries on
+/// browsing — stacked, the listing would sit under the fold of a window
+/// that is mostly empty. The page reads its width once, here, and hands
+/// the layout down.
 ///
 /// **Nothing here is saved.** The page is a field editor for the Run setup
 /// form that pushed it: [onDone] hands back the rule list as it now
@@ -40,6 +52,11 @@ class FiltersPage extends StatefulWidget {
 class _FiltersPageState extends State<FiltersPage> {
   final FiltersController _controller = filtersScope.controller;
 
+  /// The listing keeps its state — the keyboard cursor, the focus, the
+  /// scroll position — when a window resized across the breakpoint moves
+  /// it from one layout's tree to the other's.
+  final _listingKey = GlobalKey(debugLabel: 'filters-listing');
+
   @override
   void initState() {
     super.initState();
@@ -48,68 +65,142 @@ class _FiltersPageState extends State<FiltersPage> {
 
   @override
   Widget build(BuildContext context) {
-    return PopOnEscape(
-      child: PopScope(
-        // The result travels on the way out rather than from a Save button:
-        // every edit is already live on this screen, so a button that
-        // "applied" them would be asking the user to confirm what they can
-        // already see.
-        canPop: true,
-        onPopInvokedWithResult: (didPop, _) {
-          if (didPop) widget.onDone(_controller.state.rules);
-        },
-        child: Scaffold(
-          appBar: AppBar(
-            title: const Text('Filters'),
-            bottom: PreferredSize(
-              preferredSize: const Size.fromHeight(24),
-              child: ListenableBuilder(
-                listenable: _controller.state,
-                builder: (context, _) => Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      _controller.state.rootPath,
-                      key: const Key('filters-root-path'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final layout = FiltersLayout.forWidth(constraints.maxWidth);
+        return PopOnEscape(
+          child: PopScope(
+            // The result travels on the way out rather than from a Save
+            // button: every edit is already live on this screen, so a
+            // button that "applied" them would be asking the user to
+            // confirm what they can already see.
+            canPop: true,
+            onPopInvokedWithResult: (didPop, _) {
+              if (didPop) widget.onDone(_controller.state.rules);
+            },
+            child: Scaffold(
+              appBar: AppBar(
+                title: const Text('Filters'),
+                bottom: PreferredSize(
+                  preferredSize: const Size.fromHeight(24),
+                  child: ListenableBuilder(
+                    listenable: _controller.state,
+                    builder: (context, _) => Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        // Selectable because the path is the one thing on
+                        // the page a user may want to take elsewhere — a
+                        // terminal, a file manager — and it is often too
+                        // long to retype.
+                        child: SelectionArea(
+                          child: Text(
+                            _controller.state.rootPath,
+                            key: const Key('filters-root-path'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
+              body: ListenableBuilder(
+                listenable: _controller.state,
+                builder: (context, _) => switch (layout) {
+                  FiltersLayout.stacked => _stacked(context, layout),
+                  FiltersLayout.sidePane => _sidePane(context, layout),
+                },
+              ),
             ),
           ),
-          body: ListenableBuilder(
-            listenable: _controller.state,
-            builder: (context, _) => Column(
-              children: [
-                ReadableColumn(
-                  width: ReadableWidth.list,
-                  child: _RulesSection(
-                    controller: _controller,
-                    onAdd: () => _addRule(context),
-                  ),
-                ),
-                const Divider(height: 1),
-                ReadableColumn(
-                  width: ReadableWidth.list,
-                  child: _PreviewSection(controller: _controller),
-                ),
-                const Divider(height: 1),
-                ReadableColumn(
-                  width: ReadableWidth.list,
-                  child: _PathBar(controller: _controller),
-                ),
-                Expanded(child: _Listing(controller: _controller)),
-              ],
-            ),
-          ),
-        ),
-      ),
+        );
+      },
     );
   }
+
+  /// The phone's page: one column, the listing taking the height left.
+  Widget _stacked(BuildContext context, FiltersLayout layout) {
+    return Column(
+      children: [
+        ReadableColumn(
+          width: ReadableWidth.list,
+          child: _RulesSection(
+            controller: _controller,
+            layout: layout,
+            onAdd: () => _addRule(context),
+          ),
+        ),
+        const Divider(height: 1),
+        ReadableColumn(
+          width: ReadableWidth.list,
+          child: _PreviewSection(controller: _controller),
+        ),
+        const Divider(height: 1),
+        ReadableColumn(
+          width: ReadableWidth.list,
+          child: _PathBar(controller: _controller, path: _crumbPath()),
+        ),
+        Expanded(child: _listing()),
+      ],
+    );
+  }
+
+  /// The wide page: the rules and the preview in a pane of their own, the
+  /// path bar and the listing beside it.
+  ///
+  /// The pane scrolls on its own, so a long rule list never pushes the
+  /// preview's counts — what a rule change is checked against — out of a
+  /// window that has the height for them.
+  Widget _sidePane(BuildContext context, FiltersLayout layout) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          key: const Key('filters-side-pane'),
+          width: FiltersLayout.sidePaneWidth,
+          child: ListView(
+            children: [
+              _RulesSection(
+                controller: _controller,
+                layout: layout,
+                onAdd: () => _addRule(context),
+              ),
+              const Divider(height: 1),
+              _PreviewSection(controller: _controller),
+            ],
+          ),
+        ),
+        const VerticalDivider(width: 1),
+        Expanded(
+          child: Column(
+            children: [
+              ReadableColumn(
+                width: ReadableWidth.list,
+                child: _PathBar(controller: _controller, path: _crumbPath()),
+              ),
+              Expanded(child: _listing()),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The folder the breadcrumb names: the listed one, or the root while a
+  /// listing is in flight or has failed.
+  String _crumbPath() => switch (_controller.state.folder) {
+    FiltersFolderListed(:final path) => path,
+    FiltersFolderLoading() || FiltersFolderFailed() => '',
+  };
+
+  Widget _listing() => _Listing(
+    key: _listingKey,
+    controller: _controller,
+    folder: _controller.state.folder,
+  );
 
   /// The advanced entry: a pattern typed by hand, for the rule no row can
   /// be pointed at. Refused patterns stay in the dialog with the reason —
@@ -131,9 +222,16 @@ class _FiltersPageState extends State<FiltersPage> {
 /// fact that catches a typo, and it has to be next to the rule it is
 /// about.
 class _RulesSection extends StatelessWidget {
-  const _RulesSection({required this.controller, required this.onAdd});
+  const _RulesSection({
+    required this.controller,
+    required this.layout,
+    required this.onAdd,
+  });
 
   final FiltersController controller;
+
+  /// Where the listing is, which the empty state points the user at.
+  final FiltersLayout layout;
   final VoidCallback onAdd;
 
   @override
@@ -163,8 +261,14 @@ class _RulesSection extends StatelessWidget {
           ),
           if (rows.isEmpty)
             Text(
-              'No rules — everything in this folder syncs. Exclude something '
-              'by tapping it in the list below.',
+              switch (layout) {
+                FiltersLayout.stacked =>
+                  'No rules — everything in this folder syncs. Exclude '
+                      'something by tapping it in the list below.',
+                FiltersLayout.sidePane =>
+                  'No rules — everything in this folder syncs. Exclude '
+                      "something from its row's menu in the list.",
+              },
               key: const Key('filters-no-rules'),
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
@@ -352,44 +456,116 @@ class _Amount extends StatelessWidget {
 /// The root is its own segment, named for the folder rather than shown as
 /// its whole path — that path is already in the app bar, and repeating it
 /// here would take the width the segments need. Tapping a segment goes
-/// back to it, which is the only way up as well: an "up" button and a
-/// breadcrumb are the same control drawn twice.
-class _PathBar extends StatelessWidget {
-  const _PathBar({required this.controller});
+/// back to it, which is the only pointer way up as well: an "up" button
+/// and a breadcrumb are the same control drawn twice. (The keyboard's way
+/// up is Backspace on the listing.)
+///
+/// **It stays scrolled to the folder being listed** — the last segment. A
+/// path deeper than the row is wide is cut at the root end, which is the
+/// end the user already knows.
+///
+/// **A vertical mouse wheel scrolls it sideways.** Most wheels turn one way
+/// only, and a row that scrolled only on a horizontal delta would leave the
+/// start of a deep path out of a mouse user's reach. Shift+wheel and a
+/// trackpad's sideways swipe still reach the row's own scroll view first,
+/// which takes them as it always did.
+class _PathBar extends StatefulWidget {
+  const _PathBar({required this.controller, required this.path});
 
   final FiltersController controller;
+
+  /// The folder the segments spell out, root-relative; `''` is the root.
+  final String path;
+
+  @override
+  State<_PathBar> createState() => _PathBarState();
+}
+
+class _PathBarState extends State<_PathBar> {
+  final _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _showCurrent();
+  }
+
+  @override
+  void didUpdateWidget(_PathBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path) _showCurrent();
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Scrolls to the last segment once the new segments are laid out.
+  void _showCurrent() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    });
+  }
+
+  /// A wheel turned up or down, with nothing sideways in it, moves the row
+  /// left or right by as much. Registered with the resolver like a
+  /// scroll view's own claim, so an event something deeper already took
+  /// is not scrolled twice.
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent || !_scroll.hasClients) return;
+    final delta = event.scrollDelta;
+    if (delta.dy == 0 || delta.dx != 0) return;
+    final position = _scroll.position;
+    final target = (position.pixels + delta.dy).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if (target == position.pixels) return;
+    GestureBinding.instance.pointerSignalResolver.register(
+      event,
+      (_) => position.pointerScroll(delta.dy),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final folder = controller.state.folder;
-    final path = folder is FiltersFolderListed ? folder.path : '';
+    final path = widget.path;
     final segments = path.isEmpty ? const <String>[] : path.split('/');
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        children: [
-          TextButton(
-            key: const Key('filters-crumb-root'),
-            onPressed: () => controller.openFolder(''),
-            child: const Text('This folder'),
-          ),
-          for (var i = 0; i < segments.length; i++) ...[
-            Icon(
-              Icons.chevron_right,
-              size: 16,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+    return Listener(
+      key: const Key('filters-path-bar'),
+      onPointerSignal: _onPointerSignal,
+      child: SizedBox(
+        height: 40,
+        child: ListView(
+          controller: _scroll,
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          children: [
             TextButton(
-              key: Key('filters-crumb-${segments.take(i + 1).join('/')}'),
-              onPressed: () =>
-                  controller.openFolder(segments.take(i + 1).join('/')),
-              child: Text(segments[i]),
+              key: const Key('filters-crumb-root'),
+              onPressed: () => widget.controller.openFolder(''),
+              child: const Text('This folder'),
             ),
+            for (var i = 0; i < segments.length; i++) ...[
+              Icon(
+                Icons.chevron_right,
+                size: 16,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              TextButton(
+                key: Key('filters-crumb-${segments.take(i + 1).join('/')}'),
+                onPressed: () => widget.controller.openFolder(
+                  segments.take(i + 1).join('/'),
+                ),
+                child: Text(segments[i]),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -397,51 +573,248 @@ class _PathBar extends StatelessWidget {
 
 /// The folder's contents: what is in the sync, what a rule keeps out, and
 /// the way to change either.
-class _Listing extends StatelessWidget {
-  const _Listing({required this.controller});
+///
+/// **Browsable from the keyboard.** The listing is one focus stop with a
+/// cursor on one of its rows: Up and Down move it, Home and End jump,
+/// Enter opens a folder, Backspace or Alt+Up opens the one above
+/// ([ListingCommand]). The keys are heard only while the listing holds the
+/// focus itself — once Tab has put it on a row's menu button, Enter is
+/// that button's, as everywhere else in the app — and a click on a row
+/// moves the cursor there and hands the keys back. Esc is not here: it
+/// leaves the page from anywhere on it ([PopOnEscape]).
+///
+/// **The ring shows only for a keyboard user:** while the listing holds
+/// the focus and the app's focus highlight is in its keyboard mode. A tap
+/// moves the cursor too and draws nothing, the way Material hides every
+/// focus highlight after a touch.
+///
+/// **On a desktop the listing takes the focus on arrival** ([keyboardFirst]),
+/// so the arrows work before anything is clicked. On a phone nothing is
+/// focused, as before.
+///
+/// **Every row is the height of one prototype row.** A row is a one-line
+/// name over a one-line status, so the rows are equal anyway; saying so
+/// lets the list lay out a folder of thousands without building them, and
+/// lets a key bring the cursor's row into view by arithmetic
+/// ([revealOffset]) whether or not the row has been built.
+class _Listing extends StatefulWidget {
+  const _Listing({super.key, required this.controller, required this.folder});
 
   final FiltersController controller;
 
+  /// What the view state says is listed — a parameter rather than read
+  /// off [controller], so a new listing reaches [State.didUpdateWidget],
+  /// where the cursor is settled on it.
+  final FiltersFolder folder;
+
+  @override
+  State<_Listing> createState() => _ListingState();
+}
+
+class _ListingState extends State<_Listing> {
+  final _focus = FocusNode(debugLabel: 'filters-listing');
+  final _scroll = ScrollController();
+
+  /// The row the cursor is on, root-relative; `null` while nothing is
+  /// listed or the folder is empty.
+  String? _at;
+
+  /// The folder last listed, so the next listing knows where the user came
+  /// from ([cursorAfterListing]).
+  String? _shownPath;
+
+  /// The list's own padding at its last layout: with the scroll position,
+  /// all [revealOffset] needs.
+  EdgeInsets _padding = EdgeInsets.zero;
+
+  /// A row with no rule and no path, for the list to measure every row's
+  /// height by.
+  static const _prototype = FilterEntryRow(
+    name: 'M',
+    path: '',
+    isFolder: true,
+    status: FilterEntrySyncs(),
+    detail: 'M',
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_redraw);
+    FocusManager.instance.addHighlightModeListener(_onHighlightMode);
+    _settle(widget.folder);
+  }
+
+  @override
+  void didUpdateWidget(_Listing oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.folder, widget.folder)) _settle(widget.folder);
+  }
+
+  @override
+  void dispose() {
+    FocusManager.instance.removeHighlightModeListener(_onHighlightMode);
+    _focus
+      ..removeListener(_redraw)
+      ..dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _redraw() => setState(() {});
+
+  void _onHighlightMode(FocusHighlightMode _) => _redraw();
+
+  bool get _ringShown =>
+      _focus.hasPrimaryFocus &&
+      FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
+
+  /// Puts the cursor where [folder] leaves it, and — when it is a different
+  /// folder from the last — brings that row into view once it is laid out.
+  void _settle(FiltersFolder folder) {
+    if (folder is! FiltersFolderListed) return;
+    final moved = folder.path != _shownPath;
+    _at = cursorAfterListing(folder, cameFrom: _shownPath, at: _at);
+    _shownPath = folder.path;
+    if (moved) _revealAfterLayout();
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    final repeat = event is KeyRepeatEvent;
+    if (event is! KeyDownEvent && !repeat) return KeyEventResult.ignored;
+    final folder = widget.folder;
+    if (!node.hasPrimaryFocus || folder is! FiltersFolderListed) {
+      return KeyEventResult.ignored;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    final command = ListingCommand.forKey(
+      event.logicalKey,
+      folder: folder,
+      at: _at,
+      alt: keyboard.isAltPressed,
+      modified:
+          keyboard.isControlPressed ||
+          keyboard.isMetaPressed ||
+          keyboard.isShiftPressed,
+    );
+    switch (command) {
+      case null:
+        return KeyEventResult.ignored;
+      case MoveListingCursor(:final path):
+        setState(() => _at = path);
+        _revealAfterLayout();
+      // A held arrow walks the list; a held Enter or Backspace opens once.
+      case OpenListingFolder() when repeat:
+        break;
+      case OpenListingFolder(:final path):
+        widget.controller.openFolder(path);
+    }
+    return KeyEventResult.handled;
+  }
+
+  /// A pointer went down on the row at [path]: the cursor follows it, and
+  /// the listing takes the keys, so the keyboard carries on from where the
+  /// mouse last was.
+  void _press(String path) {
+    setState(() => _at = path);
+    _focus.requestFocus();
+  }
+
+  /// Scrolls the cursor's row just wholly into view, after the frame that
+  /// lays out whatever changed — a new folder's rows, or none at all for a
+  /// key that only moved the cursor.
+  void _revealAfterLayout() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final folder = widget.folder;
+      if (!mounted || !_scroll.hasClients) return;
+      if (folder is! FiltersFolderListed) return;
+      final index = folder.entries.indexWhere((entry) => entry.path == _at);
+      final position = _scroll.position;
+      if (index < 0 || position.maxScrollExtent <= position.minScrollExtent) {
+        return;
+      }
+      final to = revealOffset(
+        index: index,
+        count: folder.entries.length,
+        content: position.maxScrollExtent + position.viewportDimension,
+        leading: _padding.top,
+        trailing: _padding.bottom,
+        viewport: position.viewportDimension,
+        pixels: position.pixels,
+      );
+      if (to == null) return;
+      position.jumpTo(
+        to.clamp(position.minScrollExtent, position.maxScrollExtent),
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return switch (controller.state.folder) {
-      FiltersFolderLoading() => const Center(
-        child: CircularProgressIndicator(semanticsLabel: 'Opening the folder'),
-      ),
-      FiltersFolderFailed(:final message) => ReadableColumn(
-        width: ReadableWidth.list,
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            message,
-            key: const Key('filters-folder-failed'),
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
+    return Focus(
+      focusNode: _focus,
+      autofocus: keyboardFirst(context),
+      includeSemantics: false,
+      onKeyEvent: _onKey,
+      child: switch (widget.folder) {
+        FiltersFolderLoading() => const Center(
+          child: CircularProgressIndicator(
+            semanticsLabel: 'Opening the folder',
           ),
         ),
-      ),
-      FiltersFolderListed(:final entries) when entries.isEmpty =>
-        const ReadableColumn(
+        FiltersFolderFailed(:final message) => ReadableColumn(
           width: ReadableWidth.list,
           child: Padding(
-            padding: EdgeInsets.all(24),
+            padding: const EdgeInsets.all(24),
             child: Text(
-              'This folder is empty.',
-              key: Key('filters-folder-empty'),
+              message,
+              key: const Key('filters-folder-failed'),
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ),
         ),
-      FiltersFolderListed(:final entries) => ReadableScrollPadding(
-        width: ReadableWidth.list,
-        padding: null,
-        builder: (context, padding) => ListView(
-          padding: padding,
-          children: [
-            for (final entry in entries)
-              _EntryTile(controller: controller, entry: entry),
-          ],
+        FiltersFolderListed(:final entries) when entries.isEmpty =>
+          const ReadableColumn(
+            width: ReadableWidth.list,
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'This folder is empty.',
+                key: Key('filters-folder-empty'),
+              ),
+            ),
+          ),
+        FiltersFolderListed(:final entries) => ReadableScrollPadding(
+          width: ReadableWidth.list,
+          padding: null,
+          builder: (context, padding) {
+            _padding = padding;
+            final ringShown = _ringShown;
+            return ListView.builder(
+              controller: _scroll,
+              padding: padding,
+              itemCount: entries.length,
+              prototypeItem: _EntryTile(
+                controller: widget.controller,
+                entry: _prototype,
+                ringed: false,
+                onPress: () {},
+              ),
+              itemBuilder: (context, i) {
+                final entry = entries[i];
+                return _EntryTile(
+                  controller: widget.controller,
+                  entry: entry,
+                  ringed: ringShown && entry.path == _at,
+                  onPress: () => _press(entry.path),
+                );
+              },
+            );
+          },
         ),
-      ),
-    };
+      },
+    );
   }
 }
 
@@ -451,64 +824,94 @@ class _Listing extends StatelessWidget {
 /// The verdict is drawn as well as written: an excluded row is dimmed and
 /// says which rule did it, so a folder that is out of the sync is visibly
 /// out while scrolling, rather than something to be read for.
+///
+/// [ringed] draws the keyboard cursor's ring: a rounded outline with a
+/// faint fill of the primary colour, inside the row's own bounds so the
+/// row does not move for it — nor change height, which every row shares
+/// with the listing's prototype.
 class _EntryTile extends StatelessWidget {
-  const _EntryTile({required this.controller, required this.entry});
+  const _EntryTile({
+    required this.controller,
+    required this.entry,
+    required this.ringed,
+    required this.onPress,
+  });
 
   final FiltersController controller;
   final FilterEntryRow entry;
+  final bool ringed;
+
+  /// A pointer went down anywhere on the row — its menu button included.
+  final VoidCallback onPress;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final excluded = entry.status is FilterEntryExcluded;
     final quiet = theme.colorScheme.onSurfaceVariant;
-    return ListTile(
-      key: Key('filters-entry-${entry.path}'),
-      leading: Icon(
-        entry.isFolder
-            ? Icons.folder_outlined
-            : entry.status is FilterEntryUncarried
-            ? Icons.link_off
-            : Icons.insert_drive_file_outlined,
-        color: excluded ? quiet : null,
-      ),
-      title: Text(
-        entry.name,
-        overflow: TextOverflow.ellipsis,
-        style: excluded
-            ? TextStyle(
-                color: quiet,
-                decoration: TextDecoration.lineThrough,
-                decorationColor: quiet,
+    final primary = theme.colorScheme.primary;
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => onPress(),
+      child: ListTile(
+        key: Key('filters-entry-${entry.path}'),
+        // The tile's own shape and colour, not a box around it: the tile
+        // draws them on the Material beneath with its ink, which a
+        // filled box in between would hide.
+        shape: ringed
+            ? RoundedRectangleBorder(
+                side: BorderSide(color: primary, width: 2),
+                borderRadius: BorderRadius.circular(8),
               )
             : null,
+        tileColor: ringed ? primary.withValues(alpha: 0.08) : null,
+        leading: Icon(
+          entry.isFolder
+              ? Icons.folder_outlined
+              : entry.status is FilterEntryUncarried
+              ? Icons.link_off
+              : Icons.insert_drive_file_outlined,
+          color: excluded ? quiet : null,
+        ),
+        title: Text(
+          entry.name,
+          overflow: TextOverflow.ellipsis,
+          style: excluded
+              ? TextStyle(
+                  color: quiet,
+                  decoration: TextDecoration.lineThrough,
+                  decorationColor: quiet,
+                )
+              : null,
+        ),
+        subtitle: Text(
+          switch (entry.status) {
+            FilterEntrySyncs() => entry.detail ?? 'Syncs',
+            FilterEntryExcluded(:final pattern) =>
+              entry.detail == null
+                  ? 'Excluded by $pattern'
+                  : '${entry.detail} · excluded by $pattern',
+            FilterEntryUncarried(:final reason) => reason,
+          },
+          style: theme.textTheme.bodySmall?.copyWith(color: quiet),
+          overflow: TextOverflow.ellipsis,
+        ),
+        onTap: entry.isFolder ? () => controller.openFolder(entry.path) : null,
+        trailing: _EntryMenu(controller: controller, entry: entry),
       ),
-      subtitle: Text(
-        switch (entry.status) {
-          FilterEntrySyncs() => entry.detail ?? 'Syncs',
-          FilterEntryExcluded(:final pattern) =>
-            entry.detail == null
-                ? 'Excluded by $pattern'
-                : '${entry.detail} · excluded by $pattern',
-          FilterEntryUncarried(:final reason) => reason,
-        },
-        style: theme.textTheme.bodySmall?.copyWith(color: quiet),
-        overflow: TextOverflow.ellipsis,
-      ),
-      onTap: entry.isFolder ? () => controller.openFolder(entry.path) : null,
-      trailing: _EntryMenu(controller: controller, entry: entry),
     );
   }
 }
 
-/// The actions on a row: exclude it by name, exclude this one only, or —
-/// when a rule is already keeping it out — drop that rule.
+/// The actions on a row ([FilterEntryRow.actions]): exclude it by name,
+/// exclude this one only, or — when a rule is already keeping it out —
+/// drop that rule.
 ///
 /// A menu rather than a swipe or a checkbox: "exclude everywhere" and
 /// "exclude this one" are genuinely different rules, and a control with
 /// one gesture would have to guess which the user meant. A row that a rule
-/// already covers offers the way back, so an excluded folder is not a dead
-/// end the user has to go find the rule for.
+/// already covers offers the way back as a button of its own, so an
+/// excluded folder is not a dead end the user has to go find the rule for.
 class _EntryMenu extends StatelessWidget {
   const _EntryMenu({required this.controller, required this.entry});
 
@@ -517,42 +920,26 @@ class _EntryMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return switch (entry.status) {
-      FilterEntryUncarried() => const SizedBox.shrink(),
-      FilterEntryExcluded(:final pattern) => TextButton(
+    return switch (entry.actions) {
+      [] => const SizedBox.shrink(),
+      [final IncludeAgain include] => TextButton(
         key: Key('filters-include-${entry.path}'),
-        onPressed: () => controller.removeRule(pattern),
-        child: const Text('Include'),
+        onPressed: () => controller.runEntryAction(include),
+        child: Text(include.label),
       ),
-      FilterEntrySyncs() => PopupMenuButton<_EntryAction>(
+      final actions => PopupMenuButton<FilterEntryAction>(
         key: Key('filters-menu-${entry.path}'),
         icon: const Icon(Icons.more_vert),
         tooltip: 'Exclude ${entry.name}',
-        onSelected: (action) => switch (action) {
-          _EntryAction.excludeEverywhere => controller.excludeEverywhere(
-            entry.name,
-          ),
-          _EntryAction.excludeThisOne => controller.excludeExactly(entry.path),
-        },
+        onSelected: controller.runEntryAction,
         itemBuilder: (context) => [
-          PopupMenuItem(
-            value: _EntryAction.excludeEverywhere,
-            child: Text("Exclude every '${entry.name}'"),
-          ),
-          PopupMenuItem(
-            value: _EntryAction.excludeThisOne,
-            child: Text(
-              'Exclude only this ${entry.isFolder ? 'folder' : 'file'}',
-            ),
-          ),
+          for (final action in actions)
+            PopupMenuItem(value: action, child: Text(action.label)),
         ],
       ),
     };
   }
 }
-
-/// The two rules a row can be turned into.
-enum _EntryAction { excludeEverywhere, excludeThisOne }
 
 /// The typed pattern, with the syntax SPEC §9 offers spelled out and a few
 /// patterns that can be tapped instead of typed.

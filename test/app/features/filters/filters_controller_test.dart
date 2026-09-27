@@ -108,9 +108,14 @@ void main() {
     }
   }
 
-  /// The re-listing a rule change or a count started has landed.
-  Future<void> relisted() => settleUntil(
-    () => controller.state.folder is! FiltersFolderLoading,
+  /// The re-listing a rule change or a count started has landed: a new
+  /// listing in place of [before], the one on screen when it started. The
+  /// old rows stay up while the folder is re-read, so "not loading" is not
+  /// enough to tell the new listing from the old.
+  Future<void> relisted(FiltersFolder before) => settleUntil(
+    () =>
+        !identical(controller.state.folder, before) &&
+        controller.state.folder is! FiltersFolderLoading,
     what: 'the folder to re-list',
   );
 
@@ -118,7 +123,10 @@ void main() {
   // test's listing from writing into a view state the next test has
   // already replaced.
   tearDown(() async {
-    await relisted();
+    await settleUntil(
+      () => controller.state.folder is! FiltersFolderLoading,
+      what: 'the folder to list',
+    );
     controller.dispose();
   });
 
@@ -208,12 +216,45 @@ void main() {
       await open(rules: const ['**/cache']);
       expect(row('cache').status, isA<FilterEntryExcluded>());
 
+      final before = controller.state.folder;
       controller.removeRule('**/cache');
       // The listing is re-read, because a row's verdict is the rules'.
-      await relisted();
+      await relisted(before);
 
       expect(controller.state.rules, isEmpty);
       expect(row('cache').status, isA<FilterEntrySyncs>());
+    });
+
+    test('a rule change keeps the rows up while the folder is re-read, and '
+        'opening another folder does not', () async {
+      await open();
+      final before = controller.state.folder;
+
+      controller.excludeEverywhere('cache');
+      // The same folder: its rows stay on screen until the new verdicts
+      // land, so the page keeps its scroll and its keyboard place.
+      expect(controller.state.folder, same(before));
+      await relisted(before);
+      expect(row('cache').status, isA<FilterEntryExcluded>());
+
+      unawaited(controller.openFolder('DCIM'));
+      expect(controller.state.folder, isA<FiltersFolderLoading>());
+    });
+
+    test("a row's actions each do what they say", () async {
+      await open(rules: const ['**/*.tmp']);
+      final dcim = row('DCIM');
+      expect(dcim.actions.map((a) => a.label), [
+        "Exclude every 'DCIM'",
+        'Exclude only this folder',
+      ]);
+
+      controller.runEntryAction(dcim.actions.last);
+      expect(controller.state.rules, ['**/*.tmp', 'DCIM']);
+      controller.runEntryAction(dcim.actions.first);
+      expect(controller.state.rules, ['**/*.tmp', 'DCIM', '**/DCIM']);
+      controller.runEntryAction(const IncludeAgain('**/*.tmp'));
+      expect(controller.state.rules, ['DCIM', '**/DCIM']);
     });
   });
 
@@ -337,10 +378,11 @@ void main() {
         ),
       );
 
+      final before = controller.state.folder;
       await controller.runPreview();
       // The count re-reads the listing itself, so the numbers land on the
       // rows the user is already looking at.
-      await relisted();
+      await relisted(before);
 
       expect(row('DCIM').detail, '2 files · 35 B');
     });

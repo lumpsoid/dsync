@@ -89,6 +89,67 @@ class FilterEntryRow {
   /// totals, or `null` when a folder has not been counted — which is every
   /// folder until a preview runs.
   final String? detail;
+
+  /// What can be done to this row, in the order a menu lists them.
+  ///
+  /// One list for every place a row offers its actions — the trailing
+  /// button today, a context menu on the row later — so the choices and
+  /// their wording are decided here once rather than per control.
+  List<FilterEntryAction> get actions => switch (status) {
+    FilterEntrySyncs() => [
+      ExcludeEveryNamed(name),
+      ExcludeOnlyThis(path: path, isFolder: isFolder),
+    ],
+    FilterEntryExcluded(:final pattern) => [IncludeAgain(pattern)],
+    // No rule is in the way, so there is none to add or drop.
+    FilterEntryUncarried() => const [],
+  };
+}
+
+/// One thing a listing row offers: a rule it can be turned into, or the
+/// rule to drop to bring it back. `FiltersController.runEntryAction`
+/// carries it out.
+///
+/// "Exclude everywhere" and "exclude this one" are separate actions rather
+/// than one with a flag because they are genuinely different rules, and
+/// the user has to be shown both to choose.
+sealed class FilterEntryAction {
+  const FilterEntryAction();
+
+  /// The action as a menu item says it.
+  String get label;
+}
+
+/// Excludes anything named [name], wherever it sits in the tree.
+final class ExcludeEveryNamed extends FilterEntryAction {
+  const ExcludeEveryNamed(this.name);
+
+  final String name;
+
+  @override
+  String get label => "Exclude every '$name'";
+}
+
+/// Excludes exactly the row at [path] — and, for a folder, what is under
+/// it.
+final class ExcludeOnlyThis extends FilterEntryAction {
+  const ExcludeOnlyThis({required this.path, required this.isFolder});
+
+  final String path;
+  final bool isFolder;
+
+  @override
+  String get label => 'Exclude only this ${isFolder ? 'folder' : 'file'}';
+}
+
+/// Drops [pattern], the rule keeping the row out.
+final class IncludeAgain extends FilterEntryAction {
+  const IncludeAgain(this.pattern);
+
+  final String pattern;
+
+  @override
+  String get label => 'Include';
 }
 
 /// Where the browser is and what it found.

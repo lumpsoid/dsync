@@ -8,7 +8,9 @@ import 'package:dsync/app/features/filters/filters_page.dart';
 import 'package:dsync/app/features/filters/filters_scope.dart';
 import 'package:dsync/app/features/filters/filters_view_state.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
@@ -27,7 +29,12 @@ import '../../support/pump_until.dart';
 /// notes.txt            12 B
 /// cache/a.tmp          10 B
 /// DCIM/one.jpg         30 B
+/// DCIM/Holiday photos from the long summer/Day one at the beach/
+///   Morning swim/wave.jpg  7 B
 /// ```
+///
+/// The deep folder is there to be longer than a narrow window's
+/// breadcrumb.
 void main() {
   late FakeHub core;
   late FiltersController controller;
@@ -41,7 +48,10 @@ void main() {
   const tree = {
     null: [('cache', null), ('DCIM', null), ('notes.txt', 12)],
     'cache': [('a.tmp', 10)],
-    'DCIM': [('one.jpg', 30)],
+    'DCIM': [(_holiday, null), ('one.jpg', 30)],
+    'DCIM/$_holiday': [(_beach, null)],
+    'DCIM/$_holiday/$_beach': [(_swim, null)],
+    'DCIM/$_holiday/$_beach/$_swim': [('wave.jpg', 7)],
   };
 
   List<FilterRow> listing(String? folder, List<String> ignore) => [
@@ -109,9 +119,10 @@ void main() {
   /// result.
   Future<void> pumpPage(
     WidgetTester tester, {
+    required Size window,
     List<String> rules = const [],
   }) async {
-    tester.view.physicalSize = const Size(800, 2000);
+    tester.view.physicalSize = window;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -141,7 +152,7 @@ void main() {
   testWidgets('shows the folder being filtered and its contents', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, window: _compact);
 
     expect(find.byKey(const Key('filters-root-path')), findsOneWidget);
     expect(find.byKey(const Key('filters-entry-cache')), findsOneWidget);
@@ -153,7 +164,7 @@ void main() {
 
   testWidgets('an excluded row says which rule keeps it out, and offers the '
       'way back', (tester) async {
-    await pumpPage(tester, rules: const ['**/cache']);
+    await pumpPage(tester, window: _compact, rules: const ['**/cache']);
 
     expect(find.textContaining('**/cache'), findsWidgets);
     expect(find.byKey(const Key('filters-include-cache')), findsOneWidget);
@@ -163,7 +174,7 @@ void main() {
 
   testWidgets('excluding a row from its menu adds the rule and re-draws the '
       'row', (tester) async {
-    await pumpPage(tester);
+    await pumpPage(tester, window: _compact);
 
     final before = controller.state.folder;
 
@@ -191,7 +202,7 @@ void main() {
   });
 
   testWidgets('Preview counts what the rules keep and drop', (tester) async {
-    await pumpPage(tester, rules: const ['**/*.tmp']);
+    await pumpPage(tester, window: _compact, rules: const ['**/*.tmp']);
     core.reply<wire.CoreCommandPreviewFilters>(
       previewReply(
         const FilterPreview(
@@ -230,7 +241,7 @@ void main() {
   testWidgets('a count taken before the last rule change says so', (
     tester,
   ) async {
-    await pumpPage(tester);
+    await pumpPage(tester, window: _compact);
     core.reply<wire.CoreCommandPreviewFilters>(
       previewReply(
         const FilterPreview(
@@ -271,7 +282,7 @@ void main() {
   testWidgets('leaving hands the rules back, however the page is left', (
     tester,
   ) async {
-    await pumpPage(tester, rules: const ['**/*.tmp']);
+    await pumpPage(tester, window: _compact, rules: const ['**/*.tmp']);
     await tester.runAsync(() async {
       controller.excludeEverywhere('cache');
       await listed();
@@ -287,4 +298,208 @@ void main() {
       ['**/*.tmp', '**/cache'],
     ]);
   });
+
+  /// Whether the keyboard cursor's ring is drawn on the row at [path].
+  bool ringed(WidgetTester tester, String path) =>
+      tester.widget<ListTile>(find.byKey(Key('filters-entry-$path'))).shape !=
+      null;
+
+  /// Carries out [act] — a key, a call — that opens the folder at [path],
+  /// and waits for that folder to be listed.
+  Future<void> openedBy(
+    WidgetTester tester,
+    Future<void> Function() act, {
+    required String path,
+  }) async {
+    await tester.runAsync(() async {
+      await act();
+      await settleUntil(
+        () => switch (controller.state.folder) {
+          FiltersFolderListed(path: final listed) => listed == path,
+          _ => false,
+        },
+        what: 'the folder $path to list',
+      );
+    });
+    await tester.pumpAndSettle();
+  }
+
+  group('on a wide window', () {
+    testWidgets('the rules and the preview sit in a pane beside the '
+        'listing', (tester) async {
+      await pumpPage(tester, window: _wide);
+
+      final pane = tester.getRect(find.byKey(const Key('filters-side-pane')));
+      final addRule = tester.getRect(find.byKey(const Key('filters-add-rule')));
+      final preview = tester.getRect(find.byKey(const Key('filters-preview')));
+      final row = tester.getRect(find.byKey(const Key('filters-entry-cache')));
+      final crumb = tester.getRect(find.byKey(const Key('filters-crumb-root')));
+
+      expect(pane.contains(addRule.center), isTrue);
+      expect(pane.contains(preview.center), isTrue);
+      // Beside, not under: the listing and its path bar start right of the
+      // pane, and the first row is level with the pane's top half.
+      expect(row.left, greaterThanOrEqualTo(pane.right));
+      expect(crumb.left, greaterThanOrEqualTo(pane.right));
+      expect(row.top, lessThan(pane.center.dy));
+      expect(
+        find.textContaining("from its row's menu in the list"),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('adding a rule updates the preview while the listing '
+        'stays', (tester) async {
+      await pumpPage(tester, window: _wide);
+      core.reply<wire.CoreCommandPreviewFilters>(
+        previewReply(
+          const FilterPreview(
+            folders: [
+              FilterFolderSummary(
+                path: null,
+                depth: 0,
+                excludedBy: null,
+                includedFiles: 3,
+                includedBytes: 52,
+                excludedFiles: 0,
+                excludedBytes: 0,
+              ),
+            ],
+            excludedByRule: {},
+            unreadableFolders: [],
+          ),
+        ),
+      );
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const Key('filters-preview')));
+        await settleUntil(
+          () => controller.state.preview is FiltersPreviewReady,
+          what: 'the count to finish',
+        );
+      });
+      await tester.pumpAndSettle();
+      final listed = controller.state.folder;
+
+      await tester.tap(find.byKey(const Key('filters-menu-cache')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text("Exclude every 'cache'"));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+
+      // The rule and the stale count are up at once, and the rows never
+      // left for a spinner while the folder was re-read.
+      expect(find.byKey(const Key('filters-rule-**/cache')), findsOneWidget);
+      expect(find.byKey(const Key('filters-preview-stale')), findsOneWidget);
+      expect(find.byKey(const Key('filters-entry-notes.txt')), findsOneWidget);
+      expect(find.bySemanticsLabel('Opening the folder'), findsNothing);
+
+      await pumpUntil(
+        tester,
+        () => !identical(controller.state.folder, listed),
+        what: 'the folder to list again',
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('filters-include-cache')), findsOneWidget);
+    });
+
+    testWidgets('the listing browses from the keyboard', (tester) async {
+      await pumpPage(tester, window: _wide);
+
+      // A click puts the cursor on the row and the keys on the listing —
+      // with no ring, since the pointer is not the keyboard.
+      await tester.tap(find.byKey(const Key('filters-entry-notes.txt')));
+      await tester.pump();
+      expect(ringed(tester, 'notes.txt'), isFalse);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(ringed(tester, 'DCIM'), isTrue);
+      expect(ringed(tester, 'notes.txt'), isFalse);
+
+      // Enter opens the folder under the cursor, starting at its top.
+      await openedBy(
+        tester,
+        () => tester.sendKeyEvent(LogicalKeyboardKey.enter),
+        path: 'DCIM',
+      );
+      expect(find.byKey(const Key('filters-entry-DCIM/one.jpg')), findsOne);
+      expect(ringed(tester, 'DCIM/$_holiday'), isTrue);
+
+      // Backspace goes up, back onto the folder it came out of.
+      await openedBy(
+        tester,
+        () => tester.sendKeyEvent(LogicalKeyboardKey.backspace),
+        path: '',
+      );
+      expect(ringed(tester, 'DCIM'), isTrue);
+
+      // Alt+Up is the same way up.
+      await openedBy(
+        tester,
+        () => tester.sendKeyEvent(LogicalKeyboardKey.enter),
+        path: 'DCIM',
+      );
+      await openedBy(tester, () async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      }, path: '');
+      expect(ringed(tester, 'DCIM'), isTrue);
+    });
+  });
+
+  testWidgets('the breadcrumb follows the folder and scrolls with a vertical '
+      'wheel', (tester) async {
+    await pumpPage(tester, window: const Size(400, 800));
+    const deep = 'DCIM/$_holiday/$_beach/$_swim';
+    await openedBy(tester, () => controller.openFolder(deep), path: deep);
+
+    final crumbs = find.descendant(
+      of: find.byKey(const Key('filters-path-bar')),
+      matching: find.byType(Scrollable),
+    );
+    ScrollPosition position() => tester.state<ScrollableState>(crumbs).position;
+    // Scrolled to the folder being listed: the last segment.
+    expect(position().maxScrollExtent, greaterThan(100));
+    expect(position().pixels, position().maxScrollExtent);
+
+    final end = position().pixels;
+    final wheel = TestPointer(1, PointerDeviceKind.mouse);
+    final over = tester.getCenter(find.byKey(const Key('filters-path-bar')));
+    await tester.sendEventToBinding(wheel.hover(over));
+    await tester.sendEventToBinding(wheel.scroll(const Offset(0, -100)));
+    await tester.pump();
+
+    expect(position().pixels, end - 100);
+  });
+
+  testWidgets('a compact window stacks the page as before, the root path '
+      'selectable', (tester) async {
+    await pumpPage(tester, window: _compact);
+
+    expect(find.byKey(const Key('filters-side-pane')), findsNothing);
+    final preview = tester.getRect(find.byKey(const Key('filters-preview')));
+    final crumb = tester.getRect(find.byKey(const Key('filters-crumb-root')));
+    final row = tester.getRect(find.byKey(const Key('filters-entry-cache')));
+    expect(preview.bottom, lessThanOrEqualTo(crumb.top));
+    expect(crumb.bottom, lessThanOrEqualTo(row.top));
+    expect(find.textContaining('in the list below'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('filters-root-path')),
+        matching: find.byType(SelectionArea),
+      ),
+      findsOneWidget,
+    );
+  });
 }
+
+/// Below the side pane's breakpoint — the phone's stacked page.
+const _compact = Size(800, 2000);
+
+/// A desktop window, well past the side pane's breakpoint.
+const _wide = Size(1440, 900);
+
+const _holiday = 'Holiday photos from the long summer';
+const _beach = 'Day one at the beach';
+const _swim = 'Morning swim';
