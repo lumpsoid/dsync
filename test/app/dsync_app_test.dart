@@ -6,6 +6,22 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/dsync_app.dart';
+import 'package:dsync/app/features/archives/archives_page.dart';
+import 'package:dsync/app/features/archives/archives_scope.dart';
+import 'package:dsync/app/features/device_detail/device_detail_controller.dart';
+import 'package:dsync/app/features/device_detail/device_detail_page.dart';
+import 'package:dsync/app/features/device_detail/device_detail_scope.dart';
+import 'package:dsync/app/features/serve/serve_controller.dart';
+import 'package:dsync/app/features/serve/serve_page.dart';
+import 'package:dsync/app/features/serve/serve_scope.dart';
+import 'package:dsync/app/features/settings/settings_page.dart';
+import 'package:dsync/app/features/settings/settings_scope.dart';
+import 'package:dsync/app/features/shared_folders/shared_folders_controller.dart';
+import 'package:dsync/app/features/shared_folders/shared_folders_page.dart';
+import 'package:dsync/app/features/shared_folders/shared_folders_scope.dart';
+import 'package:dsync/app/features/this_device/this_device_page.dart';
+import 'package:dsync/app/features/this_device/this_device_scope.dart';
+import 'package:flutter/services.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
@@ -491,5 +507,284 @@ void main() {
     expect(secondEntry.localRoot, localRoot.path);
     expect(secondEntry.remoteRoot, '~/notes');
     expect(second.address, '10.0.0.9:4242');
+  });
+
+  /// The adaptive shell. The tests above run on `flutter_test`'s default
+  /// 800x600 surface, which is a compact window, so they are the phone's
+  /// push navigation; these set the window's size themselves.
+  group('the app shell', () {
+    late DeviceDetailController deviceDetail;
+    late SharedFoldersController sharedFolders;
+
+    setUp(() {
+      deviceDetail = DeviceDetailController(app, picker: FakeFolderPicker());
+      sharedFolders = SharedFoldersController(app, picker: FakeFolderPicker());
+      deviceDetailScope.setController(deviceDetail);
+      sharedFoldersScope.setController(sharedFolders);
+      // Serve starts serving the moment it is shown: no platform wake lock
+      // and no stored address to read under test.
+      serveScope.setFactory(
+        () => ServeController(
+          app,
+          bindAddress: () async => InternetAddress.loopbackIPv4,
+          screenWake: FakeScreenWake(),
+        ),
+      );
+    });
+
+    tearDown(deviceDetailScope.reset);
+    tearDown(sharedFoldersScope.reset);
+    tearDown(serveScope.reset);
+    tearDown(archivesScope.reset);
+    tearDown(settingsScope.reset);
+    tearDown(thisDeviceScope.reset);
+
+    void windowOf(WidgetTester tester, Size size) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+    }
+
+    const wide = Size(1440, 900);
+    const compact = Size(800, 600);
+
+    Finder onRail(String label) => find.descendant(
+      of: find.byType(NavigationRail),
+      matching: find.text(label),
+    );
+
+    /// Past a push or a rail switch. Not `pumpAndSettle`: some pages keep
+    /// a spinner going while their fake core has not been scripted.
+    Future<void> step(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    void pairedDesktop() => app.state.recordDevices([
+      PairedDeviceRow(
+        name: 'desktop',
+        deviceId: 'a1b2:c3d4',
+        address: '10.0.0.7:28771',
+        pairedAt: DateTime(2026, 9, 15),
+        agreedRootLabels: const {'/srv/notes': '/srv/notes'},
+        certificateIssuedAt: DateTime(2026, 1, 1),
+        certificateExpiresAt: DateTime(2027, 1, 1),
+        certificateWarning: null,
+        verifiedAt: null,
+      ),
+    ]);
+
+    testWidgets('a wide window gets the rail, and the home drops the chrome '
+        'it replaces', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      await tester.pumpWidget(const DsyncApp());
+      await step(tester);
+
+      expect(find.byType(NavigationRail), findsOneWidget);
+      for (final label in [
+        'Profiles',
+        'Devices',
+        'Shared folders',
+        'Sync history',
+        'Serve',
+      ]) {
+        expect(onRail(label), findsOneWidget, reason: label);
+      }
+      expect(find.byKey(const Key('shell-open-settings')), findsOneWidget);
+      expect(find.byKey(const Key('shell-open-thisDevice')), findsOneWidget);
+      expect(find.byKey(const Key('shell-new-run')), findsOneWidget);
+
+      expect(find.byType(ProfilesPage), findsOneWidget);
+      for (final key in [
+        'profiles-new-run',
+        'profiles-open-devices',
+        'profiles-open-serve',
+        'profiles-open-archives',
+        'profiles-open-settings',
+      ]) {
+        expect(find.byKey(Key(key)), findsNothing, reason: key);
+      }
+      expect(find.byType(BackButton), findsNothing);
+    });
+
+    testWidgets('each destination shows its own page, with no back arrow', (
+      tester,
+    ) async {
+      windowOf(tester, wide);
+      ready();
+      await tester.pumpWidget(const DsyncApp());
+      await step(tester);
+
+      final destinations = <(Finder, Type)>[
+        (onRail('Devices'), DevicesPage),
+        (onRail('Shared folders'), SharedFoldersPage),
+        (onRail('Sync history'), ArchivesPage),
+        (onRail('Serve'), ServePage),
+        (find.byKey(const Key('shell-open-settings')), SettingsPage),
+        (find.byKey(const Key('shell-open-thisDevice')), ThisDevicePage),
+        (onRail('Profiles'), ProfilesPage),
+      ];
+      for (final (tap, page) in destinations) {
+        await tester.tap(tap);
+        await step(tester);
+
+        expect(find.byType(page), findsOneWidget, reason: '$page');
+        expect(find.byType(BackButton), findsNothing, reason: '$page');
+        expect(find.byType(NavigationRail), findsOneWidget, reason: '$page');
+      }
+    });
+
+    testWidgets('Devices under the rail leaves This device and Shared '
+        'folders to it, and keeps Pair', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+
+      expect(find.byKey(const Key('devices-open-this-device')), findsNothing);
+      expect(
+        find.byKey(const Key('devices-open-shared-folders')),
+        findsNothing,
+      );
+      expect(find.byKey(const Key('devices-open-pair')), findsOneWidget);
+    });
+
+    testWidgets('New run on the rail lands on the device list', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      await tester.pumpWidget(const DsyncApp());
+
+      await tester.tap(find.byKey(const Key('shell-new-run')));
+      await step(tester);
+
+      expect(find.byType(DevicesPage), findsOneWidget);
+    });
+
+    testWidgets('a device opened from Devices keeps the rail, and back or Esc '
+        'closes only the device', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedDesktop();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+
+      await tester.tap(find.text('desktop'));
+      await step(tester);
+      expect(find.byType(DeviceDetailPage), findsOneWidget);
+      expect(find.byType(NavigationRail), findsOneWidget);
+      expect(find.byType(BackButton), findsOneWidget);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(DeviceDetailPage), findsNothing);
+      expect(find.byType(DevicesPage), findsOneWidget);
+      expect(find.byType(BackButton), findsNothing);
+
+      await tester.tap(find.text('desktop'));
+      await step(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byType(DeviceDetailPage), findsNothing);
+      expect(find.byType(DevicesPage), findsOneWidget);
+
+      // At a destination's own page Esc goes nowhere: not to the home,
+      // not out of Devices.
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byType(DevicesPage), findsOneWidget);
+    });
+
+    testWidgets('a step-by-step flow covers the whole window, rail and all', (
+      tester,
+    ) async {
+      windowOf(tester, wide);
+      ready();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+
+      await tester.tap(find.text('Pair a device'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PairPage), findsOneWidget);
+      expect(find.byType(NavigationRail), findsNothing);
+    });
+
+    testWidgets('resizing wide → compact → wide keeps the destination and '
+        'the open device, with its state', (tester) async {
+      windowOf(tester, wide);
+      ready();
+      pairedDesktop();
+      await tester.pumpWidget(const DsyncApp());
+      await tester.tap(onRail('Devices'));
+      await step(tester);
+      await tester.tap(find.text('desktop'));
+      await step(tester);
+      final opened = tester.state(find.byType(DeviceDetailPage));
+
+      windowOf(tester, compact);
+      await step(tester);
+      expect(find.byType(NavigationRail), findsNothing);
+      expect(find.byType(DeviceDetailPage), findsOneWidget);
+      expect(tester.state(find.byType(DeviceDetailPage)), same(opened));
+      expect(find.byType(BackButton), findsOneWidget);
+
+      windowOf(tester, wide);
+      await step(tester);
+      expect(find.byType(NavigationRail), findsOneWidget);
+      expect(find.byType(DeviceDetailPage), findsOneWidget);
+      expect(tester.state(find.byType(DeviceDetailPage)), same(opened));
+
+      // And the stack under it is the one the layout on screen owns: the
+      // device list, a destination's own page, with no way back past it.
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(DevicesPage), findsOneWidget);
+      expect(find.byType(BackButton), findsNothing);
+    });
+
+    testWidgets('the rail fits the shortest window at either width, labels '
+        'beneath and beside', (tester) async {
+      ready();
+      for (final size in const [Size(840, 600), Size(1200, 600)]) {
+        windowOf(tester, size);
+        await tester.pumpWidget(const DsyncApp());
+        await tester.tap(find.byKey(const Key('shell-open-settings')));
+        await step(tester);
+
+        // An overflow would have failed the pump; this is what it drew.
+        expect(find.byType(SettingsPage), findsOneWidget, reason: '$size');
+        expect(onRail('Shared folders'), findsOneWidget, reason: '$size');
+      }
+    });
+
+    testWidgets('a compact window has no rail, and walks back the way it '
+        'came: This device → Devices → home', (tester) async {
+      windowOf(tester, compact);
+      ready();
+      await tester.pumpWidget(const DsyncApp());
+
+      expect(find.byType(NavigationRail), findsNothing);
+      expect(find.byKey(const Key('profiles-new-run')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('profiles-open-devices')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('devices-open-this-device')));
+      await step(tester);
+      expect(find.byType(ThisDevicePage), findsOneWidget);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(DevicesPage), findsOneWidget);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(ProfilesPage), findsOneWidget);
+      expect(find.byType(BackButton), findsNothing);
+    });
   });
 }

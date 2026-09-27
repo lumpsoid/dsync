@@ -2,6 +2,7 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/features/devices/devices_chrome.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/features/devices/devices_page.dart';
 import 'package:dsync/app/features/devices/devices_scope.dart';
@@ -101,8 +102,10 @@ void main() {
         onOpenDevice: devicesOpened.add,
         onOpenRunSetup: opened.add,
         onOpenPair: () => pairOpened++,
-        onOpenThisDevice: () => thisDeviceOpened++,
-        onOpenSharedFolders: () => sharedFoldersOpened++,
+        chrome: DevicesOwnChrome(
+          onOpenThisDevice: () => thisDeviceOpened++,
+          onOpenSharedFolders: () => sharedFoldersOpened++,
+        ),
       ),
     ),
   );
@@ -332,6 +335,29 @@ void main() {
     await tester.tap(find.byKey(const Key('devices-open-shared-folders')));
 
     expect(sharedFoldersOpened, 1);
+  });
+
+  testWidgets('under the shell\'s chrome the app bar keeps Pair and drops '
+      'This device and Shared folders', (tester) async {
+    ready();
+    app.state.recordDevices([row('phone')]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DevicesPage(
+          onOpenDevice: devicesOpened.add,
+          onOpenRunSetup: opened.add,
+          onOpenPair: () => pairOpened++,
+          chrome: const DevicesShellChrome(),
+        ),
+      ),
+    );
+
+    // The rail carries both as destinations of their own on a wide window.
+    expect(find.byKey(const Key('devices-open-this-device')), findsNothing);
+    expect(find.byKey(const Key('devices-open-shared-folders')), findsNothing);
+    // Pairing acts on this list whatever the layout.
+    await tester.tap(find.byKey(const Key('devices-open-pair')));
+    expect(pairOpened, 1);
   });
 
   testWidgets('the row does not offer revoke', (tester) async {

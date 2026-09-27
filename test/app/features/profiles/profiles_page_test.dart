@@ -2,6 +2,7 @@ import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/device_identity_row.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/features/profiles/profiles_chrome.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
@@ -65,9 +66,11 @@ void main() {
       home: ProfilesPage(
         onOpenProfile: opened.add,
         onOpenDevices: () => devicesOpened++,
-        onOpenArchives: () => archivesOpened++,
-        onOpenSettings: () => settingsOpened++,
-        onOpenServe: () => serveOpened++,
+        chrome: ProfilesOwnChrome(
+          onOpenArchives: () => archivesOpened++,
+          onOpenSettings: () => settingsOpened++,
+          onOpenServe: () => serveOpened++,
+        ),
       ),
     ),
   );
@@ -187,6 +190,34 @@ void main() {
     expect(settingsOpened, 0);
     expect(archivesOpened, 0);
     expect(devicesOpened, 0);
+  });
+
+  testWidgets('under the shell\'s chrome the app bar keeps only its own '
+      'actions, and the empty state still points at Devices', (tester) async {
+    ready();
+    app.state.recordProfiles(const []);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProfilesPage(
+          onOpenProfile: opened.add,
+          onOpenDevices: () => devicesOpened++,
+          chrome: const ProfilesShellChrome(),
+        ),
+      ),
+    );
+
+    // The rail carries these on a wide window; the page draws none of them.
+    for (final key in [
+      'profiles-open-serve',
+      'profiles-open-archives',
+      'profiles-open-settings',
+      'profiles-open-devices',
+      'profiles-new-run',
+    ]) {
+      expect(find.byKey(Key(key)), findsNothing, reason: key);
+    }
+    await tester.tap(find.text('Sync with a device'));
+    expect(devicesOpened, 1);
   });
 
   testWidgets('every profile is a row naming the run it re-runs', (

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../paired_device_row.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
+import 'devices_chrome.dart';
 import 'devices_controller.dart';
 import 'devices_scope.dart';
 
@@ -17,22 +18,24 @@ import 'devices_scope.dart';
 /// state for this page's own error line — and refreshes on pull, on the
 /// app-bar [RefreshButton] or on F5 ([RefreshShortcuts]).
 ///
-/// [onOpenDevice], [onOpenRunSetup], [onOpenPair], [onOpenThisDevice] and
-/// [onOpenSharedFolders] are the seams to the features a tap leads to: the
-/// device's own page for managing it, Run setup for syncing with it, Pair
-/// from either the app-bar action or the empty state's button, and this
-/// installation's own identity and everything it shares from the app bar.
+/// [onOpenDevice], [onOpenRunSetup], [onOpenPair] and the callbacks in
+/// [chrome] are the seams to the features a tap leads to: the device's own
+/// page for managing it, Run setup for syncing with it, Pair from either
+/// the app-bar action or the empty state's button, and this installation's
+/// own identity and everything it shares from the app bar.
 /// Each takes the destination as an id (or nothing) rather than a row — the
 /// destination loads what it needs — and all are the entrypoint's to wire
 /// to routes, so this page needs no `Navigator` of its own.
+///
+/// [chrome] says whether This device and Shared folders are in this page's
+/// app bar or, on a wide window, destinations of the app shell's rail.
 class DevicesPage extends StatelessWidget {
   const DevicesPage({
     super.key,
     required this.onOpenDevice,
     required this.onOpenRunSetup,
     required this.onOpenPair,
-    required this.onOpenThisDevice,
-    required this.onOpenSharedFolders,
+    required this.chrome,
   });
 
   /// Opens the tapped device's own page — its certificate, the folders it
@@ -46,20 +49,14 @@ class DevicesPage extends StatelessWidget {
   /// length, and from the empty state's button on a first run.
   final VoidCallback onOpenPair;
 
-  /// Opens the This device page, where this installation's own identity is
-  /// shown and its certificate renewed.
-  final VoidCallback onOpenThisDevice;
-
-  /// Opens the Shared folders page: this list inverted, one row per folder
-  /// this host serves and the devices allowed to ask for it. Reached from
-  /// here because it answers the question the list next to it raises — the
-  /// rows say which devices are paired, that page says what each of them
-  /// may actually reach.
-  final VoidCallback onOpenSharedFolders;
+  /// Whether this page draws its own way to This device and Shared
+  /// folders, or the shell draws them.
+  final DevicesChrome chrome;
 
   @override
   Widget build(BuildContext context) {
     final controller = devicesScope.controller;
+    final chrome = this.chrome;
     return RefreshShortcuts(
       onRefresh: controller.refresh,
       child: Scaffold(
@@ -70,18 +67,20 @@ class DevicesPage extends StatelessWidget {
               key: const Key('devices-refresh'),
               onRefresh: controller.refresh,
             ),
-            IconButton(
-              key: const Key('devices-open-shared-folders'),
-              icon: const Icon(Icons.folder_shared_outlined),
-              tooltip: 'Shared folders',
-              onPressed: onOpenSharedFolders,
-            ),
-            IconButton(
-              key: const Key('devices-open-this-device'),
-              icon: const Icon(Icons.badge_outlined),
-              tooltip: 'This device',
-              onPressed: onOpenThisDevice,
-            ),
+            if (chrome is DevicesOwnChrome) ...[
+              IconButton(
+                key: const Key('devices-open-shared-folders'),
+                icon: const Icon(Icons.folder_shared_outlined),
+                tooltip: 'Shared folders',
+                onPressed: chrome.onOpenSharedFolders,
+              ),
+              IconButton(
+                key: const Key('devices-open-this-device'),
+                icon: const Icon(Icons.badge_outlined),
+                tooltip: 'This device',
+                onPressed: chrome.onOpenThisDevice,
+              ),
+            ],
             IconButton(
               key: const Key('devices-open-pair'),
               icon: const Icon(Icons.add),

@@ -5,6 +5,7 @@ import '../../profile_breakage.dart';
 import '../../profile_row.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
+import 'profiles_chrome.dart';
 import 'profiles_controller.dart';
 import 'profiles_scope.dart';
 
@@ -39,14 +40,16 @@ import 'profiles_scope.dart';
 /// about running, and stays on screen once the list has rows. Both are the
 /// entrypoint's to wire to routes, so this page needs no `Navigator` of its
 /// own.
+///
+/// [chrome] says whether those app-bar actions and the button are drawn
+/// here at all: on a wide window the app shell's rail carries them, and the
+/// page keeps only what acts on the list itself.
 class ProfilesPage extends StatefulWidget {
   const ProfilesPage({
     super.key,
     required this.onOpenProfile,
     required this.onOpenDevices,
-    required this.onOpenArchives,
-    required this.onOpenSettings,
-    required this.onOpenServe,
+    required this.chrome,
   });
 
   /// Opens Run setup pre-filled from the tapped profile, by id — the id is
@@ -56,21 +59,9 @@ class ProfilesPage extends StatefulWidget {
   /// Opens the Devices page.
   final VoidCallback onOpenDevices;
 
-  /// Opens the Sync history page, where the archives are listed with what
-  /// they cost and can be deleted. From the app bar only: it is maintenance,
-  /// not part of setting up or making a run.
-  final VoidCallback onOpenArchives;
-
-  /// Opens the Settings page. From the app bar of the home page, because
-  /// settings belong to the installation rather than to any one device,
-  /// profile or run — this is the only screen every route starts from.
-  final VoidCallback onOpenSettings;
-
-  /// Opens the Serve page, where this device starts answering paired
-  /// devices (SPEC §4.4). From the app bar of the home page because it is
-  /// an activity the user starts — their hands are on the device that will
-  /// serve — rather than a subsection of managing any one peer.
-  final VoidCallback onOpenServe;
+  /// Whether this page draws its own way to the other destinations — the
+  /// app-bar actions and the "New run" button — or the shell draws them.
+  final ProfilesChrome chrome;
 
   @override
   State<ProfilesPage> createState() => _ProfilesPageState();
@@ -87,6 +78,7 @@ class _ProfilesPageState extends State<ProfilesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final chrome = widget.chrome;
     return RefreshShortcuts(
       onRefresh: _controller.refresh,
       child: Scaffold(
@@ -97,29 +89,31 @@ class _ProfilesPageState extends State<ProfilesPage> {
               key: const Key('profiles-refresh'),
               onRefresh: _controller.refresh,
             ),
-            IconButton(
-              key: const Key('profiles-open-serve'),
-              icon: const Icon(Icons.wifi_tethering),
-              tooltip: 'Answer paired devices',
-              onPressed: widget.onOpenServe,
-            ),
-            IconButton(
-              key: const Key('profiles-open-archives'),
-              icon: const Icon(Icons.sd_storage_outlined),
-              tooltip: 'Sync history',
-              onPressed: widget.onOpenArchives,
-            ),
-            IconButton(
-              key: const Key('profiles-open-settings'),
-              icon: const Icon(Icons.settings_outlined),
-              tooltip: 'Settings',
-              onPressed: widget.onOpenSettings,
-            ),
-            TextButton(
-              key: const Key('profiles-open-devices'),
-              onPressed: widget.onOpenDevices,
-              child: const Text('Devices'),
-            ),
+            if (chrome is ProfilesOwnChrome) ...[
+              IconButton(
+                key: const Key('profiles-open-serve'),
+                icon: const Icon(Icons.wifi_tethering),
+                tooltip: 'Answer paired devices',
+                onPressed: chrome.onOpenServe,
+              ),
+              IconButton(
+                key: const Key('profiles-open-archives'),
+                icon: const Icon(Icons.sd_storage_outlined),
+                tooltip: 'Sync history',
+                onPressed: chrome.onOpenArchives,
+              ),
+              IconButton(
+                key: const Key('profiles-open-settings'),
+                icon: const Icon(Icons.settings_outlined),
+                tooltip: 'Settings',
+                onPressed: chrome.onOpenSettings,
+              ),
+              TextButton(
+                key: const Key('profiles-open-devices'),
+                onPressed: widget.onOpenDevices,
+                child: const Text('Devices'),
+              ),
+            ],
           ],
         ),
         body: ListenableBuilder(
@@ -133,12 +127,15 @@ class _ProfilesPageState extends State<ProfilesPage> {
             onOpenDevices: widget.onOpenDevices,
           ),
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          key: const Key('profiles-new-run'),
-          onPressed: widget.onOpenDevices,
-          icon: const Icon(Icons.sync),
-          label: const Text('New run'),
-        ),
+        floatingActionButton: switch (chrome) {
+          ProfilesOwnChrome() => FloatingActionButton.extended(
+            key: const Key('profiles-new-run'),
+            onPressed: widget.onOpenDevices,
+            icon: const Icon(Icons.sync),
+            label: const Text('New run'),
+          ),
+          ProfilesShellChrome() => null,
+        },
       ),
     );
   }
