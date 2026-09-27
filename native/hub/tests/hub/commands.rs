@@ -191,6 +191,101 @@ async fn a_device_s_grants_are_listed_once_each_in_order() {
     assert_eq!(listed[0].granted_roots, [a, b]);
 }
 
+/// `leaf` created as a folder under the head's temp dir, as text: grants
+/// are judged as this host resolves them, so the folders are real.
+fn folder(head: &Head, leaf: &str) -> String {
+    std::fs::create_dir_all(head.path(leaf)).unwrap_or_else(|error| panic!("mkdir: {error}"));
+    head.path_text(leaf)
+}
+
+fn grant(id: &str, path: &str) -> CoreCommand {
+    CoreCommand::GrantRoot {
+        device_id: id.to_owned(),
+        path: path.to_owned(),
+    }
+}
+
+/// The paired-devices file as it stands on disk.
+fn paired_bytes(head: &Head) -> Vec<u8> {
+    let store = PairedDeviceStore::new(&StateDir::new(head.state()));
+    std::fs::read(store.path()).unwrap_or_else(|error| panic!("read: {error}"))
+}
+
+#[tokio::test]
+async fn a_folder_inside_a_granted_folder_is_refused_naming_the_grant() {
+    let mut head = Head::new("studio").await;
+    let id = seed_device(&head, "phone");
+    let outer = folder(&head, "a/b");
+    let inner = folder(&head, "a/b/c");
+    head.ok(grant(&id, &outer)).await;
+    let before = paired_bytes(&head);
+
+    let refused = head.failure(grant(&id, &inner)).await;
+    assert!(refused.contains("grants never nest"), "{refused}");
+    assert!(refused.contains(&format!("overlaps {outer}")), "{refused}");
+    assert_eq!(paired_bytes(&head), before);
+
+    // Positive controls: the identical path again is a no-op, and a
+    // sibling that only shares a prefix of characters is granted.
+    let again = devices(head.ok(grant(&id, &outer)).await.1);
+    assert_eq!(again[0].granted_roots, std::slice::from_ref(&outer));
+    assert_eq!(paired_bytes(&head), before);
+    let sibling = folder(&head, "a/bc");
+    let granted = devices(head.ok(grant(&id, &sibling)).await.1);
+    assert_eq!(granted[0].granted_roots, [outer, sibling]);
+}
+
+#[tokio::test]
+async fn a_folder_holding_a_granted_file_or_folder_is_refused() {
+    let mut head = Head::new("studio").await;
+    let id = seed_device(&head, "phone");
+    let file = head.path("f/notes.txt");
+    write(&file, "notes");
+    let file = file.to_string_lossy().into_owned();
+    let inner = folder(&head, "d/inner");
+    head.ok(grant(&id, &file)).await;
+    head.ok(grant(&id, &inner)).await;
+    let before = paired_bytes(&head);
+
+    let over_file = head.failure(grant(&id, &head.path_text("f"))).await;
+    assert!(
+        over_file.contains(&format!("overlaps {file}")),
+        "{over_file}"
+    );
+    let over_folder = head.failure(grant(&id, &head.path_text("d"))).await;
+    assert!(
+        over_folder.contains(&format!("overlaps {inner}")),
+        "{over_folder}"
+    );
+    assert_eq!(paired_bytes(&head), before);
+
+    // Positive control: a folder beside them both is granted.
+    let beside = folder(&head, "e");
+    let granted = devices(head.ok(grant(&id, &beside)).await.1);
+    assert_eq!(granted[0].granted_roots.len(), 3);
+    assert!(granted[0].granted_roots.contains(&beside));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_resolving_to_a_granted_folder_is_refused() {
+    let mut head = Head::new("studio").await;
+    let id = seed_device(&head, "phone");
+    let real = folder(&head, "real");
+    let link = head.path_text("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap_or_else(|error| panic!("link: {error}"));
+    head.ok(grant(&id, &real)).await;
+    let before = paired_bytes(&head);
+
+    let refused = head.failure(grant(&id, &link)).await;
+    assert!(refused.contains(&format!("overlaps {real}")), "{refused}");
+    assert_eq!(paired_bytes(&head), before);
+
+    // Positive control: the real folder's own spelling again is a no-op.
+    let again = devices(head.ok(grant(&id, &real)).await.1);
+    assert_eq!(again[0].granted_roots, [real]);
+}
+
 #[tokio::test]
 async fn a_device_s_address_and_verification_are_set_by_hand() {
     let mut head = Head::new("studio").await;
