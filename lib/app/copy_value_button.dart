@@ -47,24 +47,31 @@ class CopyValueButton extends StatelessWidget {
   /// id", "address", "folder path".
   final String what;
 
-  Future<void> _copy(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    await Clipboard.setData(ClipboardData(text: value));
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(
-          '${what.substring(0, 1).toUpperCase()}${what.substring(1)} copied.',
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return IconButton(
       icon: const Icon(Icons.copy_outlined),
       tooltip: 'Copy $what',
-      onPressed: () => _copy(context),
+      onPressed: () => copyValue(context, value: value, what: what),
     );
   }
+}
+
+/// [CopyValueButton]'s copy, for a copy offered somewhere other than its
+/// own button — a row's menu (`RowCopy`) — so both put [value] on the
+/// clipboard byte for byte and confirm it in the same words.
+Future<void> copyValue(
+  BuildContext context, {
+  required String value,
+  required String what,
+}) async {
+  final messenger = ScaffoldMessenger.of(context);
+  await Clipboard.setData(ClipboardData(text: value));
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(
+        '${what.substring(0, 1).toUpperCase()}${what.substring(1)} copied.',
+      ),
+    ),
+  );
 }

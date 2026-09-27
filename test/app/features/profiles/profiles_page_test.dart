@@ -9,11 +9,14 @@ import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
+import '../../support/clipboard.dart';
 import '../../support/fake_head.dart';
 
 /// Rendering tests for the profiles home, driven the way the scope contract
@@ -452,6 +455,109 @@ void main() {
     expect(find.text('Delete weekly?'), findsNothing);
     expect(opened, isEmpty);
   });
+
+  group('on a desktop, the row\'s menu (task 746a4d)', () {
+    /// The page on a wide desktop window, showing [rows]. Written once the
+    /// mount's own read of the (empty) fake store has landed, so a settle
+    /// later in the test cannot replace them with nothing.
+    Future<void> pumpDesktop(WidgetTester tester, List<ProfileRow> rows) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.linux),
+          home: ProfilesPage(
+            onOpenProfile: opened.add,
+            onOpenDevices: () => devicesOpened++,
+            chrome: ProfilesOwnChrome(
+              onOpenArchives: () => archivesOpened++,
+              onOpenSettings: () => settingsOpened++,
+              onOpenServe: () => serveOpened++,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      app.state.recordProfiles(rows);
+      await tester.pump();
+    }
+
+    Future<void> rightClick(WidgetTester tester, Finder at) async {
+      await tester.tapAt(
+        tester.getCenter(at),
+        buttons: kSecondaryMouseButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a right-click offers the row\'s buttons and its paths, and '
+        'deleting from it asks first', (tester) async {
+      ready();
+      await pumpDesktop(tester, [ok()]);
+
+      await rightClick(tester, find.text('On this device'));
+
+      expect(find.text('Copy path on this device'), findsOneWidget);
+      expect(find.text('Copy path on desktop'), findsOneWidget);
+      expect(find.text('Delete profile'), findsOneWidget);
+      // A right-click is not a tap: nothing was opened.
+      expect(opened, isEmpty);
+
+      await tester.tap(find.text('Delete profile'));
+      await tester.pumpAndSettle();
+      expect(find.text('Delete weekly?'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('profiles-delete-confirm')));
+      await tester.pumpAndSettle();
+      expect(controller.deleted, ['weekly']);
+    });
+
+    testWidgets('a copy from the menu carries the stored path', (tester) async {
+      final copied = recordClipboard(tester);
+      ready();
+      await pumpDesktop(tester, [ok()]);
+
+      await rightClick(tester, find.text('weekly'));
+      await tester.tap(find.text('Copy path on this device'));
+      await tester.pumpAndSettle();
+
+      expect(copied, ['/on-device/notes']);
+    });
+
+    testWidgets('a broken row\'s menu carries its remedy', (tester) async {
+      ready();
+      await pumpDesktop(tester, [broken()]);
+
+      await rightClick(tester, find.text('revoked'));
+      await tester.tap(find.text('Pair again').last);
+      await tester.pumpAndSettle();
+
+      expect(devicesOpened, 1);
+    });
+
+    testWidgets('Delete and Shift+F10 on a focused row: the confirmation, and '
+        'the menu', (tester) async {
+      ready();
+      await pumpDesktop(tester, [ok()]);
+      Focus.of(tester.element(find.text('weekly'))).requestFocus();
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+      await tester.pumpAndSettle();
+      expect(find.text('Delete weekly?'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('profiles-delete-cancel')));
+      await tester.pumpAndSettle();
+      expect(controller.deleted, isEmpty);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.f10);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pumpAndSettle();
+      expect(find.text('Delete profile'), findsOneWidget);
+    });
+  });
 }
 
 /// The real controller with its one folder-chooser input recorded instead of
@@ -462,6 +568,10 @@ class _RecordingProfilesController extends ProfilesController {
   _RecordingProfilesController(super.app, {required super.picker});
 
   final List<({String name, int entryIndex})> repicked = [];
+  final List<String> deleted = [];
+
+  @override
+  Future<void> delete(String name) async => deleted.add(name);
 
   @override
   Future<void> repickLocalFolder(String name, int entryIndex) async =>

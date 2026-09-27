@@ -9,10 +9,12 @@ import 'package:dsync/app/features/devices/devices_scope.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
@@ -458,4 +460,48 @@ void main() {
       );
     },
   );
+
+  testWidgets('on a desktop a right-click offers the run button and the '
+      'address, and opens nothing by itself (task 746a4d)', (tester) async {
+    final copied = recordClipboard(tester);
+    ready();
+    app.state.recordDevices([row('phone'), row('laptop')]);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.linux),
+        home: DevicesPage(
+          onOpenDevice: devicesOpened.add,
+          onOpenRunSetup: opened.add,
+          onOpenPair: () => pairOpened++,
+          chrome: DevicesOwnChrome(
+            onOpenThisDevice: () => thisDeviceOpened++,
+            onOpenSharedFolders: () => sharedFoldersOpened++,
+          ),
+        ),
+      ),
+    );
+
+    Future<void> rightClick() async {
+      await tester.tapAt(
+        tester.getCenter(find.text('laptop')),
+        buttons: kSecondaryMouseButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await rightClick();
+    expect(devicesOpened, isEmpty);
+    // The row's own button and the menu's item, one each.
+    expect(find.text('Set up run'), findsNWidgets(3));
+    await tester.tap(find.text('Set up run').last);
+    await tester.pumpAndSettle();
+    expect(opened, ['a1b2:c3d4:laptop']);
+
+    await rightClick();
+    await tester.tap(find.text('Copy address'));
+    await tester.pumpAndSettle();
+    expect(copied, ['10.0.0.7:28771']);
+    expect(find.text('Address copied.'), findsOneWidget);
+  });
 }

@@ -6,6 +6,9 @@ import '../../keyboard_first.dart';
 import '../../path_text.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
+import '../../row_action.dart';
+import '../../row_actions_menu.dart';
+import 'filter_row_actions.dart';
 import 'filters_controller.dart';
 import 'filters_layout.dart';
 import 'filters_listing_keys.dart';
@@ -590,6 +593,11 @@ class _PathBarState extends State<_PathBar> {
 /// moves the cursor there and hands the keys back. Esc is not here: it
 /// leaves the page from anywhere on it ([PopOnEscape]).
 ///
+/// **The Menu key and Shift+F10 open the cursor row's menu** on a desktop,
+/// the one a right-click on the row opens ([RowActionsMenu]). The rows take
+/// no focus of their own, so the listing hears the key and opens the row's
+/// menu through a [RowMenuHandle] it gives the cursor's row alone.
+///
 /// **The ring shows only for a keyboard user:** while the listing holds
 /// the focus and the app's focus highlight is in its keyboard mode. A tap
 /// moves the cursor too and draws nothing, the way Material hides every
@@ -621,6 +629,9 @@ class _Listing extends StatefulWidget {
 class _ListingState extends State<_Listing> {
   final _focus = FocusNode(debugLabel: 'filters-listing');
   final _scroll = ScrollController();
+
+  /// The cursor's row's menu, for the Menu key.
+  final _cursorMenu = RowMenuHandle();
 
   /// The row the cursor is on, root-relative; `null` while nothing is
   /// listed or the folder is empty.
@@ -694,6 +705,11 @@ class _ListingState extends State<_Listing> {
       return KeyEventResult.ignored;
     }
     final keyboard = HardwareKeyboard.instance;
+    if (_at != null &&
+        rowMenuActivators.any((keys) => keys.accepts(event, keyboard))) {
+      _openCursorMenu();
+      return KeyEventResult.handled;
+    }
     final command = ListingCommand.forKey(
       event.logicalKey,
       folder: folder,
@@ -717,6 +733,22 @@ class _ListingState extends State<_Listing> {
         widget.controller.openFolder(path);
     }
     return KeyEventResult.handled;
+  }
+
+  /// Opens the cursor row's menu. A row the lazy list has not built — the
+  /// cursor scrolled out of view by the wheel — is brought into view first,
+  /// and its menu opened in the frame after the one that builds it.
+  void _openCursorMenu() {
+    if (_cursorMenu.open()) return;
+    _revealAfterLayout();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // The reveal jumps in this frame's callbacks; the row is built in the
+      // next frame.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _cursorMenu.open();
+      });
+      WidgetsBinding.instance.ensureVisualUpdate();
+    });
   }
 
   /// A pointer went down on the row at [path]: the cursor follows it, and
@@ -810,6 +842,7 @@ class _ListingState extends State<_Listing> {
                 controller: widget.controller,
                 entry: _prototype,
                 ringed: false,
+                menu: null,
                 onPress: () {},
               ),
               itemBuilder: (context, i) {
@@ -818,6 +851,7 @@ class _ListingState extends State<_Listing> {
                   controller: widget.controller,
                   entry: entry,
                   ringed: ringShown && entry.path == _at,
+                  menu: entry.path == _at ? _cursorMenu : null,
                   onPress: () => _press(entry.path),
                 );
               },
@@ -845,12 +879,17 @@ class _EntryTile extends StatelessWidget {
     required this.controller,
     required this.entry,
     required this.ringed,
+    required this.menu,
     required this.onPress,
   });
 
   final FiltersController controller;
   final FilterEntryRow entry;
   final bool ringed;
+
+  /// The listing's way to open this row's menu from the keyboard, on the
+  /// cursor's row only.
+  final RowMenuHandle? menu;
 
   /// A pointer went down anywhere on the row — its menu button included.
   final VoidCallback onPress;
@@ -861,54 +900,71 @@ class _EntryTile extends StatelessWidget {
     final excluded = entry.status is FilterEntryExcluded;
     final quiet = theme.colorScheme.onSurfaceVariant;
     final primary = theme.colorScheme.primary;
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) => onPress(),
-      child: ListTile(
-        key: Key('filters-entry-${entry.path}'),
-        // The tile's own shape and colour, not a box around it: the tile
-        // draws them on the Material beneath with its ink, which a
-        // filled box in between would hide.
-        shape: ringed
-            ? RoundedRectangleBorder(
-                side: BorderSide(color: primary, width: 2),
-                borderRadius: BorderRadius.circular(8),
-              )
-            : null,
-        tileColor: ringed ? primary.withValues(alpha: 0.08) : null,
-        leading: Icon(
-          entry.isFolder
-              ? Icons.folder_outlined
-              : entry.status is FilterEntryUncarried
-              ? Icons.link_off
-              : Icons.insert_drive_file_outlined,
-          color: excluded ? quiet : null,
-        ),
-        title: Text(
-          entry.name,
-          overflow: TextOverflow.ellipsis,
-          style: excluded
-              ? TextStyle(
-                  color: quiet,
-                  decoration: TextDecoration.lineThrough,
-                  decorationColor: quiet,
+    final actions = filterRowActions(
+      entry.actions,
+      run: controller.runEntryAction,
+    );
+    // A right-click is a pointer down too: the cursor moves to the row
+    // before its menu opens, so the keys carry on from there.
+    return RowActionsMenu(
+      actions: actions,
+      focusNode: null,
+      handle: menu,
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => onPress(),
+        child: ListTile(
+          key: Key('filters-entry-${entry.path}'),
+          // The tile's own shape and colour, not a box around it: the tile
+          // draws them on the Material beneath with its ink, which a
+          // filled box in between would hide.
+          shape: ringed
+              ? RoundedRectangleBorder(
+                  side: BorderSide(color: primary, width: 2),
+                  borderRadius: BorderRadius.circular(8),
                 )
               : null,
+          tileColor: ringed ? primary.withValues(alpha: 0.08) : null,
+          leading: Icon(
+            entry.isFolder
+                ? Icons.folder_outlined
+                : entry.status is FilterEntryUncarried
+                ? Icons.link_off
+                : Icons.insert_drive_file_outlined,
+            color: excluded ? quiet : null,
+          ),
+          title: Text(
+            entry.name,
+            overflow: TextOverflow.ellipsis,
+            style: excluded
+                ? TextStyle(
+                    color: quiet,
+                    decoration: TextDecoration.lineThrough,
+                    decorationColor: quiet,
+                  )
+                : null,
+          ),
+          subtitle: Text(
+            switch (entry.status) {
+              FilterEntrySyncs() => entry.detail ?? 'Syncs',
+              FilterEntryExcluded(:final pattern) =>
+                entry.detail == null
+                    ? 'Excluded by $pattern'
+                    : '${entry.detail} · excluded by $pattern',
+              FilterEntryUncarried(:final reason) => reason,
+            },
+            style: theme.textTheme.bodySmall?.copyWith(color: quiet),
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: entry.isFolder
+              ? () => controller.openFolder(entry.path)
+              : null,
+          trailing: _EntryMenu(
+            controller: controller,
+            entry: entry,
+            actions: actions,
+          ),
         ),
-        subtitle: Text(
-          switch (entry.status) {
-            FilterEntrySyncs() => entry.detail ?? 'Syncs',
-            FilterEntryExcluded(:final pattern) =>
-              entry.detail == null
-                  ? 'Excluded by $pattern'
-                  : '${entry.detail} · excluded by $pattern',
-            FilterEntryUncarried(:final reason) => reason,
-          },
-          style: theme.textTheme.bodySmall?.copyWith(color: quiet),
-          overflow: TextOverflow.ellipsis,
-        ),
-        onTap: entry.isFolder ? () => controller.openFolder(entry.path) : null,
-        trailing: _EntryMenu(controller: controller, entry: entry),
       ),
     );
   }
@@ -923,11 +979,18 @@ class _EntryTile extends StatelessWidget {
 /// one gesture would have to guess which the user meant. A row that a rule
 /// already covers offers the way back as a button of its own, so an
 /// excluded folder is not a dead end the user has to go find the rule for.
+///
+/// The ⋮ menu renders [actions], the list the row's context menu renders.
 class _EntryMenu extends StatelessWidget {
-  const _EntryMenu({required this.controller, required this.entry});
+  const _EntryMenu({
+    required this.controller,
+    required this.entry,
+    required this.actions,
+  });
 
   final FiltersController controller;
   final FilterEntryRow entry;
+  final List<RowAction> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -938,15 +1001,10 @@ class _EntryMenu extends StatelessWidget {
         onPressed: () => controller.runEntryAction(include),
         child: Text(include.label),
       ),
-      final actions => PopupMenuButton<FilterEntryAction>(
+      _ => RowActionsButton(
         key: Key('filters-menu-${entry.path}'),
-        icon: const Icon(Icons.more_vert),
+        actions: actions,
         tooltip: 'Exclude ${entry.name}',
-        onSelected: controller.runEntryAction,
-        itemBuilder: (context) => [
-          for (final action in actions)
-            PopupMenuItem(value: action, child: Text(action.label)),
-        ],
       ),
     };
   }

@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import '../../paired_device_row.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
+import '../../row_actions_menu.dart';
+import 'device_row_actions.dart';
 import 'devices_chrome.dart';
 import 'devices_controller.dart';
 import 'devices_scope.dart';
@@ -193,10 +195,8 @@ class _DevicesBodyState extends State<_DevicesBody> {
         row.deviceId == selectedDeviceId,
         () => _select(row.deviceId),
       ),
-      DevicesOwnChrome() || DevicesShellChrome() => (
-        false,
-        () => widget.onOpenDevice(row.deviceId),
-      ),
+      DevicesOwnChrome() ||
+      DevicesShellChrome() => (false, () => widget.onOpenDevice(row.deviceId)),
     };
     return _DeviceTile(
       row: row,
@@ -373,59 +373,64 @@ class _DeviceTile extends StatelessWidget {
     final warning = row.certificateWarning;
     final savedRuns = savedRunLine;
     final sharesNothing = row.agreedRootCount == 0;
-    return ListTile(
-      // The name, and — only once the user has confirmed this device's id —
-      // a mark beside it. Inline rather than in the tile's leading slot, so
-      // the unconfirmed rows around it are not indented past an empty
-      // square: an unconfirmed pairing is the ordinary state and costs
-      // nothing on screen, which is the whole point of the confirmation
-      // being optional.
-      title: Row(
-        children: [
-          Flexible(child: Text(row.name, overflow: TextOverflow.ellipsis)),
-          if (row.isVerified) ...[
-            const SizedBox(width: 6),
-            Icon(
-              Icons.verified,
-              key: Key('device-verified-${row.deviceId}'),
-              size: 16,
-              color: theme.colorScheme.primary,
-              semanticLabel: 'Device id confirmed',
-            ),
-          ],
-        ],
-      ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(row.address),
-          if (savedRuns != null) Text(savedRuns),
-          if (warning != null)
-            Text(warning, style: TextStyle(color: theme.colorScheme.tertiary)),
-          if (sharesNothing)
-            Text(
-              _noRootsLine,
-              style: TextStyle(color: theme.colorScheme.tertiary),
-            ),
-        ],
-      ),
-      // Two lines normally; a third only when a further line is showing.
-      isThreeLine: savedRuns != null || warning != null || sharesNothing,
-      selected: selected,
-      selectedTileColor: theme.colorScheme.secondaryContainer,
-      selectedColor: theme.colorScheme.onSecondaryContainer,
+    return RowActionsMenu(
+      actions: deviceRowActions(row, onRunSetup: onRunSetup),
       focusNode: focusNode,
-      onTap: onTap,
-      trailing: TextButton(
-        onPressed: onRunSetup,
-        child: const Text(_runSetupLabel),
+      handle: null,
+      child: ListTile(
+        // The name, and — only once the user has confirmed this device's id —
+        // a mark beside it. Inline rather than in the tile's leading slot, so
+        // the unconfirmed rows around it are not indented past an empty
+        // square: an unconfirmed pairing is the ordinary state and costs
+        // nothing on screen, which is the whole point of the confirmation
+        // being optional.
+        title: Row(
+          children: [
+            Flexible(child: Text(row.name, overflow: TextOverflow.ellipsis)),
+            if (row.isVerified) ...[
+              const SizedBox(width: 6),
+              Icon(
+                Icons.verified,
+                key: Key('device-verified-${row.deviceId}'),
+                size: 16,
+                color: theme.colorScheme.primary,
+                semanticLabel: 'Device id confirmed',
+              ),
+            ],
+          ],
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(row.address),
+            if (savedRuns != null) Text(savedRuns),
+            if (warning != null)
+              Text(
+                warning,
+                style: TextStyle(color: theme.colorScheme.tertiary),
+              ),
+            if (sharesNothing)
+              Text(
+                _noRootsLine,
+                style: TextStyle(color: theme.colorScheme.tertiary),
+              ),
+          ],
+        ),
+        // Two lines normally; a third only when a further line is showing.
+        isThreeLine: savedRuns != null || warning != null || sharesNothing,
+        selected: selected,
+        selectedTileColor: theme.colorScheme.secondaryContainer,
+        selectedColor: theme.colorScheme.onSecondaryContainer,
+        focusNode: focusNode,
+        onTap: onTap,
+        trailing: TextButton(
+          onPressed: onRunSetup,
+          child: const Text(deviceRunSetupLabel),
+        ),
       ),
     );
   }
 }
-
-/// What a tap on a device row does, in the user's words.
-const _runSetupLabel = 'Set up run';
 
 /// The one roots fact a list row keeps. A pairing that grants nothing can
 /// reach nothing, so a run against it fails with nothing else visibly wrong

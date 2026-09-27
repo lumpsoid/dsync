@@ -6,6 +6,8 @@ import '../../profile_breakage.dart';
 import '../../profile_row.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
+import '../../row_actions_menu.dart';
+import 'profile_row_actions.dart';
 import 'profiles_chrome.dart';
 import 'profiles_controller.dart';
 import 'profiles_scope.dart';
@@ -29,6 +31,10 @@ import 'profiles_scope.dart';
 /// visible from the home list, because the row is the only place the run
 /// the user configured still exists — and it must be fixable there, because
 /// the alternative is deleting the run and configuring it again.
+///
+/// On a desktop a right-click on a row, or the Menu key on a focused one,
+/// opens its buttons as a menu with its paths to copy
+/// ([profileRowActions]), and Delete asks to delete the focused row.
 ///
 /// [onOpenProfile] is the seam to Run setup, fired with the tapped row's
 /// profile id — an id, not a row, per the handoff rule.
@@ -279,116 +285,124 @@ class _ProfileTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final breakage = row.breakage;
-    return Card(
-      margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 4, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      row.name,
-                      style: theme.textTheme.titleMedium,
-                      overflow: TextOverflow.ellipsis,
+    final shown = profileEntriesShown(row.entries);
+    return RowActionsMenu(
+      actions: profileRowActions(
+        row,
+        onRunAgain: onRunAgain,
+        onPickFolder: onPickFolder,
+        onPairAgain: onPairAgain,
+        onDelete: onDelete,
+      ),
+      // The card's ink well takes the focus by itself; a right-click leaves
+      // it where it was.
+      focusNode: null,
+      handle: null,
+      child: Card(
+        margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        row.name,
+                        style: theme.textTheme.titleMedium,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline),
-                    tooltip: 'Delete profile',
-                    onPressed: onDelete,
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Delete profile',
+                      onPressed: onDelete,
+                    ),
+                  ],
+                ),
+                // The pair, one side per block, headed the way Run setup
+                // heads the same two fields ("On this device" / "On
+                // <device>"): the two screens describe one run, and a row
+                // that named the sides differently would read as a
+                // different thing. It also puts the device where it belongs
+                // — on the side that *is* the device — instead of on a line
+                // of its own above a pair of anonymous paths. A revoked
+                // device has no name on this host any more, only an id, and
+                // the heading says so rather than leaving a blank where a
+                // name was.
+                //
+                // Only the first two entries are drawn in full — a row is a
+                // summary, not the editor — with the rest folded into a count.
+                // A single-entry profile (still the common case) reads exactly
+                // as it always has: no numbering, one pair of blocks.
+                for (final (index, entry) in shown.indexed) ...[
+                  if (index > 0) const SizedBox(height: 8),
+                  _PairSide(label: 'On this device', path: entry.localRootPath),
+                  const SizedBox(height: 8),
+                  _PairSide(
+                    label: 'On ${profilePeerLabel(row)}',
+                    path: entry.remoteRootPath,
                   ),
                 ],
-              ),
-              // The pair, one side per block, headed the way Run setup
-              // heads the same two fields ("On this device" / "On
-              // <device>"): the two screens describe one run, and a row
-              // that named the sides differently would read as a
-              // different thing. It also puts the device where it belongs
-              // — on the side that *is* the device — instead of on a line
-              // of its own above a pair of anonymous paths. A revoked
-              // device has no name on this host any more, only an id, and
-              // the heading says so rather than leaving a blank where a
-              // name was.
-              //
-              // Only the first two entries are drawn in full — a row is a
-              // summary, not the editor — with the rest folded into a count.
-              // A single-entry profile (still the common case) reads exactly
-              // as it always has: no numbering, one pair of blocks.
-              for (final (index, entry) in _shown(row.entries).indexed) ...[
-                if (index > 0) const SizedBox(height: 8),
-                _PairSide(label: 'On this device', path: entry.localRootPath),
-                const SizedBox(height: 8),
-                _PairSide(
-                  label:
-                      'On ${row.peerName ?? 'unpaired device ${row.peerDeviceId}'}',
-                  path: entry.remoteRootPath,
-                ),
-              ],
-              if (row.entries.length > 2) ...[
-                const SizedBox(height: 4),
-                Text(
-                  'and ${row.entries.length - 2} more',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-              if (row.lastRunUnfinished) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'The last run did not finish. Run it again to sort out the '
-                  'files it left.',
-                  style: TextStyle(color: theme.colorScheme.error),
-                ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton(
-                    key: Key('profile-run-again-${row.name}'),
-                    onPressed: onRunAgain,
-                    child: const Text('Run again'),
-                  ),
-                ),
-              ],
-              if (breakage != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  breakage.message,
-                  style: TextStyle(color: theme.colorScheme.error),
-                ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: switch (breakage) {
-                    ProfileLocalRootUnusable(:final entryIndex) => TextButton(
-                      key: Key('profile-pick-folder-${row.name}'),
-                      onPressed: () => onPickFolder(entryIndex),
-                      child: const Text('Choose folder'),
+                if (row.entries.length > 2) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'and ${row.entries.length - 2} more',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
-                    ProfileDeviceUnpaired() => TextButton(
-                      key: Key('profile-pair-again-${row.name}'),
-                      onPressed: onPairAgain,
-                      child: const Text('Pair again'),
+                  ),
+                ],
+                if (row.lastRunUnfinished) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'The last run did not finish. Run it again to sort out the '
+                    'files it left.',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      key: Key('profile-run-again-${row.name}'),
+                      onPressed: onRunAgain,
+                      child: const Text('Run again'),
                     ),
-                  },
-                ),
+                  ),
+                ],
+                if (breakage != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    breakage.message,
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: switch (breakage) {
+                      ProfileLocalRootUnusable(:final entryIndex) => TextButton(
+                        key: Key('profile-pick-folder-${row.name}'),
+                        onPressed: () => onPickFolder(entryIndex),
+                        child: const Text('Choose folder'),
+                      ),
+                      ProfileDeviceUnpaired() => TextButton(
+                        key: Key('profile-pair-again-${row.name}'),
+                        onPressed: onPairAgain,
+                        child: const Text('Pair again'),
+                      ),
+                    },
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
     );
   }
 }
-
-/// The entries a row draws in full: the first two, so a long profile still
-/// fits on a row sized for one.
-List<ProfileEntryRow> _shown(List<ProfileEntryRow> entries) =>
-    entries.length <= 2 ? entries : entries.sublist(0, 2);
 
 /// One side of the pair: where it is, and the folder it is.
 ///

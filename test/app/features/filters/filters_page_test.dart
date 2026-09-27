@@ -324,6 +324,107 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  group('on a desktop, the row\'s menu (task 746a4d)', () {
+    final desktop = TargetPlatformVariant.only(TargetPlatform.linux);
+
+    Future<void> rightClick(WidgetTester tester, String path) async {
+      await tester.tapAt(
+        tester.getCenter(find.byKey(Key('filters-entry-$path'))),
+        buttons: kSecondaryMouseButton,
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    List<String> menuLabels(WidgetTester tester) => [
+      for (final item in tester.widgetList<MenuItemButton>(
+        find.byType(MenuItemButton),
+      ))
+        (item.child! as Text).data!,
+    ];
+
+    testWidgets(
+      'a right-click lists what the ⋮ button lists, and excluding from it '
+      'adds the rule',
+      (tester) async {
+        await pumpPage(tester, window: _wide);
+
+        await tester.tap(find.byKey(const Key('filters-menu-cache')));
+        await tester.pumpAndSettle();
+        final fromButton = menuLabels(tester);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+
+        await rightClick(tester, 'cache');
+        expect(fromButton, [
+          "Exclude every 'cache'",
+          'Exclude only this folder',
+        ]);
+        expect(menuLabels(tester), fromButton);
+
+        final before = controller.state.folder;
+        await tester.tap(find.text("Exclude every 'cache'"));
+        await tester.pump();
+        await pumpUntil(
+          tester,
+          () =>
+              controller.state.folder is FiltersFolderListed &&
+              !identical(controller.state.folder, before),
+          what: 'the folder to list again',
+        );
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('filters-rule-**/cache')), findsOneWidget);
+        // The right-click was not a click: the folder was not opened.
+        expect(
+          find.byKey(const Key('filters-entry-cache/a.tmp')),
+          findsNothing,
+        );
+      },
+      variant: desktop,
+    );
+
+    testWidgets(
+      'Shift+F10 opens the cursor row\'s menu, and a right-click moves the '
+      'cursor to its row',
+      (tester) async {
+        await pumpPage(tester, window: _wide);
+
+        await rightClick(tester, 'notes.txt');
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(find.byType(MenuItemButton), findsNothing);
+        // Still on the page: Esc closed the menu, not the page.
+        expect(
+          find.byKey(const Key('filters-entry-notes.txt')),
+          findsOneWidget,
+        );
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.f10);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pumpAndSettle();
+        expect(menuLabels(tester), [
+          "Exclude every 'notes.txt'",
+          'Exclude only this file',
+        ]);
+        // Anchored at the cursor's row.
+        final row = tester.getRect(
+          find.byKey(const Key('filters-entry-notes.txt')),
+        );
+        final first = tester.getRect(find.byType(MenuItemButton).first);
+        expect(first.top, greaterThanOrEqualTo(row.bottom));
+        expect((first.left - row.left).abs(), lessThan(24));
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.contextMenu);
+        await tester.pumpAndSettle();
+        expect(find.byType(MenuItemButton), findsNWidgets(2));
+      },
+      variant: desktop,
+    );
+  });
+
   group('on a wide window', () {
     testWidgets('the rules and the preview sit in a pane beside the '
         'listing', (tester) async {

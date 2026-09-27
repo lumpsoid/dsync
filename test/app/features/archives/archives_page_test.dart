@@ -686,6 +686,99 @@ void main() {
       await tester.pump();
       expect(focusIsWithin(Key('archive-row-$two')), isTrue);
     });
+
+    group('the row\'s menu (task 746a4d)', () {
+      Future<void> rightClick(WidgetTester tester, String logPath) async {
+        await tester.tapAt(
+          tester.getCenter(rowOf(logPath)),
+          buttons: kSecondaryMouseButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('with nothing ticked, a right-click deletes that row behind '
+          'its confirmation', (tester) async {
+        await pumpWideDesktop(tester);
+
+        await rightClick(tester, two);
+        expect(find.text('Select'), findsOneWidget);
+        expect(find.text('Copy path'), findsOneWidget);
+        await tester.tap(find.text('Delete history'));
+        await tester.pumpAndSettle();
+        expect(find.text('Delete history for two?'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('archives-confirm-delete')));
+        await tester.pumpAndSettle();
+        expect(controller.deleted, [two]);
+      });
+
+      testWidgets('a right-click on a ticked row acts on the whole selection', (
+        tester,
+      ) async {
+        await pumpWideDesktop(tester);
+        await tester.tap(find.byKey(const Key('archive-check-$one')));
+        await tester.tap(find.byKey(const Key('archive-check-$three')));
+        await tester.pump();
+
+        await rightClick(tester, three);
+        expect(find.text('Deselect'), findsOneWidget);
+        await tester.tap(find.text('Delete 2 selected'));
+        await tester.pumpAndSettle();
+        expect(find.text('Delete 2 histories?'), findsOneWidget);
+
+        await tester.tap(
+          find.byKey(const Key('archives-confirm-delete-selected')),
+        );
+        await tester.pumpAndSettle();
+        expect(controller.deletedSelected, 1);
+        expect(controller.deleted, isEmpty);
+      });
+
+      testWidgets('a right-click outside the selection keeps the ticks, moves '
+          'the focus there, and offers no delete of that row alone', (
+        tester,
+      ) async {
+        await pumpWideDesktop(tester);
+        await tester.tap(find.byKey(const Key('archive-check-$one')));
+        await tester.pump();
+
+        await rightClick(tester, two);
+        expect(controller.state.selected, {one});
+        expect(find.text('Select'), findsOneWidget);
+        expect(find.text('Delete history'), findsNothing);
+        expect(find.textContaining('selected'), findsOneWidget);
+
+        await tester.tap(find.text('Select'));
+        await tester.pumpAndSettle();
+        expect(controller.state.selected, {one, two});
+        expect(focusIsWithin(Key('archive-row-$two')), isTrue);
+      });
+
+      testWidgets('Shift+F10 opens the focused row\'s menu, and Delete stays '
+          'the page\'s', (tester) async {
+        await pumpWideDesktop(tester);
+        await tester.tap(rowOf(two));
+        await tester.pump();
+
+        await withKey(
+          tester,
+          LogicalKeyboardKey.shiftLeft,
+          () => tester.sendKeyEvent(LogicalKeyboardKey.f10),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Delete history'), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(find.text('Delete history'), findsNothing);
+        // Esc closed the menu and nothing else: the page is still up.
+        expect(rowOf(two), findsOneWidget);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+        await tester.pumpAndSettle();
+        expect(find.text('Delete history for two?'), findsOneWidget);
+      });
+    });
   });
 
   testWidgets('the notice is selectable, the rows are not, and a long press '

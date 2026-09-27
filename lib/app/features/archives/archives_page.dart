@@ -7,6 +7,9 @@ import '../../keyboard_first.dart';
 import '../../path_text.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
+import '../../row_action.dart';
+import '../../row_actions_menu.dart';
+import 'archive_row_actions.dart';
 import 'archives_controller.dart';
 import 'archives_scope.dart';
 import 'archives_view_state.dart';
@@ -41,7 +44,10 @@ import 'archives_view_state.dart';
 /// Ctrl/Cmd+A ticks all, Delete deletes what is ticked (or the focused row)
 /// behind the same confirmation, and Esc stops selecting. The selection is
 /// the controller's ([ArchivesViewState.selection]); the page only reads
-/// the modifier keys and says which operation a click was.
+/// the modifier keys and says which operation a click was. A right-click on
+/// a row, or the Menu key on a focused one, opens the row's menu
+/// ([archiveRowActions]): on the selection when the row is ticked, on the
+/// row alone otherwise, the ticks left as they are.
 ///
 /// **Esc stops selecting before it leaves.** In the shell's pane Esc pops
 /// the page; while rows are ticked it is heard here first and only clears
@@ -236,6 +242,8 @@ class _ArchivesPageState extends State<ArchivesPage> {
         focusOf: _focusOf,
         onClick: _click,
         onDelete: (row) => _confirmDelete(context, row),
+        onDeleteSelected: () =>
+            _confirmDeleteSelected(context, _controller.state.selected.length),
       ),
     );
   }
@@ -336,6 +344,7 @@ class _ArchivesBody extends StatelessWidget {
     required this.focusOf,
     required this.onClick,
     required this.onDelete,
+    required this.onDeleteSelected,
   });
 
   final ArchivesController controller;
@@ -345,10 +354,12 @@ class _ArchivesBody extends StatelessWidget {
   final FocusNode Function(String logPath) focusOf;
   final void Function(String logPath, {required bool onCheckbox}) onClick;
   final void Function(ArchiveRow row) onDelete;
+  final VoidCallback onDeleteSelected;
 
   @override
   Widget build(BuildContext context) {
     final error = controller.state.error;
+    final state = controller.state;
     return RefreshIndicator(
       onRefresh: controller.refresh,
       child: ReadableScrollPadding(
@@ -374,12 +385,21 @@ class _ArchivesBody extends StatelessWidget {
                     row: row,
                     checkbox: checkboxes,
                     focusNode: focusOf(row.logPath),
-                    isSelecting: controller.state.isSelecting,
-                    isSelected: controller.state.isSelected(row.logPath),
+                    isSelecting: state.isSelecting,
+                    isSelected: state.isSelected(row.logPath),
                     onClick: () => onClick(row.logPath, onCheckbox: false),
                     onCheck: () => onClick(row.logPath, onCheckbox: true),
                     onLongPress: () => controller.toggleSelection(row.logPath),
                     onDelete: () => onDelete(row),
+                    actions: archiveRowActions(
+                      row,
+                      isSelecting: state.isSelecting,
+                      isSelected: state.isSelected(row.logPath),
+                      selectedCount: state.selected.length,
+                      onToggle: () => controller.toggleSelection(row.logPath),
+                      onDelete: () => onDelete(row),
+                      onDeleteSelected: onDeleteSelected,
+                    ),
                   ),
                 const _Explanation(),
               ],
@@ -490,6 +510,7 @@ class _ArchiveTile extends StatelessWidget {
     required this.onCheck,
     required this.onLongPress,
     required this.onDelete,
+    required this.actions,
   });
 
   final ArchiveRow row;
@@ -512,61 +533,70 @@ class _ArchiveTile extends StatelessWidget {
   final VoidCallback onLongPress;
   final VoidCallback onDelete;
 
+  /// The row's context menu on a desktop ([archiveRowActions]): on the
+  /// selection when this row is in it, on this row otherwise.
+  final List<RowAction> actions;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final note = row.note;
     final peerLine = row.peerLine;
-    return ListTile(
-      key: Key('archive-row-${row.logPath}'),
+    return RowActionsMenu(
+      actions: actions,
       focusNode: focusNode,
-      selected: isSelected,
-      // Long press starts selecting, the platform's own gesture for it; once
-      // selecting, a plain tap is enough.
-      onLongPress: onLongPress,
-      onTap: checkbox || isSelecting ? onClick : null,
-      leading: checkbox
-          // Out of the focus order: the row is the keyboard's stop and Space
-          // on it ticks, so a second stop per row would only double the Tabs
-          // down the list.
-          ? ExcludeFocus(
-              child: Checkbox(
-                key: Key('archive-check-${row.logPath}'),
-                value: isSelected,
-                onChanged: (_) => onCheck(),
+      handle: null,
+      child: ListTile(
+        key: Key('archive-row-${row.logPath}'),
+        focusNode: focusNode,
+        selected: isSelected,
+        // Long press starts selecting, the platform's own gesture for it; once
+        // selecting, a plain tap is enough.
+        onLongPress: onLongPress,
+        onTap: checkbox || isSelecting ? onClick : null,
+        leading: checkbox
+            // Out of the focus order: the row is the keyboard's stop and Space
+            // on it ticks, so a second stop per row would only double the Tabs
+            // down the list.
+            ? ExcludeFocus(
+                child: Checkbox(
+                  key: Key('archive-check-${row.logPath}'),
+                  value: isSelected,
+                  onChanged: (_) => onCheck(),
+                ),
+              )
+            : isSelecting
+            ? Icon(
+                isSelected ? Icons.check_circle : Icons.circle_outlined,
+                color: isSelected ? theme.colorScheme.primary : null,
+              )
+            : null,
+        title: Text(row.title),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (peerLine != null) Text(peerLine),
+            // Hover-only tooltip (see [PathText]): a long-press here is the
+            // row's own, and starts selecting.
+            switch (row.rootPath) {
+              final path? => PathText(path, style: null, leafStyle: null),
+              null => const Text(ArchiveRow.unknownLocation),
+            },
+            Text('${row.sizeLabel} · last written ${row.lastWritten}'),
+            if (note != null)
+              Text(note, style: TextStyle(color: theme.colorScheme.error)),
+          ],
+        ),
+        isThreeLine: true,
+        trailing: isSelecting
+            ? null
+            : IconButton(
+                key: Key('archive-delete-${row.logPath}'),
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Delete history',
+                onPressed: onDelete,
               ),
-            )
-          : isSelecting
-          ? Icon(
-              isSelected ? Icons.check_circle : Icons.circle_outlined,
-              color: isSelected ? theme.colorScheme.primary : null,
-            )
-          : null,
-      title: Text(row.title),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (peerLine != null) Text(peerLine),
-          // Hover-only tooltip (see [PathText]): a long-press here is the
-          // row's own, and starts selecting.
-          switch (row.rootPath) {
-            final path? => PathText(path, style: null, leafStyle: null),
-            null => const Text(ArchiveRow.unknownLocation),
-          },
-          Text('${row.sizeLabel} · last written ${row.lastWritten}'),
-          if (note != null)
-            Text(note, style: TextStyle(color: theme.colorScheme.error)),
-        ],
       ),
-      isThreeLine: true,
-      trailing: isSelecting
-          ? null
-          : IconButton(
-              key: Key('archive-delete-${row.logPath}'),
-              icon: const Icon(Icons.delete_outline),
-              tooltip: 'Delete history',
-              onPressed: onDelete,
-            ),
     );
   }
 }
