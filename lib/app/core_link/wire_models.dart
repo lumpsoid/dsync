@@ -6,12 +6,14 @@ import 'models/conflict_choice.dart';
 import 'models/conflict_info.dart';
 import 'models/conflict_row.dart';
 import 'models/decision_summary.dart';
+import 'models/entry_view.dart';
 import 'models/device_identity_info.dart';
 import 'models/file_status.dart';
 import 'models/filter_folder_summary.dart';
 import 'models/filter_preview.dart';
 import 'models/filter_row.dart';
 import 'models/mass_delete_side.dart';
+import 'models/other_entry.dart';
 import 'models/pair_code_reading.dart';
 import 'models/paired_device_info.dart';
 import 'models/pairing_view.dart';
@@ -23,6 +25,7 @@ import 'models/profile_draft.dart';
 import 'models/profile_entry.dart';
 import 'models/replica_info.dart';
 import 'models/replica_side.dart';
+import 'models/root_kind.dart';
 import 'models/run_intent.dart';
 import 'models/run_phase.dart';
 import 'models/run_standing.dart';
@@ -134,10 +137,26 @@ PeerProbeOutcome probe(wire.ProbeOutcome outcome) => switch (outcome) {
   _ => throw StateError('unknown probe outcome: $outcome'),
 };
 
+RootKind rootKind(wire.RootKindView kind) => switch (kind) {
+  wire.RootKindView.folder => RootKind.folder,
+  wire.RootKindView.file => RootKind.file,
+};
+
+wire.RootKindView wireRootKind(RootKind kind) => switch (kind) {
+  RootKind.folder => wire.RootKindView.folder,
+  RootKind.file => wire.RootKindView.file,
+};
+
 wire.ProfileDraft wireDraft(ProfileDraft draft) => wire.ProfileDraft(
-  localRoot: draft.localRoot,
   peerDeviceId: draft.peerDeviceId,
-  remoteRoot: draft.remoteRoot,
+  entries: [
+    for (final entry in draft.entries)
+      wire.EntryDraft(
+        kind: wireRootKind(entry.kind),
+        localRoot: entry.localRoot,
+        remoteRoot: entry.remoteRoot,
+      ),
+  ],
   jobs: draft.jobs,
   ignore: draft.ignorePatterns,
 );
@@ -145,19 +164,27 @@ wire.ProfileDraft wireDraft(ProfileDraft draft) => wire.ProfileDraft(
 ProfileEntry profile(wire.ProfileEntry entry) => switch (entry) {
   wire.ProfileEntryHead(:final value) => HeadProfile(
     name: value.name,
-    profileId: value.profileId,
-    localRoot: value.localRoot,
-    localRootExpanded: value.localRootExpanded,
-    localRootRefusal: value.localRootRefusal,
     peerDeviceId: value.peerDeviceId,
     peerName: value.peerName,
-    remoteRoot: value.remoteRoot,
     jobs: value.jobs,
     ignorePatterns: value.ignore,
     lastRunUnfinished: value.lastRunUnfinished,
+    entries: [
+      for (final entry in value.entries)
+        EntryView(
+          entryId: entry.entryId,
+          kind: rootKind(entry.kind),
+          localRoot: entry.localRoot,
+          localRootExpanded: entry.localRootExpanded,
+          localRootRefusal: entry.localRootRefusal,
+          remoteRoot: entry.remoteRoot,
+        ),
+    ],
   ),
-  wire.ProfileEntryOther(:final name, :final profileId, :final a, :final b) =>
-    OtherProfile(name: name, profileId: profileId, a: a, b: b),
+  wire.ProfileEntryOther(:final name, :final entries) => OtherProfile(
+    name: name,
+    entries: [for (final entry in entries) OtherEntry(a: entry.a, b: entry.b)],
+  ),
   wire.ProfileEntryUnreadable(:final name, :final message) => UnreadableProfile(
     name: name,
     message: message,
@@ -469,7 +496,7 @@ ServeAddresses addresses(wire.AddressesView view) =>
 
 ArchiveInfo archive(wire.ArchiveView view) => ArchiveInfo(
   logPath: view.logPath,
-  profileId: view.profileId,
+  entryId: view.entryId,
   side: side(view.side),
   rootPath: view.rootPath,
   sizeBytes: _n(view.sizeBytes),

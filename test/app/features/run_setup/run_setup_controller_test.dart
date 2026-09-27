@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run_setup/run_setup_controller.dart';
@@ -186,7 +187,10 @@ void main() {
       expect(controller.state.localRoot, picked);
       expect(picker.requestAccessCount, 0, reason: 'the check already passed');
       expect(core.sent<wire.CoreCommandCheckFolder>(), [
-        wire.CoreCommandCheckFolder(path: picked),
+        wire.CoreCommandCheckFolder(
+          path: picked,
+          kind: wire.RootKindView.folder,
+        ),
       ]);
     });
 
@@ -320,7 +324,10 @@ void main() {
       expect(picker.pickCount, 1, reason: 'not made to pick it again');
       expect(
         core.sent<wire.CoreCommandCheckFolder>().last,
-        const wire.CoreCommandCheckFolder(path: refused),
+        const wire.CoreCommandCheckFolder(
+          path: refused,
+          kind: wire.RootKindView.folder,
+        ),
       );
     });
 
@@ -475,9 +482,11 @@ void main() {
       expect(request.dryRun, isFalse);
       // Unnamed: a one-off run of the pair itself.
       final draft = (request.target as DraftTarget).draft;
-      expect(draft.localRoot, notes());
+      final entry = draft.entries.single;
+      expect(entry.kind, RootKind.folder);
+      expect(entry.localRoot, notes());
       expect(draft.peerDeviceId, desktop.deviceId);
-      expect(draft.remoteRoot, '~/notes');
+      expect(entry.remoteRoot, '~/notes');
       // The core picks the jobs; nothing here guesses them.
       expect(draft.jobs, isNull);
     });
@@ -497,7 +506,8 @@ void main() {
       expect(controller.state.addressError, isNull);
     });
 
-    test('recreates a folder removed since it was chosen', () async {
+    test('creates no directory: a folder removed since it was chosen is '
+        'the core\'s to create or refuse', () async {
       await loadDesktop();
       await pickNotes();
       Directory(notes()).deleteSync();
@@ -508,8 +518,17 @@ void main() {
         profileName: '',
       );
 
-      expect(Directory(notes()).existsSync(), isTrue);
+      // Recreated empty here, an archived folder would read as emptied.
+      expect(Directory(notes()).existsSync(), isFalse);
       expect(requests(), hasLength(1));
+      expect(
+        (requests().single.target as DraftTarget)
+            .draft
+            .entries
+            .single
+            .localRoot,
+        notes(),
+      );
     });
 
     test('carries the dry-run switch as it stands', () async {
@@ -567,9 +586,14 @@ void main() {
         wire.CoreCommandSaveProfile(
           name: 'weekly',
           draft: wire.ProfileDraft(
-            localRoot: notes(),
             peerDeviceId: desktop.deviceId,
-            remoteRoot: '~/notes',
+            entries: [
+              wire.EntryDraft(
+                kind: wire.RootKindView.folder,
+                localRoot: notes(),
+                remoteRoot: '~/notes',
+              ),
+            ],
             jobs: null,
             ignore: const [],
           ),
@@ -724,7 +748,7 @@ void main() {
         wire.CoreCommandRenameProfile(from: 'weekly', to: 'weekly retyped'),
       ]);
       expect(saves().single.name, 'weekly retyped');
-      expect(saves().single.draft.remoteRoot, '~/notes/sub');
+      expect(saves().single.draft.entries.single.remoteRoot, '~/notes/sub');
       expect(
         (requests().single.target as SavedProfileTarget).name,
         'weekly retyped',
@@ -744,8 +768,8 @@ void main() {
 
       final save = saves().single;
       expect(save.name, 'weekly');
-      expect(save.draft.localRoot, notes());
-      expect(save.draft.remoteRoot, '~/notes');
+      expect(save.draft.entries.single.localRoot, notes());
+      expect(save.draft.entries.single.remoteRoot, '~/notes');
       expect(app.state.profiles.single.name, 'weekly');
       expect(requests(), isEmpty);
       expect(controller.state.outcome, isA<RunSetupSaved>());
@@ -815,7 +839,7 @@ void main() {
         wire.CoreCommandRenameProfile(from: 'weekly', to: 'weekly retyped'),
       ]);
       expect(saves().single.name, 'weekly retyped');
-      expect(saves().single.draft.remoteRoot, '~/notes/sub');
+      expect(saves().single.draft.entries.single.remoteRoot, '~/notes/sub');
       expect(requests(), isEmpty);
     });
 

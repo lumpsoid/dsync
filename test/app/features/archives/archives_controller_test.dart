@@ -32,44 +32,48 @@ void main() {
 
   tearDown(() => controller.dispose());
 
-  /// Adds [profileId]'s log on [side] to what the core lists.
-  String log(String profileId, [ReplicaSide side = ReplicaSide.a]) {
-    final info = archiveInfo(profileId: profileId, side: side);
+  /// Adds [entryId]'s log on [side] to what the core lists.
+  String log(String entryId, [ReplicaSide side = ReplicaSide.a]) {
+    final info = archiveInfo(entryId: entryId, side: side);
     listed.add(info);
     core.reply<wire.CoreCommandListArchives>(archivesReply([...listed]));
     return info.logPath;
   }
 
-  /// The core's answer to a clear: the logs of [profileIds] still listed.
-  wire.ReplyResult left(List<String> profileIds) => archivesReply([
+  /// The core's answer to a clear: the logs of [entryIds] still listed.
+  wire.ReplyResult left(List<String> entryIds) => archivesReply([
     for (final info in listed)
-      if (profileIds.contains(info.profileId)) info,
+      if (entryIds.contains(info.entryId)) info,
   ]);
 
   /// Each clear's answer, by the archive id it names.
   void answerClears(Map<String, wire.ReplyResult> byProfile) =>
       core.answer<wire.CoreCommandClearArchive>(
-        (clear) => byProfile[clear.profileId]!,
+        (clear) => byProfile[clear.entryId]!,
       );
 
   List<String> cleared() => [
     for (final clear in core.sent<wire.CoreCommandClearArchive>())
-      clear.profileId,
+      clear.entryId,
   ];
 
-  ProfileRow profile(String id, String name, {String? peerName = 'desktop'}) =>
-      ProfileRow(
-        name: name,
-        profileId: id,
-        peerDeviceId: 'a1b2:c3d4',
-        peerName: peerName,
-        localRootPath: '/on-device/notes',
-        remoteRootPath: '~/notes',
-        localRootLabel: PathLabel.of('/on-device/notes'),
-        remoteRootLabel: PathLabel.of('~/notes'),
-        breakage: null,
-        lastRunUnfinished: false,
-      );
+  ProfileRow profile(
+    String id,
+    String name, {
+    String? peerName = 'desktop',
+    List<String> moreIds = const [],
+  }) => ProfileRow(
+    name: name,
+    entryIds: [id, ...moreIds],
+    peerDeviceId: 'a1b2:c3d4',
+    peerName: peerName,
+    localRootPath: '/on-device/notes',
+    remoteRootPath: '~/notes',
+    localRootLabel: PathLabel.of('/on-device/notes'),
+    remoteRootLabel: PathLabel.of('~/notes'),
+    breakage: null,
+    lastRunUnfinished: false,
+  );
 
   List<ArchiveRow> rows() => (controller.state.listing as ArchivesReady).rows;
 
@@ -86,6 +90,43 @@ void main() {
     expect(titles(), ['weekly notes']);
     expect(rows().single.note, isNull);
   });
+
+  test('every entry\'s archives are named after the one saved run', () async {
+    log('p1');
+    log('p2');
+    log('p3');
+    app.state.recordProfiles([
+      profile('p1', 'weekly notes', moreIds: ['p2']),
+    ]);
+
+    await controller.refresh();
+
+    // The third id belongs to no saved run: the join is by id, not a
+    // blanket match.
+    expect(titles(), ['weekly notes', 'weekly notes', 'p3']);
+  });
+
+  test(
+    'clearing a two-entry run\'s archives clears each entry id once',
+    () async {
+      log('p1');
+      log('p1', ReplicaSide.b);
+      log('p2');
+      app.state.recordProfiles([
+        profile('p1', 'weekly notes', moreIds: ['p2']),
+      ]);
+      await controller.refresh();
+      answerClears({
+        'p1': left(['p2']),
+        'p2': left(const []),
+      });
+
+      await controller.deleteAll();
+
+      expect(cleared(), ['p1', 'p2']);
+      expect(rows(), isEmpty);
+    },
+  );
 
   test('an archive names the device its run syncs with', () async {
     log('p1');

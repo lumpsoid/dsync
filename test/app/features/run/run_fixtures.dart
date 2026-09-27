@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/core_link/models/entry_draft.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
@@ -22,9 +23,8 @@ RunRequest runRequest({
 }) => RunRequest(
   target: const DraftTarget(
     ProfileDraft(
-      localRoot: '/data/notes',
       peerDeviceId: 'aaaa-bbbb-cccc-dddd',
-      remoteRoot: '~/notes',
+      entries: [EntryDraft(localRoot: '/data/notes', remoteRoot: '~/notes')],
     ),
   ),
   localRootPath: '/data/notes',

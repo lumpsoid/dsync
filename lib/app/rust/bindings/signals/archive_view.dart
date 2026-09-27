@@ -6,7 +6,7 @@ part of 'signals.dart';
 class ArchiveView {
   const ArchiveView({
     required this.logPath,
-    required this.profileId,
+    required this.entryId,
     required this.side,
     this.rootPath,
     required this.sizeBytes,
@@ -17,7 +17,7 @@ class ArchiveView {
     deserializer.increaseContainerDepth();
     final instance = ArchiveView(
       logPath: deserializer.deserializeString(),
-      profileId: deserializer.deserializeString(),
+      entryId: deserializer.deserializeString(),
       side: SideViewExtension.deserialize(deserializer),
       rootPath: TraitHelpers.deserializeOptionStr(deserializer),
       sizeBytes: deserializer.deserializeUint64(),
@@ -37,7 +37,7 @@ class ArchiveView {
   }
 
   final String logPath;
-  final String profileId;
+  final String entryId;
   final SideView side;
   final String? rootPath;
   final Uint64 sizeBytes;
@@ -45,7 +45,7 @@ class ArchiveView {
 
   ArchiveView copyWith({
     String? logPath,
-    String? profileId,
+    String? entryId,
     SideView? side,
     String? Function()? rootPath,
     Uint64? sizeBytes,
@@ -53,7 +53,7 @@ class ArchiveView {
   }) {
     return ArchiveView(
       logPath: logPath ?? this.logPath,
-      profileId: profileId ?? this.profileId,
+      entryId: entryId ?? this.entryId,
       side: side ?? this.side,
       rootPath: rootPath == null ? this.rootPath : rootPath(),
       sizeBytes: sizeBytes ?? this.sizeBytes,
@@ -64,7 +64,7 @@ class ArchiveView {
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeString(logPath);
-    serializer.serializeString(profileId);
+    serializer.serializeString(entryId);
     side.serialize(serializer);
     TraitHelpers.serializeOptionStr(rootPath, serializer);
     serializer.serializeUint64(sizeBytes);
@@ -85,7 +85,7 @@ class ArchiveView {
 
     return other is ArchiveView
       && logPath == other.logPath
-      && profileId == other.profileId
+      && entryId == other.entryId
       && side == other.side
       && rootPath == other.rootPath
       && sizeBytes == other.sizeBytes
@@ -95,7 +95,7 @@ class ArchiveView {
   @override
   int get hashCode => Object.hash(
         logPath,
-        profileId,
+        entryId,
         side,
         rootPath,
         sizeBytes,
@@ -109,7 +109,7 @@ class ArchiveView {
     assert(() {
       fullString = '$runtimeType('
         'logPath: $logPath, '
-        'profileId: $profileId, '
+        'entryId: $entryId, '
         'side: $side, '
         'rootPath: $rootPath, '
         'sizeBytes: $sizeBytes, '

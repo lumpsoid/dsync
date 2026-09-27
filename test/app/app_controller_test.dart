@@ -3,6 +3,7 @@ import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
+import 'package:dsync/app/core_link/models/entry_draft.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -346,14 +347,14 @@ void main() {
   group('profiles', () {
     test('refreshProfiles renders the head\'s profiles as rows', () async {
       core.reply<wire.CoreCommandListProfiles>(
-        profilesReply([headProfile(name: 'weekly', profileId: 'p1')]),
+        profilesReply([headProfile(name: 'weekly', entryId: 'p1')]),
       );
 
       await controller.refreshProfiles();
 
       final row = controller.state.profiles.single;
       expect(row.name, 'weekly');
-      expect(row.profileId, 'p1');
+      expect(row.entryIds, ['p1']);
       expect(row.peerName, 'desktop');
       expect(row.remoteRootPath, '~/notes');
       expect(row.breakage, isNull);
@@ -414,9 +415,10 @@ void main() {
       await controller.saveProfile(
         'weekly',
         const ProfileDraft(
-          localRoot: '/sdcard/Notes',
           peerDeviceId: 'aaaa-bbbb-cccc-dddd',
-          remoteRoot: '~/notes',
+          entries: [
+            EntryDraft(localRoot: '/sdcard/Notes', remoteRoot: '~/notes'),
+          ],
         ),
       );
 
@@ -424,9 +426,14 @@ void main() {
         wire.CoreCommandSaveProfile(
           name: 'weekly',
           draft: wire.ProfileDraft(
-            localRoot: '/sdcard/Notes',
             peerDeviceId: 'aaaa-bbbb-cccc-dddd',
-            remoteRoot: '~/notes',
+            entries: [
+              wire.EntryDraft(
+                kind: wire.RootKindView.folder,
+                localRoot: '/sdcard/Notes',
+                remoteRoot: '~/notes',
+              ),
+            ],
             jobs: null,
             ignore: [],
           ),
@@ -443,9 +450,10 @@ void main() {
       await controller.saveProfile(
         'new',
         const ProfileDraft(
-          localRoot: '/sdcard/Notes',
           peerDeviceId: 'aaaa-bbbb-cccc-dddd',
-          remoteRoot: '~/notes',
+          entries: [
+            EntryDraft(localRoot: '/sdcard/Notes', remoteRoot: '~/notes'),
+          ],
         ),
         replacing: 'old',
       );
@@ -474,9 +482,14 @@ void main() {
         wire.CoreCommandSaveProfile(
           name: 'weekly',
           draft: wire.ProfileDraft(
-            localRoot: '/sdcard/Moved',
             peerDeviceId: 'aaaa-bbbb-cccc-dddd',
-            remoteRoot: '~/notes',
+            entries: [
+              wire.EntryDraft(
+                kind: wire.RootKindView.folder,
+                localRoot: '/sdcard/Moved',
+                remoteRoot: '~/notes',
+              ),
+            ],
             jobs: 3,
             ignore: ['**/.git'],
           ),

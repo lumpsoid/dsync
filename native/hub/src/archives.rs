@@ -15,11 +15,11 @@ impl Hub {
         blocking(move || archives(&inventory)).await
     }
 
-    /// Both sides of `profile_id`, as one decision: one side's history
+    /// Both sides of the entry `entry_id`, as one decision: one side's history
     /// kept without the other's records a propagation the other no longer
     /// remembers. Stops at a log a run holds; answers with what is left.
-    pub(crate) async fn clear_archive(&self, profile_id: &str) -> Handled {
-        let entry_id = EntryId::parse(profile_id).map_err(text)?;
+    pub(crate) async fn clear_archive(&self, entry_id: &str) -> Handled {
+        let entry_id = EntryId::parse(entry_id).map_err(text)?;
         let inventory = ArchiveInventory::new(self.state.clone());
         blocking(move || {
             let stored = inventory.list().map_err(text)?;

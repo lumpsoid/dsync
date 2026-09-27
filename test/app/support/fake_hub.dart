@@ -10,6 +10,7 @@ import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 
@@ -332,6 +333,11 @@ wire.SideView wireSideOf(ReplicaSide side) => switch (side) {
   ReplicaSide.b => wire.SideView.b,
 };
 
+wire.RootKindView wireRootKindOf(RootKind kind) => switch (kind) {
+  RootKind.folder => wire.RootKindView.folder,
+  RootKind.file => wire.RootKindView.file,
+};
+
 wire.IdentityView wireIdentity(DeviceIdentityInfo identity) =>
     wire.IdentityView(
       deviceId: identity.deviceId,
@@ -361,20 +367,30 @@ wire.ProfileEntry wireProfile(ProfileEntry entry) => switch (entry) {
   HeadProfile() && final head => wire.ProfileEntryHead(
     value: wire.ProfileView(
       name: head.name,
-      profileId: head.profileId,
-      localRoot: head.localRoot,
-      localRootExpanded: head.localRootExpanded,
-      localRootRefusal: head.localRootRefusal,
       peerDeviceId: head.peerDeviceId,
       peerName: head.peerName,
-      remoteRoot: head.remoteRoot,
       jobs: head.jobs,
       ignore: head.ignorePatterns,
       lastRunUnfinished: head.lastRunUnfinished,
+      entries: [
+        for (final entry in head.entries)
+          wire.EntryView(
+            entryId: entry.entryId,
+            kind: wireRootKindOf(entry.kind),
+            localRoot: entry.localRoot,
+            localRootExpanded: entry.localRootExpanded,
+            localRootRefusal: entry.localRootRefusal,
+            remoteRoot: entry.remoteRoot,
+          ),
+      ],
     ),
   ),
-  OtherProfile(:final name, :final profileId, :final a, :final b) =>
-    wire.ProfileEntryOther(name: name, profileId: profileId, a: a, b: b),
+  OtherProfile(:final name, :final entries) => wire.ProfileEntryOther(
+    name: name,
+    entries: [
+      for (final entry in entries) wire.OtherEntryView(a: entry.a, b: entry.b),
+    ],
+  ),
   UnreadableProfile(:final name, :final message) => wire.ProfileEntryUnreadable(
     name: name,
     message: message,
@@ -383,7 +399,7 @@ wire.ProfileEntry wireProfile(ProfileEntry entry) => switch (entry) {
 
 wire.ArchiveView wireArchive(ArchiveInfo archive) => wire.ArchiveView(
   logPath: archive.logPath,
-  profileId: archive.profileId,
+  entryId: archive.entryId,
   side: wireSideOf(archive.side),
   rootPath: archive.rootPath,
   sizeBytes: _id(archive.sizeBytes),

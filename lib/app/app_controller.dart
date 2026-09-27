@@ -6,6 +6,7 @@ import 'app_state.dart';
 import 'core_link/core_link.dart';
 import 'core_link/models/core_dirs.dart';
 import 'core_link/models/core_failure.dart';
+import 'core_link/models/entry_draft.dart';
 import 'core_link/models/paired_device_info.dart';
 import 'core_link/models/profile_draft.dart';
 import 'core_link/models/profile_entry.dart';
@@ -210,7 +211,8 @@ class AppController {
     _recordProfiles(await core.saveProfile(name, draft));
   }
 
-  /// Points the profile [name] at [localRootPath] and re-renders the list —
+  /// Points the profile [name]'s first entry at [localRootPath], keeping
+  /// the rest, and re-renders the list —
   /// the remedy the home list offers on a row broken by a lost folder
   /// grant. The caller has already proved the folder usable. Returns
   /// `null` on success, or the message to show.
@@ -232,9 +234,15 @@ class AppController {
         await core.saveProfile(
           name,
           ProfileDraft(
-            localRoot: localRootPath,
             peerDeviceId: saved.peerDeviceId,
-            remoteRoot: saved.remoteRoot,
+            entries: [
+              for (final (index, entry) in saved.entries.indexed)
+                EntryDraft(
+                  kind: entry.kind,
+                  localRoot: index == 0 ? localRootPath : entry.localRoot,
+                  remoteRoot: entry.remoteRoot,
+                ),
+            ],
             jobs: saved.jobs,
             ignorePatterns: saved.ignorePatterns,
           ),

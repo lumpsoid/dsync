@@ -36,9 +36,14 @@ void main() {
         expect(
           (asked.target as wire.RunTargetPair).draft,
           const wire.ProfileDraft(
-            localRoot: '/data/notes',
             peerDeviceId: 'aaaa-bbbb-cccc-dddd',
-            remoteRoot: '~/notes',
+            entries: [
+              wire.EntryDraft(
+                kind: wire.RootKindView.folder,
+                localRoot: '/data/notes',
+                remoteRoot: '~/notes',
+              ),
+            ],
             jobs: null,
             ignore: [],
           ),

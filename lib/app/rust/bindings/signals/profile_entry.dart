@@ -97,39 +97,29 @@ class ProfileEntryHead extends ProfileEntry {
 class ProfileEntryOther extends ProfileEntry {
   const ProfileEntryOther({
     required this.name,
-    this.profileId,
-    required this.a,
-    required this.b,
+    required this.entries,
   }) : super();
 
   static ProfileEntryOther load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = ProfileEntryOther(
       name: deserializer.deserializeString(),
-      profileId: TraitHelpers.deserializeOptionStr(deserializer),
-      a: deserializer.deserializeString(),
-      b: deserializer.deserializeString(),
+      entries: TraitHelpers.deserializeVectorOtherEntryView(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
   final String name;
-  final String? profileId;
-  final String a;
-  final String b;
+  final List<OtherEntryView> entries;
 
   ProfileEntryOther copyWith({
     String? name,
-    String? Function()? profileId,
-    String? a,
-    String? b,
+    List<OtherEntryView>? entries,
   }) {
     return ProfileEntryOther(
       name: name ?? this.name,
-      profileId: profileId == null ? this.profileId : profileId(),
-      a: a ?? this.a,
-      b: b ?? this.b,
+      entries: entries ?? this.entries,
     );
   }
 
@@ -137,9 +127,7 @@ class ProfileEntryOther extends ProfileEntry {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(1);
     serializer.serializeString(name);
-    TraitHelpers.serializeOptionStr(profileId, serializer);
-    serializer.serializeString(a);
-    serializer.serializeString(b);
+    TraitHelpers.serializeVectorOtherEntryView(entries, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -150,17 +138,13 @@ class ProfileEntryOther extends ProfileEntry {
 
     return other is ProfileEntryOther
       && name == other.name
-      && profileId == other.profileId
-      && a == other.a
-      && b == other.b;
+      && listEquals(entries, other.entries);
   }
 
   @override
   int get hashCode => Object.hash(
         name,
-        profileId,
-        a,
-        b,
+        entries,
       );
 
   @override
@@ -170,9 +154,7 @@ class ProfileEntryOther extends ProfileEntry {
     assert(() {
       fullString = '$runtimeType('
         'name: $name, '
-        'profileId: $profileId, '
-        'a: $a, '
-        'b: $b'
+        'entries: $entries'
         ')';
       return true;
     }());

@@ -4,9 +4,11 @@ import 'package:dsync/app/core_link/core_link.dart';
 import 'fake_hub.dart';
 
 import 'package:dsync/app/core_link/models/archive_info.dart';
+import 'package:dsync/app/core_link/models/entry_view.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 
 /// The clock every head test reads unless it moves it.
 DateTime fixedNow() => DateTime.utc(2026, 6, 1, 12);
@@ -45,43 +47,66 @@ PairedDeviceInfo pairedDevice({
   expiryNote: expiryNote,
 );
 
-/// A head-shaped saved profile as the core lists it.
+/// A head-shaped saved profile as the core lists it: one folder entry of
+/// [localRoot] and [remoteRoot] under [entryId], or [entries] when given.
 HeadProfile headProfile({
   String name = 'notes',
-  String? profileId,
+  String? entryId,
   String localRoot = '/storage/emulated/0/Notes',
   String? localRootRefusal,
   String peerDeviceId = 'aaaa-bbbb-cccc-dddd',
   String? peerName = 'desktop',
   String remoteRoot = '~/notes',
+  List<EntryView>? entries,
   int? jobs,
   List<String> ignorePatterns = const [],
   bool lastRunUnfinished = false,
 }) => HeadProfile(
   name: name,
-  profileId: profileId ?? 'profile-$name',
-  localRoot: localRoot,
-  localRootExpanded: localRoot,
-  localRootRefusal: localRootRefusal,
   peerDeviceId: peerDeviceId,
   peerName: peerName,
-  remoteRoot: remoteRoot,
   jobs: jobs,
   ignorePatterns: ignorePatterns,
   lastRunUnfinished: lastRunUnfinished,
+  entries:
+      entries ??
+      [
+        entryView(
+          entryId: entryId ?? 'profile-$name',
+          localRoot: localRoot,
+          localRootRefusal: localRootRefusal,
+          remoteRoot: remoteRoot,
+        ),
+      ],
+);
+
+/// One entry of a head-shaped profile as the core lists it.
+EntryView entryView({
+  required String entryId,
+  RootKind kind = RootKind.folder,
+  String localRoot = '/storage/emulated/0/Notes',
+  String? localRootRefusal,
+  String remoteRoot = '~/notes',
+}) => EntryView(
+  entryId: entryId,
+  kind: kind,
+  localRoot: localRoot,
+  localRootExpanded: localRoot,
+  localRootRefusal: localRootRefusal,
+  remoteRoot: remoteRoot,
 );
 
 /// An archive log as the core lists it.
 ArchiveInfo archiveInfo({
-  String profileId = 'profile-notes',
+  String entryId = 'profile-notes',
   ReplicaSide side = ReplicaSide.a,
   String? logPath,
   String? rootPath = '/storage/emulated/0/Notes',
   int sizeBytes = 2048,
   DateTime? lastModified,
 }) => ArchiveInfo(
-  logPath: logPath ?? '/fake/state/$profileId-${side.name}.jsonl',
-  profileId: profileId,
+  logPath: logPath ?? '/fake/state/$entryId-${side.name}.jsonl',
+  entryId: entryId,
   side: side,
   rootPath: rootPath,
   sizeBytes: sizeBytes,

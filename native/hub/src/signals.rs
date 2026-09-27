@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::views::{
     ActionChoiceView, AddressesView, ArchiveView, ConflictChoiceView, DeviceView, DirsView,
     FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingView, ProbeOutcome,
-    ProfileEntry, RunView, ScanProbeView, ServeStartedView, ServeView,
+    ProfileEntry, RootKindView, RunView, ScanProbeView, ServeStartedView, ServeView,
 };
 
 /// Dart asks the core for one thing. Answered by one [`CoreReply`] with
@@ -165,9 +165,9 @@ pub enum CoreCommand {
     ServeAddresses,
 
     ListArchives,
-    /// Deletes both sides' archives of `profile_id`.
+    /// Deletes both sides' archives of the entry `entry_id`.
     ClearArchive {
-        profile_id: String,
+        entry_id: String,
     },
 
     /// The whole tree under `root` counted against `ignore`.
@@ -186,9 +186,12 @@ pub enum CoreCommand {
     CheckIgnorePattern {
         pattern: String,
     },
-    /// Lists `path`, writes one entry and removes it (SPEC §3).
+    /// Whether `path` can be a root of `kind` (SPEC §3): a folder is
+    /// listed, one entry written in it and removed; a file's folder is so
+    /// probed, and the file opened for reading if it is there.
     CheckFolder {
         path: String,
+        kind: RootKindView,
     },
     /// Times the scan's layers over `root`, `passes` times.
     ProbeScan {
@@ -198,15 +201,22 @@ pub enum CoreCommand {
     },
 }
 
-/// The head's profile: this device's `local_root` synced with
-/// `remote_root` on the paired device `peer_device_id`.
+/// The head's profile: each entry's `local_root` on this device synced
+/// with its `remote_root` on the paired device `peer_device_id`.
 #[derive(Clone, Deserialize, SignalPiece)]
 pub struct ProfileDraft {
-    pub local_root: String,
     pub peer_device_id: String,
-    pub remote_root: String,
+    pub entries: Vec<EntryDraft>,
     pub jobs: Option<u32>,
     pub ignore: Vec<String>,
+}
+
+/// One entry of a [`ProfileDraft`]: two folders, or one file each.
+#[derive(Clone, Deserialize, SignalPiece)]
+pub struct EntryDraft {
+    pub kind: RootKindView,
+    pub local_root: String,
+    pub remote_root: String,
 }
 
 /// What a run syncs: a saved profile, or a one-off pair.

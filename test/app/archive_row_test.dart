@@ -9,19 +9,18 @@ import 'package:test/test.dart';
 /// and the saved run that wrote it is a decision, so it is tested as one —
 /// no directory, no controller, no pump.
 void main() {
-  ArchiveInfo archive({String profileId = 'p1', String? rootPath}) =>
-      ArchiveInfo(
-        logPath: '/state/dsync/$profileId-a.jsonl',
-        profileId: profileId,
-        side: ReplicaSide.a,
-        rootPath: rootPath,
-        sizeBytes: 4404019,
-        lastModified: DateTime(2026, 9, 15, 11, 21),
-      );
+  ArchiveInfo archive({String entryId = 'p1', String? rootPath}) => ArchiveInfo(
+    logPath: '/state/dsync/$entryId-a.jsonl',
+    entryId: entryId,
+    side: ReplicaSide.a,
+    rootPath: rootPath,
+    sizeBytes: 4404019,
+    lastModified: DateTime(2026, 9, 15, 11, 21),
+  );
 
   ProfileRow profile({String? peerName = 'desktop'}) => ProfileRow(
     name: 'weekly notes',
-    profileId: 'p1',
+    entryIds: const ['p1'],
     peerDeviceId: 'a1b2:c3d4',
     peerName: peerName,
     localRootPath: '/on-device/notes',
@@ -50,7 +49,7 @@ void main() {
   });
 
   test('an archive no saved run claims names no device either', () {
-    final row = ArchiveRow.render(archive(profileId: 'p9'), profile: null);
+    final row = ArchiveRow.render(archive(entryId: 'p9'), profile: null);
 
     expect(row.title, 'p9');
     expect(row.peerLine, isNull, reason: 'there is no peer to name');

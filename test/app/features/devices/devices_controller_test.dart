@@ -115,7 +115,7 @@ void main() {
   group('savedRunLines', () {
     ProfileRow profile(String id, {required String peerDeviceId}) => ProfileRow(
       name: 'run $id',
-      profileId: id,
+      entryIds: [id],
       peerDeviceId: peerDeviceId,
       peerName: 'phone',
       localRootPath: '/on-device/notes',

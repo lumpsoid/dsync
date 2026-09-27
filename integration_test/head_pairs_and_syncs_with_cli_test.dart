@@ -25,6 +25,7 @@ import 'dart:io';
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/core_link/models/entry_draft.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/core_link/core_channel.dart';
@@ -164,9 +165,10 @@ void main() {
           request: RunRequest(
             target: DraftTarget(
               ProfileDraft(
-                localRoot: appRoot.path,
                 peerDeviceId: desktop.deviceId,
-                remoteRoot: cliRoot.path,
+                entries: [
+                  EntryDraft(localRoot: appRoot.path, remoteRoot: cliRoot.path),
+                ],
               ),
             ),
             localRootPath: appRoot.path,

@@ -5,9 +5,11 @@ use std::time::SystemTime;
 
 use dsync_core::{DeviceIdentity, PairedDevice, PairedDeviceStore, ProfileStore, StateDir};
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{DIR_LEAF, HostFacts, Location, Platform, ProfileName, ReplicaLocation};
-use hub::signals::{CoreCommand, ProfileDraft, ReplyResult};
-use hub::views::{DeviceView, EntryKindView, ProfileEntry};
+use dsync_domain::{
+    DIR_LEAF, EntryId, HostFacts, Location, Platform, ProfileName, ReplicaLocation,
+};
+use hub::signals::{CoreCommand, EntryDraft, ProfileDraft, ReplyResult};
+use hub::views::{DeviceView, EntryKindView, ProfileEntry, ProfileView, RootKindView};
 use hub::{Core, Outbox};
 
 use crate::support::{Head, one_entry, write};
@@ -270,13 +272,42 @@ async fn an_ignore_pattern_is_checked_on_its_own() {
 }
 
 fn draft(head: &Head, peer: &str, local_leaf: &str) -> ProfileDraft {
+    entries_draft(
+        peer,
+        vec![entry(
+            RootKindView::Folder,
+            &head.path_text(local_leaf),
+            "/sdcard/notes",
+        )],
+    )
+}
+
+fn entries_draft(peer: &str, entries: Vec<EntryDraft>) -> ProfileDraft {
     ProfileDraft {
-        local_root: head.path_text(local_leaf),
         peer_device_id: peer.to_owned(),
-        remote_root: "/sdcard/notes".to_owned(),
+        entries,
         jobs: Some(2),
         ignore: vec!["**/.git".to_owned()],
     }
+}
+
+fn entry(kind: RootKindView, local_root: &str, remote_root: &str) -> EntryDraft {
+    EntryDraft {
+        kind,
+        local_root: local_root.to_owned(),
+        remote_root: remote_root.to_owned(),
+    }
+}
+
+/// The one head-shaped profile called `name` in `listed`.
+fn head_profile<'a>(listed: &'a [ProfileEntry], name: &str) -> &'a ProfileView {
+    listed
+        .iter()
+        .find_map(|entry| match entry {
+            ProfileEntry::Head(view) if view.name == name => Some(view),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a head-shaped profile {name}"))
 }
 
 fn profiles(result: ReplyResult) -> Vec<ProfileEntry> {
@@ -302,12 +333,17 @@ async fn a_saved_profile_lists_with_its_peer_its_folder_check_and_its_id() {
     assert_eq!(notes.name, "Notes");
     assert_eq!(notes.peer_device_id, peer);
     assert_eq!(notes.peer_name.as_deref(), Some("phone"));
-    assert_eq!(notes.remote_root, "/sdcard/notes");
     assert_eq!(notes.jobs, Some(2));
     assert_eq!(notes.ignore, ["**/.git"]);
-    assert_eq!(notes.local_root_refusal, None);
     assert!(!notes.last_run_unfinished);
-    assert_eq!(notes.profile_id.len(), 32);
+    let [only] = &notes.entries[..] else {
+        panic!("expected one entry");
+    };
+    assert_eq!(only.kind, RootKindView::Folder);
+    assert_eq!(only.local_root, head.path_text("notes"));
+    assert_eq!(only.remote_root, "/sdcard/notes");
+    assert_eq!(only.local_root_refusal, None);
+    assert_eq!(only.entry_id.len(), 32);
 
     // A second profile over a folder that is gone lists as refused.
     let save = CoreCommand::SaveProfile {
@@ -319,7 +355,7 @@ async fn a_saved_profile_lists_with_its_peer_its_folder_check_and_its_id() {
         ProfileEntry::Head(view) if view.name == "Gone" => Some(view),
         _ => None,
     });
-    assert!(refused.is_some_and(|view| view.local_root_refusal.is_some()));
+    assert!(refused.is_some_and(|view| view.entries[0].local_root_refusal.is_some()));
 
     let renamed = profiles(
         head.ok(CoreCommand::RenameProfile {
@@ -381,7 +417,9 @@ async fn a_profile_of_another_shape_and_an_unreadable_one_are_listed_as_such() {
     let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);
     assert!(listed.iter().any(|entry| matches!(
         entry,
-        ProfileEntry::Other { name, profile_id: Some(_), .. } if name == "pair"
+        ProfileEntry::Other { name, entries } if name == "pair"
+            && entries.len() == 1
+            && entries[0].a == head.path_text("a")
     )));
     assert!(listed.iter().any(|entry| matches!(
         entry,
@@ -396,6 +434,7 @@ async fn a_folder_is_checked_by_writing_in_it() {
     let usable = head
         .ok(CoreCommand::CheckFolder {
             path: head.path_text("ok"),
+            kind: RootKindView::Folder,
         })
         .await
         .1;
@@ -406,6 +445,7 @@ async fn a_folder_is_checked_by_writing_in_it() {
     let missing = head
         .ok(CoreCommand::CheckFolder {
             path: head.path_text("missing"),
+            kind: RootKindView::Folder,
         })
         .await
         .1;
@@ -413,6 +453,183 @@ async fn a_folder_is_checked_by_writing_in_it() {
         missing,
         ReplyResult::FolderChecked { refusal: Some(ref why) } if why.contains("missing")
     ));
+}
+
+#[tokio::test]
+async fn a_file_is_checked_by_writing_beside_it() {
+    let mut head = Head::new("studio").await;
+    write(&head.path("ok/notes.md"), "x");
+    let check = |path: String| CoreCommand::CheckFolder {
+        path,
+        kind: RootKindView::File,
+    };
+    let usable = head.ok(check(head.path_text("ok/notes.md"))).await.1;
+    assert!(matches!(
+        usable,
+        ReplyResult::FolderChecked { refusal: None }
+    ));
+    let missing = head.ok(check(head.path_text("gone/notes.md"))).await.1;
+    assert!(matches!(
+        missing,
+        ReplyResult::FolderChecked { refusal: Some(ref why) } if why.contains("gone")
+    ));
+    // The same folder as a file root is the wrong kind.
+    let folder = head.ok(check(head.path_text("ok"))).await.1;
+    assert!(matches!(
+        folder,
+        ReplyResult::FolderChecked { refusal: Some(_) }
+    ));
+}
+
+#[tokio::test]
+async fn saving_nested_entries_is_refused_naming_both() {
+    let mut head = Head::new("studio").await;
+    let peer = seed_device(&head, "phone");
+    let nested = entries_draft(
+        &peer,
+        vec![
+            entry(RootKindView::Folder, &head.path_text("notes"), "/sdcard/a"),
+            entry(
+                RootKindView::Folder,
+                &head.path_text("notes/sub"),
+                "/sdcard/b",
+            ),
+        ],
+    );
+    let refused = head
+        .failure(CoreCommand::SaveProfile {
+            name: "Nested".to_owned(),
+            draft: nested,
+        })
+        .await;
+    assert!(refused.contains("Nested"), "{refused}");
+    assert!(refused.contains("entries[0].a"), "{refused}");
+    assert!(refused.contains("entries[1].a"), "{refused}");
+    let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);
+    assert!(listed.is_empty());
+
+    // Positive control: side by side, the same two entries save.
+    let apart = entries_draft(
+        &peer,
+        vec![
+            entry(RootKindView::Folder, &head.path_text("notes"), "/sdcard/a"),
+            entry(RootKindView::Folder, &head.path_text("sub"), "/sdcard/b"),
+        ],
+    );
+    let saved = profiles(
+        head.ok(CoreCommand::SaveProfile {
+            name: "Nested".to_owned(),
+            draft: apart,
+        })
+        .await
+        .1,
+    );
+    assert_eq!(head_profile(&saved, "Nested").entries.len(), 2);
+}
+
+#[tokio::test]
+async fn a_two_entry_profile_lists_every_entry_with_its_own_id_and_check() {
+    let mut head = Head::new("studio").await;
+    let peer = seed_device(&head, "phone");
+    write(&head.path("docs/todo.md"), "x");
+    let two = entries_draft(
+        &peer,
+        vec![
+            entry(
+                RootKindView::File,
+                &head.path_text("docs/todo.md"),
+                "/sdcard/todo.md",
+            ),
+            entry(
+                RootKindView::File,
+                &head.path_text("gone/list.md"),
+                "/sdcard/list.md",
+            ),
+        ],
+    );
+    let saved = profiles(
+        head.ok(CoreCommand::SaveProfile {
+            name: "Two".to_owned(),
+            draft: two,
+        })
+        .await
+        .1,
+    );
+    let listed = head_profile(&saved, "Two");
+    let [todo, list] = &listed.entries[..] else {
+        panic!("expected two entries");
+    };
+    assert_eq!(
+        (todo.kind, list.kind),
+        (RootKindView::File, RootKindView::File)
+    );
+    assert_eq!(todo.local_root, head.path_text("docs/todo.md"));
+    assert_eq!(list.remote_root, "/sdcard/list.md");
+    assert_ne!(todo.entry_id, list.entry_id);
+    // A readable file in a writable folder is usable; one whose folder is
+    // gone is not.
+    assert_eq!(todo.local_root_refusal, None);
+    assert!(
+        list.local_root_refusal
+            .as_deref()
+            .is_some_and(|why| why.contains("gone")),
+        "{:?}",
+        list.local_root_refusal
+    );
+    assert!(!listed.last_run_unfinished);
+
+    // Only the second entry's run marker: the profile's last run did not
+    // finish.
+    let marker_id = EntryId::parse(&list.entry_id).unwrap_or_else(|error| panic!("{error}"));
+    write(&StateDir::new(head.state()).run_marker(&marker_id), "");
+    let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);
+    assert!(head_profile(&listed, "Two").last_run_unfinished);
+}
+
+#[tokio::test]
+async fn clearing_an_entry_archive_leaves_the_other_entry_archives() {
+    let mut head = Head::new("studio").await;
+    let peer = seed_device(&head, "phone");
+    let two = entries_draft(
+        &peer,
+        vec![
+            entry(RootKindView::Folder, &head.path_text("a"), "/sdcard/a"),
+            entry(RootKindView::Folder, &head.path_text("b"), "/sdcard/b"),
+        ],
+    );
+    let saved = profiles(
+        head.ok(CoreCommand::SaveProfile {
+            name: "Two".to_owned(),
+            draft: two,
+        })
+        .await
+        .1,
+    );
+    let ids: Vec<String> = head_profile(&saved, "Two")
+        .entries
+        .iter()
+        .map(|entry| entry.entry_id.clone())
+        .collect();
+    let state = StateDir::new(head.state());
+    for id in &ids {
+        let id = EntryId::parse(id).unwrap_or_else(|error| panic!("{error}"));
+        for side in [dsync_domain::Side::A, dsync_domain::Side::B] {
+            write(&state.archive_log(&id, side), "");
+        }
+    }
+    let ReplyResult::Archives(all) = head.ok(CoreCommand::ListArchives).await.1 else {
+        panic!("expected the archives");
+    };
+    assert_eq!(all.len(), 4);
+
+    let clear = CoreCommand::ClearArchive {
+        entry_id: ids[0].clone(),
+    };
+    let ReplyResult::Archives(left) = head.ok(clear).await.1 else {
+        panic!("expected the archives");
+    };
+    assert_eq!(left.len(), 2);
+    assert!(left.iter().all(|archive| archive.entry_id == ids[1]));
 }
 
 #[tokio::test]

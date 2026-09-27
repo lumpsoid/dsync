@@ -1,14 +1,13 @@
 //! Saved profiles (plan OQ1): the core's TOML store, which the head edits
-//! through these commands. The head's shape is this device's folder as
-//! side A and a folder on a paired device as side B; every change answers
-//! with the list as it now stands.
+//! through these commands. The head's shape is entries that each pair a
+//! root on this device (side A) with one on a paired device (side B);
+//! every change answers with the list as it now stands.
 
 use dsync_core::{
     PairedDeviceStore, PairedDevices, ProfileStore, RunMarker, StateDir, check_root_access,
 };
 use dsync_domain::{
-    Entry, EntryId, HostFacts, Jobs, Location, Profile, ProfileName, ReplicaLocation, RootKind,
-    Side,
+    Entry, EntryId, HostFacts, Jobs, Location, Profile, ProfileName, ReplicaLocation, Side,
 };
 
 use crate::devices::device;
@@ -16,7 +15,7 @@ use crate::diagnostics::ignore_rules;
 use crate::dispatch::{Handled, Hub, blocking, text};
 use crate::run::run_flags;
 use crate::signals::{ProfileDraft, ReplyResult};
-use crate::views::{ProfileEntry, ProfileView};
+use crate::views::{EntryView, OtherEntryView, ProfileEntry, ProfileView};
 
 impl Hub {
     pub(crate) async fn list_profiles(&self) -> Handled {
@@ -26,19 +25,12 @@ impl Hub {
             .map(ReplyResult::Profiles)
     }
 
-    /// Creates or overwrites `name`: a one-entry profile of the draft's
-    /// pair, refused before it is written when its options would be (the
-    /// two roots overlap, say).
+    /// Creates or overwrites `name` with the draft's entries, refused
+    /// before it is written when its options would be (two roots overlap,
+    /// say: the refusal names both entries).
     pub(crate) async fn save_profile(&self, name: &str, draft: ProfileDraft) -> Handled {
         let name = ProfileName::parse(name).map_err(text)?;
-        let (local, peer) = self.draft_locations(&draft)?;
-        let entry = Entry::folder(local, peer).map_err(text)?;
-        let mut profile = Profile::new(vec![entry])
-            .map_err(text)?
-            .with_rules(ignore_rules(&draft.ignore)?);
-        if let Some(jobs) = draft.jobs {
-            profile = profile.with_jobs(Jobs::new(i64::from(jobs)).map_err(text)?);
-        }
+        let profile = self.draft_profile(&draft)?;
         let flags = run_flags(false, Vec::new(), None)?;
         profile.options(&name, &flags, &self.facts).map_err(text)?;
         let listing = self.listing();
@@ -73,15 +65,12 @@ impl Hub {
         .map(ReplyResult::Profiles)
     }
 
-    /// The draft's two sides: its local root as A, its remote root on the
-    /// paired device as B, under the name that device is paired as now.
-    pub(crate) fn draft_locations(
-        &self,
-        draft: &ProfileDraft,
-    ) -> Result<(ReplicaLocation, ReplicaLocation), String> {
+    /// The draft as a profile: one entry per draft entry, its local root
+    /// as A and its remote root on the paired device as B, under the name
+    /// that device is paired as now; the draft's ignore patterns as the
+    /// profile's rules. What saving writes and what a draft run syncs.
+    pub(crate) fn draft_profile(&self, draft: &ProfileDraft) -> Result<Profile, String> {
         let platform = self.facts.platform();
-        let local = Location::local(&draft.local_root, platform).map_err(text)?;
-        let local = ReplicaLocation::new(local, None).map_err(text)?;
         let id = device(&draft.peer_device_id)?;
         let paired = self.paired().load().map_err(text)?;
         let name = paired
@@ -89,9 +78,24 @@ impl Hub {
             .ok_or_else(|| format!("no device with id {id} is paired with this host"))?
             .name()
             .clone();
-        let peer = Location::peer(name, &draft.remote_root).map_err(text)?;
-        let peer = ReplicaLocation::new(peer, Some(id)).map_err(text)?;
-        Ok((local, peer))
+        let entries = draft
+            .entries
+            .iter()
+            .map(|entry| {
+                let local = Location::local(&entry.local_root, platform).map_err(text)?;
+                let local = ReplicaLocation::new(local, None).map_err(text)?;
+                let peer = Location::peer(name.clone(), &entry.remote_root).map_err(text)?;
+                let peer = ReplicaLocation::new(peer, Some(id)).map_err(text)?;
+                Entry::new(entry.kind.into(), local, peer).map_err(text)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut profile = Profile::new(entries)
+            .map_err(text)?
+            .with_rules(ignore_rules(&draft.ignore)?);
+        if let Some(jobs) = draft.jobs {
+            profile = profile.with_jobs(Jobs::new(i64::from(jobs)).map_err(text)?);
+        }
+        Ok(profile)
     }
 
     fn listing(&self) -> Listing {
@@ -130,36 +134,41 @@ impl Listing {
             .collect())
     }
 
-    /// A one-entry profile of this device's folder and a paired device's
-    /// is the head's own shape; any other lists by its first entry.
+    /// A profile whose every entry pairs a root on this device with one
+    /// on a paired device is the head's own shape (one device: a profile
+    /// has one endpoint per side); any other, or one whose options are
+    /// refused on this host, lists its entries as typed.
     fn entry(&self, name: ProfileName, profile: &Profile, paired: &PairedDevices) -> ProfileEntry {
-        let first = &profile.entries()[0];
-        let id = self.first_entry_id(&name, profile);
-        match (
-            profile.entries().len(),
-            first.replica(Side::A),
-            first.replica(Side::B),
-            id,
-        ) {
-            (1, ReplicaLocation::Local(_), ReplicaLocation::Peer(peer, device), Some(id)) => {
-                let local = first.replica(Side::A).to_location();
-                let expanded = local.expanded_path(self.facts.home());
-                let refusal = match &expanded {
-                    Ok(root) => check_root_access(RootKind::Folder, root.as_ref())
-                        .err()
-                        .map(text),
-                    Err(error) => Some(error.to_string()),
-                };
-                let marker = RunMarker::new(self.state.run_marker(&id));
+        let ids = self.entry_ids(&name, profile);
+        let device = match profile.entries()[0].replica(Side::B) {
+            ReplicaLocation::Peer(_, device) => Some(*device),
+            _ => None,
+        };
+        let head = profile.entries().iter().all(|entry| {
+            matches!(
+                (entry.replica(Side::A), entry.replica(Side::B)),
+                (ReplicaLocation::Local(_), ReplicaLocation::Peer(..))
+            )
+        });
+        match (head, device, ids) {
+            (true, Some(device), Some(ids)) => {
+                let entries: Vec<EntryView> = profile
+                    .entries()
+                    .iter()
+                    .zip(&ids)
+                    .map(|(entry, id)| self.entry_view(entry, id))
+                    .collect();
+                // Unreadable reads as absent: a warning, not a reason to
+                // hide the profile.
+                let last_run_unfinished = ids.iter().any(|id| {
+                    RunMarker::new(self.state.run_marker(id))
+                        .is_present()
+                        .unwrap_or(false)
+                });
                 ProfileEntry::Head(ProfileView {
                     name: name.to_string(),
-                    profile_id: id.as_str().to_owned(),
-                    local_root: local.path().to_owned(),
-                    local_root_expanded: expanded.unwrap_or_else(|_| local.path().to_owned()),
-                    local_root_refusal: refusal,
                     peer_device_id: device.to_string(),
-                    peer_name: paired.get(device).map(|paired| paired.name().to_string()),
-                    remote_root: peer.path().to_owned(),
+                    peer_name: paired.get(&device).map(|paired| paired.name().to_string()),
                     jobs: profile
                         .jobs()
                         .map(|jobs| u32::try_from(jobs.get()).unwrap_or(u32::MAX)),
@@ -169,25 +178,55 @@ impl Listing {
                         .iter()
                         .map(|glob| glob.as_str().to_owned())
                         .collect(),
-                    // Unreadable reads as absent: a warning, not a reason
-                    // to hide the profile.
-                    last_run_unfinished: marker.is_present().unwrap_or(false),
+                    last_run_unfinished,
+                    entries,
                 })
             }
-            (_, a, b, id) => ProfileEntry::Other {
+            _ => ProfileEntry::Other {
                 name: name.to_string(),
-                profile_id: id.map(|id| id.as_str().to_owned()),
-                a: a.to_string(),
-                b: b.to_string(),
+                entries: profile
+                    .entries()
+                    .iter()
+                    .map(|entry| OtherEntryView {
+                        a: entry.replica(Side::A).to_string(),
+                        b: entry.replica(Side::B).to_string(),
+                    })
+                    .collect(),
             },
         }
     }
 
-    /// The first entry's id, or `None` when the profile's options are
-    /// refused on this host.
-    fn first_entry_id(&self, name: &ProfileName, profile: &Profile) -> Option<EntryId> {
+    /// A head entry: its local root, expanded and checked as a root of
+    /// the entry's kind, and its remote root as typed.
+    fn entry_view(&self, entry: &Entry, id: &EntryId) -> EntryView {
+        let local = entry.replica(Side::A).to_location();
+        let expanded = local.expanded_path(self.facts.home());
+        let refusal = match &expanded {
+            Ok(root) => check_root_access(entry.kind(), root.as_ref())
+                .err()
+                .map(text),
+            Err(error) => Some(error.to_string()),
+        };
+        EntryView {
+            entry_id: id.as_str().to_owned(),
+            kind: entry.kind().into(),
+            local_root: local.path().to_owned(),
+            local_root_expanded: expanded.unwrap_or_else(|_| local.path().to_owned()),
+            local_root_refusal: refusal,
+            remote_root: entry.replica(Side::B).to_location().path().to_owned(),
+        }
+    }
+
+    /// Every entry's id, in entry order, or `None` when the profile's
+    /// options are refused on this host.
+    fn entry_ids(&self, name: &ProfileName, profile: &Profile) -> Option<Vec<EntryId>> {
         let flags = run_flags(false, Vec::new(), None).ok()?;
         let options = profile.options(name, &flags, &self.facts).ok()?;
-        options.into_iter().next().map(|options| options.entry_id)
+        Some(
+            options
+                .into_iter()
+                .map(|options| options.entry_id)
+                .collect(),
+        )
     }
 }

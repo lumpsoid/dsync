@@ -1,3 +1,6 @@
+import 'entry_view.dart';
+import 'other_entry.dart';
+
 /// One saved profile, by the shape the core found it in.
 sealed class ProfileEntry {
   const ProfileEntry(this.name);
@@ -5,53 +8,40 @@ sealed class ProfileEntry {
   final String name;
 }
 
-/// The head's shape: this device's folder with one on a paired device.
+/// The head's shape: every entry pairs a root on this device with one on
+/// the same paired device.
 final class HeadProfile extends ProfileEntry {
   const HeadProfile({
     required String name,
-    required this.profileId,
-    required this.localRoot,
-    required this.localRootExpanded,
-    required this.localRootRefusal,
     required this.peerDeviceId,
     required this.peerName,
-    required this.remoteRoot,
     required this.jobs,
     required this.ignorePatterns,
     required this.lastRunUnfinished,
+    required this.entries,
   }) : super(name);
 
-  final String profileId;
-  final String localRoot;
-  final String localRootExpanded;
-
-  /// Why the local root cannot be a replica root now, if it cannot.
-  final String? localRootRefusal;
   final String peerDeviceId;
 
   /// The device's name now; `null` when it is no longer paired.
   final String? peerName;
-  final String remoteRoot;
   final int? jobs;
   final List<String> ignorePatterns;
 
-  /// SPEC §7.6's run marker is present.
+  /// SPEC §7.6's run marker is present for any of the entries.
   final bool lastRunUnfinished;
+
+  /// Never empty: the core refuses a profile without entries.
+  final List<EntryView> entries;
 }
 
-/// Any other pair (a profile written for the CLI): runnable, not editable
+/// Any other profile (one written for the CLI): runnable, not editable
 /// here.
 final class OtherProfile extends ProfileEntry {
-  const OtherProfile({
-    required String name,
-    required this.profileId,
-    required this.a,
-    required this.b,
-  }) : super(name);
+  const OtherProfile({required String name, required this.entries})
+    : super(name);
 
-  final String? profileId;
-  final String a;
-  final String b;
+  final List<OtherEntry> entries;
 }
 
 /// A profile file that would not load; [message] says why.

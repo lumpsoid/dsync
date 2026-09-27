@@ -191,13 +191,9 @@ async fn the_head_reviews_the_plan_and_the_run_applies_what_it_kept() {
         panic!("expected the archives");
     };
     assert_eq!(archives.len(), 2);
-    let profile_id = archives[0].profile_id.clone();
-    assert!(
-        archives
-            .iter()
-            .all(|archive| archive.profile_id == profile_id)
-    );
-    let clear = CoreCommand::ClearArchive { profile_id };
+    let entry_id = archives[0].entry_id.clone();
+    assert!(archives.iter().all(|archive| archive.entry_id == entry_id));
+    let clear = CoreCommand::ClearArchive { entry_id };
     let ReplyResult::Archives(left) = head.ok(clear).await.1 else {
         panic!("expected the archives");
     };

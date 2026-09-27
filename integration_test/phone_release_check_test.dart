@@ -41,8 +41,10 @@ import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/core_link/core_channel.dart';
 import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
+import 'package:dsync/app/core_link/models/entry_draft.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
+import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/pair_show/pair_show_controller.dart';
 import 'package:dsync/app/features/pair_show/pair_show_view_state.dart';
@@ -160,7 +162,7 @@ class _Session {
   Future<void> allFilesGrant() async {
     _mark('step|a-default');
     await _awaitControl('appop-default', step: 'a');
-    final coreRefusal = await app.core.checkFolder(_appRoot);
+    final coreRefusal = await app.core.checkFolder(_appRoot, RootKind.folder);
     if (coreRefusal == null) {
       _fail('a', 'the core took $_appRoot with the app-op at default');
     }
@@ -181,7 +183,7 @@ class _Session {
 
     await _awaitControl('appop-allow', step: 'a');
     await _until(
-      () async => await app.core.checkFolder(_appRoot) == null,
+      () async => await app.core.checkFolder(_appRoot, RootKind.folder) == null,
       'the core to take $_appRoot',
       within: _grantWait,
       step: 'a',
@@ -253,9 +255,10 @@ class _Session {
       RunRequest(
         target: DraftTarget(
           ProfileDraft(
-            localRoot: _appRoot,
             peerDeviceId: desktop.deviceId,
-            remoteRoot: _desktopPushRoot,
+            entries: [
+              EntryDraft(localRoot: _appRoot, remoteRoot: _desktopPushRoot),
+            ],
           ),
         ),
         localRootPath: _appRoot,
@@ -312,9 +315,8 @@ class _Session {
     await app.saveProfile(
       _killProfile,
       ProfileDraft(
-        localRoot: _appBig,
         peerDeviceId: desktop.deviceId,
-        remoteRoot: _desktopBigRoot,
+        entries: [EntryDraft(localRoot: _appBig, remoteRoot: _desktopBigRoot)],
       ),
     );
     _say('d-run', 'Pulling the big tree; the desktop will kill this app.');

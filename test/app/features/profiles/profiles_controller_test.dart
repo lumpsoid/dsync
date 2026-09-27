@@ -1,4 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/core_link/models/other_entry.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
 import 'package:dsync/app/profile_breakage.dart';
@@ -36,7 +37,7 @@ void main() {
     String? localRootRefusal,
   }) => headProfile(
     name: 'weekly',
-    profileId: 'p1',
+    entryId: 'p1',
     localRoot: localRoot,
     localRootRefusal: localRootRefusal,
     peerDeviceId: phone.deviceId,
@@ -71,7 +72,10 @@ void main() {
       core.reply<wire.CoreCommandListProfiles>(
         profilesReply([
           savedProfile(),
-          const OtherProfile(name: 'laptop', profileId: 'p2', a: '/a', b: '/b'),
+          const OtherProfile(
+            name: 'laptop',
+            entries: [OtherEntry(a: '/a', b: '/b')],
+          ),
           const UnreadableProfile(name: 'broken', message: 'bad TOML'),
         ]),
       );
@@ -154,9 +158,14 @@ void main() {
           wire.CoreCommandSaveProfile(
             name: 'weekly',
             draft: wire.ProfileDraft(
-              localRoot: '/storage/emulated/0/Elsewhere',
               peerDeviceId: phone.deviceId,
-              remoteRoot: '~/notes',
+              entries: [
+                wire.EntryDraft(
+                  kind: wire.RootKindView.folder,
+                  localRoot: '/storage/emulated/0/Elsewhere',
+                  remoteRoot: '~/notes',
+                ),
+              ],
               jobs: 4,
               ignore: const ['**/.git'],
             ),
@@ -194,8 +203,14 @@ void main() {
       // The grant was asked for once, then the check was repeated.
       expect(picker.requestAccessCount, 1);
       expect(core.sent<wire.CoreCommandCheckFolder>(), const [
-        wire.CoreCommandCheckFolder(path: refused),
-        wire.CoreCommandCheckFolder(path: refused),
+        wire.CoreCommandCheckFolder(
+          path: refused,
+          kind: wire.RootKindView.folder,
+        ),
+        wire.CoreCommandCheckFolder(
+          path: refused,
+          kind: wire.RootKindView.folder,
+        ),
       ]);
       expect(controller.state.error, 'dsync cannot use $refused');
       expect(core.sent<wire.CoreCommandSaveProfile>(), isEmpty);
@@ -219,7 +234,13 @@ void main() {
       await controller.repickLocalFolder('weekly');
 
       expect(
-        core.sent<wire.CoreCommandSaveProfile>().single.draft.localRoot,
+        core
+            .sent<wire.CoreCommandSaveProfile>()
+            .single
+            .draft
+            .entries
+            .single
+            .localRoot,
         folder,
       );
       expect(controller.state.error, isNull);

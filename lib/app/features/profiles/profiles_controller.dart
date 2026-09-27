@@ -1,5 +1,6 @@
 import '../../app_controller.dart';
 import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/root_kind.dart';
 
 import '../run_setup/folder_picker.dart';
 import 'profiles_view_state.dart';
@@ -105,9 +106,9 @@ class ProfilesController {
 
     final String? failure;
     try {
-      var refusal = await app.core.checkFolder(picked);
+      var refusal = await app.core.checkFolder(picked, RootKind.folder);
       if (refusal != null && await picker.requestAccess()) {
-        refusal = await app.core.checkFolder(picked);
+        refusal = await app.core.checkFolder(picked, RootKind.folder);
       }
       if (refusal != null) {
         state.recordError(refusal);

@@ -39,6 +39,9 @@ use state::{Choices, Ended, RunState, Snapshot, Steer};
 /// Events buffered between the run and the session, as the CLI's.
 const EVENT_BUFFER: usize = 256;
 
+/// What a draft run's messages call the profile it has not been saved as.
+const UNSAVED: &str = "unsaved run";
+
 impl Hub {
     /// Opens the run session and answers at once: resolving, connecting
     /// and running happen in `session`'s task, and a target that will not
@@ -115,30 +118,31 @@ impl Launch {
             .iter()
             .map(ToString::to_string)
             .collect();
-        let (options, flags) = match &self.target {
+        // A draft is built into a profile exactly as saving it would be,
+        // so it runs exactly as the saved profile would: same entry ids,
+        // same overlap refusal, file entries included.
+        let (name, profile) = match &self.target {
             RunTarget::Profile { name } => {
                 let name = ProfileName::parse(name).map_err(text)?;
                 let profile = hub.profiles.load(&name, facts.platform()).map_err(text)?;
-                let flags = run_flags(self.dry_run, Vec::new(), None)?;
-                let mut entries = profile.options(&name, &flags, facts).map_err(text)?;
-                // Interim, until the session sequences a profile's entries.
-                if entries.len() > 1 {
-                    return Err(format!(
-                        "profile \"{name}\" has {} entries; multi-entry profiles are not \
-                         supported yet",
-                        entries.len()
-                    ));
-                }
-                (entries.remove(0), flags)
+                (name, profile)
             }
-            RunTarget::Pair { draft } => {
-                let (local, peer) = hub.draft_locations(draft)?;
-                let flags = run_flags(self.dry_run, draft.ignore.clone(), draft.jobs)?;
-                let options = EffectiveOptions::for_ad_hoc(local, peer, &flags, facts, &addresses)
-                    .map_err(text)?;
-                (options, flags)
-            }
+            RunTarget::Pair { draft } => (
+                ProfileName::parse(UNSAVED).map_err(text)?,
+                hub.draft_profile(draft)?,
+            ),
         };
+        let flags = run_flags(self.dry_run, Vec::new(), None)?;
+        let mut entries = profile.options(&name, &flags, facts).map_err(text)?;
+        // Interim, until the session sequences a profile's entries.
+        if entries.len() > 1 {
+            return Err(format!(
+                "profile \"{name}\" has {} entries; multi-entry profiles are not \
+                 supported yet",
+                entries.len()
+            ));
+        }
+        let options = entries.remove(0);
         let mut connector = Connector::new(
             hub.state.clone(),
             facts.home().map(str::to_owned),

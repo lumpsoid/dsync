@@ -1767,32 +1767,32 @@ class CoreCommandListArchives extends CoreCommand {
 @immutable
 class CoreCommandClearArchive extends CoreCommand {
   const CoreCommandClearArchive({
-    required this.profileId,
+    required this.entryId,
   }) : super();
 
   static CoreCommandClearArchive load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = CoreCommandClearArchive(
-      profileId: deserializer.deserializeString(),
+      entryId: deserializer.deserializeString(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
-  final String profileId;
+  final String entryId;
 
   CoreCommandClearArchive copyWith({
-    String? profileId,
+    String? entryId,
   }) {
     return CoreCommandClearArchive(
-      profileId: profileId ?? this.profileId,
+      entryId: entryId ?? this.entryId,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(27);
-    serializer.serializeString(profileId);
+    serializer.serializeString(entryId);
     serializer.decreaseContainerDepth();
   }
 
@@ -1802,11 +1802,11 @@ class CoreCommandClearArchive extends CoreCommand {
     if (other.runtimeType != runtimeType) return false;
 
     return other is CoreCommandClearArchive
-      && profileId == other.profileId;
+      && entryId == other.entryId;
   }
 
   @override
-  int get hashCode => profileId.hashCode;
+  int get hashCode => entryId.hashCode;
 
   @override
   String toString() {
@@ -1814,7 +1814,7 @@ class CoreCommandClearArchive extends CoreCommand {
 
     assert(() {
       fullString = '$runtimeType('
-        'profileId: $profileId'
+        'entryId: $entryId'
         ')';
       return true;
     }());
@@ -2035,24 +2035,29 @@ class CoreCommandCheckIgnorePattern extends CoreCommand {
 class CoreCommandCheckFolder extends CoreCommand {
   const CoreCommandCheckFolder({
     required this.path,
+    required this.kind,
   }) : super();
 
   static CoreCommandCheckFolder load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = CoreCommandCheckFolder(
       path: deserializer.deserializeString(),
+      kind: RootKindViewExtension.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
   final String path;
+  final RootKindView kind;
 
   CoreCommandCheckFolder copyWith({
     String? path,
+    RootKindView? kind,
   }) {
     return CoreCommandCheckFolder(
       path: path ?? this.path,
+      kind: kind ?? this.kind,
     );
   }
 
@@ -2060,6 +2065,7 @@ class CoreCommandCheckFolder extends CoreCommand {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(31);
     serializer.serializeString(path);
+    kind.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -2069,11 +2075,15 @@ class CoreCommandCheckFolder extends CoreCommand {
     if (other.runtimeType != runtimeType) return false;
 
     return other is CoreCommandCheckFolder
-      && path == other.path;
+      && path == other.path
+      && kind == other.kind;
   }
 
   @override
-  int get hashCode => path.hashCode;
+  int get hashCode => Object.hash(
+        path,
+        kind,
+      );
 
   @override
   String toString() {
@@ -2081,7 +2091,8 @@ class CoreCommandCheckFolder extends CoreCommand {
 
     assert(() {
       fullString = '$runtimeType('
-        'path: $path'
+        'path: $path, '
+        'kind: $kind'
         ')';
       return true;
     }());

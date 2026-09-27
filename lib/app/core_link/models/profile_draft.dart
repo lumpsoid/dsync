@@ -1,17 +1,17 @@
-/// The head's profile as entered: this device's [localRoot] synced with
-/// [remoteRoot] on the paired device [peerDeviceId].
+import 'entry_draft.dart';
+
+/// The head's profile as entered: each of [entries] syncs a root on this
+/// device with one on the paired device [peerDeviceId].
 final class ProfileDraft {
   const ProfileDraft({
-    required this.localRoot,
     required this.peerDeviceId,
-    required this.remoteRoot,
+    required this.entries,
     this.jobs,
     this.ignorePatterns = const [],
   });
 
-  final String localRoot;
   final String peerDeviceId;
-  final String remoteRoot;
+  final List<EntryDraft> entries;
   final int? jobs;
   final List<String> ignorePatterns;
 }

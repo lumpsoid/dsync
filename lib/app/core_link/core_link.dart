@@ -16,6 +16,7 @@ import 'models/pairing_window.dart';
 import 'models/peer_probe_outcome.dart';
 import 'models/profile_draft.dart';
 import 'models/profile_entry.dart';
+import 'models/root_kind.dart';
 import 'models/run_intent.dart';
 import 'models/run_session.dart';
 import 'models/run_target.dart';
@@ -379,9 +380,10 @@ final class CoreLink {
   Future<List<ArchiveInfo>> listArchives() =>
       _ask(const wire.CoreCommandListArchives(), _archives);
 
-  /// Deletes both sides' archives of [profileId]; answers with the rest.
-  Future<List<ArchiveInfo>> clearArchive(String profileId) =>
-      _ask(wire.CoreCommandClearArchive(profileId: profileId), _archives);
+  /// Deletes both sides' archives of the entry [entryId]; answers with the
+  /// rest.
+  Future<List<ArchiveInfo>> clearArchive(String entryId) =>
+      _ask(wire.CoreCommandClearArchive(entryId: entryId), _archives);
 
   /// The whole tree under [root] counted against [ignorePatterns].
   Future<FilterPreview> previewFilters(
@@ -419,9 +421,10 @@ final class CoreLink {
   Future<void> checkIgnorePattern(String pattern) =>
       _ask(wire.CoreCommandCheckIgnorePattern(pattern: pattern), _done);
 
-  /// Why [path] cannot be a replica root, or `null` when it can (SPEC §3).
-  Future<String?> checkFolder(String path) => _ask(
-    wire.CoreCommandCheckFolder(path: path),
+  /// Why [path] cannot be a replica root of [kind], or `null` when it can
+  /// (SPEC §3).
+  Future<String?> checkFolder(String path, RootKind kind) => _ask(
+    wire.CoreCommandCheckFolder(path: path, kind: wireRootKind(kind)),
     (result) => switch (result) {
       wire.ReplyResultFolderChecked(:final refusal) => refusal,
       _ => _unexpected(result),

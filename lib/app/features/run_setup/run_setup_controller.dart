@@ -1,10 +1,10 @@
-import 'dart:io';
-
 import '../../app_controller.dart';
 import '../../core_link/models/core_failure.dart';
+import '../../core_link/models/entry_draft.dart';
 import '../../core_link/models/paired_device_info.dart';
 import '../../core_link/models/profile_draft.dart';
 import '../../core_link/models/profile_entry.dart';
+import '../../core_link/models/root_kind.dart';
 import '../../core_link/models/run_target.dart';
 import '../../run_request.dart';
 import 'folder_picker.dart';
@@ -131,15 +131,17 @@ class RunSetupController {
             );
             return;
           }
+          // The form edits the first entry for now.
+          final first = profile.entries.first;
           deviceId = profile.peerDeviceId;
           _profileName = profile.name;
           _profileJobs = profile.jobs;
-          state.recordLocalRoot(profile.localRoot);
+          state.recordLocalRoot(first.localRoot);
           state.recordIgnorePatterns(profile.ignorePatterns);
           state.recordPrefill(
             RunSetupPrefill(
               profileName: profile.name,
-              remoteRoot: profile.remoteRoot,
+              remoteRoot: first.remoteRoot,
               lastRunUnfinished: profile.lastRunUnfinished,
             ),
           );
@@ -218,9 +220,9 @@ class RunSetupController {
   /// The core's refusal of [path], asking for the All-files grant once and
   /// checking again when the first check refuses.
   Future<String?> _usableRefusal(String path) async {
-    final refusal = await app.core.checkFolder(path);
+    final refusal = await app.core.checkFolder(path, RootKind.folder);
     if (refusal == null || !await picker.requestAccess()) return refusal;
-    return app.core.checkFolder(path);
+    return app.core.checkFolder(path, RootKind.folder);
   }
 
   /// Opens the OS settings page that grants access to folders outside the
@@ -250,7 +252,7 @@ class RunSetupController {
     state.recordFolderAccessError(null);
     String? refusal;
     try {
-      refusal = await app.core.checkFolder(waiting.path);
+      refusal = await app.core.checkFolder(waiting.path, RootKind.folder);
     } on CoreFailure catch (e) {
       refusal = e.message;
     }
@@ -304,17 +306,10 @@ class RunSetupController {
     final form = _validate(remoteRoot: remoteRoot);
     if (form == null) return;
 
+    // No root is created here: the core creates a first sync's folder
+    // itself, and refuses one that went missing after it synced —
+    // creating it here would pass it off as emptied.
     state.recordOutcome(const RunSetupStarting());
-    try {
-      // On demand: a folder listed a moment ago may have been removed by a
-      // file manager since, and a missing local root is not a run.
-      await Directory(form.draft.localRoot).create(recursive: true);
-    } on FileSystemException catch (e) {
-      state.recordOutcome(
-        RunSetupFailed('Could not open ${form.draft.localRoot}: ${e.message}'),
-      );
-      return;
-    }
     final name = profileName.trim();
     if (name.isNotEmpty && !await _saveProfile(form, name)) return;
     final typed = address.trim();
@@ -324,9 +319,9 @@ class RunSetupController {
           target: name.isEmpty
               ? DraftTarget(form.draft)
               : SavedProfileTarget(name),
-          localRootPath: form.draft.localRoot,
+          localRootPath: form.entry.localRoot,
           deviceName: form.deviceName,
-          remoteRootPath: form.draft.remoteRoot,
+          remoteRootPath: form.entry.remoteRoot,
           address: typed.isEmpty ? null : typed,
           dryRun: state.dryRun,
         ),
@@ -403,12 +398,13 @@ class RunSetupController {
       state.recordOutcome(const RunSetupIdle());
       return null;
     }
+    final entry = EntryDraft(localRoot: localRootPath, remoteRoot: remote);
     return _ValidatedForm(
       deviceName: peer.name,
+      entry: entry,
       draft: ProfileDraft(
-        localRoot: localRootPath,
         peerDeviceId: peerDeviceId,
-        remoteRoot: remote,
+        entries: [entry],
         jobs: _profileJobs,
         ignorePatterns: state.ignorePatterns,
       ),
@@ -443,9 +439,16 @@ final class _AwaitingGrant extends _RefusedFolder {
 
 /// What [RunSetupController._validate] answers when every field holds.
 class _ValidatedForm {
-  const _ValidatedForm({required this.deviceName, required this.draft});
+  const _ValidatedForm({
+    required this.deviceName,
+    required this.entry,
+    required this.draft,
+  });
 
   final String deviceName;
+
+  /// The one entry the form edits, also [draft]'s only entry.
+  final EntryDraft entry;
   final ProfileDraft draft;
 }
 

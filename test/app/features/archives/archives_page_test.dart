@@ -33,7 +33,7 @@ void main() {
 
   ArchiveRow row(String title, {String? note, String? peerLine}) => ArchiveRow(
     logPath: '/state/dsync/$title-a.jsonl',
-    profileId: title,
+    entryId: title,
     title: title,
     peerLine: peerLine,
     location: '/on-device/notes',

@@ -48,13 +48,16 @@ class ArchivesController {
   }
 
   void _render(List<ArchiveInfo> archives) {
+    // A profile owns one id per entry: each archive attributes to the
+    // profile holding its entry.
     final profiles = {
-      for (final profile in app.state.profiles) profile.profileId: profile,
+      for (final profile in app.state.profiles)
+        for (final entryId in profile.entryIds) entryId: profile,
     };
     state.recordListing(
       ArchivesReady([
         for (final archive in archives)
-          ArchiveRow.render(archive, profile: profiles[archive.profileId]),
+          ArchiveRow.render(archive, profile: profiles[archive.entryId]),
       ]),
     );
   }
@@ -65,7 +68,7 @@ class ArchivesController {
   Future<void> delete(String logPath) async {
     await _clear([
       for (final row in _rows)
-        if (row.logPath == logPath) row.profileId,
+        if (row.logPath == logPath) row.entryId,
     ]);
   }
 
@@ -83,30 +86,30 @@ class ArchivesController {
   /// the same button.
   Future<void> deleteSelected() => _clear([
     for (final row in _rows)
-      if (state.isSelected(row.logPath)) row.profileId,
+      if (state.isSelected(row.logPath)) row.entryId,
   ]);
 
   /// Deletes every archive currently listed — "start over as if this device
   /// had never synced". Stops at the first log a run is using, for the
   /// reason `dsync archive clear` stops there: quietly skipping one would
   /// leave the user with a smaller list and no idea which was kept.
-  Future<void> deleteAll() => _clear([for (final row in _rows) row.profileId]);
+  Future<void> deleteAll() => _clear([for (final row in _rows) row.entryId]);
 
   List<ArchiveRow> get _rows => switch (state.listing) {
     ArchivesReady(:final rows) => rows,
     ArchivesLoading() || ArchivesFailed() => const [],
   };
 
-  /// Clears each of [profileIds] once, in order, then re-renders what is
+  /// Clears each of [entryIds] once, in order, then re-renders what is
   /// left — from the core's own answer, or a fresh listing after a refusal.
-  Future<void> _clear(List<String> profileIds) async {
+  Future<void> _clear(List<String> entryIds) async {
     try {
       var left = <ArchiveInfo>[];
-      for (final profileId in profileIds.toSet()) {
-        left = await app.core.clearArchive(profileId);
+      for (final entryId in entryIds.toSet()) {
+        left = await app.core.clearArchive(entryId);
       }
       state.clearError();
-      if (profileIds.isEmpty) {
+      if (entryIds.isEmpty) {
         await refresh();
       } else {
         _render(left);

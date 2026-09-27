@@ -1,14 +1,13 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// The head's profile: this device's `local_root` synced with
-/// `remote_root` on the paired device `peer_device_id`.
+/// The head's profile: each entry's `local_root` on this device synced
+/// with its `remote_root` on the paired device `peer_device_id`.
 @immutable
 class ProfileDraft {
   const ProfileDraft({
-    required this.localRoot,
     required this.peerDeviceId,
-    required this.remoteRoot,
+    required this.entries,
     this.jobs,
     required this.ignore,
   });
@@ -16,9 +15,8 @@ class ProfileDraft {
   static ProfileDraft deserialize(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = ProfileDraft(
-      localRoot: deserializer.deserializeString(),
       peerDeviceId: deserializer.deserializeString(),
-      remoteRoot: deserializer.deserializeString(),
+      entries: TraitHelpers.deserializeVectorEntryDraft(deserializer),
       jobs: TraitHelpers.deserializeOptionU32(deserializer),
       ignore: TraitHelpers.deserializeVectorStr(deserializer),
     );
@@ -35,23 +33,20 @@ class ProfileDraft {
     return value;
   }
 
-  final String localRoot;
   final String peerDeviceId;
-  final String remoteRoot;
+  final List<EntryDraft> entries;
   final int? jobs;
   final List<String> ignore;
 
   ProfileDraft copyWith({
-    String? localRoot,
     String? peerDeviceId,
-    String? remoteRoot,
+    List<EntryDraft>? entries,
     int? Function()? jobs,
     List<String>? ignore,
   }) {
     return ProfileDraft(
-      localRoot: localRoot ?? this.localRoot,
       peerDeviceId: peerDeviceId ?? this.peerDeviceId,
-      remoteRoot: remoteRoot ?? this.remoteRoot,
+      entries: entries ?? this.entries,
       jobs: jobs == null ? this.jobs : jobs(),
       ignore: ignore ?? this.ignore,
     );
@@ -59,9 +54,8 @@ class ProfileDraft {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeString(localRoot);
     serializer.serializeString(peerDeviceId);
-    serializer.serializeString(remoteRoot);
+    TraitHelpers.serializeVectorEntryDraft(entries, serializer);
     TraitHelpers.serializeOptionU32(jobs, serializer);
     TraitHelpers.serializeVectorStr(ignore, serializer);
     serializer.decreaseContainerDepth();
@@ -79,18 +73,16 @@ class ProfileDraft {
     if (other.runtimeType != runtimeType) return false;
 
     return other is ProfileDraft
-      && localRoot == other.localRoot
       && peerDeviceId == other.peerDeviceId
-      && remoteRoot == other.remoteRoot
+      && listEquals(entries, other.entries)
       && jobs == other.jobs
       && listEquals(ignore, other.ignore);
   }
 
   @override
   int get hashCode => Object.hash(
-        localRoot,
         peerDeviceId,
-        remoteRoot,
+        entries,
         jobs,
         ignore,
       );
@@ -101,9 +93,8 @@ class ProfileDraft {
 
     assert(() {
       fullString = '$runtimeType('
-        'localRoot: $localRoot, '
         'peerDeviceId: $peerDeviceId, '
-        'remoteRoot: $remoteRoot, '
+        'entries: $entries, '
         'jobs: $jobs, '
         'ignore: $ignore'
         ')';

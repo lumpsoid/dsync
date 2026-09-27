@@ -8,9 +8,9 @@ import 'profile_row.dart';
 /// strings and branches on nothing.
 ///
 /// [render] is where the two facts the head has are joined: `core`'s
-/// [ArchiveInfo] — what is on disk — and the saved run whose id matches
-/// it, if the home list still has one. The caller fetches both and hands
-/// them here; this decides how they read. That is CLAUDE.md's "the caller
+/// [ArchiveInfo] — what is on disk — and the saved run one of whose
+/// entry ids matches it, if the home list still has one. The caller
+/// fetches both and hands them here; this decides how they read. That is CLAUDE.md's "the caller
 /// loads the facts, then calls down for the verdict".
 ///
 /// The saved run is handed over whole, as a [ProfileRow], rather than as
@@ -24,12 +24,12 @@ class ArchiveRow {
   /// path and nothing else — it is `core`'s own key for the file.
   final String logPath;
 
-  /// The archive id the log is filed under: what clearing it is addressed
+  /// The entry id the log is filed under: what clearing it is addressed
   /// by, both sides at once (a history kept on one side only records a
   /// propagation the other no longer remembers).
-  final String profileId;
+  final String entryId;
 
-  /// The saved run's name, or the profile id when no saved run matches —
+  /// The saved run's name, or the entry id when no saved run matches —
   /// honest either way, and the id is what `dsync archive list` prints on a
   /// desktop with the same state directory.
   final String title;
@@ -73,7 +73,7 @@ class ArchiveRow {
 
   const ArchiveRow({
     required this.logPath,
-    required this.profileId,
+    required this.entryId,
     required this.title,
     required this.peerLine,
     required this.location,
@@ -92,8 +92,8 @@ class ArchiveRow {
     final rootPath = archive.rootPath;
     return ArchiveRow(
       logPath: archive.logPath,
-      profileId: archive.profileId,
-      title: profile?.name ?? archive.profileId,
+      entryId: archive.entryId,
+      title: profile?.name ?? archive.entryId,
       peerLine: switch (profile) {
         null => null,
         ProfileRow(:final peerName?) => 'syncs with $peerName',

@@ -44,10 +44,10 @@ impl Hub {
         .await
     }
 
-    pub(crate) async fn check_folder(&self, path: String) -> Handled {
+    pub(crate) async fn check_folder(&self, path: String, kind: RootKind) -> Handled {
         blocking(move || {
             Ok(ReplyResult::FolderChecked {
-                refusal: check_root_access(RootKind::Folder, &PathBuf::from(path))
+                refusal: check_root_access(kind, &PathBuf::from(path))
                     .err()
                     .map(text),
             })

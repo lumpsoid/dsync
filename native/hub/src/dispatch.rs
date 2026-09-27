@@ -169,7 +169,7 @@ impl Hub {
             CoreCommand::StopServe { session } => self.stop_serve(session),
             CoreCommand::ServeAddresses => Ok(self.serve_addresses()),
             CoreCommand::ListArchives => self.list_archives().await,
-            CoreCommand::ClearArchive { profile_id } => self.clear_archive(&profile_id).await,
+            CoreCommand::ClearArchive { entry_id } => self.clear_archive(&entry_id).await,
             CoreCommand::PreviewFilters { root, ignore } => {
                 self.preview_filters(root, &ignore).await
             }
@@ -179,7 +179,7 @@ impl Hub {
                 ignore,
             } => self.list_filter_folder(root, folder, &ignore).await,
             CoreCommand::CheckIgnorePattern { pattern } => check_ignore_pattern(&pattern),
-            CoreCommand::CheckFolder { path } => self.check_folder(path).await,
+            CoreCommand::CheckFolder { path, kind } => self.check_folder(path, kind.into()).await,
             CoreCommand::ProbeScan {
                 root,
                 ignore,

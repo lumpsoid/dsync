@@ -229,6 +229,30 @@ class TraitHelpers {
     return List.generate(length, (_) => DeviceView.deserialize(deserializer));
   }
 
+  static void serializeVectorEntryDraft(List<EntryDraft> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<EntryDraft> deserializeVectorEntryDraft(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => EntryDraft.deserialize(deserializer));
+  }
+
+  static void serializeVectorEntryView(List<EntryView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<EntryView> deserializeVectorEntryView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => EntryView.deserialize(deserializer));
+  }
+
   static void serializeVectorFilterFolderView(List<FilterFolderView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -263,6 +287,18 @@ class TraitHelpers {
   static List<MassDeleteView> deserializeVectorMassDeleteView(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => MassDeleteView.deserialize(deserializer));
+  }
+
+  static void serializeVectorOtherEntryView(List<OtherEntryView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<OtherEntryView> deserializeVectorOtherEntryView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => OtherEntryView.deserialize(deserializer));
   }
 
   static void serializeVectorPlanRowView(List<PlanRowView> value, BinarySerializer serializer) {

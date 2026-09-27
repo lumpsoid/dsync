@@ -2,9 +2,10 @@
 //! redeems it, the first confirms; then the first serves, the second
 //! probes it and runs against it - every step a hub command.
 
-use hub::signals::{CoreCommand, ProfileDraft, ReplyResult, RunIntent, RunTarget};
+use hub::signals::{CoreCommand, EntryDraft, ProfileDraft, ReplyResult, RunIntent, RunTarget};
 use hub::views::{
-    PairCodeView, PairingView, ProbeOutcome, RunPhaseView, ServeEventView, ServePhaseView,
+    PairCodeView, PairingView, ProbeOutcome, RootKindView, RunPhaseView, ServeEventView,
+    ServePhaseView,
 };
 
 use crate::support::{Head, read, write};
@@ -206,9 +207,12 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
     let run = CoreCommand::StartRun {
         target: RunTarget::Pair {
             draft: ProfileDraft {
-                local_root: phone.path_text("mine"),
                 peer_device_id: desktop_id.clone(),
-                remote_root: shared.clone(),
+                entries: vec![EntryDraft {
+                    kind: RootKindView::Folder,
+                    local_root: phone.path_text("mine"),
+                    remote_root: shared.clone(),
+                }],
                 jobs: None,
                 ignore: Vec::new(),
             },

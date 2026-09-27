@@ -4,7 +4,7 @@ import 'replica_side.dart';
 final class ArchiveInfo {
   const ArchiveInfo({
     required this.logPath,
-    required this.profileId,
+    required this.entryId,
     required this.side,
     required this.rootPath,
     required this.sizeBytes,
@@ -12,7 +12,7 @@ final class ArchiveInfo {
   });
 
   final String logPath;
-  final String profileId;
+  final String entryId;
   final ReplicaSide side;
 
   /// `null`: the first line is not a readable header.

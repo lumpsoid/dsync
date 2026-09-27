@@ -8,9 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dsync_core::{ActionFailure, Certificate, DeviceIdentity, PairedDevice, StoredArchive};
 use dsync_domain::{
     Action, CertificateExpiry, CertificateOwner, Conflict, EntryKind, FilterFolderRow,
-    FilterPreviewFolder, FilterPreviewReport, Plan, Proposal, ReplicaInfo, ReplicaRoot, RunSummary,
-    ScanProbeReport, ScanTally, Side, SideDeletes, SkippedAt, SkippedPath, SkippedReason, Status,
-    Unchanged,
+    FilterPreviewFolder, FilterPreviewReport, Plan, Proposal, ReplicaInfo, ReplicaRoot, RootKind,
+    RunSummary, ScanProbeReport, ScanTally, Side, SideDeletes, SkippedAt, SkippedPath,
+    SkippedReason, Status, Unchanged,
 };
 use rinf::SignalPiece;
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,31 @@ impl From<SideView> for Side {
         match side {
             SideView::A => Side::A,
             SideView::B => Side::B,
+        }
+    }
+}
+
+/// What an entry's two roots are: folders, or one file each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, SignalPiece)]
+pub enum RootKindView {
+    Folder,
+    File,
+}
+
+impl From<RootKind> for RootKindView {
+    fn from(kind: RootKind) -> RootKindView {
+        match kind {
+            RootKind::Folder => RootKindView::Folder,
+            RootKind::File => RootKindView::File,
+        }
+    }
+}
+
+impl From<RootKindView> for RootKind {
+    fn from(kind: RootKindView) -> RootKind {
+        match kind {
+            RootKindView::Folder => RootKind::Folder,
+            RootKindView::File => RootKind::File,
         }
     }
 }
@@ -164,35 +189,49 @@ pub enum ProbeOutcome {
 /// One saved profile.
 #[derive(Serialize, SignalPiece)]
 pub enum ProfileEntry {
-    /// The head's shape: this device's folder with one on a paired device.
+    /// The head's shape: every entry pairs a root on this device with one
+    /// on the same paired device.
     Head(ProfileView),
-    /// Any other pair (a CLI-written profile); runnable, not editable here.
+    /// Any other profile (a CLI-written one); runnable, not editable here.
     Other {
         name: String,
-        profile_id: Option<String>,
-        a: String,
-        b: String,
+        entries: Vec<OtherEntryView>,
     },
     /// The file would not load; `message` says why.
     Unreadable { name: String, message: String },
 }
 
+/// One entry of an [`ProfileEntry::Other`] profile, its sides as typed.
+#[derive(Serialize, SignalPiece)]
+pub struct OtherEntryView {
+    pub a: String,
+    pub b: String,
+}
+
 #[derive(Serialize, SignalPiece)]
 pub struct ProfileView {
     pub name: String,
-    pub profile_id: String,
+    pub peer_device_id: String,
+    /// The paired device's name now; `None` when it is no longer paired.
+    pub peer_name: Option<String>,
+    pub jobs: Option<u32>,
+    pub ignore: Vec<String>,
+    /// SPEC §7.6's run marker is present for any of the entries.
+    pub last_run_unfinished: bool,
+    pub entries: Vec<EntryView>,
+}
+
+/// One entry of a [`ProfileView`]: a root on this device and one on the
+/// profile's paired device.
+#[derive(Serialize, SignalPiece)]
+pub struct EntryView {
+    pub entry_id: String,
+    pub kind: RootKindView,
     pub local_root: String,
     pub local_root_expanded: String,
     /// Why the local root cannot be a replica root now, if it cannot.
     pub local_root_refusal: Option<String>,
-    pub peer_device_id: String,
-    /// The paired device's name now; `None` when it is no longer paired.
-    pub peer_name: Option<String>,
     pub remote_root: String,
-    pub jobs: Option<u32>,
-    pub ignore: Vec<String>,
-    /// SPEC §7.6's run marker is present.
-    pub last_run_unfinished: bool,
 }
 
 /// Serving: the port bound and what to type on the other device.
@@ -212,7 +251,7 @@ pub struct AddressesView {
 #[derive(Serialize, SignalPiece)]
 pub struct ArchiveView {
     pub log_path: String,
-    pub profile_id: String,
+    pub entry_id: String,
     pub side: SideView,
     /// `None`: the first line is not a readable header.
     pub root_path: Option<String>,
@@ -224,7 +263,7 @@ impl From<&StoredArchive> for ArchiveView {
     fn from(archive: &StoredArchive) -> ArchiveView {
         ArchiveView {
             log_path: archive.log_path.to_string_lossy().into_owned(),
-            profile_id: archive.entry_id.as_str().to_owned(),
+            entry_id: archive.entry_id.as_str().to_owned(),
             side: archive.side.into(),
             root_path: archive.root_path.clone(),
             size_bytes: archive.size_bytes,

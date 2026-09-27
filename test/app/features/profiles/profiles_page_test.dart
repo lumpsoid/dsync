@@ -73,7 +73,7 @@ void main() {
 
   ProfileRow ok() => ProfileRow(
     name: 'weekly',
-    profileId: 'p1',
+    entryIds: const ['p1'],
     peerDeviceId: 'a1b2:c3d4',
     peerName: 'desktop',
     localRootPath: '/on-device/notes',
@@ -86,7 +86,7 @@ void main() {
 
   ProfileRow broken() => ProfileRow(
     name: 'revoked',
-    profileId: 'p2',
+    entryIds: const ['p2'],
     peerDeviceId: 'dead:beef',
     peerName: null,
     localRootPath: '/on-device/notes',
@@ -99,7 +99,7 @@ void main() {
 
   ProfileRow folderLost() => ProfileRow(
     name: 'no folder',
-    profileId: 'p3',
+    entryIds: const ['p3'],
     peerDeviceId: 'a1b2:c3d4',
     peerName: 'desktop',
     localRootPath: '/on-device/gone',
@@ -237,7 +237,7 @@ void main() {
     app.state.recordProfiles([
       ProfileRow(
         name: 'weekly',
-        profileId: 'p1',
+        entryIds: const ['p1'],
         peerDeviceId: 'a1b2:c3d4',
         peerName: 'desktop',
         localRootPath: '/on-device/notes',

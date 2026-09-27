@@ -19,7 +19,7 @@ import 'profile_breakage.dart';
 class ProfileRow {
   const ProfileRow({
     required this.name,
-    required this.profileId,
+    required this.entryIds,
     required this.peerDeviceId,
     required this.peerName,
     required this.localRootPath,
@@ -34,24 +34,28 @@ class ProfileRow {
   /// once revoked), the core's refusal of its local root (`null` while
   /// the folder is usable), and whether its run marker (SPEC §7.6) is
   /// still there.
+  ///
+  /// The row shows the profile's first entry, whose local root is what the
+  /// folder remedy re-picks.
   factory ProfileRow.render(HeadProfile profile) {
+    final first = profile.entries.first;
     final ProfileBreakage? broken;
     if (profile.peerName == null) {
       broken = const ProfileDeviceUnpaired();
-    } else if (profile.localRootRefusal != null) {
+    } else if (first.localRootRefusal != null) {
       broken = const ProfileLocalRootUnusable();
     } else {
       broken = null;
     }
     return ProfileRow(
       name: profile.name,
-      profileId: profile.profileId,
+      entryIds: [for (final entry in profile.entries) entry.entryId],
       peerDeviceId: profile.peerDeviceId,
       peerName: profile.peerName,
-      localRootPath: profile.localRoot,
-      remoteRootPath: profile.remoteRoot,
-      localRootLabel: PathLabel.of(profile.localRoot),
-      remoteRootLabel: PathLabel.of(profile.remoteRoot),
+      localRootPath: first.localRoot,
+      remoteRootPath: first.remoteRoot,
+      localRootLabel: PathLabel.of(first.localRoot),
+      remoteRootLabel: PathLabel.of(first.remoteRoot),
       breakage: broken,
       lastRunUnfinished: broken == null && profile.lastRunUnfinished,
     );
@@ -61,9 +65,9 @@ class ProfileRow {
   /// what a tap hands the Run setup page and what a delete is addressed by.
   final String name;
 
-  /// The archive id the core derives from the profile's two sides: what
-  /// its archive logs are filed under.
-  final String profileId;
+  /// The ids the core derives from each entry's two sides, in entry
+  /// order: what the profile's archive logs are filed under.
+  final List<String> entryIds;
 
   /// The peer's grouped device id, kept as what the row shows in place of
   /// [peerName] when the device has been revoked — an id is all this host
@@ -75,10 +79,10 @@ class ProfileRow {
   /// name on this host any more, only an id.
   final String? peerName;
 
-  /// Side `a`, the absolute path the run syncs.
+  /// The first entry's side `a`, the absolute path the run syncs.
   final String localRootPath;
 
-  /// Side `b`, unexpanded.
+  /// The first entry's side `b`, unexpanded.
   final String remoteRootPath;
 
   /// [localRootPath] as the row prints it: split by [PathLabel] into the
