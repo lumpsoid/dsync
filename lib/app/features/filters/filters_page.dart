@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import 'filters_controller.dart';
 import 'filters_scope.dart';
@@ -47,61 +48,63 @@ class _FiltersPageState extends State<FiltersPage> {
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      // The result travels on the way out rather than from a Save button:
-      // every edit is already live on this screen, so a button that
-      // "applied" them would be asking the user to confirm what they can
-      // already see.
-      canPop: true,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) widget.onDone(_controller.state.rules);
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Filters'),
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(24),
-            child: ListenableBuilder(
-              listenable: _controller.state,
-              builder: (context, _) => Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    _controller.state.rootPath,
-                    key: const Key('filters-root-path'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
+    return PopOnEscape(
+      child: PopScope(
+        // The result travels on the way out rather than from a Save button:
+        // every edit is already live on this screen, so a button that
+        // "applied" them would be asking the user to confirm what they can
+        // already see.
+        canPop: true,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) widget.onDone(_controller.state.rules);
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('Filters'),
+            bottom: PreferredSize(
+              preferredSize: const Size.fromHeight(24),
+              child: ListenableBuilder(
+                listenable: _controller.state,
+                builder: (context, _) => Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      _controller.state.rootPath,
+                      key: const Key('filters-root-path'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        ),
-        body: ListenableBuilder(
-          listenable: _controller.state,
-          builder: (context, _) => Column(
-            children: [
-              ReadableColumn(
-                width: ReadableWidth.list,
-                child: _RulesSection(
-                  controller: _controller,
-                  onAdd: () => _addRule(context),
+          body: ListenableBuilder(
+            listenable: _controller.state,
+            builder: (context, _) => Column(
+              children: [
+                ReadableColumn(
+                  width: ReadableWidth.list,
+                  child: _RulesSection(
+                    controller: _controller,
+                    onAdd: () => _addRule(context),
+                  ),
                 ),
-              ),
-              const Divider(height: 1),
-              ReadableColumn(
-                width: ReadableWidth.list,
-                child: _PreviewSection(controller: _controller),
-              ),
-              const Divider(height: 1),
-              ReadableColumn(
-                width: ReadableWidth.list,
-                child: _PathBar(controller: _controller),
-              ),
-              Expanded(child: _Listing(controller: _controller)),
-            ],
+                const Divider(height: 1),
+                ReadableColumn(
+                  width: ReadableWidth.list,
+                  child: _PreviewSection(controller: _controller),
+                ),
+                const Divider(height: 1),
+                ReadableColumn(
+                  width: ReadableWidth.list,
+                  child: _PathBar(controller: _controller),
+                ),
+                Expanded(child: _Listing(controller: _controller)),
+              ],
+            ),
           ),
         ),
       ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../archive_row.dart';
+import '../../destructive_confirm_dialog.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
 import 'archives_controller.dart';
@@ -364,24 +365,17 @@ class _DeleteDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Delete history for ${row.title}?'),
-      content: Text(
-        'This frees ${row.sizeLabel} and does not touch any of your files.\n\n'
-        'The next run over this folder reads and rehashes all of it, and '
-        'treats every file as new — the same work the first run did.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          key: const Key('archives-confirm-delete'),
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Delete'),
-        ),
-      ],
+    return DestructiveConfirmDialog(
+      title: 'Delete history for ${row.title}?',
+      message:
+          'This frees ${row.sizeLabel} and does not touch any of your files.'
+          '\n\n'
+          'The next run over this folder reads and rehashes all of it, and '
+          'treats every file as new — the same work the first run did.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Delete',
+      cancelKey: const Key('archives-cancel-delete'),
+      confirmKey: const Key('archives-confirm-delete'),
     );
   }
 }
@@ -395,26 +389,18 @@ class _DeleteAllDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(
-        count == 1 ? 'Delete all history?' : 'Delete all $count histories?',
-      ),
-      content: const Text(
-        'This does not touch any of your files.\n\n'
-        'Every run then reads and rehashes its whole folder once more and '
-        'treats every file as new, as it did the first time.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          key: const Key('archives-confirm-delete-all'),
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Delete all'),
-        ),
-      ],
+    return DestructiveConfirmDialog(
+      title: count == 1
+          ? 'Delete all history?'
+          : 'Delete all $count histories?',
+      message:
+          'This does not touch any of your files.\n\n'
+          'Every run then reads and rehashes its whole folder once more and '
+          'treats every file as new, as it did the first time.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Delete all',
+      cancelKey: const Key('archives-cancel-delete-all'),
+      confirmKey: const Key('archives-confirm-delete-all'),
     );
   }
 }
@@ -428,26 +414,16 @@ class _DeleteSelectedDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(
-        count == 1 ? 'Delete 1 history?' : 'Delete $count histories?',
-      ),
-      content: const Text(
-        'This does not touch any of your files.\n\n'
-        'Each run whose history goes reads and rehashes its whole folder '
-        'once more and treats every file as new, as it did the first time.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          key: const Key('archives-confirm-delete-selected'),
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Delete'),
-        ),
-      ],
+    return DestructiveConfirmDialog(
+      title: count == 1 ? 'Delete 1 history?' : 'Delete $count histories?',
+      message:
+          'This does not touch any of your files.\n\n'
+          'Each run whose history goes reads and rehashes its whole folder '
+          'once more and treats every file as new, as it did the first time.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Delete',
+      cancelKey: const Key('archives-cancel-delete-selected'),
+      confirmKey: const Key('archives-confirm-delete-selected'),
     );
   }
 }

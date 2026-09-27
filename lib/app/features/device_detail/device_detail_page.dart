@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../destructive_confirm_dialog.dart';
 import '../../format_date.dart';
 import '../../paired_device_row.dart';
 import '../../readable_width.dart';
@@ -489,6 +490,10 @@ class _GrantDialogState extends State<_GrantDialog> {
               Expanded(
                 child: FilledButton.icon(
                   key: const Key('device-grant-browse'),
+                  // The leading way in has the focus, so Enter on a dialog
+                  // just opened is the chooser. The field under it takes
+                  // Enter as Share once the user has gone there to type.
+                  autofocus: true,
                   onPressed: _browse,
                   icon: const Icon(Icons.folder_open),
                   label: const Text('Choose folder'),
@@ -742,24 +747,17 @@ class _RevokeDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Revoke $name?'),
-      content: Text(
-        'This device will stop trusting $name and will refuse its '
-        'connections.\n\n'
-        'This only changes this device. $name is not told and still trusts '
-        'this device until you revoke there too.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Revoke'),
-        ),
-      ],
+    return DestructiveConfirmDialog(
+      title: 'Revoke $name?',
+      message:
+          'This device will stop trusting $name and will refuse its '
+          'connections.\n\n'
+          'This only changes this device. $name is not told and still trusts '
+          'this device until you revoke there too.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Revoke',
+      cancelKey: const Key('device-revoke-cancel'),
+      confirmKey: const Key('device-revoke-confirm'),
     );
   }
 }

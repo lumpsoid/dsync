@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../core_link/models/root_kind.dart';
+import '../../keyboard_first.dart';
+import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import '../../run_request.dart';
 import '../filters/filters_page.dart';
@@ -33,12 +35,23 @@ import 'run_setup_view_state.dart';
 /// `create()`: `load` is asynchronous, and a controller disposed by a page
 /// that left early would have its view state written to after disposal.
 ///
-/// **One remote-root `TextEditingController` per entry.** The text fields
-/// are the page's, not the view state's (`RunSetupViewState`'s doc
-/// comment); [_RunSetupPageState] keeps a list the same length as
+/// **One remote-root field per entry.** The text fields are the page's, not
+/// the view state's (`RunSetupViewState`'s doc comment); [_RunSetupPageState]
+/// keeps a list of [_RemoteRootField]s the same length as
 /// `RunSetupController`'s entries, rebuilt whenever that count changes
 /// (`load`, adding or removing an entry) and left alone otherwise, so a
 /// keystroke in one field never disturbs another's.
+///
+/// **The keyboard walks the fields in the order they are drawn.** Enter in
+/// an entry's remote root moves to the next entry's, then to the profile
+/// name; Enter in the profile name — the last field outside the Options
+/// fold — or in the address inside it starts the run, as the filled button
+/// does. Tab walks every control in reading order. The first remote root
+/// takes the focus on arrival where the keyboard comes first
+/// ([keyboardFirst]); on a phone nothing does, because the first thing to
+/// do is pick a folder, not type. Esc backs out like the arrow
+/// ([PopOnEscape]) — there is no unsaved-changes question on the arrow
+/// either, so there is none on the key.
 ///
 /// [onStart] is the seam to the Run feature: it fires once with the
 /// [RunRequest] the controller built, and the entrypoint wires it to the
@@ -71,10 +84,13 @@ class RunSetupPage extends StatefulWidget {
 class _RunSetupPageState extends State<RunSetupPage> {
   final RunSetupController _controller = runSetupScope.controller;
 
-  /// One remote-root text controller per entry — see the class doc comment.
-  final List<TextEditingController> _remoteRoots = [TextEditingController()];
+  /// One remote-root field per entry — see the class doc comment.
+  final List<_RemoteRootField> _remoteRoots = [_RemoteRootField('')];
   final _address = TextEditingController();
   final _profileName = TextEditingController();
+
+  /// Where Enter in the last remote root lands.
+  final _profileNameFocus = FocusNode();
 
   /// Listens for the app coming back from the Settings page the refusal's
   /// snackbar opened — and only then: armed by [_openAccessSettings],
@@ -98,32 +114,33 @@ class _RunSetupPageState extends State<RunSetupPage> {
     _syncRemoteRoots(prefill?.remoteRoots ?? const ['']);
   }
 
-  /// Rebuilds [_remoteRoots] so it holds exactly [texts].length
-  /// controllers, seeded with [texts] — called whenever the entry count
-  /// changes, never for a keystroke in one of them.
+  /// Rebuilds [_remoteRoots] so it holds exactly [texts].length fields,
+  /// seeded with [texts] — called whenever the entry count changes, never
+  /// for a keystroke in one of them.
   void _syncRemoteRoots(List<String> texts) {
-    for (final controller in _remoteRoots) {
-      controller.dispose();
+    for (final field in _remoteRoots) {
+      field.dispose();
     }
     _remoteRoots
       ..clear()
-      ..addAll([for (final text in texts) TextEditingController(text: text)]);
+      ..addAll([for (final text in texts) _RemoteRootField(text)]);
   }
 
   @override
   void dispose() {
     _backFromSettings?.dispose();
-    for (final controller in _remoteRoots) {
-      controller.dispose();
+    for (final field in _remoteRoots) {
+      field.dispose();
     }
     _address.dispose();
     _profileName.dispose();
+    _profileNameFocus.dispose();
     super.dispose();
   }
 
   void _addEntry() {
     _controller.addEntry();
-    _remoteRoots.add(TextEditingController());
+    _remoteRoots.add(_RemoteRootField(''));
   }
 
   void _removeEntry(int index) {
@@ -210,7 +227,7 @@ class _RunSetupPageState extends State<RunSetupPage> {
   }
 
   List<String> _remoteRootTexts() => [
-    for (final controller in _remoteRoots) controller.text,
+    for (final field in _remoteRoots) field.text.text,
   ];
 
   Future<void> _start() async {
@@ -262,53 +279,58 @@ class _RunSetupPageState extends State<RunSetupPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        // The title says what the page is, not what is on it: the form
-        // already names the device and every folder, so repeating them in
-        // the chrome would only take the room a long device name needs.
-        title: ListenableBuilder(
-          listenable: _controller.state,
-          builder: (context, _) =>
-              Text(_title(_controller.state), overflow: TextOverflow.ellipsis),
-        ),
-      ),
-      body: ListenableBuilder(
-        listenable: _controller.state,
-        builder: (context, _) => switch (_controller.state.peer) {
-          RunSetupPeerLoading() => const Center(
-            // Nothing else is on screen in this case, so the label carries
-            // the whole announcement.
-            child: CircularProgressIndicator(
-              semanticsLabel: 'Loading the device',
+    return PopOnEscape(
+      child: Scaffold(
+        appBar: AppBar(
+          // The title says what the page is, not what is on it: the form
+          // already names the device and every folder, so repeating them in
+          // the chrome would only take the room a long device name needs.
+          title: ListenableBuilder(
+            listenable: _controller.state,
+            builder: (context, _) => Text(
+              _title(_controller.state),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
-          RunSetupPeerMissing(:final message) => ReadableColumn(
-            width: ReadableWidth.form,
-            child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Text(
-                message,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
+        body: ListenableBuilder(
+          listenable: _controller.state,
+          builder: (context, _) => switch (_controller.state.peer) {
+            RunSetupPeerLoading() => const Center(
+              // Nothing else is on screen in this case, so the label carries
+              // the whole announcement.
+              child: CircularProgressIndicator(
+                semanticsLabel: 'Loading the device',
               ),
             ),
-          ),
-          RunSetupPeerLoaded(:final name) => _RunSetupForm(
-            controller: _controller,
-            deviceName: name,
-            editing: _controller.state.prefill != null,
-            remoteRoots: _remoteRoots,
-            address: _address,
-            profileName: _profileName,
-            onPickFolder: _pickFolder,
-            onPickFile: _pickFile,
-            onAddEntry: () => setState(_addEntry),
-            onRemoveEntry: (index) => setState(() => _removeEntry(index)),
-            onOpenFilters: _openFilters,
-            onStart: _start,
-            onSave: _save,
-          ),
-        },
+            RunSetupPeerMissing(:final message) => ReadableColumn(
+              width: ReadableWidth.form,
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Text(
+                  message,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ),
+            RunSetupPeerLoaded(:final name) => _RunSetupForm(
+              controller: _controller,
+              deviceName: name,
+              editing: _controller.state.prefill != null,
+              remoteRoots: _remoteRoots,
+              address: _address,
+              profileName: _profileName,
+              profileNameFocus: _profileNameFocus,
+              onPickFolder: _pickFolder,
+              onPickFile: _pickFile,
+              onAddEntry: () => setState(_addEntry),
+              onRemoveEntry: (index) => setState(() => _removeEntry(index)),
+              onOpenFilters: _openFilters,
+              onStart: _start,
+              onSave: _save,
+            ),
+          },
+        ),
       ),
     );
   }
@@ -341,6 +363,7 @@ class _RunSetupForm extends StatelessWidget {
     required this.remoteRoots,
     required this.address,
     required this.profileName,
+    required this.profileNameFocus,
     required this.onPickFolder,
     required this.onPickFile,
     required this.onAddEntry,
@@ -358,11 +381,12 @@ class _RunSetupForm extends StatelessWidget {
   /// nothing else: the fields and the rules are the same either way.
   final bool editing;
 
-  /// One text controller per entry, in order — [_RunSetupPageState] keeps
-  /// this in step with `RunSetupController`'s entries.
-  final List<TextEditingController> remoteRoots;
+  /// One field per entry, in order — [_RunSetupPageState] keeps this in
+  /// step with `RunSetupController`'s entries.
+  final List<_RemoteRootField> remoteRoots;
   final TextEditingController address;
   final TextEditingController profileName;
+  final FocusNode profileNameFocus;
   final void Function(int index) onPickFolder;
   final void Function(int index) onPickFile;
   final VoidCallback onAddEntry;
@@ -383,6 +407,7 @@ class _RunSetupForm extends StatelessWidget {
     final entries = state.entries;
     final first = entries.first;
     final firstFolder = first.kind == RootKind.folder ? first.localRoot : null;
+    final autofocus = keyboardFirst(context);
     return Column(
       children: [
         Expanded(
@@ -417,6 +442,10 @@ class _RunSetupForm extends StatelessWidget {
                     entry: entry,
                     deviceName: deviceName,
                     remoteRoot: remoteRoots[index],
+                    autofocus: autofocus && index == 0,
+                    nextField: index + 1 < remoteRoots.length
+                        ? remoteRoots[index + 1].focus
+                        : profileNameFocus,
                     starting: starting,
                     removable: entries.length > 1,
                     onPickFolder: () => onPickFolder(index),
@@ -465,7 +494,11 @@ class _RunSetupForm extends StatelessWidget {
                 TextField(
                   key: const Key('run-setup-profile-name'),
                   controller: profileName,
+                  focusNode: profileNameFocus,
                   enabled: !starting,
+                  // The last field outside the fold: Enter is Start.
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => onStart(),
                   decoration: InputDecoration(
                     labelText: editing
                         ? 'Profile name'
@@ -495,6 +528,8 @@ class _RunSetupForm extends StatelessWidget {
                       key: const Key('run-setup-address'),
                       controller: address,
                       enabled: !starting,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => onStart(),
                       decoration: InputDecoration(
                         labelText: 'Address (optional)',
                         hintText: 'host or host:port',
@@ -534,6 +569,8 @@ class _EntrySection extends StatelessWidget {
     required this.entry,
     required this.deviceName,
     required this.remoteRoot,
+    required this.autofocus,
+    required this.nextField,
     required this.starting,
     required this.removable,
     required this.onPickFolder,
@@ -546,7 +583,15 @@ class _EntrySection extends StatelessWidget {
   final int index;
   final RunEntryForm entry;
   final String deviceName;
-  final TextEditingController remoteRoot;
+  final _RemoteRootField remoteRoot;
+
+  /// Whether the remote root takes the focus when the form appears — the
+  /// first entry's, where the keyboard comes first.
+  final bool autofocus;
+
+  /// Where Enter in the remote root moves: the next entry's, or the
+  /// profile name after the last.
+  final FocusNode nextField;
   final bool starting;
 
   /// Whether this entry can be removed — never the last one (D1).
@@ -651,8 +696,15 @@ class _EntrySection extends StatelessWidget {
         const SizedBox(height: 8),
         TextField(
           key: Key(_remoteKey),
-          controller: remoteRoot,
+          controller: remoteRoot.text,
+          focusNode: remoteRoot.focus,
+          autofocus: autofocus,
           enabled: !starting,
+          textInputAction: TextInputAction.next,
+          // Straight to the next field rather than the next control: the
+          // default would land on "Add another folder or file", where the
+          // next Enter adds an entry.
+          onEditingComplete: nextField.requestFocus,
           onChanged: onRemoteRootChanged,
           decoration: InputDecoration(
             labelText: isFolder ? 'Folder' : 'File',
@@ -664,6 +716,21 @@ class _EntrySection extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// One entry's remote-root field: its text and its place in the Enter
+/// chain, made, kept and disposed together so the two cannot drift apart
+/// the way two parallel lists could.
+class _RemoteRootField {
+  _RemoteRootField(String text) : text = TextEditingController(text: text);
+
+  final TextEditingController text;
+  final FocusNode focus = FocusNode();
+
+  void dispose() {
+    text.dispose();
+    focus.dispose();
   }
 }
 

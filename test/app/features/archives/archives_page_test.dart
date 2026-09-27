@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
+import '../../support/focus.dart';
 
 /// Rendering tests for the Archives page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controller is pinned with
@@ -267,6 +268,63 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.deleted, isEmpty);
+  });
+
+  group('the delete dialog at the keyboard (task b30d1b)', () {
+    Future<void> openDialog(WidgetTester tester) async {
+      await pumpDesktopPage(tester);
+      controller.state.recordListing(ArchivesReady([row('weekly notes')]));
+      await tester.pump();
+      await tester.tap(
+        find.byKey(
+          const Key('archive-delete-/state/dsync/weekly notes-a.jsonl'),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('the focus is on Cancel, and Enter deletes nothing', (
+      tester,
+    ) async {
+      await openDialog(tester);
+      expect(focusIsWithin(const Key('archives-cancel-delete')), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(controller.deleted, isEmpty);
+    });
+
+    testWidgets('the delete is one Tab away, drawn in the error colour', (
+      tester,
+    ) async {
+      await openDialog(tester);
+      final delete = tester.widget<FilledButton>(
+        find.byKey(const Key('archives-confirm-delete')),
+      );
+      final scheme = Theme.of(tester.element(find.byType(AlertDialog)))
+          .colorScheme;
+      expect(delete.style?.backgroundColor?.resolve({}), scheme.error);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(focusIsWithin(const Key('archives-confirm-delete')), isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+
+      expect(controller.deleted, ['/state/dsync/weekly notes-a.jsonl']);
+    });
+
+    testWidgets('Esc dismisses it and deletes nothing', (tester) async {
+      await openDialog(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(controller.deleted, isEmpty);
+    });
   });
 
   testWidgets('deleting all asks first, then deletes all', (tester) async {

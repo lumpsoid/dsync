@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'destructive_confirm_dialog.dart';
+
 /// The confirmation before a folder is withdrawn from a device — the undo
 /// of a grant (SPEC §4.4's second step), asked for with the same weight as
 /// the revoke of a whole pairing.
@@ -22,7 +24,9 @@ import 'package:flutter/material.dart';
 /// about the same write is how a user learns that one of the two is lying.
 ///
 /// Pops `true` to withdraw and `false` to keep sharing; a dismissal pops
-/// nothing, and every caller treats that as "keep sharing".
+/// nothing, and every caller treats that as "keep sharing". Asked through
+/// [DestructiveConfirmDialog], so "Keep sharing" has the focus and Enter
+/// withdraws nothing.
 class WithdrawRootDialog extends StatelessWidget {
   const WithdrawRootDialog({
     super.key,
@@ -39,27 +43,18 @@ class WithdrawRootDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Stop sharing $rootLabel?'),
-      content: Text(
-        '$deviceName will no longer be allowed to reach this folder. The '
-        'next time it asks for it, this device refuses.\n\n'
-        '$deviceName is not told, and nothing in the folder is moved or '
-        'deleted. Files it has already synced stay where they are on both '
-        'devices.',
-      ),
-      actions: [
-        TextButton(
-          key: const Key('withdraw-root-cancel'),
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Keep sharing'),
-        ),
-        FilledButton(
-          key: const Key('withdraw-root-confirm'),
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Stop sharing'),
-        ),
-      ],
+    return DestructiveConfirmDialog(
+      title: 'Stop sharing $rootLabel?',
+      message:
+          '$deviceName will no longer be allowed to reach this folder. The '
+          'next time it asks for it, this device refuses.\n\n'
+          '$deviceName is not told, and nothing in the folder is moved or '
+          'deleted. Files it has already synced stay where they are on both '
+          'devices.',
+      cancelLabel: 'Keep sharing',
+      confirmLabel: 'Stop sharing',
+      cancelKey: const Key('withdraw-root-cancel'),
+      confirmKey: const Key('withdraw-root-confirm'),
     );
   }
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../destructive_confirm_dialog.dart';
 import '../../format_path.dart';
 import '../../profile_breakage.dart';
 import '../../profile_row.dart';
@@ -449,22 +450,15 @@ class _DeleteDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Delete ${row.name}?'),
-      content: const Text(
-        'This removes the saved run from the home list. It does not touch '
-        'the paired device, the folders or the sync history.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Delete'),
-        ),
-      ],
+    return DestructiveConfirmDialog(
+      title: 'Delete ${row.name}?',
+      message:
+          'This removes the saved run from the home list. It does not touch '
+          'the paired device, the folders or the sync history.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Delete',
+      cancelKey: const Key('profiles-delete-cancel'),
+      confirmKey: const Key('profiles-delete-confirm'),
     );
   }
 }

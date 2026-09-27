@@ -12,11 +12,13 @@ import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
+import '../../support/focus.dart';
 
 /// Rendering tests for the Run setup page, driven the way the scope
 /// contract in `app_scope.dart` intends: the controllers are pinned with
@@ -843,6 +845,136 @@ void main() {
 
       expect(find.text('No file chosen'), findsOneWidget);
       expect(find.text('Pick a file…'), findsOneWidget);
+    });
+  });
+
+  group('keyboard (task b30d1b)', () {
+    const remoteRoot = Key('run-setup-remote-root');
+    const remoteRoot1 = Key('run-setup-remote-root-1');
+    const profileName = Key('run-setup-profile-name');
+
+    /// The page pushed over a home route, the way the app pushes it, under
+    /// a theme for [platform] — so there is somewhere for Esc to go back to,
+    /// and the platform decides whether a field takes the focus.
+    Future<void> pumpPushed(
+      WidgetTester tester, {
+      required TargetPlatform platform,
+    }) async {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final navigator = GlobalKey<NavigatorState>();
+      await tester.runAsync(() async {
+        await tester.pumpWidget(
+          MaterialApp(
+            navigatorKey: navigator,
+            theme: ThemeData(platform: platform),
+            home: const Text('home'),
+          ),
+        );
+        unawaited(
+          navigator.currentState!.push(
+            MaterialPageRoute<void>(
+              builder: (_) => RunSetupPage(
+                source: RunSetupFromDevice(desktop.deviceId),
+                onStart: started.add,
+                onSaved: () => saved++,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        await loaded();
+      });
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('on a desktop the first remote root has the focus on '
+        'arrival', (tester) async {
+      await pumpPushed(tester, platform: TargetPlatform.linux);
+
+      expect(focusIsWithin(remoteRoot), isTrue);
+    });
+
+    testWidgets('on a phone nothing takes the focus, so no soft keyboard '
+        'covers the form', (tester) async {
+      await pumpPushed(tester, platform: TargetPlatform.android);
+
+      expect(focusIsWithin(remoteRoot), isFalse);
+      expect(
+        tester.testTextInput.isVisible,
+        isFalse,
+        reason: 'no field asked for the keyboard',
+      );
+    });
+
+    testWidgets('Enter walks the remote roots in order, then the profile '
+        'name, and Enter there is Start', (tester) async {
+      await pumpPushed(tester, platform: TargetPlatform.linux);
+      await tester.tap(find.byKey(const Key('run-setup-add-entry')));
+      await tester.pump();
+      await tester.showKeyboard(find.byKey(remoteRoot));
+
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pump();
+      expect(
+        focusIsWithin(remoteRoot1),
+        isTrue,
+        reason: 'the next field, not the Add button between them',
+      );
+
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pump();
+      expect(focusIsWithin(profileName), isTrue);
+
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      // Start ran: with nothing filled in it refuses, field by field — both
+      // entries' — the same as a click on the button does.
+      expect(controller.state.entries[0].localFolderError, isNotNull);
+      expect(
+        find.text(controller.state.entries[0].remoteRootError!),
+        findsNWidgets(2),
+      );
+      expect(started, isEmpty);
+    });
+
+    testWidgets('Tab and Shift+Tab follow the order the form is drawn in', (
+      tester,
+    ) async {
+      await pumpPushed(tester, platform: TargetPlatform.linux);
+      expect(focusIsWithin(remoteRoot), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(focusIsWithin(const Key('run-setup-add-entry')), isTrue);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      expect(focusIsWithin(const Key('run-setup-pick-folder')), isTrue);
+    });
+
+    testWidgets('Esc leaves the field first, then backs out of the page', (
+      tester,
+    ) async {
+      await pumpPushed(tester, platform: TargetPlatform.linux);
+      expect(focusIsWithin(remoteRoot), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(focusIsWithin(remoteRoot), isFalse);
+      expect(find.byType(RunSetupPage), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byType(RunSetupPage), findsNothing);
+      expect(find.text('home'), findsOneWidget);
+      expect(started, isEmpty);
+      expect(saved, 0);
     });
   });
 }

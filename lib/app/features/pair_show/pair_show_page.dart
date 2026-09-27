@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import 'pair_show_controller.dart';
 import 'pair_show_scope.dart';
@@ -126,58 +127,61 @@ class _PairShowPageState extends State<PairShowPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("This device's code")),
-      body: !_showing
-          ? _NameField(name: _name, onShow: _show)
-          : ListenableBuilder(
-              listenable: _controller.state,
-              builder: (context, _) => switch (_controller.state.status) {
-                PairShowStarting() => const Center(
-                  child: CircularProgressIndicator(
-                    semanticsLabel: 'Opening a pairing window',
+    // Esc leaves as the arrow does, closing the window with the page.
+    return PopOnEscape(
+      child: Scaffold(
+        appBar: AppBar(title: const Text("This device's code")),
+        body: !_showing
+            ? _NameField(name: _name, onShow: _show)
+            : ListenableBuilder(
+                listenable: _controller.state,
+                builder: (context, _) => switch (_controller.state.status) {
+                  PairShowStarting() => const Center(
+                    child: CircularProgressIndicator(
+                      semanticsLabel: 'Opening a pairing window',
+                    ),
                   ),
-                ),
-                PairShowWaiting(:final offer) => _Offer(
-                  offer: offer,
-                  onCopy: () => _copy(offer.payloadLine),
-                ),
-                PairShowConfirming(:final deviceId, :final peerName) =>
-                  _Confirm(
-                    deviceId: deviceId,
-                    peerName: peerName,
-                    onAnswer: (confirmed) =>
-                        _controller.answerConfirmation(confirmed: confirmed),
+                  PairShowWaiting(:final offer) => _Offer(
+                    offer: offer,
+                    onCopy: () => _copy(offer.payloadLine),
                   ),
-                PairShowDeclined() => _Ended(
-                  key: const Key('pair-show-declined'),
-                  message:
-                      'You turned that device away, so nothing was recorded. '
-                      'The code is used up either way — show a new one when '
-                      'the device you meant is ready.',
-                  isError: false,
-                  onRetry: () => unawaited(_showAnother()),
-                ),
-                // Rendered as the window it is: the page is leaving, and says so
-                // through the snackbar `_statusChanged` raises.
-                PairShowPaired() => const SizedBox.shrink(),
-                PairShowExpired(:final window) => _Ended(
-                  key: const Key('pair-show-expired'),
-                  message:
-                      'Nothing used this code before it ran out. Codes are good '
-                      'for ${window.inMinutes} minutes, so the '
-                      'other device needs to be ready before you show one.',
-                  isError: false,
-                  onRetry: () => unawaited(_showAnother()),
-                ),
-                PairShowFailed(:final message) => _Ended(
-                  key: const Key('pair-show-failed'),
-                  message: message,
-                  isError: true,
-                  onRetry: () => unawaited(_showAnother()),
-                ),
-              },
-            ),
+                  PairShowConfirming(:final deviceId, :final peerName) =>
+                    _Confirm(
+                      deviceId: deviceId,
+                      peerName: peerName,
+                      onAnswer: (confirmed) =>
+                          _controller.answerConfirmation(confirmed: confirmed),
+                    ),
+                  PairShowDeclined() => _Ended(
+                    key: const Key('pair-show-declined'),
+                    message:
+                        'You turned that device away, so nothing was recorded. '
+                        'The code is used up either way — show a new one when '
+                        'the device you meant is ready.',
+                    isError: false,
+                    onRetry: () => unawaited(_showAnother()),
+                  ),
+                  // Rendered as the window it is: the page is leaving, and says so
+                  // through the snackbar `_statusChanged` raises.
+                  PairShowPaired() => const SizedBox.shrink(),
+                  PairShowExpired(:final window) => _Ended(
+                    key: const Key('pair-show-expired'),
+                    message:
+                        'Nothing used this code before it ran out. Codes are good '
+                        'for ${window.inMinutes} minutes, so the '
+                        'other device needs to be ready before you show one.',
+                    isError: false,
+                    onRetry: () => unawaited(_showAnother()),
+                  ),
+                  PairShowFailed(:final message) => _Ended(
+                    key: const Key('pair-show-failed'),
+                    message: message,
+                    isError: true,
+                    onRetry: () => unawaited(_showAnother()),
+                  ),
+                },
+              ),
+      ),
     );
   }
 }
@@ -301,6 +305,8 @@ class _Offer extends StatelessWidget {
                     alignment: Alignment.centerLeft,
                     child: TextButton.icon(
                       key: const Key('pair-show-copy'),
+                      // The one thing to do here, so Enter copies.
+                      autofocus: true,
                       onPressed: onCopy,
                       icon: const Icon(Icons.content_copy),
                       label: const Text('Copy line'),
@@ -345,8 +351,11 @@ class _Offer extends StatelessWidget {
 /// of whatever redeemed the code, against the id that device shows on its
 /// own screen.
 ///
-/// Both answers are buttons of equal weight, and neither is pre-selected.
-/// The id is the whole content — grouped hex, monospaced, wrapped rather
+/// Both answers are buttons of equal weight, and neither is pre-selected
+/// by the look of it. The keyboard's focus does start on the refusal: a
+/// trust decision must not be one stray Enter away, and refusing is the
+/// answer that records nothing — pairing takes a Tab or a click, after the
+/// ids have actually been read. The id is the whole content — grouped hex, monospaced, wrapped rather
 /// than truncated, because a comparison that cannot see every group is not
 /// a comparison. Nothing has been recorded at the moment this is on screen;
 /// refusing records nothing at all.
@@ -403,6 +412,7 @@ class _Confirm extends StatelessWidget {
               Expanded(
                 child: OutlinedButton(
                   key: const Key('pair-show-refuse'),
+                  autofocus: true,
                   onPressed: () => onAnswer(false),
                   child: const Text('Not my device'),
                 ),
@@ -467,6 +477,7 @@ class _Ended extends StatelessWidget {
           const SizedBox(height: 24),
           FilledButton(
             key: const Key('pair-show-retry'),
+            autofocus: true,
             onPressed: onRetry,
             child: const Text('Show a new code'),
           ),

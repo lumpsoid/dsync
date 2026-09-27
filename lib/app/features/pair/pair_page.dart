@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import 'pair_code.dart';
 import 'pair_controller.dart';
@@ -233,23 +234,25 @@ class _PairPageState extends State<PairPage> {
   @override
   Widget build(BuildContext context) {
     final controller = pairScope.controller;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Pair a device')),
-      body: ListenableBuilder(
-        listenable: controller.state,
-        builder: (context, _) => _PairForm(
-          state: controller.state,
-          onScan: switch (widget.scanner) {
-            final scanner? => () => _scan(scanner),
-            null => null,
-          },
-          onPaste: _paste,
-          line: _line,
-          onReadLine: _readLine,
-          onShowOwnCode: widget.onShowOwnCode,
-          onClearCode: _clearCode,
-          localName: _localName,
-          onSubmit: _submit,
+    return PopOnEscape(
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Pair a device')),
+        body: ListenableBuilder(
+          listenable: controller.state,
+          builder: (context, _) => _PairForm(
+            state: controller.state,
+            onScan: switch (widget.scanner) {
+              final scanner? => () => _scan(scanner),
+              null => null,
+            },
+            onPaste: _paste,
+            line: _line,
+            onReadLine: _readLine,
+            onShowOwnCode: widget.onShowOwnCode,
+            onClearCode: _clearCode,
+            localName: _localName,
+            onSubmit: _submit,
+          ),
         ),
       ),
     );

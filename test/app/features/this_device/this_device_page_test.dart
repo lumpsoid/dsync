@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
+import '../../support/focus.dart';
 
 /// The This device page as a rendering test: the identity is pushed into
 /// `AppState` as an already-rendered row and the page is pumped directly,
@@ -78,6 +79,17 @@ void main() {
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(controller.state.outcome, isA<IdentityIdle>());
+  });
+
+  testWidgets('renew loses nothing, so its dialog has Renew focused for Enter '
+      '(task b30d1b)', (tester) async {
+    ready();
+    await pumpPage(tester);
+
+    await tester.tap(find.byKey(const Key('this-device-renew')));
+    await tester.pumpAndSettle();
+
+    expect(focusIsWithin(const Key('this-device-reissue-confirm')), isTrue);
   });
 
   testWidgets('the rename dialog opens filled with the current name', (

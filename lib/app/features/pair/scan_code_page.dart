@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 
 /// The camera, as the Pair flow's second input method (SPEC §4.4): built by
@@ -79,26 +80,28 @@ class _ScanCodePageState extends State<ScanCodePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Scan the pairing code')),
-      body: Column(
-        children: [
-          // The camera takes the page: framing a small symbol is easier the
-          // more of it the user can see.
-          Expanded(child: Center(child: widget.scanner(_onScanned))),
-          ReadableColumn(
-            width: ReadableWidth.form,
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                'Point the camera at the QR code the other device is '
-                'showing.',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium,
+    return PopOnEscape(
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Scan the pairing code')),
+        body: Column(
+          children: [
+            // The camera takes the page: framing a small symbol is easier the
+            // more of it the user can see.
+            Expanded(child: Center(child: widget.scanner(_onScanned))),
+            ReadableColumn(
+              width: ReadableWidth.form,
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Point the camera at the QR code the other device is '
+                  'showing.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

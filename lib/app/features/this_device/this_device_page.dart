@@ -234,6 +234,11 @@ class _NoticeTile extends StatelessWidget {
 
 /// What a re-issue costs, said before it happens. The same words for both
 /// actions, because it is the same write: see `ThisDeviceController`.
+///
+/// **Enter confirms.** Unlike a delete or a revoke, nothing is lost here —
+/// the id and every pairing survive, and each peer catches up on its next
+/// connection — so this is a notice of a cost, not a guard against a loss,
+/// and the button the user came to press has the focus.
 class _ReissueDialog extends StatelessWidget {
   const _ReissueDialog({required this.title, required this.action});
 
@@ -256,6 +261,8 @@ class _ReissueDialog extends StatelessWidget {
           child: const Text('Cancel'),
         ),
         FilledButton(
+          key: const Key('this-device-reissue-confirm'),
+          autofocus: true,
           onPressed: () => Navigator.of(context).pop(true),
           child: Text(action),
         ),

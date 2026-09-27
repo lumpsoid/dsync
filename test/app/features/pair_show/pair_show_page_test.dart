@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
+import '../../support/focus.dart';
 
 /// Rendering tests for the Show-this-device's-code page, driven the way the
 /// scope contract in `app_scope.dart` intends: the controllers are pinned
@@ -288,6 +289,50 @@ void main() {
     tester,
   ) async {
     expect(await tapAnswer(tester, 'pair-show-refuse'), isFalse);
+  });
+
+  testWidgets('the focus starts on the refusal, so Enter never pairs '
+      '(task b30d1b)', (tester) async {
+    final recording = _RecordingController(app);
+    pairShowScope.setController(recording);
+    await pumpPage(tester);
+    await openWindow(tester);
+    recording.state.recordStatus(
+      const PairShowConfirming(deviceId: 'a1b2:c3d4', peerName: 'my laptop'),
+    );
+    await tester.pump();
+    expect(focusIsWithin(const Key('pair-show-refuse')), isTrue);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(recording.answered, isFalse);
+  });
+
+  testWidgets('Esc backs out of the page, from its field in two presses '
+      '(task b30d1b)', (tester) async {
+    final navigator = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(
+      MaterialApp(navigatorKey: navigator, home: const Text('home')),
+    );
+    unawaited(
+      navigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => PairShowPage(onPaired: () => paired++),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(focusIsWithin(const Key('pair-show-name')), isTrue);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byType(PairShowPage), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byType(PairShowPage), findsNothing);
+    expect(find.text('home'), findsOneWidget);
   });
 
   testWidgets('a declined device says so and offers a fresh code', (

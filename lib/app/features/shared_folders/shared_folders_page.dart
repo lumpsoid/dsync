@@ -315,6 +315,10 @@ class _AddFolderDialogState extends State<_AddFolderDialog> {
                 Expanded(
                   child: FilledButton.icon(
                     key: const Key('shared-folders-browse'),
+                    // The leading way in has the focus, as on the Device
+                    // page's grant dialog: Enter on the fresh dialog is the
+                    // chooser.
+                    autofocus: true,
                     onPressed: _browse,
                     icon: const Icon(Icons.folder_open),
                     label: const Text('Choose folder'),
@@ -340,6 +344,9 @@ class _AddFolderDialogState extends State<_AddFolderDialog> {
             TextField(
               key: const Key('shared-folders-path-field'),
               controller: _path,
+              // A path is only half the answer: Enter moves on to the
+              // devices to tick rather than sharing with none of them.
+              textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
                 labelText: 'Folder on this device',
                 hintText: '~/Sync',
