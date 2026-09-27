@@ -21,6 +21,7 @@ use crate::any_replica::AnyReplica;
 use crate::archive_store::ArchiveError;
 use crate::link_error::LinkError;
 use crate::local_replica::LocalReplica;
+use crate::local_root::{Root, RootError};
 use crate::peer_dialer::{PeerDialError, PeerDialer};
 use crate::remote_replica::RemoteReplica;
 use crate::replica::Replica;
@@ -71,6 +72,10 @@ pub enum ConnectFailure {
     /// A local root spelled with a `~` on a host with no home.
     #[error(transparent)]
     Root(#[from] ExpandError),
+    /// A local root its entry's kind cannot open: a single-file path
+    /// with no file name.
+    #[error(transparent)]
+    Shape(#[from] RootError),
     /// A local replica's archive could not be opened.
     #[error(transparent)]
     Archive(#[from] ArchiveError),
@@ -104,7 +109,9 @@ impl ConnectFailure {
     /// is the entry's own.
     pub fn ends_profile(&self) -> bool {
         match self {
-            ConnectFailure::Root(_) | ConnectFailure::Archive(_) => false,
+            ConnectFailure::Root(_) | ConnectFailure::Shape(_) | ConnectFailure::Archive(_) => {
+                false
+            }
             ConnectFailure::Link(_)
             | ConnectFailure::Socket { .. }
             | ConnectFailure::Peer(_)
@@ -243,7 +250,11 @@ impl Connector {
         location: &Location,
         spec: ReplicaSpec,
     ) -> Result<AnyReplica, ConnectFailure> {
-        let root = location.expanded_path(self.home.as_deref())?;
+        let root = Root::new(
+            location.expanded_path(self.home.as_deref())?,
+            spec.kind,
+            spec.as_path.clone(),
+        )?;
         let state = self.state.clone();
         let tuning = self.tuning;
         // This host runs the run, so it owns both ends: its rules decide.

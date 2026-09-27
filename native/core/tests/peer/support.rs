@@ -234,6 +234,8 @@ pub async fn serve_with(host: &Host, tuning: Tuning) -> Serving {
             let root = spec.expanded_root(home.as_deref());
             Box::pin(async move {
                 let root = root.map_err(|e| ReplicaError::Refused(e.to_string()))?;
+                let root = dsync_core::Root::new(root, spec.kind, spec.as_path.clone())
+                    .map_err(|e| ReplicaError::Refused(e.to_string()))?;
                 let opened = tokio::task::spawn_blocking(move || {
                     LocalReplica::open(
                         root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,

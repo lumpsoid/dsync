@@ -31,6 +31,7 @@ mod inbound;
 mod interface_addresses;
 mod link_error;
 mod local_replica;
+mod local_root;
 mod paired_device;
 mod paired_device_store;
 mod paired_devices;
@@ -82,11 +83,12 @@ pub use enrolment_listener::{
 pub use enrolment_message::{EnrolmentDenial, EnrolmentMessageError};
 pub use enrolment_token::TokenRefusal;
 pub use filter_listing::{UnlistableFolder, list_filter_folder, preview_filters_at};
-pub use folder_access::{ACCESS_PROBE_NAME, FolderRefused, check_folder_access};
+pub use folder_access::{ACCESS_PROBE_NAME, FolderRefused, check_root_access};
 pub use granted_roots::GrantedRoots;
 pub use interface_addresses::interface_addresses;
 pub use link_error::LinkError;
 pub use local_replica::LocalReplica;
+pub use local_root::{Root, RootError};
 pub use paired_device::{DifferentKey, GrantNests, PairedDevice, resolve_grant};
 pub use paired_device_store::{
     PAIRED_DEVICES_FORMAT_VERSION, PairedDeviceStore, PairedDeviceStoreError,

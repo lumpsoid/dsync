@@ -10,7 +10,7 @@ use crate::reconcile::reconcile;
 use crate::scan_entry::{FileMeta, FileState, Unchanged};
 use crate::scan_result::ScanResult;
 use crate::skipped_path::{SkippedPath, SkippedReason, unreadable_of};
-use crate::{Action, Plan, Side};
+use crate::{Action, Plan, RootKind, Side};
 
 fn path(text: &str) -> RelPath {
     RelPath::parse(text).unwrap_or_else(|e| panic!("{e}"))
@@ -118,13 +118,23 @@ fn plan_of(scans: &Exchanged) -> Plan {
             .iter()
             .chain(&scans.changed_b.skipped),
     );
-    reconcile(scans.on_a.clone(), scans.on_b.clone(), &unreadable)
+    reconcile(
+        scans.on_a.clone(),
+        scans.on_b.clone(),
+        &unreadable,
+        RootKind::Folder,
+    )
 }
 
 /// The exchange's plan, asserted equal to the whole-listing plan.
 fn plan_matching_full_exchange(a: ScanResult, b: ScanResult) -> Plan {
     let unreadable = unreadable_of(a.skipped.iter().chain(&b.skipped));
-    let whole = reconcile(a.entries.clone(), b.entries.clone(), &unreadable);
+    let whole = reconcile(
+        a.entries.clone(),
+        b.entries.clone(),
+        &unreadable,
+        RootKind::Folder,
+    );
     let phased = plan_of(&exchange(a, b));
     assert_eq!(phased, whole);
     phased

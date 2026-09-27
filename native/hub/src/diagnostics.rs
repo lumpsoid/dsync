@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 
 use dsync_core::{
-    ScanProbe, check_folder_access, list_filter_folder, preview_filters_at, probe_case_folding,
+    ScanProbe, check_root_access, list_filter_folder, preview_filters_at, probe_case_folding,
 };
-use dsync_domain::{Glob, RelPath, RuleSet};
+use dsync_domain::{Glob, RelPath, RootKind, RuleSet};
 
 use crate::dispatch::{Handled, Hub, blocking, text};
 use crate::signals::ReplyResult;
@@ -47,7 +47,9 @@ impl Hub {
     pub(crate) async fn check_folder(&self, path: String) -> Handled {
         blocking(move || {
             Ok(ReplyResult::FolderChecked {
-                refusal: check_folder_access(&PathBuf::from(path)).err().map(text),
+                refusal: check_root_access(RootKind::Folder, &PathBuf::from(path))
+                    .err()
+                    .map(text),
             })
         })
         .await

@@ -506,7 +506,7 @@ mod tests {
                     async move {
                         let opened = tokio::task::spawn_blocking(move || {
                             LocalReplica::open(
-                                spec.root,
+                                crate::Root::folder(spec.root),
                                 state,
                                 spec.entry,
                                 spec.side,

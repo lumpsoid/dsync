@@ -3,17 +3,20 @@
 use crate::action::Action;
 use crate::rel_path::RelPath;
 use crate::resolution::Resolution;
+use crate::root_kind::RootKind;
 use crate::scan_entry::Status;
 use crate::side::Side;
 
 /// "Conflicts are never auto-resolved" (SPEC §6). Each side's whole status
 /// travels with it, so a head can say which branch of §5.2 produced it;
-/// `None` means that side has no record of the path at all.
+/// `None` means that side has no record of the path at all. `root_kind`
+/// is the kind of the entry whose run found it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Conflict {
     pub path: RelPath,
     pub a: Option<Status>,
     pub b: Option<Status>,
+    pub root_kind: RootKind,
 }
 
 impl Conflict {
@@ -35,17 +38,20 @@ impl Conflict {
     /// The ways this conflict can be settled: a side with no record of
     /// the path cannot be the one kept (there is nothing there to keep),
     /// and keeping both needs a file on both sides - otherwise there is
-    /// only one version to keep. Leaving it open is always possible and is
-    /// not a resolution.
+    /// only one version to keep. Never in a single-file entry: the copy
+    /// aside would be a second file the entry does not name, which its
+    /// replica refuses to write. Leaving it open is always possible and
+    /// is not a resolution.
     pub fn offers(&self) -> Vec<Resolution> {
         let mut offered: Vec<Resolution> = Side::BOTH
             .into_iter()
             .filter(|&side| self.on(side).is_some())
             .map(Resolution::Keep)
             .collect();
-        if Side::BOTH
-            .iter()
-            .all(|&side| self.on(side).and_then(Status::file).is_some())
+        if self.root_kind == RootKind::Folder
+            && Side::BOTH
+                .iter()
+                .all(|&side| self.on(side).and_then(Status::file).is_some())
         {
             offered.push(Resolution::KeepBoth);
         }
@@ -110,6 +116,7 @@ mod tests {
             path: RelPath::parse("x/y").unwrap_or_else(|e| panic!("{e}")),
             a,
             b,
+            root_kind: RootKind::Folder,
         }
     }
 
@@ -245,6 +252,22 @@ mod tests {
         );
         let one = conflict(None, Some(Status::Deleted));
         assert_eq!(one.offers(), vec![Resolution::Keep(Side::B)]);
+    }
+
+    #[test]
+    fn a_single_file_entry_never_offers_keeping_both() {
+        let folder = conflict(Some(unchanged(1)), Some(Status::Modified(file(2))));
+        let file_entry = Conflict {
+            root_kind: RootKind::File,
+            ..folder.clone()
+        };
+        assert_eq!(
+            file_entry.offers(),
+            vec![Resolution::Keep(Side::A), Resolution::Keep(Side::B)]
+        );
+        assert_eq!(file_entry.keep_both(aside()), None);
+        // Positive control: the same conflict in a folder entry offers it.
+        assert!(folder.keep_both(aside()).is_some());
     }
 
     #[test]

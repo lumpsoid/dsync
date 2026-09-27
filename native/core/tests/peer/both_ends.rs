@@ -18,7 +18,7 @@ const PHONE_RUN: &str = "fedcba9876543210fedcba9876543210";
 
 fn local(host: &Host, root: &Path, profile: &str) -> LocalReplica {
     LocalReplica::open(
-        root.to_str().unwrap().to_owned(),
+        dsync_core::Root::folder(root.to_str().unwrap().to_owned()),
         host.state(),
         EntryId::parse(profile).unwrap(),
         Side::A,

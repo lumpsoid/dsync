@@ -5,7 +5,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dsync_domain::{EntryId, MissingReplicaRoot, RootKind, RunOutcome, RunSummary, Side};
+use dsync_domain::{
+    EntryId, MissingParentFolder, MissingReplicaRoot, RootKind, RunOutcome, RunSummary, Side,
+    WrongRootKind,
+};
 
 use crate::connector::{ConnectError, PeerContact};
 use crate::run::{RunError, RunEvent};
@@ -67,6 +70,12 @@ pub enum SkipReason {
     /// for an empty one, which would delete every archived file on the
     /// other side.
     Missing(MissingReplicaRoot),
+    /// A single-file entry whose file's folder is missing: never created,
+    /// and never taken for an empty folder either.
+    ParentMissing(MissingParentFolder),
+    /// A root that is not the entry's kind: a folder where it syncs one
+    /// file, or the reverse. Nothing was locked or written.
+    WrongKind(WrongRootKind),
 }
 
 /// Why an entry failed.
@@ -88,6 +97,12 @@ impl EntryOutcome {
         match (summary, error) {
             (_, Some(RunError::MissingRoot(missing))) => {
                 EntryOutcome::Skipped(SkipReason::Missing(missing))
+            }
+            (_, Some(RunError::ParentMissing(missing))) => {
+                EntryOutcome::Skipped(SkipReason::ParentMissing(missing))
+            }
+            (_, Some(RunError::WrongKind(wrong))) => {
+                EntryOutcome::Skipped(SkipReason::WrongKind(wrong))
             }
             (_, Some(error)) => EntryOutcome::Failed(EntryFailure::Run(error)),
             (Some(summary), None) => EntryOutcome::Synced(summary),

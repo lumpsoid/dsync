@@ -107,7 +107,7 @@ impl Site {
     pub fn replica_with(&self, side: Side, tuning: Tuning) -> LocalReplica {
         let spec = self.spec(side);
         LocalReplica::open(
-            spec.root,
+            dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
             self.state(),
             spec.entry,
             side,
@@ -529,7 +529,7 @@ where
             async move {
                 let opened = tokio::task::spawn_blocking(move || {
                     LocalReplica::open(
-                        spec.root,
+                        dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
                         state,
                         spec.entry,
                         spec.side,

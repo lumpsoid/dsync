@@ -314,8 +314,7 @@ impl Profile {
     /// or any side of one entry and any side of another on the same
     /// endpoint - entry 1's A inside entry 2's B when both sides are this
     /// host, too. Nested roots would sync one file twice, through two
-    /// archives that each believe they own it. Also refused, for now, is
-    /// any single-file entry (the replica cannot open one yet).
+    /// archives that each believe they own it.
     pub fn options(
         &self,
         name: &ProfileName,
@@ -355,16 +354,6 @@ impl Profile {
                     second_path: second_side.to_string(),
                 });
             }
-        }
-        if let Some(entry) = self
-            .entries
-            .iter()
-            .position(|entry| entry.kind() == RootKind::File)
-        {
-            return Err(OptionsError::FileEntryUnsupported {
-                profile: name.to_string(),
-                entry,
-            });
         }
         Ok(self
             .entries

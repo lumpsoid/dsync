@@ -736,6 +736,7 @@ mod tests {
             path: path(name),
             a: Some(Status::Modified(file(3, 1))),
             b: Some(Status::Modified(file(5, b_mtime_us))),
+            root_kind: dsync_domain::RootKind::Folder,
         }
     }
 
@@ -869,6 +870,7 @@ mod tests {
                 path: path("gone.md"),
                 a: None,
                 b: Some(Status::Created(file(5, 1))),
+                root_kind: dsync_domain::RootKind::Folder,
             }],
         };
         let mut state = reviewing(&plan);

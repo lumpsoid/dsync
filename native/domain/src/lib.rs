@@ -34,6 +34,7 @@ mod jobs;
 mod location;
 mod mass_delete;
 mod metric_format;
+mod missing_parent_folder;
 mod on_disk;
 mod options_error;
 mod owed_commits;
@@ -70,8 +71,10 @@ mod sync_target;
 mod temp_name;
 mod tuning;
 mod unreadable_paths;
+mod unusable_root;
 mod write_stats;
 mod write_target;
+mod wrong_root_kind;
 
 pub use action::Action;
 pub use advertisable_address::{
@@ -108,6 +111,7 @@ pub use location::{
 };
 pub use mass_delete::{MassDelete, MassDeletePolicy, SideDeletes};
 pub use metric_format::{format_bytes, format_count, format_duration};
+pub use missing_parent_folder::MissingParentFolder;
 pub use on_disk::OnDisk;
 pub use options_error::OptionsError;
 pub use owed_commits::{IncompleteTransfer, OwedCommits, UnevenCommitOnly};
@@ -147,5 +151,7 @@ pub use sync_target::{AdHocTarget, SyncTarget};
 pub use temp_name::{TEMP_FILE_MARKER, is_temp_file_name, temp_name_for};
 pub use tuning::Tuning;
 pub use unreadable_paths::UnreadablePaths;
+pub use unusable_root::UnusableRoot;
 pub use write_stats::{Stage, StageTime, WriteStats};
 pub use write_target::{WriteMode, WriteTarget};
+pub use wrong_root_kind::WrongRootKind;

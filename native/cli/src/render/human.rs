@@ -422,6 +422,14 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
                 let device = self.view.replica(missing.side).device();
                 writeln!(self.err, "error: {}", missing.describe(device.as_deref()))
             }
+            RunError::ParentMissing(missing) => {
+                let device = self.view.replica(missing.side).device();
+                writeln!(self.err, "error: {}", missing.describe(device.as_deref()))
+            }
+            RunError::WrongKind(wrong) => {
+                let device = self.view.replica(wrong.side).device();
+                writeln!(self.err, "error: {}", wrong.describe(device.as_deref()))
+            }
             RunError::DeletesNotConfirmed(verdict) => writeln!(
                 self.err,
                 "error: {}\nTo apply it, run interactively and answer y, or rerun with \
@@ -471,6 +479,10 @@ fn outcome_text(outcome: &EntryOutcome) -> String {
     match outcome {
         EntryOutcome::Synced(_) => "synced".to_owned(),
         EntryOutcome::Skipped(SkipReason::Missing(missing)) => format!("skipped: {missing}"),
+        EntryOutcome::Skipped(SkipReason::ParentMissing(missing)) => {
+            format!("skipped: {missing}")
+        }
+        EntryOutcome::Skipped(SkipReason::WrongKind(wrong)) => format!("skipped: {wrong}"),
         EntryOutcome::Failed(EntryFailure::Connect(error)) => format!("failed: {error}"),
         EntryOutcome::Failed(EntryFailure::Run(error)) => format!("failed: {error}"),
         EntryOutcome::Failed(EntryFailure::Dropped) => {

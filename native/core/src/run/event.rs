@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dsync_domain::{
-    Action, BucketCountMismatch, Conflict, IncompleteTransfer, MassDelete, MissingReplicaRoot,
-    Plan, ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side, SkippedPath, UnevenCommitOnly,
+    Action, BucketCountMismatch, Conflict, IncompleteTransfer, MassDelete, MissingParentFolder,
+    MissingReplicaRoot, Plan, ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side, SkippedPath,
+    UnevenCommitOnly, UnusableRoot, WrongRootKind,
 };
 
 use crate::replica_error::ReplicaError;
@@ -72,6 +73,13 @@ pub enum RunError {
     /// ([`MissingReplicaRoot::describe`]).
     #[error(transparent)]
     MissingRoot(MissingReplicaRoot),
+    /// A single-file root whose folder is missing: never created.
+    #[error(transparent)]
+    ParentMissing(MissingParentFolder),
+    /// A root that is not its entry's kind, refused before either replica
+    /// is locked.
+    #[error(transparent)]
+    WrongKind(WrongRootKind),
     /// The two sides digested under different bucket counts: a far side
     /// that did not follow the exchange.
     #[error(transparent)]
@@ -86,6 +94,16 @@ pub enum RunError {
         #[source]
         source: Arc<io::Error>,
     },
+}
+
+impl From<UnusableRoot> for RunError {
+    fn from(unusable: UnusableRoot) -> RunError {
+        match unusable {
+            UnusableRoot::Missing(missing) => RunError::MissingRoot(missing),
+            UnusableRoot::ParentMissing(missing) => RunError::ParentMissing(missing),
+            UnusableRoot::WrongKind(wrong) => RunError::WrongKind(wrong),
+        }
+    }
 }
 
 impl RunError {
@@ -116,6 +134,8 @@ impl RunError {
         match self {
             RunError::Replica { side, .. } => Some(*side),
             RunError::MissingRoot(missing) => Some(missing.side),
+            RunError::ParentMissing(missing) => Some(missing.side),
+            RunError::WrongKind(wrong) => Some(wrong.side),
             RunError::Exchange(_) | RunError::DeletesNotConfirmed(_) | RunError::Marker { .. } => {
                 None
             }

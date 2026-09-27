@@ -657,32 +657,19 @@ fn windows_paths_overlap_by_windows_rules() {
 }
 
 #[test]
-fn a_single_file_entry_is_refused_for_now() {
+fn a_single_file_entry_runs_beside_a_folder_entry() {
     let text = "[[entries]]\na = \"/home/me/docs\"\nb = \"me@phone:/docs\"\n\
                 [[entries]]\nkind = \"file\"\na = \"/home/me/notes.md\"\n\
                 b = \"me@phone:/notes.md\"\n";
-    let error = profile(text)
+    let options = profile(text)
         .options(&name("p"), &no_flags(), &facts())
-        .unwrap_err();
-    assert_eq!(
-        error,
-        OptionsError::FileEntryUnsupported {
-            profile: "p".into(),
-            entry: 1
-        }
-    );
-    assert!(error.to_string().contains("not supported yet"), "{error}");
-    // Positive control: the same entries as folders run.
-    let folders = text.replace("kind = \"file\"\n", "");
-    assert_eq!(
-        profile(&folders)
-            .options(&name("p"), &no_flags(), &facts())
-            .map(|o| o.len()),
-        Ok(2)
-    );
+        .unwrap();
+    let kinds: Vec<RootKind> = options.iter().map(EffectiveOptions::kind).collect();
+    assert_eq!(kinds, [RootKind::Folder, RootKind::File]);
+    assert_eq!(options[1].as_path().map(RelPath::as_str), Some("notes.md"));
 }
 
-/// What a file entry's options will carry once the interim refusal lifts.
+/// What a file entry's options carry.
 #[test]
 fn a_file_entrys_options_carry_its_kind_name_and_own_id() {
     let text = "[[entries]]\nkind = \"file\"\na = \"/home/me/notes.md\"\n\

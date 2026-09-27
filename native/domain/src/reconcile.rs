@@ -7,6 +7,7 @@ use crate::conflict::Conflict;
 use crate::plan::Plan;
 use crate::proposal::Proposal;
 use crate::rel_path::RelPath;
+use crate::root_kind::RootKind;
 use crate::scan_entry::{FileState, ScanEntry, Status, Unchanged};
 use crate::side::Side;
 use crate::unreadable_paths::UnreadablePaths;
@@ -27,7 +28,15 @@ mod tests;
 /// covers is left out entirely - no action, no conflict - because the
 /// unreadable side's silence would otherwise read as "never seen" and
 /// mirror the other side's copy over a file the tool never looked at.
-pub fn reconcile(a: Vec<ScanEntry>, b: Vec<ScanEntry>, unreadable: &UnreadablePaths) -> Plan {
+///
+/// `root_kind` is the entry's: each conflict carries it, for what it can
+/// offer ([`Conflict::offers`]).
+pub fn reconcile(
+    a: Vec<ScanEntry>,
+    b: Vec<ScanEntry>,
+    unreadable: &UnreadablePaths,
+    root_kind: RootKind,
+) -> Plan {
     let a = by_path(a);
     let b = by_path(b);
     let files_a = present_paths(&a);
@@ -51,6 +60,7 @@ pub fn reconcile(a: Vec<ScanEntry>, b: Vec<ScanEntry>, unreadable: &UnreadablePa
             path: path.clone(),
             a: on_a.copied(),
             b: on_b.copied(),
+            root_kind,
         };
         // A file on one side and a directory with files on the other.
         if is_file_vs_dir(on_a, path, &dirs_b) || is_file_vs_dir(on_b, path, &dirs_a) {

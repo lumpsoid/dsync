@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use dsync_core::{
-    LocalReplica, PeerEvent, PeerListener, ReplicaError, StateDir, Symlinks, bind_peer,
+    LocalReplica, PeerEvent, PeerListener, ReplicaError, Root, StateDir, Symlinks, bind_peer,
     interface_addresses,
 };
 use dsync_domain::host_port::{format_host_port, parse_bind_address};
@@ -268,6 +268,8 @@ impl Opener {
             control.update(|serving| {
                 serving.record(now_ms(), ServeEventView::Serving { root: root.clone() })
             });
+            let root = Root::new(root, spec.kind, spec.as_path.clone())
+                .map_err(|error| ReplicaError::Refused(error.to_string()))?;
             let opening = tokio::task::spawn_blocking(move || {
                 LocalReplica::open(
                     root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,

@@ -2,16 +2,35 @@
 
 use std::time::SystemTime;
 
+use crate::missing_parent_folder::MissingParentFolder;
+use crate::root_kind::RootKind;
 use crate::side::Side;
+use crate::unusable_root::UnusableRoot;
+use crate::wrong_root_kind::WrongRootKind;
 
-/// Whether a replica's root folder exists (SPEC §4.5).
+/// Whether a replica's root is there to sync (SPEC §4.5). A single-file
+/// root whose folder is there is `Present` with or without its file: an
+/// absent file is a scan with nothing in it, which the archive reads as a
+/// deletion or a first sync like any other path.
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ReplicaRoot {
     Present,
-    /// Missing, with the file count its archive holds, for the message.
+    /// A folder root that is missing, with the file count its archive
+    /// holds, for the message.
     Missing {
         root_path: String,
         archived_files: u64,
+    },
+    /// A single-file root whose folder is missing.
+    ParentMissing {
+        root_path: String,
+        folder: String,
+    },
+    /// Something other than the entry's kind is at the root: a folder at
+    /// a single-file root, or anything but a folder at a folder root.
+    WrongKind {
+        root_path: String,
+        expected: RootKind,
     },
 }
 
@@ -60,10 +79,31 @@ impl MissingReplicaRoot {
 }
 
 impl ReplicaInfo {
+    /// Refuses a root that is not the entry's kind, naming `side`. Judged
+    /// before either replica is locked: nothing is taken or written for a
+    /// root the run will not touch.
+    pub fn wrong_kind(&self, side: Side) -> Option<WrongRootKind> {
+        match &self.root {
+            ReplicaRoot::WrongKind {
+                root_path,
+                expected,
+            } => Some(WrongRootKind {
+                side,
+                root_path: root_path.clone(),
+                expected: *expected,
+            }),
+            ReplicaRoot::Present
+            | ReplicaRoot::Missing { .. }
+            | ReplicaRoot::ParentMissing { .. } => None,
+        }
+    }
+
     /// Whether a run has to create this replica's root before scanning it:
-    /// only on its first sync, when no archive expects anything there.
-    /// Once it has committed, a missing root is refused, naming `side`.
-    pub fn must_create_root(&self, side: Side) -> Result<bool, MissingReplicaRoot> {
+    /// only a folder root, on its first sync, when no archive expects
+    /// anything there. Once it has committed, a missing root is refused,
+    /// naming `side`. A single-file root's missing folder is always
+    /// refused: dsync never creates the folders above a file.
+    pub fn must_create_root(&self, side: Side) -> Result<bool, UnusableRoot> {
         match (&self.root, self.last_commit) {
             (ReplicaRoot::Present, _) => Ok(false),
             (ReplicaRoot::Missing { .. }, None) => Ok(true),
@@ -73,11 +113,29 @@ impl ReplicaInfo {
                     archived_files,
                 },
                 Some(_),
-            ) => Err(MissingReplicaRoot {
+            ) => Err(UnusableRoot::Missing(MissingReplicaRoot {
                 side,
                 root_path: root_path.clone(),
                 archived_files: *archived_files,
-            }),
+            })),
+            (ReplicaRoot::ParentMissing { root_path, folder }, _) => {
+                Err(UnusableRoot::ParentMissing(MissingParentFolder {
+                    side,
+                    root_path: root_path.clone(),
+                    folder: folder.clone(),
+                }))
+            }
+            (
+                ReplicaRoot::WrongKind {
+                    root_path,
+                    expected,
+                },
+                _,
+            ) => Err(UnusableRoot::WrongKind(WrongRootKind {
+                side,
+                root_path: root_path.clone(),
+                expected: *expected,
+            })),
         }
     }
 }
@@ -131,12 +189,57 @@ mod tests {
         };
         assert_eq!(
             info(committed(), missing).must_create_root(Side::B),
-            Err(MissingReplicaRoot {
+            Err(UnusableRoot::Missing(MissingReplicaRoot {
                 side: Side::B,
                 root_path: "/media/sd/notes".into(),
                 archived_files: 42,
-            })
+            }))
         );
+    }
+
+    #[test]
+    fn a_missing_parent_folder_is_refused_first_sync_or_not() {
+        let parent_missing = ReplicaRoot::ParentMissing {
+            root_path: "/media/sd/notes.md".into(),
+            folder: "/media/sd".into(),
+        };
+        let refused = Err(UnusableRoot::ParentMissing(MissingParentFolder {
+            side: Side::A,
+            root_path: "/media/sd/notes.md".into(),
+            folder: "/media/sd".into(),
+        }));
+        assert_eq!(
+            info(None, parent_missing.clone()).must_create_root(Side::A),
+            refused
+        );
+        assert_eq!(
+            info(committed(), parent_missing.clone()).must_create_root(Side::A),
+            refused
+        );
+        assert_eq!(info(None, parent_missing).wrong_kind(Side::A), None);
+    }
+
+    #[test]
+    fn a_root_of_the_wrong_kind_is_refused_and_never_created() {
+        let wrong = ReplicaRoot::WrongKind {
+            root_path: "/x/notes.md".into(),
+            expected: RootKind::File,
+        };
+        let expected = WrongRootKind {
+            side: Side::B,
+            root_path: "/x/notes.md".into(),
+            expected: RootKind::File,
+        };
+        assert_eq!(
+            info(None, wrong.clone()).wrong_kind(Side::B),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            info(None, wrong).must_create_root(Side::B),
+            Err(UnusableRoot::WrongKind(expected))
+        );
+        // Positive control: a present root is of its kind.
+        assert_eq!(info(None, ReplicaRoot::Present).wrong_kind(Side::B), None);
     }
 
     fn missing(archived_files: u64) -> MissingReplicaRoot {

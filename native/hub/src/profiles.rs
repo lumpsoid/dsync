@@ -4,10 +4,11 @@
 //! with the list as it now stands.
 
 use dsync_core::{
-    PairedDeviceStore, PairedDevices, ProfileStore, RunMarker, StateDir, check_folder_access,
+    PairedDeviceStore, PairedDevices, ProfileStore, RunMarker, StateDir, check_root_access,
 };
 use dsync_domain::{
-    Entry, EntryId, HostFacts, Jobs, Location, Profile, ProfileName, ReplicaLocation, Side,
+    Entry, EntryId, HostFacts, Jobs, Location, Profile, ProfileName, ReplicaLocation, RootKind,
+    Side,
 };
 
 use crate::devices::device;
@@ -144,7 +145,9 @@ impl Listing {
                 let local = first.replica(Side::A).to_location();
                 let expanded = local.expanded_path(self.facts.home());
                 let refusal = match &expanded {
-                    Ok(root) => check_folder_access(root.as_ref()).err().map(text),
+                    Ok(root) => check_root_access(RootKind::Folder, root.as_ref())
+                        .err()
+                        .map(text),
                     Err(error) => Some(error.to_string()),
                 };
                 let marker = RunMarker::new(self.state.run_marker(&id));

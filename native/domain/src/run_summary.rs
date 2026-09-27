@@ -63,6 +63,7 @@ mod tests {
     use super::*;
     use crate::conflict::Conflict;
     use crate::proposal::Proposal;
+    use crate::root_kind::RootKind;
     use crate::side::Side;
 
     fn path(text: &str) -> RelPath {
@@ -94,6 +95,7 @@ mod tests {
                 path: path("x"),
                 a: None,
                 b: None,
+                root_kind: RootKind::Folder,
             }],
         }
     }
@@ -150,6 +152,7 @@ mod tests {
             path: path("y"),
             a: None,
             b: None,
+            root_kind: RootKind::Folder,
         });
         let mut kept = all(&plan);
         kept.push(Action::Delete {

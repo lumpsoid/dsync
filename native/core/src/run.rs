@@ -280,6 +280,14 @@ impl Run {
                 last_run_unfinished,
             })
             .await;
+        // Before either lock: a root of the wrong kind is not touched at
+        // all, not even by a lock beside it.
+        for (side, info) in [(Side::A, &info_a), (Side::B, &info_b)] {
+            if let Some(wrong) = info.wrong_kind(side) {
+                self.events.fail(RunError::WrongKind(wrong)).await;
+                return None;
+            }
+        }
         if let Err(error) = pair.clock.phase(RunPhase::Lock, pair.lock(Side::A)).await {
             self.events
                 .fail(RunError::replica(Side::A, ReplicaOp::Lock)(error))
@@ -332,7 +340,7 @@ impl Run {
         // one leaves the other as it was (SPEC §4.5).
         let mut create = Vec::new();
         for (side, info) in Side::BOTH.into_iter().zip(infos) {
-            if info.must_create_root(side).map_err(RunError::MissingRoot)? {
+            if info.must_create_root(side).map_err(RunError::from)? {
                 create.push(side);
             }
         }
@@ -367,7 +375,12 @@ impl Run {
         let skipped = || a.skipped.iter().chain(&b.skipped);
         let unreadable = failure_count(skipped());
         let reconciling = Instant::now();
-        let plan = reconcile(a.list.clone(), b.list.clone(), &unreadable_of(skipped()));
+        let plan = reconcile(
+            a.list.clone(),
+            b.list.clone(),
+            &unreadable_of(skipped()),
+            options.kind(),
+        );
         pair.clock
             .add_phase(RunPhase::Reconcile, reconciling.elapsed());
         for conflict in &plan.conflicts {

@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use dsync_core::{
     DeviceIdentityStore, LocalReplica, PairedDeviceStore, PeerEvent, PeerListener, ReplicaError,
-    ReplicaServer, StateDir, Symlinks, bind_peer,
+    ReplicaServer, Root, StateDir, Symlinks, bind_peer,
 };
 use dsync_domain::host_port::{format_host_port, is_wildcard_address};
 use dsync_domain::{HostFacts, ReplicaSpec, Tuning};
@@ -60,6 +60,8 @@ impl Opener {
         async move {
             let root = spec
                 .expanded_root(home.as_deref())
+                .map_err(|error| ReplicaError::Refused(error.to_string()))?;
+            let root = Root::new(root, spec.kind, spec.as_path.clone())
                 .map_err(|error| ReplicaError::Refused(error.to_string()))?;
             let opening = tokio::task::spawn_blocking(move || {
                 LocalReplica::open(

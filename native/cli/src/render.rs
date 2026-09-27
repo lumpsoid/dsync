@@ -291,6 +291,7 @@ pub(crate) mod fixtures {
             path: path(at),
             a,
             b,
+            root_kind: dsync_domain::RootKind::Folder,
         }
     }
 

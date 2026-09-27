@@ -152,3 +152,63 @@ fn a_resolved_overlap_through_a_symlink_names_the_profile_and_exits_3() {
         "a refused run touched a replica"
     );
 }
+
+#[test]
+fn a_profile_of_a_folder_entry_and_a_file_entry_syncs_both() {
+    let site = Site::new();
+    let (a, b) = (site.root("fa"), site.root("fb"));
+    site.root("notes-b");
+    site.write("fa/one.txt", "1");
+    site.write("notes.md", "my notes");
+    site.write("beside.md", "not synced");
+    // Side A's file is relative: it sits in the working directory.
+    let b_file = site.arg("notes-b/renamed.md");
+    site.profile(
+        "mixed",
+        &format!(
+            "[[entries]]\na = \"{a}\"\nb = \"{b}\"\n\
+             [[entries]]\nkind = \"file\"\na = \"notes.md\"\nb = \"{b_file}\"\n"
+        ),
+    );
+
+    let synced = site.run(&["sync", "mixed", "--batch"]);
+
+    synced.exits(0);
+    assert_eq!(site.read("fb/one.txt"), "1");
+    assert_eq!(site.read("notes-b/renamed.md"), "my notes");
+    assert_eq!(
+        site.listing(&site.path("notes-b")),
+        ["renamed.md".to_owned()].into()
+    );
+
+    // Back the other way, under side A's own name.
+    site.write("notes-b/renamed.md", "edited on b");
+    site.run(&["sync", "mixed", "--batch"]).exits(0);
+    assert_eq!(site.read("notes.md"), "edited on b");
+    assert_eq!(site.read("beside.md"), "not synced");
+}
+
+#[test]
+fn a_file_entry_whose_folder_is_missing_is_skipped_and_the_next_entry_syncs() {
+    let site = Site::new();
+    let (a, b) = (site.root("sa"), site.root("sb"));
+    site.write("sa/one.txt", "1");
+    site.write("n/notes.md", "n");
+    let (a_file, b_file) = (site.arg("n/notes.md"), site.arg("gone/notes.md"));
+    site.profile(
+        "skips",
+        &format!(
+            "[[entries]]\nkind = \"file\"\na = \"{a_file}\"\nb = \"{b_file}\"\n\
+             [[entries]]\na = \"{a}\"\nb = \"{b}\"\n"
+        ),
+    );
+
+    let finished = site.run(&["sync", "skips", "--batch"]);
+
+    assert!(
+        finished.stdout.contains("skipped: The folder"),
+        "{finished:#?}"
+    );
+    assert!(!site.path("gone").exists());
+    assert_eq!(site.read("sb/one.txt"), "1");
+}

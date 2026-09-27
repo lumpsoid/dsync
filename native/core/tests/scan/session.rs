@@ -7,8 +7,8 @@
 
 use dsync_core::ScanSession;
 use dsync_domain::{
-    Action, Archive, ArchiveCommit, Bucket, BucketCount, ChangedScan, Plan, RuleSet, ScanEntry,
-    ScanResult, Side, reconcile, status_list, unreadable_of,
+    Action, Archive, ArchiveCommit, Bucket, BucketCount, ChangedScan, Plan, RootKind, RuleSet,
+    ScanEntry, ScanResult, Side, reconcile, status_list, unreadable_of,
 };
 
 use crate::support::*;
@@ -61,13 +61,23 @@ fn plan_of(scans: &Exchanged) -> Plan {
             .iter()
             .chain(&scans.changed_b.skipped),
     );
-    reconcile(scans.on_a.clone(), scans.on_b.clone(), &unreadable)
+    reconcile(
+        scans.on_a.clone(),
+        scans.on_b.clone(),
+        &unreadable,
+        RootKind::Folder,
+    )
 }
 
 /// The exchange's plan, asserted equal to the whole-listing plan.
 fn plan_matching_whole_listings(a: ScanResult, b: ScanResult) -> (Plan, Exchanged) {
     let unreadable = unreadable_of(a.skipped.iter().chain(&b.skipped));
-    let whole = reconcile(a.entries.clone(), b.entries.clone(), &unreadable);
+    let whole = reconcile(
+        a.entries.clone(),
+        b.entries.clone(),
+        &unreadable,
+        RootKind::Folder,
+    );
     let scans = exchange(ScanSession::new(a), ScanSession::new(b));
     let phased = plan_of(&scans);
     assert_eq!(phased, whole);

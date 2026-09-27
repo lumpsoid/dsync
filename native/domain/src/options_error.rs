@@ -54,13 +54,6 @@ pub enum OptionsError {
          environment variables are expanded: {first} and {second}"
     )]
     AdHocOverlap { first: String, second: String },
-    /// Interim, until single-file replicas land: a `kind = "file"` entry
-    /// parses and saves but does not run.
-    #[error(
-        "profile \"{profile}\": entries[{entry}] is a single-file entry; single-file entries \
-         are not supported yet"
-    )]
-    FileEntryUnsupported { profile: String, entry: usize },
     #[error(transparent)]
     Expand(#[from] ExpandError),
 }

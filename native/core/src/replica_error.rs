@@ -70,6 +70,7 @@ pub enum FileOp {
     Read,
     Delete,
     RemoveDir,
+    Commit,
 }
 
 impl fmt::Display for FileOp {
@@ -79,6 +80,7 @@ impl fmt::Display for FileOp {
             FileOp::Read => "reading",
             FileOp::Delete => "deleting",
             FileOp::RemoveDir => "removing the empty folder",
+            FileOp::Commit => "recording in the archive",
         })
     }
 }

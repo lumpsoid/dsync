@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
     ArchiveCommit, Bucket, BucketCount, Digested, EntryId, FileMeta, Jobs, OnDisk, Precondition,
-    RelPath, ReplicaInfo, ReplicaRoot, RuleSet, ScanEntry, Side, Tuning,
+    RelPath, ReplicaInfo, RuleSet, ScanEntry, Side, Tuning,
 };
 
 use crate::archive_store::{ArchiveError, ArchiveStore};
@@ -22,6 +22,7 @@ use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
 use crate::confinement::Confinement;
 use crate::file_write::Destination;
+use crate::local_root::{Located, Root};
 use crate::replica::{
     BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
 };
@@ -43,8 +44,8 @@ pub struct LocalReplica {
 }
 
 struct Shared {
-    root: PathBuf,
-    root_text: String,
+    /// The only way to the replica's files ([`Root::locate`]).
+    root: Arc<Root>,
     state: StateDir,
     entry_id: EntryId,
     side: Side,
@@ -71,12 +72,12 @@ enum ScanPhase {
 }
 
 impl LocalReplica {
-    /// The replica at `root` (as the location names it; also the archive
-    /// header's root), side `side` of `entry_id`, with its state in
-    /// `state`, going through the `symlinks` it may. Replays the archive,
-    /// so this blocks.
+    /// The replica at `root` (its text as the location names it is also
+    /// the archive header's root), side `side` of `entry_id`, with its
+    /// state in `state`, going through the `symlinks` it may. Replays the
+    /// archive, so this blocks.
     pub fn open(
-        root: String,
+        root: Root,
         state: StateDir,
         entry_id: EntryId,
         side: Side,
@@ -84,15 +85,15 @@ impl LocalReplica {
         tuning: Tuning,
         symlinks: Symlinks,
     ) -> Result<LocalReplica, ArchiveError> {
-        let store = ArchiveStore::open_replica(&state, &entry_id, side, root.clone(), &tuning)?;
-        let path = PathBuf::from(&root);
-        let confinement = Arc::new(Confinement::new(path.clone(), symlinks));
+        let store =
+            ArchiveStore::open_replica(&state, &entry_id, side, root.text().to_owned(), &tuning)?;
+        let root = Arc::new(root);
+        let confinement = Arc::new(Confinement::new(root.base().to_path_buf(), symlinks));
         Ok(LocalReplica {
             shared: Arc::new(Shared {
-                destination: Arc::new(Destination::new(path.clone(), confinement.clone())),
+                destination: Arc::new(Destination::new(root.clone(), confinement.clone())),
                 confinement,
-                root: path,
-                root_text: root,
+                root,
                 state,
                 entry_id,
                 side,
@@ -106,8 +107,9 @@ impl LocalReplica {
         })
     }
 
+    /// The root itself: the folder, or the one file.
     pub fn root(&self) -> &Path {
-        &self.shared.root
+        self.shared.root.path()
     }
 
     /// What this replica's writers have spent so far, stage by stage
@@ -161,6 +163,14 @@ impl Shared {
     fn file_error(&self, op: FileOp, path: PathBuf) -> impl FnOnce(io::Error) -> ReplicaError {
         move |source| ReplicaError::File { op, path, source }
     }
+
+    /// Where `path` lands, or the refusal of a path outside the root,
+    /// failing `op`.
+    fn locate(&self, op: FileOp, path: &RelPath) -> Result<Located, ReplicaError> {
+        self.root
+            .locate(path)
+            .map_err(self.file_error(op, PathBuf::from(path.as_str())))
+    }
 }
 
 impl Replica for LocalReplica {
@@ -170,14 +180,7 @@ impl Replica for LocalReplica {
             let last_commit = store.last_commit()?;
             // The archive is only counted for a missing root, where the
             // refusal reports it (SPEC §4.5).
-            let root = if shared.root.is_dir() {
-                ReplicaRoot::Present
-            } else {
-                ReplicaRoot::Missing {
-                    root_path: shared.root_text.clone(),
-                    archived_files: store.archive().len() as u64,
-                }
-            };
+            let root = shared.root.state(|| store.archive().len() as u64);
             Ok(ReplicaInfo {
                 last_commit,
                 archive_path: Some(store.log_path().display().to_string()),
@@ -189,8 +192,12 @@ impl Replica for LocalReplica {
 
     async fn lock(&self) -> Result<(), ReplicaError> {
         self.blocking(|shared| {
-            let lock =
-                RunLocks::acquire(&shared.state, &shared.entry_id, shared.side, &shared.root)?;
+            let lock = RunLocks::acquire(
+                &shared.state,
+                &shared.entry_id,
+                shared.side,
+                shared.root.path(),
+            )?;
             // Replayed again under the lock: a run that held it until now
             // may have committed since this replica was opened.
             let mut store = shared.store();
@@ -199,7 +206,7 @@ impl Replica for LocalReplica {
                 &shared.state,
                 &shared.entry_id,
                 shared.side,
-                shared.root_text.clone(),
+                shared.root.text().to_owned(),
                 &shared.tuning,
             )?;
             *shared.held() = Some(lock);
@@ -221,8 +228,10 @@ impl Replica for LocalReplica {
 
     async fn create_root(&self) -> Result<(), ReplicaError> {
         self.blocking(|shared| {
-            fs::create_dir_all(&shared.root)
-                .map_err(shared.file_error(FileOp::CreateRoot, shared.root.clone()))
+            shared
+                .root
+                .create()
+                .map_err(shared.file_error(FileOp::CreateRoot, shared.root.path().to_path_buf()))
         })
         .await
     }
@@ -233,11 +242,11 @@ impl Replica for LocalReplica {
             .blocking(move |shared| {
                 let scanner = Scanner::new(
                     shared.jobs,
-                    probe_case_folding(&shared.root),
+                    probe_case_folding(shared.root.base()),
                     shared.confinement.symlinks().clone(),
                 );
                 let mut store = shared.store();
-                let result = scanner.scan(&shared.root, store.archive(), &rules)?;
+                let result = shared.root.scan(&scanner, store.archive(), &rules)?;
                 store.commit(result.key_refreshes())?;
                 Ok::<_, ReplicaError>(result)
             })
@@ -291,15 +300,15 @@ impl Replica for LocalReplica {
     }
 
     async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
-        let source = path.join_under(&self.shared.root);
         let path = path.clone();
         let file = self
             .blocking(move |shared| {
+                let Located { path: source, rel } = shared.locate(FileOp::Read, &path)?;
                 // A peer can read without scanning: the scan's skip is
                 // not the only bound.
                 shared
                     .confinement
-                    .check(&path)
+                    .check(&rel)
                     .and_then(|()| File::open(&source))
                     .map_err(shared.file_error(FileOp::Read, source.clone()))
             })
@@ -325,12 +334,12 @@ impl Replica for LocalReplica {
     }
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
-        let target = path.join_under(&self.shared.root);
         let path = path.clone();
         self.blocking(move |shared| {
+            let Located { path: target, rel } = shared.locate(FileOp::Delete, &path)?;
             shared
                 .confinement
-                .check(&path)
+                .check(&rel)
                 .map_err(shared.file_error(FileOp::Delete, target.clone()))?;
             expect.check(on_disk_at(&target))?;
             fs::remove_file(&target).map_err(shared.file_error(FileOp::Delete, target.clone()))
@@ -341,14 +350,17 @@ impl Replica for LocalReplica {
     async fn remove_empty_dirs(&self, path: &RelPath) -> Result<(), ReplicaError> {
         let path = path.clone();
         self.blocking(move |shared| {
-            let mut ancestor = path.parent();
+            // The folders above the path within the root: none for a
+            // single-file root, whose folder is never removed.
+            let rel = shared.locate(FileOp::RemoveDir, &path)?.rel;
+            let mut ancestor = rel.parent();
             if let Some(folder) = &ancestor {
                 shared.confinement.check(folder).map_err(
-                    shared.file_error(FileOp::RemoveDir, folder.join_under(&shared.root)),
+                    shared.file_error(FileOp::RemoveDir, folder.join_under(shared.root.base())),
                 )?;
             }
             while let Some(folder) = ancestor {
-                let at = folder.join_under(&shared.root);
+                let at = folder.join_under(shared.root.base());
                 match fs::remove_dir(&at) {
                     // Forgotten, so a later write into it this session
                     // creates it again instead of trusting it (SPEC §7.1
@@ -372,8 +384,15 @@ impl Replica for LocalReplica {
     }
 
     async fn commit(&self, batch: Vec<ArchiveCommit>) -> Result<(), ReplicaError> {
-        self.blocking(move |shared| Ok(shared.store().commit(batch)?))
-            .await
+        self.blocking(move |shared| {
+            // A single-file root's archive records its one path, whoever
+            // asks.
+            for commit in &batch {
+                shared.locate(FileOp::Commit, commit.path())?;
+            }
+            Ok(shared.store().commit(batch)?)
+        })
+        .await
     }
 
     async fn compact(&self) -> Result<(), ReplicaError> {

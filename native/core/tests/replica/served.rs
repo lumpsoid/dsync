@@ -43,7 +43,7 @@ pub fn open_local(
         Box::pin(async move {
             let opened = tokio::task::spawn_blocking(move || {
                 LocalReplica::open(
-                    spec.root,
+                    dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
                     state,
                     spec.entry,
                     spec.side,

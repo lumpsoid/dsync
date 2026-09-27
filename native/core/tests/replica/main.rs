@@ -6,6 +6,7 @@
 mod child;
 mod commit;
 mod crash;
+mod file_root;
 mod hello_lock;
 mod pipelining;
 mod read;

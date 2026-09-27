@@ -12,8 +12,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use dsync_core::{ArchiveStore, Body, LocalReplica, Replica, StateDir, body_channel};
 use dsync_domain::{
     Action, Archive, ArchiveCommit, BucketCount, ContentHash, EntryId, FileMeta, FileState, Jobs,
-    Plan, Precondition, RelPath, RuleSet, ScanEntry, Side, Status, Tuning, UnreadablePaths,
-    is_temp_file_name, reconcile, status_list,
+    Plan, Precondition, RelPath, RootKind, RuleSet, ScanEntry, Side, Status, Tuning,
+    UnreadablePaths, is_temp_file_name, reconcile, status_list,
 };
 use tempfile::TempDir;
 
@@ -149,7 +149,7 @@ impl Site {
         tuning: Tuning,
     ) -> LocalReplica {
         LocalReplica::open(
-            root.to_str().unwrap().to_owned(),
+            dsync_core::Root::folder(root.to_str().unwrap().to_owned()),
             self.state(),
             EntryId::parse(profile).unwrap(),
             side,
@@ -319,7 +319,12 @@ pub async fn exchange(a: &impl Replica, b: &impl Replica) -> Exchanged {
     let list_a = status_list(opened_a.changed.entries, digested_a.owed, fetched_a);
     let list_b = status_list(opened_b.changed.entries, digested_b.owed, fetched_b);
     Exchanged {
-        plan: reconcile(list_a.clone(), list_b.clone(), &unreadable),
+        plan: reconcile(
+            list_a.clone(),
+            list_b.clone(),
+            &unreadable,
+            RootKind::Folder,
+        ),
         a: list_a,
         b: list_b,
     }

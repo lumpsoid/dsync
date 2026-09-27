@@ -80,6 +80,57 @@ impl Scanner {
         rules: &RuleSet,
     ) -> Result<ScanResult, UnreadableRoot> {
         let events = walk(root, rules, &self.symlinks)?;
+        Ok(self.conclude(events, archive, rules))
+    }
+
+    /// A single-file root's scan: `file` in `dir`, reported at `as_path`.
+    /// No walk, and no rule applies - the entry named the file, so the
+    /// profile's ignore rules and the scratch-name skip do not hide it.
+    /// Only a file that is not found is absent; any other failure to stat
+    /// or read it reports it unreadable, so it is never read as deleted.
+    /// Its folder not being one is fatal, as a folder root's is.
+    pub fn scan_file(
+        &self,
+        dir: &Path,
+        file: &Path,
+        as_path: &RelPath,
+        archive: &Archive,
+    ) -> Result<ScanResult, UnreadableRoot> {
+        let unreadable_root = |source| UnreadableRoot {
+            root: dir.to_path_buf(),
+            source,
+        };
+        if !fs::metadata(dir).map_err(unreadable_root)?.is_dir() {
+            return Err(unreadable_root(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "not a folder",
+            )));
+        }
+        let path = as_path.clone();
+        let events = match fs::metadata(file) {
+            Ok(meta) if meta.is_file() => vec![Event::File {
+                path,
+                source: file.to_path_buf(),
+            }],
+            Ok(meta) if meta.is_dir() => vec![Event::Skipped(SkippedPath::new(
+                path,
+                SkippedReason::Unreadable,
+                "a folder, where the entry syncs a single file",
+            ))],
+            Ok(meta) => vec![Event::Skipped(SkippedPath::new(
+                path,
+                SkippedReason::SpecialFile,
+                special_kind(meta.file_type()),
+            ))],
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => vec![Event::Skipped(unreadable(path, &error))],
+        };
+        Ok(self.conclude(events, archive, &RuleSet::default()))
+    }
+
+    /// Stats and hashes the files among the walk's `events`, and gives each
+    /// its status against `archive`.
+    fn conclude(&self, events: Vec<Event>, archive: &Archive, rules: &RuleSet) -> ScanResult {
         let files: Vec<(&RelPath, &Path)> = events
             .iter()
             .filter_map(|event| match event {
@@ -151,7 +202,7 @@ impl Scanner {
                 }
             }
         }
-        Ok(ScanResult::assemble(archive, rules, self.folding, walked))
+        ScanResult::assemble(archive, rules, self.folding, walked)
     }
 }
 

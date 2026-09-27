@@ -19,6 +19,7 @@ use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::body::BodyError;
 use crate::confinement::Confinement;
+use crate::local_root::{Located, Root};
 use crate::replica_error::ReplicaError;
 use crate::scanner::{on_disk, on_disk_failing, stat};
 use crate::write_error::WriteError;
@@ -35,8 +36,9 @@ pub(crate) enum Chunk {
 /// Where a replica's writes land, shared by its writer threads for the
 /// session.
 pub(crate) struct Destination {
-    root: PathBuf,
-    /// Parent folders this session has created or found. See
+    root: Arc<Root>,
+    /// Parent folders this session has created or found, relative to the
+    /// root's base. See
     /// [`Destination::ensure_parent`].
     parents: Mutex<HashSet<RelPath>>,
     modes: ModeStep,
@@ -45,7 +47,7 @@ pub(crate) struct Destination {
 }
 
 impl Destination {
-    pub(crate) fn new(root: PathBuf, confinement: Arc<Confinement>) -> Destination {
+    pub(crate) fn new(root: Arc<Root>, confinement: Arc<Confinement>) -> Destination {
         Destination {
             root,
             parents: Mutex::new(HashSet::new()),
@@ -75,12 +77,15 @@ impl Destination {
     /// the replica lock does not prevent. The second surfaces as a failed
     /// write, and a failed write forgets its parent, so the next path under
     /// it creates it again: one path fails, not every one under it.
+    ///
+    /// `folder` is a located path's parent ([`Located::rel`]): a single-file
+    /// root's file has none, so its folder is never created here.
     fn ensure_parent(&self, folder: &RelPath) -> io::Result<bool> {
         if self.parents().contains(folder) {
             return Ok(false);
         }
         // Remembered only after the create succeeds.
-        fs::create_dir_all(folder.join_under(&self.root))?;
+        fs::create_dir_all(folder.join_under(self.root.base()))?;
         self.parents().insert(folder.clone());
         Ok(true)
     }
@@ -209,9 +214,17 @@ pub(crate) fn write_file(
 ) -> Result<FileMeta, ReplicaError> {
     let mut timer = StageTimer::new(stats);
     let mut scratch: Option<Scratch> = None;
+    // Refused before anything is looked at: a path outside the root.
+    let located = destination.root.locate(path).map_err(|source| {
+        ReplicaError::Write(WriteError {
+            path: path.clone(),
+            stage: Stage::Probe,
+            source,
+        })
+    })?;
     let landed = land(
         destination,
-        path,
+        &located,
         meta,
         expect,
         chunks,
@@ -219,7 +232,7 @@ pub(crate) fn write_file(
         &mut scratch,
     );
     if landed.is_err() {
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = located.rel.parent() {
             destination.forget(&parent);
         }
         if let Some(scratch) = scratch {
@@ -253,26 +266,25 @@ fn at(stage: Stage) -> impl FnOnce(io::Error) -> Failed {
 
 fn land(
     destination: &Destination,
-    path: &RelPath,
+    located: &Located,
     meta: FileMeta,
     expect: Precondition,
     chunks: &mut mpsc::UnboundedReceiver<Chunk>,
     timer: &mut StageTimer,
     scratch: &mut Option<Scratch>,
 ) -> Result<FileMeta, Failed> {
-    let root = &destination.root;
-    let target = path.join_under(root);
+    let Located { path: target, rel } = located;
     // Before anything is looked at through a link it may not go through.
     destination
         .confinement
-        .check(path)
+        .check(rel)
         .map_err(at(Stage::Probe))?;
     // Before the folders too: a path whose parent is not there reads as
     // absent, and one that changed leaves nothing behind.
-    let (found, now) = probe(&target);
+    let (found, now) = probe(target);
     timer.lap(Stage::Probe);
     expect.check(now)?;
-    if let Some(parent) = path.parent()
+    if let Some(parent) = rel.parent()
         && destination
             .ensure_parent(&parent)
             .map_err(at(Stage::Mkdir))?
@@ -281,7 +293,7 @@ fn land(
     }
 
     let mut file = match found.mode() {
-        WriteMode::InPlace => match open_in_place(&target, &found) {
+        WriteMode::InPlace => match open_in_place(target, &found) {
             Ok(file) => {
                 timer.lap(stage_opening(&found));
                 file
@@ -291,11 +303,11 @@ fn land(
             // a rename exists for: it needs only the folder's permission.
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
                 timer.lap(Stage::Open);
-                create_scratch(&target, scratch, timer)?
+                create_scratch(target, scratch, timer)?
             }
             Err(error) => return Err(Failed::At(stage_opening(&found), error)),
         },
-        WriteMode::TempAndRename => create_scratch(&target, scratch, timer)?,
+        WriteMode::TempAndRename => create_scratch(target, scratch, timer)?,
     };
 
     loop {
@@ -316,7 +328,9 @@ fn land(
     // Best effort (SPEC §7.4): the stat below records whatever landed.
     let _ = file.set_modified(system_time(meta.mtime_us));
     timer.lap(Stage::Mtime);
-    destination.modes.apply(root, &file, meta.mode);
+    destination
+        .modes
+        .apply(destination.root.base(), &file, meta.mode);
     timer.lap(Stage::Mode);
     drop(file);
     timer.lap(Stage::Close);
@@ -325,7 +339,7 @@ fn land(
         *scratch = None;
         timer.lap(Stage::Rename);
     }
-    let landed = stat(&target).map_err(at(Stage::Stat))?;
+    let landed = stat(target).map_err(at(Stage::Stat))?;
     timer.lap(Stage::Stat);
     Ok(landed)
 }
@@ -466,7 +480,8 @@ mod tests {
 
     fn destination(root: &Path, modes_apply: bool) -> Destination {
         let confinement = Confinement::new(root.to_path_buf(), crate::Symlinks::AsRuled);
-        let destination = Destination::new(root.to_path_buf(), Arc::new(confinement));
+        let folder = Root::folder(root.to_str().unwrap().to_owned());
+        let destination = Destination::new(Arc::new(folder), Arc::new(confinement));
         destination.modes.applies.set(modes_apply).unwrap();
         destination
     }

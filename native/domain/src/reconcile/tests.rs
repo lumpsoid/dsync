@@ -76,7 +76,7 @@ fn untrusted_absent(p: &str) -> ScanEntry {
 }
 
 fn run(a: Vec<ScanEntry>, b: Vec<ScanEntry>) -> Plan {
-    reconcile(a, b, &UnreadablePaths::default())
+    reconcile(a, b, &UnreadablePaths::default(), RootKind::Folder)
 }
 
 fn unreadable(roots: &[&str]) -> UnreadablePaths {
@@ -515,7 +515,7 @@ fn a_path_one_side_could_not_read_gets_no_action() {
         Some(Act::CopyBtoA)
     );
 
-    let plan = reconcile(vec![], b, &unreadable(&["f.txt"]));
+    let plan = reconcile(vec![], b, &unreadable(&["f.txt"]), RootKind::Folder);
     assert_eq!(plan, Plan::default());
 }
 
@@ -525,7 +525,7 @@ fn nor_a_conflict() {
     let b = vec![hashed("f.txt", Kind::Modified, "b")];
     assert!(is_conflict(&run(a.clone(), b.clone()), "f.txt"));
 
-    let plan = reconcile(a, b, &unreadable(&["f.txt"]));
+    let plan = reconcile(a, b, &unreadable(&["f.txt"]), RootKind::Folder);
     assert_eq!(plan, Plan::default());
 }
 
@@ -535,6 +535,7 @@ fn an_unreadable_directory_covers_everything_beneath_it() {
         vec![],
         vec![hashed("sub/inner.txt", Kind::Unchanged, "b")],
         &unreadable(&["sub"]),
+        RootKind::Folder,
     );
     assert!(plan.actions.is_empty());
 }
@@ -545,6 +546,7 @@ fn a_sibling_whose_name_merely_starts_with_an_unreadable_path_is_reconciled() {
         vec![],
         vec![sized("submarine.txt", Kind::Created, "b", 4)],
         &unreadable(&["sub"]),
+        RootKind::Folder,
     );
     let paths: Vec<_> = plan
         .actions
@@ -560,6 +562,7 @@ fn every_other_path_still_reconciles_normally() {
         vec![sized("ok.txt", Kind::Created, "a", 5)],
         vec![],
         &unreadable(&["locked.txt"]),
+        RootKind::Folder,
     );
     assert_eq!(plan.actions.len(), 1);
     assert_eq!(action_for(&plan, "ok.txt"), Some(Act::CopyAtoB));

@@ -301,7 +301,7 @@ async fn a_local_replica_follows_links_as_its_own_rules_say() {
     let linked = Linked::new().await;
     // Another profile than the served one's, on the same tree.
     let local = LocalReplica::open(
-        linked.root.to_str().unwrap().to_owned(),
+        dsync_core::Root::folder(linked.root.to_str().unwrap().to_owned()),
         linked.server.state(),
         EntryId::parse("fedcba9876543210fedcba9876543210").unwrap(),
         Side::A,
