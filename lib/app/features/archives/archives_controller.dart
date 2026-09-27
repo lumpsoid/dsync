@@ -2,6 +2,7 @@ import '../../app_controller.dart';
 import '../../archive_row.dart';
 import '../../core_link/models/archive_info.dart';
 import '../../core_link/models/core_failure.dart';
+import 'archive_selection.dart';
 import 'archives_view_state.dart';
 
 /// Input methods of the Archives page: what the sync history costs on this
@@ -75,10 +76,36 @@ class ArchivesController {
   /// Ticks or unticks one row, and leaves selection mode when the last tick
   /// goes. The page calls this rather than the view state directly, per the
   /// controller role in `app_scope.dart`.
-  void toggleSelection(String logPath) => state.toggleSelection(logPath);
+  void toggleSelection(String logPath) =>
+      state.recordSelection(state.selection.toggle(logPath));
+
+  /// Ticks every row from the selection's anchor to [to] in the order the
+  /// list shows — Shift-click and Shift+Up/Down. [from] is the row the
+  /// keyboard focus is on, where the range starts when nothing has been
+  /// clicked yet; see [ArchiveSelection.selectRange].
+  void selectRange({required String? from, required String to}) => state
+      .recordSelection(state.selection.selectRange(_order, from: from, to: to));
+
+  /// Ticks every listed row — Ctrl+A and the bar's "Select all". Nothing
+  /// over a list that is empty or not read yet.
+  void selectAll() => state.recordSelection(state.selection.selectAll(_order));
 
   /// Leaves selection mode without deleting anything.
-  void clearSelection() => state.clearSelection();
+  void clearSelection() => state.recordSelection(ArchiveSelection.none);
+
+  /// The row [step] rows from [logPath] in the list as it stands now —
+  /// where Up (`-1`) and Down (`1`) move the keyboard focus — or `null`
+  /// past either end, where the focus stays put. From a row that is not on
+  /// the list (none focused yet), Down starts at the first row and Up at
+  /// the last, the way a desktop list with nothing focused does.
+  String? rowBeside(String? logPath, int step) {
+    final order = _order;
+    if (order.isEmpty) return null;
+    final at = logPath == null ? -1 : order.indexOf(logPath);
+    if (at < 0) return step < 0 ? order.last : order.first;
+    final next = at + step;
+    return next >= 0 && next < order.length ? order[next] : null;
+  }
 
   /// Deletes every ticked archive, in the order the list shows, stopping at
   /// the first one a run is using: what the refusal leaves ticked is
@@ -99,6 +126,9 @@ class ArchivesController {
     ArchivesReady(:final rows) => rows,
     ArchivesLoading() || ArchivesFailed() => const [],
   };
+
+  /// The listed log paths, in the order the page shows them.
+  List<String> get _order => [for (final row in _rows) row.logPath];
 
   /// Clears each of [entryIds] once, in order, then re-renders what is
   /// left — from the core's own answer, or a fresh listing after a refusal.

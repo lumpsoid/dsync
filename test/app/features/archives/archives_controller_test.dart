@@ -335,6 +335,43 @@ void main() {
     expect(controller.state.isSelecting, isFalse);
   });
 
+  test('a range and select all run over the list in its order', () async {
+    final first = log('p1');
+    log('p2');
+    final third = log('p3');
+    await controller.refresh();
+
+    controller.toggleSelection(first);
+    controller.selectRange(from: null, to: third);
+    expect(controller.state.selected, hasLength(3));
+
+    controller.clearSelection();
+    expect(controller.state.isSelecting, isFalse);
+
+    controller.selectAll();
+    expect(controller.state.selected, hasLength(3));
+  });
+
+  test('Up and Down step through the rows and stop at the ends', () async {
+    final first = log('p1');
+    final second = log('p2');
+    await controller.refresh();
+
+    expect(controller.rowBeside(null, 1), first);
+    expect(controller.rowBeside(null, -1), second);
+    expect(controller.rowBeside(first, 1), second);
+    expect(controller.rowBeside(second, 1), isNull);
+    expect(controller.rowBeside(first, -1), isNull);
+  });
+
+  test('select all before the list is read ticks nothing', () async {
+    log('p1');
+
+    controller.selectAll();
+
+    expect(controller.state.isSelecting, isFalse);
+  });
+
   test('a row deleted from under a tick drops the tick', () async {
     final path = log('p1');
     await controller.refresh();

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../archive_row.dart';
 import '../../destructive_confirm_dialog.dart';
+import '../../keyboard_first.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
 import 'archives_controller.dart';
@@ -20,11 +22,30 @@ import 'archives_view_state.dart';
 /// keeps SPEC's word (`dsync archive list`), where the reader is a person
 /// who has read SPEC.
 ///
-/// **Rows can be ticked, and the ticked ones deleted together.** Long press
-/// starts it; the app bar then says how many are picked and carries the
-/// delete. It exists for the middle case the other two buttons miss: three
-/// dead histories out of a dozen, where deleting each in turn is four taps
-/// apiece and "delete all" costs the nine that are still earning their keep.
+/// **Rows can be ticked, and the ticked ones deleted together.** The app
+/// bar then says how many are picked and carries the delete. It exists for
+/// the middle case the other two buttons miss: three dead histories out of
+/// a dozen, where deleting each in turn is four taps apiece and "delete
+/// all" costs the nine that are still earning their keep.
+///
+/// **How ticking starts is the platform's own.** On a phone it is a long
+/// press, and once selecting a tap. On a desktop ([keyboardFirst]) a long
+/// press is not a thing a mouse does, so every row carries a checkbox,
+/// always drawn rather than on hover — a keyboard user never hovers, and a
+/// box that appears under the pointer shifts the row's text as the mouse
+/// crosses the list — and the bar carries "Select all". There a plain
+/// click focuses a row (or ticks it once selecting), Ctrl/Cmd-click ticks
+/// one, Shift-click ranges from the last row clicked, and the keyboard has
+/// the rest: Up/Down move between rows, Shift+Up/Down extend, Space ticks,
+/// Ctrl/Cmd+A ticks all, Delete deletes what is ticked (or the focused row)
+/// behind the same confirmation, and Esc stops selecting. The selection is
+/// the controller's ([ArchivesViewState.selection]); the page only reads
+/// the modifier keys and says which operation a click was.
+///
+/// **Esc stops selecting before it leaves.** In the shell's pane Esc pops
+/// the page; while rows are ticked it is heard here first and only clears
+/// them — the handler nearest the focus wins — and with nothing ticked it
+/// passes on to the shell untouched.
 ///
 /// Loads on mounting and refreshes on pull, on the app-bar [RefreshButton]
 /// or on F5 ([RefreshShortcuts]), like the home list. It takes no
@@ -39,6 +60,25 @@ class ArchivesPage extends StatefulWidget {
 class _ArchivesPageState extends State<ArchivesPage> {
   final ArchivesController _controller = archivesScope.controller;
 
+  /// Each row's focus, by log path — what Up/Down move and Space ticks. A
+  /// node outlives a deleted row until this page goes, for the reason the
+  /// Devices list keeps its own that way: disposing it in the frame its row
+  /// is still unmounting in would pull it from under the row.
+  final _rowFocus = <String, FocusNode>{};
+
+  FocusNode _focusOf(String logPath) => _rowFocus.putIfAbsent(
+    logPath,
+    () => FocusNode(debugLabel: 'archive row $logPath'),
+  );
+
+  /// The row holding the focus, itself or a button inside it, or `null`.
+  String? get _focusedRow {
+    for (final MapEntry(key: logPath, value: node) in _rowFocus.entries) {
+      if (node.hasFocus) return logPath;
+    }
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -46,29 +86,174 @@ class _ArchivesPageState extends State<ArchivesPage> {
   }
 
   @override
+  void dispose() {
+    for (final node in _rowFocus.values) {
+      node.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     // The whole scaffold rebuilds on the view state, not just the body: the
     // app-bar action exists only over a list with rows, so it is as much a
     // reader of the listing as the body is.
-    return RefreshShortcuts(
-      onRefresh: _controller.refresh,
-      child: ListenableBuilder(
-        listenable: _controller.state,
-        builder: (context, _) => _scaffold(context),
+    //
+    // The keys are heard above RefreshShortcuts' autofocused node, so Ctrl+A
+    // and Esc work the moment the page is shown, before any row is clicked.
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: _onKey,
+      child: RefreshShortcuts(
+        onRefresh: _controller.refresh,
+        child: ListenableBuilder(
+          listenable: _controller.state,
+          builder: (context, _) => _scaffold(context),
+        ),
       ),
     );
   }
 
+  KeyEventResult _onKey(FocusNode _, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    final command = keyboard.isControlPressed || keyboard.isMetaPressed;
+    final shift = keyboard.isShiftPressed;
+    final handled = switch (event.logicalKey) {
+      LogicalKeyboardKey.escape when !command && !shift => _stopSelecting(),
+      LogicalKeyboardKey.keyA when command && !shift => _selectAll(),
+      LogicalKeyboardKey.delete when !command && !shift => _deleteByKey(),
+      LogicalKeyboardKey.arrowUp when !command => _step(-1, extend: shift),
+      LogicalKeyboardKey.arrowDown when !command => _step(1, extend: shift),
+      LogicalKeyboardKey.space when !command && !shift => _toggleFocused(),
+      _ => false,
+    };
+    return handled ? KeyEventResult.handled : KeyEventResult.ignored;
+  }
+
+  /// Esc: clears the ticks, or — with none — leaves the key to the shell.
+  bool _stopSelecting() {
+    if (!_controller.state.isSelecting) return false;
+    _controller.clearSelection();
+    return true;
+  }
+
+  bool _selectAll() {
+    if (_controller.state.listing case ArchivesReady(:final rows)
+        when rows.isNotEmpty) {
+      _controller.selectAll();
+      return true;
+    }
+    return false;
+  }
+
+  /// Delete: the ticked rows when there are any, else the focused row —
+  /// each behind the confirmation its button asks.
+  bool _deleteByKey() {
+    if (_controller.state.isSelecting) {
+      _confirmDeleteSelected(context, _controller.state.selected.length);
+      return true;
+    }
+    final focused = _focusedRow;
+    if (_controller.state.listing case ArchivesReady(:final rows)) {
+      for (final row in rows) {
+        if (row.logPath == focused) {
+          _confirmDelete(context, row);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Up or Down: focuses the next row, and with Shift ranges the selection
+  /// to it — from the anchor, or from the row being left when nothing has
+  /// been clicked yet. At either end the key is spent and nothing moves.
+  bool _step(int step, {required bool extend}) {
+    final from = _focusedRow;
+    final next = _controller.rowBeside(from, step);
+    if (next == null) return from != null;
+    if (extend) _controller.selectRange(from: from, to: next);
+    final node = _focusOf(next)..requestFocus();
+    // Scrolled to once the row is laid out: its bottom edge into view
+    // moving down, its top moving up, and nothing when it is in view.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final row = node.context;
+      if (row == null || !row.mounted) return;
+      Scrollable.ensureVisible(
+        row,
+        alignmentPolicy: step < 0
+            ? ScrollPositionAlignmentPolicy.keepVisibleAtStart
+            : ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      );
+    });
+    return true;
+  }
+
+  /// Space on a row: ticks or unticks it. Only on the row itself — Space
+  /// on the delete button inside it is that button's.
+  bool _toggleFocused() {
+    for (final MapEntry(key: logPath, value: node) in _rowFocus.entries) {
+      if (node.hasPrimaryFocus) {
+        _controller.toggleSelection(logPath);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// A click on [logPath]'s row, or on its checkbox when [onCheckbox]:
+  /// Shift ranges, Ctrl/Cmd ticks, and a plain click ticks once selecting
+  /// or on the box. A plain click on a row while nothing is ticked only
+  /// focuses it, so the keys have a row to start from.
+  void _click(String logPath, {required bool onCheckbox}) {
+    final keyboard = HardwareKeyboard.instance;
+    final from = _focusedRow;
+    _focusOf(logPath).requestFocus();
+    if (keyboard.isShiftPressed) {
+      _controller.selectRange(from: from, to: logPath);
+    } else if (onCheckbox ||
+        keyboard.isControlPressed ||
+        keyboard.isMetaPressed ||
+        _controller.state.isSelecting) {
+      _controller.toggleSelection(logPath);
+    }
+  }
+
   Widget _scaffold(BuildContext context) {
+    final checkboxes = keyboardFirst(context);
     return Scaffold(
       appBar: _controller.state.isSelecting
-          ? _selectionAppBar(context)
-          : _titleAppBar(context),
-      body: _ArchivesBody(controller: _controller),
+          ? _selectionAppBar(context, selectAll: checkboxes)
+          : _titleAppBar(context, selectAll: checkboxes),
+      body: _ArchivesBody(
+        controller: _controller,
+        checkboxes: checkboxes,
+        focusOf: _focusOf,
+        onClick: _click,
+        onDelete: (row) => _confirmDelete(context, row),
+      ),
     );
   }
 
-  AppBar _titleAppBar(BuildContext context) {
+  /// The desktop's explicit way into selecting: tick every row, with the
+  /// shortcut named in its tooltip. An action that entered an empty
+  /// selection mode instead would need a mode flag beside the set, and
+  /// with a checkbox on every row there is nothing such a mode would add.
+  Widget _selectAllButton(BuildContext context) {
+    final mac = Theme.of(context).platform == TargetPlatform.macOS;
+    return IconButton(
+      key: const Key('archives-select-all'),
+      icon: const Icon(Icons.select_all),
+      tooltip: 'Select all (${mac ? 'Cmd' : 'Ctrl'}+A)',
+      onPressed: _controller.selectAll,
+    );
+  }
+
+  AppBar _titleAppBar(BuildContext context, {required bool selectAll}) {
     return AppBar(
       title: const Text('Sync history'),
       actions: [
@@ -79,13 +264,15 @@ class _ArchivesPageState extends State<ArchivesPage> {
         // Only over a list that has rows: "delete everything" is not an
         // action to offer while the page is still reading, or over nothing.
         if (_controller.state.listing case ArchivesReady(:final rows)
-            when rows.isNotEmpty)
+            when rows.isNotEmpty) ...[
+          if (selectAll) _selectAllButton(context),
           IconButton(
             key: const Key('archives-delete-all'),
             icon: const Icon(Icons.delete_sweep_outlined),
             tooltip: 'Delete all history',
             onPressed: () => _confirmDeleteAll(context, rows.length),
           ),
+        ],
       ],
     );
   }
@@ -94,7 +281,7 @@ class _ArchivesPageState extends State<ArchivesPage> {
   /// nothing, and the delete. "Delete all" is gone from it on purpose —
   /// having picked three of a dozen, the button next to the count should
   /// not be the one that takes the other nine.
-  AppBar _selectionAppBar(BuildContext context) {
+  AppBar _selectionAppBar(BuildContext context, {required bool selectAll}) {
     final count = _controller.state.selected.length;
     return AppBar(
       leading: IconButton(
@@ -105,6 +292,7 @@ class _ArchivesPageState extends State<ArchivesPage> {
       ),
       title: Text('$count selected'),
       actions: [
+        if (selectAll) _selectAllButton(context),
         IconButton(
           key: const Key('archives-delete-selected'),
           icon: const Icon(Icons.delete_outline),
@@ -113,6 +301,14 @@ class _ArchivesPageState extends State<ArchivesPage> {
         ),
       ],
     );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, ArchiveRow row) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => _DeleteDialog(row: row),
+    );
+    if (confirmed ?? false) await _controller.delete(row.logPath);
   }
 
   Future<void> _confirmDeleteAll(BuildContext context, int count) async {
@@ -133,9 +329,21 @@ class _ArchivesPageState extends State<ArchivesPage> {
 }
 
 class _ArchivesBody extends StatelessWidget {
-  const _ArchivesBody({required this.controller});
+  const _ArchivesBody({
+    required this.controller,
+    required this.checkboxes,
+    required this.focusOf,
+    required this.onClick,
+    required this.onDelete,
+  });
 
   final ArchivesController controller;
+
+  /// Whether rows carry a checkbox — the desktop's way in to selecting.
+  final bool checkboxes;
+  final FocusNode Function(String logPath) focusOf;
+  final void Function(String logPath, {required bool onCheckbox}) onClick;
+  final void Function(ArchiveRow row) onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -163,11 +371,14 @@ class _ArchivesBody extends StatelessWidget {
                 for (final row in rows)
                   _ArchiveTile(
                     row: row,
+                    checkbox: checkboxes,
+                    focusNode: focusOf(row.logPath),
                     isSelecting: controller.state.isSelecting,
                     isSelected: controller.state.isSelected(row.logPath),
-                    onToggleSelection: () =>
-                        controller.toggleSelection(row.logPath),
-                    onDelete: () => _confirmDelete(context, row),
+                    onClick: () => onClick(row.logPath, onCheckbox: false),
+                    onCheck: () => onClick(row.logPath, onCheckbox: true),
+                    onLongPress: () => controller.toggleSelection(row.logPath),
+                    onDelete: () => onDelete(row),
                   ),
                 const _Explanation(),
               ],
@@ -176,14 +387,6 @@ class _ArchivesBody extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  Future<void> _confirmDelete(BuildContext context, ArchiveRow row) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => _DeleteDialog(row: row),
-    );
-    if (confirmed ?? false) await controller.delete(row.logPath);
   }
 }
 
@@ -273,13 +476,24 @@ class _TotalTile extends StatelessWidget {
 class _ArchiveTile extends StatelessWidget {
   const _ArchiveTile({
     required this.row,
+    required this.checkbox,
+    required this.focusNode,
     required this.isSelecting,
     required this.isSelected,
-    required this.onToggleSelection,
+    required this.onClick,
+    required this.onCheck,
+    required this.onLongPress,
     required this.onDelete,
   });
 
   final ArchiveRow row;
+
+  /// Whether the row leads with a checkbox (the desktop) rather than with a
+  /// tick mark drawn only while selecting (a phone). The desktop's row is
+  /// clickable, and so focusable, even when nothing is ticked, so the
+  /// keyboard can walk the list.
+  final bool checkbox;
+  final FocusNode focusNode;
 
   /// Whether any row on the page is ticked. While that holds, a tap ticks
   /// this row rather than doing nothing, and the per-row delete gives way to
@@ -287,7 +501,9 @@ class _ArchiveTile extends StatelessWidget {
   /// over the selection, is a way to delete the wrong thing.
   final bool isSelecting;
   final bool isSelected;
-  final VoidCallback onToggleSelection;
+  final VoidCallback onClick;
+  final VoidCallback onCheck;
+  final VoidCallback onLongPress;
   final VoidCallback onDelete;
 
   @override
@@ -297,12 +513,24 @@ class _ArchiveTile extends StatelessWidget {
     final peerLine = row.peerLine;
     return ListTile(
       key: Key('archive-row-${row.logPath}'),
+      focusNode: focusNode,
       selected: isSelected,
       // Long press starts selecting, the platform's own gesture for it; once
       // selecting, a plain tap is enough.
-      onLongPress: onToggleSelection,
-      onTap: isSelecting ? onToggleSelection : null,
-      leading: isSelecting
+      onLongPress: onLongPress,
+      onTap: checkbox || isSelecting ? onClick : null,
+      leading: checkbox
+          // Out of the focus order: the row is the keyboard's stop and Space
+          // on it ticks, so a second stop per row would only double the Tabs
+          // down the list.
+          ? ExcludeFocus(
+              child: Checkbox(
+                key: Key('archive-check-${row.logPath}'),
+                value: isSelected,
+                onChanged: (_) => onCheck(),
+              ),
+            )
+          : isSelecting
           ? Icon(
               isSelected ? Icons.check_circle : Icons.circle_outlined,
               color: isSelected ? theme.colorScheme.primary : null,

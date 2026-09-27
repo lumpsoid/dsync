@@ -5,6 +5,7 @@ import 'package:dsync/app/features/archives/archives_controller.dart';
 import 'package:dsync/app/features/archives/archives_page.dart';
 import 'package:dsync/app/features/archives/archives_scope.dart';
 import 'package:dsync/app/features/archives/archives_view_state.dart';
+import 'package:dsync/app/pop_on_escape.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -438,6 +439,225 @@ void main() {
 
     expect(controller.deletedSelected, 0);
     expect(find.text('Sync history'), findsOneWidget);
+  });
+
+  testWidgets('a phone draws no checkboxes and no select-all', (tester) async {
+    await pumpPage(tester);
+    controller.state.recordListing(ArchivesReady([row('one'), row('two')]));
+    await tester.pump();
+
+    expect(find.byType(Checkbox), findsNothing);
+    expect(find.byKey(const Key('archives-select-all')), findsNothing);
+
+    await tester.longPress(
+      find.byKey(const Key('archive-row-/state/dsync/one-a.jsonl')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('1 selected'), findsOneWidget);
+    expect(find.byType(Checkbox), findsNothing);
+  });
+
+  group('selecting with a mouse and keyboard (task 47a19a)', () {
+    const one = '/state/dsync/one-a.jsonl';
+    const two = '/state/dsync/two-a.jsonl';
+    const three = '/state/dsync/three-a.jsonl';
+
+    Finder rowOf(String logPath) => find.byKey(Key('archive-row-$logPath'));
+
+    /// A wide desktop window, the page pushed over a home the way the
+    /// shell's pane pushes it, and an Esc above it that pops — as the
+    /// shell's does.
+    Future<void> pumpWideDesktop(WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.linux),
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const PopOnEscape(child: ArchivesPage()),
+                ),
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      // Read before the push: a spinner never lets the transition settle.
+      controller.state.recordListing(
+        ArchivesReady([row('one'), row('two'), row('three')]),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> withKey(
+      WidgetTester tester,
+      LogicalKeyboardKey modifier,
+      Future<void> Function() act,
+    ) async {
+      await tester.sendKeyDownEvent(modifier);
+      await act();
+      await tester.sendKeyUpEvent(modifier);
+      await tester.pump();
+    }
+
+    testWidgets('every row has a checkbox, and ticking one starts selecting', (
+      tester,
+    ) async {
+      await pumpWideDesktop(tester);
+      expect(find.byType(Checkbox), findsNWidgets(3));
+      expect(find.byKey(const Key('archives-select-all')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('archive-check-$two')));
+      await tester.pump();
+
+      expect(find.text('1 selected'), findsOneWidget);
+      expect(controller.state.selected, {two});
+    });
+
+    testWidgets('a plain click focuses a row, a Ctrl-click ticks it', (
+      tester,
+    ) async {
+      await pumpWideDesktop(tester);
+
+      await tester.tap(rowOf(one));
+      await tester.pump();
+      expect(controller.state.isSelecting, isFalse);
+      expect(focusIsWithin(Key('archive-row-$one')), isTrue);
+
+      await withKey(tester, LogicalKeyboardKey.controlLeft, () async {
+        await tester.tap(rowOf(two));
+        await tester.tap(rowOf(three));
+      });
+      expect(controller.state.selected, {two, three});
+
+      await withKey(
+        tester,
+        LogicalKeyboardKey.controlLeft,
+        () => tester.tap(rowOf(two)),
+      );
+      expect(controller.state.selected, {three});
+    });
+
+    testWidgets('a Shift-click ticks the range from the row last clicked', (
+      tester,
+    ) async {
+      await pumpWideDesktop(tester);
+
+      await tester.tap(find.byKey(const Key('archive-check-$one')));
+      await tester.pump();
+      await withKey(
+        tester,
+        LogicalKeyboardKey.shiftLeft,
+        () => tester.tap(rowOf(three)),
+      );
+
+      expect(controller.state.selected, {one, two, three});
+      expect(find.text('3 selected'), findsOneWidget);
+    });
+
+    testWidgets('Ctrl+A ticks every row, as does Select all', (tester) async {
+      await pumpWideDesktop(tester);
+
+      await withKey(
+        tester,
+        LogicalKeyboardKey.controlLeft,
+        () => tester.sendKeyEvent(LogicalKeyboardKey.keyA),
+      );
+      expect(controller.state.selected, {one, two, three});
+
+      controller.clearSelection();
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('archives-select-all')));
+      await tester.pump();
+      expect(find.text('3 selected'), findsOneWidget);
+    });
+
+    testWidgets('Esc clears the selection and stays; the next Esc leaves', (
+      tester,
+    ) async {
+      await pumpWideDesktop(tester);
+      await tester.tap(find.byKey(const Key('archive-check-$one')));
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(controller.state.isSelecting, isFalse);
+      expect(find.byType(ArchivesPage), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byType(ArchivesPage), findsNothing);
+    });
+
+    testWidgets('Delete asks before deleting the ticked rows', (tester) async {
+      await pumpWideDesktop(tester);
+      await tester.tap(find.byKey(const Key('archive-check-$one')));
+      await tester.tap(find.byKey(const Key('archive-check-$three')));
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+      await tester.pumpAndSettle();
+      expect(find.text('Delete 2 histories?'), findsOneWidget);
+      expect(controller.deletedSelected, 0, reason: 'the dialog comes first');
+
+      await tester.tap(
+        find.byKey(const Key('archives-confirm-delete-selected')),
+      );
+      await tester.pumpAndSettle();
+      expect(controller.deletedSelected, 1);
+    });
+
+    testWidgets('Delete on a focused row with nothing ticked asks for it', (
+      tester,
+    ) async {
+      await pumpWideDesktop(tester);
+      await tester.tap(rowOf(two));
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+      await tester.pumpAndSettle();
+      expect(find.text('Delete history for two?'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('archives-confirm-delete')));
+      await tester.pumpAndSettle();
+      expect(controller.deleted, [two]);
+    });
+
+    testWidgets('Up and Down move between rows, Space ticks, Shift extends', (
+      tester,
+    ) async {
+      await pumpWideDesktop(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(focusIsWithin(Key('archive-row-$one')), isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      expect(controller.state.selected, {one});
+
+      await withKey(
+        tester,
+        LogicalKeyboardKey.shiftLeft,
+        () => tester.sendKeyEvent(LogicalKeyboardKey.arrowDown),
+      );
+      expect(focusIsWithin(Key('archive-row-$two')), isTrue);
+      expect(controller.state.selected, {one, two});
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(focusIsWithin(Key('archive-row-$three')), isTrue);
+      expect(controller.state.selected, {one, two}, reason: 'only moved');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(focusIsWithin(Key('archive-row-$two')), isTrue);
+    });
   });
 
   testWidgets('a refused delete is shown above the list it left alone', (
