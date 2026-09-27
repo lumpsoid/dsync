@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../core_link/models/root_kind.dart';
 import '../../run_request.dart';
-import '../diagnostics/diagnostics_page.dart';
 import '../filters/filters_page.dart';
 import '../filters/filters_view_state.dart';
 import 'file_chooser.dart';
@@ -230,9 +229,8 @@ class _RunSetupPageState extends State<RunSetupPage> {
   /// The Filters page, over entry 0's folder and the profile's rules —
   /// values, not an id, because a form that has not been saved has no id to
   /// hand over (see `FiltersArgs`). Pushed from here rather than from
-  /// `dsync_app.dart` for the same reason Diagnostics is: it is a detail of
-  /// this form, opened over this form's in-flight values, and the
-  /// entrypoint knows about neither.
+  /// `dsync_app.dart`: it is a detail of this form, opened over this form's
+  /// in-flight values, and the entrypoint knows about neither.
   ///
   /// Bound to entry 0 rather than offered per entry: the ignore rules are
   /// profile-wide (D1), and a file entry offers no preview at all (D8) — so
@@ -253,12 +251,6 @@ class _RunSetupPageState extends State<RunSetupPage> {
     ),
   );
 
-  Future<void> _openDiagnostics(String rootPath) => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (_) => DiagnosticsPage(rootPath: rootPath, blockedReason: null),
-    ),
-  );
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -271,35 +263,6 @@ class _RunSetupPageState extends State<RunSetupPage> {
           builder: (context, _) =>
               Text(_title(_controller.state), overflow: TextOverflow.ellipsis),
         ),
-        actions: [
-          // The reachable entry to Diagnostics: the Run page carries the
-          // same button, but that page only exists once a run has been
-          // started, and a probe is refused while one is in flight — so
-          // this is the only place a measurement can be taken *before* a
-          // sync, which is when the question is usually asked.
-          //
-          // Bound to entry 0's folder, the same representative entry
-          // Filters uses — a file entry offers no scan probe (D8).
-          ListenableBuilder(
-            listenable: _controller.state,
-            builder: (context, _) {
-              final first = _controller.state.entries.first;
-              final rootPath = first.kind == RootKind.folder
-                  ? first.localRoot
-                  : null;
-              return IconButton(
-                key: const Key('run-setup-diagnostics'),
-                icon: const Icon(Icons.biotech_outlined),
-                tooltip: rootPath == null
-                    ? 'Diagnostics — pick a folder on this device first'
-                    : 'Diagnostics',
-                onPressed: rootPath == null
-                    ? null
-                    : () => _openDiagnostics(rootPath),
-              );
-            },
-          ),
-        ],
       ),
       body: ListenableBuilder(
         listenable: _controller.state,

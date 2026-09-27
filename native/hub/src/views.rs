@@ -9,8 +9,8 @@ use dsync_core::{ActionFailure, Certificate, DeviceIdentity, PairedDevice, Store
 use dsync_domain::{
     Action, CertificateExpiry, CertificateOwner, Conflict, EntryKind, FilterFolderRow,
     FilterPreviewFolder, FilterPreviewReport, Plan, Proposal, ReplicaInfo, ReplicaRoot, RootKind,
-    RunSummary, ScanProbeReport, ScanTally, Side, SideDeletes, SkippedAt, SkippedPath,
-    SkippedReason, Status, Unchanged,
+    RunSummary, ScanTally, Side, SideDeletes, SkippedAt, SkippedPath, SkippedReason, Status,
+    Unchanged,
 };
 use rinf::SignalPiece;
 use serde::{Deserialize, Serialize};
@@ -374,59 +374,6 @@ impl From<&FilterFolderRow> for FilterRowView {
                 .as_ref()
                 .map(|glob| glob.as_str().to_owned()),
             syncs: row.syncs(),
-        }
-    }
-}
-
-/// The scan probe: the text report, and its figures.
-#[derive(Serialize, SignalPiece)]
-pub struct ScanProbeView {
-    pub root: String,
-    pub report: String,
-    pub passes: Vec<ScanPassView>,
-}
-
-#[derive(Serialize, SignalPiece)]
-pub struct ScanPassView {
-    pub index: u32,
-    pub layers: Vec<ScanLayerView>,
-}
-
-#[derive(Serialize, SignalPiece)]
-pub struct ScanLayerView {
-    pub label: String,
-    pub elapsed_micros: u64,
-    pub files: u64,
-    pub directories: Option<u64>,
-    pub bytes: u64,
-    pub micros_per_file: f64,
-}
-
-impl From<&ScanProbeReport> for ScanProbeView {
-    fn from(report: &ScanProbeReport) -> ScanProbeView {
-        ScanProbeView {
-            root: report.root.to_string_lossy().into_owned(),
-            report: report.to_string(),
-            passes: report
-                .passes
-                .iter()
-                .map(|pass| ScanPassView {
-                    index: u32::try_from(pass.index).unwrap_or(u32::MAX),
-                    layers: pass
-                        .layers
-                        .iter()
-                        .map(|layer| ScanLayerView {
-                            label: layer.layer.label().to_owned(),
-                            elapsed_micros: u64::try_from(layer.elapsed.as_micros())
-                                .unwrap_or(u64::MAX),
-                            files: layer.files,
-                            directories: layer.directories,
-                            bytes: layer.bytes,
-                            micros_per_file: layer.micros_per_file(),
-                        })
-                        .collect(),
-                })
-                .collect(),
         }
     }
 }

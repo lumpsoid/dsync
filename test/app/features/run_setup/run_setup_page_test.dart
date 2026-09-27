@@ -682,45 +682,6 @@ void main() {
     expect(request.dryRun, isFalse);
   });
 
-  group('the Diagnostics entry (task 8347dd)', () {
-    testWidgets('waits for a folder, since the probe needs one to measure', (
-      tester,
-    ) async {
-      await pumpLoaded(tester);
-
-      expect(
-        tester
-            .widget<IconButton>(find.byKey(const Key('run-setup-diagnostics')))
-            .onPressed,
-        isNull,
-      );
-    });
-
-    testWidgets('opens over the chosen folder, ready to measure — this is '
-        'the only way in before a run', (tester) async {
-      final picked = '${tempDir.path}/elsewhere/notes';
-      Directory(picked).createSync(recursive: true);
-      picker.onPick = () => picked;
-      await pumpLoaded(tester);
-      await pickFolder(
-        tester,
-        until: () => controller.state.entries[0].localRoot == picked,
-        what: 'the picked folder to become the local root',
-      );
-
-      await tester.tap(find.byKey(const Key('run-setup-diagnostics')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Diagnostics'), findsOneWidget);
-      expect(
-        tester
-            .widget<FilledButton>(find.byKey(const Key('scan-cost-run')))
-            .onPressed,
-        isNotNull,
-      );
-    });
-  });
-
   group('entries (D10)', () {
     testWidgets('adding an entry gives it its own keyed fields, entry 0 '
         'untouched', (tester) async {
@@ -788,29 +749,14 @@ void main() {
       expect(started, isEmpty);
     });
 
-    testWidgets('a File entry offers no scan probe or filter preview', (
-      tester,
-    ) async {
+    testWidgets('a File entry asks for a file', (tester) async {
       await pumpLoaded(tester);
-
-      expect(
-        tester
-            .widget<IconButton>(find.byKey(const Key('run-setup-diagnostics')))
-            .onPressed,
-        isNull,
-      );
 
       await tester.tap(find.text('File'));
       await tester.pump();
 
       expect(find.text('No file chosen'), findsOneWidget);
       expect(find.text('Pick a file…'), findsOneWidget);
-      expect(
-        tester
-            .widget<IconButton>(find.byKey(const Key('run-setup-diagnostics')))
-            .onPressed,
-        isNull,
-      );
     });
   });
 }

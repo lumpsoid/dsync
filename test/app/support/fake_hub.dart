@@ -11,7 +11,6 @@ import 'package:dsync/app/core_link/models/peer_probe_outcome.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
-import 'package:dsync/app/core_link/models/scan_probe_result.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 
 /// The Rust hub, faked at the head's one seam: a [CoreChannel] that
@@ -213,9 +212,6 @@ wire.ReplyResult _neutral(wire.CoreCommand command) => switch (command) {
   ),
   wire.CoreCommandCheckFolder() => const wire.ReplyResultFolderChecked(
     refusal: null,
-  ),
-  wire.CoreCommandProbeScan() => const wire.ReplyResultScanProbe(
-    value: wire.ScanProbeView(root: '', report: '', passes: []),
   ),
   _ => throw StateError('script a reply for $command'),
 };
@@ -458,29 +454,4 @@ wire.FilterRowView wireFilterRow(FilterRow row) => wire.FilterRowView(
   },
   excludedBy: row.excludedBy,
   syncs: row.syncs,
-);
-
-wire.ScanProbeView wireScanProbe(ScanProbeResult result) => wire.ScanProbeView(
-  root: result.root,
-  report: result.report,
-  passes: [
-    for (final (index, pass) in result.passes.indexed)
-      wire.ScanPassView(
-        index: index,
-        layers: [
-          for (final layer in pass)
-            wire.ScanLayerView(
-              label: layer.label,
-              elapsedMicros: _id(layer.elapsed.inMicroseconds),
-              files: _id(layer.files),
-              directories: switch (layer.directories) {
-                final d? => _id(d),
-                null => null,
-              },
-              bytes: _id(layer.bytes),
-              microsPerFile: layer.microsPerFile,
-            ),
-        ],
-      ),
-  ],
 );

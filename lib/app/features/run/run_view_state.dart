@@ -570,7 +570,6 @@ class SyncRunViewState extends ChangeNotifier {
   RunStanding? _standing;
   bool _dryRun = false;
   SyncRunHeader? _header;
-  String? _diagnosticsRoot;
   SyncRunScanTally? _scanTally;
   List<String> _skippedSymlinks = const [];
   List<String> _unreadablePaths = const [];
@@ -604,7 +603,7 @@ class SyncRunViewState extends ChangeNotifier {
   Listenable get phaseChanged => _phase;
 
   /// The core's word on whether the run is live: connecting to applying.
-  /// The screen is held, leaving asks first and probes wait while it is.
+  /// The screen is held and leaving asks first while it is.
   /// `false` before the core has said anything.
   bool get live => _standing == RunStanding.live;
 
@@ -617,11 +616,6 @@ class SyncRunViewState extends ChangeNotifier {
 
   /// `null` until both sides' `hello` is in.
   SyncRunHeader? get header => _header;
-
-  /// The folder on this device the Diagnostics page probes: the running
-  /// entry's (a file entry's own folder); `null` until the core has listed
-  /// the entries.
-  String? get diagnosticsRoot => _diagnosticsRoot;
 
   /// `null` until both scans have completed.
   SyncRunScanTally? get scanTally => _scanTally;
@@ -728,7 +722,6 @@ class SyncRunViewState extends ChangeNotifier {
     required bool dryRun,
     required String? startedAt,
     required SyncRunHeader? header,
-    required String? diagnosticsRoot,
     required SyncRunScanTally? scanTally,
     required List<String> skippedSymlinks,
     required List<String> unreadablePaths,
@@ -750,7 +743,6 @@ class SyncRunViewState extends ChangeNotifier {
     _dryRun = dryRun;
     _startedAt = startedAt;
     _header = header;
-    _diagnosticsRoot = diagnosticsRoot;
     _entries = List.unmodifiable(entries);
     _currentEntry = currentEntry;
     _scanTally = scanTally;

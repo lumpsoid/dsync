@@ -54,7 +54,7 @@ class FileChooser {
 /// anything else the core lists, since only `Folder` rows are worth
 /// descending into) is taken as the choice.
 ///
-/// Pushed the way Filters and Diagnostics are (`run_setup_page.dart`'s
+/// Pushed the way Filters is (`run_setup_page.dart`'s
 /// `_openFilters`): a detail of whichever page opened it, over a folder
 /// already chosen, so it needs nothing from a `Navigator` of its own beyond
 /// what pushed it.

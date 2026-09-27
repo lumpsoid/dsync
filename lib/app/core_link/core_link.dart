@@ -21,7 +21,6 @@ import 'models/run_intent.dart';
 import 'models/run_session.dart';
 import 'models/run_target.dart';
 import 'models/run_view.dart';
-import 'models/scan_probe_result.dart';
 import 'models/serve_addresses.dart';
 import 'models/serve_session.dart';
 import 'models/serve_view.dart';
@@ -427,23 +426,6 @@ final class CoreLink {
     wire.CoreCommandCheckFolder(path: path, kind: wireRootKind(kind)),
     (result) => switch (result) {
       wire.ReplyResultFolderChecked(:final refusal) => refusal,
-      _ => _unexpected(result),
-    },
-  );
-
-  /// What scanning [root] costs, [passes] times over.
-  Future<ScanProbeResult> probeScan(
-    String root, {
-    List<String> ignorePatterns = const [],
-    int passes = 2,
-  }) => _ask(
-    wire.CoreCommandProbeScan(
-      root: root,
-      ignore: ignorePatterns,
-      passes: passes,
-    ),
-    (result) => switch (result) {
-      wire.ReplyResultScanProbe(:final value) => scanProbe(value),
       _ => _unexpected(result),
     },
   );

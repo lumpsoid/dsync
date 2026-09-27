@@ -35,8 +35,6 @@ import 'models/run_standing.dart';
 import 'models/run_summary_info.dart';
 import 'models/run_target.dart';
 import 'models/run_view.dart';
-import 'models/scan_probe_layer.dart';
-import 'models/scan_probe_result.dart';
 import 'models/scan_tally.dart';
 import 'models/serve_addresses.dart';
 import 'models/serve_event.dart';
@@ -559,26 +557,4 @@ FilterRow filterRow(wire.FilterRowView view) => FilterRow(
   isFolder: view.kind is wire.EntryKindViewFolder,
   excludedBy: view.excludedBy,
   syncs: view.syncs,
-);
-
-ScanProbeResult scanProbe(wire.ScanProbeView view) => ScanProbeResult(
-  root: view.root,
-  report: view.report,
-  passes: [
-    for (final pass in view.passes)
-      [
-        for (final layer in pass.layers)
-          ScanProbeLayer(
-            label: layer.label,
-            elapsed: Duration(microseconds: _n(layer.elapsedMicros)),
-            files: _n(layer.files),
-            directories: switch (layer.directories) {
-              final d? => _n(d),
-              null => null,
-            },
-            bytes: _n(layer.bytes),
-            microsPerFile: layer.microsPerFile,
-          ),
-      ],
-  ],
 );

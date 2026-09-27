@@ -361,30 +361,6 @@ class TraitHelpers {
     return List.generate(length, (_) => RuleCountView.deserialize(deserializer));
   }
 
-  static void serializeVectorScanLayerView(List<ScanLayerView> value, BinarySerializer serializer) {
-    serializer.serializeLength(value.length);
-    for (final item in value) {
-        item.serialize(serializer);
-    }
-  }
-
-  static List<ScanLayerView> deserializeVectorScanLayerView(BinaryDeserializer deserializer) {
-    final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => ScanLayerView.deserialize(deserializer));
-  }
-
-  static void serializeVectorScanPassView(List<ScanPassView> value, BinarySerializer serializer) {
-    serializer.serializeLength(value.length);
-    for (final item in value) {
-        item.serialize(serializer);
-    }
-  }
-
-  static List<ScanPassView> deserializeVectorScanPassView(BinaryDeserializer deserializer) {
-    final length = deserializer.deserializeLength();
-    return List.generate(length, (_) => ScanPassView.deserialize(deserializer));
-  }
-
   static void serializeVectorServeLineView(List<ServeLineView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

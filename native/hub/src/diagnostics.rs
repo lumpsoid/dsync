@@ -1,17 +1,15 @@
 //! What the head asks about a folder before it syncs one: whether it is
-//! usable at all (SPEC §3), what the ignore rules keep of it (SPEC §9),
-//! and what scanning it costs.
+//! usable at all (SPEC §3), and what the ignore rules keep of it
+//! (SPEC §9).
 
 use std::path::PathBuf;
 
-use dsync_core::{
-    ScanProbe, check_root_access, list_filter_folder, preview_filters_at, probe_case_folding,
-};
+use dsync_core::{check_root_access, list_filter_folder, preview_filters_at};
 use dsync_domain::{Glob, RelPath, RootKind, RuleSet};
 
 use crate::dispatch::{Handled, Hub, blocking, text};
 use crate::signals::ReplyResult;
-use crate::views::{FilterPreviewView, FilterRowView, ScanProbeView};
+use crate::views::{FilterPreviewView, FilterRowView};
 
 impl Hub {
     pub(crate) async fn preview_filters(&self, root: String, ignore: &[String]) -> Handled {
@@ -51,21 +49,6 @@ impl Hub {
                     .err()
                     .map(text),
             })
-        })
-        .await
-    }
-
-    /// The scan's layers over `root`, with the jobs and case folding a
-    /// real scan of it would use.
-    pub(crate) async fn probe_scan(&self, root: String, ignore: &[String], passes: u32) -> Handled {
-        let rules = ignore_rules(ignore)?;
-        let jobs = self.tuning.scan_jobs;
-        blocking(move || {
-            let root = PathBuf::from(root);
-            let probe = ScanProbe::new(jobs, probe_case_folding(&root));
-            let passes = usize::try_from(passes).map_err(text)?;
-            let report = probe.run(&root, &rules, passes).map_err(text)?;
-            Ok(ReplyResult::ScanProbe(ScanProbeView::from(&report)))
         })
         .await
     }

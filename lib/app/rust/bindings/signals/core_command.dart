@@ -43,7 +43,6 @@ abstract class CoreCommand {
       case 29: return CoreCommandListFilterFolder.load(deserializer);
       case 30: return CoreCommandCheckIgnorePattern.load(deserializer);
       case 31: return CoreCommandCheckFolder.load(deserializer);
-      case 32: return CoreCommandProbeScan.load(deserializer);
       default: throw Exception('Unknown variant index for CoreCommand: ' + index.toString());
     }
   }
@@ -2098,84 +2097,5 @@ class CoreCommandCheckFolder extends CoreCommand {
     }());
 
     return fullString ?? 'CoreCommandCheckFolder';
-  }
-}
-
-@immutable
-class CoreCommandProbeScan extends CoreCommand {
-  const CoreCommandProbeScan({
-    required this.root,
-    required this.ignore,
-    required this.passes,
-  }) : super();
-
-  static CoreCommandProbeScan load(BinaryDeserializer deserializer) {
-    deserializer.increaseContainerDepth();
-    final instance = CoreCommandProbeScan(
-      root: deserializer.deserializeString(),
-      ignore: TraitHelpers.deserializeVectorStr(deserializer),
-      passes: deserializer.deserializeUint32(),
-    );
-    deserializer.decreaseContainerDepth();
-    return instance;
-  }
-
-  final String root;
-  final List<String> ignore;
-  final int passes;
-
-  CoreCommandProbeScan copyWith({
-    String? root,
-    List<String>? ignore,
-    int? passes,
-  }) {
-    return CoreCommandProbeScan(
-      root: root ?? this.root,
-      ignore: ignore ?? this.ignore,
-      passes: passes ?? this.passes,
-    );
-  }
-
-  void serialize(BinarySerializer serializer) {
-    serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(32);
-    serializer.serializeString(root);
-    TraitHelpers.serializeVectorStr(ignore, serializer);
-    serializer.serializeUint32(passes);
-    serializer.decreaseContainerDepth();
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other.runtimeType != runtimeType) return false;
-
-    return other is CoreCommandProbeScan
-      && root == other.root
-      && listEquals(ignore, other.ignore)
-      && passes == other.passes;
-  }
-
-  @override
-  int get hashCode => Object.hash(
-        root,
-        ignore,
-        passes,
-      );
-
-  @override
-  String toString() {
-    String? fullString;
-
-    assert(() {
-      fullString = '$runtimeType('
-        'root: $root, '
-        'ignore: $ignore, '
-        'passes: $passes'
-        ')';
-      return true;
-    }());
-
-    return fullString ?? 'CoreCommandProbeScan';
   }
 }

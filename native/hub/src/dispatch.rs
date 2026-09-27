@@ -180,11 +180,6 @@ impl Hub {
             } => self.list_filter_folder(root, folder, &ignore).await,
             CoreCommand::CheckIgnorePattern { pattern } => check_ignore_pattern(&pattern),
             CoreCommand::CheckFolder { path, kind } => self.check_folder(path, kind.into()).await,
-            CoreCommand::ProbeScan {
-                root,
-                ignore,
-                passes,
-            } => self.probe_scan(root, &ignore, passes).await,
         }
     }
 }

@@ -776,25 +776,6 @@ async fn the_filter_preview_counts_what_a_rule_removes_and_lists_a_folder() {
 }
 
 #[tokio::test]
-async fn the_scan_probe_climbs_every_layer_once_per_pass() {
-    let mut head = Head::new("studio").await;
-    write(&head.path("tree/a.txt"), "a");
-    write(&head.path("tree/sub/b.txt"), "bb");
-    let probe = CoreCommand::ProbeScan {
-        root: head.path_text("tree"),
-        ignore: Vec::new(),
-        passes: 2,
-    };
-    let ReplyResult::ScanProbe(report) = head.ok(probe).await.1 else {
-        panic!("expected the probe report");
-    };
-    assert_eq!(report.passes.len(), 2);
-    assert!(!report.passes[0].layers.is_empty());
-    assert!(report.passes[0].layers.iter().all(|layer| layer.files == 2));
-    assert!(!report.report.is_empty());
-}
-
-#[tokio::test]
 async fn archives_list_empty_on_a_host_that_never_synced() {
     let mut head = Head::new("studio").await;
     let ReplyResult::Archives(archives) = head.ok(CoreCommand::ListArchives).await.1 else {

@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::views::{
     ActionChoiceView, AddressesView, ArchiveView, ConflictChoiceView, DeviceView, DirsView,
     FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingView, ProbeOutcome,
-    ProfileEntry, RootKindView, RunView, ScanProbeView, ServeStartedView, ServeView,
+    ProfileEntry, RootKindView, RunView, ServeStartedView, ServeView,
 };
 
 /// Dart asks the core for one thing. Answered by one [`CoreReply`] with
@@ -193,12 +193,6 @@ pub enum CoreCommand {
         path: String,
         kind: RootKindView,
     },
-    /// Times the scan's layers over `root`, `passes` times.
-    ProbeScan {
-        root: String,
-        ignore: Vec<String>,
-        passes: u32,
-    },
 }
 
 /// The head's profile: each entry's `local_root` on this device synced
@@ -295,7 +289,6 @@ pub enum ReplyResult {
     FolderChecked {
         refusal: Option<String>,
     },
-    ScanProbe(ScanProbeView),
 }
 
 /// The run in `session`, whole, as it now stands. `last`: the session is

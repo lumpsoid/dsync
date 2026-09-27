@@ -25,7 +25,6 @@ abstract class ReplyResult {
       case 12: return ReplyResultFilterPreview.load(deserializer);
       case 13: return ReplyResultFilterFolder.load(deserializer);
       case 14: return ReplyResultFolderChecked.load(deserializer);
-      case 15: return ReplyResultScanProbe.load(deserializer);
       default: throw Exception('Unknown variant index for ReplyResult: ' + index.toString());
     }
   }
@@ -914,64 +913,5 @@ class ReplyResultFolderChecked extends ReplyResult {
     }());
 
     return fullString ?? 'ReplyResultFolderChecked';
-  }
-}
-
-@immutable
-class ReplyResultScanProbe extends ReplyResult {
-  const ReplyResultScanProbe({
-    required this.value,
-  }) : super();
-
-  static ReplyResultScanProbe load(BinaryDeserializer deserializer) {
-    deserializer.increaseContainerDepth();
-    final instance = ReplyResultScanProbe(
-      value: ScanProbeView.deserialize(deserializer),
-    );
-    deserializer.decreaseContainerDepth();
-    return instance;
-  }
-
-  final ScanProbeView value;
-
-  ReplyResultScanProbe copyWith({
-    ScanProbeView? value,
-  }) {
-    return ReplyResultScanProbe(
-      value: value ?? this.value,
-    );
-  }
-
-  void serialize(BinarySerializer serializer) {
-    serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(15);
-    value.serialize(serializer);
-    serializer.decreaseContainerDepth();
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other.runtimeType != runtimeType) return false;
-
-    return other is ReplyResultScanProbe
-      && value == other.value;
-  }
-
-  @override
-  int get hashCode => value.hashCode;
-
-  @override
-  String toString() {
-    String? fullString;
-
-    assert(() {
-      fullString = '$runtimeType('
-        'value: $value'
-        ')';
-      return true;
-    }());
-
-    return fullString ?? 'ReplyResultScanProbe';
   }
 }

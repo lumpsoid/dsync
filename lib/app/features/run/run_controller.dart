@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:path/path.dart' as p;
 
 import '../../app_controller.dart';
 import '../../core_link/models/action_choice.dart';
@@ -14,7 +13,6 @@ import '../../core_link/models/file_status.dart';
 import '../../core_link/models/plan_action.dart';
 import '../../core_link/models/plan_proposal.dart';
 import '../../core_link/models/replica_side.dart';
-import '../../core_link/models/root_kind.dart';
 import '../../core_link/models/run_intent.dart';
 import '../../core_link/models/run_phase.dart';
 import '../../core_link/models/run_session.dart';
@@ -174,7 +172,6 @@ class SyncRunController {
       dryRun: state.dryRun,
       startedAt: null,
       header: null,
-      diagnosticsRoot: null,
       scanTally: null,
       skippedSymlinks: const [],
       unreadablePaths: const [],
@@ -235,10 +232,6 @@ class SyncRunController {
           },
         ),
         _ => null,
-      },
-      diagnosticsRoot: switch (entry ?? view.entries.firstOrNull) {
-        final entry? => _folder(entry),
-        null => null,
       },
       scanTally: switch (view.tallies) {
         (:final a, :final b, :final checked, :final changed) =>
@@ -433,13 +426,6 @@ class SyncRunController {
     return 'just now';
   }
 }
-
-/// The folder on this device [entry] syncs: its root, or a file entry's
-/// own folder.
-String _folder(EntryRun entry) => switch (entry.kind) {
-  RootKind.folder => entry.localRoot,
-  RootKind.file => p.dirname(entry.localRoot),
-};
 
 /// [entry] as an issue line names it: both its roots.
 String _entryName(EntryRun entry) => '${entry.localRoot} ⇄ ${entry.remoteRoot}';
