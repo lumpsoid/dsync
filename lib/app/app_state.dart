@@ -5,6 +5,7 @@ import 'core_link/models/device_identity_info.dart';
 import 'device_identity_row.dart';
 import 'paired_device_row.dart';
 import 'profile_row.dart';
+import 'theme_preference.dart';
 
 /// The one application state of the Flutter head (SPEC §13, §16): whether
 /// the head has bootstrapped enough to show a page at all — and, once it
@@ -25,6 +26,10 @@ import 'profile_row.dart';
 /// profiles home deletes them, and the home list (now under a pushed page)
 /// must show both without a reload.
 ///
+/// The theme lives here because the app's root draws in it and the Settings
+/// page changes it: one value the whole app rebuilds from, so a choice
+/// applies the moment it is saved.
+///
 /// The mutators are the controller's, not a widget's: they are the only
 /// way in, they are named for the transition they record, and there is no
 /// property setter on any field. A page reads; only `AppController`
@@ -33,6 +38,7 @@ class AppState extends ChangeNotifier {
   AppBootstrap _bootstrap = const AppBootstrapLoading();
   List<PairedDeviceRow> _devices = const [];
   List<ProfileRow> _profiles = const [];
+  ThemePreference _theme = ThemePreference.system;
 
   /// The gate: loading until `AppController.bootstrap()` has run, then
   /// ready — carrying this device's id and its expiry warning — or failed
@@ -48,6 +54,10 @@ class AppState extends ChangeNotifier {
   /// profiles home's first read of the store; the home page's error line,
   /// not this list's emptiness, says when the store could not be read.
   List<ProfileRow> get profiles => _profiles;
+
+  /// Which brightness the app draws in: the device's own until the stored
+  /// choice has been read, and whenever it cannot be.
+  ThemePreference get theme => _theme;
 
   /// Records a bootstrap transition. `AppController` only.
   void recordBootstrap(AppBootstrap bootstrap) {
@@ -78,6 +88,12 @@ class AppState extends ChangeNotifier {
   /// `AppController` only.
   void recordProfiles(List<ProfileRow> profiles) {
     _profiles = List.unmodifiable(profiles);
+    notifyListeners();
+  }
+
+  /// Records [theme] as the one the app draws in. `AppController` only.
+  void recordTheme(ThemePreference theme) {
+    _theme = theme;
     notifyListeners();
   }
 }

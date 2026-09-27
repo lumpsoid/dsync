@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/app_theme.dart';
+import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/features/settings/settings_controller.dart';
 import 'package:dsync/app/features/settings/settings_page.dart';
 import 'package:dsync/app/features/settings/settings_scope.dart';
 import 'package:dsync/app/features/settings/settings_view_state.dart';
+import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
@@ -53,7 +55,7 @@ void main() {
 
   testWidgets('every icon button says what it does, and every tappable '
       'keeps the arrow', (tester) async {
-    controller.state.recordBindAddress('10.8.0.3');
+    controller.state.recordSettings(at('10.8.0.3'));
     await pumpPage(tester);
 
     await expectAffordances(tester);
@@ -62,7 +64,7 @@ void main() {
   testWidgets('shows the Network section and the stored address', (
     tester,
   ) async {
-    controller.state.recordBindAddress('10.8.0.3');
+    controller.state.recordSettings(at('10.8.0.3'));
 
     await pumpPage(tester);
 
@@ -80,7 +82,7 @@ void main() {
   });
 
   testWidgets('a typed address is handed to the controller', (tester) async {
-    controller.state.recordBindAddress('0.0.0.0');
+    controller.state.recordSettings(at('0.0.0.0'));
     await pumpPage(tester);
 
     await tester.tap(find.byKey(const Key('settings-bind-address')));
@@ -96,7 +98,7 @@ void main() {
   });
 
   testWidgets('cancelling the dialog stores nothing', (tester) async {
-    controller.state.recordBindAddress('0.0.0.0');
+    controller.state.recordSettings(at('0.0.0.0'));
     await pumpPage(tester);
 
     await tester.tap(find.byKey(const Key('settings-bind-address')));
@@ -107,8 +109,34 @@ void main() {
     expect(controller.saved, isEmpty);
   });
 
+  testWidgets('shows the Appearance section with the stored theme chosen', (
+    tester,
+  ) async {
+    controller.state.recordSettings(
+      AppSettings.defaults.withTheme(ThemePreference.dark),
+    );
+
+    await pumpPage(tester);
+
+    expect(find.text('Appearance'), findsOneWidget);
+    final choice = tester.widget<SegmentedButton<ThemePreference>>(
+      find.byKey(const Key('settings-theme-choice')),
+    );
+    expect(choice.selected, {ThemePreference.dark});
+  });
+
+  testWidgets('a chosen theme is handed to the controller', (tester) async {
+    controller.state.recordSettings(AppSettings.defaults);
+    await pumpPage(tester);
+
+    await tester.tap(find.text('Light'));
+    await tester.pumpAndSettle();
+
+    expect(controller.themes, [ThemePreference.light]);
+  });
+
   testWidgets('a refusal is shown as the page\'s error line', (tester) async {
-    controller.state.recordBindAddress('0.0.0.0');
+    controller.state.recordSettings(at('0.0.0.0'));
     controller.state.recordOutcome(
       const SettingsFailed('"my-laptop" is not an IP address.'),
     );
@@ -128,7 +156,8 @@ void main() {
     await pumpPage(tester);
 
     expect(find.textContaining('is damaged'), findsOneWidget);
-    expect(find.textContaining('Unavailable'), findsOneWidget);
+    // Both settings: neither shows a default the file did not say.
+    expect(find.textContaining('Unavailable'), findsNWidgets(2));
   });
 
   group('width', () {
@@ -137,7 +166,7 @@ void main() {
       tester.view.physicalSize = Size(width, 1440);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
-      controller.state.recordBindAddress('10.8.0.3');
+      controller.state.recordSettings(at('10.8.0.3'));
       await pumpPage(tester);
     }
 
@@ -162,6 +191,10 @@ void main() {
   });
 }
 
+/// The defaults with the bind address [address], as the store would answer.
+AppSettings at(String address) =>
+    AppSettings.defaults.withBindAddress(InternetAddress(address));
+
 /// A controller that records what the page asked of it instead of touching
 /// a store: the page's job here is to carry a tap and a typed value down,
 /// and to render what the view state says.
@@ -176,4 +209,9 @@ class _RecordingController extends SettingsController {
 
   @override
   Future<void> saveBindAddress(String text) async => saved.add(text);
+
+  final themes = <ThemePreference>[];
+
+  @override
+  Future<void> saveTheme(ThemePreference theme) async => themes.add(theme);
 }

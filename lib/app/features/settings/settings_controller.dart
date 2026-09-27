@@ -3,10 +3,11 @@ import 'dart:io';
 import '../../app_controller.dart';
 import '../../app_settings.dart';
 import '../../app_settings_store.dart';
+import '../../theme_preference.dart';
 import 'settings_view_state.dart';
 
 /// Input methods of the Settings page: read what is stored, and store what
-/// the user typed.
+/// the user typed or chose.
 ///
 /// Takes the [AppController] it borrows the settings store from as a
 /// constructor argument, per the controller role in `app_scope.dart`.
@@ -32,14 +33,13 @@ class SettingsController {
   /// Reads the stored settings onto [state] — what the page asks for on
   /// mounting, and a fresh read every time, per `AppSettingsStore`.
   ///
-  /// A damaged file leaves [SettingsViewState.bindAddress] `null` and shows
+  /// A damaged file leaves [SettingsViewState.settings] `null` and shows
   /// the store's own line: the defaults must not be displayed as though the
   /// file had said them (see `AppSettingsStore`'s absent-vs-damaged rule),
   /// and the remedy — remove the file, or restore it — is in that line.
   Future<void> load() async {
     try {
-      final settings = await (await app.settings).load();
-      state.recordBindAddress(settings.bindAddress.address);
+      state.recordSettings(await (await app.settings).load());
       state.recordOutcome(const SettingsIdle());
     } on AppSettingsStoreException catch (e) {
       state.recordOutcome(SettingsFailed(e.toString()));
@@ -58,19 +58,53 @@ class SettingsController {
     }
 
     state.recordOutcome(const SettingsWorking());
-    try {
-      await (await app.settings).save(AppSettings(bindAddress: address));
-    } on FileSystemException catch (e) {
-      state.recordOutcome(
-        SettingsFailed(
-          'This device could not save its settings: ${e.message}. The bind '
-          'address is unchanged.',
-        ),
-      );
+    final failure = await _change(
+      (settings) => settings.withBindAddress(address),
+      unchanged: 'The bind address is unchanged.',
+    );
+    if (failure != null) {
+      state.recordOutcome(SettingsFailed(failure));
       return;
     }
-    state.recordBindAddress(address.address);
     state.recordOutcome(SettingsSaved(_saved(address)));
+  }
+
+  /// Stores [theme] and has the app draw in it at once. No line says so:
+  /// the page changing colour under the user's finger is the confirmation.
+  Future<void> saveTheme(ThemePreference theme) async {
+    state.recordOutcome(const SettingsWorking());
+    final failure = await _change(
+      (settings) => settings.withTheme(theme),
+      unchanged: 'The theme is unchanged.',
+    );
+    if (failure != null) {
+      state.recordOutcome(SettingsFailed(failure));
+      return;
+    }
+    app.themeSaved(theme);
+    state.recordOutcome(const SettingsIdle());
+  }
+
+  /// Rewrites the stored settings as [change] of what is stored now, so one
+  /// setting's save keeps the others, and records what was written onto
+  /// [state]. Returns `null` on success, or the line to show, ending in
+  /// [unchanged].
+  Future<String?> _change(
+    AppSettings Function(AppSettings settings) change, {
+    required String unchanged,
+  }) async {
+    try {
+      final store = await app.settings;
+      final changed = change(await store.load());
+      await store.save(changed);
+      state.recordSettings(changed);
+    } on AppSettingsStoreException catch (e) {
+      return '$e';
+    } on FileSystemException catch (e) {
+      return 'This device could not save its settings: ${e.message}. '
+          '$unchanged';
+    }
+    return null;
   }
 
   void dispose() => state.dispose();

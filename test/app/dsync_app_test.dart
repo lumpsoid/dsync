@@ -41,6 +41,7 @@ import 'package:dsync/app/features/run_setup/run_setup_scope.dart';
 import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/run_request.dart';
+import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -178,6 +179,30 @@ void main() {
       scheme,
       ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
     );
+  });
+
+  testWidgets('a theme chosen in Settings applies at once, over the '
+      'device\'s', (tester) async {
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+    await tester.pumpWidget(const DsyncApp());
+
+    Brightness brightness() =>
+        Theme.of(tester.element(find.byType(CircularProgressIndicator)))
+            .colorScheme
+            .brightness;
+
+    app.themeSaved(ThemePreference.light);
+    // The spinner never settles; one theme animation's worth is enough.
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(brightness(), Brightness.light);
+
+    app.themeSaved(ThemePreference.system);
+    // The spinner never settles; one theme animation's worth is enough.
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(brightness(), Brightness.dark);
   });
 
   testWidgets('renders the failure message on a failed bootstrap', (

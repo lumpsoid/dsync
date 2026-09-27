@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/core_link/core_link.dart';
@@ -7,6 +9,7 @@ import 'package:dsync/app/core_link/models/entry_draft.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
+import 'package:dsync/app/theme_preference.dart';
 import 'package:test/test.dart';
 
 import 'support/fake_hub.dart';
@@ -84,6 +87,44 @@ void main() {
   });
 
   group('bootstrap', () {
+    group('theme', () {
+      late Directory stateDir;
+
+      setUp(() async {
+        stateDir = await Directory.systemTemp.createTemp('app_theme_test');
+        core.reply<wire.CoreCommandInit>(
+          initialised(
+            stateDir: stateDir.path,
+            profilesDir: '${stateDir.path}/profiles',
+          ),
+        );
+      });
+
+      tearDown(() => stateDir.delete(recursive: true));
+
+      test('draws in the stored theme', () async {
+        await File('${stateDir.path}/settings.json').writeAsString(
+          '{"version": "1.1", "network": {"bindAddress": "0.0.0.0"}, '
+          '"appearance": {"theme": "dark"}}',
+        );
+
+        await controller.bootstrap();
+
+        expect(controller.state.theme, ThemePreference.dark);
+        expect(controller.state.bootstrap, isA<AppBootstrapReady>());
+      });
+
+      test('a damaged settings file leaves the device\'s theme and still '
+          'lands ready', () async {
+        await File('${stateDir.path}/settings.json').writeAsString('{"ver');
+
+        await controller.bootstrap();
+
+        expect(controller.state.theme, ThemePreference.system);
+        expect(controller.state.bootstrap, isA<AppBootstrapReady>());
+      });
+    });
+
     test('starts loading and lands ready with the core\'s identity', () async {
       expect(controller.state.bootstrap, isA<AppBootstrapLoading>());
 

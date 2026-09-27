@@ -63,19 +63,29 @@ import 'shell_state.dart';
 /// not have to relaunch to be believed.
 ///
 /// **Light and dark are one theme** ([appTheme]) under two brightnesses.
-/// Which one shows is the device's call — there is no in-app toggle and
-/// nothing to persist.
+/// Which one shows is `AppState.theme` — the device's call unless the
+/// Settings page fixed one — and the app rebuilds when it changes, so a
+/// choice applies without a restart. The two themes are built once: the
+/// root rebuilds on every `AppState` change, and an unchanged theme must
+/// not cost a fresh one each time.
 class DsyncApp extends StatelessWidget {
   const DsyncApp({super.key});
 
+  static final _light = appTheme(Brightness.light);
+  static final _dark = appTheme(Brightness.dark);
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'dsync',
-      theme: appTheme(Brightness.light),
-      darkTheme: appTheme(Brightness.dark),
-      themeMode: ThemeMode.system,
-      home: const _BootstrapGate(),
+    final state = appScope.controller.state;
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) => MaterialApp(
+        title: 'dsync',
+        theme: _light,
+        darkTheme: _dark,
+        themeMode: state.theme.themeMode,
+        home: const _BootstrapGate(),
+      ),
     );
   }
 }

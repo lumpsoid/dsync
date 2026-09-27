@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'app_settings.dart';
 import 'atomic_write.dart';
+import 'theme_preference.dart';
 
 /// The preferences this head keeps for itself (the Settings page's store).
 /// Persisted in the core's state directory (SPEC §8.3), beside the
@@ -37,9 +38,14 @@ import 'atomic_write.dart';
 /// [AppSettingsStoreForeignVersionException], naming both versions; a later
 /// minor of this major is read, and the fields this build does not know are
 /// ignored.
+///
+/// **1.1 added `appearance.theme`.** A document without the `appearance`
+/// section — every 1.0 one — reads as [ThemePreference.system], the
+/// default it was drawn in; a present one naming no known theme is damage
+/// like any other wrong shape.
 class AppSettingsStore {
   /// The version this build writes, `major.minor`.
-  static const formatVersion = '1.0';
+  static const formatVersion = '1.1';
 
   final File _file;
 
@@ -78,6 +84,7 @@ class AppSettingsStore {
     final document = {
       'version': formatVersion,
       'network': {'bindAddress': settings.bindAddress.address},
+      'appearance': {'theme': settings.theme.name},
     };
     await writeFileAtomically(_file, jsonEncode(document));
   }
@@ -104,7 +111,24 @@ class AppSettingsStore {
     }
     // The one rule about what a bind address may be, the same one the
     // Settings page refuses a hostname with — not a second copy of it.
-    return AppSettings(bindAddress: parseBindAddress(bindAddress));
+    return AppSettings(
+      bindAddress: parseBindAddress(bindAddress),
+      theme: _parseTheme(decoded['appearance']),
+    );
+  }
+
+  /// The `appearance` section's theme: [ThemePreference.system] when the
+  /// section is absent (a 1.0 document), a known name when it is present.
+  static ThemePreference _parseTheme(Object? appearance) {
+    if (appearance == null) return ThemePreference.system;
+    if (appearance is! Map<String, dynamic>) {
+      throw const FormatException('"appearance" is not a JSON object');
+    }
+    final theme = appearance['theme'];
+    for (final preference in ThemePreference.values) {
+      if (preference.name == theme) return preference;
+    }
+    throw FormatException('"appearance.theme" is not a known theme: $theme');
   }
 
   /// The major of a `major.minor` version, both plain decimal digits.
@@ -127,7 +151,7 @@ sealed class AppSettingsStoreException implements Exception {
 
 /// Thrown by [AppSettingsStore.load] when its file exists but cannot be
 /// read as this store's document: truncated, malformed JSON, or
-/// well-formed JSON of the wrong shape, version text or bind address.
+/// well-formed JSON of the wrong shape, version text, bind address or theme.
 class AppSettingsStoreCorruptException extends AppSettingsStoreException {
   final String path;
   final String detail;

@@ -12,6 +12,7 @@ import 'core_link/models/profile_draft.dart';
 import 'core_link/models/profile_entry.dart';
 import 'paired_device_row.dart';
 import 'profile_row.dart';
+import 'theme_preference.dart';
 
 /// The head's bootstrap orchestrator: owns [AppState] and the one
 /// [CoreLink] every feature controller borrows (SPEC §5, §13). The only
@@ -78,9 +79,11 @@ class AppController {
   /// paired-device store: the directory is the core's answer to `init`, so
   /// the head never writes where an older build kept its state (plan D0).
   ///
-  /// Deliberately not read during [bootstrap]: a damaged settings file
-  /// loses convenience, not trust (see `AppSettingsStore`), so it surfaces
-  /// on the Settings page rather than keeping the app off its home list.
+  /// Read during [bootstrap] for the theme only, and never failing it: a
+  /// damaged settings file loses convenience, not trust (see
+  /// `AppSettingsStore`), so the app draws in the device's theme and the
+  /// file's message surfaces on the Settings page rather than keeping the
+  /// app off its home list.
   Future<AppSettingsStore> get settings async =>
       AppSettingsStore(File('${(await dirs).stateDir}/settings.json'));
 
@@ -97,6 +100,7 @@ class AppController {
     state.recordBootstrap(const AppBootstrapLoading());
     try {
       await dirs;
+      await _loadTheme();
       final identity = await core.showIdentity();
       await refreshDevices();
       state.recordReadyIdentity(identity);
@@ -104,6 +108,19 @@ class AppController {
       state.recordBootstrap(AppBootstrapFailed(e.message));
     }
   }
+
+  /// Records the stored theme, before the first page is drawn. A settings
+  /// file that cannot be read leaves the device's own; see [settings].
+  Future<void> _loadTheme() async {
+    try {
+      state.recordTheme((await (await settings).load()).theme);
+    } on AppSettingsStoreException {
+      // Surfaced on the Settings page, which reads the file itself.
+    }
+  }
+
+  /// The Settings page has stored [theme]: the app draws in it from now on.
+  void themeSaved(ThemePreference theme) => state.recordTheme(theme);
 
   /// Re-issues this device's certificate under its existing key (SPEC §4.4,
   /// `dsync pair renew`), optionally under a new [commonName], and records

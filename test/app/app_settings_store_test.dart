@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/atomic_write.dart';
+import 'package:dsync/app/theme_preference.dart';
 import 'package:test/test.dart';
 
 /// Covers `AppSettingsStore` against real temporary directories (SPEC §14),
@@ -25,6 +26,9 @@ void main() {
 
   AppSettingsStore store() => AppSettingsStore(storeFile());
 
+  AppSettings at(String address) =>
+      AppSettings.defaults.withBindAddress(InternetAddress(address));
+
   group('load', () {
     test(
       'a missing file is the first-run defaults, and creates nothing',
@@ -34,26 +38,69 @@ void main() {
         final settings = await store().load();
 
         expect(settings.bindAddress.address, '0.0.0.0');
+        expect(settings.theme, ThemePreference.system);
         expect(storeFile().existsSync(), isFalse);
       },
     );
 
-    test('reads back what was saved, written as version 1.0', () async {
-      await store().save(AppSettings(bindAddress: InternetAddress('10.8.0.3')));
+    test('reads back what was saved, written as version 1.1', () async {
+      await store().save(at('10.8.0.3'));
 
-      expect(storeFile().readAsStringSync(), contains('"version":"1.0"'));
+      expect(storeFile().readAsStringSync(), contains('"version":"1.1"'));
       expect((await store().load()).bindAddress.address, '10.8.0.3');
     });
 
+    test('the theme survives the round trip beside the address', () async {
+      await store().save(at('10.8.0.3').withTheme(ThemePreference.dark));
+
+      final settings = await store().load();
+      expect(settings.theme, ThemePreference.dark);
+      expect(settings.bindAddress.address, '10.8.0.3');
+    });
+
+    test('a 1.0 document, which has no theme, reads as System', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.0", "network": {"bindAddress": "10.8.0.3"}}',
+      );
+
+      final settings = await store().load();
+      expect(settings.theme, ThemePreference.system);
+      expect(settings.bindAddress.address, '10.8.0.3');
+    });
+
+    test('an unknown theme is corruption, not System', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.1", "network": {"bindAddress": "0.0.0.0"}, '
+        '"appearance": {"theme": "sepia"}}',
+      );
+
+      await expectLater(
+        store().load(),
+        throwsA(isA<AppSettingsStoreCorruptException>()),
+      );
+    });
+
+    test('an appearance section that is not an object is corruption', () async {
+      await storeFile().writeAsString(
+        '{"version": "1.1", "network": {"bindAddress": "0.0.0.0"}, '
+        '"appearance": "dark"}',
+      );
+
+      await expectLater(
+        store().load(),
+        throwsA(isA<AppSettingsStoreCorruptException>()),
+      );
+    });
+
     test('an IPv6 literal survives the round trip', () async {
-      await store().save(AppSettings(bindAddress: InternetAddress('fd00::5')));
+      await store().save(at('fd00::5'));
 
       expect((await store().load()).bindAddress.address, 'fd00::5');
     });
 
     test('a later save replaces the whole document', () async {
-      await store().save(AppSettings(bindAddress: InternetAddress('10.8.0.3')));
-      await store().save(AppSettings(bindAddress: InternetAddress('0.0.0.0')));
+      await store().save(at('10.8.0.3'));
+      await store().save(at('0.0.0.0'));
 
       expect((await store().load()).bindAddress.address, '0.0.0.0');
     });
@@ -64,9 +111,7 @@ void main() {
         final reader = store();
         expect((await reader.load()).bindAddress.address, '0.0.0.0');
 
-        await store().save(
-          AppSettings(bindAddress: InternetAddress('10.8.0.3')),
-        );
+        await store().save(at('10.8.0.3'));
 
         expect((await reader.load()).bindAddress.address, '10.8.0.3');
       },
@@ -95,7 +140,7 @@ void main() {
             allOf(
               contains(storeFile().path),
               contains('format 2.0'),
-              contains('(format 1.0)'),
+              contains('(format 1.1)'),
               contains('reads format 2.x'),
             ),
           ),
@@ -160,13 +205,13 @@ void main() {
         File('${tempDir.path}/deeper/settings.json'),
       );
 
-      await nested.save(AppSettings(bindAddress: InternetAddress('0.0.0.0')));
+      await nested.save(at('0.0.0.0'));
 
       expect((await nested.load()).bindAddress.address, '0.0.0.0');
     });
 
     test('leaves no scratch file behind', () async {
-      await store().save(AppSettings(bindAddress: InternetAddress('0.0.0.0')));
+      await store().save(at('0.0.0.0'));
 
       expect(tempDir.listSync().map((e) => e.path.split('/').last), [
         'settings.json',

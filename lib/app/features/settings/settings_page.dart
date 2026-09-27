@@ -1,17 +1,18 @@
 import 'package:flutter/material.dart';
 
 import '../../readable_width.dart';
+import '../../theme_preference.dart';
 import 'settings_controller.dart';
 import 'settings_scope.dart';
 import 'settings_view_state.dart';
 
-/// What this installation keeps for itself, in sections. One section so
-/// far — **Network**, holding the address the pairing listener binds
-/// (task 2b26ac's `--bind`, as the head's own setting).
+/// What this installation keeps for itself, in sections: **Network**,
+/// holding the address the pairing listener binds (task 2b26ac's `--bind`,
+/// as the head's own setting), and **Appearance**, holding the theme.
 ///
-/// Widgets only, per the page role in `app_scope.dart`: the stored address
-/// arrives as text the controller has already parsed and re-rendered, and
-/// the only branches here are over its nullability and the sealed
+/// Widgets only, per the page role in `app_scope.dart`: the stored settings
+/// arrive as one value the controller has already parsed, and the only
+/// branches here are over whether they were read and the sealed
 /// [SettingsOutcome]. Nothing on this page decides what a bind address may
 /// be — the dialog hands what was typed to the controller, and the refusal
 /// it shows is `parseBindAddress`'s own words.
@@ -59,6 +60,8 @@ class _SettingsBody extends StatelessWidget {
     final state = controller.state;
     final outcome = state.outcome;
     final working = outcome is SettingsWorking;
+    final bindAddress = state.settings?.bindAddress.address;
+    final theme = state.settings?.theme;
     return ReadableScrollPadding(
       width: ReadableWidth.list,
       padding: null,
@@ -72,16 +75,58 @@ class _SettingsBody extends StatelessWidget {
               leading: const Icon(Icons.lan_outlined),
               title: const Text('Pairing bind address'),
               subtitle: Text(
-                state.bindAddress == null
+                bindAddress == null
                     ? 'Unavailable — see below.'
-                    : '${state.bindAddress}\nWhich of this device\'s '
+                    : '$bindAddress\nWhich of this device\'s '
                           'addresses the pairing code listens on. 0.0.0.0 is '
                           'every IPv4 interface; one interface\'s own address '
                           'is also what the code advertises.',
               ),
-              isThreeLine: state.bindAddress != null,
-              enabled: !working && state.bindAddress != null,
-              onTap: () => _editBindAddress(context, state.bindAddress ?? ''),
+              isThreeLine: bindAddress != null,
+              enabled: !working && bindAddress != null,
+              onTap: () => _editBindAddress(context, bindAddress ?? ''),
+            ),
+          ),
+          const _SectionHeader('Appearance'),
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('settings-theme'),
+              leading: const Icon(Icons.brightness_6_outlined),
+              title: const Text('Theme'),
+              enabled: !working && theme != null,
+              subtitle: switch (theme) {
+                null => const Text('Unavailable — see below.'),
+                // Three fixed choices, each applied the moment it is
+                // picked: shown side by side rather than behind a dialog.
+                final theme => Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: SegmentedButton<ThemePreference>(
+                      key: const Key('settings-theme-choice'),
+                      segments: const [
+                        ButtonSegment(
+                          value: ThemePreference.system,
+                          label: Text('System'),
+                        ),
+                        ButtonSegment(
+                          value: ThemePreference.light,
+                          label: Text('Light'),
+                        ),
+                        ButtonSegment(
+                          value: ThemePreference.dark,
+                          label: Text('Dark'),
+                        ),
+                      ],
+                      selected: {theme},
+                      onSelectionChanged: working
+                          ? null
+                          : (selection) =>
+                                controller.saveTheme(selection.single),
+                    ),
+                  ),
+                ),
+              },
             ),
           ),
           switch (outcome) {
@@ -98,7 +143,7 @@ class _SettingsBody extends StatelessWidget {
           if (working)
             const ListTile(
               title: LinearProgressIndicator(
-                semanticsLabel: 'Saving the bind address',
+                semanticsLabel: 'Saving your settings',
               ),
             ),
         ],
@@ -115,9 +160,8 @@ class _SettingsBody extends StatelessWidget {
   }
 }
 
-/// A settings section's name. There is one section today; it is drawn
-/// anyway, because "Network" is what tells a reader which of this device's
-/// behaviours the setting under it changes.
+/// A settings section's name: what tells a reader which of this device's
+/// behaviours the settings under it change.
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader(this.title);
 

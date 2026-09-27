@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import '../../app_settings.dart';
+
 /// Where the Settings page's last read or write stands. A sealed hierarchy
 /// rather than a `bool working` beside a nullable message, for the reason
 /// `AppBootstrap` and `IdentityOutcome` give: "working with an error" and
@@ -39,23 +41,26 @@ final class SettingsFailed extends SettingsOutcome {
 /// The rendered values local to the Settings page — see the view-state role
 /// in `app_scope.dart`.
 ///
-/// [bindAddress] is text, not an [InternetAddress]: by the time it is here
-/// the rule has already run (`SettingsController`), so the page displays a
-/// value rather than re-deciding whether it is acceptable. It is `null`
-/// until the store has answered, which includes the case where the store
-/// refused to answer — a damaged settings file leaves it `null` and puts
-/// the reason in [outcome], so the page can never show the defaults as if
-/// they were what the file said.
+/// [settings] is the stored document as one already-parsed value: by the
+/// time it is here every rule has run (`AppSettingsStore`,
+/// `SettingsController`), so the page displays values rather than
+/// re-deciding whether they are acceptable. One value rather than a
+/// nullable per setting, so the settings are either all read or none are —
+/// never some shown and some not. It is `null` until the store has
+/// answered, which includes the case where the store refused to answer — a
+/// damaged settings file leaves it `null` and puts the reason in [outcome],
+/// so the page can never show the defaults as if they were what the file
+/// said.
 class SettingsViewState extends ChangeNotifier {
   SettingsOutcome _outcome = const SettingsIdle();
-  String? _bindAddress;
+  AppSettings? _settings;
 
   /// Where the last read or write stands.
   SettingsOutcome get outcome => _outcome;
 
-  /// The stored bind address as text, or `null` until the store has been
-  /// read successfully.
-  String? get bindAddress => _bindAddress;
+  /// The stored settings, or `null` until the store has been read
+  /// successfully.
+  AppSettings? get settings => _settings;
 
   /// Moves the outcome. `SettingsController` only.
   void recordOutcome(SettingsOutcome outcome) {
@@ -63,9 +68,10 @@ class SettingsViewState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Records the bind address now in the store. `SettingsController` only.
-  void recordBindAddress(String address) {
-    _bindAddress = address;
+  /// Records the settings now in the store, whole. `SettingsController`
+  /// only.
+  void recordSettings(AppSettings settings) {
+    _settings = settings;
     notifyListeners();
   }
 }
