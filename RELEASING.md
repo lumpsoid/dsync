@@ -1,7 +1,25 @@
 # Releasing dsync
 
-How to cut an Android release, written for a maintainer who has not done it
-in a year. Desktop builds are not released yet.
+How to cut a release, written for a maintainer who has not done it in a year.
+Most of this file is about the Android release key, the one thing that cannot
+be recovered if lost.
+
+## Artifacts
+
+`scripts/release.sh` builds everything the machine it runs on can build and
+collects it, with versioned names and a `SHA256SUMS`, in `dist/X.Y.Z/`:
+
+| Host | Default targets | Artifacts |
+|---|---|---|
+| Linux | `android linux cli` | `dsync-X.Y.Z-android.apk`, `.aab`, `dsync-X.Y.Z-linux-<arch>.tar.gz`, `dsync-cli-X.Y.Z-linux-<arch>.tar.gz` |
+| macOS | `macos cli` | `dsync-X.Y.Z-macos.zip` (unsigned, not notarized), `dsync-cli-X.Y.Z-macos-<arch>.tar.gz` |
+| Windows (Git Bash) | `windows cli` | `dsync-X.Y.Z-windows-<arch>.zip`, `dsync-cli-X.Y.Z-windows-<arch>.zip` |
+
+Name targets to build only those (`scripts/release.sh cli linux`). It refuses
+a dirty working tree; `--allow-dirty` builds anyway, for trying the pipeline
+out, and such artifacts are never published. To gather one release from
+several machines, copy each machine's files into one `dist/X.Y.Z/` and rerun
+any target there: `SHA256SUMS` is rewritten over every file in the directory.
 
 ## The key, and why it matters
 
@@ -69,27 +87,25 @@ key.
 3. **Bump the version** in `pubspec.yaml`: `version: X.Y.Z+N`. `N` is Android's
    versionCode and must be higher than every published release's, or the
    update will not install. Commit it (`chore: version X.Y.Z`).
-4. **Build and verify**:
+4. **Build and verify** on each host (Linux, then macOS and Windows for their
+   desktop apps and CLIs):
 
    ```sh
-   scripts/release-android.sh
+   scripts/release.sh
    ```
 
-   It builds `build/app/outputs/flutter-apk/app-release.apk` and
+   Its `android` target runs `scripts/release-android.sh`, which builds `build/app/outputs/flutter-apk/app-release.apk` and
    `build/app/outputs/bundle/release/app-release.aab`, checks each has exactly
    one signer and that it is the release key (`apksigner verify
    --print-certs` for the APK, `keytool -printcert -jarfile` for the AAB), and
    prints both paths with their SHA-256.
-5. **Tag and publish**:
+5. **Tag and publish**, with every host's artifacts gathered in `dist/X.Y.Z/`:
 
    ```sh
    git tag vX.Y.Z
    git push origin vX.Y.Z
-   gh release create vX.Y.Z build/app/outputs/flutter-apk/app-release.apk
+   gh release create vX.Y.Z dist/X.Y.Z/*
    ```
-
-   Rename the APK to `dsync-X.Y.Z.apk` if you like, and put its SHA-256 in the
-   release notes.
 
 ## CI
 

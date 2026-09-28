@@ -50,3 +50,6 @@ app.*.map.json
 
 # Agent worktrees: a second checkout of this repo, nested inside it
 /.claude/worktrees/
+
+# Release artifacts: scripts/release.sh
+/dist/
