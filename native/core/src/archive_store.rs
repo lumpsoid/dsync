@@ -142,15 +142,26 @@ impl ArchiveStore {
             entry_id: held.entry_id().clone(),
             root_path,
         };
-        ArchiveStore::open(held.archive_log().to_path_buf(), header, tuning)
+        ArchiveStore::replayed(held.archive_log().to_path_buf(), header, tuning)
     }
 
-    /// Opens the log at `log` and replays it, holding no lock: for a log
-    /// no run can be using, such as a test's own. A replica's sync opens
-    /// its log with [`ArchiveStore::open_replica`]. A missing log is an empty
-    /// archive; nothing is created until the first commit is written, so a
-    /// run that commits nothing (a dry run) leaves no file behind.
+    /// Opens the log at `log` and replays it, holding no lock. Test support
+    /// only, behind the `test-support` feature, for a log no run can be
+    /// using, such as a test's own: outside tests a replica's archive opens
+    /// only with [`ArchiveStore::open_replica`], under its lock.
+    #[cfg(feature = "test-support")]
     pub fn open(
+        log: PathBuf,
+        header: ArchiveHeader,
+        tuning: &Tuning,
+    ) -> Result<ArchiveStore, ArchiveError> {
+        ArchiveStore::replayed(log, header, tuning)
+    }
+
+    /// Replays the log at `log`. A missing log is an empty archive; nothing
+    /// is created until the first commit is written, so a run that commits
+    /// nothing (a dry run) leaves no file behind.
+    fn replayed(
         log: PathBuf,
         header: ArchiveHeader,
         tuning: &Tuning,

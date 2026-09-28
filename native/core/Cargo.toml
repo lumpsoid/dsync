@@ -27,6 +27,13 @@ tokio = { workspace = true, features = ["rt", "sync", "io-util", "io-std", "net"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# `test-support` exposes what only tests may call, such as
+# `ArchiveStore::open`, which replays a log without the replica's lock.
+# Only dev-dependencies enable it, so no shipped build compiles it.
+[features]
+test-support = []
+
 [dev-dependencies]
+dsync-core = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

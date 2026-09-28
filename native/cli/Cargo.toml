@@ -24,6 +24,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "
 
 [dev-dependencies]
 assert_cmd = "2"
+dsync-core = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util", "process"] }

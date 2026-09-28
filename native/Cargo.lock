@@ -344,6 +344,7 @@ dependencies = [
 name = "dsync-core"
 version = "0.1.0"
 dependencies = [
+ "dsync-core",
  "dsync-domain",
  "futures-util",
  "if-addrs",
