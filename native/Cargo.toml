@@ -14,6 +14,15 @@ members = ["domain", "core", "cli", "hub", "scan_probe"]
 # a plain `cargo build` here does not.
 default-members = ["domain", "core", "cli", "hub"]
 
+# Debug info is most of what a dev build writes and links: ours keeps
+# file:line for backtraces, dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.dependencies]
 dsync-domain = { path = "domain" }
 dsync-core = { path = "core" }
