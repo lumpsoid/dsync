@@ -1,7 +1,7 @@
 //! With the XDG variables pointed at a temp dir, every store writes under
 //! `dsync/` and nothing else appears there.
 
-use dsync_core::{ArchiveInventory, ArchiveStore, ReplicaLock, RunMarker, StateDir};
+use dsync_core::{ArchiveHeader, ArchiveInventory, ArchiveStore, ReplicaLock, RunMarker, StateDir};
 use dsync_domain::{
     ArchiveCommit, DirRule, HostFacts, Platform, Side, StateDirChoice, Tuning, config_dir,
 };
@@ -39,14 +39,12 @@ fn every_store_writes_under_the_dsync_leaf_only() {
     RunMarker::new(state.run_marker(&profile()))
         .create()
         .unwrap();
-    let mut store = ArchiveStore::open_replica(
-        &state,
-        &profile(),
-        Side::A,
-        "/home/me/notes".into(),
-        &Tuning::DEFAULT,
-    )
-    .unwrap();
+    let header = ArchiveHeader {
+        entry_id: profile(),
+        root_path: "/home/me/notes".into(),
+    };
+    let log = state.archive_log(&profile(), Side::A);
+    let mut store = ArchiveStore::open(log, header, &Tuning::DEFAULT).unwrap();
     store
         .commit([
             upsert("a.txt", crate::stores::support::file(1, 1)),

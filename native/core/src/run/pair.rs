@@ -3,7 +3,8 @@
 //! dyn-compatible), so each call picks its side here once.
 
 use dsync_domain::{
-    ArchiveCommit, FileMeta, Precondition, RelPath, ReplicaInfo, ReplicaOp, Side, WriteStats,
+    ArchiveCommit, ArchiveFacts, FileMeta, Precondition, RelPath, ReplicaOp, RootFacts, Side,
+    WriteStats,
 };
 
 use crate::body::Body;
@@ -48,11 +49,11 @@ macro_rules! on_side {
 }
 
 impl<A: Replica, B: Replica> Pair<'_, A, B> {
-    pub(crate) async fn hello(&self, side: Side) -> Result<ReplicaInfo, ReplicaError> {
+    pub(crate) async fn hello(&self, side: Side) -> Result<RootFacts, ReplicaError> {
         on_side!(self, side, ReplicaOp::Hello, replica => replica.hello())
     }
 
-    pub(crate) async fn lock(&self, side: Side) -> Result<(), ReplicaError> {
+    pub(crate) async fn lock(&self, side: Side) -> Result<ArchiveFacts, ReplicaError> {
         on_side!(self, side, ReplicaOp::Lock, replica => replica.lock())
     }
 

@@ -2,11 +2,13 @@
 //! protocol: the cases of `missing_root_test.dart`.
 
 use std::fs;
+use std::sync::Arc;
 
-use dsync_core::{BatchDecider, RunError};
-use dsync_domain::Side;
+use dsync_core::{BatchDecider, Replica, RunError};
+use dsync_domain::{ArchiveCommit, ContentHash, FileMeta, FileState, Side};
+use tokio::sync::{Notify, Semaphore};
 
-use crate::run::support::{Finished, Site, run, served, with_deadline};
+use crate::run::support::{Call, Fault, Finished, Probe, Site, path, run, served, with_deadline};
 
 #[derive(Clone, Copy, Debug)]
 enum Reach {
@@ -114,4 +116,56 @@ async fn a_refusal_of_one_side_does_not_create_the_other_sides_root() {
     for reach in [Reach::Local, Reach::Served] {
         a_refusal_of_one_side_does_not_create_the_other(reach).await;
     }
+}
+
+#[tokio::test]
+async fn the_missing_root_rule_judges_the_archive_as_the_lock_read_it() {
+    let site = Site::new();
+    fs::remove_dir(site.root(Side::B)).unwrap();
+    let (locking, gate) = (Arc::new(Notify::new()), Arc::new(Semaphore::new(0)));
+    let (b, _) = Probe::with_hook(site.replica(Side::B), {
+        let (locking, gate) = (locking.clone(), gate.clone());
+        Arc::new(move |call: &Call| {
+            (*call == Call::Lock).then(|| {
+                locking.notify_one();
+                Fault::Hold(gate.clone())
+            })
+        })
+    });
+    // Between B's hello, when its archive was empty, and its lock, another
+    // run on B commits: from then on B has synced before.
+    let committing = async {
+        locking.notified().await;
+        let other = site.replica(Side::B);
+        other.lock().await.unwrap();
+        let file = FileState {
+            meta: FileMeta {
+                size: 1,
+                mtime_us: 1,
+                mode: 0o644,
+            },
+            hash: ContentHash::from_digest([1; 32]),
+        };
+        other
+            .commit(vec![ArchiveCommit::Upsert {
+                path: path("f"),
+                file,
+            }])
+            .await
+            .unwrap();
+        other.unlock().await.unwrap();
+        gate.close();
+    };
+
+    let mut decider = BatchDecider;
+    let (finished, ()) = tokio::join!(
+        run(&site, site.replica(Side::A), b, &mut decider),
+        committing
+    );
+
+    let [RunError::MissingRoot(missing)] = finished.errors()[..] else {
+        panic!("{:?}", finished.errors());
+    };
+    assert_eq!((missing.side, missing.archived_files), (Side::B, 1));
+    assert!(!site.root(Side::B).exists(), "created from stale facts");
 }

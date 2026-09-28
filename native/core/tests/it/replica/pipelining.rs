@@ -40,10 +40,11 @@ where
     })
 }
 
-async fn hello(served: &Served) {
+async fn hello_and_lock(served: &Served) {
     with_deadline("hello", served.replica.hello())
         .await
         .unwrap();
+    with_deadline("lock", served.replica.lock()).await.unwrap();
 }
 
 #[tokio::test]
@@ -51,7 +52,7 @@ async fn a_later_operation_on_another_path_completes_before_an_earlier_one() {
     let site = Site::new();
     site.put(Side::B, "other", "x");
     let served = Served::new(&site, Side::B).await;
-    hello(&served).await;
+    hello_and_lock(&served).await;
     let (sender, mut write) = held_write(&served, "slow");
     // Issued after the write, answered first: the reply for `other`
     // reaches its own caller while the write's exchange is still open.
@@ -71,7 +72,7 @@ async fn a_later_operation_on_another_path_completes_before_an_earlier_one() {
 async fn operations_on_one_path_keep_the_order_they_were_issued_in() {
     let site = Site::new();
     let served = Served::new(&site, Side::B).await;
-    hello(&served).await;
+    hello_and_lock(&served).await;
     let log = Arc::new(Mutex::new(Vec::new()));
     let (sender, write) = held_write(&served, "p");
     tokio::task::yield_now().await;
@@ -101,7 +102,7 @@ async fn a_barrier_drains_the_window_and_holds_what_comes_after_it() {
     let site = Site::new();
     site.put(Side::B, "q", "x");
     let served = Served::new(&site, Side::B).await;
-    hello(&served).await;
+    hello_and_lock(&served).await;
     let log = Arc::new(Mutex::new(Vec::new()));
     let (sender, write) = held_write(&served, "p");
     tokio::task::yield_now().await;
@@ -129,7 +130,7 @@ async fn a_barrier_drains_the_window_and_holds_what_comes_after_it() {
 async fn a_tombstone_commit_is_windowed_not_a_barrier() {
     let site = Site::new();
     let served = Served::new(&site, Side::B).await;
-    hello(&served).await;
+    hello_and_lock(&served).await;
     let (sender, write) = held_write(&served, "p");
     tokio::task::yield_now().await;
     with_deadline(
@@ -150,7 +151,7 @@ async fn a_connection_that_fails_takes_every_outstanding_operation_with_it() {
     let site = Site::new();
     site.put(Side::B, "big", vec![1u8; 4 * 1024 * 1024]);
     let served = Served::new(&site, Side::B).await;
-    hello(&served).await;
+    hello_and_lock(&served).await;
     let (sender, write) = held_write_failing(&served, "w");
     let unread = with_deadline("read", served.replica.read(&path("big")))
         .await
@@ -217,7 +218,7 @@ async fn small_read_behind_an_unread(size: usize) -> bool {
     site.put(Side::B, "unread", vec![3u8; size]);
     site.put(Side::B, "small", "s");
     let served = Served::new(&site, Side::B).await;
-    hello(&served).await;
+    hello_and_lock(&served).await;
     let unread = with_deadline("read", served.replica.read(&path("unread")))
         .await
         .unwrap();

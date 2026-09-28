@@ -7,8 +7,8 @@ use std::io;
 
 use dsync_core::{Body, FileOp, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
-    ArchiveCommit, BucketCount, EntryId, Glob, Precondition, ReplicaRoot, RuleSet, Side, Status,
-    Tuning,
+    ArchiveCommit, ArchiveFacts, BucketCount, EntryId, Glob, Precondition, ReplicaRoot, RuleSet,
+    Side, Status, Tuning,
 };
 
 use crate::replica::hello_lock::assert_folder_in_use;
@@ -24,7 +24,7 @@ async fn a_scan_write_and_commit_round_trip_lands_both_sides_in_sync() {
     site.put(Side::A, "top.txt", "top");
     site.put(Side::A, "deep/er/file.bin", vec![7u8; 300_000]);
     site.put(Side::B, "only-b.txt", "b");
-    let a = site.replica(Side::A);
+    let a = site.locked(Side::A).await;
     let served = Served::new(&site, Side::B).await;
     let b = served.replica.as_ref();
     with_deadline("hello", b.hello()).await.unwrap();
@@ -51,24 +51,25 @@ async fn a_scan_write_and_commit_round_trip_lands_both_sides_in_sync() {
 }
 
 #[tokio::test]
-async fn hello_reports_the_far_sides_replica_and_create_root_makes_a_missing_one() {
+async fn hello_and_lock_report_the_far_sides_replica_and_create_root_makes_a_missing_one() {
     let site = Site::new();
     std::fs::remove_dir(site.root(Side::B)).unwrap();
     let served = Served::new(&site, Side::B).await;
-    let info = with_deadline("hello", served.replica.hello())
+    let root = with_deadline("hello", served.replica.hello())
         .await
         .unwrap();
-    assert!(matches!(
-        info.root,
-        ReplicaRoot::Missing {
-            archived_files: 0,
-            ..
-        }
-    ));
-    assert_eq!(info.last_commit, None);
+    assert!(matches!(root.root, ReplicaRoot::Missing { .. }));
     assert_eq!(
-        info.archive_path,
+        root.archive_path,
         Some(site.log(Side::B).display().to_string())
+    );
+    let archive = with_deadline("lock", served.replica.lock()).await.unwrap();
+    assert_eq!(
+        archive,
+        ArchiveFacts {
+            last_commit: None,
+            archived_files: 0,
+        }
     );
     with_deadline("create_root", served.replica.create_root())
         .await
@@ -191,6 +192,7 @@ async fn the_scan_applies_the_initiators_rules_on_the_far_side() {
     let served = Served::new(&site, Side::B).await;
     let b = served.replica.as_ref();
     with_deadline("hello", b.hello()).await.unwrap();
+    with_deadline("lock", b.lock()).await.unwrap();
     let rules = RuleSet::new(vec![Glob::new("build").unwrap()], vec![]);
     let opened = with_deadline("open_scan", b.open_scan(&rules))
         .await
@@ -379,8 +381,8 @@ async fn commits_persist_through_the_real_archive() {
     )
     .await
     .unwrap();
-    with_deadline("unlock", b.unlock()).await.unwrap();
     with_deadline("compact", b.compact()).await.unwrap();
+    with_deadline("unlock", b.unlock()).await.unwrap();
 
     let archive = site.archive(Side::B);
     assert_eq!(archive.get(&path("u")), Some(&recorded("u")));
@@ -394,10 +396,11 @@ async fn commits_persist_through_the_real_archive() {
 async fn scan_tickets_are_checked_on_the_far_side() {
     let site = Site::new();
     site.put(Side::B, "f", "x");
-    let local = site.replica(Side::A);
+    let local = site.locked(Side::A).await;
     let served = Served::new(&site, Side::B).await;
     let b = served.replica.as_ref();
     with_deadline("hello", b.hello()).await.unwrap();
+    with_deadline("lock", b.lock()).await.unwrap();
     // A ticket another replica issued names no exchange open over there.
     let foreign = with_deadline("local scan", local.open_scan(&RuleSet::default()))
         .await

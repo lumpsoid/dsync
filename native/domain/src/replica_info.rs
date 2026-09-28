@@ -1,8 +1,11 @@
-//! What a replica reports about itself in reply to `hello` (SPEC §4.2).
+//! A replica's state as a run's header shows it and SPEC §4.5 judges it:
+//! its root as `hello` found it, its archive as `lock` read it.
 
 use std::time::SystemTime;
 
+use crate::archive_facts::ArchiveFacts;
 use crate::missing_parent_folder::MissingParentFolder;
+use crate::root_facts::RootFacts;
 use crate::root_kind::RootKind;
 use crate::side::Side;
 use crate::unusable_root::UnusableRoot;
@@ -15,11 +18,9 @@ use crate::wrong_root_kind::WrongRootKind;
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ReplicaRoot {
     Present,
-    /// A folder root that is missing, with the file count its archive
-    /// holds, for the message.
+    /// A folder root that is missing.
     Missing {
         root_path: String,
-        archived_files: u64,
     },
     /// A single-file root whose folder is missing.
     ParentMissing {
@@ -34,13 +35,13 @@ pub enum ReplicaRoot {
     },
 }
 
-/// A replica's `hello` reply.
+/// A replica's `hello` and `lock` replies together, once both are in.
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplicaInfo {
     /// When its archive last committed; `None` if it never has (SPEC §8.2).
-    /// Reported by the replica because the initiator cannot stat an
-    /// archive on a remote host.
     pub last_commit: Option<SystemTime>,
+    /// The files its archive holds.
+    pub archived_files: u64,
     /// Its resolved archive path, for the run header, when the replica
     /// knows it; only the far end knows where a remote archive lives.
     pub archive_path: Option<String>,
@@ -79,22 +80,14 @@ impl MissingReplicaRoot {
 }
 
 impl ReplicaInfo {
-    /// Refuses a root that is not the entry's kind, naming `side`. Judged
-    /// before either replica is locked: nothing is taken or written for a
-    /// root the run will not touch.
-    pub fn wrong_kind(&self, side: Side) -> Option<WrongRootKind> {
-        match &self.root {
-            ReplicaRoot::WrongKind {
-                root_path,
-                expected,
-            } => Some(WrongRootKind {
-                side,
-                root_path: root_path.clone(),
-                expected: *expected,
-            }),
-            ReplicaRoot::Present
-            | ReplicaRoot::Missing { .. }
-            | ReplicaRoot::ParentMissing { .. } => None,
+    /// What `hello` found of the root, with what `lock` read of the
+    /// archive.
+    pub fn new(root: RootFacts, archive: ArchiveFacts) -> ReplicaInfo {
+        ReplicaInfo {
+            last_commit: archive.last_commit,
+            archived_files: archive.archived_files,
+            archive_path: root.archive_path,
+            root: root.root,
         }
     }
 
@@ -107,17 +100,13 @@ impl ReplicaInfo {
         match (&self.root, self.last_commit) {
             (ReplicaRoot::Present, _) => Ok(false),
             (ReplicaRoot::Missing { .. }, None) => Ok(true),
-            (
-                ReplicaRoot::Missing {
-                    root_path,
-                    archived_files,
-                },
-                Some(_),
-            ) => Err(UnusableRoot::Missing(MissingReplicaRoot {
-                side,
-                root_path: root_path.clone(),
-                archived_files: *archived_files,
-            })),
+            (ReplicaRoot::Missing { root_path }, Some(_)) => {
+                Err(UnusableRoot::Missing(MissingReplicaRoot {
+                    side,
+                    root_path: root_path.clone(),
+                    archived_files: self.archived_files,
+                }))
+            }
             (ReplicaRoot::ParentMissing { root_path, folder }, _) => {
                 Err(UnusableRoot::ParentMissing(MissingParentFolder {
                     side,
@@ -153,11 +142,16 @@ mod tests {
     }
 
     fn info(last_commit: Option<SystemTime>, root: ReplicaRoot) -> ReplicaInfo {
-        ReplicaInfo {
-            last_commit,
-            archive_path: None,
-            root,
-        }
+        ReplicaInfo::new(
+            RootFacts {
+                archive_path: None,
+                root,
+            },
+            ArchiveFacts {
+                last_commit,
+                archived_files: 0,
+            },
+        )
     }
 
     #[test]
@@ -176,19 +170,24 @@ mod tests {
     fn a_missing_root_with_no_archive_is_created_on_its_first_sync() {
         let missing = ReplicaRoot::Missing {
             root_path: "/phone/synth".into(),
-            archived_files: 0,
         };
         assert_eq!(info(None, missing).must_create_root(Side::B), Ok(true));
     }
 
     #[test]
     fn a_missing_root_with_an_archive_is_refused_naming_side_path_and_count() {
-        let missing = ReplicaRoot::Missing {
-            root_path: "/media/sd/notes".into(),
+        let missing = RootFacts {
+            archive_path: None,
+            root: ReplicaRoot::Missing {
+                root_path: "/media/sd/notes".into(),
+            },
+        };
+        let archive = ArchiveFacts {
+            last_commit: committed(),
             archived_files: 42,
         };
         assert_eq!(
-            info(committed(), missing).must_create_root(Side::B),
+            ReplicaInfo::new(missing, archive).must_create_root(Side::B),
             Err(UnusableRoot::Missing(MissingReplicaRoot {
                 side: Side::B,
                 root_path: "/media/sd/notes".into(),
@@ -216,7 +215,6 @@ mod tests {
             info(committed(), parent_missing.clone()).must_create_root(Side::A),
             refused
         );
-        assert_eq!(info(None, parent_missing).wrong_kind(Side::A), None);
     }
 
     #[test]
@@ -231,15 +229,9 @@ mod tests {
             expected: RootKind::File,
         };
         assert_eq!(
-            info(None, wrong.clone()).wrong_kind(Side::B),
-            Some(expected.clone())
-        );
-        assert_eq!(
             info(None, wrong).must_create_root(Side::B),
             Err(UnusableRoot::WrongKind(expected))
         );
-        // Positive control: a present root is of its kind.
-        assert_eq!(info(None, ReplicaRoot::Present).wrong_kind(Side::B), None);
     }
 
     fn missing(archived_files: u64) -> MissingReplicaRoot {

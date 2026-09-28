@@ -308,8 +308,12 @@ async fn a_local_replica_follows_links_as_its_own_rules_say() {
         Jobs::DEFAULT,
         Tuning::DEFAULT,
         Symlinks::AsRuled,
-    )
-    .unwrap();
+    );
+    // The folder is the served session's until it lets go.
+    with_deadline("unlock", linked.peer.replica.unlock())
+        .await
+        .unwrap();
+    with_deadline("lock", local.lock()).await.unwrap();
 
     let opened = with_deadline("scan", local.open_scan(&follow_all()))
         .await

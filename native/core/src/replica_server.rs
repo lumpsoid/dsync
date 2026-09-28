@@ -124,7 +124,11 @@ where
             }
             Err(error) => return reply(outbox, first.id, Err(undecodable(&error))).await,
         };
-        let opening = (self.open)(spec);
+        let opening = async {
+            let replica = (self.open)(spec).await?;
+            let hello = replica.hello().await;
+            Ok::<_, ReplicaError>((replica, hello))
+        };
         tokio::pin!(opening);
         let opened = tokio::select! {
             opened = &mut opening => opened,
@@ -133,8 +137,8 @@ where
             // at: the session ends.
             _ = incoming.recv() => return,
         };
-        let replica = match opened {
-            Ok(replica) => replica,
+        let (replica, hello) = match opened {
+            Ok(opened) => opened,
             Err(error) => return reply(outbox, first.id, Err(error.into())).await,
         };
         let served = Arc::new(Served {
@@ -143,7 +147,7 @@ where
             outbox: outbox.clone(),
             credits: credits.clone(),
         });
-        let hello = served.replica.hello().await.map(Reply::Hello);
+        let hello = hello.map(Reply::Hello);
         reply(outbox, first.id, hello.map_err(WireError::from)).await;
         let mut running = JoinSet::new();
         while let Some(next) = incoming.recv().await {
@@ -210,7 +214,7 @@ impl<R: Replica> Served<R> {
         let replica = &self.replica;
         let answer: Result<Reply, ReplicaError> = match request {
             Request::Hello(_) => replica.hello().await.map(Reply::Hello),
-            Request::Lock => replica.lock().await.map(|()| Reply::Done),
+            Request::Lock => replica.lock().await.map(Reply::Locked),
             Request::Unlock => replica
                 .unlock()
                 .await
@@ -504,18 +508,15 @@ mod tests {
                 move |spec: ReplicaSpec| {
                     let state = state.clone();
                     async move {
-                        let opened = tokio::task::spawn_blocking(move || {
-                            LocalReplica::open(
-                                crate::Root::folder(spec.root),
-                                state,
-                                spec.entry,
-                                spec.side,
-                                spec.jobs,
-                                Tuning::DEFAULT,
-                                crate::Symlinks::AsRuled,
-                            )
-                        });
-                        Ok(opened.await.unwrap()?)
+                        Ok(LocalReplica::open(
+                            crate::Root::folder(spec.root),
+                            state,
+                            spec.entry,
+                            spec.side,
+                            spec.jobs,
+                            Tuning::DEFAULT,
+                            crate::Symlinks::AsRuled,
+                        ))
                     }
                 },
                 Tuning::DEFAULT,

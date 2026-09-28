@@ -37,6 +37,11 @@ pub enum ReplicaError {
     /// issued by another replica, or spent by a newer scan.
     #[error("no scan exchange is open at that phase on this replica")]
     NoScan,
+    /// An operation on the archive - a scan, a commit, a compaction - on a
+    /// replica whose lock this session does not hold: the archive is read
+    /// only under it (SPEC §4.3).
+    #[error("this replica is not locked: take its lock before its archive")]
+    NotLocked,
     /// The connection to a remote replica failed; every operation
     /// outstanding on it fails with this.
     #[error(transparent)]
@@ -54,11 +59,15 @@ pub enum ReplicaError {
 
 impl ReplicaError {
     /// Whether this failure ends the whole run rather than one action: the
-    /// connection is gone, or an archive can no longer record anything.
+    /// connection is gone, or an archive can no longer record anything (or
+    /// never could: its lock is not held).
     pub fn ends_run(&self) -> bool {
         matches!(
             self,
-            ReplicaError::Link(_) | ReplicaError::Archive(_) | ReplicaError::RemoteArchive(_)
+            ReplicaError::Link(_)
+                | ReplicaError::Archive(_)
+                | ReplicaError::RemoteArchive(_)
+                | ReplicaError::NotLocked
         )
     }
 }

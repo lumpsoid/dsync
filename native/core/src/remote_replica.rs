@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, BucketDigests, FileMeta, OnDisk, Precondition, RelPath,
-    ReplicaInfo, ReplicaSpec, RuleSet, ScanEntry, Tuning, WriteStats,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, FileMeta, OnDisk,
+    Precondition, RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Tuning, WriteStats,
 };
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::oneshot;
@@ -398,17 +398,20 @@ fn unexpected(asked: &str) -> ReplicaError {
 }
 
 impl Replica for RemoteReplica {
-    async fn hello(&self) -> Result<ReplicaInfo, ReplicaError> {
+    async fn hello(&self) -> Result<RootFacts, ReplicaError> {
         let _all = self.window.barrier().await;
         match self.call(Request::Hello(self.spec.clone())).await? {
-            Reply::Hello(info) => Ok(info),
+            Reply::Hello(facts) => Ok(facts),
             _ => Err(unexpected("hello")),
         }
     }
 
-    async fn lock(&self) -> Result<(), ReplicaError> {
+    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
         let _all = self.window.barrier().await;
-        done(self.call(Request::Lock).await?, "lock")
+        match self.call(Request::Lock).await? {
+            Reply::Locked(facts) => Ok(facts),
+            _ => Err(unexpected("lock")),
+        }
     }
 
     async fn unlock(&self) -> Result<(), ReplicaError> {
@@ -680,9 +683,8 @@ mod tests {
         }
     }
 
-    fn info() -> ReplicaInfo {
-        ReplicaInfo {
-            last_commit: None,
+    fn info() -> RootFacts {
+        RootFacts {
             archive_path: None,
             root: ReplicaRoot::Present,
         }

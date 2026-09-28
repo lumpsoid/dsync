@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use dsync_core::{
     AnyReplica, BatchDecider, ConnectError, ConnectFailure, Connector, Decider, EntryFailure,
     EntryOutcome, LinkError, PeerContact, ProfileEvent, ProfileReport, ProfileRun, ProfileStop,
-    Replica, ResolvedOverlap, RunError, SkipReason, StateDir,
+    Replica, ReplicaError, ResolvedOverlap, RunError, SkipReason, StateDir,
 };
 use dsync_domain::{
     Action, Command, EffectiveOptions, Entry, Flags, HostFacts, Location, MassDelete, Plan,
-    Platform, Profile, ProfileName, ReplicaLocation, RunFlags, Side, Tuning,
+    Platform, Profile, ProfileName, ReplicaLocation, ReplicaOp, RunFlags, Side, Tuning,
 };
 use tempfile::TempDir;
 use tokio::sync::{Notify, Semaphore, mpsc};
@@ -427,15 +427,20 @@ async fn an_entry_whose_archive_cannot_open_leaves_the_next_to_run() {
 
     let profiled = sync(&roots, &entries).await;
 
+    // Read under the lock, so it fails the lock, not the connect.
     let [
-        EntryOutcome::Failed(EntryFailure::Connect(failed)),
+        EntryOutcome::Failed(EntryFailure::Run(failed)),
         EntryOutcome::Synced(_),
     ] = profiled.outcomes()[..]
     else {
         panic!("{:?}", profiled.outcomes());
     };
     assert!(
-        matches!(failed.failure, ConnectFailure::Archive(_)),
+        matches!(
+            failed,
+            RunError::Replica { side: Side::A, op: ReplicaOp::Lock, source }
+                if matches!(**source, ReplicaError::Archive(_))
+        ),
         "{failed}"
     );
     assert_eq!(fs::read(second.1.join("n")).unwrap(), b"n");

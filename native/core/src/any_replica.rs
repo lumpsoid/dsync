@@ -3,8 +3,8 @@
 //! enum dispatches by delegation, statically.
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, FileMeta, Precondition, RelPath, ReplicaInfo, RuleSet,
-    ScanEntry, WriteStats,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, FileMeta, Precondition, RelPath, RootFacts,
+    RuleSet, ScanEntry, WriteStats,
 };
 
 use crate::body::Body;
@@ -29,11 +29,11 @@ macro_rules! delegate {
 }
 
 impl Replica for AnyReplica {
-    async fn hello(&self) -> Result<ReplicaInfo, ReplicaError> {
+    async fn hello(&self) -> Result<RootFacts, ReplicaError> {
         delegate!(self.hello())
     }
 
-    async fn lock(&self) -> Result<(), ReplicaError> {
+    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
         delegate!(self.lock())
     }
 

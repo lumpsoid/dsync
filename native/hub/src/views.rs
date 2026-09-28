@@ -403,12 +403,9 @@ impl From<&ReplicaInfo> for ReplicaInfoView {
                 ReplicaRoot::Present
                 | ReplicaRoot::ParentMissing { .. }
                 | ReplicaRoot::WrongKind { .. } => None,
-                ReplicaRoot::Missing {
-                    root_path,
-                    archived_files,
-                } => Some(MissingRootView {
+                ReplicaRoot::Missing { root_path } => Some(MissingRootView {
                     root_path: root_path.clone(),
-                    archived_files: *archived_files,
+                    archived_files: info.archived_files,
                 }),
             },
         }

@@ -32,11 +32,11 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use dsync_domain::{Archive, ArchiveCommit, EntryId, FormatVersion, Side, Tuning};
+use dsync_domain::{Archive, ArchiveCommit, EntryId, FormatVersion, Tuning};
 
 use crate::archive_line::Line;
 use crate::atomic_write::{sync_dir, write_atomically};
-use crate::state_dir::StateDir;
+use crate::replica_lock::RunLocks;
 
 /// The log's format, written in its header (SPEC §8.2, §8.4). A new field
 /// on a line is a minor bump; a new kind of line, or any change to what an
@@ -129,22 +129,25 @@ pub struct ArchiveStore {
 }
 
 impl ArchiveStore {
-    /// Opens the log of `side` of `entry_id` in `state`.
-    pub fn open_replica(
-        state: &StateDir,
-        entry_id: &EntryId,
-        side: Side,
+    /// Opens the log of the replica `held` locks, whose root is
+    /// `root_path`. A sync's only way to its archive: one replayed without
+    /// the lock could miss what another run commits before this one takes
+    /// it (SPEC §4.3).
+    pub(crate) fn open_replica(
+        held: &RunLocks,
         root_path: String,
         tuning: &Tuning,
     ) -> Result<ArchiveStore, ArchiveError> {
         let header = ArchiveHeader {
-            entry_id: entry_id.clone(),
+            entry_id: held.entry_id().clone(),
             root_path,
         };
-        ArchiveStore::open(state.archive_log(entry_id, side), header, tuning)
+        ArchiveStore::open(held.archive_log().to_path_buf(), header, tuning)
     }
 
-    /// Opens the log at `log` and replays it. A missing log is an empty
+    /// Opens the log at `log` and replays it, holding no lock: for a log
+    /// no run can be using, such as a test's own. A replica's sync opens
+    /// its log with [`ArchiveStore::open_replica`]. A missing log is an empty
     /// archive; nothing is created until the first commit is written, so a
     /// run that commits nothing (a dry run) leaves no file behind.
     pub fn open(

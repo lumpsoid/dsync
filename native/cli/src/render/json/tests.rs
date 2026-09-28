@@ -44,6 +44,7 @@ fn copy(at: &str) -> Action {
 fn info(last_commit: Option<SystemTime>, archive: Option<&str>) -> ReplicaInfo {
     ReplicaInfo {
         last_commit,
+        archived_files: 0,
         archive_path: archive.map(str::to_owned),
         root: ReplicaRoot::Present,
     }

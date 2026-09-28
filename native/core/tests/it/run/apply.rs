@@ -221,6 +221,7 @@ async fn a_path_one_side_never_had_is_still_tombstoned_on_the_side_that_records_
     let site = Site::new();
     // A remembers a file that is gone from its disk; B has never seen it.
     let replica = site.replica(Side::A);
+    replica.lock().await.unwrap();
     let file = dsync_domain::FileState {
         meta: dsync_domain::FileMeta {
             size: 1,

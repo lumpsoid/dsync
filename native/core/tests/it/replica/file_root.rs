@@ -43,7 +43,6 @@ fn local(site: &Site, file: &Path) -> LocalReplica {
         Tuning::DEFAULT,
         Symlinks::AsRuled,
     )
-    .unwrap()
 }
 
 /// The file root at `file`, served over the protocol: what the dialer
@@ -60,6 +59,7 @@ async fn served(site: &Site, file: &Path) -> RemoteReplica {
     .unwrap();
     // The far side opens the replica at the first `hello`.
     replica.hello().await.unwrap();
+    replica.lock().await.unwrap();
     replica
 }
 
@@ -181,6 +181,7 @@ async fn a_file_root_refuses_every_path_but_its_synced_name_local_and_served() {
         match reach {
             Reach::Local => {
                 let replica = local(&site, &mine);
+                replica.lock().await.unwrap();
                 refuses_all_but_its_own(&replica, &site, reach).await;
                 serves_its_own(&replica, &site, &mine, reach).await;
             }
@@ -260,6 +261,7 @@ async fn the_scan_reports_the_file_at_its_synced_name_whatever_the_rules_say() {
     let site = Site::new();
     let (_, mine) = folder(&site);
     let replica = local(&site, &mine);
+    replica.lock().await.unwrap();
     let rules = RuleSet::new(vec![Glob::new("*.md").unwrap()], vec![]);
 
     let scan = replica.open_scan(&rules).await.unwrap().changed;
@@ -281,6 +283,7 @@ async fn an_absent_file_whose_folder_is_there_scans_as_deleted() {
     let site = Site::new();
     let mine = site.file(Side::B, "mine.md");
     let replica = local(&site, &mine);
+    replica.lock().await.unwrap();
     replica
         .commit(vec![ArchiveCommit::Upsert {
             path: path(AS_PATH),
@@ -308,6 +311,7 @@ async fn an_unreadable_file_is_reported_unreadable_not_deleted() {
     let site = Site::new();
     let mine = site.put(Side::B, "mine.md", "mine");
     let replica = local(&site, &mine);
+    replica.lock().await.unwrap();
     replica
         .commit(vec![ArchiveCommit::Upsert {
             path: path(AS_PATH),
@@ -349,6 +353,7 @@ async fn a_file_that_cannot_be_statted_is_reported_unreadable_not_deleted() {
     let site = Site::new();
     let mine = site.put(Side::B, "locked/mine.md", "mine");
     let replica = local(&site, &mine);
+    replica.lock().await.unwrap();
     replica
         .commit(vec![ArchiveCommit::Upsert {
             path: path(AS_PATH),

@@ -41,18 +41,15 @@ pub fn open_local(
     move |spec: ReplicaSpec| {
         let state = state.clone();
         Box::pin(async move {
-            let opened = tokio::task::spawn_blocking(move || {
-                LocalReplica::open(
-                    dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
-                    state,
-                    spec.entry,
-                    spec.side,
-                    spec.jobs,
-                    Tuning::DEFAULT,
-                    dsync_core::Symlinks::AsRuled,
-                )
-            });
-            Ok(opened.await.unwrap()?)
+            Ok(LocalReplica::open(
+                dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
+                state,
+                spec.entry,
+                spec.side,
+                spec.jobs,
+                Tuning::DEFAULT,
+                dsync_core::Symlinks::AsRuled,
+            ))
         })
     }
 }

@@ -14,8 +14,8 @@
 use std::future::Future;
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, OnDisk, Precondition,
-    RelPath, ReplicaInfo, RuleSet, ScanEntry, WriteStats,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, OnDisk,
+    Precondition, RelPath, RootFacts, RuleSet, ScanEntry, WriteStats,
 };
 use tokio::sync::oneshot;
 
@@ -29,18 +29,23 @@ use crate::replica_error::ReplicaError;
 /// Every method takes `&self`: a run's apply writes, deletes and commits
 /// concurrently on the same replica.
 pub trait Replica: Send + Sync {
-    /// This replica's own state (SPEC §4.2's `hello`): when its archive
-    /// last committed, where the archive lives, and whether its root is
-    /// there. The first call on a session.
-    fn hello(&self) -> impl Future<Output = Result<ReplicaInfo, ReplicaError>> + Send;
+    /// This replica's root (SPEC §4.2's `hello`): whether it is there, and
+    /// where the archive lives. Nothing the archive holds: that is read
+    /// only under the lock. The first call on a session.
+    fn hello(&self) -> impl Future<Output = Result<RootFacts, ReplicaError>> + Send;
 
-    /// Takes this replica's lock (SPEC §4.3). Refused while another run
-    /// holds it - fatal for the caller (SPEC §11.5 exit 3).
-    fn lock(&self) -> impl Future<Output = Result<(), ReplicaError>> + Send;
+    /// Takes this replica's lock (SPEC §4.3) and reads its archive, once,
+    /// for the rest of the session: when it last committed, and how many
+    /// files it holds. Refused while another run holds it - fatal for the
+    /// caller (SPEC §11.5 exit 3). Until it succeeds, every operation on
+    /// the archive - a scan, a commit, a compaction - is refused
+    /// [`ReplicaError::NotLocked`].
+    fn lock(&self) -> impl Future<Output = Result<ArchiveFacts, ReplicaError>> + Send;
 
-    /// Makes every commit durable, then releases the lock (SPEC §4.3,
-    /// §8.2). Called on every exit path; the lock is released even when
-    /// the flush fails, and the flush's error is returned.
+    /// Makes every commit durable, then releases the lock and the archive
+    /// read under it (SPEC §4.3, §8.2). Called on every exit path; the lock
+    /// is released even when the flush fails, and the flush's error is
+    /// returned.
     fn unlock(&self) -> impl Future<Output = Result<(), ReplicaError>> + Send;
 
     /// Creates the root [`Replica::hello`] reported missing. Only called

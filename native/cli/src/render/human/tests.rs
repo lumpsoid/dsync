@@ -62,6 +62,7 @@ fn summary() -> RunEvent {
 fn info(last_commit: Option<std::time::SystemTime>) -> ReplicaInfo {
     ReplicaInfo {
         last_commit,
+        archived_files: 0,
         archive_path: Some("/state/x-a.jsonl".into()),
         root: ReplicaRoot::Present,
     }

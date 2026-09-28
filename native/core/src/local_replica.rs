@@ -2,6 +2,10 @@
 //! store, its lock, its writer pool. Used for a local location directly,
 //! and by the server a remote replica talks to.
 //!
+//! The archive is opened by the lock and dropped with it: a replica that
+//! does not hold its lock has no archive to read, so each session replays
+//! the log once, under the lock.
+//!
 //! Blocking work - the archive's fsyncs, the scan, file reads, deletes -
 //! runs on tokio's blocking pool (`spawn_blocking`); writes run on the
 //! pool's own threads (plan D3). Never `tokio::fs`. This type builds no
@@ -13,11 +17,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
-    ArchiveCommit, Bucket, BucketCount, Digested, EntryId, FileMeta, Jobs, OnDisk, Precondition,
-    RelPath, ReplicaInfo, RuleSet, ScanEntry, Side, Tuning,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Digested, EntryId, FileMeta, Jobs, OnDisk,
+    Precondition, RelPath, RootFacts, RuleSet, ScanEntry, Side, Tuning,
 };
 
-use crate::archive_store::{ArchiveError, ArchiveStore};
+use crate::archive_store::ArchiveStore;
 use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
 use crate::confinement::Confinement;
@@ -51,8 +55,7 @@ struct Shared {
     side: Side,
     jobs: Jobs,
     tuning: Tuning,
-    store: Mutex<ArchiveStore>,
-    lock: Mutex<Option<RunLocks>>,
+    session: Mutex<Session>,
     scan: Mutex<ScanPhase>,
     /// Which links this replica goes through, checked on every path.
     confinement: Arc<Confinement>,
@@ -60,6 +63,18 @@ struct Shared {
     /// Started by the first write: a replica only read from never starts
     /// its threads.
     writers: OnceLock<WriterPool>,
+}
+
+/// Whether this replica holds its lock, and with it the archive read under
+/// it: there is no archive without the lock.
+enum Session {
+    Unlocked,
+    /// `store` before `lock`: a store dropped without an unlock writes out
+    /// its buffer before the lock that makes the archive this run's goes.
+    Locked {
+        store: Box<ArchiveStore>,
+        lock: RunLocks,
+    },
 }
 
 /// Where this replica's scan exchange stands (plan OQ3). The tickets make
@@ -74,8 +89,8 @@ enum ScanPhase {
 impl LocalReplica {
     /// The replica at `root` (its text as the location names it is also
     /// the archive header's root), side `side` of `entry_id`, with its
-    /// state in `state`, going through the `symlinks` it may. Replays the
-    /// archive, so this blocks.
+    /// state in `state`, going through the `symlinks` it may. Touches
+    /// nothing on disk: the archive is read by [`Replica::lock`].
     pub fn open(
         root: Root,
         state: StateDir,
@@ -84,12 +99,10 @@ impl LocalReplica {
         jobs: Jobs,
         tuning: Tuning,
         symlinks: Symlinks,
-    ) -> Result<LocalReplica, ArchiveError> {
-        let store =
-            ArchiveStore::open_replica(&state, &entry_id, side, root.text().to_owned(), &tuning)?;
+    ) -> LocalReplica {
         let root = Arc::new(root);
         let confinement = Arc::new(Confinement::new(root.base().to_path_buf(), symlinks));
-        Ok(LocalReplica {
+        LocalReplica {
             shared: Arc::new(Shared {
                 destination: Arc::new(Destination::new(root.clone(), confinement.clone())),
                 confinement,
@@ -99,12 +112,11 @@ impl LocalReplica {
                 side,
                 jobs,
                 tuning,
-                store: Mutex::new(store),
-                lock: Mutex::new(None),
+                session: Mutex::new(Session::Unlocked),
                 scan: Mutex::new(ScanPhase::Closed),
                 writers: OnceLock::new(),
             }),
-        })
+        }
     }
 
     /// The root itself: the folder, or the one file.
@@ -138,16 +150,24 @@ impl LocalReplica {
 }
 
 impl Shared {
-    fn store(&self) -> MutexGuard<'_, ArchiveStore> {
-        self.store.lock().unwrap_or_else(PoisonError::into_inner)
+    fn session(&self) -> MutexGuard<'_, Session> {
+        self.session.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs `work` on the archive read under the lock, or refuses: this
+    /// session does not hold it.
+    fn archive<T>(
+        &self,
+        work: impl FnOnce(&mut ArchiveStore) -> Result<T, ReplicaError>,
+    ) -> Result<T, ReplicaError> {
+        match &mut *self.session() {
+            Session::Locked { store, .. } => work(store),
+            Session::Unlocked => Err(ReplicaError::NotLocked),
+        }
     }
 
     fn scan(&self) -> MutexGuard<'_, ScanPhase> {
         self.scan.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn held(&self) -> MutexGuard<'_, Option<RunLocks>> {
-        self.lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn writers(&self) -> &WriterPool {
@@ -174,43 +194,39 @@ impl Shared {
 }
 
 impl Replica for LocalReplica {
-    async fn hello(&self) -> Result<ReplicaInfo, ReplicaError> {
+    async fn hello(&self) -> Result<RootFacts, ReplicaError> {
         self.blocking(|shared| {
-            let mut store = shared.store();
-            let last_commit = store.last_commit()?;
-            // The archive is only counted for a missing root, where the
-            // refusal reports it (SPEC §4.5).
-            let root = shared.root.state(|| store.archive().len() as u64);
-            Ok(ReplicaInfo {
-                last_commit,
-                archive_path: Some(store.log_path().display().to_string()),
-                root,
+            let log = shared.state.archive_log(&shared.entry_id, shared.side);
+            Ok(RootFacts {
+                archive_path: Some(log.display().to_string()),
+                root: shared.root.state(),
             })
         })
         .await
     }
 
-    async fn lock(&self) -> Result<(), ReplicaError> {
+    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
         self.blocking(|shared| {
+            let mut session = shared.session();
+            // A second lock in one session is refused here as held, like
+            // another run's.
             let lock = RunLocks::acquire(
                 &shared.state,
                 &shared.entry_id,
                 shared.side,
                 shared.root.path(),
             )?;
-            // Replayed again under the lock: a run that held it until now
-            // may have committed since this replica was opened.
-            let mut store = shared.store();
-            store.flush()?;
-            *store = ArchiveStore::open_replica(
-                &shared.state,
-                &shared.entry_id,
-                shared.side,
+            let mut store = Box::new(ArchiveStore::open_replica(
+                &lock,
                 shared.root.text().to_owned(),
                 &shared.tuning,
-            )?;
-            *shared.held() = Some(lock);
-            Ok(())
+            )?);
+            let facts = ArchiveFacts {
+                last_commit: store.last_commit()?,
+                archived_files: store.archive().len() as u64,
+            };
+            *session = Session::Locked { store, lock };
+            Ok(facts)
         })
         .await
     }
@@ -219,9 +235,16 @@ impl Replica for LocalReplica {
         self.blocking(|shared| {
             // Batched commits are made durable before the lock that says
             // this replica is this session's is given up (SPEC §8.2).
-            let flushed = shared.store().flush();
-            shared.held().take();
-            Ok(flushed?)
+            match std::mem::replace(&mut *shared.session(), Session::Unlocked) {
+                Session::Locked { mut store, lock } => {
+                    let flushed = store.flush();
+                    // The archive goes before the lock it was read under.
+                    drop(store);
+                    drop(lock);
+                    Ok(flushed?)
+                }
+                Session::Unlocked => Ok(()),
+            }
         })
         .await
     }
@@ -240,15 +263,16 @@ impl Replica for LocalReplica {
         let rules = rules.clone();
         let result = self
             .blocking(move |shared| {
-                let scanner = Scanner::new(
-                    shared.jobs,
-                    probe_case_folding(shared.root.base()),
-                    shared.confinement.symlinks().clone(),
-                );
-                let mut store = shared.store();
-                let result = shared.root.scan(&scanner, store.archive(), &rules)?;
-                store.commit(result.key_refreshes())?;
-                Ok::<_, ReplicaError>(result)
+                shared.archive(|store| {
+                    let scanner = Scanner::new(
+                        shared.jobs,
+                        probe_case_folding(shared.root.base()),
+                        shared.confinement.symlinks().clone(),
+                    );
+                    let result = shared.root.scan(&scanner, store.archive(), &rules)?;
+                    store.commit(result.key_refreshes())?;
+                    Ok(result)
+                })
             })
             .await?;
         let session = ScanSession::new(result);
@@ -390,13 +414,14 @@ impl Replica for LocalReplica {
             for commit in &batch {
                 shared.locate(FileOp::Commit, commit.path())?;
             }
-            Ok(shared.store().commit(batch)?)
+            shared.archive(|store| Ok(store.commit(batch)?))
         })
         .await
     }
 
     async fn compact(&self) -> Result<(), ReplicaError> {
-        self.blocking(|shared| Ok(shared.store().compact()?)).await
+        self.blocking(|shared| shared.archive(|store| Ok(store.compact()?)))
+            .await
     }
 
     async fn close(self) -> Result<(), ReplicaError> {

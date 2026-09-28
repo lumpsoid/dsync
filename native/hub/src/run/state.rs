@@ -1591,6 +1591,7 @@ mod tests {
     fn replica(last_commit_s: Option<u64>) -> ReplicaInfo {
         ReplicaInfo {
             last_commit: last_commit_s.map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s)),
+            archived_files: 0,
             archive_path: None,
             root: ReplicaRoot::Present,
         }

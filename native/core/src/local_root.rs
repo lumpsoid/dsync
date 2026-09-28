@@ -133,10 +133,9 @@ impl Root {
     }
 
     /// Whether the root is there to sync, as `hello` reports it (SPEC
-    /// §4.5). `archived_files` counts the archive, asked only for a
-    /// missing folder root. A file root whose folder is there is present
-    /// with or without its file.
-    pub(crate) fn state(&self, archived_files: impl FnOnce() -> u64) -> ReplicaRoot {
+    /// §4.5). A file root whose folder is there is present with or without
+    /// its file.
+    pub(crate) fn state(&self) -> ReplicaRoot {
         match &self.shape {
             Shape::Folder(folder) => match fs::metadata(folder) {
                 Ok(meta) if meta.is_dir() => ReplicaRoot::Present,
@@ -146,7 +145,6 @@ impl Root {
                 },
                 Err(_) => ReplicaRoot::Missing {
                     root_path: self.text.clone(),
-                    archived_files: archived_files(),
                 },
             },
             Shape::File { dir, .. } if !dir.is_dir() => ReplicaRoot::ParentMissing {

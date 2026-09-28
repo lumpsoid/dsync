@@ -13,6 +13,7 @@ mod action;
 mod advertisable_address;
 mod app_dirs;
 mod archive;
+mod archive_facts;
 mod case_folding;
 mod certificate_validity;
 mod changed_scan;
@@ -53,6 +54,7 @@ mod replica_info;
 mod replica_location;
 mod replica_spec;
 mod resolution;
+mod root_facts;
 mod root_kind;
 mod rule_set;
 mod run_flags;
@@ -84,6 +86,7 @@ pub use app_dirs::{
     DIR_LEAF, DirError, DirPath, DirRule, EmptyDirPath, StateDirChoice, config_dir, state_dir,
 };
 pub use archive::{Archive, ArchiveCommit};
+pub use archive_facts::ArchiveFacts;
 pub use case_folding::CaseFolding;
 pub use certificate_validity::{
     CertificateExpiry, CertificateOwner, CertificateValidity, OutOfValidity,
@@ -130,6 +133,7 @@ pub use replica_info::{MissingReplicaRoot, ReplicaInfo, ReplicaRoot};
 pub use replica_location::{ReplicaLocation, ReplicaLocationError};
 pub use replica_spec::ReplicaSpec;
 pub use resolution::Resolution;
+pub use root_facts::RootFacts;
 pub use root_kind::RootKind;
 pub use rule_set::RuleSet;
 pub use run_flags::{Command, Flags, Mode, RunFlags, Verbosity};

@@ -12,14 +12,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dsync_core::{
-    ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan, LinkError, LocalReplica,
-    OpenedScan, Reading, RemoteReplica, Replica, ReplicaError, ReplicaServer, Run, RunEvent,
-    RunReport, StateDir, Transport,
+    ArchiveHeader, ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan,
+    LinkError, LocalReplica, OpenedScan, Reading, RemoteReplica, Replica, ReplicaError,
+    ReplicaServer, Run, RunEvent, RunReport, StateDir, Transport,
 };
 use dsync_domain::{
-    Action, Archive, ArchiveCommit, Bucket, BucketCount, Command, EffectiveOptions, FileMeta,
-    Flags, HostFacts, Location, Platform, Precondition, RelPath, ReplicaInfo, ReplicaLocation,
-    ReplicaSpec, RuleSet, RunFlags, ScanEntry, Side, Tuning, WriteStats,
+    Action, Archive, ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Command, EffectiveOptions,
+    FileMeta, Flags, HostFacts, Location, Platform, Precondition, RelPath, ReplicaLocation,
+    ReplicaSpec, RootFacts, RuleSet, RunFlags, ScanEntry, Side, Tuning, WriteStats,
 };
 use tempfile::TempDir;
 use tokio::sync::{Semaphore, mpsc};
@@ -115,7 +115,6 @@ impl Site {
             tuning,
             dsync_core::Symlinks::AsRuled,
         )
-        .unwrap()
     }
 
     pub fn file(&self, side: Side, relative: &str) -> PathBuf {
@@ -152,16 +151,14 @@ impl Site {
     /// `side`'s archive as the next run would read it off disk.
     pub fn archive(&self, side: Side) -> Archive {
         let spec = self.spec(side);
-        ArchiveStore::open_replica(
-            &self.state(),
-            &spec.entry,
-            side,
-            spec.root,
-            &Tuning::DEFAULT,
-        )
-        .unwrap()
-        .archive()
-        .clone()
+        let header = ArchiveHeader {
+            entry_id: spec.entry,
+            root_path: spec.root,
+        };
+        ArchiveStore::open(self.log(side), header, &Tuning::DEFAULT)
+            .unwrap()
+            .archive()
+            .clone()
     }
 
     pub fn marker(&self) -> PathBuf {
@@ -405,12 +402,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl<R: Replica> Replica for Probe<R> {
-    async fn hello(&self) -> Result<ReplicaInfo, ReplicaError> {
+    async fn hello(&self) -> Result<RootFacts, ReplicaError> {
         self.enter(Call::Hello).await?;
         self.inner.hello().await
     }
 
-    async fn lock(&self) -> Result<(), ReplicaError> {
+    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
         self.enter(Call::Lock).await?;
         self.inner.lock().await
     }
@@ -527,18 +524,15 @@ where
         move |spec: ReplicaSpec| {
             let state = state.clone();
             async move {
-                let opened = tokio::task::spawn_blocking(move || {
-                    LocalReplica::open(
-                        dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
-                        state,
-                        spec.entry,
-                        spec.side,
-                        spec.jobs,
-                        tuning,
-                        dsync_core::Symlinks::AsRuled,
-                    )
-                });
-                Ok::<_, ReplicaError>(opened.await.unwrap()?)
+                Ok::<_, ReplicaError>(LocalReplica::open(
+                    dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
+                    state,
+                    spec.entry,
+                    spec.side,
+                    spec.jobs,
+                    tuning,
+                    dsync_core::Symlinks::AsRuled,
+                ))
             }
         },
         tuning,

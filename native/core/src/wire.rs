@@ -12,8 +12,8 @@ use std::io;
 use std::path::PathBuf;
 
 use dsync_domain::{
-    ArchiveCommit, ChangedDuringSync, ChangedScan, FileMeta, Precondition, RelPath, ReplicaInfo,
-    ReplicaSpec, RuleSet, ScanEntry, Stage, WriteStats,
+    ArchiveCommit, ArchiveFacts, ChangedDuringSync, ChangedScan, FileMeta, Precondition, RelPath,
+    ReplicaSpec, RootFacts, RuleSet, ScanEntry, Stage, WriteStats,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +57,9 @@ pub(crate) enum Request {
 /// A successful answer; which one follows from the request.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub(crate) enum Reply {
-    Hello(ReplicaInfo),
+    Hello(RootFacts),
+    /// The lock is taken; with the archive as its one replay read it.
+    Locked(ArchiveFacts),
     Done,
     Scan(ChangedScan),
     Digests {
@@ -110,6 +112,7 @@ pub(crate) enum WireError {
         io: WireIo,
     },
     NoScan,
+    NotLocked,
     Refused(String),
     Changed,
     /// The far side could not make sense of a request (a path that is not
@@ -167,6 +170,7 @@ impl From<ReplicaError> for WireError {
                 io: WireIo::from(&source),
             },
             ReplicaError::NoScan => WireError::NoScan,
+            ReplicaError::NotLocked => WireError::NotLocked,
             ReplicaError::Refused(message) => WireError::Refused(message),
             ReplicaError::Changed(ChangedDuringSync) => WireError::Changed,
             ReplicaError::RemoteArchive(message) => WireError::Archive(message),
@@ -205,6 +209,7 @@ impl From<WireError> for ReplicaError {
                 source: io.into(),
             },
             WireError::NoScan => ReplicaError::NoScan,
+            WireError::NotLocked => ReplicaError::NotLocked,
             WireError::Refused(message) => ReplicaError::Refused(message),
             WireError::Changed => ReplicaError::Changed(ChangedDuringSync),
             WireError::Protocol(message) => ReplicaError::Link(
@@ -421,18 +426,23 @@ mod tests {
             },
         };
         for reply in [
-            Reply::Hello(ReplicaInfo {
-                last_commit: Some(UNIX_EPOCH + Duration::from_micros(1_700_000_000_123_456)),
+            Reply::Hello(RootFacts {
                 archive_path: Some("/state/x-a.jsonl".into()),
                 root: ReplicaRoot::Missing {
                     root_path: "/gone".into(),
-                    archived_files: 4,
                 },
             }),
-            Reply::Hello(ReplicaInfo {
-                last_commit: None,
+            Reply::Hello(RootFacts {
                 archive_path: None,
                 root: ReplicaRoot::Present,
+            }),
+            Reply::Locked(ArchiveFacts {
+                last_commit: Some(UNIX_EPOCH + Duration::from_micros(1_700_000_000_123_456)),
+                archived_files: 4,
+            }),
+            Reply::Locked(ArchiveFacts {
+                last_commit: None,
+                archived_files: 0,
             }),
             Reply::Done,
             Reply::Scan(changed),
@@ -517,6 +527,13 @@ mod tests {
                     && lock == &PathBuf::from("/state/folder-0123.lock")),
             "{back:?}"
         );
+    }
+
+    #[test]
+    fn an_unlocked_archive_comes_back_as_not_locked() {
+        let wire = WireError::from(ReplicaError::NotLocked);
+        let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
+        assert!(matches!(back, ReplicaError::NotLocked), "{back:?}");
     }
 
     #[test]

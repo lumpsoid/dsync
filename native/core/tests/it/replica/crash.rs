@@ -13,8 +13,8 @@ async fn a_crash_between_the_two_commits_converges_without_moving_bytes_again() 
     site.put(Side::A, "f", "v1");
     site.put(Side::B, "f", "v1");
     {
-        let a = site.replica(Side::A);
-        let b = site.replica(Side::B);
+        let a = site.locked(Side::A).await;
+        let b = site.locked(Side::B).await;
         with_deadline("seed", async {
             seed(&a).await;
             seed(&b).await;
@@ -25,8 +25,8 @@ async fn a_crash_between_the_two_commits_converges_without_moving_bytes_again() 
 
     // The run that crashes: B's commit lands, A's never happens.
     {
-        let a = site.replica(Side::A);
-        let b = site.replica(Side::B);
+        let a = site.locked(Side::A).await;
+        let b = site.locked(Side::B).await;
         with_deadline("crashing run", async {
             let exchanged = exchange(&a, &b).await;
             assert_eq!(
@@ -60,8 +60,8 @@ async fn a_crash_between_the_two_commits_converges_without_moving_bytes_again() 
 
     // The next run: A reports modified, B unchanged, with the same content
     // - commit-only, not a second copy.
-    let a = site.replica(Side::A);
-    let b = site.replica(Side::B);
+    let a = site.locked(Side::A).await;
+    let b = site.locked(Side::B).await;
     let before = site.state_of(Side::B, "f");
     with_deadline("recovery run", async {
         let exchanged = exchange(&a, &b).await;

@@ -42,14 +42,12 @@ impl Fixture {
 
     /// A real log, written by the real store.
     fn write_log(&self, profile: &str, side: Side, root: &str, entries: usize) -> PathBuf {
-        let mut store = ArchiveStore::open_replica(
-            &self.state(),
-            &id(profile),
-            side,
-            root.into(),
-            &Tuning::DEFAULT,
-        )
-        .unwrap();
+        let header = ArchiveHeader {
+            entry_id: id(profile),
+            root_path: root.into(),
+        };
+        let log = self.state().archive_log(&id(profile), side);
+        let mut store = ArchiveStore::open(log, header, &Tuning::DEFAULT).unwrap();
         store
             .commit((0..entries).map(|i| upsert(&format!("file{i}.txt"), file(10, 1))))
             .unwrap();

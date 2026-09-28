@@ -108,7 +108,6 @@ impl FileEntry {
             Tuning::DEFAULT,
             dsync_core::Symlinks::AsRuled,
         )
-        .unwrap()
     }
 
     async fn served(

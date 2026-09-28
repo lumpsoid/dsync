@@ -7,8 +7,9 @@
 //! copied over A.
 //!
 //! A "run" is fresh replicas over the same roots and state dir. A killed
-//! run is a real killed process, or replicas leaked with `mem::forget` so
-//! nothing buffered is flushed, which is what a dead process leaves.
+//! run is a real killed process, or replicas ended by [`killed`]: their
+//! locks released and nothing buffered flushed, which is what a dead
+//! process leaves.
 
 use std::path::Path;
 
@@ -42,11 +43,27 @@ async fn arrange(cell: Cell) -> Site {
     if let Cell::OrdinaryPull = cell {
         site.put(Side::A, "f", OLD);
         site.put(Side::B, "f", OLD);
-        seed(&site.replica(Side::A)).await;
-        seed(&site.replica(Side::B)).await;
+        seed(&site.locked(Side::A).await).await;
+        seed(&site.locked(Side::B).await).await;
     }
     site.put(Side::A, "f", SOURCE);
     site
+}
+
+/// Ends `replicas` as a killed process would: their locks go, and every
+/// commit they still buffer goes with them - each log stays as it was on
+/// disk.
+fn killed(site: &Site, replicas: (LocalReplica, LocalReplica)) {
+    let on_disk = Side::BOTH.map(|side| (site.log(side), std::fs::read(site.log(side)).ok()));
+    drop(replicas);
+    for (log, bytes) in on_disk {
+        match bytes {
+            Some(bytes) => std::fs::write(log, bytes).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(log);
+            }
+        }
+    }
 }
 
 /// The run that tears: the plan copies `f` to B, B's mark goes down
@@ -55,8 +72,8 @@ async fn torn_run<F, T>(site: &Site, tear: F) -> (LocalReplica, LocalReplica)
 where
     F: AsyncFnOnce(&LocalReplica) -> T,
 {
-    let a = site.replica(Side::A);
-    let b = site.replica(Side::B);
+    let a = site.locked(Side::A).await;
+    let b = site.locked(Side::B).await;
     let exchanged = exchange(&a, &b).await;
     assert_eq!(
         exchanged.actions(),
@@ -78,8 +95,8 @@ where
 /// the mark stays until the user settles it.
 async fn expect_interrupted(site: &Site) {
     for _ in 0..2 {
-        let a = site.replica(Side::A);
-        let b = site.replica(Side::B);
+        let a = site.locked(Side::A).await;
+        let b = site.locked(Side::B).await;
         let exchanged = exchange(&a, &b).await;
         let [conflict] = exchanged.plan.conflicts.as_slice() else {
             panic!("expected one conflict: {:?}", exchanged.plan);
@@ -97,8 +114,8 @@ async fn expect_interrupted(site: &Site) {
 /// The run after a tear that converges by itself: `f` lands on B, nothing
 /// comes back to A, and the run after that finds nothing to do.
 async fn expect_converges(site: &Site) {
-    let a = site.replica(Side::A);
-    let b = site.replica(Side::B);
+    let a = site.locked(Side::A).await;
+    let b = site.locked(Side::B).await;
     let recovery = exchange(&a, &b).await;
     assert!(recovery.plan.conflicts.is_empty(), "{:?}", recovery.plan);
     assert!(
@@ -151,7 +168,7 @@ async fn killed_after_the_mark_before_the_write_converges() {
         let site = with_deadline("arrange", arrange(cell)).await;
         with_deadline("tear and recover", async {
             let (a, b) = torn_run(&site, async |_: &LocalReplica| {}).await;
-            std::mem::forget((a, b));
+            killed(&site, (a, b));
             assert!(site.archive(Side::B).is_untrusted(&path("f")));
             expect_converges(&site).await;
         })
@@ -204,7 +221,7 @@ async fn a_write_killed_before_its_commits_are_flushed_converges() {
             })
             .await;
             // Killed: the buffered upsert dies with the process.
-            std::mem::forget((a, b));
+            killed(&site, (a, b));
             assert!(site.archive(Side::B).is_untrusted(&path("f")));
             expect_converges(&site).await;
         })
@@ -241,11 +258,11 @@ async fn a_users_edit_to_a_marked_file_after_a_crash_is_a_conflict_never_overwri
     let site = with_deadline("arrange", arrange(Cell::OrdinaryPull)).await;
     with_deadline("crash, edit and recover", async {
         let (a, b) = torn_run(&site, async |_: &LocalReplica| {}).await;
-        std::mem::forget((a, b));
+        killed(&site, (a, b));
         site.put(Side::B, "f", "the user's edit, made after the crash");
 
-        let a = site.replica(Side::A);
-        let b = site.replica(Side::B);
+        let a = site.locked(Side::A).await;
+        let b = site.locked(Side::B).await;
         let next = exchange(&a, &b).await;
 
         assert!(next.plan.conflicts[0].interrupted());
@@ -271,7 +288,7 @@ pub fn tear_write(dir: &Path) {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let b = site.replica(Side::B);
+        let b = site.locked(Side::B).await;
         b.commit(vec![ArchiveCommit::Intent(path("f"))])
             .await
             .unwrap();

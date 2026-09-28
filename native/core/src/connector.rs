@@ -18,7 +18,6 @@ use dsync_domain::{
 };
 
 use crate::any_replica::AnyReplica;
-use crate::archive_store::ArchiveError;
 use crate::link_error::LinkError;
 use crate::local_replica::LocalReplica;
 use crate::local_root::{Root, RootError};
@@ -76,9 +75,6 @@ pub enum ConnectFailure {
     /// with no file name.
     #[error(transparent)]
     Shape(#[from] RootError),
-    /// A local replica's archive could not be opened.
-    #[error(transparent)]
-    Archive(#[from] ArchiveError),
     /// An ssh or socket connection failed before it was up: ssh would not
     /// start, the far side did not speak the protocol, or it went away. An
     /// ssh failure carries what ssh printed.
@@ -105,13 +101,11 @@ pub enum ConnectFailure {
 impl ConnectFailure {
     /// Whether this failure says the device or transport is unreachable,
     /// so a profile's later entries - over the same one - would only fail
-    /// the same way, each after its own timeout. A root or archive failure
-    /// is the entry's own.
+    /// the same way, each after its own timeout. A root failure is the
+    /// entry's own.
     pub fn ends_profile(&self) -> bool {
         match self {
-            ConnectFailure::Root(_) | ConnectFailure::Shape(_) | ConnectFailure::Archive(_) => {
-                false
-            }
+            ConnectFailure::Root(_) | ConnectFailure::Shape(_) => false,
             ConnectFailure::Link(_)
             | ConnectFailure::Socket { .. }
             | ConnectFailure::Peer(_)
@@ -258,24 +252,15 @@ impl Connector {
         let state = self.state.clone();
         let tuning = self.tuning;
         // This host runs the run, so it owns both ends: its rules decide.
-        let opening = tokio::task::spawn_blocking(move || {
-            LocalReplica::open(
-                root,
-                state,
-                spec.entry,
-                spec.side,
-                spec.jobs,
-                tuning,
-                Symlinks::AsRuled,
-            )
-        });
-        match opening.await {
-            Ok(opened) => Ok(AnyReplica::Local(opened?)),
-            Err(error) => match error.try_into_panic() {
-                Ok(panic) => std::panic::resume_unwind(panic),
-                Err(_) => panic!("the runtime shut down while a replica opened"),
-            },
-        }
+        Ok(AnyReplica::Local(LocalReplica::open(
+            root,
+            state,
+            spec.entry,
+            spec.side,
+            spec.jobs,
+            tuning,
+            Symlinks::AsRuled,
+        )))
     }
 
     #[cfg(unix)]

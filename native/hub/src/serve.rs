@@ -270,20 +270,9 @@ impl Opener {
             });
             let root = Root::new(root, spec.kind, spec.as_path.clone())
                 .map_err(|error| ReplicaError::Refused(error.to_string()))?;
-            let opening = tokio::task::spawn_blocking(move || {
-                LocalReplica::open(
-                    root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,
-                )
-            });
-            match opening.await {
-                Ok(opened) => Ok(opened?),
-                Err(error) => match error.try_into_panic() {
-                    Ok(panic) => std::panic::resume_unwind(panic),
-                    Err(_) => Err(ReplicaError::Refused(
-                        "the head shut down while the replica opened".into(),
-                    )),
-                },
-            }
+            Ok(LocalReplica::open(
+                root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,
+            ))
         }
     }
 }

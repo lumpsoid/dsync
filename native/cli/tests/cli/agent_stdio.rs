@@ -46,6 +46,7 @@ async fn a_hello_and_a_scan_round_trip_then_closing_ends_the_agent_cleanly() {
         let expected = site.state_dir().join(format!("{PROFILE}-a.jsonl"));
         assert_eq!(info.archive_path.as_deref(), expected.to_str());
 
+        replica.lock().await.unwrap();
         let opened = replica.open_scan(&RuleSet::default()).await.unwrap();
         let [entry] = opened.changed.entries.as_slice() else {
             panic!("{:?}", opened.changed.entries);
@@ -53,6 +54,7 @@ async fn a_hello_and_a_scan_round_trip_then_closing_ends_the_agent_cleanly() {
         assert_eq!(entry.path.as_str(), "a.txt");
         assert!(matches!(entry.status, Status::Created(_)), "{entry:?}");
 
+        replica.unlock().await.unwrap();
         replica.close().await.unwrap();
         let status = child.wait().await.unwrap();
         assert_eq!(status.code(), Some(0));

@@ -67,8 +67,13 @@ pub enum LockError {
 /// are). The one place their order is decided: the profile's first, so a
 /// repeat of the same run is still refused as that; then the folder's.
 /// Released in the reverse order, as the fields drop.
+///
+/// Holding one is the only way to a replica's archive
+/// ([`crate::ArchiveStore::open_replica`]): it names the log it guards.
 #[derive(Debug)]
 pub(crate) struct RunLocks {
+    entry_id: EntryId,
+    archive_log: PathBuf,
     _folder: ReplicaLock,
     _profile: ReplicaLock,
 }
@@ -94,9 +99,21 @@ impl RunLocks {
             other => other,
         })?;
         Ok(RunLocks {
+            entry_id: entry_id.clone(),
+            archive_log: state.archive_log(entry_id, side),
             _folder: folder,
             _profile: profile,
         })
+    }
+
+    /// The entry whose archive these locks guard.
+    pub(crate) fn entry_id(&self) -> &EntryId {
+        &self.entry_id
+    }
+
+    /// The archive log these locks guard.
+    pub(crate) fn archive_log(&self) -> &Path {
+        &self.archive_log
     }
 }
 

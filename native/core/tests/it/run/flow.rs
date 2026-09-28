@@ -622,6 +622,7 @@ async fn a_dry_run_leaves_a_log_with_redundant_lines_uncompacted() {
     site.put(Side::A, "f", "v");
     sync(&site).await;
     let replica = site.replica(Side::A);
+    replica.lock().await.unwrap();
     let file = site.archive(Side::A).get(&path("f")).copied().unwrap();
     for _ in 0..3 {
         replica

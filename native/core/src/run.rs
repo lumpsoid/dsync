@@ -1,7 +1,8 @@
-//! The one owner of SPEC's sync order (plan D8): hello A then B, lock A
-//! then B, the missing-root rule (§4.5), both scans and the three-phase
-//! exchange at once (§6.1), reconcile, the decider, §10's delete guard,
-//! the run marker, the
+//! The one owner of SPEC's sync order (plan D8): hello A then B, the
+//! wrong-kind check (§4.5), lock A then B - each lock reading its archive,
+//! once - the run header, the missing-root rule (§4.5) on the archives as
+//! the locks read them, both scans and the three-phase exchange at once
+//! (§6.1), reconcile, the decider, §10's delete guard, the run marker, the
 //! apply, the marker's removal, compaction when anything was applied
 //! (§8.2), the summary - then unlock and disconnect, on every path.
 //!
@@ -257,10 +258,10 @@ impl Run {
         decider: &mut impl Decider,
         marker: &Path,
     ) -> Option<RunSummary> {
-        let mut infos = Vec::with_capacity(2);
+        let mut roots = Vec::with_capacity(2);
         for side in Side::BOTH {
             match pair.clock.phase(RunPhase::Connect, pair.hello(side)).await {
-                Ok(info) => infos.push(info),
+                Ok(root) => roots.push(root),
                 Err(error) => {
                     self.events
                         .fail(RunError::replica(side, ReplicaOp::Hello)(error))
@@ -269,9 +270,40 @@ impl Run {
                 }
             }
         }
-        let (Some(info_b), Some(info_a)) = (infos.pop(), infos.pop()) else {
+        let (Some(root_b), Some(root_a)) = (roots.pop(), roots.pop()) else {
             return None;
         };
+        // Before either lock: a root of the wrong kind is not touched at
+        // all, not even by a lock beside it.
+        for (side, root) in [(Side::A, &root_a), (Side::B, &root_b)] {
+            if let Some(wrong) = root.wrong_kind(side) {
+                self.events.fail(RunError::WrongKind(wrong)).await;
+                return None;
+            }
+        }
+        let archive_a = match pair.clock.phase(RunPhase::Lock, pair.lock(Side::A)).await {
+            Ok(archive) => archive,
+            Err(error) => {
+                self.events
+                    .fail(RunError::replica(Side::A, ReplicaOp::Lock)(error))
+                    .await;
+                return None;
+            }
+        };
+        let archive_b = match pair.clock.phase(RunPhase::Lock, pair.lock(Side::B)).await {
+            Ok(archive) => archive,
+            Err(error) => {
+                self.events
+                    .fail(RunError::replica(Side::B, ReplicaOp::Lock)(error))
+                    .await;
+                self.unlock(pair, Side::A).await;
+                return None;
+            }
+        };
+        // The header's facts are whole only now: each archive as its lock
+        // read it.
+        let info_a = ReplicaInfo::new(root_a, archive_a);
+        let info_b = ReplicaInfo::new(root_b, archive_b);
         let last_run_unfinished = marker_present(marker).await;
         self.events
             .emit(RunEvent::Replicas {
@@ -280,27 +312,6 @@ impl Run {
                 last_run_unfinished,
             })
             .await;
-        // Before either lock: a root of the wrong kind is not touched at
-        // all, not even by a lock beside it.
-        for (side, info) in [(Side::A, &info_a), (Side::B, &info_b)] {
-            if let Some(wrong) = info.wrong_kind(side) {
-                self.events.fail(RunError::WrongKind(wrong)).await;
-                return None;
-            }
-        }
-        if let Err(error) = pair.clock.phase(RunPhase::Lock, pair.lock(Side::A)).await {
-            self.events
-                .fail(RunError::replica(Side::A, ReplicaOp::Lock)(error))
-                .await;
-            return None;
-        }
-        if let Err(error) = pair.clock.phase(RunPhase::Lock, pair.lock(Side::B)).await {
-            self.events
-                .fail(RunError::replica(Side::B, ReplicaOp::Lock)(error))
-                .await;
-            self.unlock(pair, Side::A).await;
-            return None;
-        }
         let summary = match self
             .locked(pair, [&info_a, &info_b], options, decider, marker)
             .await

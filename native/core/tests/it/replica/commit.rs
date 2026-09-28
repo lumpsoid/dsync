@@ -18,7 +18,7 @@ fn upsert(relative: &str, content: &str) -> ArchiveCommit {
 #[tokio::test]
 async fn an_upsert_and_a_tombstone_land_in_order() {
     let site = Site::new();
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
 
     with_deadline("commits", async {
         replica
@@ -41,7 +41,7 @@ async fn an_upsert_and_a_tombstone_land_in_order() {
 #[tokio::test]
 async fn a_batch_holding_an_intent_is_on_disk_when_the_call_returns() {
     let site = Site::new();
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
 
     with_deadline("upsert", replica.commit(vec![upsert("a.txt", "a")]))
         .await
@@ -68,7 +68,7 @@ async fn a_batch_holding_an_intent_is_on_disk_when_the_call_returns() {
 #[tokio::test]
 async fn compact_folds_the_log_to_one_line_per_path() {
     let site = Site::new();
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
 
     with_deadline("commits", async {
         replica.commit(vec![upsert("a.txt", "a")]).await.unwrap();
@@ -84,7 +84,11 @@ async fn compact_folds_the_log_to_one_line_per_path() {
         3
     );
 
-    with_deadline("compact", replica.compact()).await.unwrap();
+    with_deadline("compact", async {
+        replica.lock().await.unwrap();
+        replica.compact().await.unwrap();
+    })
+    .await;
 
     // The header, and the one surviving upsert.
     assert_eq!(
@@ -102,7 +106,7 @@ async fn a_batch_that_cannot_be_made_durable_fails_and_earlier_batches_stand() {
     use crate::replica::support::set_mode;
 
     let site = Site::new();
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
     with_deadline("first batch", async {
         replica
             .commit(vec![ArchiveCommit::Intent(path("a.txt"))])

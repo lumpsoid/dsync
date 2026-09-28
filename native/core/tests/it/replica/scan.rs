@@ -14,7 +14,7 @@ use crate::replica::support::{Site, exchange, hash_of, path, seed, with_deadline
 async fn a_new_file_is_created_against_an_empty_archive() {
     let site = Site::new();
     site.put(Side::A, "a.txt", "hello");
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
 
     let opened = with_deadline("scan", replica.open_scan(&RuleSet::default()))
         .await
@@ -37,7 +37,7 @@ async fn a_rehash_that_confirms_the_content_refreshes_the_archive_keys() {
         },
         hash: real.hash,
     };
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
 
     with_deadline("scan", async {
         replica
@@ -61,7 +61,7 @@ async fn a_rehash_that_confirms_the_content_refreshes_the_archive_keys() {
 async fn an_unchanged_file_whose_keys_match_writes_nothing() {
     let site = Site::new();
     site.put(Side::A, "a.txt", "hello");
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
     with_deadline("seed", seed(&replica)).await;
     let before = fs::read(site.log(Side::A)).unwrap();
 
@@ -79,7 +79,7 @@ async fn a_scratch_file_from_a_crashed_write_is_not_scanned() {
     let site = Site::new();
     site.put(Side::A, "a.txt", "hello");
     site.put(Side::A, &temp_name_for("a.txt", 4242, 7), "half a file");
-    let replica = site.replica(Side::A);
+    let replica = site.locked(Side::A).await;
 
     let opened = with_deadline("scan", replica.open_scan(&RuleSet::default()))
         .await
@@ -95,8 +95,8 @@ async fn unchanged_entries_cross_only_where_the_digests_disagree() {
     for side in [Side::A, Side::B] {
         site.put(side, "same", "same on both");
     }
-    let a = site.replica(Side::A);
-    let b = site.replica(Side::B);
+    let a = site.locked(Side::A).await;
+    let b = site.locked(Side::B).await;
     with_deadline("seed", async {
         seed(&a).await;
         seed(&b).await;
@@ -147,8 +147,8 @@ async fn unchanged_entries_cross_only_where_the_digests_disagree() {
 #[tokio::test]
 async fn a_ticket_only_opens_the_phase_of_the_replica_that_issued_it() {
     let site = Site::new();
-    let a = site.replica(Side::A);
-    let b = site.replica(Side::B);
+    let a = site.locked(Side::A).await;
+    let b = site.locked(Side::B).await;
 
     with_deadline("scans", async {
         let opened = a.open_scan(&RuleSet::default()).await.unwrap();

@@ -9,7 +9,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
-use dsync_core::{ArchiveStore, Body, LocalReplica, Replica, StateDir, body_channel};
+use dsync_core::{
+    ArchiveHeader, ArchiveStore, Body, LocalReplica, Replica, StateDir, body_channel,
+};
 use dsync_domain::{
     Action, Archive, ArchiveCommit, BucketCount, ContentHash, EntryId, FileMeta, FileState, Jobs,
     Plan, Precondition, RelPath, RootKind, RuleSet, ScanEntry, Side, Status, Tuning,
@@ -135,6 +137,14 @@ impl Site {
         self.replica_with(side, Tuning::DEFAULT)
     }
 
+    /// `side`'s replica with its lock taken, as a run holds it: the
+    /// archive is read only under the lock.
+    pub async fn locked(&self, side: Side) -> LocalReplica {
+        let replica = self.replica(side);
+        with_deadline("lock", replica.lock()).await.unwrap();
+        replica
+    }
+
     pub fn replica_with(&self, side: Side, tuning: Tuning) -> LocalReplica {
         self.replica_at(&self.root(side), PROFILE, side, tuning)
     }
@@ -157,7 +167,6 @@ impl Site {
             tuning,
             dsync_core::Symlinks::AsRuled,
         )
-        .unwrap()
     }
 
     pub fn log(&self, side: Side) -> PathBuf {
@@ -167,16 +176,14 @@ impl Site {
 
     /// `side`'s archive as the next run would read it off disk.
     pub fn archive(&self, side: Side) -> Archive {
-        ArchiveStore::open_replica(
-            &self.state(),
-            &EntryId::parse(PROFILE).unwrap(),
-            side,
-            self.root(side).to_str().unwrap().to_owned(),
-            &Tuning::DEFAULT,
-        )
-        .unwrap()
-        .archive()
-        .clone()
+        let header = ArchiveHeader {
+            entry_id: EntryId::parse(PROFILE).unwrap(),
+            root_path: self.root(side).to_str().unwrap().to_owned(),
+        };
+        ArchiveStore::open(self.log(side), header, &Tuning::DEFAULT)
+            .unwrap()
+            .archive()
+            .clone()
     }
 
     /// What is on disk at `relative` on `side`, as a scan would record it.
@@ -330,8 +337,9 @@ pub async fn exchange(a: &impl Replica, b: &impl Replica) -> Exchanged {
     }
 }
 
-/// Records every file `replica` holds as synced: what a first run that
-/// found both sides already equal leaves behind.
+/// Records every file `replica`, locked, holds as synced: what a first run
+/// that found both sides already equal leaves behind. Locked again after,
+/// for the run that follows it.
 pub async fn seed(replica: &impl Replica) {
     let opened = replica.open_scan(&RuleSet::default()).await.unwrap();
     let upserts = opened
@@ -348,6 +356,7 @@ pub async fn seed(replica: &impl Replica) {
         .collect();
     replica.commit(upserts).await.unwrap();
     replica.unlock().await.unwrap();
+    replica.lock().await.unwrap();
 }
 
 /// How far [`copy`] gets before it stops.
@@ -398,7 +407,7 @@ pub async fn copy(
 
 /// Applies `exchanged`'s plan the way a run does, for the actions these
 /// tests produce - copies and commit-only records - then makes both
-/// archives durable.
+/// archives durable, and locks both again for the run after it.
 pub async fn apply(a: &impl Replica, b: &impl Replica, exchanged: &Exchanged) {
     for action in exchanged.actions().iter() {
         let relative = action.path().as_str();
@@ -434,4 +443,6 @@ pub async fn apply(a: &impl Replica, b: &impl Replica, exchanged: &Exchanged) {
     }
     a.unlock().await.unwrap();
     b.unlock().await.unwrap();
+    a.lock().await.unwrap();
+    b.lock().await.unwrap();
 }
