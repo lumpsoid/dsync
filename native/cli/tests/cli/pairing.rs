@@ -40,10 +40,13 @@ impl Showing {
         Showing { show, pty, payload }
     }
 
-    /// `pair accept --name desktop <payload>` on `local`, answered with
-    /// `answer` once the prompt shows the device that redeemed it.
-    pub fn accept(&mut self, local: &Site, answer: &str) -> Spawned {
-        let accept = local.spawn(&["pair", "accept", "--name", "desktop", &self.payload]);
+    /// `pair accept --name desktop <payload>` and `extra` on `local`,
+    /// answered with `answer` once the prompt shows the device that
+    /// redeemed it.
+    pub fn accept(&mut self, local: &Site, answer: &str, extra: &[&str]) -> Spawned {
+        let mut args = vec!["pair", "accept", "--name", "desktop", &self.payload];
+        args.extend_from_slice(extra);
+        let accept = local.spawn(&args);
         let enrolling = accept.stderr_line(|line| line.contains("this device is"), STARTUP);
         self.show
             .stderr_line(|line| line.contains("redeemed the payload"), STARTUP);
@@ -77,7 +80,7 @@ fn identity(site: &Site) -> DeviceId {
 pub fn pair(remote: &Site, local: &Site, serve_port: u16) {
     let port = serve_port.to_string();
     let mut showing = Showing::start(remote, &["--serve-port", &port]);
-    let mut accept = showing.accept(local, "y");
+    let mut accept = showing.accept(local, "y", &[]);
     let (accepted, _) = accept.exit(DEADLINE);
     assert_eq!(accepted, Some(0), "{}", accept.stderr());
     let (shown, _) = showing.show.exit(DEADLINE);
@@ -88,7 +91,7 @@ pub fn pair(remote: &Site, local: &Site, serve_port: u16) {
 fn a_shown_payload_accepted_pairs_both_stores_and_a_terminal_gets_a_qr() {
     let (remote, local) = (Site::new(), Site::new());
     let mut showing = Showing::on_terminal(&remote, &[]);
-    let mut accept = showing.accept(&local, "y");
+    let mut accept = showing.accept(&local, "y", &[]);
     let (accepted, _) = accept.exit(DEADLINE);
     assert_eq!(accepted, Some(0), "{}", accept.stderr());
     let (shown, _) = showing.show.exit(DEADLINE);
@@ -118,13 +121,28 @@ fn a_shown_payload_accepted_pairs_both_stores_and_a_terminal_gets_a_qr() {
     let phone = on_remote.get(&identity(&local)).unwrap();
     assert_eq!(phone.name().as_str(), "phone");
     assert!(phone.granted_roots().is_empty());
+    // Where the accepting side connected from, on the default peer port:
+    // it gave no --serve-port.
+    assert_eq!(phone.last_known_address().to_string(), "127.0.0.1:28771");
+}
+
+#[test]
+fn the_accepting_side_is_recorded_on_the_serve_port_it_names() {
+    let (remote, local) = (Site::new(), Site::new());
+    let mut showing = Showing::start(&remote, &[]);
+    let mut accept = showing.accept(&local, "y", &["--serve-port", "40123"]);
+    assert_eq!(accept.exit(DEADLINE).0, Some(0), "{}", accept.stderr());
+    assert_eq!(showing.show.exit(DEADLINE).0, Some(0));
+    let on_remote = paired(&remote.state_dir());
+    let phone = on_remote.get(&identity(&local)).unwrap();
+    assert_eq!(phone.last_known_address().to_string(), "127.0.0.1:40123");
 }
 
 #[test]
 fn a_terminal_that_cannot_draw_blocks_gets_a_stated_note_instead_of_a_qr() {
     let (remote, local) = (Site::new(), Site::new());
     let mut showing = Showing::start(&remote, &[]);
-    let mut accept = showing.accept(&local, "y");
+    let mut accept = showing.accept(&local, "y", &[]);
     assert_eq!(accept.exit(DEADLINE).0, Some(0), "{}", accept.stderr());
     assert_eq!(showing.show.exit(DEADLINE).0, Some(0));
     assert_eq!(showing.show.stdout(), showing.payload);
@@ -163,7 +181,7 @@ fn the_payload_advertises_the_bound_address_unless_advertise_names_another() {
 fn a_device_the_operator_does_not_recognise_is_refused_and_nothing_is_recorded() {
     let (remote, local) = (Site::new(), Site::new());
     let mut showing = Showing::start(&remote, &[]);
-    let mut accept = showing.accept(&local, "n");
+    let mut accept = showing.accept(&local, "n", &[]);
     assert_eq!(accept.exit(DEADLINE).0, Some(3));
     assert!(
         accept.stderr().contains("enrolment refused"),

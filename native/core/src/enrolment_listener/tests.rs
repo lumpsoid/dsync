@@ -17,6 +17,10 @@ use crate::state_dir::StateDir;
 
 const FROM: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40000);
 
+/// Where the enrolling phone says it serves: not the default, so a
+/// listener that recorded the default instead would be caught.
+const SERVES_ON: NonZeroU16 = NonZeroU16::new(40123).unwrap();
+
 struct Side {
     _dir: tempfile::TempDir,
     identity: DeviceIdentity,
@@ -81,7 +85,7 @@ where
     let device = dialer.candidate(payload, name("desktop")).unwrap();
     let (client, server) = duplex(64 * 1024);
     tokio::join!(
-        dialer.enrol_over(client, payload, device),
+        dialer.enrol_over(client, payload, device, SERVES_ON),
         enrolling.enrol(server, FROM, permit())
     )
 }
@@ -213,6 +217,7 @@ async fn a_malformed_certificate_is_refused_without_asking_anyone_or_spending_th
         let request = EnrolmentRequest {
             token: *payload.token().as_bytes(),
             certificate_der: b"nope".to_vec(),
+            serves_on: SERVES_ON,
         };
         write_message(&mut tls, &request).await.unwrap();
         read_message::<EnrolmentReply>(&mut tls).await.unwrap()
@@ -230,6 +235,82 @@ async fn a_malformed_certificate_is_refused_without_asking_anyone_or_spending_th
 
     // Positive control: the token is still live for a real certificate,
     // and that one is put to the operator.
+    let (enrolled, _) = enrol_over_memory(&phone, &payload, &enrolling).await;
+    assert!(enrolled.is_ok(), "{enrolled:?}");
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn the_enrolled_device_is_recorded_on_the_port_it_serves_on() {
+    let (desktop, phone) = (side("desktop"), side("phone"));
+    let (payload, enrolling) = showing(&desktop, yes).await;
+
+    let (enrolled, ended) = enrol_over_memory(&phone, &payload, &enrolling).await;
+    assert!(enrolled.is_ok(), "{enrolled:?}");
+    let Ok(EnrolmentEnd::Enrolled(recorded)) = ended else {
+        panic!("expected the phone enrolled: {ended:?}");
+    };
+    let expected = PeerAddress::new(&FROM.ip().to_string(), SERVES_ON.get()).unwrap();
+    assert_eq!(recorded.last_known_address(), &expected);
+    let stored = desktop.paired.load().unwrap();
+    assert_eq!(
+        stored.iter().next().unwrap().last_known_address(),
+        &expected
+    );
+}
+
+/// The request's layout with a plain port: only a hand-rolled peer can
+/// say it serves on 0.
+#[derive(serde::Serialize)]
+struct AnyPortRequest {
+    token: [u8; dsync_domain::EnrolmentToken::LEN],
+    certificate_der: Vec<u8>,
+    serves_on: u16,
+}
+
+#[tokio::test]
+async fn a_request_serving_on_port_zero_is_refused_as_malformed_and_spends_nothing() {
+    let (desktop, phone) = (side("desktop"), side("phone"));
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = asked.clone();
+    let (payload, enrolling) = showing(&desktop, move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        ready(true)
+    })
+    .await;
+
+    let (client, server) = duplex(64 * 1024);
+    let (ended, ()) = tokio::join!(enrolling.enrol(server, FROM, permit()), async {
+        let config = enrolment_client_config(PeerPin::new([desktop.identity.device_id()])).unwrap();
+        let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(server_name(), client)
+            .await
+            .unwrap();
+        let request = AnyPortRequest {
+            token: *payload.token().as_bytes(),
+            certificate_der: phone.identity.certificate().der().to_vec(),
+            serves_on: 0,
+        };
+        write_message(&mut tls, &request).await.unwrap();
+        // Held open until the listener drops the connection.
+        let mut sink = [0u8; 1];
+        let _ = tls.read(&mut sink).await;
+    });
+    assert!(
+        matches!(
+            ended,
+            Err(EnrolmentRefusal::Request(EnrolmentMessageError::Malformed(
+                _
+            )))
+        ),
+        "{ended:?}"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert!(!enrolling.redeemed());
+    assert!(desktop.paired.load().unwrap().is_empty());
+
+    // Positive control: the token is still live for a request that names
+    // a port.
     let (enrolled, _) = enrol_over_memory(&phone, &payload, &enrolling).await;
     assert!(enrolled.is_ok(), "{enrolled:?}");
     assert_eq!(asked.load(Ordering::SeqCst), 1);

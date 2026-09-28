@@ -6,6 +6,7 @@
 //! the address it serves peer:// on.
 
 use std::io;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -114,7 +115,9 @@ impl EnrolmentDialer {
         }
     }
 
-    /// Redeems `payload`, recording the device that showed it as `name`.
+    /// Redeems `payload`, recording the device that showed it as `name`
+    /// and telling it this device serves on `serves_on` - where it will
+    /// dial this one, whether or not anything serves there yet.
     /// Connecting and the TLS handshake are bounded by
     /// [`Tuning::handshake`]; the answer, which waits on the other
     /// operator, by [`Tuning::pairing_token`] (plus the handshake bound
@@ -123,6 +126,7 @@ impl EnrolmentDialer {
         &self,
         payload: &PairingPayload,
         name: PeerName,
+        serves_on: NonZeroU16,
     ) -> Result<PairedDevice, EnrolError> {
         let device = self.candidate(payload, name)?;
         let address = payload.address();
@@ -136,7 +140,7 @@ impl EnrolmentDialer {
             .map_err(|_| unreachable(io::ErrorKind::TimedOut.into()))?
             .map_err(unreachable)?;
         tcp.set_nodelay(true).map_err(unreachable)?;
-        self.enrol_over(tcp, payload, device).await
+        self.enrol_over(tcp, payload, device, serves_on).await
     }
 
     /// The device `payload` describes, as it will be recorded here -
@@ -162,12 +166,14 @@ impl EnrolmentDialer {
     }
 
     /// The exchange over `stream`, connected to `payload`'s address, that
-    /// records `device` once the other side has.
+    /// records `device` once the other side has, telling it this device
+    /// serves on `serves_on`.
     pub(crate) async fn enrol_over<S>(
         &self,
         stream: S,
         payload: &PairingPayload,
         device: PairedDevice,
+        serves_on: NonZeroU16,
     ) -> Result<PairedDevice, EnrolError>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -204,6 +210,7 @@ impl EnrolmentDialer {
         let request = EnrolmentRequest {
             token: *payload.token().as_bytes(),
             certificate_der: self.identity.certificate().der().to_vec(),
+            serves_on,
         };
         let no_answer = |cause| EnrolError::NoAnswer {
             address: address.clone(),

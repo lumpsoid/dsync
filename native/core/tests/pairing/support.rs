@@ -4,6 +4,7 @@
 
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::num::NonZeroU16;
 use std::time::{Duration, SystemTime};
 
 use dsync_core::{
@@ -27,6 +28,10 @@ pub async fn with_deadline<T>(label: &str, work: impl Future<Output = T>) -> T {
 
 /// Where the showing device says it serves peer:// (never dialled here).
 pub const SERVICE_PORT: u16 = 29000;
+
+/// Where an enrolling host says it serves peer:// (never dialled here):
+/// not the default, so a listener that recorded the default is caught.
+pub const ENROLLING_SERVES_ON: NonZeroU16 = NonZeroU16::new(40123).unwrap();
 
 pub fn name(text: &str) -> PeerName {
     PeerName::parse(text).unwrap()
@@ -64,7 +69,7 @@ impl Host {
         label: &str,
     ) -> Result<PairedDevice, EnrolError> {
         EnrolmentDialer::new(self.identity.clone(), self.store.clone(), Tuning::DEFAULT)
-            .enrol(payload, name(label))
+            .enrol(payload, name(label), ENROLLING_SERVES_ON)
             .await
     }
 }

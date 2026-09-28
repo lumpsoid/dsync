@@ -1,6 +1,9 @@
 import '../../app_controller.dart';
+import '../../app_settings.dart';
+import '../../app_settings_store.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/pair_code_reading.dart';
+import '../../peer_port.dart';
 import 'pair_code.dart';
 import 'pair_view_state.dart';
 
@@ -11,10 +14,19 @@ import 'pair_view_state.dart';
 /// the core — from as a constructor argument, per the controller role in
 /// `app_scope.dart`. The exchange itself is the core's; every refusal it
 /// makes arrives as its own words and is shown as the outcome.
+///
+/// **The port this device serves on is read fresh per exchange** and sent
+/// with the code, so the device that showed it records this one where it
+/// actually serves. A settings file that cannot be read means the default
+/// port, never a failed pairing.
 class PairController {
-  PairController(this.app);
+  PairController(this.app, {required this.peerPort});
 
   final AppController app;
+
+  /// The Settings page's peer port, read once per [submitPayload]. Throws
+  /// `AppSettingsStoreException` when the settings file cannot be read.
+  final Future<PeerPort> Function() peerPort;
 
   /// The view state this controller renders into; owned here, disposed here.
   final PairViewState state = PairViewState();
@@ -102,7 +114,12 @@ class PairController {
   Future<void> _enrol(String payload, {required String localName}) async {
     try {
       state.recordOwnDeviceId((await app.core.showIdentity()).deviceId);
-      await app.core.acceptPairing(code: payload, name: localName);
+      final servesOn = await _readPeerPort();
+      await app.core.acceptPairing(
+        code: payload,
+        name: localName,
+        servicePort: servesOn.value,
+      );
     } on CoreFailure catch (e) {
       state.recordOutcome(PairFailed(e.message));
       return;
@@ -116,6 +133,15 @@ class PairController {
       return;
     }
     state.recordOutcome(PairSucceeded(localName));
+  }
+
+  /// A damaged settings file pairs on the default port.
+  Future<PeerPort> _readPeerPort() async {
+    try {
+      return await peerPort();
+    } on AppSettingsStoreException {
+      return PeerPort(defaultPeerPort);
+    }
   }
 
   /// Re-validates the name field as the user types, so its error line goes

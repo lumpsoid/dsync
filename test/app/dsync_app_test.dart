@@ -96,7 +96,7 @@ void main() {
     core = FakeHub();
     app = fakeApp(core);
     devices = DevicesController(app);
-    pair = PairController(app);
+    pair = PairController(app, peerPort: () async => PeerPort(defaultPeerPort));
     profiles = ProfilesController(app, picker: FakeFolderPicker());
     runSetupPicker = FakeFolderPicker();
     runSetup = RunSetupController(app, picker: runSetupPicker);

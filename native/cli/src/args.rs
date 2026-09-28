@@ -124,6 +124,17 @@ pub struct PairAcceptArgs {
     /// its own choice, made by `dsync pair show --name` there.
     #[arg(long, value_name = "NAME")]
     pub name: String,
+    /// The port this device's `dsync agent --serve` listens on. Sent to the
+    /// device that showed the payload, which records this device at the
+    /// address it connected from on this port and dials it there from then
+    /// on, so give it here if --serve runs on a non-default port.
+    #[arg(
+        long,
+        value_name = "PORT",
+        default_value_t = Tuning::DEFAULT.peer_port,
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
+    pub serve_port: u16,
     #[command(flatten)]
     pub state: StateDirArgs,
 }

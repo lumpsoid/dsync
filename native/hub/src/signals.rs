@@ -78,10 +78,12 @@ pub enum CoreCommand {
     ReadPairCode {
         text: String,
     },
-    /// Redeems a pairing code, recording the other device as `name`.
+    /// Redeems a pairing code, recording the other device as `name` and
+    /// telling it this device serves on `service_port`.
     AcceptPairing {
         code: String,
         name: String,
+        service_port: u16,
     },
 
     ListDevices,

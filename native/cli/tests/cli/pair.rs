@@ -313,4 +313,16 @@ fn accept_needs_a_name_and_exactly_one_payload() {
     site.run(&["pair", "accept", "--name", "desktop"]).exits(3);
     site.run(&["pair", "accept", "--name", "desktop", "a", "b"])
         .exits(3);
+    for port in ["0", "70000", "http"] {
+        site.run(&[
+            "pair",
+            "accept",
+            "--name",
+            "desktop",
+            "--serve-port",
+            port,
+            "dsync-pair:1.0:AAAA",
+        ])
+        .exits(3);
+    }
 }

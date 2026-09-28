@@ -210,12 +210,18 @@ final class CoreLink {
     },
   );
 
-  /// Redeems [code], recording the other device as [name].
+  /// Redeems [code], recording the other device as [name] and telling it
+  /// this device serves on [servicePort] — where it will dial this one.
   Future<PairedDeviceInfo> acceptPairing({
     required String code,
     required String name,
+    required int servicePort,
   }) => _ask(
-    wire.CoreCommandAcceptPairing(code: code, name: name),
+    wire.CoreCommandAcceptPairing(
+      code: code,
+      name: name,
+      servicePort: servicePort,
+    ),
     (result) => switch (result) {
       wire.ReplyResultDevice(:final value) => device(value),
       _ => _unexpected(result),

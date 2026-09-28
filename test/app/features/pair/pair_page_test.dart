@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
+import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/features/pair/pair_code.dart';
@@ -8,6 +9,7 @@ import 'package:dsync/app/features/pair/pair_page.dart';
 import 'package:dsync/app/features/pair/pair_scope.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
 import 'package:dsync/app/features/pair/scan_code_page.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -67,7 +69,10 @@ void main() {
         ),
       );
     app = fakeApp(core);
-    controller = PairController(app);
+    controller = PairController(
+      app,
+      peerPort: () async => PeerPort(defaultPeerPort),
+    );
     appScope.setController(app);
     pairScope.setController(controller);
     // The clipboard, as the way a test gets a code in when how it arrived

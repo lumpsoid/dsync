@@ -10,6 +10,7 @@
 //! byte of body is buffered for it.
 
 use std::io;
+use std::num::NonZeroU16;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -23,12 +24,16 @@ use dsync_domain::EnrolmentToken;
 pub(crate) const MAX_ENROLMENT_MESSAGE_BYTES: u32 = 64 * 1024;
 
 /// What the enrolling device sends: the token, as proof it saw the
-/// payload, and its own certificate. No name: each side names its peer
-/// itself (SPEC §4.4, task 736fdb), so there is nothing to propose.
+/// payload, its own certificate, and the port it serves paired devices
+/// on, where the listener will dial it at the address it connected from.
+/// No name: each side names its peer itself (SPEC §4.4, task 736fdb), so
+/// there is nothing to propose. A port of 0 does not decode: such a
+/// request is malformed.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub(crate) struct EnrolmentRequest {
     pub(crate) token: [u8; EnrolmentToken::LEN],
     pub(crate) certificate_der: Vec<u8>,
+    pub(crate) serves_on: NonZeroU16,
 }
 
 /// The listener's one answer.
@@ -126,6 +131,7 @@ mod tests {
         EnrolmentRequest {
             token: [7; EnrolmentToken::LEN],
             certificate_der: vec![1, 2, 3],
+            serves_on: NonZeroU16::new(40123).unwrap(),
         }
     }
 
@@ -174,10 +180,14 @@ mod tests {
     #[tokio::test]
     async fn a_message_exactly_at_the_cap_is_read() {
         let cap = MAX_ENROLMENT_MESSAGE_BYTES as usize;
-        // The token, a three-byte varint length, then the certificate.
+        // The token, a three-byte varint length, the certificate, then
+        // the port's varint.
+        let serves_on = NonZeroU16::new(40123).unwrap();
+        let port_len = postcard::to_stdvec(&serves_on).unwrap().len();
         let padded = EnrolmentRequest {
             token: [7; EnrolmentToken::LEN],
-            certificate_der: vec![1; cap - EnrolmentToken::LEN - 3],
+            certificate_der: vec![1; cap - EnrolmentToken::LEN - 3 - port_len],
+            serves_on,
         };
         assert_eq!(postcard::to_stdvec(&padded).unwrap().len(), cap);
         let (mut a, mut b) = duplex(2 * cap);
@@ -200,6 +210,45 @@ mod tests {
             matches!(read, Err(EnrolmentMessageError::TrailingBytes(1))),
             "{read:?}"
         );
+    }
+
+    /// The request's layout with a plain port, which nothing but a
+    /// hand-rolled peer would send as 0.
+    #[derive(Serialize)]
+    struct AnyPortRequest {
+        token: [u8; EnrolmentToken::LEN],
+        certificate_der: Vec<u8>,
+        serves_on: u16,
+    }
+
+    #[tokio::test]
+    async fn a_request_serving_on_port_zero_is_malformed() {
+        let zero = AnyPortRequest {
+            token: [7; EnrolmentToken::LEN],
+            certificate_der: vec![1, 2, 3],
+            serves_on: 0,
+        };
+        let (mut a, mut b) = duplex(1024);
+        write_message(&mut a, &zero).await.unwrap();
+        let read = read_message::<EnrolmentRequest>(&mut b).await;
+        assert!(
+            matches!(read, Err(EnrolmentMessageError::Malformed(_))),
+            "{read:?}"
+        );
+
+        // Positive control: the same layout with a port reads.
+        let (mut a, mut b) = duplex(1024);
+        write_message(
+            &mut a,
+            &AnyPortRequest {
+                serves_on: 40123,
+                ..zero
+            },
+        )
+        .await
+        .unwrap();
+        let read: EnrolmentRequest = read_message(&mut b).await.unwrap();
+        assert_eq!(read, request());
     }
 
     #[tokio::test]

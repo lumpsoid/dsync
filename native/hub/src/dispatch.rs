@@ -139,7 +139,11 @@ impl Hub {
             }
             CoreCommand::CancelPairing { session } => self.cancel_pairing(session),
             CoreCommand::ReadPairCode { text } => Ok(self.read_pair_code(&text)),
-            CoreCommand::AcceptPairing { code, name } => self.accept_pairing(&code, &name).await,
+            CoreCommand::AcceptPairing {
+                code,
+                name,
+                service_port,
+            } => self.accept_pairing(&code, &name, service_port).await,
             CoreCommand::ListDevices => self.list_devices(),
             CoreCommand::RenameDevice { device_id, name } => self.rename_device(&device_id, &name),
             CoreCommand::RevokeDevice { device_id } => self.revoke_device(&device_id),

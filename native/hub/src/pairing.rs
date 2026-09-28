@@ -3,6 +3,7 @@
 //! and redeeming another device's code (`dsync pair accept`).
 
 use std::net::SocketAddr;
+use std::num::NonZeroU16;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
@@ -10,7 +11,7 @@ use dsync_core::{
     Certificate, EnrolmentDialer, EnrolmentEnd, EnrolmentEvent, EnrolmentListener,
     PendingEnrolment, interface_addresses, read_pair_code,
 };
-use dsync_domain::host_port::parse_bind_address;
+use dsync_domain::host_port::{PeerAddressError, parse_bind_address};
 use dsync_domain::{PairCode, PairingPayload, PeerName, advertised_host};
 use tokio::sync::oneshot;
 
@@ -150,16 +151,24 @@ impl Hub {
     }
 
     /// Redeems `code`, recording the showing device as `name` on both
-    /// sides once its operator confirms.
-    pub(crate) async fn accept_pairing(&self, code: &str, name: &str) -> Handled {
+    /// sides once its operator confirms; that device records this one on
+    /// `service_port`.
+    pub(crate) async fn accept_pairing(
+        &self,
+        code: &str,
+        name: &str,
+        service_port: u16,
+    ) -> Handled {
         let name = PeerName::parse(name).map_err(text)?;
+        let serves_on =
+            NonZeroU16::new(service_port).ok_or_else(|| text(PeerAddressError::ZeroPort))?;
         let payload = PairingPayload::decode(code.trim()).map_err(text)?;
         let identity = self
             .identities()
             .load_or_create(&self.device_name, SystemTime::now())
             .map_err(text)?;
         let paired = EnrolmentDialer::new(identity, self.paired(), self.tuning)
-            .enrol(&payload, name)
+            .enrol(&payload, name, serves_on)
             .await
             .map_err(text)?;
         Ok(ReplyResult::Device(DeviceView::of(

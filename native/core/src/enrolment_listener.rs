@@ -13,6 +13,7 @@
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::num::NonZeroU16;
 use std::pin::pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
@@ -335,7 +336,7 @@ where
                 EnrolmentReply::Denied(EnrolmentDenial::Declined),
                 EnrolmentEnd::Declined { device },
             ),
-            Ok(true) => match self.record(certificate, from) {
+            Ok(true) => match self.record(certificate, from, request.serves_on) {
                 Ok(paired) => (EnrolmentReply::Accepted, EnrolmentEnd::Enrolled(paired)),
                 Err(error) => (
                     EnrolmentReply::Denied(EnrolmentDenial::NotStored),
@@ -348,15 +349,16 @@ where
     }
 
     /// Records the confirmed device under this side's name, reached at the
-    /// address it connected from on the default peer port (it did not say
-    /// where it serves, and may not serve at all).
+    /// address it connected from on the port it said it serves on (the one
+    /// it would serve on, if it does not serve yet).
     fn record(
         &self,
         certificate: Certificate,
         from: SocketAddr,
+        serves_on: NonZeroU16,
     ) -> Result<PairedDevice, PairedDeviceStoreError> {
-        let address = PeerAddress::with_default_port(&from.ip().to_string())
-            .expect("an IP address on the default port is an address");
+        let address = PeerAddress::new(&from.ip().to_string(), serves_on.get())
+            .expect("an IP address on a nonzero port is an address");
         let device = PairedDevice::new(
             certificate,
             self.peer_name.clone(),

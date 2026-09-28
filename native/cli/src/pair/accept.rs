@@ -3,6 +3,7 @@
 //! pairing two devices they hold, not a stranger probing, so "wrong
 //! token", "declined" and "stale payload" each point at a different fix.
 
+use std::num::NonZeroU16;
 use std::time::SystemTime;
 
 use dsync_core::{DeviceIdentityStore, EnrolError, EnrolmentDialer, PairedDeviceStore};
@@ -18,6 +19,9 @@ pub async fn accept(args: PairAcceptArgs, host: &Host) -> Result<u8, Failure> {
         &args.name,
         "dsync pair accept needs --name: this host's own label for the device being paired.",
     )?;
+    // --serve-port's parser already refuses 0.
+    let serves_on = NonZeroU16::new(args.serve_port)
+        .ok_or_else(|| Failure::usage("dsync pair accept: --serve-port must be 1 to 65535."))?;
     let state = state_dir(&args.state, host)?;
     let payload = PairingPayload::decode(args.payload.trim())
         .map_err(|error| Failure::usage(format!("dsync pair accept: {error}")))?;
@@ -32,7 +36,10 @@ pub async fn accept(args: PairAcceptArgs, host: &Host) -> Result<u8, Failure> {
         identity.device_id()
     );
     let dialer = EnrolmentDialer::new(identity, PairedDeviceStore::new(&state), Tuning::DEFAULT);
-    let paired = dialer.enrol(&payload, name).await.map_err(enrol_failure)?;
+    let paired = dialer
+        .enrol(&payload, name, serves_on)
+        .await
+        .map_err(enrol_failure)?;
     println!("paired: \"{}\" ({})", paired.name(), paired.device_id());
     Ok(0)
 }

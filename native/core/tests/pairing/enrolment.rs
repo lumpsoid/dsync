@@ -12,7 +12,8 @@ use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{EnrolmentToken, PairCode, PairingPayload, Tuning};
 
 use crate::support::{
-    Host, SERVICE_PORT, enrol_confirmed, loopback, name, show, show_with, with_deadline,
+    ENROLLING_SERVES_ON, Host, SERVICE_PORT, enrol_confirmed, loopback, name, show, show_with,
+    with_deadline,
 };
 
 fn token_refusal(event: EnrolmentEvent) -> Option<TokenRefusal> {
@@ -66,7 +67,7 @@ async fn a_confirmed_enrolment_leaves_each_side_holding_the_other() {
     assert_eq!(on_desktop[0].name(), &name("my phone"));
     assert_eq!(
         on_desktop[0].last_known_address(),
-        &PeerAddress::with_default_port("127.0.0.1").unwrap()
+        &PeerAddress::new("127.0.0.1", ENROLLING_SERVES_ON.get()).unwrap()
     );
     assert!(on_desktop[0].granted_roots().is_empty());
 

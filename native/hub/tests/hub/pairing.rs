@@ -10,6 +10,10 @@ use hub::views::{
 
 use crate::support::{Head, read, write};
 
+/// The port a redeeming phone says it serves on: not the default, so a
+/// desktop that recorded the default instead would be caught.
+const PHONE_SERVES_ON: u16 = 40123;
+
 fn show(name: &str) -> CoreCommand {
     CoreCommand::ShowPairing {
         name: name.to_owned(),
@@ -64,6 +68,7 @@ async fn pair(desktop: &mut Head, phone: &mut Head) {
     let accept = CoreCommand::AcceptPairing {
         code: payload.clone(),
         name: "desktop".to_owned(),
+        service_port: PHONE_SERVES_ON,
     };
     let confirming = async {
         let PairingView::Confirming { device_id, name } = desktop.pairing_view(session).await
@@ -85,9 +90,13 @@ async fn pair(desktop: &mut Head, phone: &mut Head) {
     };
     assert_eq!(paired.name, "desktop");
     assert_eq!(paired.device_id, desktop_id);
+    // The desktop dials the phone where it connected from, on the port the
+    // phone said it serves on.
     assert!(matches!(
         ended,
-        PairingView::Enrolled(ref device) if device.device_id == phone_id
+        PairingView::Enrolled(ref device)
+            if device.device_id == phone_id
+                && device.address == format!("127.0.0.1:{PHONE_SERVES_ON}")
     ));
 }
 
@@ -138,6 +147,26 @@ async fn a_pairing_window_takes_no_answer_unasked_and_closes_when_cancelled() {
 }
 
 #[tokio::test]
+async fn a_redeeming_device_serving_on_port_zero_is_refused_before_it_dials() {
+    let mut desktop = Head::new("desktop").await;
+    let mut phone = Head::new("phone").await;
+    let (session, _) = desktop.ok(show("phone")).await;
+    let (payload, _) = opened(&mut desktop, session).await;
+    let message = phone
+        .failure(CoreCommand::AcceptPairing {
+            code: payload,
+            name: "desktop".to_owned(),
+            service_port: 0,
+        })
+        .await;
+    assert!(message.contains("port"), "{message}");
+    let ReplyResult::Devices(devices) = phone.ok(CoreCommand::ListDevices).await.1 else {
+        panic!("expected the devices");
+    };
+    assert!(devices.is_empty());
+}
+
+#[tokio::test]
 async fn a_declined_device_is_not_recorded() {
     let mut desktop = Head::new("desktop").await;
     let mut phone = Head::new("phone").await;
@@ -146,6 +175,7 @@ async fn a_declined_device_is_not_recorded() {
     let accept = CoreCommand::AcceptPairing {
         code: payload,
         name: "desktop".to_owned(),
+        service_port: 28771,
     };
     let declining = async {
         let awaiting = desktop.pairing_view(session).await;

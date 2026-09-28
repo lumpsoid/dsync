@@ -518,6 +518,7 @@ class CoreCommandAcceptPairing extends CoreCommand {
   const CoreCommandAcceptPairing({
     required this.code,
     required this.name,
+    required this.servicePort,
   }) : super();
 
   static CoreCommandAcceptPairing load(BinaryDeserializer deserializer) {
@@ -525,6 +526,7 @@ class CoreCommandAcceptPairing extends CoreCommand {
     final instance = CoreCommandAcceptPairing(
       code: deserializer.deserializeString(),
       name: deserializer.deserializeString(),
+      servicePort: deserializer.deserializeUint16(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -532,14 +534,17 @@ class CoreCommandAcceptPairing extends CoreCommand {
 
   final String code;
   final String name;
+  final int servicePort;
 
   CoreCommandAcceptPairing copyWith({
     String? code,
     String? name,
+    int? servicePort,
   }) {
     return CoreCommandAcceptPairing(
       code: code ?? this.code,
       name: name ?? this.name,
+      servicePort: servicePort ?? this.servicePort,
     );
   }
 
@@ -548,6 +553,7 @@ class CoreCommandAcceptPairing extends CoreCommand {
     serializer.serializeVariantIndex(7);
     serializer.serializeString(code);
     serializer.serializeString(name);
+    serializer.serializeUint16(servicePort);
     serializer.decreaseContainerDepth();
   }
 
@@ -558,13 +564,15 @@ class CoreCommandAcceptPairing extends CoreCommand {
 
     return other is CoreCommandAcceptPairing
       && code == other.code
-      && name == other.name;
+      && name == other.name
+      && servicePort == other.servicePort;
   }
 
   @override
   int get hashCode => Object.hash(
         code,
         name,
+        servicePort,
       );
 
   @override
@@ -574,7 +582,8 @@ class CoreCommandAcceptPairing extends CoreCommand {
     assert(() {
       fullString = '$runtimeType('
         'code: $code, '
-        'name: $name'
+        'name: $name, '
+        'servicePort: $servicePort'
         ')';
       return true;
     }());

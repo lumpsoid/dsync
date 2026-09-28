@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/app_settings.dart';
+import 'package:dsync/app/app_settings_store.dart';
 import 'package:dsync/app/core_link/models/pair_code_reading.dart';
 import 'package:dsync/app/features/pair/pair_code.dart';
 import 'package:dsync/app/features/pair/pair_controller.dart';
 import 'package:dsync/app/features/pair/pair_view_state.dart';
+import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:test/test.dart';
 
@@ -45,7 +48,7 @@ void main() {
       )
       ..reply<wire.CoreCommandAcceptPairing>(paired('desktop'));
     app = fakeApp(core);
-    controller = PairController(app);
+    controller = PairController(app, peerPort: _defaultPort);
   });
 
   tearDown(() {
@@ -259,7 +262,11 @@ void main() {
       await submit(localName: ' my desktop ');
 
       expect(core.sent<wire.CoreCommandAcceptPairing>(), const [
-        wire.CoreCommandAcceptPairing(code: payloadText, name: 'my desktop'),
+        wire.CoreCommandAcceptPairing(
+          code: payloadText,
+          name: 'my desktop',
+          servicePort: defaultPeerPort,
+        ),
       ]);
       expect(controller.state.outcome, isA<PairSucceeded>());
       expect(
@@ -269,6 +276,37 @@ void main() {
       // `refreshDevices()` ran: the row the core recorded is now listed.
       expect(app.state.devices.map((d) => d.name), ['my desktop']);
       expect(app.state.devices.single.deviceId, readable.deviceId);
+    });
+
+    test('sends the stored peer port as where this device serves', () async {
+      controller.dispose();
+      controller = PairController(app, peerPort: () async => PeerPort(40123));
+
+      await submit();
+
+      expect(
+        core.sent<wire.CoreCommandAcceptPairing>().single.servicePort,
+        40123,
+      );
+      expect(controller.state.outcome, isA<PairSucceeded>());
+    });
+
+    test('a settings file that cannot be read pairs on the default port, '
+        'not a failed pairing', () async {
+      controller.dispose();
+      controller = PairController(
+        app,
+        peerPort: () async =>
+            throw const AppSettingsStoreCorruptException('/s.json', 'bad'),
+      );
+
+      await submit();
+
+      expect(
+        core.sent<wire.CoreCommandAcceptPairing>().single.servicePort,
+        defaultPeerPort,
+      );
+      expect(controller.state.outcome, isA<PairSucceeded>());
     });
 
     test(
@@ -380,3 +418,7 @@ void main() {
     });
   });
 }
+
+/// The peer port every controller in this file is built with, unless a
+/// test names another.
+Future<PeerPort> _defaultPort() async => PeerPort(defaultPeerPort);
