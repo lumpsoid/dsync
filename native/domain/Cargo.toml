@@ -13,6 +13,7 @@ publish = false
 base64.workspace = true
 serde.workspace = true
 sha2.workspace = true
+similar.workspace = true
 thiserror.workspace = true
 time.workspace = true
 toml.workspace = true

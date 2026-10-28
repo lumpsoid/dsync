@@ -25,6 +25,7 @@ mod effective_options;
 mod entry;
 mod entry_id;
 mod exit_code;
+mod file_text;
 mod filter_preview;
 mod folder_spread;
 mod format_version;
@@ -73,6 +74,7 @@ mod skipped_path;
 mod ssh_access;
 mod sync_target;
 mod temp_name;
+mod text_diff;
 mod tuning;
 mod unreadable_paths;
 mod unusable_root;
@@ -102,6 +104,7 @@ pub use effective_options::EffectiveOptions;
 pub use entry::{Entry, EntryError};
 pub use entry_id::{CanonicalSide, EntryId, EntryIdError};
 pub use exit_code::{RunOutcome, StopSignal};
+pub use file_text::{Binary, FileText};
 pub use filter_preview::{
     EntryKind, FilterFolderRow, FilterPreviewFolder, FilterPreviewReport, ListedEntry,
     filter_folder_rows, preview_filters,
@@ -157,6 +160,7 @@ pub use skipped_path::{SkippedAt, SkippedPath, SkippedReason, failure_count, unr
 pub use ssh_access::{EmptySshValue, SshAccess, SshCommand, SshOption};
 pub use sync_target::{AdHocTarget, SyncTarget};
 pub use temp_name::{TEMP_FILE_MARKER, is_temp_file_name, temp_name_for};
+pub use text_diff::{Block, Hunk, Line, Span, TextDiff};
 pub use tuning::Tuning;
 pub use unreadable_paths::UnreadablePaths;
 pub use unusable_root::UnusableRoot;
