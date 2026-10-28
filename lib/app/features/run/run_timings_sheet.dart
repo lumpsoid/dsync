@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../monospace.dart';
 import '../../readable_width.dart';
 import '../../shell_layout.dart';
 import 'run_controller.dart';
@@ -163,21 +164,6 @@ class RunTimingsDialog extends StatelessWidget {
   }
 }
 
-/// A monospace face on every platform the app ships to.
-///
-/// `monospace` is a generic alias, not a font: Android and Linux's
-/// fontconfig resolve it, Windows and macOS do not, and the report's
-/// columns only align in a fixed-pitch face. So the fallbacks name one
-/// font each platform is known to carry — Menlo (macOS and iOS), Consolas
-/// (Windows), DejaVu Sans Mono (the Linux default, should the alias be
-/// unset) — with Courier New last, present on both Windows and macOS.
-const _monospaceFallback = [
-  'Menlo',
-  'Consolas',
-  'DejaVu Sans Mono',
-  'Courier New',
-];
-
 /// The report in a fixed-pitch face, or a line saying it comes when the run
 /// ends.
 ///
@@ -209,7 +195,7 @@ class _TimingsReport extends StatelessWidget {
           key: const Key('run-timings-report'),
           style: theme.textTheme.bodySmall?.copyWith(
             fontFamily: 'monospace',
-            fontFamilyFallback: _monospaceFallback,
+            fontFamilyFallback: monospaceFallback,
           ),
         ),
       ),
