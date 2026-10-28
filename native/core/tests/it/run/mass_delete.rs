@@ -2,7 +2,7 @@
 //! stops the run before the other side loses its files, unless the
 //! decider confirms or the run allows it.
 
-use dsync_core::{BatchDecider, Decider, RunError, RunEvent};
+use dsync_core::{BatchDecider, Decider, Peek, Replica, RunError, RunEvent};
 use dsync_domain::{Action, Flags, MassDelete, Plan, Side, Tuning};
 
 use crate::run::support::{Finished, Site, run, run_with, sync};
@@ -15,7 +15,11 @@ struct Confirming {
 }
 
 impl Decider for Confirming {
-    async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
+    async fn decide<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        _: Peek<'_, A, B>,
+    ) -> Vec<Action> {
         plan.actions.iter().map(|p| p.action.clone()).collect()
     }
 

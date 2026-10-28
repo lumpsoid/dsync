@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dsync_core::{
     AnyReplica, BatchDecider, ConnectError, ConnectFailure, Connector, Decider, EntryFailure,
-    EntryOutcome, LinkError, PeerContact, ProfileEvent, ProfileReport, ProfileRun, ProfileStop,
-    Replica, ReplicaError, ResolvedOverlap, RunError, SkipReason, StateDir,
+    EntryOutcome, LinkError, Peek, PeerContact, ProfileEvent, ProfileReport, ProfileRun,
+    ProfileStop, Replica, ReplicaError, ResolvedOverlap, RunError, SkipReason, StateDir,
 };
 use dsync_domain::{
     Action, Command, EffectiveOptions, Entry, Flags, HostFacts, Location, MassDelete, Plan,
@@ -251,7 +251,11 @@ struct Confirming {
 }
 
 impl Decider for Confirming {
-    async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
+    async fn decide<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        _: Peek<'_, A, B>,
+    ) -> Vec<Action> {
         plan.actions.iter().map(|p| p.action.clone()).collect()
     }
 

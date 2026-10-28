@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use dsync_core::{
     ArchiveHeader, ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan,
-    LinkError, LocalReplica, OpenedScan, Reading, RemoteReplica, Replica, ReplicaError,
+    LinkError, LocalReplica, OpenedScan, Peek, Reading, RemoteReplica, Replica, ReplicaError,
     ReplicaServer, Run, RunEvent, RunReport, StateDir, Transport,
 };
 use dsync_domain::{
@@ -296,7 +296,11 @@ pub struct Answer {
 }
 
 impl Decider for Answer {
-    async fn decide(&mut self, _: &dsync_domain::Plan) -> Vec<Action> {
+    async fn decide<A: Replica, B: Replica>(
+        &mut self,
+        _: &dsync_domain::Plan,
+        _: Peek<'_, A, B>,
+    ) -> Vec<Action> {
         self.asked = true;
         self.actions.clone()
     }

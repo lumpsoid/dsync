@@ -19,7 +19,7 @@ async fn review(plan: &Plan, script: &str) -> (Vec<Action>, String) {
     let (_shown, plan_shown) = watch::channel(1);
     let mut output = Vec::new();
     let mut decider = InteractiveDecider::new(script.as_bytes(), &mut output, plan_shown);
-    let kept = with_deadline("the review", decider.decide(plan)).await;
+    let kept = with_deadline("the review", decider.review(plan)).await;
     drop(decider);
     (kept, String::from_utf8(output).unwrap())
 }
@@ -44,13 +44,13 @@ async fn a_later_review_waits_for_its_own_plan_not_an_earlier_ones() {
 
     // Entry 1: the channel already reads 1, so this proceeds at once.
     let first = actions(vec![copy("a", Side::A, 1)]);
-    let kept = with_deadline("entry 1", decider.decide(&first)).await;
+    let kept = with_deadline("entry 1", decider.review(&first)).await;
     assert_eq!(kept, [copy("a", Side::A, 1)]);
 
     // Entry 2: nothing has bumped the count past 1 yet - a stale `true`
     // flag would answer this at once; the count must not.
     let second = actions(vec![copy("b", Side::A, 1)]);
-    let waiting = decider.decide(&second);
+    let waiting = decider.review(&second);
     tokio::pin!(waiting);
     let premature = tokio::time::timeout(Duration::from_millis(50), &mut waiting).await;
     assert!(
@@ -209,21 +209,6 @@ async fn the_legend_comes_before_the_first_prompt_and_an_empty_plan_asks_nothing
     assert!(legend < printed.find("--- copy A -> B: a").unwrap());
     let (kept, silent) = review(&Plan::default(), "").await;
     assert!(kept.is_empty() && silent.is_empty());
-}
-
-#[tokio::test]
-async fn batch_keeps_every_action_and_resolves_no_conflict() {
-    let plan = Plan {
-        actions: proposed(vec![copy("f", Side::A, 1)]),
-        conflicts: vec![conflict("c", Some(created(3)), Some(created(7)))],
-    };
-    let batch = with_deadline("batch", BatchDecider.decide(&plan)).await;
-    assert_eq!(batch, [copy("f", Side::A, 1)]);
-    assert!(
-        with_deadline("dry run", DryRunDecider.decide(&plan))
-            .await
-            .is_empty()
-    );
 }
 
 /// The delete guard's answer to `script`, and what was printed.

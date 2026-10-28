@@ -6,12 +6,20 @@ use std::future::Future;
 
 use dsync_domain::{Action, MassDelete, Plan};
 
+use crate::replica::Replica;
+use crate::run::peek::Peek;
+
 /// Answers a plan with the actions to apply: the plan's own, minus any it
 /// vetoes, plus one per conflict it resolves ([`dsync_domain::Conflict::resolve`]).
 /// A conflict it leaves out stays unresolved. Async, because an
-/// interactive head answers when the user does.
+/// interactive head answers when the user does. `peek` reads both
+/// replicas' current files while it decides, and only then.
 pub trait Decider: Send {
-    fn decide(&mut self, plan: &Plan) -> impl Future<Output = Vec<Action>> + Send;
+    fn decide<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        peek: Peek<'_, A, B>,
+    ) -> impl Future<Output = Vec<Action>> + Send;
 
     /// Whether to apply the approved actions although they trip SPEC §10's
     /// delete guard (`verdict`). `false` ends the run with nothing applied.
@@ -29,7 +37,11 @@ pub struct BatchDecider;
 pub struct DryRunDecider;
 
 impl Decider for BatchDecider {
-    async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
+    async fn decide<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        _: Peek<'_, A, B>,
+    ) -> Vec<Action> {
         plan.actions.iter().map(|p| p.action.clone()).collect()
     }
 
@@ -40,7 +52,7 @@ impl Decider for BatchDecider {
 }
 
 impl Decider for DryRunDecider {
-    async fn decide(&mut self, _: &Plan) -> Vec<Action> {
+    async fn decide<A: Replica, B: Replica>(&mut self, _: &Plan, _: Peek<'_, A, B>) -> Vec<Action> {
         Vec::new()
     }
 

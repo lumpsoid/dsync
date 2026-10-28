@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use dsync_core::Decider;
+use dsync_core::{Decider, Peek, Replica};
 use dsync_domain::{Action, Conflict, MassDelete, Plan, Resolution, Side, Status};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, Lines};
 use tokio::sync::watch;
@@ -234,7 +234,11 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
 }
 
 impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> Decider for InteractiveDecider<R, W> {
-    async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
+    async fn decide<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        _: Peek<'_, A, B>,
+    ) -> Vec<Action> {
         self.review(plan).await
     }
 

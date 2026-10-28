@@ -17,9 +17,11 @@
 
 mod applier;
 mod clock;
+mod compared;
 mod decider;
 mod event;
 mod pair;
+mod peek;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -35,8 +37,10 @@ use dsync_domain::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+pub use compared::Compared;
 pub use decider::{BatchDecider, Decider, DryRunDecider};
 pub use event::{ActionFailure, RunError, RunEvent};
+pub use peek::Peek;
 
 use crate::replica::Replica;
 use crate::run_marker::RunMarker;
@@ -404,7 +408,7 @@ impl Run {
             })
             .await;
 
-        let kept = self.decide(&plan, decider, pair.clock).await;
+        let kept = self.decide(&plan, decider, pair).await;
         let kept = self
             .guard_deletes(kept, [&a.tally, &b.tally], options, decider, pair.clock)
             .await?;
@@ -450,24 +454,27 @@ impl Run {
     }
 
     /// The decider's answer - nothing, once the run is stopped: a stopped
-    /// run does not ask, and one stopped while asking applies nothing.
-    async fn decide(
+    /// run does not ask, and one stopped while asking applies nothing. The
+    /// decider may read `pair` through a [`Peek`] while it is asked, and
+    /// only then.
+    async fn decide<A: Replica, B: Replica>(
         &self,
         plan: &Plan,
         decider: &mut impl Decider,
-        clock: &RunClock,
+        pair: Pair<'_, A, B>,
     ) -> Vec<Action> {
         if self.stop.graceful.is_cancelled() {
             return Vec::new();
         }
+        let peek = Peek::new(pair.a, pair.b, self.tuning.peek);
         let asking = async {
             tokio::select! {
                 biased;
                 () = self.stop.graceful.cancelled() => Vec::new(),
-                kept = decider.decide(plan) => kept,
+                kept = decider.decide(plan, peek) => kept,
             }
         };
-        let kept = clock.phase(RunPhase::Present, asking).await;
+        let kept = pair.clock.phase(RunPhase::Present, asking).await;
         if self.stop.graceful.is_cancelled() {
             return Vec::new();
         }

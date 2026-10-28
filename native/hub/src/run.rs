@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use dsync_core::{
-    BatchDecider, Connector, Decider, DryRunDecider, PeerDialer, ProfileEvent, ProfileReport,
-    ProfileRun, ProfileStop, interface_addresses,
+    BatchDecider, Connector, Decider, DryRunDecider, Peek, PeerDialer, ProfileEvent, ProfileReport,
+    ProfileRun, ProfileStop, Replica, interface_addresses,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
@@ -539,7 +539,11 @@ struct HeadDecider {
 }
 
 impl Decider for HeadDecider {
-    async fn decide(&mut self, plan: &Plan) -> Vec<Action> {
+    async fn decide<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        _: Peek<'_, A, B>,
+    ) -> Vec<Action> {
         let Some((answer, peer_label)) = self.control.ask_review(plan) else {
             return Vec::new();
         };
