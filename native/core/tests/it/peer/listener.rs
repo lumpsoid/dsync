@@ -357,7 +357,7 @@ async fn a_peer_of_another_protocol_major_is_refused_naming_both() {
     assert!(
         error
             .to_string()
-            .contains("this side speaks 1.0, the far side 2.0"),
+            .contains("this side speaks 1.1, the far side 2.0"),
         "{error}"
     );
 }

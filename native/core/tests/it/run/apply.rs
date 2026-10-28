@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 
 use crate::run::flow::{many, proposed_plan, wait_for};
 use crate::run::support::{
-    Answer, Call, Fault, Probe, Site, path, refused, run, run_with, sync, with_deadline,
+    Answer, Call, Fault, Probe, Site, path, refused, run, run_with, served, sync, with_deadline,
 };
 
 #[cfg(unix)]
@@ -460,6 +460,40 @@ async fn a_write_that_fails_part_way_gives_its_slot_back_and_the_apply_finishes(
 
     let summary = finished.report.summary.unwrap();
     assert_eq!((summary.applied, summary.failed), (names.len() - 1, 1));
+}
+
+/// The write refuses its body unread, so the run drops the served
+/// source's read mid-stream: under protocol 1.1 the read is cancelled, and
+/// the source's slot for the path is held until the far side ends it - the
+/// run's unlock and close wait on every slot, so one never given back hangs
+/// the run.
+#[tokio::test]
+async fn a_write_failing_mid_body_cancels_a_served_source_s_read_and_the_run_finishes() {
+    let site = Site::new();
+    site.put(Side::A, "big", vec![7u8; 16 * 1024 * 1024]);
+    site.put(Side::A, "small", "small");
+    let (a, serving) = served(&site, Side::A).await;
+    let (b, _) = Probe::with_hook(
+        site.replica(Side::B),
+        Arc::new(|call: &Call| {
+            (*call == Call::Write("big".into())).then(|| Fault::Fail(refused()))
+        }),
+    );
+
+    let finished = run(&site, a, b, &mut BatchDecider).await;
+
+    let mut results = finished.results();
+    results.sort();
+    assert_eq!(
+        results,
+        [("big".to_owned(), false), ("small".to_owned(), true)]
+    );
+    assert!(site.archive(Side::A).get(&path("small")).is_some());
+    assert!(site.archive(Side::B).get(&path("small")).is_some());
+    with_deadline("the session's end", serving)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

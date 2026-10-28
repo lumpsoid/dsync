@@ -47,10 +47,13 @@ pub(crate) enum Kind {
     /// Room the receiver of a body has made for more of it: a big-endian
     /// u32 of bytes (SPEC §4.2, [`crate::credit`]).
     Credit,
+    /// The receiver of a read body asking its sender to stop: empty. The
+    /// sender ends the body with a `Fail` (protocol 1.1, SPEC §4.2).
+    Cancel,
 }
 
 impl Kind {
-    const ALL: [Kind; 8] = [
+    const ALL: [Kind; 9] = [
         Kind::Version,
         Kind::Request,
         Kind::Reply,
@@ -59,6 +62,7 @@ impl Kind {
         Kind::Fail,
         Kind::Heartbeat,
         Kind::Credit,
+        Kind::Cancel,
     ];
 
     fn byte(self) -> u8 {
@@ -71,6 +75,7 @@ impl Kind {
             Kind::Fail => 0x06,
             Kind::Heartbeat => 0x07,
             Kind::Credit => 0x08,
+            Kind::Cancel => 0x09,
         }
     }
 

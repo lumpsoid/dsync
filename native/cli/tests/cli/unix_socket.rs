@@ -107,7 +107,7 @@ fn a_far_side_of_another_protocol_major_is_refused_naming_both() {
     assert!(
         refused
             .stderr
-            .contains("protocol version mismatch: this side speaks 1.0, the far side 2.0"),
+            .contains("protocol version mismatch: this side speaks 1.1, the far side 2.0"),
         "{refused:#?}"
     );
     far_side.join().unwrap();

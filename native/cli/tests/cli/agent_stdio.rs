@@ -87,7 +87,7 @@ async fn a_protocol_major_mismatch_exits_3_naming_both_versions() {
         let (code, stderr) = exit_and_stderr(child).await;
         assert_eq!(code, Some(3), "{stderr}");
         assert!(
-            stderr.contains("protocol version mismatch: this side speaks 1.0, the far side 999.2"),
+            stderr.contains("protocol version mismatch: this side speaks 1.1, the far side 999.2"),
             "{stderr}"
         );
     })
@@ -104,7 +104,7 @@ async fn a_later_protocol_minor_is_accepted() {
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(&version_frame(1, 9)).await.unwrap();
         stdin.flush().await.unwrap();
-        let mut answer = vec![0u8; version_frame(1, 0).len()];
+        let mut answer = vec![0u8; version_frame(1, 1).len()];
         child
             .stdout
             .as_mut()
@@ -112,7 +112,7 @@ async fn a_later_protocol_minor_is_accepted() {
             .read_exact(&mut answer)
             .await
             .unwrap();
-        assert_eq!(answer, version_frame(1, 0));
+        assert_eq!(answer, version_frame(1, 1));
         drop(stdin);
         let (code, stderr) = exit_and_stderr(child).await;
         assert_eq!(code, Some(0), "{stderr}");

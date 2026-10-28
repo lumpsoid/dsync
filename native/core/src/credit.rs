@@ -67,6 +67,18 @@ struct Stream {
 struct Left {
     bytes: usize,
     closed: bool,
+    /// Its receiver asked for no more of this body.
+    cancelled: bool,
+}
+
+/// Why a body may send no more.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Stopped {
+    /// The connection is over: nothing more reaches the far side.
+    Closed,
+    /// The receiver cancelled the body (SPEC §4.2): the connection carries
+    /// on, and the body still owes its exchange a terminating frame.
+    Cancelled,
 }
 
 impl Credits {
@@ -91,6 +103,7 @@ impl Credits {
             left: Mutex::new(Left {
                 bytes: STREAM_CREDIT_BYTES,
                 closed: state.closed,
+                cancelled: false,
             }),
             granted: Notify::new(),
         });
@@ -108,6 +121,16 @@ impl Credits {
         if let Some(stream) = self.state().open.get(&id) {
             let mut left = stream.left();
             left.bytes = left.bytes.saturating_add(bytes);
+            stream.granted.notify_one();
+        }
+    }
+
+    /// Cancels exchange `id`'s body: its sender stops at its next take,
+    /// even one already waiting for a grant. A body no longer being sent,
+    /// or not yet opened, is not cancelled.
+    pub fn cancel(&self, id: u32) {
+        if let Some(stream) = self.state().open.get(&id) {
+            stream.left().cancelled = true;
             stream.granted.notify_one();
         }
     }
@@ -139,19 +162,22 @@ pub(crate) struct Credit {
 }
 
 impl Credit {
-    /// Takes up to `most` bytes of credit, waiting while there is none;
-    /// `None` once the connection is over.
-    pub async fn take(&self, most: usize) -> Option<usize> {
+    /// Takes up to `most` bytes of credit, waiting while there is none,
+    /// until the connection is over or the receiver cancels the body.
+    pub async fn take(&self, most: usize) -> Result<usize, Stopped> {
         loop {
             {
                 let mut left = self.stream.left();
                 if left.closed {
-                    return None;
+                    return Err(Stopped::Closed);
+                }
+                if left.cancelled {
+                    return Err(Stopped::Cancelled);
                 }
                 if left.bytes > 0 {
                     let taken = most.min(left.bytes);
                     left.bytes -= taken;
-                    return Some(taken);
+                    return Ok(taken);
                 }
             }
             self.stream.granted.notified().await;
@@ -183,19 +209,19 @@ mod tests {
     async fn a_body_sends_its_opening_credit_then_waits_for_a_grant() {
         let credits = Credits::new();
         let credit = credits.open(1);
-        assert_eq!(credit.take(usize::MAX).await, Some(STREAM_CREDIT_BYTES));
+        assert_eq!(credit.take(usize::MAX).await, Ok(STREAM_CREDIT_BYTES));
         assert!(waits(&credit).await);
 
         credits.grant(1, 10);
-        assert_eq!(credit.take(4).await, Some(4));
-        assert_eq!(credit.take(100).await, Some(6));
+        assert_eq!(credit.take(4).await, Ok(4));
+        assert_eq!(credit.take(100).await, Ok(6));
     }
 
     #[tokio::test]
     async fn a_grant_wakes_a_sender_already_waiting() {
         let credits = Credits::new();
         let credit = credits.open(1);
-        credit.take(STREAM_CREDIT_BYTES).await;
+        credit.take(STREAM_CREDIT_BYTES).await.unwrap();
         let (taken, ()) = tokio::time::timeout(DEADLINE, async {
             tokio::join!(credit.take(64), async {
                 tokio::task::yield_now().await;
@@ -204,21 +230,21 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(taken, Some(64));
+        assert_eq!(taken, Ok(64));
     }
 
     #[tokio::test]
     async fn grants_go_to_their_own_body_and_one_for_a_body_gone_is_dropped() {
         let credits = Credits::new();
         let (one, two) = (credits.open(1), credits.open(2));
-        one.take(STREAM_CREDIT_BYTES).await;
-        two.take(STREAM_CREDIT_BYTES).await;
+        one.take(STREAM_CREDIT_BYTES).await.unwrap();
+        two.take(STREAM_CREDIT_BYTES).await.unwrap();
         drop(two);
 
         credits.grant(2, 64);
         assert!(waits(&one).await);
         credits.grant(1, 64);
-        assert_eq!(one.take(usize::MAX).await, Some(64));
+        assert_eq!(one.take(usize::MAX).await, Ok(64));
         assert!(credits.state().open.keys().eq([&1]));
     }
 
@@ -226,13 +252,36 @@ mod tests {
     async fn closing_ends_every_credit_open_and_opened_later() {
         let credits = Credits::new();
         let open = credits.open(1);
-        open.take(STREAM_CREDIT_BYTES).await;
+        open.take(STREAM_CREDIT_BYTES).await.unwrap();
         credits.close();
         assert_eq!(
             tokio::time::timeout(DEADLINE, open.take(1)).await.unwrap(),
-            None
+            Err(Stopped::Closed)
         );
-        assert_eq!(credits.open(2).take(1).await, None);
+        assert_eq!(credits.open(2).take(1).await, Err(Stopped::Closed));
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_its_own_body_only_and_wakes_it_waiting() {
+        let credits = Credits::new();
+        let (one, two) = (credits.open(1), credits.open(2));
+        one.take(STREAM_CREDIT_BYTES).await.unwrap();
+        let (taken, ()) = tokio::time::timeout(DEADLINE, async {
+            tokio::join!(one.take(64), async {
+                tokio::task::yield_now().await;
+                credits.cancel(1);
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(taken, Err(Stopped::Cancelled));
+        assert_eq!(two.take(64).await, Ok(64));
+
+        // A cancel for a body gone or never opened changes nothing.
+        drop(one);
+        credits.cancel(1);
+        credits.cancel(9);
+        assert_eq!(credits.open(1).take(64).await, Ok(64));
     }
 
     #[test]

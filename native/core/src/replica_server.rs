@@ -21,7 +21,7 @@ use tokio::task::JoinSet;
 use crate::body::Body;
 use crate::credit::{self, Credits};
 use crate::frame::{Frame, FrameError, Kind};
-use crate::inbound::{Inbound, Piece};
+use crate::inbound::{Dropped, Inbound, Piece};
 use crate::link_error::LinkError;
 use crate::remote_replica::silent_if_timed_out;
 use crate::replica::{BucketTicket, DigestTicket, Replica};
@@ -322,7 +322,7 @@ fn undecodable(error: &postcard::Error) -> WireError {
 }
 
 /// The reader: requests to the session, a write's body frames to its
-/// body, grants to the read bodies being sent. Returns `Ok` when the
+/// body, grants and cancels to the read bodies being sent. Returns `Ok` when the
 /// client closes its end; either way every read body still being sent
 /// stops.
 async fn read_requests<R: AsyncRead + Unpin>(
@@ -362,12 +362,19 @@ async fn route_requests<R: AsyncRead + Unpin>(
                 credits.grant(frame.id, credit::granted(&frame)?);
                 continue;
             }
+            // For a read no longer being sent - already ended, or never
+            // opened - there is nothing to stop.
+            Kind::Cancel => {
+                credits.cancel(frame.id);
+                continue;
+            }
             Kind::Request => {
                 let request = wire::decode::<Request>(&frame.payload);
                 // The body's route opens before the next frame is read, so
                 // none of the body can arrive ahead of it.
                 let body = matches!(request, Ok(Request::Write { .. })).then(|| {
-                    let (inbound, body) = Inbound::open(outbox.clone(), frame.id, ());
+                    let (inbound, body) =
+                        Inbound::open(outbox.clone(), frame.id, (), Dropped::Release);
                     bodies.insert(frame.id, inbound);
                     body
                 });
@@ -464,6 +471,58 @@ mod tests {
                 .unwrap();
             assert_eq!((frame.kind, frame.id), (Kind::Reply, id));
             wire::decode(&frame.payload).unwrap()
+        }
+
+        async fn send_to(&mut self, kind: Kind, id: u32, payload: Vec<u8>) {
+            Frame::new(kind, id, payload)
+                .write_to(&mut self.writer)
+                .await
+                .unwrap();
+            self.writer.flush().await.unwrap();
+        }
+
+        async fn next(&mut self) -> Frame {
+            within(DEADLINE, Frame::read_from(&mut self.reader))
+                .await
+                .unwrap()
+                .unwrap()
+        }
+
+        /// The next frame, if one comes before the server goes quiet.
+        async fn next_if_any(&mut self) -> Option<Frame> {
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                Frame::read_from(&mut self.reader),
+            )
+            .await
+            .ok()
+            .map(|frame| frame.unwrap().unwrap())
+        }
+
+        /// Opens a read of `path`: its id, once the server said it opened.
+        async fn open_read(&mut self, path: &str) -> u32 {
+            let request = Request::Read(RelPath::parse(path).unwrap());
+            let id = self.send_raw(Kind::Request, wire::encode(&request)).await;
+            let frame = self.next().await;
+            assert_eq!((frame.kind, frame.id), (Kind::Reply, id));
+            assert_eq!(
+                wire::decode::<Answer>(&frame.payload).unwrap(),
+                Ok(Reply::Opened)
+            );
+            id
+        }
+
+        /// The body bytes of read `id` up to its terminating frame.
+        async fn body_to_its_end(&mut self, id: u32) -> (usize, Frame) {
+            let mut bytes = 0;
+            loop {
+                let frame = self.next().await;
+                assert_eq!(frame.id, id);
+                if frame.kind != Kind::Chunk {
+                    return (bytes, frame);
+                }
+                bytes += frame.payload.len();
+            }
         }
 
         /// Whether the server has closed its end.
@@ -620,6 +679,88 @@ mod tests {
                 Err(error) => panic!("{error:?}"),
             }
         }
+        within(DEADLINE, serving).await.unwrap().unwrap();
+    }
+
+    const BIG: usize = 4 * 1024 * 1024;
+
+    /// A session past its hello over a site with a `BIG` file `big` and a
+    /// small file `small`.
+    async fn serving_files() -> (Site, Client, JoinHandle<Result<(), LinkError>>) {
+        let site = Site::new();
+        fs::write(site.dir.path().join("root/big"), vec![7u8; BIG]).unwrap();
+        fs::write(site.dir.path().join("root/small"), "small").unwrap();
+        let (mut client, serving) = site.serve(None).await;
+        assert!(matches!(
+            client.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        (site, client, serving)
+    }
+
+    fn is_cancelled(frame: &Frame) -> bool {
+        let error = wire::decode::<WireIo>(&frame.payload).unwrap();
+        frame.kind == Kind::Fail
+            && std::io::Error::from(error).kind() == std::io::ErrorKind::Interrupted
+    }
+
+    #[tokio::test]
+    async fn a_cancel_mid_read_ends_it_with_a_fail_and_no_more_chunks() {
+        let (_site, mut client, serving) = serving_files().await;
+        let id = client.open_read("big").await;
+        let first = client.next().await;
+        assert_eq!((first.kind, first.id), (Kind::Chunk, id));
+        client
+            .send_to(
+                Kind::Credit,
+                id,
+                crate::credit::grant_frame(id, 1 << 20).payload,
+            )
+            .await;
+        client.send_to(Kind::Cancel, id, Vec::new()).await;
+        let (bytes, last) = client.body_to_its_end(id).await;
+        assert!(is_cancelled(&last), "{last:?}");
+        assert!(first.payload.len() + bytes < BIG, "the whole file was sent");
+        assert_eq!(client.next_if_any().await, None);
+        drop(client);
+        within(DEADLINE, serving).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cancel_reaches_a_read_waiting_on_credit() {
+        let (_site, mut client, serving) = serving_files().await;
+        let id = client.open_read("big").await;
+        let mut sent = 0;
+        while sent < crate::credit::STREAM_CREDIT_BYTES {
+            let frame = client.next().await;
+            assert_eq!((frame.kind, frame.id), (Kind::Chunk, id));
+            sent += frame.payload.len();
+        }
+        // Granted nothing: the server waits on credit until the cancel.
+        assert_eq!(client.next_if_any().await, None);
+        client.send_to(Kind::Cancel, id, Vec::new()).await;
+        let last = client.next().await;
+        assert_eq!(last.id, id);
+        assert!(is_cancelled(&last), "{last:?}");
+        drop(client);
+        within(DEADLINE, serving).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cancel_for_no_read_being_sent_changes_nothing() {
+        let (_site, mut client, serving) = serving_files().await;
+        let id = client.open_read("small").await;
+        let (bytes, end) = client.body_to_its_end(id).await;
+        assert_eq!((bytes, end.kind), (5, Kind::End));
+        // Late, for a read already ended, and for an id never used.
+        client.send_to(Kind::Cancel, id, Vec::new()).await;
+        client.send_to(Kind::Cancel, 99, Vec::new()).await;
+        assert_eq!(client.next_if_any().await, None);
+
+        let again = client.open_read("small").await;
+        let (bytes, end) = client.body_to_its_end(again).await;
+        assert_eq!((bytes, end.kind), (5, Kind::End));
+        drop(client);
         within(DEADLINE, serving).await.unwrap().unwrap();
     }
 

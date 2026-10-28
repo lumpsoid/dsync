@@ -4,6 +4,7 @@
 //! `agent_server_test.dart` that are not about metrics.
 
 use std::io;
+use std::sync::atomic::Ordering;
 
 use dsync_core::{Body, FileOp, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
@@ -236,6 +237,41 @@ async fn read_streams_the_current_bytes_and_a_missing_file_fails_as_the_local_on
     assert_eq!(op, FileOp::Read);
     assert_eq!(at, site.file(Side::B, "missing"));
     assert_eq!(source.kind(), io::ErrorKind::NotFound);
+    served.close().await;
+}
+
+#[tokio::test]
+async fn a_read_dropped_after_its_first_chunk_stops_the_far_side_and_frees_its_path() {
+    const BIG: usize = 16 * 1024 * 1024;
+    let site = Site::new();
+    site.put(Side::B, "big", vec![7u8; BIG]);
+    let (served, sent) = Served::counting(&site, Side::B).await;
+    let b = served.replica.as_ref();
+    with_deadline("hello", b.hello()).await.unwrap();
+    let mut body = with_deadline("read", b.read(&path("big")))
+        .await
+        .unwrap()
+        .body;
+    let first = with_deadline("first chunk", body.next()).await.unwrap();
+    assert!(first.is_some_and(|chunk| !chunk.is_empty()));
+    drop(body);
+
+    // The path's next read waits for the far side to end the first one:
+    // by then it has sent all it ever will of it.
+    let again = with_deadline("the same path's next read", b.read(&path("big")))
+        .await
+        .unwrap();
+    let stopped_at = sent.load(Ordering::SeqCst);
+    assert!(
+        stopped_at < BIG / 4,
+        "the far side sent {stopped_at} bytes of a {BIG}-byte file"
+    );
+    let content = with_deadline("collect", again.body.collect())
+        .await
+        .unwrap();
+    assert_eq!(content.len(), BIG);
+    // The count does see a whole file go by.
+    assert!(sent.load(Ordering::SeqCst) > BIG);
     served.close().await;
 }
 

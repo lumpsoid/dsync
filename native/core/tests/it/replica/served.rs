@@ -3,13 +3,18 @@
 //! ends in this process, no mocks (plan D4).
 
 use std::future::Future;
+use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use dsync_core::{
     LinkError, LocalReplica, RemoteReplica, ReplicaError, ReplicaServer, StateDir, Transport,
 };
 use dsync_domain::{EntryId, Jobs, ReplicaSpec, Side, Tuning};
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio::task::JoinHandle;
 
 use crate::replica::support::{PROFILE, Site, with_deadline};
@@ -63,9 +68,31 @@ pub struct Served {
 impl Served {
     /// The replica on `side` of `site`, served over a fresh connection.
     pub async fn new(site: &Site, side: Side) -> Served {
-        let server = ReplicaServer::new(open_local(site.state()), Tuning::DEFAULT);
         let (near, far) = tokio::io::duplex(DUPLEX_BYTES);
-        let serving = tokio::spawn(async move { server.serve(Transport::split(far)).await });
+        Served::over(site, side, near, Transport::split(far)).await
+    }
+
+    /// [`Served::new`], counting the bytes the far side sends: how a test
+    /// sees where it stopped sending.
+    pub async fn counting(site: &Site, side: Side) -> (Served, Arc<AtomicUsize>) {
+        let (near, far) = tokio::io::duplex(DUPLEX_BYTES);
+        let (reader, writer) = tokio::io::split(far);
+        let sent = Arc::new(AtomicUsize::new(0));
+        let writer = Counted {
+            inner: writer,
+            sent: sent.clone(),
+        };
+        let served = Served::over(site, side, near, Transport::new(reader, writer)).await;
+        (served, sent)
+    }
+
+    async fn over<R, W>(site: &Site, side: Side, near: DuplexStream, far: Transport<R, W>) -> Served
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let server = ReplicaServer::new(open_local(site.state()), Tuning::DEFAULT);
+        let serving = tokio::spawn(async move { server.serve(far).await });
         let replica = with_deadline(
             "connect",
             RemoteReplica::connect(Transport::split(near), spec(site, side), &Tuning::DEFAULT),
@@ -95,4 +122,32 @@ pub async fn still_pending<T>(work: &mut JoinHandle<T>) -> bool {
     tokio::time::timeout(Duration::from_millis(100), work)
         .await
         .is_err()
+}
+
+/// A writer counting the bytes written through it.
+struct Counted<W> {
+    inner: W,
+    sent: Arc<AtomicUsize>,
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for Counted<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let written = Pin::new(&mut self.inner).poll_write(cx, bytes);
+        if let Poll::Ready(Ok(n)) = written {
+            self.sent.fetch_add(n, Ordering::SeqCst);
+        }
+        written
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }

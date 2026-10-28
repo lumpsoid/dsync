@@ -26,7 +26,7 @@ use tokio::sync::oneshot;
 use crate::body::Body;
 use crate::credit::{self, Credits};
 use crate::frame::{Frame, FrameError, Kind};
-use crate::inbound::{Inbound, Piece};
+use crate::inbound::{Dropped, Inbound, Piece};
 use crate::link_error::LinkError;
 use crate::replica::{
     BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
@@ -37,7 +37,7 @@ use crate::ssh_transport::{SshChild, SshLaunch};
 use crate::transport::{
     Liveness, Outbox, OutboxClosed, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
-use crate::version_handshake::handshake;
+use crate::version_handshake::{cancels_reads, handshake};
 use crate::wire::{self, Answer, Reply, Request, WireIo};
 
 /// How long [`RemoteReplica::close`] waits for the far side to end its
@@ -58,6 +58,8 @@ pub struct RemoteReplica {
 /// bodies being sent, and the exchanges waiting on the reader.
 struct Link {
     outbox: Outbox,
+    /// What a read body its consumer drops does, by the version agreed.
+    dropped_read: Dropped,
     credits: Arc<Credits>,
     routes: Mutex<Routes>,
 }
@@ -110,7 +112,7 @@ impl RemoteReplica {
         let silence = liveness.map(|liveness| liveness.silence_limit);
         let mut reader =
             BufReader::with_capacity(READ_BUFFER_BYTES, SilenceLimit::new(reader, silence));
-        handshake(&mut reader, &mut writer)
+        let agreed = handshake(&mut reader, &mut writer)
             .await
             .map_err(|error| silent_if_timed_out(error, liveness))?;
         let (outbox, written) = start_writer(
@@ -120,6 +122,11 @@ impl RemoteReplica {
         );
         let link = Arc::new(Link {
             outbox,
+            dropped_read: if cancels_reads(agreed) {
+                Dropped::Cancel
+            } else {
+                Dropped::Release
+            },
             credits: Credits::new(),
             routes: Mutex::new(Routes {
                 next_id: 1,
@@ -344,7 +351,7 @@ impl Link {
                 }
                 Ok(())
             }
-            Kind::Version | Kind::Request => Err(LinkError::Protocol(format!(
+            Kind::Version | Kind::Request | Kind::Cancel => Err(LinkError::Protocol(format!(
                 "a {:?} frame from the server",
                 frame.kind
             ))),
@@ -482,10 +489,12 @@ impl Replica for RemoteReplica {
 
     async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
         // Held by the body's route until the body is over, so a read costs
-        // its place in the window for as long as its bytes are arriving.
+        // its place in the window for as long as its bytes are arriving -
+        // and, dropped at 1.1, until the far end has stopped sending them.
         let slot = self.window.enter([path.clone()]).await;
         let (id, answer, reading) = self.link.open(|id, reply| {
-            let (inbound, body) = Inbound::open(self.link.outbox.clone(), id, slot);
+            let (inbound, body) =
+                Inbound::open(self.link.outbox.clone(), id, slot, self.link.dropped_read);
             let (settle, settled) = Settled::channel();
             let route = Route::Read {
                 reply: Some(reply),
@@ -537,7 +546,13 @@ impl Replica for RemoteReplica {
             };
             let sending = async {
                 match next {
-                    Ok(Some(bytes)) => outbox.send_chunk(id, bytes, &credit).await.map(|()| false),
+                    // Only the connection closing stops a write's body: the
+                    // server never cancels one (`Link::route` refuses it).
+                    Ok(Some(bytes)) => outbox
+                        .send_chunk(id, bytes, &credit)
+                        .await
+                        .map(|()| false)
+                        .map_err(|_| OutboxClosed),
                     Ok(None) => outbox.end(id).await.map(|()| true),
                     Err(error) => outbox.fail(id, &error.into()).await.map(|()| true),
                 }
@@ -638,11 +653,12 @@ mod tests {
 
     use std::time::Duration;
 
-    use dsync_domain::{EntryId, Jobs, ReplicaRoot, Side};
+    use dsync_domain::{EntryId, FormatVersion, Jobs, ReplicaRoot, Side};
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, duplex};
     use tokio::time::Instant;
 
     use super::*;
+    use crate::version_handshake::{PROTOCOL_VERSION, handshake_as};
     use crate::wire::WireError;
 
     /// The far side, speaking frames by hand.
@@ -691,6 +707,14 @@ mod tests {
     }
 
     async fn connected(liveness: Option<Liveness>) -> (RemoteReplica, Peer) {
+        connected_as(PROTOCOL_VERSION, liveness).await
+    }
+
+    /// Connected to a far side speaking `version`.
+    async fn connected_as(
+        version: FormatVersion,
+        liveness: Option<Liveness>,
+    ) -> (RemoteReplica, Peer) {
         let (near, far) = duplex(64 * 1024);
         let transport = Transport::split(near);
         let transport = match liveness {
@@ -702,7 +726,7 @@ mod tests {
         let (client, far_side) = within(REAL, async {
             tokio::join!(
                 RemoteReplica::connect(transport, spec(), &Tuning::DEFAULT),
-                handshake(&mut reader, &mut writer)
+                handshake_as(version, &mut reader, &mut writer)
             )
         })
         .await;
@@ -883,6 +907,104 @@ mod tests {
         let Reading { body, settled } = read.unwrap();
         assert_eq!(within(REAL, body.collect()).await.unwrap(), b"hi");
         assert_eq!(within(REAL, settled.after()).await, now);
+    }
+
+    /// What the far side sees, in order.
+    #[derive(Debug, PartialEq)]
+    enum Saw {
+        Frame(Kind),
+        /// Nothing for a while; the far side then fails the first read.
+        Quiet,
+    }
+
+    /// Against a far side at `version`: a read of `f` whose consumer drops
+    /// its body after one chunk, then a second read of `f`. What the far
+    /// side sees from the drop until the second read's request.
+    async fn a_dropped_read_then_another(version: FormatVersion) -> Vec<Saw> {
+        let (client, mut peer) = connected_as(version, None).await;
+        let f = RelPath::parse("f").unwrap();
+        let far_side = async {
+            let request = peer.next_request().await;
+            let opened: Answer = Ok(Reply::Opened);
+            peer.send(Frame::new(Kind::Reply, request.id, wire::encode(&opened)))
+                .await;
+            peer.send(Frame::new(Kind::Chunk, request.id, b"a".to_vec()))
+                .await;
+            request.id
+        };
+        let (read, first) = within(REAL, async { tokio::join!(client.read(&f), far_side) }).await;
+        let Reading { mut body, .. } = read.unwrap();
+        assert_eq!(within(REAL, body.next()).await.unwrap().unwrap(), b"a");
+        drop(body);
+        peer.send(Frame::new(Kind::Chunk, first, b"b".to_vec()))
+            .await;
+
+        let far_side = async {
+            let mut saw = Vec::new();
+            loop {
+                match tokio::time::timeout(Duration::from_millis(100), peer.next_request()).await {
+                    Ok(frame) if frame.kind == Kind::Request => {
+                        saw.push(Saw::Frame(frame.kind));
+                        let refused: Answer = Err(WireError::Refused("done".into()));
+                        peer.send(Frame::new(Kind::Reply, frame.id, wire::encode(&refused)))
+                            .await;
+                        return saw;
+                    }
+                    Ok(frame) => {
+                        assert_eq!(frame.id, first);
+                        saw.push(Saw::Frame(frame.kind));
+                    }
+                    Err(_) => {
+                        saw.push(Saw::Quiet);
+                        let stopped = io::Error::new(io::ErrorKind::Interrupted, "cancelled");
+                        peer.send(Frame::new(
+                            Kind::Fail,
+                            first,
+                            WireIo::encode_failure(&stopped),
+                        ))
+                        .await;
+                    }
+                }
+            }
+        };
+        let (second, saw) = within(REAL, async { tokio::join!(client.read(&f), far_side) }).await;
+        assert!(matches!(second, Err(ReplicaError::Refused(_))));
+        saw
+    }
+
+    #[tokio::test]
+    async fn a_dropped_read_at_1_1_cancels_and_holds_its_path_until_the_far_side_ends_it() {
+        assert_eq!(
+            a_dropped_read_then_another(PROTOCOL_VERSION).await,
+            [
+                Saw::Frame(Kind::Cancel),
+                Saw::Quiet,
+                Saw::Frame(Kind::Request)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_read_at_1_0_sends_no_cancel_and_frees_its_path_at_once() {
+        assert_eq!(
+            a_dropped_read_then_another(FormatVersion::new(1, 0)).await,
+            [Saw::Frame(Kind::Request)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancel_from_the_server_is_a_protocol_error() {
+        let (client, mut peer) = connected(None).await;
+        let far_side = async {
+            let request = peer.next_request().await;
+            peer.send(Frame::new(Kind::Cancel, request.id, Vec::new()))
+                .await;
+        };
+        let (said, ()) = within(REAL, async { tokio::join!(client.hello(), far_side) }).await;
+        assert!(
+            matches!(said, Err(ReplicaError::Link(LinkError::Protocol(_)))),
+            "{said:?}"
+        );
     }
 
     #[tokio::test]

@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, Sleep};
 
-use crate::credit::Credit;
+use crate::credit::{Credit, Stopped};
 use crate::frame::{Frame, Kind};
 use crate::replica::Reading;
 use crate::wire::{self, WireIo};
@@ -116,6 +116,12 @@ pub(crate) struct Outbox {
 #[derive(Debug)]
 pub(crate) struct OutboxClosed;
 
+impl From<OutboxClosed> for Stopped {
+    fn from(OutboxClosed: OutboxClosed) -> Stopped {
+        Stopped::Closed
+    }
+}
+
 impl Outbox {
     pub async fn send(&self, frame: Frame) -> Result<(), OutboxClosed> {
         self.frames
@@ -135,11 +141,11 @@ impl Outbox {
         id: u32,
         mut bytes: Vec<u8>,
         credit: &Credit,
-    ) -> Result<(), OutboxClosed> {
+    ) -> Result<(), Stopped> {
         let mut sent = 0;
         while sent < bytes.len() {
             let most = (bytes.len() - sent).min(self.chunk_bytes);
-            let allowed = credit.take(most).await.ok_or(OutboxClosed)?;
+            let allowed = credit.take(most).await?;
             let piece = if allowed == bytes.len() {
                 std::mem::take(&mut bytes)
             } else {
@@ -165,6 +171,10 @@ impl Outbox {
     /// Streams a read's body as exchange `id`'s frames, as `credit`
     /// allows, failing it as the body does. Its `End` carries what the
     /// file was once read (SPEC §7.6's source check).
+    ///
+    /// A read its receiver cancels stops at its next chunk: the body is
+    /// dropped, closing the file, and a `Fail` ends the exchange - the
+    /// receiver holds the read's window slot until that frame.
     pub async fn send_read(
         &self,
         id: u32,
@@ -174,7 +184,18 @@ impl Outbox {
         let Reading { mut body, settled } = reading;
         loop {
             match body.next().await {
-                Ok(Some(bytes)) => self.send_chunk(id, bytes, &credit).await?,
+                Ok(Some(bytes)) => match self.send_chunk(id, bytes, &credit).await {
+                    Ok(()) => {}
+                    Err(Stopped::Closed) => return Err(OutboxClosed),
+                    Err(Stopped::Cancelled) => {
+                        drop((body, settled));
+                        let cancelled = io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "the reader cancelled this read",
+                        );
+                        return self.fail(id, &cancelled).await;
+                    }
+                },
                 Ok(None) => {
                     let now = settled.after().await;
                     return self
