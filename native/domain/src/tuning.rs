@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use crate::jobs::Jobs;
+use crate::peek_limits::PeekLimits;
 
 /// The engine's thresholds as named values, never inline literals.
 /// [`Tuning::DEFAULT`] is what ships; a test may build a smaller one
@@ -62,6 +63,8 @@ pub struct Tuning {
     /// unprivileged, outside the ephemeral range, clear of ssh, common dev
     /// servers and Syncthing.
     pub peer_port: u16,
+    /// What a review's diff page may read of a file.
+    pub peek: PeekLimits,
 }
 
 impl Tuning {
@@ -85,6 +88,10 @@ impl Tuning {
         archive_buffer_lines: 256,
         archive_buffer_interval: Duration::from_secs(1),
         peer_port: 28771,
+        peek: PeekLimits {
+            max_bytes: 4 * 1024 * 1024,
+            diff_deadline: Duration::from_millis(200),
+        },
     };
 }
 
@@ -123,6 +130,8 @@ mod tests {
         assert_eq!(tuning.archive_buffer_lines, 256);
         assert_eq!(tuning.archive_buffer_interval, Duration::from_secs(1));
         assert_eq!(tuning.peer_port, 28771);
+        assert_eq!(tuning.peek.max_bytes, 1 << 22);
+        assert_eq!(tuning.peek.diff_deadline, Duration::from_millis(200));
         assert!(tuning.silence_limit > tuning.heartbeat);
     }
 }
