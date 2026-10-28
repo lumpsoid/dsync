@@ -1,4 +1,5 @@
 import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/compare_offer.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/entry_run_status.dart';
 import 'package:dsync/app/core_link/models/file_status.dart';
@@ -72,6 +73,47 @@ void main() {
       ConflictChoice.keepB,
     ]);
     expect(conflict.choice, ConflictChoice.keepB);
+  });
+
+  test('each offer reads onto a plan row and a conflict row', () {
+    final offers = <wire.OfferView>[
+      wire.OfferViewNotComparable(),
+      wire.OfferViewReadable(),
+      wire.OfferViewMedia(),
+      wire.OfferViewTooLarge(side: wire.SideView.b, size: n(99)),
+    ];
+    final read = planOf(
+      decode(
+        runView(
+          plan: [
+            for (final (i, offer) in offers.indexed)
+              planRow(copyTo('p$i.txt', bytes: 1), offer: offer),
+          ],
+          conflicts: [
+            for (final (i, offer) in offers.indexed)
+              conflictRow(
+                'c$i.txt',
+                a: modifiedFile(),
+                b: modifiedFile(),
+                offer: offer,
+              ),
+          ],
+        ),
+      ),
+    );
+    final planned = [for (final row in read.actions) row.proposal.offer];
+    final conflicted = [for (final row in read.conflicts) row.offer];
+    for (final read in [planned, conflicted]) {
+      expect(read[0], isA<OfferNotComparable>());
+      expect(read[1], isA<OfferReadable>());
+      expect(read[2], isA<OfferMedia>());
+      expect(
+        read[3],
+        isA<OfferTooLarge>()
+            .having((o) => o.side, 'side', ReplicaSide.b)
+            .having((o) => o.size, 'size', 99),
+      );
+    }
   });
 
   test('a copy aside in an outcome reads with the path it wrote', () {

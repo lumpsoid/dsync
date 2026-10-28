@@ -3,16 +3,20 @@ import 'models/action_choice.dart';
 import 'models/action_result.dart';
 import 'models/action_row_update.dart';
 import 'models/archive_info.dart';
+import 'models/compare_offer.dart';
+import 'models/compared_side.dart';
 import 'models/conflict_choice.dart';
 import 'models/conflict_info.dart';
 import 'models/conflict_row.dart';
 import 'models/conflict_row_update.dart';
 import 'models/decision_summary.dart';
+import 'models/diff_hunk.dart';
 import 'models/entry_issue.dart';
 import 'models/entry_run.dart';
 import 'models/entry_run_status.dart';
 import 'models/entry_view.dart';
 import 'models/device_identity_info.dart';
+import 'models/file_comparison.dart';
 import 'models/file_status.dart';
 import 'models/filter_folder_summary.dart';
 import 'models/filter_preview.dart';
@@ -31,6 +35,7 @@ import 'models/profile_entry.dart';
 import 'models/replica_info.dart';
 import 'models/replica_side.dart';
 import 'models/root_kind.dart';
+import 'models/row_ref.dart';
 import 'models/run_intent.dart';
 import 'models/run_phase.dart';
 import 'models/run_plan.dart';
@@ -306,6 +311,7 @@ RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
                 final bytes? => _n(bytes),
                 null => null,
               },
+              offer: compareOffer(row.proposal.offer),
             ),
             choice: _actionChoice(row.choice),
             outcome: _outcome(row.outcome),
@@ -318,6 +324,7 @@ RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
             offered: [
               for (final choice in row.offered) _conflictChoice(choice),
             ],
+            offer: compareOffer(row.offer),
             choice: _conflictChoice(row.choice),
             outcome: _outcome(row.outcome),
           ),
@@ -598,3 +605,104 @@ FilterRow filterRow(wire.FilterRowView view) => FilterRow(
   excludedBy: view.excludedBy,
   syncs: view.syncs,
 );
+
+CompareOffer compareOffer(wire.OfferView view) => switch (view) {
+  wire.OfferViewNotComparable() => const OfferNotComparable(),
+  wire.OfferViewReadable() => const OfferReadable(),
+  wire.OfferViewMedia() => const OfferMedia(),
+  wire.OfferViewTooLarge(side: final s, :final size) => OfferTooLarge(
+    side(s),
+    _n(size),
+  ),
+  _ => throw StateError('unknown offer: $view'),
+};
+
+wire.RowRef wireRowRef(RowRef row) => switch (row) {
+  ActionRowRef(:final index) => wire.RowRefAction(index: index),
+  ConflictRowRef(:final index) => wire.RowRefConflict(index: index),
+};
+
+FileComparison comparison(wire.ComparisonView view) => switch (view) {
+  wire.ComparisonViewNotComparable() => const NotComparable(),
+  wire.ComparisonViewCompared(
+    :final path,
+    :final oldSide,
+    :final newSide,
+    :final verdict,
+  ) =>
+    _compared(path, _comparedSide(oldSide), _comparedSide(newSide), verdict),
+  _ => throw StateError('unknown comparison: $view'),
+};
+
+ComparedSide _comparedSide(wire.SidedView view) =>
+    ComparedSide(side(view.side), switch (view.size) {
+      final size? => _n(size),
+      null => null,
+    });
+
+ComparedFile _compared(
+  String path,
+  ComparedSide oldSide,
+  ComparedSide newSide,
+  wire.ComparedView verdict,
+) => switch (verdict) {
+  wire.ComparedViewMedia() => MediaFile(
+    path: path,
+    oldSide: oldSide,
+    newSide: newSide,
+  ),
+  wire.ComparedViewTooLarge(side: final s, :final size) => TooLargeFile(
+    path: path,
+    oldSide: oldSide,
+    newSide: newSide,
+    side: side(s),
+    size: _n(size),
+  ),
+  wire.ComparedViewBinary(side: final s) => BinaryFile(
+    path: path,
+    oldSide: oldSide,
+    newSide: newSide,
+    side: side(s),
+  ),
+  wire.ComparedViewUnreadable(side: final s, :final message) => UnreadableFile(
+    path: path,
+    oldSide: oldSide,
+    newSide: newSide,
+    side: side(s),
+    message: message,
+  ),
+  wire.ComparedViewIdentical(:final bytesDiffer) => SameText(
+    path: path,
+    oldSide: oldSide,
+    newSide: newSide,
+    bytesDiffer: bytesDiffer,
+  ),
+  wire.ComparedViewHunks(value: final hunks) => TextChanges(
+    path: path,
+    oldSide: oldSide,
+    newSide: newSide,
+    hunks: [for (final hunk in hunks) _hunk(hunk)],
+  ),
+  _ => throw StateError('unknown verdict: $verdict'),
+};
+
+DiffHunk _hunk(wire.HunkView hunk) => DiffHunk(
+  oldStart: hunk.oldStart,
+  newStart: hunk.newStart,
+  blocks: [
+    for (final block in hunk.blocks)
+      switch (block) {
+        wire.BlockViewSame(value: final lines) => SameBlock(lines),
+        wire.BlockViewChanged(:final oldLines, :final newLines) => ChangedBlock(
+          oldLines: [for (final line in oldLines) _line(line)],
+          newLines: [for (final line in newLines) _line(line)],
+        ),
+        _ => throw StateError('unknown block: $block'),
+      },
+  ],
+);
+
+DiffLine _line(wire.LineView line) => DiffLine([
+  for (final span in line.spans)
+    DiffSpan(span.text, emphasized: span.emphasized),
+]);

@@ -75,6 +75,19 @@ final class FakeHub implements CoreChannel {
   void hold<C extends wire.CoreCommand>(Future<void> until) =>
       _holds[C] = until;
 
+  bool _holdingCompares = false;
+  final Map<int, Completer<void>> _heldCompares = {};
+
+  /// Every later `CompareRow` waits, unanswered, until a `CancelCompare`
+  /// names its request; it is then answered `cancelled`, as the hub does.
+  void holdCompareUntilCancelled() => _holdingCompares = true;
+
+  /// The request id of every `CancelCompare` sent, in order.
+  List<int> get cancelledCompares => [
+    for (final cancel in sent<wire.CoreCommandCancelCompare>())
+      cancel.request.toInt(),
+  ];
+
   final _replies = _Signals<wire.CoreReply>();
   final _runSnapshots = _Signals<wire.RunSnapshot>();
   final _serveSnapshots = _Signals<wire.ServeSnapshot>();
@@ -137,6 +150,15 @@ final class FakeHub implements CoreChannel {
     final command = request.command;
     requests.add(request);
     if (_holds[command.runtimeType] case final hold?) await hold;
+    if (command is wire.CoreCommandCompareRow && _holdingCompares) {
+      final cancelled = _heldCompares[request.id.toInt()] = Completer<void>();
+      await cancelled.future;
+      _replies.add(wire.CoreReply(id: request.id, result: failed('cancelled')));
+      return;
+    }
+    if (command is wire.CoreCommandCancelCompare) {
+      _heldCompares[command.request.toInt()]?.complete();
+    }
     final result =
         _scripts[command.runtimeType]?.answer(command) ?? _neutral(command);
     _replies.add(wire.CoreReply(id: request.id, result: result));
@@ -261,6 +283,7 @@ wire.ReplyResult _neutral(wire.CoreCommand command) => switch (command) {
   wire.CoreCommandShowPairing() ||
   wire.CoreCommandConfirmPairing() ||
   wire.CoreCommandCancelPairing() ||
+  wire.CoreCommandCancelCompare() ||
   wire.CoreCommandStartRun() ||
   wire.CoreCommandSteerRun() ||
   wire.CoreCommandStopServe() ||

@@ -7,6 +7,7 @@ import 'models/archive_info.dart';
 import 'models/core_dirs.dart';
 import 'models/core_failure.dart';
 import 'models/device_identity_info.dart';
+import 'models/file_comparison.dart';
 import 'models/filter_preview.dart';
 import 'models/filter_row.dart';
 import 'models/pair_code_reading.dart';
@@ -17,6 +18,7 @@ import 'models/peer_probe_outcome.dart';
 import 'models/profile_draft.dart';
 import 'models/profile_entry.dart';
 import 'models/root_kind.dart';
+import 'models/row_ref.dart';
 import 'models/run_intent.dart';
 import 'models/run_session.dart';
 import 'models/run_target.dart';
@@ -190,6 +192,35 @@ final class CoreLink {
       rethrow;
     }
   }
+
+  /// Asks for the comparison of [row]'s two files in run [session]. The
+  /// request's [id] comes back with the reply so the caller can
+  /// [cancelCompare] it; a cancelled compare fails with `cancelled`.
+  ({int id, Future<FileComparison> reply}) compareRow(int session, RowRef row) {
+    late int id;
+    final reply = _ask(
+      wire.CoreCommandCompareRow(
+        session: wireId(session),
+        row: wireRowRef(row),
+      ),
+      opening: (opened) => id = opened,
+      (result) => switch (result) {
+        wire.ReplyResultComparison(:final value) => comparison(value),
+        _ => _unexpected(result),
+      },
+    );
+    return (id: id, reply: reply);
+  }
+
+  /// Stops the comparison [id] that [compareRow] returned in run
+  /// [session].
+  Future<void> cancelCompare(int session, int id) => _ask(
+    wire.CoreCommandCancelCompare(
+      session: wireId(session),
+      request: wireId(id),
+    ),
+    _done,
+  );
 
   /// The operator's answer for the device waiting in pairing window
   /// [session].

@@ -1,9 +1,14 @@
 import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/core_failure.dart';
+import 'package:dsync/app/core_link/models/diff_hunk.dart';
 import 'package:dsync/app/core_link/models/entry_draft.dart';
+import 'package:dsync/app/core_link/models/file_comparison.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
+import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
+import 'package:dsync/app/core_link/models/row_ref.dart';
 import 'package:dsync/app/core_link/models/run_intent.dart';
 import 'package:dsync/app/core_link/models/run_phase.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
@@ -203,5 +208,167 @@ void main() {
         ignore: [],
       ),
     );
+  });
+
+  group('comparing a row', () {
+    wire.SidedView sided(wire.SideView side, int? size) =>
+        wire.SidedView(side: side, size: size == null ? null : n(size));
+
+    Future<FileComparison> compare(wire.ComparisonView view) {
+      final hub = FakeHub()
+        ..reply<wire.CoreCommandCompareRow>(
+          wire.ReplyResultComparison(value: view),
+        );
+      return CoreLink(hub).compareRow(1, const ActionRowRef(0)).reply;
+    }
+
+    wire.ComparisonView compared(wire.ComparedView verdict) =>
+        wire.ComparisonViewCompared(
+          path: 'd/x.txt',
+          oldSide: sided(wire.SideView.b, null),
+          newSide: sided(wire.SideView.a, 0),
+          verdict: verdict,
+        );
+
+    test('every verdict reads as its comparison, with path, sides and '
+        'sizes (no file is null, an empty file is 0)', () async {
+      expect(
+        await compare(const wire.ComparisonViewNotComparable()),
+        isA<NotComparable>(),
+      );
+      final verdicts = <wire.ComparedView, Matcher>{
+        const wire.ComparedViewMedia(): isA<MediaFile>(),
+        wire.ComparedViewTooLarge(
+          side: wire.SideView.a,
+          size: n(7),
+        ): isA<TooLargeFile>()
+            .having((f) => f.side, 'side', ReplicaSide.a)
+            .having((f) => f.size, 'size', 7),
+        const wire.ComparedViewBinary(side: wire.SideView.b): isA<BinaryFile>()
+            .having((f) => f.side, 'side', ReplicaSide.b),
+        const wire.ComparedViewUnreadable(
+          side: wire.SideView.b,
+          message: 'denied',
+        ): isA<UnreadableFile>()
+            .having((f) => f.side, 'side', ReplicaSide.b)
+            .having((f) => f.message, 'message', 'denied'),
+        const wire.ComparedViewIdentical(bytesDiffer: true): isA<SameText>()
+            .having((f) => f.bytesDiffer, 'bytesDiffer', true),
+      };
+      for (final MapEntry(key: verdict, value: matcher) in verdicts.entries) {
+        final read = await compare(compared(verdict));
+        expect(read, matcher, reason: '$verdict');
+        read as ComparedFile;
+        expect(read.path, 'd/x.txt');
+        expect(read.oldSide.side, ReplicaSide.b);
+        expect(read.oldSide.size, isNull);
+        expect(read.newSide.side, ReplicaSide.a);
+        expect(read.newSide.size, 0);
+      }
+    });
+
+    test('hunks keep their blocks, lines and emphasized spans', () async {
+      final read = await compare(
+        compared(
+          const wire.ComparedViewHunks(
+            value: [
+              wire.HunkView(
+                oldStart: 3,
+                newStart: 4,
+                blocks: [
+                  wire.BlockViewSame(value: ['keep']),
+                  wire.BlockViewChanged(
+                    oldLines: [
+                      wire.LineView(
+                        spans: [
+                          wire.SpanView(text: 'a ', emphasized: false),
+                          wire.SpanView(text: 'old', emphasized: true),
+                        ],
+                      ),
+                    ],
+                    newLines: [
+                      wire.LineView(
+                        spans: [wire.SpanView(text: 'new', emphasized: true)],
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+      final hunk = (read as TextChanges).hunks.single;
+      expect(hunk.oldStart, 3);
+      expect(hunk.newStart, 4);
+      final [same, changed] = hunk.blocks;
+      expect((same as SameBlock).lines, ['keep']);
+      final block = changed as ChangedBlock;
+      expect(
+        [
+          for (final span in block.oldLines.single.spans)
+            (span.text, span.emphasized),
+        ],
+        [('a ', false), ('old', true)],
+      );
+      expect(
+        [
+          for (final span in block.newLines.single.spans)
+            (span.text, span.emphasized),
+        ],
+        [('new', true)],
+      );
+    });
+
+    test('an action and a conflict are asked for by their index; cancel '
+        'names the compare\'s own request', () async {
+      final hub = FakeHub()
+        ..reply<wire.CoreCommandCompareRow>(
+          const wire.ReplyResultComparison(
+            value: wire.ComparisonViewNotComparable(),
+          ),
+        );
+      final link = CoreLink(hub);
+      final first = link.compareRow(5, const ActionRowRef(2));
+      final second = link.compareRow(5, const ConflictRowRef(1));
+      await first.reply;
+      await second.reply;
+      await link.cancelCompare(5, second.id);
+
+      final [a, c] = hub.sent<wire.CoreCommandCompareRow>();
+      expect(a.session.toInt(), 5);
+      expect(a.row, const wire.RowRefAction(index: 2));
+      expect(c.row, const wire.RowRefConflict(index: 1));
+      final ids = [
+        for (final r in hub.requests)
+          if (r.command is wire.CoreCommandCompareRow) r.id.toInt(),
+      ];
+      expect(ids, [first.id, second.id]);
+      expect(first.id, isNot(second.id));
+      final cancel = hub.sent<wire.CoreCommandCancelCompare>().single;
+      expect(cancel.session.toInt(), 5);
+      expect(cancel.request.toInt(), second.id);
+      expect(hub.cancelledCompares, [second.id]);
+    });
+
+    test('a held compare, cancelled, fails with cancelled', () async {
+      final hub = FakeHub()..holdCompareUntilCancelled();
+      final link = CoreLink(hub);
+      final compare = link.compareRow(1, const ActionRowRef(0));
+      var settled = false;
+      final failure = compare.reply.then<Object?>(
+        (_) => null,
+        onError: (Object e) => e,
+      )..whenComplete(() => settled = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(settled, isFalse);
+
+      await link.cancelCompare(1, compare.id);
+
+      expect(
+        await failure,
+        isA<CoreFailure>().having((f) => f.message, 'message', 'cancelled'),
+      );
+    });
   });
 }
