@@ -366,10 +366,12 @@ wire.PlanRowView planRow(
   int? reverseBytes,
   wire.ActionChoiceView choice = wire.ActionChoiceView.proposed,
   wire.ResultView? outcome,
+  wire.OfferView offer = const wire.OfferViewNotComparable(),
 }) => wire.PlanRowView(
   proposal: wire.ProposalView(
     action: action,
     reverseBytes: reverseBytes == null ? null : n(reverseBytes),
+    offer: offer,
   ),
   choice: choice,
   outcome: outcome,
@@ -401,9 +403,11 @@ wire.ConflictRowView conflictRow(
   ],
   wire.ConflictChoiceView choice = wire.ConflictChoiceView.unresolved,
   wire.ResultView? outcome,
+  wire.OfferView offer = const wire.OfferViewNotComparable(),
 }) => wire.ConflictRowView(
   conflict: wire.ConflictView(path: path, a: a, b: b, interrupted: false),
   offered: offered,
+  offer: offer,
   choice: choice,
   outcome: outcome,
 );

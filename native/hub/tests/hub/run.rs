@@ -14,7 +14,7 @@ use crate::support::{FoldedRunView, Head, one_entry, read, write};
 
 /// Saves `name` as a local-to-local profile over `a` and `b` under the
 /// head's temp dir, as the CLI would write one.
-fn local_profile(head: &Head, name: &str, a: &str, b: &str) {
+pub(crate) fn local_profile(head: &Head, name: &str, a: &str, b: &str) {
     let local = |leaf: &str| {
         ReplicaLocation::new(
             Location::parse(&head.path_text(leaf), Platform::HOST)
@@ -33,9 +33,9 @@ fn local_profile(head: &Head, name: &str, a: &str, b: &str) {
 
 /// The delete guard's default thresholds, as the head sends them unchanged:
 /// 10 files, 50 percent.
-const GUARD: (u64, u64) = (10, 50);
+pub(crate) const GUARD: (u64, u64) = (10, 50);
 
-fn start(
+pub(crate) fn start(
     name: &str,
     dry_run: bool,
     default_warn_size_bytes: Option<u64>,
@@ -53,7 +53,7 @@ fn start(
     }
 }
 
-fn steer(session: u64, intent: RunIntent) -> CoreCommand {
+pub(crate) fn steer(session: u64, intent: RunIntent) -> CoreCommand {
     CoreCommand::SteerRun { session, intent }
 }
 
@@ -88,12 +88,12 @@ fn stages(views: &[FoldedRunView]) -> Vec<&'static str> {
     stages
 }
 
-fn is(wanted: &'static str) -> impl Fn(&FoldedRunView) -> bool {
+pub(crate) fn is(wanted: &'static str) -> impl Fn(&FoldedRunView) -> bool {
     move |view| stage(view) == wanted
 }
 
 /// The attempt is over: its timings report is in.
-fn ended(view: &FoldedRunView) -> bool {
+pub(crate) fn ended(view: &FoldedRunView) -> bool {
     view.timings.is_some()
 }
 
@@ -111,7 +111,7 @@ fn index(at: usize) -> u32 {
 }
 
 /// Where the plan in `view` has the action on `path`.
-fn row(view: &FoldedRunView, path: &str) -> u32 {
+pub(crate) fn row(view: &FoldedRunView, path: &str) -> u32 {
     let at = view
         .plan
         .iter()

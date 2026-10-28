@@ -14,26 +14,28 @@ mod rows;
 mod sending;
 mod state;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use dsync_core::{
-    BatchDecider, Connector, Decider, DryRunDecider, Peek, PeerDialer, ProfileEvent, ProfileReport,
-    ProfileRun, ProfileStop, Replica, interface_addresses,
+    BatchDecider, Compared, Connector, Decider, DryRunDecider, Peek, PeerDialer, ProfileEvent,
+    ProfileReport, ProfileRun, ProfileStop, Replica, interface_addresses,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
-    Action, Command, EffectiveOptions, Flags, MassDelete, Mode, Plan, ProfileName, RunFlags, Side,
+    Action, Command, Comparison, EffectiveOptions, Flags, MassDelete, Mode, Plan, ProfileName,
+    RunFlags, Side, TextDiff,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::dispatch::{Handled, Hub, text};
+use crate::dispatch::{Handled, Hub, blocking, text};
 use crate::outbox::Outbox;
 use crate::sessions::Session;
-use crate::signals::{ReplyResult, RunIntent, RunTarget};
+use crate::signals::{ReplyResult, RowRef, RunIntent, RunTarget};
 use crate::throttle::{Throttle, Urgency, Verdict};
-use crate::views::millis;
+use crate::views::{ComparedView, ComparisonView, millis};
 
 use rows::Delivered;
 use sending::Sending;
@@ -44,6 +46,13 @@ const EVENT_BUFFER: usize = 256;
 
 /// What a draft run's messages call the profile it has not been saved as.
 const UNSAVED: &str = "unsaved run";
+
+/// A compare's failure when there is no review to serve it: none open, or
+/// it was answered, stopped or ended first.
+const REVIEW_CLOSED: &str = "the review is no longer open";
+
+/// A compare's failure when the head cancelled it.
+const CANCELLED: &str = "cancelled";
 
 impl Hub {
     /// Opens the run session and answers at once: resolving, connecting
@@ -74,7 +83,7 @@ impl Hub {
             out: self.out.clone(),
             wake,
             shared: Mutex::new(Shared {
-                state: RunState::new(dry_run),
+                state: RunState::new(dry_run, self.tuning.peek),
                 stop: None,
                 pending: None,
                 throttle: Throttle::new(),
@@ -96,16 +105,36 @@ impl Hub {
 
     /// What the user did to the run in `session`.
     pub(crate) fn steer_run(&self, session: u64, intent: RunIntent) -> Handled {
-        let control = self
-            .sessions
+        self.run_control(session)?.steer(intent);
+        Ok(ReplyResult::Done)
+    }
+
+    /// `row`'s two files in the review open in `session`, as the review's
+    /// decider reads and diffs them; `request` is this command's id, which
+    /// a [`Hub::cancel_compare`] names.
+    pub(crate) async fn compare_row(&self, request: u64, session: u64, row: RowRef) -> Handled {
+        let control = self.run_control(session)?;
+        let comparing = control.ask_compare(request, row)?;
+        let answer = comparing.answer().await;
+        control.compared(request);
+        answer.map(ReplyResult::Comparison)
+    }
+
+    /// Cancels the compare `request` in `session`'s open review, whether
+    /// or not it was handled yet; with no review open, nothing.
+    pub(crate) fn cancel_compare(&self, session: u64, request: u64) -> Handled {
+        self.run_control(session)?.cancel_compare(request);
+        Ok(ReplyResult::Done)
+    }
+
+    fn run_control(&self, session: u64) -> Result<Arc<RunControl>, String> {
+        self.sessions
             .with(session, |live| match live {
                 Session::Run(control) => Some(control.clone()),
                 Session::Serve(_) | Session::Pairing(_) => None,
             })
             .flatten()
-            .ok_or_else(|| format!("no run in session {session}"))?;
-        control.steer(intent);
-        Ok(ReplyResult::Done)
+            .ok_or_else(|| format!("no run in session {session}"))
     }
 }
 
@@ -242,8 +271,59 @@ enum Wake {
 
 /// Where the answer to the question the decider waits on goes.
 enum Pending {
-    Review(oneshot::Sender<Choices>),
+    /// The review: its answer, the compares asked of the decider while it
+    /// waits, and those compares' cancels. All three go with the review,
+    /// so a compare asked after it is answered, stopped or ended fails.
+    Review {
+        answer: oneshot::Sender<Choices>,
+        compares: mpsc::UnboundedSender<CompareAsk>,
+        cancels: HashMap<u64, Cancel>,
+    },
     Deletes(oneshot::Sender<bool>),
+}
+
+/// A compare the head asked of the review's decider.
+struct CompareAsk {
+    row: RowRef,
+    /// Dropped unanswered when the compare is cancelled or the review
+    /// closes; the decider drops the read when it sees it closed.
+    reply: oneshot::Sender<ComparisonView>,
+}
+
+/// A compare request's cancel. Its command and the cancel are handled on
+/// separate tasks, so either can come first.
+enum Cancel {
+    /// The compare is waiting: firing this fails it.
+    Waiting(oneshot::Sender<()>),
+    /// Cancelled before its compare was handled: the compare fails unasked.
+    Cancelled,
+}
+
+/// A compare asked of the decider, waiting for its answer or its cancel.
+struct Comparing {
+    replied: oneshot::Receiver<ComparisonView>,
+    cancelled: oneshot::Receiver<()>,
+}
+
+impl Comparing {
+    async fn answer(self) -> Result<ComparisonView, String> {
+        tokio::select! {
+            replied = self.replied => replied.map_err(|_| REVIEW_CLOSED.to_owned()),
+            cancelled = self.cancelled => Err(match cancelled {
+                Ok(()) => CANCELLED,
+                Err(_) => REVIEW_CLOSED,
+            }
+            .to_owned()),
+        }
+    }
+}
+
+/// The open review as its decider waits on it.
+struct Reviewing {
+    answer: oneshot::Receiver<Choices>,
+    asks: mpsc::UnboundedReceiver<CompareAsk>,
+    /// Side B's label, to name keep-both copies by.
+    peer_label: String,
 }
 
 struct Shared {
@@ -346,7 +426,7 @@ impl RunControl {
             Steer::Ignored => {}
             Steer::Changed => self.publish(shared, Urgency::Now),
             Steer::Decide(choices) => {
-                if let Some(Pending::Review(answer)) = shared.pending.take() {
+                if let Some(Pending::Review { answer, .. }) = shared.pending.take() {
                     let _ = answer.send(choices);
                 }
                 self.publish(shared, Urgency::Now);
@@ -402,20 +482,70 @@ impl RunControl {
     }
 
     /// `None` when the plan is answered at once, keeping nothing; else the
-    /// head's answer to wait on and side B's label to name its keep-both
-    /// copies by.
-    fn ask_review(self: &Arc<Self>, plan: &Plan) -> Option<(oneshot::Receiver<Choices>, String)> {
+    /// review the decider waits on.
+    fn ask_review(self: &Arc<Self>, plan: &Plan) -> Option<Reviewing> {
         let mut shared = self.lock();
         let asked = match shared.state.review(plan) {
             Review::KeepNothing => None,
             Review::Asked { peer_label } => {
                 let (answer, answered) = oneshot::channel();
-                shared.pending = Some(Pending::Review(answer));
-                Some((answered, peer_label))
+                let (compares, asks) = mpsc::unbounded_channel();
+                shared.pending = Some(Pending::Review {
+                    answer,
+                    compares,
+                    cancels: HashMap::new(),
+                });
+                Some(Reviewing {
+                    answer: answered,
+                    asks,
+                    peer_label,
+                })
             }
         };
         self.publish(shared, Urgency::Now);
         asked
+    }
+
+    /// Asks the open review's decider for `row`'s compare, unless
+    /// `request` was cancelled already. Its cancel is registered in the
+    /// same lock that sends the ask.
+    fn ask_compare(&self, request: u64, row: RowRef) -> Result<Comparing, String> {
+        let mut shared = self.lock();
+        let Some(Pending::Review {
+            compares, cancels, ..
+        }) = &mut shared.pending
+        else {
+            return Err(REVIEW_CLOSED.to_owned());
+        };
+        if let Some(Cancel::Cancelled) = cancels.remove(&request) {
+            return Err(CANCELLED.to_owned());
+        }
+        let (reply, replied) = oneshot::channel();
+        // Fails when the decider is gone - stopped - before the review is
+        // cleared.
+        compares
+            .send(CompareAsk { row, reply })
+            .map_err(|_| REVIEW_CLOSED.to_owned())?;
+        let (cancel, cancelled) = oneshot::channel();
+        cancels.insert(request, Cancel::Waiting(cancel));
+        Ok(Comparing { replied, cancelled })
+    }
+
+    /// Compare `request` answered: its cancel is no longer needed.
+    fn compared(&self, request: u64) {
+        if let Some(Pending::Review { cancels, .. }) = &mut self.lock().pending {
+            cancels.remove(&request);
+        }
+    }
+
+    /// Fails compare `request` if it waits; else marks it cancelled, so it
+    /// fails unasked if it comes later.
+    fn cancel_compare(&self, request: u64) {
+        if let Some(Pending::Review { cancels, .. }) = &mut self.lock().pending
+            && let Some(Cancel::Waiting(cancel)) = cancels.insert(request, Cancel::Cancelled)
+        {
+            let _ = cancel.send(());
+        }
     }
 
     fn ask_deletes(self: &Arc<Self>, verdict: &MassDelete) -> Asked<bool> {
@@ -479,6 +609,7 @@ async fn attempt(control: &Arc<RunControl>, hub: &Hub, launch: &Launch) {
     );
     let mut head = HeadDecider {
         control: control.clone(),
+        diff_deadline: hub.tuning.peek.diff_deadline,
     };
     // The connect seam is written inline in each call: bound to a `let`,
     // the closure's lifetime is inferred too general to compile.
@@ -536,19 +667,53 @@ async fn forward(control: &Arc<RunControl>, mut events: mpsc::Receiver<ProfileEv
 /// session gone before it answers keeps nothing and confirms nothing.
 struct HeadDecider {
     control: Arc<RunControl>,
+    /// How long a compare's line diff may take: the hub's, as its runs'
+    /// peeks' read cap.
+    diff_deadline: Duration,
 }
 
 impl Decider for HeadDecider {
+    /// Waits for the head's answer, serving the review's compares one at
+    /// a time meanwhile: here, because the peek borrows the run's replicas
+    /// for this call alone. The answer is never held up by a read - it
+    /// drops the one in flight, as a cancelled compare does.
     async fn decide<A: Replica, B: Replica>(
         &mut self,
         plan: &Plan,
-        _: Peek<'_, A, B>,
+        peek: Peek<'_, A, B>,
     ) -> Vec<Action> {
-        let Some((answer, peer_label)) = self.control.ask_review(plan) else {
+        let Some(Reviewing {
+            mut answer,
+            mut asks,
+            peer_label,
+        }) = self.control.ask_review(plan)
+        else {
             return Vec::new();
         };
-        answer
-            .await
+        let answered = loop {
+            let mut ask = tokio::select! {
+                biased;
+                answered = &mut answer => break answered,
+                ask = asks.recv() => match ask {
+                    Some(ask) => ask,
+                    // The review is gone, its answer with it.
+                    None => break answer.await,
+                },
+            };
+            if ask.reply.is_closed() {
+                continue;
+            }
+            let served = tokio::select! {
+                biased;
+                answered = &mut answer => break answered,
+                () = ask.reply.closed() => None,
+                view = compare(plan, ask.row, peek, self.diff_deadline) => view,
+            };
+            if let Some(view) = served {
+                let _ = ask.reply.send(view);
+            }
+        };
+        answered
             .unwrap_or_else(|_| Choices::none())
             .actions(plan, &peer_label)
     }
@@ -559,6 +724,49 @@ impl Decider for HeadDecider {
             Asked::Waiting(answer) => answer.await.unwrap_or(false),
         }
     }
+}
+
+/// `row`'s two files in `plan`, read by `peek` and diffed within
+/// `deadline`; `None` when the runtime shut down mid-diff.
+async fn compare<A: Replica, B: Replica>(
+    plan: &Plan,
+    row: RowRef,
+    peek: Peek<'_, A, B>,
+    deadline: Duration,
+) -> Option<ComparisonView> {
+    let comparison = match row {
+        RowRef::Action { index } => usize::try_from(index)
+            .ok()
+            .and_then(|at| plan.actions.get(at))
+            .and_then(Comparison::of_proposal),
+        RowRef::Conflict { index } => usize::try_from(index)
+            .ok()
+            .and_then(|at| plan.conflicts.get(at))
+            .and_then(Comparison::of_conflict),
+    };
+    let Some(comparison) = comparison else {
+        return Some(ComparisonView::NotComparable);
+    };
+    let verdict = match peek.compare(&comparison).await {
+        Compared::Media => ComparedView::Media,
+        Compared::TooLarge { side, size } => ComparedView::TooLarge {
+            side: side.into(),
+            size,
+        },
+        Compared::Binary { side } => ComparedView::Binary { side: side.into() },
+        Compared::Unreadable { side, message } => ComparedView::Unreadable {
+            side: side.into(),
+            message,
+        },
+        Compared::Texts { old, new } => {
+            let diff =
+                blocking(move || Ok(TextDiff::between(old.as_ref(), new.as_ref(), deadline)))
+                    .await
+                    .ok()?;
+            ComparedView::from(&diff)
+        }
+    };
+    Some(ComparisonView::of(&comparison, verdict))
 }
 
 #[cfg(test)]
@@ -587,7 +795,7 @@ mod tests {
             out,
             wake,
             shared: Mutex::new(Shared {
-                state: RunState::new(false),
+                state: RunState::new(false, Tuning::DEFAULT.peek),
                 stop: None,
                 pending: None,
                 throttle: Throttle::new(),

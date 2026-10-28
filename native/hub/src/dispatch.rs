@@ -40,6 +40,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
 pub struct Core {
     facts: HostFacts,
     out: Outbox,
+    tuning: Tuning,
     hub: Mutex<Option<Arc<Hub>>>,
 }
 
@@ -47,9 +48,16 @@ impl Core {
     /// `facts` are this process's, read once by the shell; stream signals
     /// go to `out`.
     pub fn new(facts: HostFacts, out: Outbox) -> Core {
+        Core::with_tuning(facts, out, Tuning::DEFAULT)
+    }
+
+    /// As [`Core::new`], every run and connection tuned by `tuning`: the
+    /// one source of the hub's limits.
+    pub fn with_tuning(facts: HostFacts, out: Outbox, tuning: Tuning) -> Core {
         Core {
             facts,
             out,
+            tuning,
             hub: Mutex::new(None),
         }
     }
@@ -98,7 +106,7 @@ impl Core {
             state,
             profiles,
             device_name,
-            tuning: Tuning::DEFAULT,
+            tuning: self.tuning,
             out: self.out.clone(),
             sessions: Sessions::default(),
         };
@@ -179,6 +187,10 @@ impl Hub {
                 (mass_delete_min_files, mass_delete_percent),
             ),
             CoreCommand::SteerRun { session, intent } => self.steer_run(session, intent),
+            CoreCommand::CompareRow { session, row } => self.compare_row(id, session, row).await,
+            CoreCommand::CancelCompare { session, request } => {
+                self.cancel_compare(session, request)
+            }
             CoreCommand::StartServe { bind, port } => self.start_serve(id, &bind, port).await,
             CoreCommand::StopServe { session } => self.stop_serve(session),
             CoreCommand::ServeAddresses => Ok(self.serve_addresses()),

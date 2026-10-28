@@ -22,9 +22,9 @@ use rinf::{DartSignal, RustSignal, SignalPiece};
 use serde::{Deserialize, Serialize};
 
 use crate::views::{
-    ActionChoiceView, AddressesView, ArchiveView, ConflictChoiceView, DeviceView, DirsView,
-    FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingView, ProbeOutcome,
-    ProfileEntry, RootKindView, RunView, ServeStartedView, ServeView,
+    ActionChoiceView, AddressesView, ArchiveView, ComparisonView, ConflictChoiceView, DeviceView,
+    DirsView, FilterPreviewView, FilterRowView, IdentityView, PairCodeView, PairingView,
+    ProbeOutcome, ProfileEntry, RootKindView, RunView, ServeStartedView, ServeView,
 };
 
 /// Dart asks the core for one thing. Answered by one [`CoreReply`] with
@@ -163,6 +163,23 @@ pub enum CoreCommand {
         session: u64,
         intent: RunIntent,
     },
+    /// The two files of `row` in the review open in `session`, set against
+    /// each other: answered `Comparison`, or `Failed` when no review is
+    /// open (or it closes first) or the compare is cancelled. One at a
+    /// time per review: a second waits for the first. The row is named by
+    /// its index in whichever review is open when the compare is served,
+    /// never by a path.
+    CompareRow {
+        session: u64,
+        row: RowRef,
+    },
+    /// Drops the `CompareRow` with request id `request`: its read stops,
+    /// and it answers `Failed` "cancelled". Sent before that request is
+    /// handled, it still cancels it. Answered `Done`, a review open or not.
+    CancelCompare {
+        session: u64,
+        request: u64,
+    },
 
     /// Serves paired devices on `bind:port`: session id = request id.
     StartServe {
@@ -269,6 +286,13 @@ pub enum RunIntent {
     Close,
 }
 
+/// A review row, by its index among the plan's actions or its conflicts.
+#[derive(Clone, Copy, Deserialize, SignalPiece)]
+pub enum RowRef {
+    Action { index: u32 },
+    Conflict { index: u32 },
+}
+
 /// The answer to the [`CoreRequest`] with the same `id`.
 #[derive(Serialize, RustSignal)]
 pub struct CoreReply {
@@ -296,6 +320,7 @@ pub enum ReplyResult {
     Archives(Vec<ArchiveView>),
     FilterPreview(FilterPreviewView),
     FilterFolder(Vec<FilterRowView>),
+    Comparison(ComparisonView),
     /// `None`: the folder is usable.
     FolderChecked {
         refusal: Option<String>,

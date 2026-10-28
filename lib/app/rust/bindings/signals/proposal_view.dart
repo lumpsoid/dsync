@@ -2,12 +2,14 @@
 part of 'signals.dart';
 
 /// A planned action and, when it can be put the other way, the bytes that
-/// reversal would copy (`None`: no reverse is offered).
+/// reversal would copy (`None`: no reverse is offered); `offer`: whether
+/// its two files can be compared.
 @immutable
 class ProposalView {
   const ProposalView({
     required this.action,
     this.reverseBytes,
+    required this.offer,
   });
 
   static ProposalView deserialize(BinaryDeserializer deserializer) {
@@ -15,6 +17,7 @@ class ProposalView {
     final instance = ProposalView(
       action: ActionView.deserialize(deserializer),
       reverseBytes: TraitHelpers.deserializeOptionU64(deserializer),
+      offer: OfferView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -31,14 +34,17 @@ class ProposalView {
 
   final ActionView action;
   final Uint64? reverseBytes;
+  final OfferView offer;
 
   ProposalView copyWith({
     ActionView? action,
     Uint64? Function()? reverseBytes,
+    OfferView? offer,
   }) {
     return ProposalView(
       action: action ?? this.action,
       reverseBytes: reverseBytes == null ? this.reverseBytes : reverseBytes(),
+      offer: offer ?? this.offer,
     );
   }
 
@@ -46,6 +52,7 @@ class ProposalView {
     serializer.increaseContainerDepth();
     action.serialize(serializer);
     TraitHelpers.serializeOptionU64(reverseBytes, serializer);
+    offer.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -62,13 +69,15 @@ class ProposalView {
 
     return other is ProposalView
       && action == other.action
-      && reverseBytes == other.reverseBytes;
+      && reverseBytes == other.reverseBytes
+      && offer == other.offer;
   }
 
   @override
   int get hashCode => Object.hash(
         action,
         reverseBytes,
+        offer,
       );
 
   @override
@@ -78,7 +87,8 @@ class ProposalView {
     assert(() {
       fullString = '$runtimeType('
         'action: $action, '
-        'reverseBytes: $reverseBytes'
+        'reverseBytes: $reverseBytes, '
+        'offer: $offer'
         ')';
       return true;
     }());

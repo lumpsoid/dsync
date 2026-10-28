@@ -24,7 +24,8 @@ abstract class ReplyResult {
       case 11: return ReplyResultArchives.load(deserializer);
       case 12: return ReplyResultFilterPreview.load(deserializer);
       case 13: return ReplyResultFilterFolder.load(deserializer);
-      case 14: return ReplyResultFolderChecked.load(deserializer);
+      case 14: return ReplyResultComparison.load(deserializer);
+      case 15: return ReplyResultFolderChecked.load(deserializer);
       default: throw Exception('Unknown variant index for ReplyResult: ' + index.toString());
     }
   }
@@ -858,6 +859,65 @@ class ReplyResultFilterFolder extends ReplyResult {
 }
 
 @immutable
+class ReplyResultComparison extends ReplyResult {
+  const ReplyResultComparison({
+    required this.value,
+  }) : super();
+
+  static ReplyResultComparison load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = ReplyResultComparison(
+      value: ComparisonView.deserialize(deserializer),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final ComparisonView value;
+
+  ReplyResultComparison copyWith({
+    ComparisonView? value,
+  }) {
+    return ReplyResultComparison(
+      value: value ?? this.value,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(14);
+    value.serialize(serializer);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is ReplyResultComparison
+      && value == other.value;
+  }
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'value: $value'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'ReplyResultComparison';
+  }
+}
+
+@immutable
 class ReplyResultFolderChecked extends ReplyResult {
   const ReplyResultFolderChecked({
     this.refusal,
@@ -884,7 +944,7 @@ class ReplyResultFolderChecked extends ReplyResult {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(14);
+    serializer.serializeVariantIndex(15);
     TraitHelpers.serializeOptionStr(refusal, serializer);
     serializer.decreaseContainerDepth();
   }

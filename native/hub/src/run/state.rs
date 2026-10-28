@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use dsync_core::{EntryFailure, EntryOutcome, ProfileEvent, RunEvent, SkipReason};
 use dsync_domain::{
-    Action, MassDelete, Plan, RelPath, ReplicaInfo, RootKind, RunSummary, ScanTally, Side,
-    SideDeletes, SkippedPath, Status,
+    Action, MassDelete, PeekLimits, Plan, RelPath, ReplicaInfo, RootKind, RunSummary, ScanTally,
+    Side, SideDeletes, SkippedPath, Status,
 };
 
 use super::rows::{Delivered, Outcomes, PlanRows};
@@ -307,6 +307,8 @@ struct EntryRunState {
 struct EntryState {
     /// The size its plan warns above.
     warn_size_bytes: Option<u64>,
+    /// What its rows' compares are judged by.
+    peek: PeekLimits,
     /// The head declined the delete guard's deletions.
     declined: bool,
     /// The run's summary, once reported; what a lone entry ends as is
@@ -333,9 +335,10 @@ struct EntryState {
 }
 
 impl EntryState {
-    fn new(warn_size_bytes: Option<u64>) -> EntryState {
+    fn new(warn_size_bytes: Option<u64>, peek: PeekLimits) -> EntryState {
         EntryState {
             warn_size_bytes,
+            peek,
             declined: false,
             summary: None,
             failure: None,
@@ -358,7 +361,7 @@ impl EntryState {
         if let Some(taken) = &self.plan {
             return taken.clone();
         }
-        let taken = Arc::new(PlanRows::of(plan, self.warn_size_bytes));
+        let taken = Arc::new(PlanRows::of(plan, self.warn_size_bytes, &self.peek));
         self.choices = Choices::as_planned(&taken);
         self.outcomes = Arc::new(Outcomes::over(&taken));
         self.plan = Some(taken.clone());
@@ -432,6 +435,9 @@ impl EntryState {
 /// the head steered it.
 pub(crate) struct RunState {
     dry_run: bool,
+    /// What a review row's compare is judged by: the hub's, which its
+    /// runs' peeks read by.
+    peek: PeekLimits,
     phase: Phase,
     suspend: Option<Suspend>,
     /// The page left: the session ends with its attempt.
@@ -446,17 +452,19 @@ pub(crate) struct RunState {
 }
 
 impl RunState {
-    /// A session's first attempt, connecting.
-    pub(crate) fn new(dry_run: bool) -> RunState {
+    /// A session's first attempt, connecting; its rows' compares judged
+    /// by `peek`.
+    pub(crate) fn new(dry_run: bool, peek: PeekLimits) -> RunState {
         RunState {
             dry_run,
+            peek,
             phase: Phase::Connecting,
             suspend: None,
             closing: false,
             entries: Vec::new(),
             current: None,
             completed_earlier: 0,
-            entry: EntryState::new(None),
+            entry: EntryState::new(None, peek),
             timings: None,
         }
     }
@@ -474,7 +482,7 @@ impl RunState {
         *self = RunState {
             closing: self.closing,
             entries,
-            ..RunState::new(self.dry_run)
+            ..RunState::new(self.dry_run, self.peek)
         };
     }
 
@@ -532,7 +540,7 @@ impl RunState {
                     .entries
                     .get(entry)
                     .and_then(|listed| listed.roots.warn_size_bytes);
-                self.entry = EntryState::new(warn_size_bytes);
+                self.entry = EntryState::new(warn_size_bytes, self.peek);
                 self.current = Some(entry);
                 self.phase = Phase::Connecting;
                 if let Some(listed) = self.entries.get_mut(entry) {
@@ -941,7 +949,7 @@ mod tests {
     use dsync_domain::{
         Action, Conflict, ContentHash, FileMeta, FileState, MassDelete, MassDeletePolicy,
         MissingReplicaRoot, Plan, Proposal, RelPath, ReplicaInfo, ReplicaRoot, RunSummary,
-        ScanTally, Side, Status,
+        ScanTally, Side, Status, Tuning,
     };
 
     use super::{Choices, Delivered, EntryRoots, Review, RunState, Steer};
@@ -1034,7 +1042,7 @@ mod tests {
 
     /// A state running its one entry, connected.
     fn running() -> RunState {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(1));
         state.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
         state.connected(1);
@@ -1132,7 +1140,7 @@ mod tests {
 
     #[test]
     fn a_session_starts_connecting_then_scans_once_both_sides_answer() {
-        let mut state = RunState::new(true);
+        let mut state = RunState::new(true, Tuning::DEFAULT.peek);
         let view = state.view();
         assert!(view.dry_run);
         assert!(matches!(view.phase, RunPhaseView::Connecting));
@@ -1150,7 +1158,7 @@ mod tests {
         let plan = plan();
         let bytes = plan.bytes_to_transfer();
         let exceeded = |warn_size_bytes| {
-            let mut state = RunState::new(false);
+            let mut state = RunState::new(false, Tuning::DEFAULT.peek);
             let mut listed = roots(1);
             listed[0].warn_size_bytes = warn_size_bytes;
             state.listed(listed);
@@ -1375,7 +1383,7 @@ mod tests {
 
     #[test]
     fn the_delete_guard_asks_once_and_a_decline_reads_as_the_head_s_choice() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.connected(1);
         let verdict = emptied_b();
         assert_eq!(state.ask_deletes(&verdict), None);
@@ -1400,7 +1408,7 @@ mod tests {
 
     #[test]
     fn confirming_the_deletes_moves_on_to_applying() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.connected(1);
         state.ask_deletes(&emptied_b());
         assert_eq!(
@@ -1441,7 +1449,7 @@ mod tests {
 
     #[test]
     fn a_summary_finishes_the_run_for_good() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.connected(1);
         state.event(summary(3));
         assert!(
@@ -1510,7 +1518,7 @@ mod tests {
 
     #[test]
     fn coming_back_resumes_only_a_paused_run_and_resume_any_failed_one() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         assert_eq!(state.unprepared("no profile".to_owned()), Urgency::Now);
         assert!(matches!(
             phase(&state),
@@ -1523,7 +1531,7 @@ mod tests {
 
     #[test]
     fn an_attempt_ends_as_its_failure_or_with_no_summary_as_that() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.connected(1);
         state.event(summary(1));
         state.event(RunEvent::Error(RunError::DeletesNotConfirmed(emptied_b())));
@@ -1531,7 +1539,7 @@ mod tests {
         assert!(matches!(phase(&state), RunPhaseView::Failed { .. }));
         assert_eq!(state.view().timings.as_deref(), Some("run: 1s"));
 
-        let mut silent = RunState::new(false);
+        let mut silent = RunState::new(false, Tuning::DEFAULT.peek);
         silent.connected(1);
         silent.ended(ran());
         assert!(matches!(phase(&silent), RunPhaseView::NoSummary));
@@ -1540,7 +1548,7 @@ mod tests {
 
     #[test]
     fn an_attempt_that_never_connected_is_failed_or_suspended() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(1));
         not_connected(&mut state, 0);
         state.ended(None);
@@ -1549,7 +1557,7 @@ mod tests {
             RunPhaseView::Failed { ref message } if message.starts_with("replica b:")
         ));
         assert_eq!(state.view().timings, None);
-        let mut stopped = RunState::new(false);
+        let mut stopped = RunState::new(false, Tuning::DEFAULT.peek);
         stopped.listed(roots(1));
         stopped.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
         stopped.steer(RunIntent::Pause);
@@ -1567,7 +1575,7 @@ mod tests {
 
     #[test]
     fn the_view_says_whether_the_run_is_live_resumable_or_over() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         assert_eq!(standing(&state), RunStandingView::Live, "connecting");
         state.connected(1);
         state.steer(RunIntent::Pause);
@@ -1580,7 +1588,7 @@ mod tests {
         state.ended(None);
         assert_eq!(standing(&state), RunStandingView::Resumable, "failed");
 
-        let mut done = RunState::new(false);
+        let mut done = RunState::new(false, Tuning::DEFAULT.peek);
         done.connected(1);
         done.event(summary(1));
         done.ended(ran());
@@ -1598,7 +1606,7 @@ mod tests {
     }
 
     fn history(a: Option<u64>, b: Option<u64>) -> HistoryView {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.event(RunEvent::Replicas {
             a: replica(a),
             b: replica(b),
@@ -1645,7 +1653,7 @@ mod tests {
             deleted: 3,
             ..ScanTally::default()
         };
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.event(RunEvent::ScanTally { a, b });
         let tally = state.view().tally.unwrap_or_else(|| panic!("tally"));
         assert_eq!((tally.a.total, tally.a.changed), (12, 3));
@@ -1670,7 +1678,7 @@ mod tests {
         let view = reviewing(&plan).view();
         let summary = &view.plan.new_plan().summary;
         assert_eq!((summary.bytes_to_a, summary.bytes_to_b), (7, 2));
-        let before = RunState::new(false).view().plan;
+        let before = RunState::new(false, Tuning::DEFAULT.peek).view().plan;
         assert!(matches!(before, PlanUpdateView::Absent), "no plan yet");
     }
 
@@ -1848,7 +1856,7 @@ mod tests {
     #[test]
     fn a_new_entry_drops_the_plan_and_sends_its_own_whole() {
         let plan = plan();
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(3));
         start(&mut state, 0);
         state.review(&plan);
@@ -2026,7 +2034,7 @@ mod tests {
         assert!(state.is_over());
         assert_eq!(state.steer(RunIntent::Resume), Steer::Ignored);
 
-        let mut idle = RunState::new(false);
+        let mut idle = RunState::new(false, Tuning::DEFAULT.peek);
         idle.unprepared("no profile".to_owned());
         assert_eq!(idle.steer(RunIntent::Close), Steer::End);
         assert!(idle.is_over());
@@ -2070,7 +2078,7 @@ mod tests {
 
     #[test]
     fn a_skipped_entry_leaves_the_session_live_and_it_ends_with_that_issue() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(2));
         let mut seen = vec![state.view()];
         start(&mut state, 0);
@@ -2117,7 +2125,7 @@ mod tests {
 
     #[test]
     fn a_lone_entry_that_is_skipped_fails_as_its_run_did() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(1));
         start(&mut state, 0);
         state.event(RunEvent::Error(RunError::MissingRoot(missing())));
@@ -2132,7 +2140,7 @@ mod tests {
 
     #[test]
     fn every_entry_synced_finishes_over_all_their_summaries() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(2));
         for (entry, applied) in [(0, 2), (1, 3)] {
             start(&mut state, entry);
@@ -2153,7 +2161,7 @@ mod tests {
 
     #[test]
     fn the_first_entry_unreachable_with_none_run_after_fails_as_a_lone_one_would() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(2));
         not_connected(&mut state, 0);
         finish(&mut state, 1, EntryOutcome::NotRun);
@@ -2167,7 +2175,7 @@ mod tests {
 
     #[test]
     fn a_resume_after_a_pause_runs_every_entry_again_from_the_first() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(2));
         start(&mut state, 0);
         state.event(RunEvent::Progress {
@@ -2206,7 +2214,7 @@ mod tests {
 
     #[test]
     fn the_review_s_intents_apply_to_the_running_entry_s_plan() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(2));
         start(&mut state, 0);
         let first = Plan {
@@ -2250,7 +2258,7 @@ mod tests {
                 Err(ActionFailure::NoSource { side: Side::A })
             },
         };
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(2));
         start(&mut state, 0);
         state.event(result("same.txt", true));
@@ -2265,7 +2273,7 @@ mod tests {
 
     #[test]
     fn a_stop_while_the_second_entry_connects_ends_the_session_stopped() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(2));
         start(&mut state, 0);
         state.event(RunEvent::Progress {
@@ -2290,7 +2298,7 @@ mod tests {
 
     #[test]
     fn a_plan_with_no_entry_running_is_answered_with_nothing() {
-        let mut state = RunState::new(false);
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.connected(1);
         assert_eq!(state.review(&plan()), Review::KeepNothing);
         assert!(matches!(phase(&state), RunPhaseView::Applying));

@@ -7,10 +7,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dsync_core::{ActionFailure, Certificate, DeviceIdentity, PairedDevice, StoredArchive};
 use dsync_domain::{
-    Action, CertificateExpiry, CertificateOwner, Conflict, EntryKind, FilterFolderRow,
-    FilterPreviewFolder, FilterPreviewReport, Plan, Proposal, ReplicaInfo, ReplicaRoot, RootKind,
-    RunSummary, ScanTally, Side, SideDeletes, SkippedAt, SkippedPath, SkippedReason, Status,
-    Unchanged,
+    Action, Block, CertificateExpiry, CertificateOwner, Comparison, Conflict, EntryKind,
+    FilterFolderRow, FilterPreviewFolder, FilterPreviewReport, Hunk, Line, Offer, PeekLimits, Plan,
+    Proposal, ReplicaInfo, ReplicaRoot, RootKind, RunSummary, ScanTally, Side, SideDeletes, Sided,
+    SkippedAt, SkippedPath, SkippedReason, Span, Status, TextDiff, Unchanged,
 };
 use rinf::SignalPiece;
 use serde::{Deserialize, Serialize};
@@ -601,18 +601,198 @@ impl From<&Action> for ActionView {
 }
 
 /// A planned action and, when it can be put the other way, the bytes that
-/// reversal would copy (`None`: no reverse is offered).
+/// reversal would copy (`None`: no reverse is offered); `offer`: whether
+/// its two files can be compared.
 #[derive(Clone, Serialize, SignalPiece)]
 pub struct ProposalView {
     pub action: ActionView,
     pub reverse_bytes: Option<u64>,
+    pub offer: OfferView,
 }
 
-impl From<&Proposal> for ProposalView {
-    fn from(proposal: &Proposal) -> ProposalView {
+impl ProposalView {
+    /// `proposal`, its compare judged by `limits`.
+    pub fn of(proposal: &Proposal, limits: &PeekLimits) -> ProposalView {
         ProposalView {
             action: ActionView::from(&proposal.action),
             reverse_bytes: proposal.reversed().as_ref().map(Action::bytes),
+            offer: OfferView::of(Comparison::of_proposal(proposal).as_ref(), limits),
+        }
+    }
+}
+
+/// What a review row's compare would give, known before a byte is read:
+/// nothing to compare (a delete, a commit-only, a copy aside, a conflict
+/// with no file on either side), the two texts, a media file left unread,
+/// or `side`'s file over the read cap at `size` bytes.
+#[derive(Clone, Copy, Serialize, SignalPiece)]
+pub enum OfferView {
+    NotComparable,
+    Readable,
+    Media,
+    TooLarge { side: SideView, size: u64 },
+}
+
+impl OfferView {
+    pub fn of(comparison: Option<&Comparison>, limits: &PeekLimits) -> OfferView {
+        match comparison.map(|comparison| comparison.offer(limits)) {
+            None => OfferView::NotComparable,
+            Some(Offer::Readable) => OfferView::Readable,
+            Some(Offer::Media) => OfferView::Media,
+            Some(Offer::TooLarge { side, size }) => OfferView::TooLarge {
+                side: side.into(),
+                size,
+            },
+        }
+    }
+}
+
+/// A review row's two files set against each other (the diff page), or
+/// `NotComparable` when the row has none to compare - no such row in the
+/// open review, or one whose offer is [`OfferView::NotComparable`].
+/// `old_side`/`new_side` (and [`BlockView`]'s `old_lines`/`new_lines`),
+/// not the domain's `old`/`new`: `new` is a Dart keyword.
+#[derive(Serialize, SignalPiece)]
+pub enum ComparisonView {
+    NotComparable,
+    Compared {
+        path: String,
+        old_side: SidedView,
+        new_side: SidedView,
+        verdict: ComparedView,
+    },
+}
+
+impl ComparisonView {
+    pub fn of(comparison: &Comparison, verdict: ComparedView) -> ComparisonView {
+        ComparisonView::Compared {
+            path: comparison.path.to_string(),
+            old_side: comparison.old.into(),
+            new_side: comparison.new.into(),
+            verdict,
+        }
+    }
+}
+
+/// One side of a compared path; `size` is `None` when that side has no
+/// file (an empty file is `Some(0)`).
+#[derive(Clone, Copy, Serialize, SignalPiece)]
+pub struct SidedView {
+    pub side: SideView,
+    pub size: Option<u64>,
+}
+
+impl From<Sided> for SidedView {
+    fn from(sided: Sided) -> SidedView {
+        SidedView {
+            side: sided.side.into(),
+            size: sided.size,
+        }
+    }
+}
+
+/// What the compare found: left unread (media, over the cap), unreadable
+/// as text (binary, a failed read), or both texts' line diff - the same
+/// text, or the hunks that differ.
+#[derive(Serialize, SignalPiece)]
+pub enum ComparedView {
+    Media,
+    TooLarge {
+        side: SideView,
+        size: u64,
+    },
+    Binary {
+        side: SideView,
+    },
+    Unreadable {
+        side: SideView,
+        message: String,
+    },
+    /// `bytes_differ`: only line endings, a final newline or a BOM differ.
+    Identical {
+        bytes_differ: bool,
+    },
+    Hunks(Vec<HunkView>),
+}
+
+impl From<&TextDiff> for ComparedView {
+    fn from(diff: &TextDiff) -> ComparedView {
+        match diff {
+            TextDiff::Identical { bytes_differ } => ComparedView::Identical {
+                bytes_differ: *bytes_differ,
+            },
+            TextDiff::Hunks(hunks) => {
+                ComparedView::Hunks(hunks.iter().map(HunkView::from).collect())
+            }
+        }
+    }
+}
+
+/// A run of changes with their context; the starts are 1-based line
+/// numbers, as [`Hunk`]'s.
+#[derive(Serialize, SignalPiece)]
+pub struct HunkView {
+    pub old_start: u32,
+    pub new_start: u32,
+    pub blocks: Vec<BlockView>,
+}
+
+impl From<&Hunk> for HunkView {
+    fn from(hunk: &Hunk) -> HunkView {
+        HunkView {
+            old_start: hunk.old_start,
+            new_start: hunk.new_start,
+            blocks: hunk.blocks.iter().map(BlockView::from).collect(),
+        }
+    }
+}
+
+#[derive(Serialize, SignalPiece)]
+pub enum BlockView {
+    Same(Vec<String>),
+    Changed {
+        old_lines: Vec<LineView>,
+        new_lines: Vec<LineView>,
+    },
+}
+
+impl From<&Block> for BlockView {
+    fn from(block: &Block) -> BlockView {
+        let lines = |lines: &[Line]| lines.iter().map(LineView::from).collect();
+        match block {
+            Block::Same(lines) => BlockView::Same(lines.clone()),
+            Block::Changed { old, new } => BlockView::Changed {
+                old_lines: lines(old),
+                new_lines: lines(new),
+            },
+        }
+    }
+}
+
+#[derive(Serialize, SignalPiece)]
+pub struct LineView {
+    pub spans: Vec<SpanView>,
+}
+
+impl From<&Line> for LineView {
+    fn from(line: &Line) -> LineView {
+        LineView {
+            spans: line.spans.iter().map(SpanView::from).collect(),
+        }
+    }
+}
+
+#[derive(Serialize, SignalPiece)]
+pub struct SpanView {
+    pub text: String,
+    pub emphasized: bool,
+}
+
+impl From<&Span> for SpanView {
+    fn from(span: &Span) -> SpanView {
+        SpanView {
+            text: span.text.clone(),
+            emphasized: span.emphasized,
         }
     }
 }
@@ -982,6 +1162,8 @@ pub struct PlanRowView {
 pub struct ConflictRowView {
     pub conflict: ConflictView,
     pub offered: Vec<ConflictChoiceView>,
+    /// Whether its two sides' files can be compared.
+    pub offer: OfferView,
     pub choice: ConflictChoiceView,
     pub outcome: Option<ResultView>,
 }

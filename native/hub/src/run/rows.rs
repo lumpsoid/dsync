@@ -5,12 +5,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dsync_domain::{Conflict, Plan, RelPath, Side};
+use dsync_domain::{Comparison, Conflict, PeekLimits, Plan, RelPath, Side};
 
 use crate::views::{
     ActionChoiceView, ActionRowUpdateView, ConflictChoiceView, ConflictRowUpdateView,
-    ConflictRowView, ConflictView, PlanRowView, PlanSummaryView, PlanUpdateView, PlanView,
-    ProposalView, ResultView,
+    ConflictRowView, ConflictView, OfferView, PlanRowView, PlanSummaryView, PlanUpdateView,
+    PlanView, ProposalView, ResultView,
 };
 
 use super::state::Choices;
@@ -22,10 +22,12 @@ enum Row {
     Conflict(usize),
 }
 
-/// A conflict as shown, and what it can be settled as.
+/// A conflict as shown, what it can be settled as, and whether its two
+/// files can be compared.
 struct ConflictRow {
     conflict: ConflictView,
     offered: Vec<ConflictChoiceView>,
+    offer: OfferView,
 }
 
 /// A taken plan's rows, in its order.
@@ -40,8 +42,10 @@ pub(super) struct PlanRows {
 }
 
 impl PlanRows {
-    /// `plan`'s rows, warning when it moves more than `warn_size_bytes`.
-    pub(super) fn of(plan: &Plan, warn_size_bytes: Option<u64>) -> PlanRows {
+    /// `plan`'s rows, warning when it moves more than `warn_size_bytes`,
+    /// each row's compare judged by `limits` - the very limits the run's
+    /// peek reads by, so a row never offers a compare the read refuses.
+    pub(super) fn of(plan: &Plan, warn_size_bytes: Option<u64>, limits: &PeekLimits) -> PlanRows {
         let actions = plan
             .actions
             .iter()
@@ -53,13 +57,18 @@ impl PlanRows {
             .enumerate()
             .map(|(at, conflict)| (conflict.path.clone(), Row::Conflict(at)));
         PlanRows {
-            proposals: plan.actions.iter().map(ProposalView::from).collect(),
+            proposals: plan
+                .actions
+                .iter()
+                .map(|proposal| ProposalView::of(proposal, limits))
+                .collect(),
             conflicts: plan
                 .conflicts
                 .iter()
                 .map(|conflict| ConflictRow {
                     conflict: ConflictView::from(conflict),
                     offered: conflict_offers(conflict),
+                    offer: OfferView::of(Comparison::of_conflict(conflict).as_ref(), limits),
                 })
                 .collect(),
             rows: actions.chain(conflicts).collect(),
@@ -141,6 +150,7 @@ impl PlanRows {
             .map(|(at, row)| ConflictRowView {
                 conflict: row.conflict.clone(),
                 offered: row.offered.clone(),
+                offer: row.offer,
                 choice: choices.conflict(at),
                 outcome: shown(&outcomes.conflicts, at),
             })
@@ -289,4 +299,109 @@ impl PlanRows {
 
 fn index_view(at: usize) -> u32 {
     u32::try_from(at).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use dsync_domain::{
+        Action, Conflict, ContentHash, FileMeta, FileState, PeekLimits, Plan, Proposal, RelPath,
+        RootKind, Side, Status,
+    };
+
+    use super::{Choices, Outcomes, PlanRows};
+    use crate::views::{OfferView, SideView};
+
+    const LIMITS: PeekLimits = PeekLimits {
+        max_bytes: 100,
+        diff_deadline: Duration::from_millis(200),
+    };
+
+    fn path(text: &str) -> RelPath {
+        RelPath::parse(text).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn copy(name: &str, bytes: u64) -> Proposal {
+        Proposal {
+            action: Action::Copy {
+                path: path(name),
+                from: Side::A,
+                bytes,
+            },
+            reverse_bytes: Some(bytes),
+        }
+    }
+
+    fn modified(size: u64) -> Option<Status> {
+        Some(Status::Modified(FileState {
+            meta: FileMeta {
+                size,
+                mtime_us: 1,
+                mode: 0o644,
+            },
+            hash: ContentHash::from_digest([1; 32]),
+        }))
+    }
+
+    fn conflict(name: &str, a: u64, b: u64) -> Conflict {
+        Conflict {
+            path: path(name),
+            a: modified(a),
+            b: modified(b),
+            root_kind: RootKind::Folder,
+        }
+    }
+
+    /// Each row's offer, judged by the limits it was built with: a media
+    /// copy is not read, a conflict over the cap names its side, a delete
+    /// has nothing to compare, and a small text is readable either way.
+    #[test]
+    fn each_row_offers_what_its_compare_would_give() {
+        let plan = Plan {
+            actions: vec![
+                copy("clip.mp4", 10),
+                Proposal {
+                    action: Action::Delete {
+                        path: path("gone.txt"),
+                        on: Side::B,
+                    },
+                    reverse_bytes: None,
+                },
+                copy("notes.txt", 10),
+            ],
+            conflicts: vec![conflict("big.txt", 10, 101), conflict("small.txt", 10, 100)],
+        };
+        let rows = PlanRows::of(&plan, None, &LIMITS);
+        let choices = Choices::none();
+        let outcomes = Outcomes::over(&rows);
+        let actions: Vec<OfferView> = rows
+            .plan_rows(&choices, &outcomes)
+            .iter()
+            .map(|row| row.proposal.offer)
+            .collect();
+        assert!(matches!(
+            actions[..],
+            [
+                OfferView::Media,
+                OfferView::NotComparable,
+                OfferView::Readable
+            ]
+        ));
+        let conflicts: Vec<OfferView> = rows
+            .conflict_rows(&choices, &outcomes)
+            .iter()
+            .map(|row| row.offer)
+            .collect();
+        assert!(matches!(
+            conflicts[..],
+            [
+                OfferView::TooLarge {
+                    side: SideView::B,
+                    size: 101
+                },
+                OfferView::Readable
+            ]
+        ));
+    }
 }

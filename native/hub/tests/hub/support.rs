@@ -5,9 +5,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use dsync_domain::{DIR_LEAF, Entry, HostFacts, Platform, Profile, ReplicaLocation};
+use dsync_domain::{DIR_LEAF, Entry, HostFacts, Platform, Profile, ReplicaLocation, Tuning};
 use hub::signals::{CoreCommand, PairingSnapshot, ReplyResult, ServeSnapshot};
 use hub::views::{
     ConflictRowView, EntryRunView, PairingView, PlanRowView, PlanUpdateView, PlanView,
@@ -16,6 +17,7 @@ use hub::views::{
 use hub::{Core, Outbox, Outgoing};
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::task::JoinHandle;
 
 /// Every async step's own deadline: far above what any of them takes.
 pub const DEADLINE: Duration = Duration::from_secs(10);
@@ -29,7 +31,8 @@ pub async fn with_deadline<T>(label: &str, work: impl Future<Output = T>) -> T {
 
 pub struct Head {
     dir: TempDir,
-    core: Core,
+    /// Shared with the commands sent with [`Head::spawn`].
+    core: Arc<Core>,
     outgoing: UnboundedReceiver<Outgoing>,
     /// Stream signals read past while waiting for another kind.
     unread: VecDeque<Outgoing>,
@@ -41,12 +44,17 @@ pub struct Head {
 impl Head {
     /// A head initialised over a fresh support directory, as `name`.
     pub async fn new(name: &str) -> Head {
+        Head::with_tuning(name, Tuning::DEFAULT).await
+    }
+
+    /// As [`Head::new`], the hub tuned by `tuning`.
+    pub async fn with_tuning(name: &str, tuning: Tuning) -> Head {
         let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("temp dir: {error}"));
         let home = dir.path().to_string_lossy().into_owned();
         let facts = HostFacts::new(Platform::HOST, Some(home.clone()), Vec::new(), home);
         let (out, outgoing) = Outbox::channel();
         let mut head = Head {
-            core: Core::new(facts, out),
+            core: Arc::new(Core::with_tuning(facts, out, tuning)),
             dir,
             outgoing,
             unread: VecDeque::new(),
@@ -82,11 +90,27 @@ impl Head {
     /// Sends `command` with a fresh id; the id (a session's, for commands
     /// that start one) and the reply.
     pub async fn ask(&mut self, command: CoreCommand) -> (u64, ReplyResult) {
-        self.next_id += 1;
-        let id = self.next_id;
+        let id = self.fresh_id();
         let reply = with_deadline("a reply", self.core.handle(id, command)).await;
         assert_eq!(reply.id, id, "a reply answers its own request");
         (id, reply.result)
+    }
+
+    /// A request id no command was sent with yet.
+    pub fn fresh_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
+    /// Sends `command` as request `id` on a task of its own, so it stays
+    /// in flight while others are sent; its reply, within the deadline.
+    pub fn spawn(&self, id: u64, command: CoreCommand) -> JoinHandle<ReplyResult> {
+        let core = self.core.clone();
+        tokio::spawn(async move {
+            let reply = with_deadline("a reply", core.handle(id, command)).await;
+            assert_eq!(reply.id, id, "a reply answers its own request");
+            reply.result
+        })
     }
 
     /// The reply, which must not be a failure.

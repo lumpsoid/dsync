@@ -205,6 +205,18 @@ class TraitHelpers {
     return List.generate(length, (_) => ArchiveView.deserialize(deserializer));
   }
 
+  static void serializeVectorBlockView(List<BlockView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<BlockView> deserializeVectorBlockView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => BlockView.deserialize(deserializer));
+  }
+
   static void serializeVectorConflictChoiceView(List<ConflictChoiceView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -325,6 +337,30 @@ class TraitHelpers {
     return List.generate(length, (_) => FilterRowView.deserialize(deserializer));
   }
 
+  static void serializeVectorHunkView(List<HunkView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<HunkView> deserializeVectorHunkView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => HunkView.deserialize(deserializer));
+  }
+
+  static void serializeVectorLineView(List<LineView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<LineView> deserializeVectorLineView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => LineView.deserialize(deserializer));
+  }
+
   static void serializeVectorMassDeleteView(List<MassDeleteView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {
@@ -407,6 +443,18 @@ class TraitHelpers {
   static List<SkippedView> deserializeVectorSkippedView(BinaryDeserializer deserializer) {
     final length = deserializer.deserializeLength();
     return List.generate(length, (_) => SkippedView.deserialize(deserializer));
+  }
+
+  static void serializeVectorSpanView(List<SpanView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<SpanView> deserializeVectorSpanView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => SpanView.deserialize(deserializer));
   }
 
   static void serializeVectorStr(List<String> value, BinarySerializer serializer) {
