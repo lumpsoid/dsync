@@ -11,7 +11,7 @@ collects it, with versioned names and a `SHA256SUMS`, in `dist/X.Y.Z/`:
 
 | Host | Default targets | Artifacts |
 |---|---|---|
-| Linux | `android linux cli` | `dsync-X.Y.Z-android.apk`, `.aab`, `dsync-X.Y.Z-linux-<arch>.tar.gz`, `dsync-cli-X.Y.Z-linux-<arch>.tar.gz` |
+| Linux | `android linux cli`, plus `cli-linux-arm64` on x86_64 | `dsync-X.Y.Z-android.apk`, `.aab`, `dsync-X.Y.Z-linux-<arch>.tar.gz`, `dsync-cli-X.Y.Z-linux-<arch>.tar.gz`, `dsync-cli-X.Y.Z-linux-arm64.tar.gz` (static, for a Raspberry Pi on a 64-bit OS) |
 | macOS | `macos cli` | `dsync-X.Y.Z-macos.zip` (unsigned, not notarized), `dsync-cli-X.Y.Z-macos-<arch>.tar.gz` |
 | Windows (Git Bash) | `windows cli` | `dsync-X.Y.Z-windows-<arch>.zip`, `dsync-cli-X.Y.Z-windows-<arch>.zip` |
 

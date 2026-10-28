@@ -13,6 +13,11 @@
 #   macos     dsync.app, as a .zip (unsigned, not notarized)       (macOS)
 #   windows   the Flutter runner folder, as a .zip                 (Windows)
 #   cli       the `dsync` binary + LICENSE, .tar.gz (.zip on Windows) (all)
+#   cli-linux-arm64                                          (Linux x86_64)
+#             the `dsync` binary for 64-bit ARM Linux (Raspberry Pi 3 and
+#             later on a 64-bit OS), statically linked against musl and
+#             cross-built; needs `rustup target add aarch64-unknown-linux-musl`
+#             and aarch64-linux-gnu-gcc
 #
 # Each machine adds its own files to the same dist/<version>/; copy the other
 # machines' artifacts in and rerun (any target) to refresh SHA256SUMS over
@@ -35,8 +40,8 @@ targets=()
 for arg in "$@"; do
   case "$arg" in
     --allow-dirty) allow_dirty=true ;;
-    android | linux | macos | windows | cli) targets+=("$arg") ;;
-    *) die "unknown argument '$arg'. Targets: android linux macos windows cli; flag: --allow-dirty." ;;
+    android | linux | macos | windows | cli | cli-linux-arm64) targets+=("$arg") ;;
+    *) die "unknown argument '$arg'. Targets: android linux macos windows cli cli-linux-arm64; flag: --allow-dirty." ;;
   esac
 done
 
@@ -58,6 +63,7 @@ if [[ ${#targets[@]} == 0 ]]; then
     macos) targets=(macos cli) ;;
     windows) targets=(windows cli) ;;
   esac
+  [[ "$host-$arch" == linux-x86_64 ]] && targets+=(cli-linux-arm64)
 fi
 
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -123,6 +129,17 @@ build_cli() {
   stage=$(mktemp -d)
   cp "native/target/release/$exe" LICENSE "$stage/"
   pack "$dist/dsync-cli-$version-$host-$arch$ext" "$stage"
+  rm -rf "$stage"
+}
+
+build_cli-linux-arm64() {
+  local triple=aarch64-unknown-linux-musl stage
+  (cd native && CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+    cargo build --release -p dsync-cli --target "$triple")
+  stage=$(mktemp -d)
+  cp "native/target/$triple/release/dsync" LICENSE "$stage/"
+  pack "$dist/dsync-cli-$version-linux-arm64.tar.gz" "$stage"
   rm -rf "$stage"
 }
 
