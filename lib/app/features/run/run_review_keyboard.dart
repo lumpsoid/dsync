@@ -44,6 +44,8 @@ class RunReviewKeyboard extends StatefulWidget {
     required this.order,
     required this.onChoose,
     required this.onResolve,
+    required this.onCompareAction,
+    required this.onCompareConflict,
     required this.onApply,
     required this.onSyncAllExceptConflicts,
     required this.sliver,
@@ -58,6 +60,11 @@ class RunReviewKeyboard extends StatefulWidget {
 
   final void Function(int index, ActionChoice choice) onChoose;
   final void Function(int index, ConflictChoice choice) onResolve;
+
+  /// Open the comparison for the cursor's row; called only for a row whose
+  /// offer is readable.
+  final void Function(SyncRunPlanRow row) onCompareAction;
+  final void Function(SyncRunConflictRow row) onCompareConflict;
   final VoidCallback onApply;
   final VoidCallback onSyncAllExceptConflicts;
   final Widget sliver;
@@ -137,6 +144,8 @@ class _RunReviewKeyboardState extends State<RunReviewKeyboard> {
         _pickAction(choice);
       case PickConflict(:final choice):
         _pickConflict(choice);
+      case OpenComparison():
+        _compare();
       case ApplyReview():
         widget.onApply();
       case SyncAllExceptConflicts():
@@ -176,6 +185,19 @@ class _RunReviewKeyboardState extends State<RunReviewKeyboard> {
       if (!row.offers(choice)) return;
       if (_state.actionDecisionCell(row).value == choice) return;
       widget.onChoose(row.index, choice);
+    }
+  }
+
+  void _compare() {
+    switch (_cursor.at) {
+      case ActionTarget(:final position):
+        final row = _state.plan[position];
+        if (row.comparable) widget.onCompareAction(row);
+      case ConflictTarget(:final position):
+        final row = _state.conflicts[position];
+        if (row.comparable) widget.onCompareConflict(row);
+      case null:
+        break;
     }
   }
 

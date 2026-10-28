@@ -174,6 +174,9 @@ sealed class ReviewCommand {
     if (shift || alt) return null;
     if (command) return enter ? const SyncAllExceptConflicts() : null;
     if (enter) return const ApplyReview();
+    if (key == LogicalKeyboardKey.keyC && at != null) {
+      return const OpenComparison();
+    }
     final step = _steps[key];
     if (step != null) return MoveCursor(step);
     return switch (at) {
@@ -251,6 +254,17 @@ final class ApplyReview extends ReviewCommand {
 
   @override
   int get hashCode => (ApplyReview).hashCode;
+}
+
+/// C: open the cursor row's comparison, where the row offers one.
+final class OpenComparison extends ReviewCommand {
+  const OpenComparison();
+
+  @override
+  bool operator ==(Object other) => other is OpenComparison;
+
+  @override
+  int get hashCode => (OpenComparison).hashCode;
 }
 
 /// Ctrl+Enter: the review bar's "Sync all except conflicts".

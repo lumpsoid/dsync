@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../core_link/models/action_choice.dart';
+import '../../core_link/models/compare_offer.dart';
 import '../../core_link/models/conflict_choice.dart';
 import '../../core_link/models/root_kind.dart';
 import '../../core_link/models/run_standing.dart';
@@ -345,6 +346,7 @@ final class SyncRunConflictRow {
     required this.local,
     required this.remote,
     required this.offered,
+    required this.offer,
   });
 
   final int index;
@@ -352,6 +354,12 @@ final class SyncRunConflictRow {
   final SyncRunConflictSide local;
   final SyncRunConflictSide remote;
   final List<ConflictChoice> offered;
+
+  /// Whether the two files can be compared; fixed for the plan.
+  final CompareOffer offer;
+
+  /// Whether the review offers to compare the two files.
+  bool get comparable => offer is OfferReadable;
 
   /// Whether [choice] is one the core offered for this conflict.
   bool offers(ConflictChoice choice) => offered.contains(choice);
@@ -418,6 +426,7 @@ final class SyncRunPlanRow {
     required this.bytes,
     required this.group,
     required this.reversal,
+    required this.offer,
   });
 
   final int index;
@@ -426,6 +435,12 @@ final class SyncRunPlanRow {
   final int bytes;
   final SyncRunPlanGroup group;
   final SyncRunPlanReversal? reversal;
+
+  /// Whether the action's two files can be compared; fixed for the plan.
+  final CompareOffer offer;
+
+  /// Whether the review offers to compare the two files.
+  bool get comparable => offer is OfferReadable;
 
   /// Whether [choice] can be made for this action: as planned and skipped
   /// always, reversed only where the core offers a [reversal].
@@ -442,10 +457,12 @@ final class SyncRunPlanRow {
       other.action == action &&
       other.bytes == bytes &&
       other.group == group &&
-      other.reversal == reversal;
+      other.reversal == reversal &&
+      other.offer == offer;
 
   @override
-  int get hashCode => Object.hash(index, path, action, bytes, group, reversal);
+  int get hashCode =>
+      Object.hash(index, path, action, bytes, group, reversal, offer);
 }
 
 /// A planned action's reverse, rendered: what it does, literally — which

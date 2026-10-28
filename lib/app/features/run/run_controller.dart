@@ -124,6 +124,11 @@ class SyncRunController {
   /// The session, once the core opened it; `null` until then, and for
   /// good when it would not.
   Future<RunSession?>? _session;
+
+  /// The core's id for the session, once it opened; `null` until then. The
+  /// review can only be up after it opened, which is when a page needs it.
+  int? get session => _sessionId;
+  int? _sessionId;
   StreamSubscription<RunView>? _views;
   bool _screenHeld = false;
   bool _screenWanted = false;
@@ -152,6 +157,7 @@ class SyncRunController {
         massDeleteMinFiles: guard.minFiles,
         massDeletePercent: guard.percent,
       );
+      _sessionId = session.session;
       opened.complete(session);
       if (_disposed) return;
       _views = session.views.listen(_show);
@@ -474,6 +480,7 @@ class SyncRunController {
                 local: _conflictSide(row.conflict.a),
                 remote: _conflictSide(row.conflict.b),
                 offered: row.offered,
+                offer: row.offer,
               ),
           ],
           plan: [
@@ -485,6 +492,7 @@ class SyncRunController {
                 bytes: _bytes(row.proposal.action),
                 group: _group(row.proposal.action),
                 reversal: _reversal(row.proposal),
+                offer: row.proposal.offer,
               ),
           ],
           copyBytes: (

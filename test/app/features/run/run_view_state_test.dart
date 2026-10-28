@@ -1,4 +1,5 @@
 import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/compare_offer.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -154,6 +155,7 @@ void main() {
           bytes: 1,
           group: SyncRunPlanGroup.toDevice,
           reversal: null,
+          offer: const OfferNotComparable(),
         );
 
     SyncRunConflictRow conflict(int index, String path) => SyncRunConflictRow(
@@ -162,6 +164,7 @@ void main() {
       local: const SyncRunConflictSide(SyncRunSideStatus.modified),
       remote: const SyncRunConflictSide(SyncRunSideStatus.modified),
       offered: const [ConflictChoice.keepA, ConflictChoice.keepB],
+      offer: const OfferNotComparable(),
     );
 
     SyncRunResultRow result(String path, {String? error}) =>

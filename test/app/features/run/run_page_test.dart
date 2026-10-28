@@ -1,6 +1,10 @@
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/app_theme.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/replica_side.dart';
+import 'package:dsync/app/core_link/models/row_ref.dart';
+import 'package:dsync/app/features/file_diff/file_diff_page.dart';
+import 'package:dsync/app/features/file_diff/file_diff_view_state.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
 import 'package:dsync/app/features/run/run_page.dart';
 import 'package:dsync/app/features/run/run_review_cursor.dart';
@@ -2888,6 +2892,138 @@ void main() {
         jumps.elapsed + arrows.elapsed,
         lessThan(const Duration(seconds: 10)),
       );
+    });
+  });
+  group('comparing a row from the review', () {
+    const readable = wire.OfferViewReadable();
+    WholeRunView review({wire.RunPhaseView? phase}) => runView(
+      phase: phase ?? reviewing(apply: 4, leftOpen: 2),
+      conflicts: [
+        conflictRow(
+          'both.txt',
+          a: modifiedFile(),
+          b: modifiedFile(),
+          offered: offersAll,
+          offer: readable,
+        ),
+        conflictRow(
+          'pic.png',
+          a: modifiedFile(),
+          b: modifiedFile(),
+          offered: offersAll,
+          offer: const wire.OfferViewMedia(),
+        ),
+      ],
+      plan: [
+        planRow(copyTo('new.txt'), reverseBytes: 1024, offer: readable),
+        planRow(copyHere('in.txt', bytes: 300), offer: readable),
+        planRow(deleteThere('gone.txt'), reverseBytes: 512),
+        planRow(copyTo('shot.png'), offer: const wire.OfferViewMedia()),
+      ],
+    );
+
+    Finder compare(String path) => find.byKey(Key('compare-$path'));
+
+    FileDiffArgs opened(WidgetTester tester) =>
+        tester.widget<FileDiffPage>(find.byType(FileDiffPage)).args;
+
+    Future<void> tapCompare(WidgetTester tester, String path) async {
+      await tester.tap(compare(path));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('the button shows on readable rows only, and not after the '
+        'review', (tester) async {
+      await open(tester, review());
+
+      expect(compare('both.txt'), findsOneWidget);
+      expect(compare('new.txt'), findsOneWidget);
+      expect(compare('in.txt'), findsOneWidget);
+      expect(compare('pic.png'), findsNothing);
+      expect(compare('gone.txt'), findsNothing);
+      expect(compare('shot.png'), findsNothing);
+
+      await deliver(tester, review(phase: applying));
+
+      expect(find.byKey(const Key('decision-new.txt')), findsNothing);
+      expect(compare('both.txt'), findsNothing);
+      expect(compare('new.txt'), findsNothing);
+    });
+
+    testWidgets('a conflict opens its page with the local file old and the '
+        'remote new', (tester) async {
+      hub.holdCompareUntilCancelled();
+      await open(tester, review());
+
+      await tapCompare(tester, 'both.txt');
+
+      final args = opened(tester);
+      expect(args.row, isA<ConflictRowRef>());
+      expect((args.row as ConflictRowRef).index, 0);
+      expect(args.session, session());
+      expect(args.oldSide.side, ReplicaSide.a);
+      expect(args.oldSide.size, 5);
+      expect(args.newSide.side, ReplicaSide.b);
+      final sent = hub.sent<wire.CoreCommandCompareRow>().single;
+      expect(sent.row, const wire.RowRefConflict(index: 0));
+      expect(sent.session.toInt(), session());
+    });
+
+    testWidgets('a copy toward the remote replaces the remote file with this '
+        "device's", (tester) async {
+      hub.holdCompareUntilCancelled();
+      await open(tester, review());
+
+      await tapCompare(tester, 'new.txt');
+
+      final args = opened(tester);
+      expect((args.row as ActionRowRef).index, 0);
+      expect(args.oldSide.side, ReplicaSide.b);
+      expect(args.oldSide.size, 1024);
+      expect(args.newSide.side, ReplicaSide.a);
+      expect(args.newSide.size, 2048);
+      expect(
+        hub.sent<wire.CoreCommandCompareRow>().single.row,
+        const wire.RowRefAction(index: 0),
+      );
+    });
+
+    testWidgets('a copy toward this device with no reversal has no old file', (
+      tester,
+    ) async {
+      hub.holdCompareUntilCancelled();
+      await open(tester, review());
+
+      await tapCompare(tester, 'in.txt');
+
+      final args = opened(tester);
+      expect((args.row as ActionRowRef).index, 1);
+      expect(args.oldSide.side, ReplicaSide.a);
+      expect(args.oldSide.size, isNull);
+      expect(args.newSide.side, ReplicaSide.b);
+      expect(args.newSide.size, 300);
+    });
+
+    testWidgets('C at the cursor opens the row; on a media row it does '
+        'nothing', (tester) async {
+      hub.holdCompareUntilCancelled();
+      await open(tester, review());
+
+      // The cursor starts on both.txt.
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.pumpAndSettle();
+      expect((opened(tester).row as ConflictRowRef).index, 0);
+
+      tester.state<NavigatorState>(find.byType(Navigator)).pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(FileDiffPage), findsNothing);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FileDiffPage), findsNothing);
     });
   });
 }

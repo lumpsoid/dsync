@@ -111,12 +111,17 @@ class RunPlanSection extends StatelessWidget {
     this.state, {
     super.key,
     required this.onChoose,
+    required this.onCompare,
     required this.layout,
     required this.cursor,
     required this.disclosures,
   });
 
   final SyncRunViewState state;
+
+  /// Opens a row's comparison. Handed to the rows only while the review is
+  /// up, as [onChoose] is.
+  final void Function(SyncRunPlanRow row) onCompare;
 
   /// What a row's control calls — `SyncRunController.choose`. Handed to
   /// the rows only while the review is up.
@@ -136,6 +141,7 @@ class RunPlanSection extends StatelessWidget {
     final applying = state.phase is SyncRunApplying;
     final reviewing = state.phase is SyncRunAwaitingDecisions;
     final onChoose = reviewing ? this.onChoose : null;
+    final onCompare = reviewing ? this.onCompare : null;
     final cursor = reviewing ? this.cursor : null;
 
     var firstDisclosureTaken = false;
@@ -158,6 +164,7 @@ class RunPlanSection extends StatelessWidget {
           title: header,
           collapsible: collapsible,
           onChoose: onChoose,
+          onCompare: onCompare,
           cursor: cursor,
           layout: layout,
           disclosures: disclosures,
@@ -190,6 +197,7 @@ class _PlanGroupSection extends StatelessWidget {
     required this.title,
     required this.collapsible,
     required this.onChoose,
+    required this.onCompare,
     required this.cursor,
     required this.layout,
     required this.disclosures,
@@ -202,6 +210,7 @@ class _PlanGroupSection extends StatelessWidget {
   final String title;
   final bool collapsible;
   final void Function(int index, ActionChoice choice)? onChoose;
+  final void Function(SyncRunPlanRow row)? onCompare;
   final ReviewCursor? cursor;
   final RunLayout layout;
   final PlanDisclosures disclosures;
@@ -215,6 +224,7 @@ class _PlanGroupSection extends StatelessWidget {
         state: state,
         row: state.plan[position],
         onChoose: onChoose,
+        onCompare: onCompare,
         layout: layout,
       );
       final cursor = this.cursor;
@@ -307,11 +317,15 @@ class RunPlanRow extends StatelessWidget {
     required this.state,
     required this.row,
     required this.onChoose,
+    required this.onCompare,
     required this.layout,
   });
 
   final SyncRunViewState state;
   final SyncRunPlanRow row;
+
+  /// `null` outside the review: no Compare button.
+  final void Function(SyncRunPlanRow row)? onCompare;
 
   /// `null` outside the review: no control.
   final void Function(int index, ActionChoice choice)? onChoose;
@@ -373,12 +387,18 @@ class RunPlanRow extends StatelessWidget {
       ),
       trailing: onChoose == null
           ? null
-          : _ActionChoiceControl(
-              key: Key('decision-${row.path}'),
-              choice: choice,
-              reversible: row.reversal != null,
-              showKeys: false,
-              onChoose: (choice) => onChoose(row.index, choice),
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ?_compareButton(),
+                _ActionChoiceControl(
+                  key: Key('decision-${row.path}'),
+                  choice: choice,
+                  reversible: row.reversal != null,
+                  showKeys: false,
+                  onChoose: (choice) => onChoose(row.index, choice),
+                ),
+              ],
             ),
     );
   }
@@ -428,6 +448,7 @@ class RunPlanRow extends StatelessWidget {
                 ],
               ),
             ),
+            ?_compareButton(),
           ],
         ),
       ),
@@ -466,6 +487,20 @@ class RunPlanRow extends StatelessWidget {
               showKeys: true,
               onChoose: (choice) => onChoose(row.index, choice),
             ),
+    );
+  }
+
+  /// The Compare button: only in the review ([onCompare] set) and for a row
+  /// whose two files the core says can be read.
+  Widget? _compareButton() {
+    final onCompare = this.onCompare;
+    if (onCompare == null || !row.comparable) return null;
+    return IconButton(
+      key: Key('compare-${row.path}'),
+      icon: const Icon(Icons.difference_outlined),
+      tooltip: 'Compare',
+      visualDensity: VisualDensity.compact,
+      onPressed: () => onCompare(row),
     );
   }
 

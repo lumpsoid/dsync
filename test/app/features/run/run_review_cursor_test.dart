@@ -1,4 +1,5 @@
 import 'package:dsync/app/core_link/models/action_choice.dart';
+import 'package:dsync/app/core_link/models/compare_offer.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/features/run/run_layout.dart';
 import 'package:dsync/app/features/run/run_review_cursor.dart';
@@ -166,6 +167,18 @@ void main() {
       expect(key(LogicalKeyboardKey.keyA, at: at), isNull);
     });
 
+    test('C opens the comparison on either kind of row, bare only', () {
+      expect(key(LogicalKeyboardKey.keyC), const OpenComparison());
+      expect(
+        key(LogicalKeyboardKey.keyC, at: const ConflictTarget(0)),
+        const OpenComparison(),
+      );
+      expect(key(LogicalKeyboardKey.keyC, at: null), isNull);
+      expect(key(LogicalKeyboardKey.keyC, shift: true), isNull);
+      expect(key(LogicalKeyboardKey.keyC, alt: true), isNull);
+      expect(key(LogicalKeyboardKey.keyC, command: true), isNull);
+    });
+
     test('with no row under the cursor a letter picks nothing', () {
       expect(key(LogicalKeyboardKey.keyS, at: null), isNull);
       // Positive control: moving still works.
@@ -219,6 +232,7 @@ void main() {
       bytes: 1,
       group: SyncRunPlanGroup.toDevice,
       reversal: reversal,
+      offer: const OfferNotComparable(),
     );
 
     test('reverse only where the core offers a reversal', () {
@@ -239,6 +253,7 @@ void main() {
         local: SyncRunConflictSide(SyncRunSideStatus.none),
         remote: SyncRunConflictSide(SyncRunSideStatus.modified),
         offered: [ConflictChoice.unresolved, ConflictChoice.keepB],
+        offer: OfferNotComparable(),
       );
       expect(row.offers(ConflictChoice.keepB), isTrue);
       expect(row.offers(ConflictChoice.keepA), isFalse);

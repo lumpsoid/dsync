@@ -2,7 +2,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core_link/models/compared_side.dart';
 import '../../core_link/models/conflict_choice.dart';
+import '../../core_link/models/replica_side.dart';
+import '../../core_link/models/row_ref.dart';
 import '../../destructive_confirm_dialog.dart';
 import '../../format_bytes.dart';
 import '../../format_count.dart';
@@ -11,6 +14,8 @@ import '../../path_text.dart';
 import '../../pop_on_escape.dart';
 import '../../readable_width.dart';
 import '../../run_request.dart';
+import '../file_diff/file_diff_page.dart';
+import '../file_diff/file_diff_view_state.dart';
 import 'run_controller.dart';
 import 'run_layout.dart';
 import 'run_plan_section.dart';
@@ -140,6 +145,53 @@ class _RunPageState extends State<RunPage> {
     // Nothing to stop first: popping disposes the controller, which cancels
     // the subscription and releases the run's locks (see its `dispose`).
     Navigator.of(context).pop();
+  }
+
+  void _compareConflict(SyncRunConflictRow row) => _openComparison(
+    ConflictRowRef(row.index),
+    row.path,
+    oldSide: ComparedSide(ReplicaSide.a, row.local.file?.bytes),
+    newSide: ComparedSide(ReplicaSide.b, row.remote.file?.bytes),
+  );
+
+  /// A copy's source is the new side and its destination the old one; the
+  /// destination has a file only where the core offers a reversal.
+  void _comparePlan(SyncRunPlanRow row) {
+    final source = row.group == SyncRunPlanGroup.toDevice
+        ? ReplicaSide.a
+        : ReplicaSide.b;
+    _openComparison(
+      ActionRowRef(row.index),
+      row.path,
+      oldSide: ComparedSide(
+        source == ReplicaSide.a ? ReplicaSide.b : ReplicaSide.a,
+        row.reversal?.bytes,
+      ),
+      newSide: ComparedSide(source, row.bytes),
+    );
+  }
+
+  void _openComparison(
+    RowRef row,
+    String path, {
+    required ComparedSide oldSide,
+    required ComparedSide newSide,
+  }) {
+    final session = _controller.session;
+    if (session == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => FileDiffPage(
+          args: FileDiffArgs(
+            session: session,
+            row: row,
+            path: path,
+            oldSide: oldSide,
+            newSide: newSide,
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -318,6 +370,8 @@ class _RunPageState extends State<RunPage> {
             order: () => reviewOrder(state, _disclosures),
             onChoose: _controller.choose,
             onResolve: _controller.resolveConflict,
+            onCompareAction: _comparePlan,
+            onCompareConflict: _compareConflict,
             onApply: _controller.confirm,
             onSyncAllExceptConflicts: _controller.acceptAll,
             sliver: _buildColumn(state, layout),
@@ -410,6 +464,7 @@ class _RunPageState extends State<RunPage> {
                           state: state,
                           offered: reviewing ? row.offered : null,
                           onResolve: _controller.resolveConflict,
+                          onCompare: _compareConflict,
                         );
                         if (!reviewing) return conflict;
                         return ReviewRowFrame(
@@ -429,6 +484,7 @@ class _RunPageState extends State<RunPage> {
                   : RunPlanSection(
                       state,
                       onChoose: _controller.choose,
+                      onCompare: _comparePlan,
                       layout: layout,
                       cursor: _cursor,
                       disclosures: _disclosures,
@@ -1461,12 +1517,14 @@ class _ConflictRow extends StatelessWidget {
     required this.state,
     required this.offered,
     required this.onResolve,
+    required this.onCompare,
   });
 
   final SyncRunConflictRow row;
   final SyncRunViewState state;
   final List<ConflictChoice>? offered;
   final void Function(int index, ConflictChoice choice) onResolve;
+  final void Function(SyncRunConflictRow row) onCompare;
 
   @override
   Widget build(BuildContext context) {
@@ -1502,6 +1560,14 @@ class _ConflictRow extends StatelessWidget {
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                     ),
+                    if (offered != null && row.comparable)
+                      IconButton(
+                        key: Key('compare-${row.path}'),
+                        icon: const Icon(Icons.difference_outlined),
+                        tooltip: 'Compare',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => onCompare(row),
+                      ),
                     if (offered != null)
                       Padding(
                         padding: const EdgeInsets.only(left: 8),
