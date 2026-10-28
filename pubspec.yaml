@@ -22,7 +22,7 @@ environment:
   # Pinned, not a range: the version this pubspec is developed and gated
   # against. The wire protocol and archive format are the Rust core's now
   # (native/), not this SDK's.
-  sdk: 3.13.3
+  sdk: 3.13.7
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
