@@ -41,7 +41,12 @@ pub struct ChildProcess {
 impl ChildProcess {
     pub fn spawn(role: &str, path: &Path) -> ChildProcess {
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["replica::child_role", "--exact", "--nocapture", "--test-threads=1"])
+            .args([
+                "replica::child_role",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(ROLE_VAR, role)
             .env(PATH_VAR, path)
             .stdin(Stdio::piped())

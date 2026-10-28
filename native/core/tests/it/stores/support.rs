@@ -90,7 +90,12 @@ impl ChildProcess {
     /// `role` on `path`.
     pub fn spawn(role: &str, path: &Path) -> ChildProcess {
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["stores::child_role", "--exact", "--nocapture", "--test-threads=1"])
+            .args([
+                "stores::child_role",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(ROLE_VAR, role)
             .env(PATH_VAR, path)
             .stdin(Stdio::piped())

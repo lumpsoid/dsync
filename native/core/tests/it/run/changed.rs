@@ -13,7 +13,9 @@ use dsync_core::{ActionFailure, BatchDecider, Replica, RunEvent};
 use dsync_domain::Side;
 
 use crate::run::flow::proposed_plan;
-use crate::run::support::{Call, Finished, Hook, Probe, Site, path, run, served, sync, with_deadline};
+use crate::run::support::{
+    Call, Finished, Hook, Probe, Site, path, run, served, sync, with_deadline,
+};
 
 /// Where the probed side's replica lives.
 #[derive(Clone, Copy, Debug)]

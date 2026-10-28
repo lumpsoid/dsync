@@ -5,7 +5,9 @@
 use dsync_core::Replica;
 use dsync_domain::{Action, Precondition, Side, Status};
 
-use crate::replica::support::{CopyUntil, Site, apply, copy, exchange, hash_of, path, seed, with_deadline};
+use crate::replica::support::{
+    CopyUntil, Site, apply, copy, exchange, hash_of, path, seed, with_deadline,
+};
 
 #[tokio::test]
 async fn a_crash_between_the_two_commits_converges_without_moving_bytes_again() {
