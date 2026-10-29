@@ -17,10 +17,12 @@
 //! checked lexically only. A far side's paths are its host's to resolve.
 
 mod event;
+mod redial;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use dsync_domain::{
     EffectiveOptions, PathStyle, Platform, ReplicaLocation, RunMetrics, Side, StopSignal, Tuning,
@@ -31,12 +33,14 @@ use tokio::sync::mpsc;
 pub use event::{
     EntryFailure, EntryOutcome, ListedEntry, ProfileEvent, ResolvedOverlap, SkipReason,
 };
+pub use redial::ReconnectCause;
 
 use crate::connector::{ConnectError, PeerContact};
 use crate::replica::Replica;
 use crate::replica_lock::canonical_root;
-use crate::run::{Decider, Run, RunEvent, RunStop, Stopped};
+use crate::run::{Decider, Run, RunError, RunEvent, RunReport, RunStop, Stopped};
 use crate::state_dir::StateDir;
+use redial::{Attempt, Verdict, Window, verdict};
 
 /// Each entry's run event channel: small, as the profile's consumer paces
 /// the run through it.
@@ -82,10 +86,14 @@ pub struct EntryReport {
     pub outcome: EntryOutcome,
     /// Its run's measurements; `None` when it never connected.
     pub metrics: Option<RunMetrics>,
-    /// Actions the decider approved.
+    /// Actions the decider approved: the last attempt's, plus those every
+    /// earlier attempt applied (any other is planned again).
     pub planned: usize,
-    /// Approved actions that reported an outcome.
+    /// Approved actions that reported an outcome: the last attempt's,
+    /// plus those every earlier attempt applied.
     pub finished: usize,
+    /// Times a dropped `peer://` side was dialled again.
+    pub reconnects: u32,
 }
 
 impl EntryReport {
@@ -95,6 +103,49 @@ impl EntryReport {
             metrics: None,
             planned: 0,
             finished: 0,
+            reconnects: 0,
+        }
+    }
+}
+
+/// What one attempt's run counted of its events.
+#[derive(Default)]
+struct Counted {
+    planned: usize,
+    finished: usize,
+    /// Finished and applied: what a later attempt does not plan again. A
+    /// failed one - every action of a batch the drop failed, say - is.
+    applied: usize,
+    /// It got past both locks.
+    locked: bool,
+}
+
+/// One attempt's run: its report and its counts.
+struct Ran {
+    report: RunReport,
+    counted: Counted,
+}
+
+/// An entry's attempts before the one running.
+#[derive(Default)]
+struct Attempts {
+    reconnects: u32,
+    /// Actions the earlier attempts applied: the running one's plan no
+    /// longer holds them, so they are added to its `planned` as well.
+    applied_before: usize,
+}
+
+impl Attempts {
+    /// The entry's report, `last` being its last run: ended as that run
+    /// did, unless `outcome` says otherwise.
+    fn ended(&self, last: Ran, outcome: Option<EntryOutcome>) -> EntryReport {
+        let Ran { report, counted } = last;
+        EntryReport {
+            outcome: outcome.unwrap_or_else(|| EntryOutcome::of_run(report.summary, report.error)),
+            metrics: Some(report.metrics),
+            planned: self.applied_before + counted.planned,
+            finished: self.applied_before + counted.finished,
+            reconnects: self.reconnects,
         }
     }
 }
@@ -186,8 +237,10 @@ impl ProfileRun {
         })
     }
 
-    /// Connects and runs one entry. A stop while connecting abandons the
-    /// connect: it may never resolve.
+    /// Connects and runs one entry, dialling a dropped `peer://` side
+    /// again within its budget ([`redial`]). A stop while connecting, or
+    /// while waiting to re-dial, abandons the entry: a connect may never
+    /// resolve.
     async fn entry<'o, C, F, A, B>(
         &self,
         index: usize,
@@ -203,51 +256,156 @@ impl ProfileRun {
     {
         self.emit(ProfileEvent::EntryConnecting { entry: index })
             .await;
-        let connected = tokio::select! {
-            biased;
-            () = self.stop.0.until_requested() => None,
-            connected = connect(options) => Some(connected),
-        };
-        let (a, b, peers) = match connected {
+        let (a, b, peers) = match self.connect(options, connect).await {
             None => return EntryReport::unrun(EntryOutcome::NotRun),
             Some(Err(error)) => {
-                let failure = Arc::new(error);
-                self.emit(ProfileEvent::EntryNotConnected {
-                    entry: index,
-                    failure: failure.clone(),
-                })
-                .await;
+                let failure = self.not_connected(index, error).await;
                 return EntryReport::unrun(EntryOutcome::Failed(EntryFailure::Connect(failure)));
             }
             Some(Ok(connected)) => connected,
         };
+        let peer_sides: Vec<Side> = peers.iter().map(|peer| peer.side).collect();
         self.emit(ProfileEvent::EntryConnected {
             entry: index,
             peers,
         })
         .await;
-        let (sender, receiver) = mpsc::channel(ENTRY_EVENTS);
-        let run = Run::new(sender, self.state.clone(), self.tuning).with_stop(self.stop.0.clone());
-        let (report, (planned, finished)) = tokio::join!(
-            run.execute(a, b, options, decider),
-            self.forward(index, receiver),
-        );
-        EntryReport {
-            outcome: EntryOutcome::of_run(report.summary, report.error),
-            metrics: Some(report.metrics),
-            planned,
-            finished,
+        let mut ran = self.run(index, a, b, options, decider).await;
+        let mut attempts = Attempts::default();
+        let mut attempt = Attempt::First;
+        // The window the re-dials share, and the drop that opened it: a
+        // re-run that got past its locks closes it, and its own drop opens
+        // the next.
+        let mut window: Option<(Window, RunError)> = None;
+        loop {
+            let Some(error) = ran.report.error.clone() else {
+                return attempts.ended(ran, None);
+            };
+            let mut cause = ReconnectCause::Run(error.clone());
+            if self.stop.0.requested() || verdict(attempt, &cause, &peer_sides) == Verdict::Final {
+                return attempts.ended(ran, None);
+            }
+            if ran.counted.locked {
+                window = None;
+            }
+            let (open, dropped) =
+                window.get_or_insert_with(|| (Window::open(Instant::now(), self.tuning), error));
+            let (a, b) = loop {
+                let Some(after) = open.next(attempts.reconnects, Instant::now()) else {
+                    // The drop says what happened, unless the far side
+                    // still held the lock: that is its own outcome.
+                    let failure = match cause {
+                        ReconnectCause::Run(held) if held.is_held_on(&peer_sides) => held,
+                        _ => dropped.clone(),
+                    };
+                    let outcome = EntryOutcome::Failed(EntryFailure::Run(failure));
+                    return attempts.ended(ran, Some(outcome));
+                };
+                attempts.reconnects += 1;
+                self.emit(ProfileEvent::EntryReconnecting {
+                    entry: index,
+                    attempt: attempts.reconnects,
+                    after,
+                    cause: cause.clone(),
+                })
+                .await;
+                tokio::select! {
+                    biased;
+                    () = self.stop.0.until_requested() => {
+                        return attempts.ended(ran, Some(EntryOutcome::NotRun));
+                    }
+                    () = tokio::time::sleep(after) => {}
+                }
+                match self.connect(options, connect).await {
+                    None => return attempts.ended(ran, Some(EntryOutcome::NotRun)),
+                    Some(Ok((a, b, peers))) => {
+                        self.emit(ProfileEvent::EntryConnected {
+                            entry: index,
+                            peers,
+                        })
+                        .await;
+                        break (a, b);
+                    }
+                    Some(Err(error)) => {
+                        let failure = Arc::new(error);
+                        cause = ReconnectCause::Connect(failure.clone());
+                        if verdict(Attempt::Redial, &cause, &peer_sides) == Verdict::Final {
+                            self.emit(ProfileEvent::EntryNotConnected {
+                                entry: index,
+                                failure: failure.clone(),
+                            })
+                            .await;
+                            let outcome = EntryOutcome::Failed(EntryFailure::Connect(failure));
+                            return attempts.ended(ran, Some(outcome));
+                        }
+                    }
+                }
+            };
+            attempts.applied_before += ran.counted.applied;
+            ran = self.run(index, a, b, options, decider).await;
+            attempt = Attempt::Redial;
         }
     }
 
+    /// `connect(options)`, abandoned (`None`) at a stop.
+    async fn connect<'o, C, F, A, B>(
+        &self,
+        options: &'o EffectiveOptions,
+        connect: &mut C,
+    ) -> Option<Result<(A, B, Vec<PeerContact>), ConnectError>>
+    where
+        C: FnMut(&'o EffectiveOptions) -> F,
+        F: Future<Output = Result<(A, B, Vec<PeerContact>), ConnectError>>,
+    {
+        tokio::select! {
+            biased;
+            () = self.stop.0.until_requested() => None,
+            connected = connect(options) => Some(connected),
+        }
+    }
+
+    async fn not_connected(&self, index: usize, error: ConnectError) -> Arc<ConnectError> {
+        let failure = Arc::new(error);
+        self.emit(ProfileEvent::EntryNotConnected {
+            entry: index,
+            failure: failure.clone(),
+        })
+        .await;
+        failure
+    }
+
+    /// One attempt's run of entry `index` over `a` and `b`.
+    async fn run<A: Replica, B: Replica>(
+        &self,
+        index: usize,
+        a: A,
+        b: B,
+        options: &EffectiveOptions,
+        decider: &mut impl Decider,
+    ) -> Ran {
+        let (sender, receiver) = mpsc::channel(ENTRY_EVENTS);
+        let run = Run::new(sender, self.state.clone(), self.tuning).with_stop(self.stop.0.clone());
+        let (report, counted) = tokio::join!(
+            run.execute(a, b, options, decider),
+            self.forward(index, receiver),
+        );
+        Ran { report, counted }
+    }
+
     /// Passes on every event of entry `index`'s run until it ends,
-    /// counting the actions approved and those that reported an outcome.
-    async fn forward(&self, index: usize, mut events: mpsc::Receiver<RunEvent>) -> (usize, usize) {
-        let (mut planned, mut finished) = (0, 0);
+    /// counting the actions approved and those that reported an outcome,
+    /// and noting whether it got past its locks: [`RunEvent::Replicas`]
+    /// goes out only once both are taken.
+    async fn forward(&self, index: usize, mut events: mpsc::Receiver<RunEvent>) -> Counted {
+        let mut counted = Counted::default();
         while let Some(event) = events.recv().await {
-            match event {
-                RunEvent::Action(_) => planned += 1,
-                RunEvent::Result { .. } => finished += 1,
+            match &event {
+                RunEvent::Action(_) => counted.planned += 1,
+                RunEvent::Result { outcome, .. } => {
+                    counted.finished += 1;
+                    counted.applied += usize::from(outcome.is_ok());
+                }
+                RunEvent::Replicas { .. } => counted.locked = true,
                 _ => {}
             }
             self.emit(ProfileEvent::Entry {
@@ -256,7 +414,7 @@ impl ProfileRun {
             })
             .await;
         }
-        (planned, finished)
+        counted
     }
 
     /// A consumer that dropped its receiver has stopped listening; the run

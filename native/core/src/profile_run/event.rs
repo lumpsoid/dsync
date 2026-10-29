@@ -4,12 +4,14 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dsync_domain::{
     EntryId, MissingParentFolder, MissingReplicaRoot, RootKind, RunOutcome, RunSummary, Side,
     WrongRootKind,
 };
 
+use super::redial::ReconnectCause;
 use crate::connector::{ConnectError, PeerContact};
 use crate::run::{RunError, RunEvent};
 
@@ -30,6 +32,18 @@ pub enum ProfileEvent {
     EntryNotConnected {
         entry: usize,
         failure: Arc<ConnectError>,
+    },
+    /// The entry's link to a `peer://` side dropped, or a re-dial of it
+    /// failed in a way that may pass (SPEC §11.3): re-dial `attempt`,
+    /// counted from one, starts `after` from now. Supersedes the failure the attempt's run
+    /// already emitted, when `cause` is a run's: the entry has not ended.
+    /// A successful re-dial is told by [`ProfileEvent::EntryConnected`]
+    /// again, never by another `EntryConnecting`.
+    EntryReconnecting {
+        entry: usize,
+        attempt: u32,
+        after: Duration,
+        cause: ReconnectCause,
     },
     /// One event of the entry's run, as the run emitted it.
     Entry { entry: usize, event: RunEvent },

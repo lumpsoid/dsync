@@ -534,7 +534,11 @@ impl RunState {
         match event {
             // Listed from the options already, with their paths.
             ProfileEvent::Entries { .. } => Urgency::Unseen,
-            ProfileEvent::EntryConnecting { entry } => {
+            // A re-dial starts the entry over, as its first connect did:
+            // the dropped attempt's failure, rows and progress go, and
+            // what it completed is kept in `completed_earlier`.
+            ProfileEvent::EntryConnecting { entry }
+            | ProfileEvent::EntryReconnecting { entry, .. } => {
                 self.completed_earlier += self.entry.completed();
                 let warn_size_bytes = self
                     .entries
@@ -555,6 +559,15 @@ impl RunState {
                 self.event(event)
             }
             ProfileEvent::EntryFinished { entry, outcome } => {
+                // An entry whose re-dials ran out ends with the drop that
+                // started them, which its last attempt - a connect - did
+                // not emit.
+                if self.current == Some(entry)
+                    && self.entry.failure.is_none()
+                    && let EntryOutcome::Failed(EntryFailure::Run(error)) = &outcome
+                {
+                    self.entry.event(RunEvent::Error(error.clone()));
+                }
                 if let Some(listed) = self.entries.get_mut(entry) {
                     listed.status = EntryStatus::Ended(outcome);
                 }
@@ -1566,6 +1579,99 @@ mod tests {
         assert!(matches!(
             phase(&stopped),
             RunPhaseView::Paused { completed: 0 }
+        ));
+    }
+
+    fn dropped() -> RunError {
+        RunError::Replica {
+            side: Side::B,
+            op: dsync_domain::ReplicaOp::Scan,
+            source: Arc::new(dsync_core::ReplicaError::Link(
+                dsync_core::LinkError::Closed,
+            )),
+        }
+    }
+
+    /// `entry` connected, and its run dropped with its error out.
+    fn dropped_attempt(state: &mut RunState, entry: usize) {
+        state.profile_event(ProfileEvent::EntryConnecting { entry }, 0);
+        state.profile_event(
+            ProfileEvent::EntryConnected {
+                entry,
+                peers: Vec::new(),
+            },
+            1,
+        );
+        state.profile_event(
+            ProfileEvent::Entry {
+                entry,
+                event: RunEvent::Error(dropped()),
+            },
+            2,
+        );
+    }
+
+    fn reconnecting(state: &mut RunState, entry: usize) {
+        state.profile_event(
+            ProfileEvent::EntryReconnecting {
+                entry,
+                attempt: 1,
+                after: Duration::from_secs(1),
+                cause: dsync_core::ReconnectCause::Run(dropped()),
+            },
+            3,
+        );
+    }
+
+    #[test]
+    fn a_redial_clears_the_dropped_attempts_failure_and_connects_again() {
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(1));
+        dropped_attempt(&mut state, 0);
+        reconnecting(&mut state, 0);
+        assert!(matches!(phase(&state), RunPhaseView::Connecting));
+        state.profile_event(
+            ProfileEvent::EntryConnected {
+                entry: 0,
+                peers: Vec::new(),
+            },
+            4,
+        );
+        state.event(summary(1));
+        finish(&mut state, 0, EntryOutcome::Synced(RunSummary::default()));
+        state.ended(ran());
+        assert!(matches!(phase(&state), RunPhaseView::Finished { .. }));
+
+        // Positive control: the same drop, never re-dialled, ends failed.
+        let mut failed = RunState::new(false, Tuning::DEFAULT.peek);
+        failed.listed(roots(1));
+        dropped_attempt(&mut failed, 0);
+        finish(
+            &mut failed,
+            0,
+            EntryOutcome::Failed(EntryFailure::Run(dropped())),
+        );
+        failed.ended(ran());
+        assert!(matches!(phase(&failed), RunPhaseView::Failed { .. }));
+    }
+
+    /// Re-dials that ran out on a connect end with the drop, which no
+    /// attempt emitted after the reset.
+    #[test]
+    fn redials_that_ran_out_end_failed_with_the_drop() {
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(1));
+        dropped_attempt(&mut state, 0);
+        reconnecting(&mut state, 0);
+        finish(
+            &mut state,
+            0,
+            EntryOutcome::Failed(EntryFailure::Run(dropped())),
+        );
+        state.ended(ran());
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Failed { ref message } if message.contains("closed")
         ));
     }
 

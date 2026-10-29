@@ -105,7 +105,7 @@ pub use peer_pin::CertificateRefusal;
 pub use peer_sessions::PeerSessions;
 pub use profile_run::{
     EntryFailure, EntryOutcome, EntryReport, ListedEntry, ProfileEvent, ProfileReport, ProfileRun,
-    ProfileStop, ResolvedOverlap, SkipReason,
+    ProfileStop, ReconnectCause, ResolvedOverlap, SkipReason,
 };
 pub use profile_store::{ProfileStore, ProfileStoreError};
 pub use remote_replica::RemoteReplica;

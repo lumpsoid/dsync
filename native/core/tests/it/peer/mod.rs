@@ -10,6 +10,7 @@ mod grants;
 mod links;
 mod listener;
 mod reclaim;
+mod redial;
 mod rename;
 mod round_trip;
 mod support;

@@ -618,6 +618,34 @@ fn a_connect_failure_is_reported_as_the_entry_s_only_word() {
 }
 
 #[test]
+fn a_redial_is_one_stderr_line_naming_the_device_and_the_attempt() {
+    use dsync_core::{LinkError, ReconnectCause, ReplicaError, RunError};
+    use dsync_domain::ReplicaOp;
+
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut renderer = HumanRenderer::new(
+        &mut out,
+        &mut err,
+        Verbosity::Normal,
+        fixtures::view(),
+        clock(),
+    );
+    renderer.reconnecting(
+        2,
+        &ReconnectCause::Run(RunError::Replica {
+            side: Side::B,
+            op: ReplicaOp::Scan,
+            source: std::sync::Arc::new(ReplicaError::Link(LinkError::Closed)),
+        }),
+    );
+    assert_eq!(String::from_utf8(out).unwrap(), "");
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        "connection to box lost; reconnecting (2)\n"
+    );
+}
+
+#[test]
 fn the_closing_list_is_silent_for_one_entry_and_names_each_outcome_for_several() {
     use dsync_core::{EntryFailure, EntryOutcome, EntryReport, SkipReason};
 
@@ -626,6 +654,7 @@ fn the_closing_list_is_silent_for_one_entry_and_names_each_outcome_for_several()
         metrics: None,
         planned: 0,
         finished: 0,
+        reconnects: 0,
     };
     let synced = report(EntryOutcome::Synced(RunSummary::default()));
     let skipped = report(EntryOutcome::Skipped(SkipReason::Missing(

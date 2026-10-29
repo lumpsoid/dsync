@@ -15,4 +15,4 @@ mod pipeline;
 mod soak;
 #[cfg(unix)]
 mod special_files;
-mod support;
+pub(crate) mod support;

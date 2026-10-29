@@ -69,6 +69,18 @@ pub enum LinkError {
     },
 }
 
+impl LinkError {
+    /// Whether the link itself went away - closed, failed at the socket,
+    /// or silent past its limit - rather than refusing what it carried: a
+    /// dropped `peer://` link is worth dialling again (SPEC §11.3).
+    pub fn is_drop(&self) -> bool {
+        matches!(
+            self,
+            LinkError::Closed | LinkError::Io(_) | LinkError::PeerSilent { .. }
+        )
+    }
+}
+
 impl From<io::Error> for LinkError {
     fn from(error: io::Error) -> LinkError {
         LinkError::Io(Arc::new(error))

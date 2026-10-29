@@ -11,10 +11,11 @@ pub mod words;
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use dsync_core::{
-    ConnectError, EntryReport, ListedEntry, PeerContact, RunEvent, SshLaunch, StateDir,
+    ConnectError, EntryReport, ListedEntry, PeerContact, ReconnectCause, RunEvent, SshLaunch,
+    StateDir,
 };
 use dsync_domain::{
     EffectiveOptions, EntryId, Locality, Location, ProfileName, ReplicaLocation, RuleSet, Side,
@@ -208,6 +209,15 @@ impl<O: Write, E: Write> Renderer<O, E> {
         match self {
             Renderer::Human(human) => human.connect_failed(error),
             Renderer::Json(json) => json.connect_failed(error),
+        }
+    }
+
+    /// The entry's dropped link is dialled again, `attempt` of them so
+    /// far, `after` from now.
+    pub fn reconnecting(&mut self, attempt: u32, after: Duration, cause: &ReconnectCause) {
+        match self {
+            Renderer::Human(human) => human.reconnecting(attempt, cause),
+            Renderer::Json(json) => json.reconnecting(attempt, after, cause),
         }
     }
 

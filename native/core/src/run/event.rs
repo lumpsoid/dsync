@@ -131,6 +131,29 @@ impl RunError {
         )
     }
 
+    /// Whether this is the link to a `peer://` side dropping (one of
+    /// `peers`): the one run failure a profile run dials again for (SPEC
+    /// §11.3).
+    pub fn is_link_drop(&self, peers: &[Side]) -> bool {
+        matches!(
+            self,
+            RunError::Replica { side, source, .. }
+                if peers.contains(side)
+                    && matches!(&**source, ReplicaError::Link(link) if link.is_drop())
+        )
+    }
+
+    /// A [`LockError::Held`] on one of `peers`: on a re-dial, most likely
+    /// the dropped session's own lock, not yet let go.
+    pub(crate) fn is_held_on(&self, peers: &[Side]) -> bool {
+        matches!(
+            self,
+            RunError::Replica { side, source, .. }
+                if peers.contains(side)
+                    && matches!(**source, ReplicaError::Lock(LockError::Held { .. }))
+        )
+    }
+
     /// The side the failure is on, where it is on one.
     pub fn side(&self) -> Option<Side> {
         match self {

@@ -8,8 +8,8 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use dsync_core::{
-    ConnectError, EntryFailure, EntryOutcome, EntryReport, LockError, PeerContact, ReplicaError,
-    RunError, RunEvent, SkipReason,
+    ConnectError, EntryFailure, EntryOutcome, EntryReport, LockError, PeerContact, ReconnectCause,
+    ReplicaError, RunError, RunEvent, SkipReason,
 };
 use dsync_domain::{
     Action, Conflict, ReplicaInfo, RunSummary, ScanTally, Side, SkippedPath, SkippedReason, Status,
@@ -89,6 +89,20 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
             "error: Cannot reach replica {}: {}",
             words::side(error.side),
             error.failure
+        );
+    }
+
+    /// A dropped link is dialled again (SPEC §11.5): one line on stderr,
+    /// under the dropped attempt's error, which it supersedes. Named by
+    /// the device the failure is on, as the view knows it.
+    pub fn reconnecting(&mut self, attempt: u32, cause: &ReconnectCause) {
+        let device = cause
+            .side()
+            .and_then(|side| self.view.replica(side).device())
+            .unwrap_or_else(|| "the far side".to_owned());
+        let _ = writeln!(
+            self.err,
+            "connection to {device} lost; reconnecting ({attempt})"
         );
     }
 

@@ -423,3 +423,32 @@ fn a_connect_failure_is_an_error_line_naming_its_entry() {
         "{line}"
     );
 }
+
+#[test]
+fn a_redial_is_a_reconnecting_line_with_its_attempt_wait_and_cause() {
+    use dsync_core::{LinkError, ReconnectCause};
+
+    let mut out = Vec::new();
+    let mut renderer = JsonRenderer::new(&mut out, fixtures::view());
+    renderer.enter_entry(1, fixtures::view());
+    renderer.reconnecting(
+        3,
+        Duration::from_millis(4000),
+        &ReconnectCause::Run(RunError::Replica {
+            side: Side::B,
+            op: ReplicaOp::Scan,
+            source: Arc::new(ReplicaError::Link(LinkError::Closed)),
+        }),
+    );
+    let line: Value = serde_json::from_str(std::str::from_utf8(&out).unwrap().trim()).unwrap();
+    assert_eq!(
+        line,
+        json!({
+            "type": "reconnecting",
+            "entry": 1,
+            "attempt": 3,
+            "afterMs": 4000,
+            "message": "replica b: scan failed: the connection to the replica closed",
+        })
+    );
+}

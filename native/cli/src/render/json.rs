@@ -1,12 +1,14 @@
 //! `--json` (SPEC §11.4): one object per event on stdout, each with a
 //! `type`: `replicas`, `scanTally`, `symlink` / `unreadable` /
 //! `caseFoldCollision` / `unrepresentableName`, `conflict`, `plan`,
-//! `massDelete`, `action`, `result`, `progress`, `summary`, `error`. Facts only; the
-//! human warnings are renderings of them.
+//! `massDelete`, `action`, `result`, `progress`, `summary`, `error`; and
+//! around them `entries` and `reconnecting`. Facts only; the human warnings
+//! are renderings of them.
 
 use std::io::Write;
+use std::time::Duration;
 
-use dsync_core::{ConnectError, ListedEntry, RunEvent};
+use dsync_core::{ConnectError, ListedEntry, ReconnectCause, RunEvent};
 use dsync_domain::{Action, Conflict, Location, MassDelete, ReplicaInfo, ScanTally, Side, Status};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
@@ -61,6 +63,20 @@ impl<O: Write> JsonRenderer<O> {
     /// this is the only line of it.
     pub fn connect_failed(&mut self, error: &ConnectError) {
         let line = json!({"type": "error", "entry": self.entry, "message": error.to_string()});
+        let _ = writeln!(self.out, "{line}");
+    }
+
+    /// A dropped link is dialled again `after` from now: supersedes the
+    /// `error` line the dropped attempt's run wrote before it, which is
+    /// not the entry's end.
+    pub fn reconnecting(&mut self, attempt: u32, after: Duration, cause: &ReconnectCause) {
+        let line = json!({
+            "type": "reconnecting",
+            "entry": self.entry,
+            "attempt": attempt,
+            "afterMs": u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+            "message": cause.to_string(),
+        });
         let _ = writeln!(self.out, "{line}");
     }
 

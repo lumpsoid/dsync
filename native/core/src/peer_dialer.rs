@@ -112,6 +112,17 @@ impl PeerDialError {
     pub fn is_unreachable(&self) -> bool {
         matches!(self, PeerDialError::Unreachable { .. })
     }
+
+    /// Whether a re-dial failing this way may yet succeed: nothing
+    /// answered (the handshake bound included), or the link dropped once
+    /// up. Every other failure says the same on the next try.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            PeerDialError::Unreachable { .. } => true,
+            PeerDialError::Link(link) => link.is_drop(),
+            _ => false,
+        }
+    }
 }
 
 fn peer_certificate(device: &PeerName, breach: &OutOfValidity) -> String {

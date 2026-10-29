@@ -53,6 +53,18 @@ pub struct Tuning {
     /// dialer's version frame only after the wait, and the dialer's dial
     /// is bounded by `handshake`.
     pub reclaim_wait: Duration,
+    /// The wait before a dropped `peer://` entry's first re-dial; each
+    /// further one waits twice the last, up to
+    /// [`Tuning::reconnect_backoff_max`].
+    pub reconnect_backoff: Duration,
+    pub reconnect_backoff_max: Duration,
+    /// How long after a drop its entry may still be re-dialled: no wait
+    /// is started that would end past it. A re-run that gets past its
+    /// locks opens a fresh one for the next drop.
+    pub reconnect_window: Duration,
+    /// Re-dials one entry may make in all, never reset: a link that flaps
+    /// forever still ends.
+    pub reconnects_per_entry: u32,
     /// Concurrent connections not yet authenticated.
     pub unauthenticated_connections: usize,
     /// Lifetime of a pairing token.
@@ -86,6 +98,10 @@ impl Tuning {
         silence_limit: Duration::from_secs(30),
         handshake: Duration::from_secs(10),
         reclaim_wait: Duration::from_secs(5),
+        reconnect_backoff: Duration::from_secs(1),
+        reconnect_backoff_max: Duration::from_secs(15),
+        reconnect_window: Duration::from_secs(120),
+        reconnects_per_entry: 10,
         unauthenticated_connections: 16,
         pairing_token: Duration::from_secs(5 * 60),
         scan_jobs: Jobs::DEFAULT,
@@ -128,6 +144,10 @@ mod tests {
         assert_eq!(tuning.silence_limit, Duration::from_secs(30));
         assert_eq!(tuning.handshake, Duration::from_secs(10));
         assert_eq!(tuning.reclaim_wait, Duration::from_secs(5));
+        assert_eq!(tuning.reconnect_backoff, Duration::from_secs(1));
+        assert_eq!(tuning.reconnect_backoff_max, Duration::from_secs(15));
+        assert_eq!(tuning.reconnect_window, Duration::from_secs(120));
+        assert_eq!(tuning.reconnects_per_entry, 10);
         assert_eq!(tuning.unauthenticated_connections, 16);
         assert_eq!(tuning.pairing_token, Duration::from_secs(300));
         assert_eq!(tuning.scan_jobs.get(), 4);

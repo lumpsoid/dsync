@@ -180,6 +180,9 @@ pub async fn sync(
                     let _ = writeln!(err, "{} ↔ {}:", view.a.location, view.b.location);
                 }
                 let _ = write!(err, "{}", metrics.render());
+                if entry.reconnects > 0 {
+                    let _ = writeln!(err, "reconnects: {}", entry.reconnects);
+                }
             }
         }
     }
@@ -303,6 +306,12 @@ async fn show<O: Write, E: Write>(
                     let _ = plan_shown.send(plans_shown);
                 }
             }
+            ProfileEvent::EntryReconnecting {
+                attempt,
+                after,
+                cause,
+                ..
+            } => renderer.reconnecting(attempt, after, &cause),
             ProfileEvent::EntryFinished { .. } => {}
         }
     }
