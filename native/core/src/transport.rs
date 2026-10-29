@@ -14,7 +14,7 @@ use std::time::Duration;
 use dsync_domain::Tuning;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter, ReadBuf, ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
-use tokio::task::{JoinError, JoinHandle};
+use tokio::task::{AbortHandle, JoinError, JoinHandle};
 use tokio::time::{Instant, Sleep};
 
 use crate::credit::{Credit, Stopped};
@@ -269,6 +269,11 @@ impl<T: Send + 'static> Task<T> {
 
     pub fn abort(&self) {
         self.0.abort();
+    }
+
+    /// Stops the task from wherever the handle is, without owning it.
+    pub fn abort_handle(&self) -> AbortHandle {
+        self.0.abort_handle()
     }
 }
 

@@ -3,10 +3,12 @@
 //! with the list as it now stands.
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use dsync_core::{
-    DeviceIdentityStore, PairedDeviceStore, PairedDevices, PairingError, PeerDialer, resolve_grant,
+    DeviceIdentityStore, PairedDeviceStore, PairedDevices, PairingError, PeerDialer, PeerSessions,
+    resolve_grant,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{DeviceId, Location, PeerName};
@@ -115,7 +117,12 @@ impl Hub {
             .identities()
             .load_or_create(&self.device_name, SystemTime::now())
             .map_err(text)?;
-        let dialer = PeerDialer::new(identity, self.paired(), self.tuning);
+        let dialer = PeerDialer::new(
+            identity,
+            self.paired(),
+            self.tuning,
+            Arc::new(PeerSessions::new()),
+        );
         Ok(ReplyResult::PeerProbed(
             match dialer.probe(&id, address).await {
                 Ok(reached) => ProbeOutcome::Reachable {

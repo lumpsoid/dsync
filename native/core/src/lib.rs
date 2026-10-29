@@ -30,6 +30,7 @@ mod granted_roots;
 mod inbound;
 mod interface_addresses;
 mod link_error;
+mod live_sessions;
 mod local_replica;
 mod local_root;
 mod paired_device;
@@ -39,6 +40,8 @@ mod peer_dialer;
 mod peer_event;
 mod peer_listener;
 mod peer_pin;
+mod peer_preamble;
+mod peer_sessions;
 mod profile_run;
 mod profile_store;
 mod remote_replica;
@@ -53,6 +56,7 @@ mod scan_pool;
 mod scan_probe;
 mod scan_session;
 mod scanner;
+mod session_token;
 mod ssh_transport;
 mod state_dir;
 mod stored_archive;
@@ -98,6 +102,7 @@ pub use peer_dialer::{DialedPeer, PeerDialError, PeerDialer};
 pub use peer_event::{PeerEvent, PeerRefusal};
 pub use peer_listener::{GRANTS_NEST, NOT_GRANTED, PeerBindError, PeerListener, bind_peer};
 pub use peer_pin::CertificateRefusal;
+pub use peer_sessions::PeerSessions;
 pub use profile_run::{
     EntryFailure, EntryOutcome, EntryReport, ListedEntry, ProfileEvent, ProfileReport, ProfileRun,
     ProfileStop, ResolvedOverlap, SkipReason,

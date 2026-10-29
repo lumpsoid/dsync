@@ -1,11 +1,12 @@
 //! The connector: the cases of `connected_replicas_test.dart` - which
 //! transport each location takes, and the distinct failures of each.
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use dsync_core::{
     AnyReplica, ConnectError, ConnectFailure, Connector, DeviceIdentity, LinkError, PairedDevice,
-    PairedDeviceStore, PeerDialError, PeerDialer, Replica, StateDir,
+    PairedDeviceStore, PeerDialError, PeerDialer, PeerSessions, Replica, StateDir,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
@@ -266,7 +267,12 @@ fn peer_options(site: &Site, device: &str, id: &DeviceIdentity) -> EffectiveOpti
 }
 
 fn dialer(state: &StateDir, me: &DeviceIdentity) -> PeerDialer {
-    PeerDialer::new(me.clone(), PairedDeviceStore::new(state), Tuning::DEFAULT)
+    PeerDialer::new(
+        me.clone(),
+        PairedDeviceStore::new(state),
+        Tuning::DEFAULT,
+        Arc::new(PeerSessions::new()),
+    )
 }
 
 #[tokio::test]

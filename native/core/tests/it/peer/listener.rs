@@ -10,7 +10,9 @@ use dsync_core::{
 use dsync_domain::FormatVersion;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::peer::support::{Host, identity, raw_tls, serve, somewhere, with_deadline};
+use crate::peer::support::{
+    Host, identity, raw_preamble, raw_tls, serve, somewhere, with_deadline,
+};
 
 /// A granted root under `server`, created.
 fn granted_root(server: &Host) -> String {
@@ -323,6 +325,7 @@ async fn session_speaking(version: FormatVersion) -> (Vec<u8>, Result<(), LinkEr
     let mut tls = with_deadline("raw handshake", raw_tls(serving.at, Some(&client.identity)))
         .await
         .unwrap();
+    raw_preamble(&mut tls).await;
     tls.write_all(&version_frame(version)).await.unwrap();
     tls.flush().await.unwrap();
     let mut answer = vec![0u8; version_frame(PROTOCOL_VERSION).len()];
@@ -360,6 +363,34 @@ async fn a_peer_of_another_protocol_major_is_refused_naming_both() {
             .contains("this side speaks 2.0, the far side 3.0"),
         "{error}"
     );
+}
+
+/// A dsync from before the peer:// preamble opens with its version
+/// frame; the listener says so rather than misreading it.
+#[tokio::test]
+async fn a_peer_without_the_preamble_is_refused_as_such() {
+    let server = Host::new(identity("desktop"));
+    let client = Host::new(identity("phone"));
+    server.pair(&client.identity, "phone", somewhere(), &[]);
+    let mut serving = serve(&server).await;
+    let mut tls = with_deadline("raw handshake", raw_tls(serving.at, Some(&client.identity)))
+        .await
+        .unwrap();
+    tls.write_all(&version_frame(PROTOCOL_VERSION))
+        .await
+        .unwrap();
+    tls.flush().await.unwrap();
+    assert!(matches!(
+        serving.next_event().await,
+        PeerEvent::Started { .. }
+    ));
+    match serving.next_event().await {
+        PeerEvent::Ended {
+            outcome: Err(LinkError::NoPeerPreamble { received }),
+            ..
+        } => assert_eq!(received, version_frame(PROTOCOL_VERSION)[..8]),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[tokio::test]

@@ -20,6 +20,7 @@ use dsync_domain::{
 };
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::time::Instant;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
@@ -30,7 +31,10 @@ use crate::paired_device_store::{PairedDeviceStore, PairedDeviceStoreError};
 use crate::peer_pin::{
     CertificateRefusal, PeerPin, client_config, presented, server_name, tls_failure,
 };
+use crate::peer_preamble::{ClaimFailure, claim};
+use crate::peer_sessions::PeerSessions;
 use crate::remote_replica::RemoteReplica;
+use crate::session_token::SessionToken;
 use crate::transport::{Liveness, Transport};
 use crate::version_handshake::handshake;
 
@@ -133,11 +137,13 @@ pub struct DialedPeer {
     pub expiries: Vec<CertificateExpiry>,
 }
 
-/// Dials paired devices as this host's `identity`.
+/// Dials paired devices as this host's `identity`, claiming on each dial
+/// the session `sessions` holds for the same replica (SPEC §4.2).
 pub struct PeerDialer {
     identity: DeviceIdentity,
     paired: PairedDeviceStore,
     tuning: Tuning,
+    sessions: Arc<PeerSessions>,
 }
 
 /// A TLS connection up and authenticated to the pinned device.
@@ -147,11 +153,17 @@ struct Authenticated {
 }
 
 impl PeerDialer {
-    pub fn new(identity: DeviceIdentity, paired: PairedDeviceStore, tuning: Tuning) -> PeerDialer {
+    pub fn new(
+        identity: DeviceIdentity,
+        paired: PairedDeviceStore,
+        tuning: Tuning,
+        sessions: Arc<PeerSessions>,
+    ) -> PeerDialer {
         PeerDialer {
             identity,
             paired,
             tuning,
+            sessions,
         }
     }
 
@@ -160,6 +172,11 @@ impl PeerDialer {
     /// the whole of it bounded by [`Tuning::handshake`]. `spec` goes out
     /// with the replica's `hello`. The connection carries the liveness
     /// bound.
+    ///
+    /// The preamble claims the session the last dial for `spec`'s entry
+    /// and side was issued, so the far side ends it if it is still live
+    /// there - a dropped link's - before this one meets its lock; the
+    /// token this dial is issued replaces it once the dial succeeds.
     ///
     /// Looked up by id, never by name: a `peer://` location's name is
     /// cosmetic and may have been renamed, or reused by another device,
@@ -186,17 +203,26 @@ impl PeerDialer {
             expected: id,
             pin: &pin,
         };
-        let connecting = async {
-            let Authenticated { tls, presented } = self.authenticate(&failed).await?;
-            let transport = Transport::split(tls).with_liveness(Liveness::of(&self.tuning));
-            let replica = RemoteReplica::connect(transport, spec, &self.tuning)
+        let (entry, side) = (spec.entry.clone(), spec.side);
+        let reclaim = self.sessions.claim(id, &entry, side);
+        let mut deadline = Instant::now() + self.tuning.handshake;
+        let late = || failed.unreachable(io::ErrorKind::TimedOut.into());
+        let Authenticated { mut tls, presented } =
+            tokio::time::timeout_at(deadline, self.authenticate(&failed))
                 .await
-                .map_err(|cause| failed.link(cause))?;
-            Ok::<_, PeerDialError>((replica, presented))
-        };
-        let (replica, presented) = tokio::time::timeout(self.tuning.handshake, connecting)
-            .await
-            .map_err(|_| failed.unreachable(io::ErrorKind::TimedOut.into()))??;
+                .map_err(|_| late())??;
+        let token = self
+            .claim(&mut tls, reclaim, &mut deadline, &failed)
+            .await?;
+        let transport = Transport::split(tls).with_liveness(Liveness::of(&self.tuning));
+        let replica = tokio::time::timeout_at(
+            deadline,
+            RemoteReplica::connect(transport, spec, &self.tuning),
+        )
+        .await
+        .map_err(|_| late())?
+        .map_err(|cause| failed.link(cause))?;
+        self.sessions.hold(id, entry, side, token);
         let now = SystemTime::now();
         let expiries = [
             (CertificateOwner::ThisHost, self.identity.certificate()),
@@ -247,8 +273,10 @@ impl PeerDialer {
             expected: id,
             pin: &pin,
         };
+        let mut deadline = Instant::now() + self.tuning.handshake;
         let probing = async {
-            let Authenticated { tls, .. } = self.authenticate(&failed).await?;
+            let Authenticated { mut tls, .. } = self.authenticate(&failed).await?;
+            self.claim(&mut tls, None, &mut deadline, &failed).await?;
             let (reader, mut writer) = tokio::io::split(tls);
             let mut reader = BufReader::new(reader);
             handshake(&mut reader, &mut writer)
@@ -261,6 +289,23 @@ impl PeerDialer {
             .await
             .map_err(|_| failed.unreachable(io::ErrorKind::TimedOut.into()))??;
         Ok(address)
+    }
+
+    /// The dialer's half of the preamble: presents `reclaim`, answers the
+    /// token issued, within `deadline` (which a draining listener moves).
+    async fn claim(
+        &self,
+        tls: &mut TlsStream<TcpStream>,
+        reclaim: Option<SessionToken>,
+        deadline: &mut Instant,
+        failed: &Failed<'_>,
+    ) -> Result<SessionToken, PeerDialError> {
+        claim(tls, reclaim, deadline, self.tuning.handshake)
+            .await
+            .map_err(|failure| match failure {
+                ClaimFailure::Late => failed.unreachable(io::ErrorKind::TimedOut.into()),
+                ClaimFailure::Link(cause) => failed.link(cause),
+            })
     }
 
     /// TCP and TLS to `failed.address`, pinned to `failed.expected`, with

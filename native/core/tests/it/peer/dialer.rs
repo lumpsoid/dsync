@@ -2,9 +2,10 @@
 //! successful dial records - the cases of `socket_channel_test` and
 //! `connect_secure_leak_test` that are not the listener's.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use dsync_core::{PeerDialError, PeerDialer};
+use dsync_core::{PeerDialError, PeerDialer, PeerSessions};
 use dsync_domain::Tuning;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
@@ -106,6 +107,7 @@ async fn a_silent_peer_is_abandoned_at_the_dial_bound_holding_nothing() {
             handshake: bound,
             ..Tuning::DEFAULT
         },
+        Arc::new(PeerSessions::new()),
     );
     let desktop = desktop_identity.device_id();
     let started = Instant::now();
@@ -146,6 +148,7 @@ async fn a_dial_that_finishes_in_time_is_untouched_by_the_bound() {
             handshake: Duration::from_secs(2),
             ..Tuning::DEFAULT
         },
+        Arc::new(PeerSessions::new()),
     );
     let dialed = with_deadline(
         "dial",

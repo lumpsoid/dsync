@@ -24,7 +24,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use dsync_domain::{HostFacts, ReplicaSpec, Tuning};
+use dsync_domain::{DeviceId, HostFacts, ReplicaSpec, Tuning};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -33,11 +33,14 @@ use tokio_rustls::server::TlsStream;
 
 use crate::device_identity::DeviceIdentity;
 use crate::granted_roots::GrantedRoots;
+use crate::link_error::LinkError;
+use crate::live_sessions::{LiveSession, LiveSessions};
 use crate::paired_device::{PairedDevice, resolve_grant};
 use crate::paired_device_store::PairedDeviceStore;
 use crate::paired_devices::PairedDevices;
 use crate::peer_event::{PeerEvent, PeerRefusal};
 use crate::peer_pin::{CertificateRefusal, PeerPin, presented, server_config};
+use crate::peer_preamble::issue;
 use crate::replica::Replica;
 use crate::replica_error::ReplicaError;
 use crate::replica_server::ReplicaServer;
@@ -81,6 +84,7 @@ pub struct PeerListener<F> {
     paired: PairedDeviceStore,
     home: Option<String>,
     tuning: Tuning,
+    sessions: Arc<LiveSessions>,
 }
 
 impl<F, Opening, R> PeerListener<F>
@@ -107,6 +111,7 @@ where
             paired,
             home: host.home().map(str::to_owned),
             tuning,
+            sessions: Arc::default(),
         }
     }
 
@@ -140,7 +145,7 @@ where
                     return events(PeerEvent::Refused { from, why });
                 }
                 let authenticated = served.authenticate(stream, permit).await;
-                let (tls, device) = match authenticated {
+                let (mut tls, device) = match authenticated {
                     Ok(authenticated) => authenticated,
                     Err(why) => return events(PeerEvent::Refused { from, why }),
                 };
@@ -171,8 +176,19 @@ where
                     },
                     served.tuning,
                 );
-                let transport = Transport::split(tls).with_liveness(Liveness::of(&served.tuning));
-                let outcome = session.serve(transport).await;
+                // Registered before the reclaim, so this session's token
+                // can never be the one it ends.
+                let live = served.sessions.register(id);
+                let outcome = match served.claimed(&mut tls, &live, id).await {
+                    Ok(()) => {
+                        let transport =
+                            Transport::split(tls).with_liveness(Liveness::of(&served.tuning));
+                        session.serve_until(transport, live.ended()).await
+                    }
+                    Err(error) => Err(error),
+                };
+                drop(session);
+                drop(live);
                 events(PeerEvent::Ended {
                     from,
                     device: id,
@@ -181,6 +197,31 @@ where
                 });
             });
         }
+    }
+
+    /// The preamble (SPEC §4.2) under the handshake deadline: issues
+    /// `live`'s token, and if the dialer claimed a session of its own
+    /// that is still live here, ends it and waits - up to
+    /// [`Tuning::reclaim_wait`] - for it to let go of its replica, so the
+    /// claimant's lock finds it free.
+    async fn claimed<S>(
+        &self,
+        tls: &mut S,
+        live: &LiveSession,
+        device: DeviceId,
+    ) -> Result<(), LinkError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let claim = tokio::time::timeout(self.tuning.handshake, issue(tls, live.token()))
+            .await
+            .map_err(|_| LinkError::from(io::Error::from(io::ErrorKind::TimedOut)))??;
+        if let Some(claim) = claim {
+            self.sessions
+                .reclaim(&claim, device, self.tuning.reclaim_wait)
+                .await;
+        }
+        Ok(())
     }
 
     /// The TLS handshake against the paired set as it is now, under the

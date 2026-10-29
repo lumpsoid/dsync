@@ -3,7 +3,9 @@
 //! paired device does not break a profile naming it, and a different
 //! device that later takes the old name is never dialled in its place.
 
-use dsync_core::{Connector, PeerDialer, Replica};
+use std::sync::Arc;
+
+use dsync_core::{Connector, PeerDialer, PeerSessions, Replica};
 use dsync_domain::{
     Command, DeviceId, EffectiveOptions, Flags, HostFacts, Location, Platform, ReplicaLocation,
     RunFlags, Tuning,
@@ -53,6 +55,7 @@ fn connector(client: &Host) -> Connector {
         client.identity.clone(),
         client.store(),
         Tuning::DEFAULT,
+        Arc::new(PeerSessions::new()),
     ))
 }
 

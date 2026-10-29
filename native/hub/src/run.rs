@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use dsync_core::{
-    BatchDecider, Compared, Connector, Decider, DryRunDecider, Peek, PeerDialer, ProfileEvent,
-    ProfileReport, ProfileRun, ProfileStop, Replica, interface_addresses,
+    BatchDecider, Compared, Connector, Decider, DryRunDecider, Peek, PeerDialer, PeerSessions,
+    ProfileEvent, ProfileReport, ProfileRun, ProfileStop, Replica, interface_addresses,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
@@ -158,7 +158,9 @@ struct Prepared {
 }
 
 impl Launch {
-    fn prepare(&self, hub: &Hub) -> Result<Prepared, String> {
+    /// `sessions` is the run session's, so a fresh attempt claims what
+    /// the one before it left behind on a peer (SPEC §4.2).
+    fn prepare(&self, hub: &Hub, sessions: &Arc<PeerSessions>) -> Result<Prepared, String> {
         let facts = &hub.facts;
         let addresses: Vec<String> = interface_addresses()
             .unwrap_or_default()
@@ -188,7 +190,12 @@ impl Launch {
         )
         .with_local_addresses(addresses);
         if let Some(identity) = hub.identities().load().map_err(text)? {
-            connector = connector.with_peers(PeerDialer::new(identity, hub.paired(), hub.tuning));
+            connector = connector.with_peers(PeerDialer::new(
+                identity,
+                hub.paired(),
+                hub.tuning,
+                sessions.clone(),
+            ));
         }
         if let Some(typed) = &self.address {
             connector = connector.with_peer_address(PeerAddress::parse(typed).map_err(text)?);
@@ -571,8 +578,9 @@ async fn run_session(
     launch: Launch,
     mut wakes: mpsc::UnboundedReceiver<Wake>,
 ) {
+    let sessions = Arc::new(PeerSessions::new());
     loop {
-        attempt(&control, &hub, &launch).await;
+        attempt(&control, &hub, &launch, &sessions).await;
         if control.is_over() {
             return;
         }
@@ -583,13 +591,18 @@ async fn run_session(
     }
 }
 
-async fn attempt(control: &Arc<RunControl>, hub: &Hub, launch: &Launch) {
+async fn attempt(
+    control: &Arc<RunControl>,
+    hub: &Hub,
+    launch: &Launch,
+    sessions: &Arc<PeerSessions>,
+) {
     let Prepared {
         name,
         connector,
         entries,
         mode,
-    } = match launch.prepare(hub) {
+    } = match launch.prepare(hub, sessions) {
         Ok(prepared) => prepared,
         Err(message) => {
             control.update(|state| state.unprepared(message));

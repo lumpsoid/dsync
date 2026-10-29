@@ -127,7 +127,21 @@ impl RemoteReplica {
                 ended: None,
             }),
         });
-        let reading = Task::spawn(read_replies(reader, link.clone(), liveness));
+        // A link whose reader failed - silent, broken, undecodable - is
+        // never written to again: the writer is stopped, so a write stuck
+        // behind it on a full outbox (a dead path whose socket no longer
+        // drains) fails now rather than when TCP gives up. A clean end of
+        // the far side's stream leaves the writer to finish.
+        let stop_writing = written.abort_handle();
+        let reading = {
+            let link = link.clone();
+            Task::spawn(async move {
+                read_replies(reader, link.clone(), liveness).await;
+                if !matches!(link.failure(), LinkError::Closed) {
+                    stop_writing.abort();
+                }
+            })
+        };
         let writing = {
             let link = link.clone();
             Task::spawn(async move {
@@ -852,6 +866,36 @@ mod tests {
         // Answered early, the write ends its body on the wire as failed.
         let frame = within(REAL, peer.next_request()).await;
         assert_eq!((frame.kind, frame.id), (Kind::Fail, id));
+    }
+
+    /// A far side that goes dark mid-push: it reads nothing more, so the
+    /// writes' frames back up behind a writer stuck on the full transport
+    /// and fill the outbox. The silence limit still ends every write.
+    #[tokio::test(start_paused = true)]
+    async fn writes_stuck_behind_a_full_outbox_end_at_the_silence_limit() {
+        let (client, peer) = connected(network()).await;
+        let meta = FileMeta {
+            size: 0,
+            mtime_us: 0,
+            mode: 0o644,
+        };
+        let paths: Vec<_> = (0..8)
+            .map(|n| RelPath::parse(&format!("f{n}")).unwrap())
+            .collect();
+        let writes = paths.iter().map(|path| {
+            let body = Body::from_bytes(vec![1; 3 * credit::STREAM_CREDIT_BYTES]);
+            client.write(path, body, meta, Precondition::Absent)
+        });
+        let started = Instant::now();
+        let wrote = within(VIRTUAL, futures_util::future::join_all(writes)).await;
+        for write in wrote {
+            assert!(
+                matches!(write, Err(ReplicaError::Link(LinkError::PeerSilent { .. }))),
+                "{write:?}"
+            );
+        }
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+        drop(peer);
     }
 
     #[tokio::test]

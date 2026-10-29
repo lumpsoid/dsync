@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 
 use dsync_core::{
     DeviceIdentity, DialedPeer, LocalReplica, PairedDevice, PairedDeviceStore, PeerDialError,
-    PeerDialer, PeerEvent, PeerListener, ReplicaError, StateDir, Symlinks, bind_peer,
+    PeerDialer, PeerEvent, PeerListener, PeerSessions, ReplicaError, StateDir, Symlinks, bind_peer,
     resolve_grant,
 };
 use dsync_domain::host_port::PeerAddress;
@@ -24,6 +24,7 @@ use rustls::crypto::{WebPkiSupportedAlgorithms, ring};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -132,7 +133,12 @@ impl Host {
     }
 
     pub fn dialer(&self) -> PeerDialer {
-        PeerDialer::new(self.identity.clone(), self.store(), Tuning::DEFAULT)
+        PeerDialer::new(
+            self.identity.clone(),
+            self.store(),
+            Tuning::DEFAULT,
+            Arc::new(PeerSessions::new()),
+        )
     }
 
     /// Dials the device paired here as `label`, resolving it to its id
@@ -293,6 +299,22 @@ pub fn raw_client_config(identity: Option<&DeviceIdentity>) -> ClientConfig {
 
 pub fn raw_server_name() -> ServerName<'static> {
     ServerName::try_from("dsync").unwrap()
+}
+
+/// The dialer's half of the peer:// preamble by hand, claiming nothing:
+/// a `Claim` frame out, the listener's `Issued` frame read and checked
+/// for its magic.
+pub async fn raw_preamble(tls: &mut TlsStream<TcpStream>) {
+    let mut claim = b"dsync-ps".to_vec();
+    claim.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0, 0x01, 0, 1, 0]);
+    tls.write_all(&claim).await.unwrap();
+    tls.flush().await.unwrap();
+    let mut issued = [0u8; 8 + 8 + 1 + 2 + 16];
+    with_deadline("the listener's preamble", tls.read_exact(&mut issued))
+        .await
+        .unwrap();
+    assert_eq!(&issued[..8], b"dsync-ps");
+    assert_eq!(issued[16], 0x02, "an issued token");
 }
 
 /// Completes the client's half of a TLS handshake with the listener at

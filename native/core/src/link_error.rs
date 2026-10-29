@@ -34,6 +34,23 @@ pub enum LinkError {
     /// protocol at all - in practice a remote shell printing over it.
     #[error("{}", NotSpeaking { received, truncated: *truncated })]
     NotSpeakingProtocol { received: Vec<u8>, truncated: bool },
+    /// What a peer:// far side sent in place of the preamble's magic: in
+    /// practice a dsync from before session tokens, opening with its
+    /// version frame.
+    #[error(
+        "the far side did not open with the peer:// preamble (it sent {received:02x?}); \
+         it runs an older dsync - install the same version on both"
+    )]
+    NoPeerPreamble { received: Vec<u8> },
+    /// The two ends' peer:// preambles differ in major.
+    #[error(
+        "peer:// preamble version mismatch: this side speaks {local}, the far side {remote}; \
+         install dsync versions of the same major on both"
+    )]
+    PreambleVersionMismatch {
+        local: FormatVersion,
+        remote: FormatVersion,
+    },
     /// A frame or message that broke the protocol after the handshake: a
     /// bug on one side or the other, never a user's configuration.
     #[error("protocol error: {0}")]

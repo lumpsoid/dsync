@@ -4,11 +4,13 @@
 //! turn what happened into SPEC §11.5's exit code.
 
 use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use dsync_core::{
     BatchDecider, Connector, DeviceIdentityStore, DryRunDecider, PairedDeviceStore, PeerDialer,
-    ProfileEvent, ProfileRun, ProfileStop, ProfileStore, RunEvent, StateDir, interface_addresses,
+    PeerSessions, ProfileEvent, ProfileRun, ProfileStop, ProfileStore, RunEvent, StateDir,
+    interface_addresses,
 };
 use dsync_domain::{
     AdHocTarget, Command, DirRule, EffectiveOptions, Flags, Location, Mode, ReplicaLocation,
@@ -71,6 +73,7 @@ pub async fn sync(
             identity,
             PairedDeviceStore::new(&state),
             tuning,
+            Arc::new(PeerSessions::new()),
         ));
     }
 

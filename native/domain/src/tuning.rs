@@ -47,6 +47,12 @@ pub struct Tuning {
     pub silence_limit: Duration,
     /// Deadline for a TLS handshake and hello.
     pub handshake: Duration,
+    /// How long a peer listener waits for a session a reclaim ended to
+    /// let go of its replica before serving the dialer that claimed it
+    /// (SPEC §4.3). Below [`Tuning::handshake`]: the listener answers the
+    /// dialer's version frame only after the wait, and the dialer's dial
+    /// is bounded by `handshake`.
+    pub reclaim_wait: Duration,
     /// Concurrent connections not yet authenticated.
     pub unauthenticated_connections: usize,
     /// Lifetime of a pairing token.
@@ -79,6 +85,7 @@ impl Tuning {
         heartbeat: Duration::from_secs(5),
         silence_limit: Duration::from_secs(30),
         handshake: Duration::from_secs(10),
+        reclaim_wait: Duration::from_secs(5),
         unauthenticated_connections: 16,
         pairing_token: Duration::from_secs(5 * 60),
         scan_jobs: Jobs::DEFAULT,
@@ -120,6 +127,7 @@ mod tests {
         assert_eq!(tuning.heartbeat, Duration::from_secs(5));
         assert_eq!(tuning.silence_limit, Duration::from_secs(30));
         assert_eq!(tuning.handshake, Duration::from_secs(10));
+        assert_eq!(tuning.reclaim_wait, Duration::from_secs(5));
         assert_eq!(tuning.unauthenticated_connections, 16);
         assert_eq!(tuning.pairing_token, Duration::from_secs(300));
         assert_eq!(tuning.scan_jobs.get(), 4);
@@ -129,5 +137,12 @@ mod tests {
         assert_eq!(tuning.peek.max_bytes, 1 << 22);
         assert_eq!(tuning.peek.diff_deadline, Duration::from_millis(200));
         assert!(tuning.silence_limit > tuning.heartbeat);
+    }
+
+    /// A reclaim's wait runs inside the dialer's handshake bound, after
+    /// the TLS handshake; at the bound the dial would time out first.
+    #[test]
+    fn a_reclaim_waits_less_than_a_handshake_allows() {
+        assert!(Tuning::DEFAULT.reclaim_wait < Tuning::DEFAULT.handshake);
     }
 }
