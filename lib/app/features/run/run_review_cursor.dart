@@ -42,34 +42,77 @@ final class ActionTarget extends ReviewTarget {
   int get hashCode => Object.hash(ActionTarget, position);
 }
 
-/// The rows under review in the order the page shows them: the conflicts,
-/// then each shown plan group's rows. A group behind a closed disclosure
-/// is left out — the cursor only rests on a row that is on the page.
+/// One stretch of the review's rows, all of one kind: their positions,
+/// ascending.
+sealed class ReviewRun {
+  const ReviewRun(this.positions);
+
+  final List<int> positions;
+
+  /// The row at [index] of this run.
+  ReviewTarget at(int index);
+
+  /// Where [target] stands in this run, or `null` when it is not in it.
+  int? indexOf(ReviewTarget target);
+}
+
+/// Conflicts, by their positions in `SyncRunViewState.conflicts`.
+final class ConflictRun extends ReviewRun {
+  const ConflictRun(super.positions);
+
+  @override
+  ReviewTarget at(int index) => ConflictTarget(positions[index]);
+
+  @override
+  int? indexOf(ReviewTarget target) => switch (target) {
+    ConflictTarget(:final position) => _found(positions, position),
+    ActionTarget() => null,
+  };
+}
+
+/// Planned actions, by their positions in `SyncRunViewState.plan`.
+final class ActionRun extends ReviewRun {
+  const ActionRun(super.positions);
+
+  @override
+  ReviewTarget at(int index) => ActionTarget(positions[index]);
+
+  @override
+  int? indexOf(ReviewTarget target) => switch (target) {
+    ActionTarget(:final position) => _found(positions, position),
+    ConflictTarget() => null,
+  };
+}
+
+int? _found(List<int> positions, int position) {
+  final found = binarySearch(positions, position);
+  return found >= 0 ? found : null;
+}
+
+/// The rows under review in the order the page shows them: a re-dialled
+/// review's changed rows, then the conflicts, then each shown plan group's
+/// rows. A group behind a closed disclosure is left out — the cursor only
+/// rests on a row that is on the page.
 ///
-/// Holds the plan groups' own index lists rather than a flattened copy, so
+/// Holds the page's own index lists rather than a flattened copy, so
 /// making one per keypress costs a handful of list references however
 /// large the plan: a 50k-row plan is never walked to move by one.
 final class ReviewOrder {
-  ReviewOrder({required this.conflicts, required List<List<int>> actionRuns})
-    : _runs = actionRuns,
-      length = actionRuns.fold(conflicts, (sum, run) => sum + run.length);
+  ReviewOrder(this._runs)
+    : length = _runs.fold(0, (sum, run) => sum + run.positions.length);
 
-  /// How many conflicts lead the order.
-  final int conflicts;
-
-  /// Each shown group's plan positions, ascending, in page order.
-  final List<List<int>> _runs;
+  /// Each shown section's rows, in page order.
+  final List<ReviewRun> _runs;
 
   final int length;
 
   /// The row at [position], which must be in `0 ..< length`.
   ReviewTarget at(int position) {
     RangeError.checkValidIndex(position, this, 'position', length);
-    if (position < conflicts) return ConflictTarget(position);
-    var rest = position - conflicts;
+    var rest = position;
     for (final run in _runs) {
-      if (rest < run.length) return ActionTarget(run[rest]);
-      rest -= run.length;
+      if (rest < run.positions.length) return run.at(rest);
+      rest -= run.positions.length;
     }
     throw StateError('unreachable: $position is inside $length');
   }
@@ -77,18 +120,12 @@ final class ReviewOrder {
   /// Where [target] stands, or `null` when it is not shown — a row of a
   /// closed group, or one past the end of the current plan.
   int? positionOf(ReviewTarget target) {
-    switch (target) {
-      case ConflictTarget(:final position):
-        return position < conflicts ? position : null;
-      case ActionTarget(:final position):
-        var base = conflicts;
-        for (final run in _runs) {
-          final found = binarySearch(run, position);
-          if (found >= 0) return base + found;
-          base += run.length;
-        }
-        return null;
+    var base = 0;
+    for (final run in _runs) {
+      if (run.indexOf(target) case final found?) return base + found;
+      base += run.positions.length;
     }
+    return null;
   }
 }
 

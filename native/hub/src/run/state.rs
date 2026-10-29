@@ -15,7 +15,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dsync_core::{EntryFailure, EntryOutcome, ProfileEvent, RunEvent, SkipReason};
+use dsync_core::{
+    ActionChoice, ConflictChoice, EntryFailure, EntryOutcome, ProfileEvent, Recall, RowRecall,
+    RunEvent, SkipReason,
+};
 use dsync_domain::{
     Action, MassDelete, PeekLimits, Plan, RelPath, ReplicaInfo, RootKind, RunSummary, ScanTally,
     Side, SideDeletes, SkippedPath, Status,
@@ -120,6 +123,54 @@ impl Choices {
             actions: vec![ActionChoiceView::Proposed; plan.actions()],
             conflicts: vec![ConflictChoiceView::Unresolved; plan.conflicts()],
         }
+    }
+
+    /// A re-dialled entry's plan, from what `recall` kept of the answers
+    /// given before: a row that carried keeps its earlier choice, where its
+    /// row still offers it; any other row starts as planned or open.
+    fn recalled(plan: &PlanRows, recall: &Recall) -> Choices {
+        let actions = recall
+            .actions()
+            .iter()
+            .enumerate()
+            .map(|(at, row)| match row {
+                RowRecall::Carried(choice) => {
+                    let kept = match choice {
+                        ActionChoice::Approved => ActionChoiceView::Proposed,
+                        ActionChoice::Reversed => ActionChoiceView::Reversed,
+                        ActionChoice::Vetoed => ActionChoiceView::Skipped,
+                    };
+                    if plan.action_offers(at, kept) {
+                        kept
+                    } else {
+                        ActionChoiceView::Proposed
+                    }
+                }
+                RowRecall::Changed { .. } => ActionChoiceView::Proposed,
+            })
+            .collect();
+        let conflicts = recall
+            .conflicts()
+            .iter()
+            .enumerate()
+            .map(|(at, row)| match row {
+                RowRecall::Carried(choice) => {
+                    let kept = match choice {
+                        ConflictChoice::Unresolved => ConflictChoiceView::Unresolved,
+                        ConflictChoice::Keep(Side::A) => ConflictChoiceView::KeepA,
+                        ConflictChoice::Keep(Side::B) => ConflictChoiceView::KeepB,
+                        ConflictChoice::KeepBoth(_) => ConflictChoiceView::KeepBoth,
+                    };
+                    if plan.conflict_offers(at, kept) {
+                        kept
+                    } else {
+                        ConflictChoiceView::Unresolved
+                    }
+                }
+                RowRecall::Changed { .. } => ConflictChoiceView::Unresolved,
+            })
+            .collect();
+        Choices { actions, conflicts }
     }
 
     pub(super) fn action(&self, index: usize) -> ActionChoiceView {
@@ -368,6 +419,24 @@ impl EntryState {
         taken
     }
 
+    /// Takes a re-dialled entry's `plan` in with what `recall` kept of
+    /// the answers given before: its rows marked and its choices recalled,
+    /// replacing the unmarked rows its plan's event may have built
+    /// already. Nothing is reported on them yet: the run applies only once
+    /// the review is answered.
+    fn take_recalled(&mut self, plan: &Plan, recall: &Recall) -> Arc<PlanRows> {
+        let taken = Arc::new(PlanRows::recalled(
+            plan,
+            self.warn_size_bytes,
+            &self.peek,
+            recall,
+        ));
+        self.choices = Choices::recalled(&taken, recall);
+        self.outcomes = Arc::new(Outcomes::over(&taken));
+        self.plan = Some(taken.clone());
+        taken
+    }
+
     fn completed(&self) -> usize {
         self.progress.map_or(0, |(completed, _)| completed)
     }
@@ -583,9 +652,14 @@ impl RunState {
     /// The decider asks about `plan`: kept nothing at once - a run
     /// already stopping keeps nothing, a plan with nothing in it needs no
     /// review, and no entry running has none to review - or the review
-    /// opens, every row as planned.
-    pub(crate) fn review(&mut self, plan: &Plan) -> Review {
-        let taken = self.entry.take_plan(plan);
+    /// opens, every row as planned; or, for a re-dialled entry's plan
+    /// that changed since it was answered, with what `recall` kept of the
+    /// earlier answers.
+    pub(crate) fn review(&mut self, plan: &Plan, recall: Option<&Recall>) -> Review {
+        let taken = match recall {
+            None => self.entry.take_plan(plan),
+            Some(recall) => self.entry.take_recalled(plan, recall),
+        };
         let running = self.current.and_then(|index| self.entries.get(index));
         match running {
             Some(running) if self.suspend.is_none() && !taken.is_empty() => {
@@ -598,6 +672,14 @@ impl RunState {
                 Review::KeepNothing
             }
         }
+    }
+
+    /// A re-dialled entry's `plan` was answered as it was before, without
+    /// a review: it applies, its rows showing the choices `recall` kept.
+    pub(crate) fn carried(&mut self, plan: &Plan, recall: &Recall) -> Urgency {
+        self.entry.take_recalled(plan, recall);
+        self.phase = Phase::Applying;
+        Urgency::Now
     }
 
     /// SPEC §10's guard asks about `verdict`: `Some` answers at once (a
@@ -954,7 +1036,7 @@ impl Snapshot {
 mod tests {
     use dsync_core::{
         ActionFailure, ConnectError, ConnectFailure, EntryFailure, EntryOutcome, ProfileEvent,
-        RunError, RunEvent, SkipReason,
+        Recall, RunError, RunEvent, SkipReason,
     };
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
@@ -969,8 +1051,8 @@ mod tests {
     use crate::signals::RunIntent;
     use crate::throttle::Urgency;
     use crate::views::{
-        ActionChoiceView, ConflictChoiceView, EntryStatusView, HistoryView, PlanUpdateView,
-        RunPhaseView, RunStandingView, RunView, SideView,
+        ActionChoiceView, ActionView, ConflictChoiceView, EntryStatusView, HistoryView,
+        PlanUpdateView, PlanView, RecalledView, RunPhaseView, RunStandingView, RunView, SideView,
     };
 
     const PEER: &str = "Phone";
@@ -1072,7 +1154,7 @@ mod tests {
     fn reviewing(plan: &Plan) -> RunState {
         let mut state = running();
         assert_eq!(
-            state.review(plan),
+            state.review(plan, None),
             asked("b0"),
             "the review waits on the head"
         );
@@ -1177,7 +1259,7 @@ mod tests {
             state.listed(listed);
             state.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
             state.connected(1);
-            state.review(&plan);
+            state.review(&plan, None);
             state.view().plan.new_plan().exceeded_warn_size_bytes
         };
         assert_eq!(exceeded(Some(bytes - 1)), Some(bytes - 1));
@@ -1223,7 +1305,7 @@ mod tests {
     #[test]
     fn a_plan_with_nothing_in_it_is_answered_at_once_and_applies() {
         let mut state = running();
-        assert_eq!(state.review(&Plan::default()), Review::KeepNothing);
+        assert_eq!(state.review(&Plan::default(), None), Review::KeepNothing);
         assert!(matches!(phase(&state), RunPhaseView::Applying));
     }
 
@@ -1231,7 +1313,7 @@ mod tests {
     fn a_run_stopping_is_answered_with_nothing_and_asks_nothing() {
         let mut state = running();
         assert_eq!(state.steer(RunIntent::Stop), Steer::Stop);
-        assert_eq!(state.review(&plan()), Review::KeepNothing);
+        assert_eq!(state.review(&plan(), None), Review::KeepNothing);
         assert_eq!(state.ask_deletes(&emptied_b()), Some(false));
         assert!(matches!(phase(&state), RunPhaseView::Applying));
     }
@@ -1964,7 +2046,7 @@ mod tests {
         let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.listed(roots(3));
         start(&mut state, 0);
-        state.review(&plan);
+        state.review(&plan, None);
         let mut delivered = Delivered::default();
         deliver(&state, &mut delivered).new_plan();
         start(&mut state, 1);
@@ -1972,10 +2054,10 @@ mod tests {
             deliver(&state, &mut delivered),
             PlanUpdateView::Absent
         ));
-        state.review(&plan);
+        state.review(&plan, None);
         deliver(&state, &mut delivered).new_plan();
         start(&mut state, 2);
-        state.review(&plan);
+        state.review(&plan, None);
         assert_eq!(
             deliver(&state, &mut delivered).new_plan().actions.len(),
             2,
@@ -1998,7 +2080,7 @@ mod tests {
         ));
         state.listed(roots(1));
         start(&mut state, 0);
-        state.review(&plan);
+        state.review(&plan, None);
         deliver(&state, &mut delivered).new_plan();
     }
 
@@ -2289,7 +2371,7 @@ mod tests {
         });
         finish(&mut state, 0, synced(2));
         start(&mut state, 1);
-        assert_eq!(state.review(&plan()), asked("b1"));
+        assert_eq!(state.review(&plan(), None), asked("b1"));
         assert_eq!(state.steer(RunIntent::Pause), Steer::Stop);
         finish(&mut state, 1, synced(0));
         state.ended(ran());
@@ -2326,7 +2408,7 @@ mod tests {
             actions: vec![proposed(copy("only"))],
             conflicts: Vec::new(),
         };
-        state.review(&first);
+        state.review(&first, None);
         state.steer(RunIntent::AcceptAll);
         finish(&mut state, 0, synced(1));
         start(&mut state, 1);
@@ -2336,7 +2418,7 @@ mod tests {
         );
         let second = plan();
         assert_eq!(
-            state.review(&second),
+            state.review(&second, None),
             asked("b1"),
             "the running entry's side B names its keep-both copies"
         );
@@ -2405,7 +2487,265 @@ mod tests {
     fn a_plan_with_no_entry_running_is_answered_with_nothing() {
         let mut state = RunState::new(false, Tuning::DEFAULT.peek);
         state.connected(1);
-        assert_eq!(state.review(&plan()), Review::KeepNothing);
+        assert_eq!(state.review(&plan(), None), Review::KeepNothing);
         assert!(matches!(phase(&state), RunPhaseView::Applying));
+    }
+
+    /// A plan a re-dialled entry plans again: a reversible copy, a plain
+    /// copy, and two two-sided conflicts.
+    fn answered_plan() -> Plan {
+        Plan {
+            actions: vec![reversible("r"), proposed(copy("p"))],
+            conflicts: vec![two_sided("n.md", 60_000_000), two_sided("k.md", 60_000_000)],
+        }
+    }
+
+    /// The first attempt's review of `plan`, answered: `r` reversed, `p`
+    /// skipped, `n.md` kept as B's, both versions of `k.md` kept.
+    fn first_answer(plan: &Plan) -> Vec<Action> {
+        let mut state = reviewing(plan);
+        choose(&mut state, 0, ActionChoiceView::Reversed);
+        choose(&mut state, 1, ActionChoiceView::Skipped);
+        settle(&mut state, 0, ConflictChoiceView::KeepB);
+        settle(&mut state, 1, ConflictChoiceView::KeepBoth);
+        choices_of(state.steer(RunIntent::Confirm)).actions(plan, "b0")
+    }
+
+    fn recall(earlier: &Plan, answer: &[Action], now: &Plan) -> Recall {
+        Recall::after(earlier, answer, now).unwrap_or_else(|| panic!("a replayable answer"))
+    }
+
+    /// A state running its one entry whose plan's event has come in.
+    fn planned(plan: &Plan) -> RunState {
+        let mut state = running();
+        state.event(RunEvent::Plan {
+            plan: plan.clone(),
+            exceeds_warn_size: false,
+        });
+        state
+    }
+
+    fn action_choices(plan: &PlanView) -> Vec<ActionChoiceView> {
+        plan.actions.iter().map(|row| row.choice).collect()
+    }
+
+    fn conflict_choices(plan: &PlanView) -> Vec<ConflictChoiceView> {
+        plan.conflicts.iter().map(|row| row.choice).collect()
+    }
+
+    /// Which action rows are marked changed.
+    fn changed_actions(plan: &PlanView) -> Vec<bool> {
+        plan.actions
+            .iter()
+            .map(|row| row.changed.is_some())
+            .collect()
+    }
+
+    fn changed_conflicts(plan: &PlanView) -> Vec<bool> {
+        plan.conflicts
+            .iter()
+            .map(|row| row.changed.is_some())
+            .collect()
+    }
+
+    /// An unchanged re-plan is answered by the core without a review; the
+    /// rows the run applies then show the choices it kept - a skipped row
+    /// skipped, a reversed one reversed, the settled conflicts settled -
+    /// not the plan as planned its event alone shows.
+    #[test]
+    fn an_unchanged_redial_applies_unreviewed_its_rows_showing_the_choices_kept() {
+        let plan = answered_plan();
+        let answer = first_answer(&plan);
+        let mut state = planned(&plan);
+        let as_planned = state.view();
+        assert_eq!(
+            action_choices(as_planned.plan.new_plan()),
+            [ActionChoiceView::Proposed, ActionChoiceView::Proposed],
+            "control: the plan's event shows it as planned"
+        );
+
+        assert_eq!(
+            state.carried(&plan, &recall(&plan, &answer, &plan)),
+            Urgency::Now
+        );
+        let view = state.view();
+        assert!(matches!(view.phase, RunPhaseView::Applying));
+        let shown = view.plan.new_plan();
+        assert_eq!(
+            action_choices(shown),
+            [ActionChoiceView::Reversed, ActionChoiceView::Skipped]
+        );
+        assert_eq!(
+            conflict_choices(shown),
+            [ConflictChoiceView::KeepB, ConflictChoiceView::KeepBoth]
+        );
+        assert_eq!(changed_actions(shown), [false, false]);
+        assert_eq!(changed_conflicts(shown), [false, false]);
+        assert_eq!(
+            shown.recalled,
+            Some(RecalledView {
+                changed: 0,
+                kept: 4
+            })
+        );
+    }
+
+    /// A re-plan with a new path leading it - every action's index moves
+    /// on by one - and `p` now copied the other way: the review opens with
+    /// the carried rows' earlier choices on their own rows, the two
+    /// changed rows marked with what they were, and the counts. The answer
+    /// keeps each choice on the row it was made for.
+    #[test]
+    fn a_changed_redial_reviews_again_with_the_earlier_choices_kept_and_the_changes_marked() {
+        let earlier = answered_plan();
+        let answer = first_answer(&earlier);
+        let now = Plan {
+            actions: vec![
+                proposed(copy("new")),
+                reversible("r"),
+                proposed(copy_back("p")),
+            ],
+            conflicts: earlier.conflicts.clone(),
+        };
+        let mut state = planned(&now);
+        assert_eq!(
+            state.review(&now, Some(&recall(&earlier, &answer, &now))),
+            asked("b0")
+        );
+
+        let view = state.view();
+        let shown = view.plan.new_plan();
+        assert_eq!(
+            shown.recalled,
+            Some(RecalledView {
+                changed: 2,
+                kept: 3
+            })
+        );
+        assert_eq!(
+            action_choices(shown),
+            [
+                ActionChoiceView::Proposed,
+                ActionChoiceView::Reversed,
+                ActionChoiceView::Proposed
+            ]
+        );
+        assert_eq!(
+            conflict_choices(shown),
+            [ConflictChoiceView::KeepB, ConflictChoiceView::KeepBoth]
+        );
+        assert_eq!(changed_actions(shown), [true, false, true]);
+        assert_eq!(changed_conflicts(shown), [false, false]);
+        assert!(
+            shown.actions[0]
+                .changed
+                .as_ref()
+                .is_some_and(|change| change.was.is_none()),
+            "a new path was nothing"
+        );
+        assert!(
+            matches!(
+                shown.actions[2]
+                    .changed
+                    .as_ref()
+                    .and_then(|change| change.was.as_ref()),
+                Some(ActionView::Copy {
+                    from: SideView::A,
+                    ..
+                })
+            ),
+            "p was a copy from A"
+        );
+        let RunPhaseView::Reviewing(total) = view.phase else {
+            panic!("reviewing");
+        };
+        assert_eq!((total.reversed, total.skipped, total.kept_both), (1, 0, 1));
+
+        choose(&mut state, 0, ActionChoiceView::Skipped);
+        let choices = choices_of(state.steer(RunIntent::Confirm));
+        let aside = answer
+            .last()
+            .cloned()
+            .unwrap_or_else(|| panic!("k.md's copy aside"));
+        assert!(matches!(aside, Action::CopyAside { .. }));
+        assert_eq!(
+            choices.actions(&now, "b0"),
+            [
+                copy_back("r"),
+                copy_back("p"),
+                now.conflicts[0].resolve(Side::B),
+                aside,
+            ]
+        );
+    }
+
+    /// A kept choice is taken only where its row offers it: both versions
+    /// were kept of `o.md`, which B no longer has a file of, so it starts
+    /// open; `n.md` keeps its side.
+    #[test]
+    fn a_kept_choice_its_row_no_longer_offers_starts_open() {
+        let earlier = Plan {
+            actions: Vec::new(),
+            conflicts: vec![
+                Conflict {
+                    b: None,
+                    ..two_sided("o.md", 1)
+                },
+                two_sided("n.md", 1),
+            ],
+        };
+        let answer = [
+            Action::CopyAside {
+                path: path("o.md"),
+                from: Side::A,
+                to: path("o-copy.md"),
+                bytes: 3,
+            },
+            earlier.conflicts[1].resolve(Side::A),
+        ];
+        let now = Plan {
+            actions: vec![proposed(copy("new"))],
+            ..earlier.clone()
+        };
+        let mut state = planned(&now);
+        state.review(&now, Some(&recall(&earlier, &answer, &now)));
+        assert_eq!(
+            conflict_choices(state.view().plan.new_plan()),
+            [ConflictChoiceView::Unresolved, ConflictChoiceView::KeepA]
+        );
+    }
+
+    /// A first review marks nothing and counts nothing: it reads as it
+    /// always has.
+    #[test]
+    fn a_first_review_has_no_marks_and_no_counts() {
+        let plan = answered_plan();
+        let state = reviewing(&plan);
+        let view = state.view();
+        let shown = view.plan.new_plan();
+        assert_eq!(shown.recalled, None);
+        assert_eq!(changed_actions(shown), [false, false]);
+        assert_eq!(changed_conflicts(shown), [false, false]);
+    }
+
+    /// The rows a re-dialled review marks replace the unmarked ones its
+    /// plan's event showed: the head is sent the plan whole again.
+    #[test]
+    fn a_redialled_review_resends_the_plan_its_event_showed_with_its_marks() {
+        let earlier = answered_plan();
+        let answer = first_answer(&earlier);
+        let now = Plan {
+            actions: vec![proposed(copy("new")), reversible("r")],
+            conflicts: Vec::new(),
+        };
+        let mut state = planned(&now);
+        let mut delivered = Delivered::default();
+        let first = state.snapshot().view(&mut delivered);
+        assert_eq!(first.plan.new_plan().recalled, None);
+        state.review(&now, Some(&recall(&earlier, &answer, &now)));
+        let second = state.snapshot().view(&mut delivered);
+        assert_eq!(changed_actions(second.plan.new_plan()), [true, false]);
+        let third = state.snapshot().view(&mut delivered);
+        assert!(matches!(third.plan, PlanUpdateView::Same { .. }));
     }
 }

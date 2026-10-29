@@ -1117,6 +1117,18 @@ pub struct PlanView {
     pub exceeded_warn_size_bytes: Option<u64>,
     /// What the plan's copies write where.
     pub summary: PlanSummaryView,
+    /// A re-dialled entry's plan reviewed again with the answers given
+    /// before kept; `None` on a first review.
+    pub recalled: Option<RecalledView>,
+}
+
+/// A re-dialled review's count of its rows: how many changed since the
+/// head answered them (the review shows them first) and how many kept the
+/// head's earlier choice.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, SignalPiece)]
+pub struct RecalledView {
+    pub changed: u64,
+    pub kept: u64,
 }
 
 /// An action row's whole mutable state: its choice and its outcome, for
@@ -1144,6 +1156,16 @@ pub struct PlanRowView {
     pub proposal: ProposalView,
     pub choice: ActionChoiceView,
     pub outcome: Option<ResultView>,
+    /// In a re-dialled review, how the row changed since the head answered
+    /// it; `None` when it did not, or on a first review.
+    pub changed: Option<ActionChangeView>,
+}
+
+/// A re-dialled review's action row that is not the one answered before:
+/// `was` is the action that was, `None` for a path new to the review.
+#[derive(Clone, Serialize, SignalPiece)]
+pub struct ActionChangeView {
+    pub was: Option<ActionView>,
 }
 
 /// One conflict: the conflict, the choices it offers (a side with no
@@ -1157,6 +1179,15 @@ pub struct ConflictRowView {
     pub offer: OfferView,
     pub choice: ConflictChoiceView,
     pub outcome: Option<ResultView>,
+    /// [`PlanRowView::changed`], for a conflict.
+    pub changed: Option<ConflictChangeView>,
+}
+
+/// A re-dialled review's conflict that is not the one answered before:
+/// `was` is the conflict that was, `None` for a path new to the review.
+#[derive(Clone, Serialize, SignalPiece)]
+pub struct ConflictChangeView {
+    pub was: Option<ConflictView>,
 }
 
 /// A planned action under review: as planned, reversed (the loser's

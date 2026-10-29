@@ -1,10 +1,12 @@
 import '../rust/bindings/bindings.dart' as wire;
+import 'models/action_change.dart';
 import 'models/action_choice.dart';
 import 'models/action_result.dart';
 import 'models/action_row_update.dart';
 import 'models/archive_info.dart';
 import 'models/compare_offer.dart';
 import 'models/compared_side.dart';
+import 'models/conflict_change.dart';
 import 'models/conflict_choice.dart';
 import 'models/conflict_info.dart';
 import 'models/conflict_row.dart';
@@ -315,6 +317,15 @@ RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
             ),
             choice: _actionChoice(row.choice),
             outcome: _outcome(row.outcome),
+            changed: switch (row.changed) {
+              final change? => ActionChange(
+                was: switch (change.was) {
+                  final was? => _action(was),
+                  null => null,
+                },
+              ),
+              null => null,
+            },
           ),
       ],
       conflicts: [
@@ -327,6 +338,15 @@ RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
             offer: compareOffer(row.offer),
             choice: _conflictChoice(row.choice),
             outcome: _outcome(row.outcome),
+            changed: switch (row.changed) {
+              final change? => ConflictChange(
+                was: switch (change.was) {
+                  final was? => _conflict(was),
+                  null => null,
+                },
+              ),
+              null => null,
+            },
           ),
       ],
       bytesToTransfer: _n(plan.bytesToTransfer),
@@ -338,6 +358,13 @@ RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
         bytesToA: _n(plan.summary.bytesToA),
         bytesToB: _n(plan.summary.bytesToB),
       ),
+      recalled: switch (plan.recalled) {
+        final recalled? => (
+          changed: _n(recalled.changed),
+          kept: _n(recalled.kept),
+        ),
+        null => null,
+      },
     ),
   ),
   wire.PlanUpdateViewSame(:final actions, :final conflicts) => RunPlanSame(

@@ -12,6 +12,7 @@ class ConflictRowView {
     required this.offer,
     required this.choice,
     this.outcome,
+    this.changed,
   });
 
   static ConflictRowView deserialize(BinaryDeserializer deserializer) {
@@ -22,6 +23,7 @@ class ConflictRowView {
       offer: OfferView.deserialize(deserializer),
       choice: ConflictChoiceViewExtension.deserialize(deserializer),
       outcome: TraitHelpers.deserializeOptionResultView(deserializer),
+      changed: TraitHelpers.deserializeOptionConflictChangeView(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -41,6 +43,7 @@ class ConflictRowView {
   final OfferView offer;
   final ConflictChoiceView choice;
   final ResultView? outcome;
+  final ConflictChangeView? changed;
 
   ConflictRowView copyWith({
     ConflictView? conflict,
@@ -48,6 +51,7 @@ class ConflictRowView {
     OfferView? offer,
     ConflictChoiceView? choice,
     ResultView? Function()? outcome,
+    ConflictChangeView? Function()? changed,
   }) {
     return ConflictRowView(
       conflict: conflict ?? this.conflict,
@@ -55,6 +59,7 @@ class ConflictRowView {
       offer: offer ?? this.offer,
       choice: choice ?? this.choice,
       outcome: outcome == null ? this.outcome : outcome(),
+      changed: changed == null ? this.changed : changed(),
     );
   }
 
@@ -65,6 +70,7 @@ class ConflictRowView {
     offer.serialize(serializer);
     choice.serialize(serializer);
     TraitHelpers.serializeOptionResultView(outcome, serializer);
+    TraitHelpers.serializeOptionConflictChangeView(changed, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -84,7 +90,8 @@ class ConflictRowView {
       && listEquals(offered, other.offered)
       && offer == other.offer
       && choice == other.choice
-      && outcome == other.outcome;
+      && outcome == other.outcome
+      && changed == other.changed;
   }
 
   @override
@@ -94,6 +101,7 @@ class ConflictRowView {
         offer,
         choice,
         outcome,
+        changed,
       );
 
   @override
@@ -106,7 +114,8 @@ class ConflictRowView {
         'offered: $offered, '
         'offer: $offer, '
         'choice: $choice, '
-        'outcome: $outcome'
+        'outcome: $outcome, '
+        'changed: $changed'
         ')';
       return true;
     }());

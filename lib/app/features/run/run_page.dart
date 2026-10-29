@@ -443,36 +443,70 @@ class _RunPageState extends State<RunPage> {
                         child: Text(state.skippedSymlinks[index]),
                       ),
                     ),
+                  // A re-dialled review's rows that changed since the
+                  // user answered them lead the plan area (SPEC §11.4),
+                  // under the line that says so; every other row keeps
+                  // its earlier choice in its own section below.
+                  if (state.recalled case (:final changed, :final kept)
+                      when state.phase is SyncRunAwaitingDecisions)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          recalledLine(changed: changed, kept: kept),
+                          key: const Key('run-review-recalled'),
+                        ),
+                      ),
+                    ),
+                  if (state.changedConflicts.isNotEmpty ||
+                      state.changedActions.isNotEmpty)
+                    RunListSection(
+                      sectionKey: const Key('run-changed'),
+                      title:
+                          'Changed since you approved '
+                          '(${formatCount(state.changedConflicts.length + state.changedActions.length)})',
+                      header: null,
+                      itemExtent: null,
+                      itemCount:
+                          state.changedConflicts.length +
+                          state.changedActions.length,
+                      itemBuilder: (context, index) {
+                        final conflicts = state.changedConflicts;
+                        if (index < conflicts.length) {
+                          final row = state.conflicts[conflicts[index]];
+                          return _conflictItem(
+                            state,
+                            row,
+                            mark: _ChangeLine(row.path, row.changed),
+                          );
+                        }
+                        final row =
+                            state.plan[state.changedActions[index -
+                                conflicts.length]];
+                        return _actionItem(
+                          state,
+                          row,
+                          layout,
+                          mark: _ChangeLine(row.path, row.changed),
+                        );
+                      },
+                    ),
                   // First of the plan area (Design C.5): during the
                   // review each row carries its own control and its
                   // frame for the keyboard's cursor, and after it
                   // each follows its own result.
-                  if (state.conflicts.isNotEmpty)
+                  if (state.listedConflicts.isNotEmpty)
                     RunListSection(
                       sectionKey: const Key('run-conflicts'),
                       title:
-                          'Conflicts (${formatCount(state.conflicts.length)})',
+                          'Conflicts (${formatCount(state.listedConflicts.length)})',
                       header: null,
                       itemExtent: null,
-                      itemCount: state.conflicts.length,
-                      itemBuilder: (context, index) {
-                        final row = state.conflicts[index];
-                        final reviewing =
-                            state.phase is SyncRunAwaitingDecisions;
-                        final conflict = _ConflictRow(
-                          row,
-                          state: state,
-                          offered: reviewing ? row.offered : null,
-                          onResolve: _controller.resolveConflict,
-                          onCompare: _compareConflict,
-                        );
-                        if (!reviewing) return conflict;
-                        return ReviewRowFrame(
-                          cursor: _cursor,
-                          target: ConflictTarget(index),
-                          child: conflict,
-                        );
-                      },
+                      itemCount: state.listedConflicts.length,
+                      itemBuilder: (context, index) => _conflictItem(
+                        state,
+                        state.conflicts[state.listedConflicts[index]],
+                      ),
                     ),
                 ],
               ),
@@ -492,6 +526,100 @@ class _RunPageState extends State<RunPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// A conflict's row: during the review with its choices and its frame
+  /// for the keyboard's cursor. [mark], where there is one, sits under it.
+  Widget _conflictItem(
+    SyncRunViewState state,
+    SyncRunConflictRow row, {
+    Widget? mark,
+  }) {
+    final reviewing = state.phase is SyncRunAwaitingDecisions;
+    final conflict = _marked(
+      _ConflictRow(
+        row,
+        state: state,
+        offered: reviewing ? row.offered : null,
+        onResolve: _controller.resolveConflict,
+        onCompare: _compareConflict,
+      ),
+      mark,
+    );
+    if (!reviewing) return conflict;
+    return ReviewRowFrame(
+      cursor: _cursor,
+      target: ConflictTarget(row.index),
+      child: conflict,
+    );
+  }
+
+  /// [_conflictItem], for a planned action — as its plan group shows it.
+  Widget _actionItem(
+    SyncRunViewState state,
+    SyncRunPlanRow row,
+    RunLayout layout, {
+    Widget? mark,
+  }) {
+    final reviewing = state.phase is SyncRunAwaitingDecisions;
+    final action = _marked(
+      RunPlanRow(
+        state: state,
+        row: row,
+        onChoose: reviewing ? _controller.choose : null,
+        onCompare: reviewing ? _comparePlan : null,
+        layout: layout,
+      ),
+      mark,
+    );
+    if (!reviewing) return action;
+    return ReviewRowFrame(
+      cursor: _cursor,
+      target: ActionTarget(row.index),
+      child: action,
+    );
+  }
+
+  static Widget _marked(Widget row, Widget? mark) => switch (mark) {
+    final mark? => Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [row, mark],
+    ),
+    null => row,
+  };
+}
+
+/// A changed row's mark, under it in the review's changed group: what the
+/// row was when the user answered it, or that its path is new.
+class _ChangeLine extends StatelessWidget {
+  const _ChangeLine(this.path, this.change);
+
+  final String path;
+  final SyncRunRowChange? change;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.tertiary;
+    final was = change?.was;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2, right: 6),
+            child: Icon(Icons.change_circle_outlined, size: 14, color: color),
+          ),
+          Expanded(
+            child: Text(
+              was == null ? 'new' : 'was: $was',
+              key: Key('run-changed-$path'),
+              style: TextStyle(color: color),
+            ),
+          ),
+        ],
       ),
     );
   }

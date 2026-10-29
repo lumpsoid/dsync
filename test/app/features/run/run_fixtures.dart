@@ -142,6 +142,7 @@ WholeRunView runView({
   int? exceededWarnSizeBytes,
   int bytesToA = 0,
   int bytesToB = 0,
+  ({int changed, int kept})? recalled,
   ({int completed, int total})? progress,
   int applied = 0,
   int failed = 0,
@@ -178,6 +179,13 @@ WholeRunView runView({
       null => null,
     },
     summary: wire.PlanSummaryView(bytesToA: n(bytesToA), bytesToB: n(bytesToB)),
+    recalled: switch (recalled) {
+      (:final changed, :final kept) => wire.RecalledView(
+        changed: n(changed),
+        kept: n(kept),
+      ),
+      null => null,
+    },
   ),
 );
 
@@ -366,6 +374,7 @@ wire.PlanRowView planRow(
   wire.ActionChoiceView choice = wire.ActionChoiceView.proposed,
   wire.ResultView? outcome,
   wire.OfferView offer = const wire.OfferViewNotComparable(),
+  wire.ActionChangeView? changed,
 }) => wire.PlanRowView(
   proposal: wire.ProposalView(
     action: action,
@@ -374,6 +383,7 @@ wire.PlanRowView planRow(
   ),
   choice: choice,
   outcome: outcome,
+  changed: changed,
 );
 
 /// A 5-byte file modified at `mtimeUs` 1.
@@ -403,10 +413,12 @@ wire.ConflictRowView conflictRow(
   wire.ConflictChoiceView choice = wire.ConflictChoiceView.unresolved,
   wire.ResultView? outcome,
   wire.OfferView offer = const wire.OfferViewNotComparable(),
+  wire.ConflictChangeView? changed,
 }) => wire.ConflictRowView(
   conflict: wire.ConflictView(path: path, a: a, b: b),
   offered: offered,
   offer: offer,
   choice: choice,
   outcome: outcome,
+  changed: changed,
 );

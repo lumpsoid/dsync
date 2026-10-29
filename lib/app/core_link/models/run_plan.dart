@@ -10,6 +10,7 @@ final class RunPlan {
     required this.bytesToTransfer,
     required this.exceededWarnSizeBytes,
     required this.summary,
+    required this.recalled,
   });
 
   final List<PlanRow> actions;
@@ -22,4 +23,9 @@ final class RunPlan {
 
   /// The bytes the plan's copies write onto each side.
   final ({int bytesToA, int bytesToB}) summary;
+
+  /// A re-dialled entry's plan reviewed again with the earlier answers
+  /// kept: how many rows [changed] since the user answered them, and how
+  /// many [kept] their earlier choice. `null` on a first review.
+  final ({int changed, int kept})? recalled;
 }

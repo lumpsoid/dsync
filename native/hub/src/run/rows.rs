@@ -5,12 +5,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dsync_core::{Recall, RowRecall};
 use dsync_domain::{Comparison, Conflict, PeekLimits, Plan, RelPath, Side};
 
 use crate::views::{
-    ActionChoiceView, ActionRowUpdateView, ConflictChoiceView, ConflictRowUpdateView,
-    ConflictRowView, ConflictView, OfferView, PlanRowView, PlanSummaryView, PlanUpdateView,
-    PlanView, ProposalView, ResultView,
+    ActionChangeView, ActionChoiceView, ActionRowUpdateView, ActionView, ConflictChangeView,
+    ConflictChoiceView, ConflictRowUpdateView, ConflictRowView, ConflictView, OfferView,
+    PlanRowView, PlanSummaryView, PlanUpdateView, PlanView, ProposalView, RecalledView, ResultView,
 };
 
 use super::state::Choices;
@@ -28,17 +29,22 @@ struct ConflictRow {
     conflict: ConflictView,
     offered: Vec<ConflictChoiceView>,
     offer: OfferView,
+    changed: Option<ConflictChangeView>,
 }
 
 /// A taken plan's rows, in its order.
 pub(super) struct PlanRows {
     proposals: Vec<ProposalView>,
+    /// By action: how it changed since a re-dialled entry's earlier
+    /// answer, when it did.
+    changes: Vec<Option<ActionChangeView>>,
     conflicts: Vec<ConflictRow>,
     /// By path: a plan's action and a conflict's own path never coincide.
     rows: HashMap<RelPath, Row>,
     bytes_to_transfer: u64,
     exceeded_warn_size_bytes: Option<u64>,
     summary: PlanSummaryView,
+    recalled: Option<RecalledView>,
 }
 
 impl PlanRows {
@@ -69,14 +75,55 @@ impl PlanRows {
                     conflict: ConflictView::from(conflict),
                     offered: conflict_offers(conflict),
                     offer: OfferView::of(Comparison::of_conflict(conflict).as_ref(), limits),
+                    changed: None,
                 })
                 .collect(),
+            changes: vec![None; plan.actions.len()],
             rows: actions.chain(conflicts).collect(),
             bytes_to_transfer: plan.bytes_to_transfer(),
             exceeded_warn_size_bytes: warn_size_bytes
                 .filter(|_| plan.exceeds_warn_size(warn_size_bytes)),
             summary: PlanSummaryView::from(plan),
+            recalled: None,
         }
+    }
+
+    /// [`PlanRows::of`] for a re-dialled entry's plan, each row marked by
+    /// how `recall` (built over this very `plan`) found it: a changed row
+    /// with what it was, and the counts of changed and kept rows.
+    pub(super) fn recalled(
+        plan: &Plan,
+        warn_size_bytes: Option<u64>,
+        limits: &PeekLimits,
+        recall: &Recall,
+    ) -> PlanRows {
+        let mut rows = PlanRows::of(plan, warn_size_bytes, limits);
+        let (mut changed, mut kept) = (0, 0);
+        let mut tally = |is_changed: bool| {
+            if is_changed {
+                changed += 1;
+            } else {
+                kept += 1;
+            }
+        };
+        for (slot, row) in rows.changes.iter_mut().zip(recall.actions()) {
+            if let RowRecall::Changed { was } = row {
+                *slot = Some(ActionChangeView {
+                    was: was.as_ref().map(|was| ActionView::from(&was.action)),
+                });
+            }
+            tally(slot.is_some());
+        }
+        for (conflict, row) in rows.conflicts.iter_mut().zip(recall.conflicts()) {
+            if let RowRecall::Changed { was } = row {
+                conflict.changed = Some(ConflictChangeView {
+                    was: was.as_ref().map(ConflictView::from),
+                });
+            }
+            tally(conflict.changed.is_some());
+        }
+        rows.recalled = Some(RecalledView { changed, kept });
+        rows
     }
 
     pub(super) fn actions(&self) -> usize {
@@ -122,6 +169,7 @@ impl PlanRows {
             bytes_to_transfer: self.bytes_to_transfer(),
             exceeded_warn_size_bytes: self.exceeded_warn_size_bytes,
             summary: self.summary(),
+            recalled: self.recalled,
         }
     }
 
@@ -130,10 +178,12 @@ impl PlanRows {
         self.proposals
             .iter()
             .enumerate()
-            .map(|(at, proposal)| PlanRowView {
+            .zip(&self.changes)
+            .map(|((at, proposal), changed)| PlanRowView {
                 proposal: proposal.clone(),
                 choice: choices.action(at),
                 outcome: shown(&outcomes.actions, at),
+                changed: changed.clone(),
             })
             .collect()
     }
@@ -153,6 +203,7 @@ impl PlanRows {
                 offer: row.offer,
                 choice: choices.conflict(at),
                 outcome: shown(&outcomes.conflicts, at),
+                changed: row.changed.clone(),
             })
             .collect()
     }

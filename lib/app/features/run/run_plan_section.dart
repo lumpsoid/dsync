@@ -27,21 +27,22 @@ bool _collapses(SyncRunPlanGroup group, {required bool applying}) =>
     applying || group == SyncRunPlanGroup.recordOnly;
 
 /// The rows the review's cursor walks, in the order the page shows them:
-/// the conflicts, then each plan group that is on the page — a group
-/// behind a closed disclosure has no rows on it. Worked out here, beside
-/// the group order and the disclosure rule [RunPlanSection] builds from,
-/// so the cursor and the page cannot disagree about what is shown.
+/// a re-dialled review's changed rows (their conflicts, then their
+/// actions), the conflicts, then each plan group that is on the page — a
+/// group behind a closed disclosure has no rows on it. Worked out here,
+/// beside the group order and the disclosure rule [RunPlanSection] builds
+/// from, so the cursor and the page cannot disagree about what is shown.
 ReviewOrder reviewOrder(SyncRunViewState state, PlanDisclosures disclosures) {
   final applying = state.phase is SyncRunApplying;
   final sections = state.planSections;
-  return ReviewOrder(
-    conflicts: state.conflicts.length,
-    actionRuns: [
-      for (final (:group, title: _) in _planGroups)
-        if (!_collapses(group, applying: applying) || disclosures.isOpen(group))
-          sections[group]!.indexes,
-    ],
-  );
+  return ReviewOrder([
+    ConflictRun(state.changedConflicts),
+    ActionRun(state.changedActions),
+    ConflictRun(state.listedConflicts),
+    for (final (:group, title: _) in _planGroups)
+      if (!_collapses(group, applying: applying) || disclosures.isOpen(group))
+        ActionRun(sections[group]!.indexes),
+  ]);
 }
 
 /// Which of the plan's groups are open, for the ones that sit behind a

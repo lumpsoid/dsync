@@ -14,13 +14,11 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   group('ReviewOrder', () {
     // Two conflicts, then a group of plan rows 0 and 2, then one of row 1.
-    final order = ReviewOrder(
-      conflicts: 2,
-      actionRuns: const [
-        [0, 2],
-        [1],
-      ],
-    );
+    final order = ReviewOrder(const [
+      ConflictRun([0, 1]),
+      ActionRun([0, 2]),
+      ActionRun([1]),
+    ]);
 
     test('conflicts first, then each run in page order', () {
       expect(order.length, 5);
@@ -47,6 +45,31 @@ void main() {
     test('a position outside the order is an error, not a guess', () {
       expect(() => order.at(5), throwsRangeError);
       expect(() => order.at(-1), throwsRangeError);
+    });
+
+    // A re-dialled review: changed conflict 1 and action 2 lead, and are
+    // in no later run.
+    final redialled = ReviewOrder(const [
+      ConflictRun([1]),
+      ActionRun([2]),
+      ConflictRun([0]),
+      ActionRun([0, 1]),
+    ]);
+
+    test('a re-dialled review\'s changed rows lead, each shown once', () {
+      expect(
+        [for (var i = 0; i < redialled.length; i++) redialled.at(i)],
+        const [
+          ConflictTarget(1),
+          ActionTarget(2),
+          ConflictTarget(0),
+          ActionTarget(0),
+          ActionTarget(1),
+        ],
+      );
+      for (var i = 0; i < redialled.length; i++) {
+        expect(redialled.positionOf(redialled.at(i)), i);
+      }
     });
   });
 

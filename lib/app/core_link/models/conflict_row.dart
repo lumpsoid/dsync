@@ -1,5 +1,6 @@
 import 'action_result.dart';
 import 'compare_offer.dart';
+import 'conflict_change.dart';
 import 'conflict_choice.dart';
 import 'conflict_info.dart';
 
@@ -13,6 +14,7 @@ final class ConflictRow {
     required this.offer,
     required this.choice,
     required this.outcome,
+    required this.changed,
   });
 
   final ConflictInfo conflict;
@@ -22,4 +24,7 @@ final class ConflictRow {
   final CompareOffer offer;
   final ConflictChoice choice;
   final ActionResult? outcome;
+
+  /// [PlanRow.changed], for a conflict.
+  final ConflictChange? changed;
 }

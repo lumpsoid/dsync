@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use dsync_core::{Decider, Peek, Replica};
+use dsync_core::{Decider, Peek, Recall, Replica};
 use dsync_domain::{Action, Conflict, MassDelete, Plan, Resolution, Side, Status};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, Lines};
 use tokio::sync::watch;
@@ -244,7 +244,7 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> Decider for InteractiveDec
 
     /// A plan answered without a review still had its plan event shown:
     /// counted as reviewed, so the next review waits for its own plan.
-    fn carried(&mut self, _: &Plan) {
+    fn carried(&mut self, _: &Plan, _: &Recall) {
         self.reviews += 1;
     }
 

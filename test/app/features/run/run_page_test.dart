@@ -2581,6 +2581,124 @@ void main() {
       expect(ringed(tester), isNot(const ConflictTarget(0)));
     });
 
+    // A re-dialled review: theirs.txt, gone.txt (once a copy) and the new
+    // mirror.txt changed since the user approved; both.txt and new.txt
+    // keep their earlier choices.
+    WholeRunView redialled() => runView(
+      phase: reviewing(apply: 4, resolved: 1, keptBoth: 1, reversed: 1),
+      recalled: (changed: 3, kept: 3),
+      bytesToB: 2048 + 4096,
+      conflicts: [
+        conflictRow(
+          'both.txt',
+          a: modifiedFile(),
+          b: modifiedFile(),
+          offered: offersAll,
+          choice: wire.ConflictChoiceView.keepBoth,
+        ),
+        conflictRow(
+          'theirs.txt',
+          b: modifiedFile(),
+          offered: const [
+            wire.ConflictChoiceView.unresolved,
+            wire.ConflictChoiceView.keepB,
+          ],
+          changed: wire.ConflictChangeView(
+            was: wire.ConflictView(path: 'theirs.txt', b: createdFile()),
+          ),
+        ),
+      ],
+      plan: [
+        planRow(
+          copyTo('new.txt'),
+          reverseBytes: 1024,
+          choice: wire.ActionChoiceView.reversed,
+        ),
+        planRow(
+          deleteThere('gone.txt'),
+          reverseBytes: 512,
+          changed: wire.ActionChangeView(was: copyTo('gone.txt')),
+        ),
+        planRow(
+          copyTo('mirror.txt', bytes: 4096),
+          changed: const wire.ActionChangeView(),
+        ),
+        planRow(recordOnly('same.txt')),
+      ],
+    );
+
+    testWidgets('a re-dialled review leads with its changed rows, each '
+        'marked with what it was, under the header line; the rest keep '
+        'their choices, and the cursor starts on the first change', (
+      tester,
+    ) async {
+      await openAt(tester, redialled());
+
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('run-review-recalled')))
+            .data,
+        'Reconnected. 3 changed since you approved, shown first; your '
+        'other 3 choices are kept',
+      );
+      expect(find.text('Changed since you approved (3)'), findsOneWidget);
+      String mark(String path) =>
+          tester.widget<Text>(find.byKey(Key('run-changed-$path'))).data!;
+      expect(
+        mark('theirs.txt'),
+        'was: a conflict: no record on this device, created on the remote',
+      );
+      expect(mark('gone.txt'), 'was: copy to the remote');
+      expect(mark('mirror.txt'), 'new');
+      expect(find.byKey(const Key('run-changed-new.txt')), findsNothing);
+      expect(find.byKey(const Key('run-changed-both.txt')), findsNothing);
+
+      // The changed rows first, each shown once; then the conflicts and
+      // the groups as ever, without them.
+      double top(String path) =>
+          tester.getTopLeft(find.byKey(Key('decision-$path'))).dy;
+      for (final path in ['theirs.txt', 'gone.txt', 'mirror.txt']) {
+        expect(find.byKey(Key('decision-$path')), findsOneWidget);
+      }
+      expect(top('theirs.txt'), lessThan(top('gone.txt')));
+      expect(top('gone.txt'), lessThan(top('mirror.txt')));
+      expect(top('mirror.txt'), lessThan(top('both.txt')));
+      expect(top('both.txt'), lessThan(top('new.txt')));
+      expect(find.text('Conflicts (1)'), findsOneWidget);
+      // To the remote holds new.txt alone, and its bytes alone.
+      expect(find.text('To the remote (1, 2.0 KiB)'), findsOneWidget);
+      expect(find.textContaining('Deletions'), findsNothing);
+
+      // The kept choices, shown: new.txt reversed, both.txt kept both.
+      expect(
+        find.text("replace this device's version with the remote's"),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<Text>(find.byKey(const Key('decision-both.txt'))).data,
+        'Both',
+      );
+
+      // It started on theirs.txt: one step down is gone.txt, then
+      // mirror.txt, then the conflicts' section.
+      await press(tester, down);
+      expect(ringed(tester), const ActionTarget(1));
+      await pressAll(tester, [down, down]);
+      expect(ringed(tester), const ConflictTarget(0));
+      await press(tester, LogicalKeyboardKey.home);
+      expect(ringed(tester), const ConflictTarget(1));
+    });
+
+    testWidgets('a first review has no header line and no changed group', (
+      tester,
+    ) async {
+      await openAt(tester, review());
+
+      expect(find.byKey(const Key('run-review-recalled')), findsNothing);
+      expect(find.byKey(const Key('run-changed')), findsNothing);
+      expect(find.text('Conflicts (2)'), findsOneWidget);
+    });
+
     testWidgets('a letter picks the cursor row\'s choice, only where the row '
         'offers it and does not already hold it', (tester) async {
       await openAt(tester, review());

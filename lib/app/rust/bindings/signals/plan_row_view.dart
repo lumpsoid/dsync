@@ -9,6 +9,7 @@ class PlanRowView {
     required this.proposal,
     required this.choice,
     this.outcome,
+    this.changed,
   });
 
   static PlanRowView deserialize(BinaryDeserializer deserializer) {
@@ -17,6 +18,7 @@ class PlanRowView {
       proposal: ProposalView.deserialize(deserializer),
       choice: ActionChoiceViewExtension.deserialize(deserializer),
       outcome: TraitHelpers.deserializeOptionResultView(deserializer),
+      changed: TraitHelpers.deserializeOptionActionChangeView(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -34,16 +36,19 @@ class PlanRowView {
   final ProposalView proposal;
   final ActionChoiceView choice;
   final ResultView? outcome;
+  final ActionChangeView? changed;
 
   PlanRowView copyWith({
     ProposalView? proposal,
     ActionChoiceView? choice,
     ResultView? Function()? outcome,
+    ActionChangeView? Function()? changed,
   }) {
     return PlanRowView(
       proposal: proposal ?? this.proposal,
       choice: choice ?? this.choice,
       outcome: outcome == null ? this.outcome : outcome(),
+      changed: changed == null ? this.changed : changed(),
     );
   }
 
@@ -52,6 +57,7 @@ class PlanRowView {
     proposal.serialize(serializer);
     choice.serialize(serializer);
     TraitHelpers.serializeOptionResultView(outcome, serializer);
+    TraitHelpers.serializeOptionActionChangeView(changed, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -69,7 +75,8 @@ class PlanRowView {
     return other is PlanRowView
       && proposal == other.proposal
       && choice == other.choice
-      && outcome == other.outcome;
+      && outcome == other.outcome
+      && changed == other.changed;
   }
 
   @override
@@ -77,6 +84,7 @@ class PlanRowView {
         proposal,
         choice,
         outcome,
+        changed,
       );
 
   @override
@@ -87,7 +95,8 @@ class PlanRowView {
       fullString = '$runtimeType('
         'proposal: $proposal, '
         'choice: $choice, '
-        'outcome: $outcome'
+        'outcome: $outcome, '
+        'changed: $changed'
         ')';
       return true;
     }());

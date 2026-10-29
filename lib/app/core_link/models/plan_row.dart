@@ -1,3 +1,4 @@
+import 'action_change.dart';
 import 'action_choice.dart';
 import 'action_result.dart';
 import 'plan_proposal.dart';
@@ -9,9 +10,14 @@ final class PlanRow {
     required this.proposal,
     required this.choice,
     required this.outcome,
+    required this.changed,
   });
 
   final PlanProposal proposal;
   final ActionChoice choice;
   final ActionResult? outcome;
+
+  /// In a re-dialled review, how the row changed since the user answered
+  /// it; `null` when it did not, or on a first review.
+  final ActionChange? changed;
 }

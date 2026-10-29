@@ -347,6 +347,7 @@ final class SyncRunConflictRow {
     required this.remote,
     required this.offered,
     required this.offer,
+    this.changed,
   });
 
   final int index;
@@ -358,11 +359,31 @@ final class SyncRunConflictRow {
   /// Whether the two files can be compared; fixed for the plan.
   final CompareOffer offer;
 
+  /// In a re-dialled review, how the conflict changed since the user
+  /// answered it; `null` when it did not, or on a first review.
+  final SyncRunRowChange? changed;
+
   /// Whether the review offers to compare the two files.
   bool get comparable => offer is OfferReadable;
 
   /// Whether [choice] is one the core offered for this conflict.
   bool offers(ConflictChoice choice) => offered.contains(choice);
+}
+
+/// A re-dialled review's row that is not the one the user answered
+/// before: what it [was], in words ("copy to the remote"); `null` for a
+/// path new to the review.
+final class SyncRunRowChange {
+  const SyncRunRowChange({required this.was});
+
+  final String? was;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunRowChange && other.was == was;
+
+  @override
+  int get hashCode => was.hashCode;
 }
 
 /// One side of a conflict: its [status], and — for a side with a file on
@@ -419,6 +440,7 @@ final class SyncRunPlanRow {
     required this.group,
     required this.reversal,
     required this.offer,
+    this.changed,
   });
 
   final int index;
@@ -430,6 +452,9 @@ final class SyncRunPlanRow {
 
   /// Whether the action's two files can be compared; fixed for the plan.
   final CompareOffer offer;
+
+  /// [SyncRunConflictRow.changed], for an action.
+  final SyncRunRowChange? changed;
 
   /// Whether the review offers to compare the two files.
   bool get comparable => offer is OfferReadable;
@@ -450,11 +475,12 @@ final class SyncRunPlanRow {
       other.bytes == bytes &&
       other.group == group &&
       other.reversal == reversal &&
-      other.offer == offer;
+      other.offer == offer &&
+      other.changed == changed;
 
   @override
   int get hashCode =>
-      Object.hash(index, path, action, bytes, group, reversal, offer);
+      Object.hash(index, path, action, bytes, group, reversal, offer, changed);
 }
 
 /// A planned action's reverse, rendered: what it does, literally — which
@@ -516,8 +542,9 @@ final class SyncRunPlanAbsent extends SyncRunPlanChange {
 /// A whole plan, replacing whatever was shown: its [plan] and [conflicts]
 /// rows, every reported outcome by path, the core's choice for each row in
 /// their order, what the core counts the copies moving each way, the
-/// bytes the kept actions move, and the line warning that they are over
-/// the warn size (SPEC §10), if they are.
+/// bytes the kept actions move, the line warning that they are over the
+/// warn size (SPEC §10), if they are, and - for a re-dialled entry's plan
+/// reviewed again - how many rows changed and how many kept their choice.
 final class SyncRunPlanReplaced extends SyncRunPlanChange {
   const SyncRunPlanReplaced({
     required this.plan,
@@ -528,6 +555,7 @@ final class SyncRunPlanReplaced extends SyncRunPlanChange {
     required this.copyBytes,
     required this.bytesToTransfer,
     required this.sizeWarning,
+    this.recalled,
   });
 
   final List<SyncRunPlanRow> plan;
@@ -538,6 +566,7 @@ final class SyncRunPlanReplaced extends SyncRunPlanChange {
   final ({int toDevice, int toThisDevice}) copyBytes;
   final int bytesToTransfer;
   final String? sizeWarning;
+  final ({int changed, int kept})? recalled;
 }
 
 /// The rows of the plan already shown whose choice or outcome changed.
@@ -651,6 +680,10 @@ class SyncRunViewState extends ChangeNotifier {
   List<String> _skippedSymlinks = const [];
   List<String> _unreadablePaths = const [];
   List<SyncRunConflictRow> _conflicts = const [];
+  List<int> _listedConflicts = const [];
+  List<int> _changedConflicts = const [];
+  List<int> _changedActions = const [];
+  ({int changed, int kept})? _recalled;
   final ValueNotifier<List<SyncRunPlanRow>> _plan = ValueNotifier(const []);
   Map<SyncRunPlanGroup, SyncRunPlanSection> _planSections = _emptyPlanSections;
   int _bytesToTransfer = 0;
@@ -709,6 +742,25 @@ class SyncRunViewState extends ChangeNotifier {
 
   List<SyncRunConflictRow> get conflicts => _conflicts;
 
+  /// The positions in [conflicts] the conflicts' own section lists: all
+  /// of them but the [changedConflicts], which lead the review instead.
+  List<int> get listedConflicts => _listedConflicts;
+
+  /// A re-dialled review's rows that changed since the user answered them,
+  /// which the page shows first, in a group of their own: positions in
+  /// [conflicts] and in [plan], ascending. Empty on a first review. Only
+  /// where a row is shown moves; its choice stays keyed by its index.
+  List<int> get changedConflicts => _changedConflicts;
+
+  /// [changedConflicts], for the plan's actions: left out of
+  /// [planSections].
+  List<int> get changedActions => _changedActions;
+
+  /// A re-dialled entry's plan reviewed again with the earlier answers
+  /// kept: how many of its rows changed, and how many kept their choice.
+  /// `null` for a first review. Fixed with the plan.
+  ({int changed, int kept})? get recalled => _recalled;
+
   /// The reconciled plan (SPEC §6).
   List<SyncRunPlanRow> get plan => _plan.value;
 
@@ -722,7 +774,7 @@ class SyncRunViewState extends ChangeNotifier {
   /// [plan], sliced into its four [SyncRunPlanGroup]s (Design C.5) —
   /// folded once per plan, not re-walked per build. Every group is
   /// present, empty ones included, so a reader never null-checks a group
-  /// that has nothing in it.
+  /// that has nothing in it. The [changedActions] are in none of them.
   Map<SyncRunPlanGroup, SyncRunPlanSection> get planSections => _planSections;
 
   int get bytesToTransfer => _bytesToTransfer;
@@ -843,6 +895,10 @@ class SyncRunViewState extends ChangeNotifier {
   /// was a plan to take away.
   void _clearPlan() {
     _conflicts = const [];
+    _listedConflicts = const [];
+    _changedConflicts = const [];
+    _changedActions = const [];
+    _recalled = null;
     _bytesToTransfer = 0;
     _sizeWarning = null;
     _results = {};
@@ -860,6 +916,13 @@ class SyncRunViewState extends ChangeNotifier {
   /// and every cell written from them.
   void _replacePlan(SyncRunPlanReplaced change) {
     _conflicts = List.unmodifiable(change.conflicts);
+    _recalled = change.recalled;
+    final (changed, listed) = (<int>[], <int>[]);
+    for (final row in change.conflicts) {
+      (row.changed == null ? listed : changed).add(row.index);
+    }
+    _changedConflicts = List.unmodifiable(changed);
+    _listedConflicts = List.unmodifiable(listed);
     _bytesToTransfer = change.bytesToTransfer;
     _sizeWarning = change.sizeWarning;
     _results = Map.of(change.results);
@@ -922,18 +985,33 @@ class SyncRunViewState extends ChangeNotifier {
     final indexes = {
       for (final group in SyncRunPlanGroup.values) group: <int>[],
     };
+    final changed = <int>[];
+    // The bytes the changed rows move, by group: a group's bytes are the
+    // core's count for its copies, less those shown first instead.
+    final changedBytes = {
+      for (final group in SyncRunPlanGroup.values) group: 0,
+    };
     for (var i = 0; i < rows.length; i++) {
-      indexes[rows[i].group]!.add(i);
+      final row = rows[i];
+      if (row.changed == null) {
+        indexes[row.group]!.add(i);
+      } else {
+        changed.add(i);
+        changedBytes[row.group] = changedBytes[row.group]! + row.bytes;
+      }
     }
+    _changedActions = List.unmodifiable(changed);
     _planSections = {
       for (final group in SyncRunPlanGroup.values)
         group: SyncRunPlanSection(
           indexes: List.unmodifiable(indexes[group]!),
-          bytes: switch (group) {
-            SyncRunPlanGroup.toDevice => copyBytes.toDevice,
-            SyncRunPlanGroup.toThisDevice => copyBytes.toThisDevice,
-            SyncRunPlanGroup.deletions || SyncRunPlanGroup.recordOnly => 0,
-          },
+          bytes:
+              switch (group) {
+                SyncRunPlanGroup.toDevice => copyBytes.toDevice,
+                SyncRunPlanGroup.toThisDevice => copyBytes.toThisDevice,
+                SyncRunPlanGroup.deletions || SyncRunPlanGroup.recordOnly => 0,
+              } -
+              changedBytes[group]!,
         ),
     };
     _plan.value = List.unmodifiable(rows);

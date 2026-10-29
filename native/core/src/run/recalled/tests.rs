@@ -47,6 +47,8 @@ struct Fake {
     vetoes: Vec<&'static str>,
     reverses: Vec<&'static str>,
     keeps: Vec<(&'static str, Side)>,
+    /// Keep-both copies it answers with, each settling its conflict.
+    asides: Vec<Action>,
     /// Answers with this too: an action no row offered.
     stray: Option<Action>,
     confirms: bool,
@@ -74,7 +76,10 @@ impl Fake {
                 .find(|(at, _)| *at == conflict.path.as_str())
                 .map(|&(_, side)| conflict.resolve(side))
         });
-        kept.chain(resolved).chain(self.stray.clone()).collect()
+        kept.chain(resolved)
+            .chain(self.asides.iter().cloned())
+            .chain(self.stray.clone())
+            .collect()
     }
 }
 
@@ -98,7 +103,7 @@ impl Decider for Fake {
         self.answer(plan)
     }
 
-    fn carried(&mut self, _: &Plan) {
+    fn carried(&mut self, _: &Plan, _: &Recall) {
         self.carried += 1;
     }
 
@@ -195,6 +200,33 @@ async fn an_unchanged_replan_keeps_every_answer_without_asking() {
             conflict("c", RootKind::Folder).resolve(Side::A),
         ]
     );
+}
+
+#[tokio::test]
+async fn a_kept_both_conflict_carries_its_copy_aside_without_asking() {
+    let aside = Action::CopyAside {
+        path: path("c"),
+        from: Side::B,
+        to: path("c (b).txt"),
+        bytes: 3,
+    };
+    let mut inner = Fake {
+        asides: vec![aside.clone()],
+        ..Fake::default()
+    };
+    let plan = Plan {
+        actions: vec![copy("x", 10, None)],
+        conflicts: vec![conflict("c", RootKind::Folder)],
+    };
+    let mut recalled = Recalled::new(&mut inner);
+    let first = decide(&mut recalled, &plan).await;
+    let second = decide(&mut recalled, &plan).await;
+    drop(recalled);
+
+    assert_eq!((inner.decides, inner.asked_again.len()), (1, 0));
+    assert_eq!(inner.carried, 1);
+    assert_eq!(second, first);
+    assert_eq!(second, [plan.actions[0].action.clone(), aside]);
 }
 
 #[tokio::test]

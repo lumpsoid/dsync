@@ -1,4 +1,4 @@
-use dsync_core::{BatchDecider, Decider, DryRunDecider};
+use dsync_core::{BatchDecider, Decider, DryRunDecider, Recall};
 use dsync_domain::{Action, Plan, Side, Status};
 use tokio::sync::watch;
 
@@ -76,10 +76,11 @@ async fn a_carried_plan_keeps_the_next_review_waiting_for_its_own_plan() {
 
     // Entry 1, attempt 1: reviewed.
     let first = actions(vec![copy("a", Side::A, 1)]);
-    with_deadline("entry 1", decider.review(&first)).await;
+    let answer = with_deadline("entry 1", decider.review(&first)).await;
     // Entry 1, attempt 2: its plan is shown, and answered without a review.
     shown.send(2).unwrap();
-    decider.carried(&first);
+    let recall = Recall::after(&first, &answer, &first).expect("a replayable answer");
+    decider.carried(&first, &recall);
 
     // Entry 2: its plan is not shown yet.
     let second = actions(vec![copy("b", Side::A, 1)]);

@@ -37,9 +37,11 @@ pub trait Decider: Send {
 
     /// Told when `plan` was answered without asking this decider: a
     /// re-dialled entry's plan that had not changed, so its earlier answers
-    /// were kept ([`crate::run::Recalled`]). A decider that pairs its asks
-    /// with the plans shown counts this one as asked.
-    fn carried(&mut self, _plan: &Plan) {}
+    /// were kept ([`crate::run::Recalled`]) - `recall` has every row
+    /// carried, with the answer it kept. A decider that pairs its asks
+    /// with the plans shown counts this one as asked; one that shows the
+    /// plan's choices shows these.
+    fn carried(&mut self, _plan: &Plan, _recall: &Recall) {}
 
     /// Whether to apply the approved actions although they trip SPEC §10's
     /// delete guard (`verdict`). `false` ends the run with nothing applied.

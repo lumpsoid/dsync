@@ -7,6 +7,7 @@ import '../../app_settings_store.dart';
 import '../../core_link/models/action_choice.dart';
 import '../../core_link/models/action_result.dart';
 import '../../core_link/models/conflict_choice.dart';
+import '../../core_link/models/conflict_info.dart';
 import '../../core_link/models/core_failure.dart';
 import '../../core_link/models/entry_run.dart';
 import '../../core_link/models/entry_run_status.dart';
@@ -24,6 +25,7 @@ import '../../core_link/models/scan_tally.dart';
 import '../../core_link/models/skipped_path_info.dart';
 import '../../core_link/models/sync_history.dart';
 import '../../format_bytes.dart';
+import '../../format_count.dart';
 import '../../mass_delete_guard.dart';
 import '../../run_request.dart';
 import '../../screen_wake.dart';
@@ -481,6 +483,15 @@ class SyncRunController {
                 remote: _conflictSide(row.conflict.b),
                 offered: row.offered,
                 offer: row.offer,
+                changed: switch (row.changed) {
+                  final change? => SyncRunRowChange(
+                    was: switch (change.was) {
+                      final was? => _conflictWas(was),
+                      null => null,
+                    },
+                  ),
+                  null => null,
+                },
               ),
           ],
           plan: [
@@ -493,6 +504,15 @@ class SyncRunController {
                 group: _group(row.proposal.action),
                 reversal: _reversal(row.proposal),
                 offer: row.proposal.offer,
+                changed: switch (row.changed) {
+                  final change? => SyncRunRowChange(
+                    was: switch (change.was) {
+                      final was? => _actionLabel(was),
+                      null => null,
+                    },
+                  ),
+                  null => null,
+                },
               ),
           ],
           copyBytes: (
@@ -512,6 +532,7 @@ class SyncRunController {
               if (row.outcome case final outcome?)
                 row.conflict.path: _result(outcome),
           },
+          recalled: plan.recalled,
           actionChoices: [for (final row in plan.actions) row.choice],
           conflictChoices: [for (final row in plan.conflicts) row.choice],
         );
@@ -669,6 +690,20 @@ String _actionLabel(PlanAction action) => switch (action) {
   CommitOnlyAction() => 'same content, record only',
 };
 
+/// A conflict a re-dialled review's row was before, in words: what each
+/// side had done to the path.
+String _conflictWas(ConflictInfo conflict) =>
+    'a conflict: ${_sideWas(conflict.a)} on this device, '
+    '${_sideWas(conflict.b)} on the remote';
+
+String _sideWas(FileStatus? status) => switch (status) {
+  null => 'no record',
+  StatusUnchanged() => 'unchanged',
+  StatusCreated() => 'created',
+  StatusModified() => 'modified',
+  StatusDeleted() => 'deleted',
+};
+
 /// What reversing [proposal] does, worded literally (Design A): the
 /// reverse of a copy overwrites the side it would have copied to, and the
 /// reverse of a delete restores the side that lost the file — so the label
@@ -717,6 +752,18 @@ SyncRunPlanGroup _group(PlanAction action) => switch (action) {
 const deletesDeclinedMessage =
     'Not applied: you chose not to delete those files. Nothing was changed '
     'on either side.';
+
+/// A re-dialled review's header (SPEC §11.4): how many rows [changed]
+/// since the user approved them, which the review shows first, and how
+/// many other choices are [kept].
+String recalledLine({required int changed, required int kept}) {
+  final shown =
+      'Reconnected. ${formatCount(changed)} changed since you approved, '
+      'shown first';
+  if (kept == 0) return shown;
+  return '$shown; your other ${formatCount(kept)} '
+      '${kept == 1 ? 'choice is' : 'choices are'} kept';
+}
 
 const noSummaryMessage = 'The run ended without reporting a summary.';
 

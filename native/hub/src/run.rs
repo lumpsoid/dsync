@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime};
 
 use dsync_core::{
     BatchDecider, Compared, Connector, Decider, DryRunDecider, Peek, PeerDialer, PeerSessions,
-    ProfileEvent, ProfileReport, ProfileRun, ProfileStop, Replica, interface_addresses,
+    ProfileEvent, ProfileReport, ProfileRun, ProfileStop, Recall, Replica, interface_addresses,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
@@ -489,10 +489,11 @@ impl RunControl {
     }
 
     /// `None` when the plan is answered at once, keeping nothing; else the
-    /// review the decider waits on.
-    fn ask_review(self: &Arc<Self>, plan: &Plan) -> Option<Reviewing> {
+    /// review the decider waits on - with what `recall` kept of the
+    /// answers given before, for a re-dialled entry's changed plan.
+    fn ask_review(self: &Arc<Self>, plan: &Plan, recall: Option<&Recall>) -> Option<Reviewing> {
         let mut shared = self.lock();
-        let asked = match shared.state.review(plan) {
+        let asked = match shared.state.review(plan, recall) {
             Review::KeepNothing => None,
             Review::Asked { peer_label } => {
                 let (answer, answered) = oneshot::channel();
@@ -686,20 +687,56 @@ struct HeadDecider {
 }
 
 impl Decider for HeadDecider {
-    /// Waits for the head's answer, serving the review's compares one at
-    /// a time meanwhile: here, because the peek borrows the run's replicas
-    /// for this call alone. The answer is never held up by a read - it
-    /// drops the one in flight, as a cancelled compare does.
     async fn decide<A: Replica, B: Replica>(
         &mut self,
         plan: &Plan,
         peek: Peek<'_, A, B>,
     ) -> Vec<Action> {
+        self.review(plan, peek, None).await
+    }
+
+    /// A re-dialled entry's plan that changed since it was answered: the
+    /// review opens with the earlier choices kept and the changes marked
+    /// (SPEC §11.4).
+    async fn decide_again<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        peek: Peek<'_, A, B>,
+        recall: &Recall,
+    ) -> Vec<Action> {
+        self.review(plan, peek, Some(recall)).await
+    }
+
+    /// A re-dialled entry's unchanged plan, answered as before: its rows
+    /// show the choices kept, and no review opens.
+    fn carried(&mut self, plan: &Plan, recall: &Recall) {
+        self.control.update(|state| state.carried(plan, recall));
+    }
+
+    async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {
+        match self.control.ask_deletes(verdict) {
+            Asked::Answered(confirmed) => confirmed,
+            Asked::Waiting(answer) => answer.await.unwrap_or(false),
+        }
+    }
+}
+
+impl HeadDecider {
+    /// Waits for the head's answer, serving the review's compares one at
+    /// a time meanwhile: here, because the peek borrows the run's replicas
+    /// for this call alone. The answer is never held up by a read - it
+    /// drops the one in flight, as a cancelled compare does.
+    async fn review<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        peek: Peek<'_, A, B>,
+        recall: Option<&Recall>,
+    ) -> Vec<Action> {
         let Some(Reviewing {
             mut answer,
             mut asks,
             peer_label,
-        }) = self.control.ask_review(plan)
+        }) = self.control.ask_review(plan, recall)
         else {
             return Vec::new();
         };
@@ -729,13 +766,6 @@ impl Decider for HeadDecider {
         answered
             .unwrap_or_else(|_| Choices::none())
             .actions(plan, &peer_label)
-    }
-
-    async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {
-        match self.control.ask_deletes(verdict) {
-            Asked::Answered(confirmed) => confirmed,
-            Asked::Waiting(answer) => answer.await.unwrap_or(false),
-        }
     }
 }
 

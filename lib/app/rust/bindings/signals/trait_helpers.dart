@@ -1,6 +1,78 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 class TraitHelpers {
+  static void serializeOptionActionChangeView(ActionChangeView? value, BinarySerializer serializer) {
+    if (value == null) {
+        serializer.serializeOptionTag(false);
+    } else {
+        serializer.serializeOptionTag(true);
+        value.serialize(serializer);
+    }
+  }
+
+  static ActionChangeView? deserializeOptionActionChangeView(BinaryDeserializer deserializer) {
+    final tag = deserializer.deserializeOptionTag();
+    if (tag) {
+        return ActionChangeView.deserialize(deserializer);
+    } else {
+        return null;
+    }
+  }
+
+  static void serializeOptionActionView(ActionView? value, BinarySerializer serializer) {
+    if (value == null) {
+        serializer.serializeOptionTag(false);
+    } else {
+        serializer.serializeOptionTag(true);
+        value.serialize(serializer);
+    }
+  }
+
+  static ActionView? deserializeOptionActionView(BinaryDeserializer deserializer) {
+    final tag = deserializer.deserializeOptionTag();
+    if (tag) {
+        return ActionView.deserialize(deserializer);
+    } else {
+        return null;
+    }
+  }
+
+  static void serializeOptionConflictChangeView(ConflictChangeView? value, BinarySerializer serializer) {
+    if (value == null) {
+        serializer.serializeOptionTag(false);
+    } else {
+        serializer.serializeOptionTag(true);
+        value.serialize(serializer);
+    }
+  }
+
+  static ConflictChangeView? deserializeOptionConflictChangeView(BinaryDeserializer deserializer) {
+    final tag = deserializer.deserializeOptionTag();
+    if (tag) {
+        return ConflictChangeView.deserialize(deserializer);
+    } else {
+        return null;
+    }
+  }
+
+  static void serializeOptionConflictView(ConflictView? value, BinarySerializer serializer) {
+    if (value == null) {
+        serializer.serializeOptionTag(false);
+    } else {
+        serializer.serializeOptionTag(true);
+        value.serialize(serializer);
+    }
+  }
+
+  static ConflictView? deserializeOptionConflictView(BinaryDeserializer deserializer) {
+    final tag = deserializer.deserializeOptionTag();
+    if (tag) {
+        return ConflictView.deserialize(deserializer);
+    } else {
+        return null;
+    }
+  }
+
   static void serializeOptionMissingRootView(MissingRootView? value, BinarySerializer serializer) {
     if (value == null) {
         serializer.serializeOptionTag(false);
@@ -32,6 +104,24 @@ class TraitHelpers {
     final tag = deserializer.deserializeOptionTag();
     if (tag) {
         return ProgressView.deserialize(deserializer);
+    } else {
+        return null;
+    }
+  }
+
+  static void serializeOptionRecalledView(RecalledView? value, BinarySerializer serializer) {
+    if (value == null) {
+        serializer.serializeOptionTag(false);
+    } else {
+        serializer.serializeOptionTag(true);
+        value.serialize(serializer);
+    }
+  }
+
+  static RecalledView? deserializeOptionRecalledView(BinaryDeserializer deserializer) {
+    final tag = deserializer.deserializeOptionTag();
+    if (tag) {
+        return RecalledView.deserialize(deserializer);
     } else {
         return null;
     }

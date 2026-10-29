@@ -69,6 +69,15 @@ impl Recall {
         &self.conflicts
     }
 
+    /// What a re-plan `plan` recalls of `answer`, the answer given to
+    /// `earlier`, as [`Recalled`] would build it; `None` when it could not
+    /// replay that answer. For tests of a decider's `decide_again`.
+    #[cfg(feature = "test-support")]
+    pub fn after(earlier: &Plan, answer: &[Action], plan: &Plan) -> Option<Recall> {
+        let mut record = Record::default();
+        record.note(earlier, answer).then(|| record.recall(plan))
+    }
+
     /// Every row carries: there is nothing to ask.
     fn carries(&self) -> bool {
         self.actions
@@ -228,7 +237,7 @@ impl<D: Decider> Decider for Recalled<'_, D> {
             Some(record) => {
                 let recall = record.recall(plan);
                 if recall.carries() {
-                    self.inner.carried(plan);
+                    self.inner.carried(plan, &recall);
                     return recall.answer(plan);
                 }
                 self.inner.decide_again(plan, peek, &recall).await

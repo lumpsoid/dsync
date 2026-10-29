@@ -10,6 +10,7 @@ class PlanView {
     required this.bytesToTransfer,
     this.exceededWarnSizeBytes,
     required this.summary,
+    this.recalled,
   });
 
   static PlanView deserialize(BinaryDeserializer deserializer) {
@@ -20,6 +21,7 @@ class PlanView {
       bytesToTransfer: deserializer.deserializeUint64(),
       exceededWarnSizeBytes: TraitHelpers.deserializeOptionU64(deserializer),
       summary: PlanSummaryView.deserialize(deserializer),
+      recalled: TraitHelpers.deserializeOptionRecalledView(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -39,6 +41,7 @@ class PlanView {
   final Uint64 bytesToTransfer;
   final Uint64? exceededWarnSizeBytes;
   final PlanSummaryView summary;
+  final RecalledView? recalled;
 
   PlanView copyWith({
     List<PlanRowView>? actions,
@@ -46,6 +49,7 @@ class PlanView {
     Uint64? bytesToTransfer,
     Uint64? Function()? exceededWarnSizeBytes,
     PlanSummaryView? summary,
+    RecalledView? Function()? recalled,
   }) {
     return PlanView(
       actions: actions ?? this.actions,
@@ -53,6 +57,7 @@ class PlanView {
       bytesToTransfer: bytesToTransfer ?? this.bytesToTransfer,
       exceededWarnSizeBytes: exceededWarnSizeBytes == null ? this.exceededWarnSizeBytes : exceededWarnSizeBytes(),
       summary: summary ?? this.summary,
+      recalled: recalled == null ? this.recalled : recalled(),
     );
   }
 
@@ -63,6 +68,7 @@ class PlanView {
     serializer.serializeUint64(bytesToTransfer);
     TraitHelpers.serializeOptionU64(exceededWarnSizeBytes, serializer);
     summary.serialize(serializer);
+    TraitHelpers.serializeOptionRecalledView(recalled, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -82,7 +88,8 @@ class PlanView {
       && listEquals(conflicts, other.conflicts)
       && bytesToTransfer == other.bytesToTransfer
       && exceededWarnSizeBytes == other.exceededWarnSizeBytes
-      && summary == other.summary;
+      && summary == other.summary
+      && recalled == other.recalled;
   }
 
   @override
@@ -92,6 +99,7 @@ class PlanView {
         bytesToTransfer,
         exceededWarnSizeBytes,
         summary,
+        recalled,
       );
 
   @override
@@ -104,7 +112,8 @@ class PlanView {
         'conflicts: $conflicts, '
         'bytesToTransfer: $bytesToTransfer, '
         'exceededWarnSizeBytes: $exceededWarnSizeBytes, '
-        'summary: $summary'
+        'summary: $summary, '
+        'recalled: $recalled'
         ')';
       return true;
     }());
