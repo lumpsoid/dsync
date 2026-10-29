@@ -67,6 +67,31 @@ where
         Rd: AsyncRead + Unpin + Send + 'static,
         Wr: AsyncWrite + Unpin + Send + 'static,
     {
+        self.serve_until(transport, std::future::pending()).await
+    }
+
+    /// [`ReplicaServer::serve`], also ending the session the moment
+    /// `until` is ready, as on a connection that died: nothing more is
+    /// read or written on it, every request in flight is let finish, and
+    /// then the replica and its lock are released. `Ok` when cut so.
+    ///
+    /// A connection that ends - cut, or failed reading (the client's
+    /// silence) - is torn down in one order (SPEC §4.2): the reader
+    /// returns, ending every write body still arriving; the writer is
+    /// aborted, so a request blocked sending to a link nobody reads gets
+    /// its send refused instead of waiting on it forever; the requests in
+    /// flight are joined, never aborted, since a write's handler is what
+    /// keeps the lock held until its writer has stopped touching the
+    /// root; and only then the replica, and its lock, are dropped.
+    pub async fn serve_until<Rd, Wr>(
+        &self,
+        transport: Transport<Rd, Wr>,
+        until: impl Future<Output = ()> + Send + 'static,
+    ) -> Result<(), LinkError>
+    where
+        Rd: AsyncRead + Unpin + Send + 'static,
+        Wr: AsyncWrite + Unpin + Send + 'static,
+    {
         let Transport {
             reader,
             mut writer,
@@ -93,13 +118,35 @@ where
             outbox.clone(),
             credits.clone(),
             liveness,
+            until,
         ));
-        self.session(incoming, &outbox, &credits).await;
-        // A session the prologue refused stops reading here; one the client
-        // closed has stopped already.
-        reading.abort();
-        let read = (&mut reading).await.unwrap_or(Ok(()));
-        outbox.close().await;
+        let session = self.session(incoming, &outbox, &credits);
+        let read = async {
+            tokio::pin!(session);
+            let (read, session_over) = tokio::select! {
+                () = &mut session => {
+                    // A session the prologue refused stops reading here;
+                    // one the client closed has stopped already.
+                    reading.abort();
+                    ((&mut reading).await.unwrap_or(Ok(ReadEnd::Closed)), true)
+                }
+                read = &mut reading => (read.unwrap_or(Ok(ReadEnd::Closed)), false),
+            };
+            if !matches!(read, Ok(ReadEnd::Closed)) {
+                // Nothing on this link will be read again: frames still
+                // queued cost nothing to drop, and a request sending one
+                // is let go.
+                written.abort();
+            }
+            if !session_over {
+                session.await;
+            }
+            read
+        }
+        .await;
+        if matches!(read, Ok(ReadEnd::Closed)) {
+            outbox.close().await;
+        }
         drop(outbox);
         let wrote = written.await.unwrap_or(Ok(()));
         read?;
@@ -321,18 +368,33 @@ fn undecodable(error: &postcard::Error) -> WireError {
     WireError::Protocol(format!("an undecodable request: {error}"))
 }
 
+/// How the reader stopped, when it did not fail.
+enum ReadEnd {
+    /// The client closed its end, or the session stopped taking requests.
+    Closed,
+    /// The session's `until` was ready.
+    Cut,
+}
+
 /// The reader: requests to the session, a write's body frames to its
-/// body, grants and cancels to the read bodies being sent. Returns `Ok` when the
-/// client closes its end; either way every read body still being sent
-/// stops.
+/// body, grants and cancels to the read bodies being sent, until the
+/// client closes its end or `until` is ready - wherever the reader is
+/// waiting, a frame or the session. Either way every read body still
+/// being sent stops, and every write body still arriving ends short.
 async fn read_requests<R: AsyncRead + Unpin>(
     reader: BufReader<SilenceLimit<R>>,
     arrived: mpsc::Sender<Incoming>,
     outbox: Outbox,
     credits: Arc<Credits>,
     liveness: Option<Liveness>,
-) -> Result<(), LinkError> {
-    let read = route_requests(reader, arrived, outbox, &credits, liveness).await;
+    until: impl Future<Output = ()>,
+) -> Result<ReadEnd, LinkError> {
+    let read = tokio::select! {
+        read = route_requests(reader, arrived, outbox, &credits, liveness) => {
+            read.map(|()| ReadEnd::Closed)
+        }
+        () = until => Ok(ReadEnd::Cut),
+    };
     credits.close();
     read
 }
@@ -426,12 +488,18 @@ mod tests {
     use std::fs;
     use std::time::{Duration, UNIX_EPOCH};
 
-    use dsync_domain::{EntryId, Jobs, Precondition, RelPath, Side};
+    use dsync_domain::{
+        ArchiveCommit, ArchiveFacts, EntryId, FileMeta, Jobs, Precondition, RelPath, RootFacts,
+        RuleSet, STAGING_DIR, ScanEntry, Side, WriteStats,
+    };
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, duplex};
+    use tokio::sync::{Notify, Semaphore, oneshot};
     use tokio::task::JoinHandle;
 
     use super::*;
     use crate::local_replica::LocalReplica;
+    use crate::replica::{DigestedScan, OpenedScan, Reading};
+    use crate::replica_lock::{LockError, RunLocks};
     use crate::state_dir::StateDir;
 
     const DEADLINE: Duration = Duration::from_secs(5);
@@ -562,31 +630,44 @@ mod tests {
             &self,
             liveness: Option<Liveness>,
         ) -> (Client, JoinHandle<Result<(), LinkError>>) {
+            self.serve_over(64 * 1024, liveness, std::future::pending(), |replica| {
+                replica
+            })
+            .await
+        }
+
+        /// [`Site::serve`] over a link buffering `link_bytes` each way,
+        /// cut when `until` is ready, serving `wrap` of the replica.
+        async fn serve_over<R: Replica + 'static>(
+            &self,
+            link_bytes: usize,
+            liveness: Option<Liveness>,
+            until: impl Future<Output = ()> + Send + 'static,
+            wrap: impl Fn(LocalReplica) -> R + Send + Sync + 'static,
+        ) -> (Client, JoinHandle<Result<(), LinkError>>) {
             let state = StateDir::new(self.dir.path().join("state"));
             let server = ReplicaServer::new(
                 move |spec: ReplicaSpec| {
-                    let state = state.clone();
-                    async move {
-                        Ok(LocalReplica::open(
-                            crate::Root::folder(spec.root),
-                            state,
-                            spec.entry,
-                            spec.side,
-                            spec.jobs,
-                            Tuning::DEFAULT,
-                            crate::Symlinks::AsRuled,
-                        ))
-                    }
+                    let replica = wrap(LocalReplica::open(
+                        crate::Root::folder(spec.root),
+                        state.clone(),
+                        spec.entry,
+                        spec.side,
+                        spec.jobs,
+                        Tuning::DEFAULT,
+                        crate::Symlinks::AsRuled,
+                    ));
+                    async move { Ok(replica) }
                 },
                 Tuning::DEFAULT,
             );
-            let (near, far) = duplex(64 * 1024);
+            let (near, far) = duplex(link_bytes);
             let transport = Transport::split(near);
             let transport = match liveness {
                 Some(liveness) => transport.with_liveness(liveness),
                 None => transport,
             };
-            let serving = tokio::spawn(async move { server.serve(transport).await });
+            let serving = tokio::spawn(async move { server.serve_until(transport, until).await });
             let (reader, mut writer) = tokio::io::split(far);
             let mut reader = BufReader::new(reader);
             within(DEADLINE, handshake(&mut reader, &mut writer))
@@ -598,6 +679,26 @@ mod tests {
                 next_id: 0,
             };
             (client, serving)
+        }
+
+        /// Whether another run could lock this site's replica now.
+        fn lock_is_free(&self) -> bool {
+            let spec = self.spec();
+            let state = StateDir::new(self.dir.path().join("state"));
+            let root = self.dir.path().join("root");
+            match RunLocks::acquire(&state, &spec.entry, spec.side, &root) {
+                Ok(_) => true,
+                Err(LockError::Held { .. } | LockError::FolderInUse { .. }) => false,
+                Err(error) => panic!("{error}"),
+            }
+        }
+
+        /// The temps in the root's staging folder.
+        fn staged(&self) -> Vec<std::path::PathBuf> {
+            match fs::read_dir(self.dir.path().join("root").join(STAGING_DIR)) {
+                Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
+                Err(_) => Vec::new(),
+            }
         }
     }
 
@@ -775,5 +876,245 @@ mod tests {
             "{served:?}"
         );
         assert_eq!(started.elapsed(), Duration::from_secs(30));
+    }
+
+    /// A link small enough that a read body fills it, and the outbox
+    /// behind it, long before the body ends.
+    const NARROW_LINK: usize = 4 * 1024;
+
+    /// A locked session whose client opened a read of `big`, granted it
+    /// all, and then reads nothing more: the server's writer is stuck
+    /// behind a full link and the read's handler behind a full outbox.
+    async fn stuck_mid_read(
+        liveness: Option<Liveness>,
+        until: impl Future<Output = ()> + Send + 'static,
+    ) -> (Site, Client, JoinHandle<Result<(), LinkError>>) {
+        let site = Site::new();
+        fs::write(site.dir.path().join("root/big"), vec![7u8; BIG]).unwrap();
+        let (mut client, serving) = site
+            .serve_over(NARROW_LINK, liveness, until, |replica| replica)
+            .await;
+        assert!(matches!(
+            client.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        assert!(matches!(
+            client.ask(&Request::Lock).await,
+            Ok(Reply::Locked(_))
+        ));
+        let id = client.open_read("big").await;
+        let grant = crate::credit::grant_frame(id, BIG);
+        client.send_to(Kind::Credit, id, grant.payload).await;
+        (site, client, serving)
+    }
+
+    /// A future ready once its sender fires.
+    fn cut() -> (
+        oneshot::Sender<()>,
+        impl Future<Output = ()> + Send + 'static,
+    ) {
+        let (fire, fired) = oneshot::channel::<()>();
+        (fire, async move {
+            let _ = fired.await;
+        })
+    }
+
+    #[tokio::test]
+    async fn a_client_gone_silent_mid_read_frees_the_lock_after_the_silence_limit() {
+        let liveness = Liveness {
+            heartbeat: Duration::from_millis(100),
+            silence_limit: Duration::from_secs(1),
+        };
+        let (site, _client, serving) = stuck_mid_read(Some(liveness), std::future::pending()).await;
+        assert!(!site.lock_is_free());
+        let served = within(liveness.silence_limit + Duration::from_secs(2), serving)
+            .await
+            .unwrap();
+        assert!(
+            matches!(served, Err(LinkError::PeerSilent { .. })),
+            "{served:?}"
+        );
+        assert!(site.lock_is_free());
+    }
+
+    #[tokio::test]
+    async fn a_session_cut_mid_read_frees_the_lock_at_once() {
+        let (fire, until) = cut();
+        let (site, _client, serving) = stuck_mid_read(None, until).await;
+        // Long enough for the body to fill the link and the outbox.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!site.lock_is_free());
+        fire.send(()).unwrap();
+        within(DEADLINE, serving).await.unwrap().unwrap();
+        assert!(site.lock_is_free());
+    }
+
+    /// A write `path` of `bytes`, sent as its request and one chunk and
+    /// never ended: its id.
+    async fn send_unended_write(client: &mut Client, path: &str, bytes: usize) -> u32 {
+        let request = Request::Write {
+            path: RelPath::parse(path).unwrap(),
+            meta: FileMeta {
+                size: 2 * bytes as u64,
+                mtime_us: 0,
+                mode: 0o644,
+            },
+            expect: Precondition::Absent,
+        };
+        let id = client.send_raw(Kind::Request, wire::encode(&request)).await;
+        client.send_to(Kind::Chunk, id, vec![1u8; bytes]).await;
+        id
+    }
+
+    #[tokio::test]
+    async fn a_cut_session_keeps_the_lock_until_a_held_write_is_let_go() {
+        let gate = Arc::new(Semaphore::new(0));
+        let entered = Arc::new(Notify::new());
+        let (fire, until) = cut();
+        let site = Site::new();
+        let (mut client, mut serving) = {
+            let (gate, entered) = (gate.clone(), entered.clone());
+            site.serve_over(64 * 1024, None, until, move |inner| Gated {
+                inner,
+                gate: gate.clone(),
+                entered: entered.clone(),
+            })
+            .await
+        };
+        assert!(matches!(
+            client.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        assert!(matches!(
+            client.ask(&Request::Lock).await,
+            Ok(Reply::Locked(_))
+        ));
+        send_unended_write(&mut client, "new", 1024).await;
+        within(DEADLINE, entered.notified()).await;
+
+        fire.send(()).unwrap();
+        let early = tokio::time::timeout(Duration::from_millis(300), &mut serving).await;
+        assert!(early.is_err(), "the session ended under a held write");
+        assert!(!site.lock_is_free());
+
+        gate.add_permits(1);
+        within(DEADLINE, serving).await.unwrap().unwrap();
+        assert!(site.lock_is_free());
+    }
+
+    #[tokio::test]
+    async fn a_write_cut_with_its_session_leaves_no_temp() {
+        let (fire, until) = cut();
+        let site = Site::new();
+        let (mut client, serving) = site
+            .serve_over(64 * 1024, None, until, |replica| replica)
+            .await;
+        assert!(matches!(
+            client.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        assert!(matches!(
+            client.ask(&Request::Lock).await,
+            Ok(Reply::Locked(_))
+        ));
+        send_unended_write(&mut client, "new", 32 * 1024).await;
+        within(DEADLINE, async {
+            while site.staged().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        fire.send(()).unwrap();
+        within(DEADLINE, serving).await.unwrap().unwrap();
+        assert_eq!(site.staged(), Vec::<std::path::PathBuf>::new());
+        assert!(!site.dir.path().join("root/new").exists());
+    }
+
+    /// A local replica whose writes each wait for a permit of `gate`
+    /// before they start, saying on `entered` that one is waiting.
+    struct Gated {
+        inner: LocalReplica,
+        gate: Arc<Semaphore>,
+        entered: Arc<Notify>,
+    }
+
+    impl Replica for Gated {
+        async fn hello(&self) -> Result<RootFacts, ReplicaError> {
+            self.inner.hello().await
+        }
+
+        async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
+            self.inner.lock().await
+        }
+
+        async fn unlock(&self) -> Result<(), ReplicaError> {
+            self.inner.unlock().await
+        }
+
+        async fn create_root(&self) -> Result<(), ReplicaError> {
+            self.inner.create_root().await
+        }
+
+        async fn open_scan(&self, rules: &RuleSet) -> Result<OpenedScan, ReplicaError> {
+            self.inner.open_scan(rules).await
+        }
+
+        async fn scan_digests(
+            &self,
+            ticket: DigestTicket,
+            count: BucketCount,
+            peer_changed: &[RelPath],
+        ) -> Result<DigestedScan, ReplicaError> {
+            self.inner.scan_digests(ticket, count, peer_changed).await
+        }
+
+        async fn scan_buckets(
+            &self,
+            ticket: &BucketTicket,
+            buckets: &[Bucket],
+        ) -> Result<Vec<ScanEntry>, ReplicaError> {
+            self.inner.scan_buckets(ticket, buckets).await
+        }
+
+        async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
+            self.inner.read(path).await
+        }
+
+        async fn write(
+            &self,
+            path: &RelPath,
+            body: Body,
+            meta: FileMeta,
+            expect: Precondition,
+        ) -> Result<FileMeta, ReplicaError> {
+            self.entered.notify_one();
+            let _permit = self.gate.acquire().await;
+            self.inner.write(path, body, meta, expect).await
+        }
+
+        async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
+            self.inner.delete(path, expect).await
+        }
+
+        async fn remove_empty_dirs(&self, path: &RelPath) -> Result<(), ReplicaError> {
+            self.inner.remove_empty_dirs(path).await
+        }
+
+        async fn commit(&self, batch: Vec<ArchiveCommit>) -> Result<(), ReplicaError> {
+            self.inner.commit(batch).await
+        }
+
+        async fn compact(&self) -> Result<(), ReplicaError> {
+            self.inner.compact().await
+        }
+
+        async fn close(self) -> Result<(), ReplicaError> {
+            self.inner.close().await
+        }
+
+        fn write_stats(&self) -> Option<WriteStats> {
+            Replica::write_stats(&self.inner)
+        }
     }
 }
