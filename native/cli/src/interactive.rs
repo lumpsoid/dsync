@@ -75,9 +75,9 @@ pub struct InteractiveDecider<R, W> {
     /// entry 1 would let entry 2's prompt through before entry 2's plan is
     /// on screen.
     plan_shown: watch::Receiver<usize>,
-    /// How many times [`InteractiveDecider::review`] has been called: one
-    /// call per entry that reaches a decider, in the same order its plan
-    /// was shown.
+    /// How many plans have been answered: one per [`InteractiveDecider::review`]
+    /// call, and one per plan answered without it ([`Decider::carried`]),
+    /// in the same order the plans were shown.
     reviews: usize,
 }
 
@@ -240,6 +240,12 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> Decider for InteractiveDec
         _: Peek<'_, A, B>,
     ) -> Vec<Action> {
         self.review(plan).await
+    }
+
+    /// A plan answered without a review still had its plan event shown:
+    /// counted as reviewed, so the next review waits for its own plan.
+    fn carried(&mut self, _: &Plan) {
+        self.reviews += 1;
     }
 
     async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {

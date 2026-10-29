@@ -38,7 +38,7 @@ pub use redial::ReconnectCause;
 use crate::connector::{ConnectError, PeerContact};
 use crate::replica::Replica;
 use crate::replica_lock::canonical_root;
-use crate::run::{Decider, Run, RunError, RunEvent, RunReport, RunStop, Stopped};
+use crate::run::{Decider, Recalled, Run, RunError, RunEvent, RunReport, RunStop, Stopped};
 use crate::state_dir::StateDir;
 use redial::{Attempt, Verdict, Window, verdict};
 
@@ -238,7 +238,8 @@ impl ProfileRun {
     }
 
     /// Connects and runs one entry, dialling a dropped `peer://` side
-    /// again within its budget ([`redial`]). A stop while connecting, or
+    /// again within its budget ([`redial`]), its attempts answered by one
+    /// [`Recalled`] over `decider`. A stop while connecting, or
     /// while waiting to re-dial, abandons the entry: a connect may never
     /// resolve.
     async fn entry<'o, C, F, A, B>(
@@ -264,6 +265,8 @@ impl ProfileRun {
             }
             Some(Ok(connected)) => connected,
         };
+        // One record of answers for all of this entry's attempts.
+        let decider = &mut Recalled::new(decider);
         let peer_sides: Vec<Side> = peers.iter().map(|peer| peer.side).collect();
         self.emit(ProfileEvent::EntryConnected {
             entry: index,

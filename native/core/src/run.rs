@@ -22,6 +22,7 @@ mod decider;
 mod event;
 mod pair;
 mod peek;
+mod recalled;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,8 @@ pub use compared::Compared;
 pub use decider::{BatchDecider, Decider, DryRunDecider};
 pub use event::{ActionFailure, RunError, RunEvent};
 pub use peek::Peek;
+pub(crate) use recalled::Recalled;
+pub use recalled::{ActionChoice, ConflictChoice, Recall, RowRecall};
 
 use crate::replica::Replica;
 use crate::run_marker::RunMarker;

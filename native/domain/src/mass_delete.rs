@@ -116,6 +116,17 @@ impl MassDelete {
         self.sides.iter().find(|deletes| deletes.side == side)
     }
 
+    /// Whether a person who confirmed `confirmed` has already said yes to
+    /// this: every side tripped here tripped there too, with at least as
+    /// many deletes. A side newly tripped, or a count that rose, is news.
+    pub fn within(&self, confirmed: &MassDelete) -> bool {
+        self.sides.iter().all(|now| {
+            confirmed
+                .side(now.side)
+                .is_some_and(|then| now.deletes <= then.deletes)
+        })
+    }
+
     /// The refusal, as the run reports it when the deletions were not
     /// confirmed.
     pub fn describe(&self) -> String {
@@ -205,6 +216,21 @@ mod tests {
             both.sides().iter().map(|s| s.side).collect::<Vec<_>>(),
             [Side::A, Side::B]
         );
+    }
+
+    #[test]
+    fn a_verdict_is_within_a_confirmed_one_until_a_side_rises_or_appears() {
+        let tripped = |a: usize, b: usize| {
+            let mut kept = deletes(Side::A, a);
+            kept.extend(deletes(Side::B, b));
+            judge(&kept, [20, 20]).unwrap_or_else(|| panic!("tripped"))
+        };
+        let confirmed = tripped(0, 15);
+        assert!(tripped(0, 15).within(&confirmed));
+        assert!(tripped(0, 11).within(&confirmed));
+        assert!(!tripped(0, 16).within(&confirmed));
+        assert!(!tripped(11, 15).within(&confirmed));
+        assert!(tripped(0, 12).within(&tripped(11, 15)));
     }
 
     #[test]

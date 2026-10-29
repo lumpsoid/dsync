@@ -14,12 +14,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use dsync_core::{
-    BatchDecider, Connector, EntryFailure, EntryOutcome, PeerDialer, PeerSessions, ProfileEvent,
-    ProfileReport, ProfileRun, ProfileStop, ReconnectCause, ReplicaError, RunError, RunEvent,
+    BatchDecider, Connector, Decider, EntryFailure, EntryOutcome, Peek, PeerDialer, PeerSessions,
+    ProfileEvent, ProfileReport, ProfileRun, ProfileStop, ReconnectCause, Replica, ReplicaError,
+    RunError, RunEvent,
 };
 use dsync_domain::{
-    Action, Command, EffectiveOptions, Flags, HostFacts, Location, Platform, ReplicaLocation,
-    ReplicaOp, RunFlags, STAGING_DIR, Side, Tuning,
+    Action, Command, EffectiveOptions, Flags, HostFacts, Location, MassDelete, Plan, Platform,
+    ReplicaLocation, ReplicaOp, RunFlags, STAGING_DIR, Side, Tuning,
 };
 use tokio::sync::{Semaphore, mpsc};
 
@@ -199,7 +200,20 @@ impl Scene {
         tuning: Tuning,
         stop: ProfileStop,
         hook: Hook,
+        watch: impl FnMut(&ProfileEvent) + Send + 'static,
+    ) -> Profiled {
+        self.run_deciding(tuning, stop, hook, watch, &mut BatchDecider)
+            .await
+    }
+
+    /// [`Scene::run`] with `decider` answering the plans.
+    async fn run_deciding(
+        &self,
+        tuning: Tuning,
+        stop: ProfileStop,
+        hook: Hook,
         mut watch: impl FnMut(&ProfileEvent) + Send + 'static,
+        decider: &mut impl Decider,
     ) -> Profiled {
         let connector = Connector::new(self.phone.state(), None, tuning)
             .with_peers(PeerDialer::new(
@@ -229,11 +243,10 @@ impl Scene {
                 Ok((connected.a, b, connected.peers))
             }
         };
-        let report =
-            tokio::time::timeout(SLOW, run.execute(connect, &self.entries, &mut BatchDecider))
-                .await
-                .expect("the profile run ends")
-                .unwrap();
+        let report = tokio::time::timeout(SLOW, run.execute(connect, &self.entries, decider))
+            .await
+            .expect("the profile run ends")
+            .unwrap();
         Profiled {
             report,
             events: tokio::time::timeout(SLOW, collecting)
@@ -370,44 +383,42 @@ async fn with_no_redials_allowed_the_cut_fails_the_entry() {
 /// Larger than what crosses loopback while the small files land.
 const BIG: usize = 48 * 1024 * 1024;
 
-#[tokio::test]
-async fn a_link_cut_mid_apply_finishes_committing_what_landed() {
-    let scene = scene().await;
-    let small = put_files(&scene.local, "s", 10, 1024);
-    let big = put_files(&scene.local, "big", 4, BIG);
-    let total = small.len() + big.len();
-    // Commits in fours: some small files are reported before the cut, and
-    // some land and wait for a batch the cut never lets them commit in.
-    let tuning = Tuning {
-        commit_batch: 4,
-        ..near_tuning()
-    };
-    let results = Arc::new(AtomicUsize::new(0));
-    let first_attempt = Arc::new(AtomicBool::new(true));
-    let cutting = {
-        let (link, notes, results, small) = (
-            scene.link.clone(),
-            scene.notes.clone(),
-            results.clone(),
-            small.clone(),
-        );
-        let big = big.clone();
-        tokio::spawn(async move {
-            loop {
-                let landed = small.iter().all(|name| notes.join(name).exists());
-                if landed && results.load(Ordering::SeqCst) >= 8 {
-                    link.cut();
-                    return big.iter().filter(|name| !notes.join(name).exists()).count();
+impl Scene {
+    /// A run of `small` and `big` files from the phone, `decider`
+    /// answering, cut once every small file has landed on the desktop and
+    /// eight results came back. Also says how many large files had not
+    /// landed at the cut.
+    async fn cut_mid_apply(
+        &self,
+        small: &[String],
+        big: &[String],
+        decider: &mut impl Decider,
+    ) -> (Profiled, usize) {
+        // Commits in fours: some small files are reported before the cut,
+        // and some land and wait for a batch the cut never lets them
+        // commit in.
+        let tuning = Tuning {
+            commit_batch: 4,
+            ..near_tuning()
+        };
+        let results = Arc::new(AtomicUsize::new(0));
+        let first_attempt = Arc::new(AtomicBool::new(true));
+        let cutting = {
+            let (link, notes, results) = (self.link.clone(), self.notes.clone(), results.clone());
+            let (small, big) = (small.to_vec(), big.to_vec());
+            tokio::spawn(async move {
+                loop {
+                    let landed = small.iter().all(|name| notes.join(name).exists());
+                    if landed && results.load(Ordering::SeqCst) >= 8 {
+                        link.cut();
+                        return big.iter().filter(|name| !notes.join(name).exists()).count();
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-    };
-
-    let profiled = {
-        let (results, first_attempt) = (results.clone(), first_attempt.clone());
-        scene
-            .run(
+            })
+        };
+        let profiled = self
+            .run_deciding(
                 tuning,
                 ProfileStop::new(),
                 no_hook(),
@@ -423,10 +434,22 @@ async fn a_link_cut_mid_apply_finishes_committing_what_landed() {
                     }
                     _ => {}
                 },
+                decider,
             )
-            .await
-    };
-    let bigs_unlanded_at_cut = cutting.await.unwrap();
+            .await;
+        (profiled, cutting.await.unwrap())
+    }
+}
+
+#[tokio::test]
+async fn a_link_cut_mid_apply_finishes_committing_what_landed() {
+    let scene = scene().await;
+    let small = put_files(&scene.local, "s", 10, 1024);
+    let big = put_files(&scene.local, "big", 4, BIG);
+    let total = small.len() + big.len();
+
+    let (profiled, bigs_unlanded_at_cut) =
+        scene.cut_mid_apply(&small, &big, &mut BatchDecider).await;
 
     assert!(synced(profiled.outcome()), "{:?}", profiled.outcome());
     assert!(profiled.reconnects() >= 1);
@@ -470,6 +493,108 @@ async fn a_link_cut_mid_apply_finishes_committing_what_landed() {
     assert_eq!(profiled.report.planned(), total);
     assert_eq!(profiled.report.finished(), total);
     scene.assert_settled().await;
+}
+
+/// Approves every action but `vetoed`'s, resolves nothing, and counts the
+/// plans it was asked.
+#[derive(Default)]
+struct Counting {
+    vetoed: Option<&'static str>,
+    asked: usize,
+}
+
+impl Decider for Counting {
+    async fn decide<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        _: Peek<'_, A, B>,
+    ) -> Vec<Action> {
+        self.asked += 1;
+        plan.actions
+            .iter()
+            .map(|proposal| proposal.action.clone())
+            .filter(|action| Some(action.path().as_str()) != self.vetoed)
+            .collect()
+    }
+
+    async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
+        false
+    }
+}
+
+/// Whether every attempt of `profiled` reached its plan.
+fn every_attempt_planned(profiled: &Profiled) -> bool {
+    profiled.attempts().iter().all(|attempt| {
+        attempt
+            .iter()
+            .any(|event| matches!(event, RunEvent::Plan { .. }))
+    })
+}
+
+#[tokio::test]
+async fn a_redial_after_the_plan_was_approved_does_not_ask_again() {
+    let scene = scene().await;
+    let small = put_files(&scene.local, "s", 10, 1024);
+    let big = put_files(&scene.local, "big", 4, BIG);
+    let mut decider = Counting::default();
+
+    let (profiled, bigs_unlanded_at_cut) = scene.cut_mid_apply(&small, &big, &mut decider).await;
+
+    assert!(synced(profiled.outcome()), "{:?}", profiled.outcome());
+    assert!(bigs_unlanded_at_cut > 0);
+    assert!(profiled.reconnects() >= 1);
+    // Every attempt planned; only the first was put to the decider.
+    assert!(profiled.attempts().len() >= 2);
+    assert!(every_attempt_planned(&profiled));
+    assert_eq!(decider.asked, 1);
+    scene.assert_settled().await;
+}
+
+/// Control: a path the decider left out stays out after the re-dial,
+/// although that re-plan was not put to it.
+#[tokio::test]
+async fn a_path_vetoed_before_the_redial_stays_unapplied() {
+    let scene = scene().await;
+    let small = put_files(&scene.local, "s", 10, 1024);
+    let big = put_files(&scene.local, "big", 4, BIG);
+    let mut decider = Counting {
+        vetoed: Some("big03"),
+        ..Counting::default()
+    };
+
+    let (profiled, _) = scene.cut_mid_apply(&small, &big, &mut decider).await;
+
+    assert!(synced(profiled.outcome()), "{:?}", profiled.outcome());
+    assert!(profiled.reconnects() >= 1);
+    assert!(every_attempt_planned(&profiled));
+    assert_eq!(decider.asked, 1);
+    // The re-plan proposed it again and its answer left it out.
+    let last_plan = profiled
+        .attempts()
+        .last()
+        .unwrap()
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::Plan { plan, .. } => Some(plan.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        last_plan
+            .actions
+            .iter()
+            .any(|proposal| proposal.action.path().as_str() == "big03")
+    );
+    assert!(
+        profiled
+            .last_actions()
+            .iter()
+            .all(|action| action.path().as_str() != "big03")
+    );
+    assert!(!scene.notes.join("big03").exists());
+    for name in &big[..3] {
+        assert!(scene.notes.join(name).exists(), "{name}");
+    }
 }
 
 #[tokio::test]

@@ -8,6 +8,7 @@ use dsync_domain::{Action, MassDelete, Plan};
 
 use crate::replica::Replica;
 use crate::run::peek::Peek;
+use crate::run::recalled::Recall;
 
 /// Answers a plan with the actions to apply: the plan's own, minus any it
 /// vetoes, plus one per conflict it resolves ([`dsync_domain::Conflict::resolve`]).
@@ -20,6 +21,25 @@ pub trait Decider: Send {
         plan: &Plan,
         peek: Peek<'_, A, B>,
     ) -> impl Future<Output = Vec<Action>> + Send;
+
+    /// Asked instead of [`Decider::decide`] when a re-dialled entry's plan
+    /// changed since this decider last answered it: `recall` says, row by
+    /// row, which earlier answers still hold and what changed. By default
+    /// it is a fresh `decide`.
+    fn decide_again<A: Replica, B: Replica>(
+        &mut self,
+        plan: &Plan,
+        peek: Peek<'_, A, B>,
+        _recall: &Recall,
+    ) -> impl Future<Output = Vec<Action>> + Send {
+        self.decide(plan, peek)
+    }
+
+    /// Told when `plan` was answered without asking this decider: a
+    /// re-dialled entry's plan that had not changed, so its earlier answers
+    /// were kept ([`crate::run::Recalled`]). A decider that pairs its asks
+    /// with the plans shown counts this one as asked.
+    fn carried(&mut self, _plan: &Plan) {}
 
     /// Whether to apply the approved actions although they trip SPEC §10's
     /// delete guard (`verdict`). `false` ends the run with nothing applied.

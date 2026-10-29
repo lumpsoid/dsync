@@ -63,6 +63,39 @@ async fn a_later_review_waits_for_its_own_plan_not_an_earlier_ones() {
     assert_eq!(kept, [copy("b", Side::A, 1)]);
 }
 
+/// A re-dialled entry whose plan had not changed is answered without a
+/// review, but its plan event was shown; entry 2's review must still wait
+/// for entry 2's plan.
+#[tokio::test]
+async fn a_carried_plan_keeps_the_next_review_waiting_for_its_own_plan() {
+    use std::time::Duration;
+
+    let (shown, plan_shown) = watch::channel(1);
+    let mut output = Vec::new();
+    let mut decider = InteractiveDecider::new(&b"y\ny\n"[..], &mut output, plan_shown);
+
+    // Entry 1, attempt 1: reviewed.
+    let first = actions(vec![copy("a", Side::A, 1)]);
+    with_deadline("entry 1", decider.review(&first)).await;
+    // Entry 1, attempt 2: its plan is shown, and answered without a review.
+    shown.send(2).unwrap();
+    decider.carried(&first);
+
+    // Entry 2: its plan is not shown yet.
+    let second = actions(vec![copy("b", Side::A, 1)]);
+    let waiting = decider.review(&second);
+    tokio::pin!(waiting);
+    let premature = tokio::time::timeout(Duration::from_millis(50), &mut waiting).await;
+    assert!(
+        premature.is_err(),
+        "entry 2 answered before its plan was shown"
+    );
+
+    shown.send(3).unwrap();
+    let kept = with_deadline("entry 2", waiting).await;
+    assert_eq!(kept, [copy("b", Side::A, 1)]);
+}
+
 #[tokio::test]
 async fn accepts_one_action_and_skips_another() {
     let plan = actions(vec![copy("a", Side::A, 1), copy("b", Side::A, 1)]);

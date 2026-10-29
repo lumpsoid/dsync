@@ -116,8 +116,8 @@ pub use replica_error::{FileOp, ReplicaError};
 pub use replica_lock::{LockError, ReplicaLock, canonical_root};
 pub use replica_server::ReplicaServer;
 pub use run::{
-    ActionFailure, BatchDecider, Compared, Decider, DryRunDecider, Peek, Run, RunError, RunEvent,
-    RunReport, RunStop, Stopped,
+    ActionChoice, ActionFailure, BatchDecider, Compared, ConflictChoice, Decider, DryRunDecider,
+    Peek, Recall, RowRecall, Run, RunError, RunEvent, RunReport, RunStop, Stopped,
 };
 pub use run_marker::RunMarker;
 pub use scan_probe::ScanProbe;
