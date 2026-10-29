@@ -12,8 +12,6 @@ pub struct ScanTally {
     pub modified: usize,
     pub created: usize,
     pub deleted: usize,
-    /// Both untrusted kinds, present or absent.
-    pub untrusted: usize,
 }
 
 impl ScanTally {
@@ -32,7 +30,6 @@ impl ScanTally {
                 Status::Modified(_) => &mut tally.modified,
                 Status::Created(_) => &mut tally.created,
                 Status::Deleted => &mut tally.deleted,
-                Status::Untrusted(_) | Status::UntrustedAbsent => &mut tally.untrusted,
             };
             *count += 1;
         }
@@ -40,20 +37,13 @@ impl ScanTally {
     }
 
     /// The files this side's archive held going in: every entry the scan
-    /// matched to one, present or deleted. Marked paths are left out,
-    /// since a torn write's entry may be the only one it ever had (SPEC
-    /// §7.6); that only makes SPEC §10's delete guard trip sooner.
+    /// matched to one, present or deleted.
     pub fn archived(&self) -> usize {
         self.metadata_matched + self.hash_matched + self.modified + self.deleted
     }
 
     pub fn total(&self) -> usize {
-        self.metadata_matched
-            + self.hash_matched
-            + self.modified
-            + self.created
-            + self.deleted
-            + self.untrusted
+        self.metadata_matched + self.hash_matched + self.modified + self.created + self.deleted
     }
 }
 
@@ -98,8 +88,6 @@ mod tests {
             entry(Status::Modified(FILE)),
             entry(Status::Created(FILE)),
             entry(Status::Deleted),
-            entry(Status::Untrusted(FILE)),
-            entry(Status::UntrustedAbsent),
         ];
         assert_eq!(
             ScanTally::of(&entries),
@@ -109,11 +97,10 @@ mod tests {
                 modified: 1,
                 created: 1,
                 deleted: 1,
-                untrusted: 2,
             }
         );
-        assert_eq!(ScanTally::of(&entries).total(), 8);
-        // Unchanged, modified and deleted: not created, not marked.
+        assert_eq!(ScanTally::of(&entries).total(), 6);
+        // Unchanged, modified and deleted: not created.
         assert_eq!(ScanTally::of(&entries).archived(), 5);
     }
 

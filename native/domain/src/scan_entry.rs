@@ -46,36 +46,22 @@ pub enum Status {
     Modified(FileState),
     /// Archived, and no longer on disk.
     Deleted,
-    /// Marked by a write in place that never committed (SPEC §7.6), and no
-    /// longer matching its entry: a torn write or a user's edit, which
-    /// nothing on disk tells apart. A marked file that still matches takes
-    /// the branches above as though unmarked.
-    Untrusted(FileState),
-    /// Marked, with no file on disk and no archive entry: the write never
-    /// created one, or the file was removed since.
-    UntrustedAbsent,
 }
 
 impl Status {
     /// The file on disk, for every status that has one.
     pub fn file(&self) -> Option<&FileState> {
         match self {
-            Status::Unchanged { file, .. }
-            | Status::Created(file)
-            | Status::Modified(file)
-            | Status::Untrusted(file) => Some(file),
-            Status::Deleted | Status::UntrustedAbsent => None,
+            Status::Unchanged { file, .. } | Status::Created(file) | Status::Modified(file) => {
+                Some(file)
+            }
+            Status::Deleted => None,
         }
     }
 
     /// Whether this entry describes a file on disk right now.
     pub fn is_present(&self) -> bool {
         self.file().is_some()
-    }
-
-    /// Whether a write in place left this path marked (SPEC §7.6).
-    pub fn is_untrusted(&self) -> bool {
-        matches!(self, Status::Untrusted(_) | Status::UntrustedAbsent)
     }
 
     pub fn is_unchanged(&self) -> bool {

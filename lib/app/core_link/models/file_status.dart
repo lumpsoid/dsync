@@ -28,14 +28,3 @@ final class StatusModified extends FileStatus {
 final class StatusDeleted extends FileStatus {
   const StatusDeleted();
 }
-
-/// A write that never committed (SPEC §7.6).
-final class StatusUntrusted extends FileStatus {
-  const StatusUntrusted(this.file);
-
-  final FileFacts file;
-}
-
-final class StatusUntrustedAbsent extends FileStatus {
-  const StatusUntrustedAbsent();
-}

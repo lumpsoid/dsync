@@ -145,12 +145,11 @@ impl RunError {
     }
 }
 
-/// Why one action failed (SPEC §7.6). The path is left as it landed, its
-/// mark (if any) stays, and the next run resolves it.
+/// Why one action failed (SPEC §7.6). The path is left as it was, and the
+/// next run resolves it.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ActionFailure {
-    /// A replica operation failed: the action's own, its window's mark, or
-    /// the commit batch it was in (a failed batch fails every action in
+    /// A replica operation failed: the action's own, or the commit batch it was in (a failed batch fails every action in
     /// it, since some of its commits may have landed and some not).
     #[error("replica {side}: {} failed: {source}", op.name())]
     Replica {
@@ -184,11 +183,6 @@ impl ActionFailure {
                 source: Arc::new(source),
             },
         }
-    }
-
-    /// Whether this is `side`'s path found changed during sync.
-    pub(crate) fn changed_on(&self, side: Side) -> bool {
-        matches!(self, ActionFailure::ChangedDuringSync { side: on } if *on == side)
     }
 
     /// The failure that ends the whole run, when this is one (see

@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(only_a, Some(sized("d/x.txt", Some(3), None)));
         let only_b = Comparison::of_conflict(&conflict(None, Some(file(5))));
         assert_eq!(only_b, Some(sized("d/x.txt", None, Some(5))));
-        let neither = conflict(Some(Status::Deleted), Some(Status::UntrustedAbsent));
+        let neither = conflict(Some(Status::Deleted), None);
         assert_eq!(Comparison::of_conflict(&neither), None);
         assert_eq!(Comparison::of_conflict(&conflict(None, None)), None);
     }

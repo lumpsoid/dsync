@@ -283,8 +283,8 @@ async fn a_failure_on_one_path_is_recorded_and_does_not_stop_the_rest() {
             ..
         }
     ));
-    // Its mark stays; the next run copies it.
-    assert!(site.archive(Side::B).is_untrusted(&path("bad.txt")));
+    // Nothing recorded; the next run copies it.
+    assert!(site.archive(Side::B).get(&path("bad.txt")).is_none());
     assert_eq!(sync(&site).await.exit_code(), 0);
     assert_eq!(site.tree(Side::A), site.tree(Side::B));
 }
@@ -497,23 +497,19 @@ async fn a_write_failing_mid_body_cancels_a_served_source_s_read_and_the_run_fin
 }
 
 #[tokio::test]
-async fn marks_reads_and_writes_follow_the_spread_order_each_write_after_its_mark() {
+async fn reads_and_writes_follow_the_spread_order() {
     let site = Site::new();
     for name in ["a/1", "a/2", "b/1", "b/2"] {
         site.put(Side::A, name, name);
     }
     let (a, log_a) = Probe::new(site.replica(Side::A));
     let (b, log_b) = Probe::new(site.replica(Side::B));
-    let tuning = Tuning {
-        mark_window: 2,
-        ..narrow(1)
-    };
     let options = site.options();
     let mut decider = BatchDecider;
 
     with_deadline(
         "the run",
-        run_with(&site, a, b, &options, &mut decider, tuning),
+        run_with(&site, a, b, &options, &mut decider, narrow(1)),
     )
     .await;
 
@@ -527,32 +523,15 @@ async fn marks_reads_and_writes_follow_the_spread_order_each_write_after_its_mar
         })
         .collect();
     assert_eq!(reads, spread);
-    let calls = log_b.calls();
-    let writes: Vec<(usize, &str)> = calls
-        .iter()
-        .enumerate()
-        .filter_map(|(at, call)| match call {
-            Call::Write(name) => Some((at, name.as_str())),
+    let writes: Vec<String> = log_b
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Write(name) => Some(name),
             _ => None,
         })
         .collect();
-    assert_eq!(writes.iter().map(|(_, n)| *n).collect::<Vec<_>>(), spread);
-    let marks: Vec<Vec<String>> = log_b
-        .commits()
-        .into_iter()
-        .filter(|batch| batch.iter().all(ArchiveCommit::is_intent))
-        .map(|batch| batch.iter().map(|c| c.path().as_str().to_owned()).collect())
-        .collect();
-    assert_eq!(marks, [["a/1", "b/1"], ["a/2", "b/2"]]);
-    for (at, name) in writes {
-        let marked = calls.iter().position(|call| {
-            matches!(call, Call::Commit(batch) if batch.contains(&ArchiveCommit::Intent(path(name))))
-        });
-        assert!(
-            marked.is_some_and(|m| m < at),
-            "{name} written before its mark"
-        );
-    }
+    assert_eq!(writes, spread);
 }
 
 /// A pair where `x` conflicts (a file on both sides), and the "keep both"
@@ -609,19 +588,13 @@ async fn keeping_both_saves_the_peers_version_aside_and_leaves_the_conflict_open
     assert_eq!(site.get(Side::A, "x.txt").unwrap(), b"made on a");
     assert_eq!(site.get(Side::B, "x.txt").unwrap(), b"made on b!");
     assert!(!site.exists(Side::B, to.as_str()));
-    // Marked on A at `to`, never at the conflict's path.
+    // Committed on A at `to` only, never at the conflict's path; B's
+    // archive is told nothing of either path.
     let (on_a, on_b) = (log_a.commits(), log_b.commits());
-    assert!(
-        on_a.iter()
-            .flatten()
-            .any(|c| *c == ArchiveCommit::Intent(to.clone()))
-    );
+    assert!(names(&on_a, &to));
     assert!(!names(&on_a, &path("x.txt")));
-    // Committed on A only: B's archive is told nothing of either path.
     let recorded = *site.archive(Side::A).get(&to).unwrap();
-    let base = site.archive(Side::A);
-    assert!(!base.is_untrusted(&to));
-    assert!(base.get(&path("x.txt")).is_none());
+    assert!(site.archive(Side::A).get(&path("x.txt")).is_none());
     assert!(!names(&on_b, &to) && !names(&on_b, &path("x.txt")));
     assert!(site.archive(Side::B).get(&to).is_none());
 
@@ -648,7 +621,7 @@ async fn keeping_both_saves_the_peers_version_aside_and_leaves_the_conflict_open
 }
 
 #[tokio::test]
-async fn a_copy_aside_stopped_before_it_started_has_its_mark_withdrawn() {
+async fn a_copy_aside_stopped_before_it_started_writes_and_records_nothing() {
     let (site, aside, to) = conflicting_pair().await;
     site.put(Side::B, "first", "f");
     let gate = Arc::new(Semaphore::new(0));
@@ -681,25 +654,12 @@ async fn a_copy_aside_stopped_before_it_started_has_its_mark_withdrawn() {
 
     with_deadline("the run", async { tokio::join!(running, stopping) }).await;
 
-    let commits = log_a.commits();
-    assert!(
-        commits
-            .iter()
-            .flatten()
-            .any(|c| *c == ArchiveCommit::Intent(to.clone())),
-        "the aside was marked with its window"
-    );
     assert!(
         !log_a.calls().contains(&Call::Write(to.as_str().into())),
-        "and never started"
+        "the aside never started"
     );
-    assert!(
-        commits
-            .iter()
-            .flatten()
-            .any(|c| *c == ArchiveCommit::Withdraw(to.clone()))
-    );
-    assert!(!site.archive(Side::A).is_untrusted(&to));
+    assert!(!names(&log_a.commits(), &to));
+    assert!(!site.exists(Side::A, to.as_str()));
     assert!(
         site.archive(Side::A).get(&path("first")).is_some(),
         "the held copy finished"
@@ -707,18 +667,12 @@ async fn a_copy_aside_stopped_before_it_started_has_its_mark_withdrawn() {
 }
 
 #[tokio::test]
-async fn a_copy_aside_torn_mid_write_keeps_its_mark_and_is_an_interrupted_conflict_next() {
+async fn a_copy_aside_that_fails_leaves_no_sibling_and_the_conflict_is_asked_again() {
     let (site, aside, to) = conflicting_pair().await;
-    let torn = site.file(Side::A, to.as_str());
-    let tearing = Call::Write(to.as_str().into());
+    let failing = Call::Write(to.as_str().into());
     let (a, _) = Probe::with_hook(
         site.replica(Side::A),
-        Arc::new(move |call: &Call| {
-            (*call == tearing).then(|| {
-                std::fs::write(&torn, "made").unwrap();
-                Fault::Fail(refused())
-            })
-        }),
+        Arc::new(move |call: &Call| (*call == failing).then(|| Fault::Fail(refused()))),
     );
 
     let finished = run(
@@ -733,17 +687,10 @@ async fn a_copy_aside_torn_mid_write_keeps_its_mark_and_is_an_interrupted_confli
     .await;
 
     assert_eq!(finished.results(), [("x.txt".to_owned(), false)]);
-    assert!(
-        site.archive(Side::A).is_untrusted(&to),
-        "the started aside keeps its mark"
-    );
+    assert!(!site.exists(Side::A, to.as_str()));
+    assert!(site.archive(Side::A).get(&to).is_none());
     let next = proposed_plan(&site).await;
-    let on_to = next
-        .conflicts
-        .iter()
-        .find(|conflict| conflict.path == to)
-        .unwrap_or_else(|| panic!("a conflict on the sibling: {next:?}"));
-    assert!(on_to.interrupted());
-    assert!(on_to.b.is_none());
-    assert!(next.conflicts.iter().any(|c| c.path.as_str() == "x.txt"));
+    let conflicts: Vec<&str> = next.conflicts.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(conflicts, ["x.txt"]);
+    assert!(next.actions.is_empty(), "{next:?}");
 }

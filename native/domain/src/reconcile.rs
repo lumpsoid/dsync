@@ -110,8 +110,6 @@ enum Seen<'a> {
     Created(&'a FileState),
     Modified(&'a FileState),
     Deleted,
-    Untrusted(&'a FileState),
-    UntrustedAbsent,
 }
 
 fn seen(status: Option<&Status>) -> Seen<'_> {
@@ -124,8 +122,6 @@ fn seen(status: Option<&Status>) -> Seen<'_> {
         Some(Status::Created(file)) => Seen::Created(file),
         Some(Status::Modified(file)) => Seen::Modified(file),
         Some(Status::Deleted) => Seen::Deleted,
-        Some(Status::Untrusted(file)) => Seen::Untrusted(file),
-        Some(Status::UntrustedAbsent) => Seen::UntrustedAbsent,
     }
 }
 
@@ -179,24 +175,6 @@ fn resolve<'a>(a: Seen<'a>, b: Seen<'a>) -> Verdict<'a> {
             Verdict::Conflict
         }
         (Deleted, Deleted) => CommitOnly,
-
-        // Untrusted (SPEC §7.6) is not in the table. On both sides it is
-        // unreachable by construction (a marked side is never a copy's
-        // source), so the user decides.
-        (Untrusted(_) | UntrustedAbsent, Untrusted(_) | UntrustedAbsent) => Verdict::Conflict,
-        // A marked file holding the other side's content: the write
-        // finished and only its commit was lost.
-        (Untrusted(u), Unchanged(o) | Created(o) | Modified(o))
-        | (Unchanged(o) | Created(o) | Modified(o), Untrusted(u)) => same_or_conflict(u, o),
-        // A marked file with nothing on the other side: deleting it could
-        // destroy an edit, so the user decides.
-        (Untrusted(_), Silent | Deleted) | (Silent | Deleted, Untrusted(_)) => Verdict::Conflict,
-        // A mark with no file was never written: that side has never seen
-        // the path, so mirror onto it, or with nothing to mirror clear the
-        // mark.
-        (UntrustedAbsent, Unchanged(o) | Created(o) | Modified(o)) => CopyFrom(Side::B, o),
-        (Unchanged(o) | Created(o) | Modified(o), UntrustedAbsent) => CopyFrom(Side::A, o),
-        (UntrustedAbsent, Silent | Deleted) | (Silent | Deleted, UntrustedAbsent) => CommitOnly,
     }
 }
 

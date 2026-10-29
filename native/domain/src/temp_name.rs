@@ -1,5 +1,6 @@
 //! The scratch-file name a write streams into before renaming it over its
-//! target (SPEC §7.2), and the rule that recognises one again.
+//! target (SPEC §7.2), the folder a replica's writes stage those in, and
+//! the rule that recognises a scratch file again.
 //!
 //! A pure string rule shared by every writer (the replica writer, the
 //! state-dir stores' atomic write) and by the scanner, which skips these
@@ -8,6 +9,10 @@
 //! replica. They are skipped rather than deleted - removing files from a
 //! replica unasked is not something a sync tool does on a guess about a
 //! name.
+
+/// The hidden folder at a replica's base where its writes create their
+/// temps (SPEC §7.2). The scan skips it; leftovers are swept at lock.
+pub const STAGING_DIR: &str = ".dsync-staging";
 
 /// Sits between the target's name and the parts that make it unique.
 pub const TEMP_FILE_MARKER: &str = ".dsync-tmp.";

@@ -457,7 +457,6 @@ ScanTally _tally(wire.TallyView view) => ScanTally(
   modified: _n(view.modified),
   created: _n(view.created),
   deleted: _n(view.deleted),
-  untrusted: _n(view.untrusted),
   total: _n(view.total),
   changed: _n(view.changed),
 );
@@ -482,7 +481,6 @@ ConflictInfo _conflict(wire.ConflictView view) => ConflictInfo(
     final status? => _status(status),
     null => null,
   },
-  interrupted: view.interrupted,
 );
 
 FileFacts _file(wire.FileView view) =>
@@ -496,8 +494,6 @@ FileStatus _status(wire.StatusView view) => switch (view) {
   wire.StatusViewCreated(:final value) => StatusCreated(_file(value)),
   wire.StatusViewModified(:final value) => StatusModified(_file(value)),
   wire.StatusViewDeleted() => const StatusDeleted(),
-  wire.StatusViewUntrusted(:final value) => StatusUntrusted(_file(value)),
-  wire.StatusViewUntrustedAbsent() => const StatusUntrustedAbsent(),
   _ => throw StateError('unknown status: $view'),
 };
 

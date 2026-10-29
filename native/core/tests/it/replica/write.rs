@@ -4,7 +4,7 @@ use std::fs;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use dsync_core::{Body, LocalReplica, Replica, ReplicaError, Stage, body_channel};
-use dsync_domain::{FileMeta, Precondition, Side};
+use dsync_domain::{FileMeta, Precondition, STAGING_DIR, Side};
 
 use crate::replica::support::{
     MTIME_US, Site, expect_at, failing_body, meta, path, temp_files_under, with_deadline,
@@ -72,7 +72,8 @@ async fn times_every_stage_inside_the_span_that_contains_it() {
     let stats = replica.write_stats();
     assert_eq!(stats.files, 2);
     assert_eq!(stats.writers, 16);
-    assert_eq!(stats.stage(Stage::Mkdir).count, 1);
+    // The staging folder and `sub`, once each.
+    assert_eq!(stats.stage(Stage::Mkdir).count, 2);
     assert_eq!(stats.stage(Stage::Write).count, 2);
     assert!(stats.staged() > Duration::ZERO);
     assert!(stats.staged() <= wall.elapsed());
@@ -143,7 +144,7 @@ async fn overwrites_an_existing_target() {
 }
 
 #[tokio::test]
-async fn a_body_failing_mid_way_fails_the_write_and_leaves_the_target_torn() {
+async fn a_body_failing_mid_way_fails_the_write_and_leaves_the_target_whole() {
     let site = Site::new();
     let target = site.put(Side::B, "a.txt", "the old content, longer than the new");
     let before = mtime_us(&target);
@@ -162,11 +163,13 @@ async fn a_body_failing_mid_way_fails_the_write_and_leaves_the_target_torn() {
         panic!("expected a write error, got {result:?}");
     };
     assert_eq!(error.stage, Stage::Wait);
-    // Torn: neither the old bytes nor a finished new file, and no mtime
-    // propagated. The caller's mark is what makes this safe (SPEC §7.6).
-    assert_eq!(site.get(Side::B, "a.txt"), b"partial");
-    assert_ne!(mtime_us(&target), MTIME_US);
-    assert!(mtime_us(&target) >= before);
+    // The old bytes and mtime, and the temp gone (SPEC §7.6).
+    assert_eq!(
+        site.get(Side::B, "a.txt"),
+        b"the old content, longer than the new"
+    );
+    assert_eq!(mtime_us(&target), before);
+    assert!(temp_files_under(&site.root(Side::B)).is_empty());
 }
 
 #[tokio::test]
@@ -192,7 +195,7 @@ async fn a_body_whose_sender_goes_away_unfinished_is_cut_short_not_complete() {
 }
 
 #[tokio::test]
-async fn writes_in_place_with_no_scratch_file_at_any_point() {
+async fn streams_into_a_temp_in_the_staging_folder_and_renames_it_on() {
     let site = Site::new();
     site.put(Side::B, "a.txt", "old");
     let replica = site.replica(Side::B);
@@ -203,11 +206,18 @@ async fn writes_in_place_with_no_scratch_file_at_any_point() {
         let write = replica.write(&target, body, meta(0o644), site.expect(Side::B, "a.txt"));
         let feed = async {
             sender.send(b"first half ".to_vec()).await.unwrap();
-            // Mid-write: the target already holds the first half.
-            while site.get(Side::B, "a.txt") != b"first half " {
+            // Mid-write: the temp holds the first half, the target the old.
+            let staged = || {
+                let temps = temp_files_under(&site.root(Side::B));
+                temps.iter().any(|temp| {
+                    temp.parent() == Some(&site.root(Side::B).join(STAGING_DIR))
+                        && fs::read(temp).unwrap() == b"first half "
+                })
+            };
+            while !staged() {
                 tokio::task::yield_now().await;
             }
-            assert!(temp_files_under(&site.root(Side::B)).is_empty());
+            assert_eq!(site.get(Side::B, "a.txt"), b"old");
             sender.send(b"second half".to_vec()).await.unwrap();
             sender.finish().await.unwrap();
         };
@@ -220,99 +230,11 @@ async fn writes_in_place_with_no_scratch_file_at_any_point() {
     assert!(temp_files_under(&site.root(Side::B)).is_empty());
 }
 
-/// The pool's byte budget in this test, in chunks of [`CHUNK`].
-const BUDGET_CHUNKS: usize = 4;
-const CHUNK: usize = 1024;
-
-/// How long a send must stay blocked to count as waiting on the budget.
-const BLOCKED: Duration = Duration::from_millis(300);
-
-#[cfg(unix)]
-#[tokio::test(flavor = "multi_thread")]
-async fn a_stalled_writer_bounds_received_but_unwritten_bytes_and_the_sender_waits() {
-    use dsync_domain::Tuning;
-    use std::io::Read;
-
-    let site = Site::new();
-    // A named pipe with nobody reading: opening it to write blocks, which
-    // stalls the writer that takes this file before it writes a byte.
-    let fifo = site.file(Side::B, "stalled");
-    let made = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .unwrap();
-    assert!(made.success());
-    let replica = site.replica_with(
-        Side::B,
-        Tuning {
-            writer_buffer_bytes: BUDGET_CHUNKS * CHUNK,
-            ..Tuning::DEFAULT
-        },
-    );
-    let (sender, body) = body_channel(1);
-    let expect = site.expect(Side::B, "stalled");
-
-    let write = tokio::spawn(async move {
-        let landed = replica
-            .write(&path("stalled"), body, meta(0o644), expect)
-            .await;
-        (replica, landed)
-    });
-
-    // The budget's worth goes into the pool, one more is held by the write
-    // waiting for budget, one more sits in the body's own buffer - and the
-    // next send waits.
-    let mut sent = 0;
-    loop {
-        let chunk = vec![u8::try_from(sent % 256).unwrap(); CHUNK];
-        match tokio::time::timeout(BLOCKED, sender.send(chunk)).await {
-            Ok(result) => {
-                result.unwrap();
-                sent += 1;
-                assert!(sent <= BUDGET_CHUNKS + 2, "the sender never waited");
-            }
-            Err(_) => break,
-        }
-    }
-    assert_eq!(sent, BUDGET_CHUNKS + 2);
-
-    // Positive control: once the writer drains, the same sender runs to
-    // the end and every byte arrives in order.
-    let drained = tokio::task::spawn_blocking(move || {
-        let mut all = Vec::new();
-        fs::File::open(&fifo)
-            .unwrap()
-            .read_to_end(&mut all)
-            .unwrap();
-        all
-    });
-    let total = with_deadline("drain", async {
-        let mut total = sent;
-        for _ in 0..BUDGET_CHUNKS {
-            let chunk = vec![u8::try_from(total % 256).unwrap(); CHUNK];
-            sender.send(chunk.clone()).await.unwrap();
-            total += 1;
-        }
-        sender.finish().await.unwrap();
-        let (_replica, landed) = write.await.unwrap();
-        landed.unwrap();
-        total
-    })
-    .await;
-    let all = with_deadline("reader", drained).await.unwrap();
-    let expected: Vec<u8> = (0..total)
-        .flat_map(|i| vec![u8::try_from(i % 256).unwrap(); CHUNK])
-        .collect();
-    assert_eq!(all, expected);
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn a_write_dropped_mid_body_lands_nothing_and_leaves_no_scratch() {
     let site = Site::new();
-    let target = site.put(Side::B, "a.txt", "old");
-    // A second name, so the write goes through a scratch file.
-    fs::hard_link(&target, site.dir().join("elsewhere.txt")).unwrap();
+    site.put(Side::B, "a.txt", "old");
     let replica = site.replica(Side::B);
 
     with_deadline("cancelled write", async {

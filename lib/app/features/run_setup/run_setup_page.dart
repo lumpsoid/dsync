@@ -457,9 +457,8 @@ class _RunSetupForm extends StatelessWidget {
                   Text(
                     key: const Key('run-setup-last-run-unfinished'),
                     'The last run of this profile did not finish. Starting it '
-                    'again sorts out what it left: files it never reached sync '
-                    'as usual, and a file it stopped mid-write comes back as a '
-                    'conflict marked interrupted.',
+                    'again sorts out what it left: files it never reached, or '
+                    'stopped mid-write, sync as usual.',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                     ),

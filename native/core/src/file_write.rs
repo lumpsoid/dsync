@@ -1,7 +1,8 @@
 //! Landing one file on a writer thread (SPEC §7.2-§7.6): parent folders,
-//! what is at the target, in place or temp + rename, the bytes, mtime,
-//! mode, and the state that actually landed. Blocking `std::fs`
-//! throughout; the pool (`writer_pool`) runs it on its own threads.
+//! what is at the target, a temp in the staging folder renamed onto it, the
+//! bytes, mtime, mode, and the state that actually landed. Blocking
+//! `std::fs` throughout; the pool (`writer_pool`) runs it on its own
+//! threads.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions, Permissions};
@@ -12,8 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dsync_domain::{
-    ChangedDuringSync, FileMeta, OnDisk, Precondition, RelPath, WriteMode, WriteTarget,
-    temp_name_for,
+    ChangedDuringSync, FileMeta, Precondition, RelPath, STAGING_DIR, temp_name_for,
 };
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
@@ -21,7 +21,7 @@ use crate::body::BodyError;
 use crate::confinement::Confinement;
 use crate::local_root::{Located, Root};
 use crate::replica_error::ReplicaError;
-use crate::scanner::{on_disk, on_disk_failing, stat};
+use crate::scanner::{on_disk_at, stat};
 use crate::write_error::WriteError;
 use dsync_domain::{Stage, WriteStats};
 
@@ -41,6 +41,9 @@ pub(crate) struct Destination {
     /// root's base. See
     /// [`Destination::ensure_parent`].
     parents: Mutex<HashSet<RelPath>>,
+    /// Whether this session has created the staging folder. See
+    /// [`Destination::ensure_staging`].
+    staged: Mutex<bool>,
     modes: ModeStep,
     /// Refuses a write through a link the replica may not go through.
     confinement: Arc<Confinement>,
@@ -51,6 +54,7 @@ impl Destination {
         Destination {
             root,
             parents: Mutex::new(HashSet::new()),
+            staged: Mutex::new(false),
             modes: ModeStep::for_host(),
             confinement,
         }
@@ -65,6 +69,40 @@ impl Destination {
 
     fn parents(&self) -> MutexGuard<'_, HashSet<RelPath>> {
         self.parents.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn staged(&self) -> MutexGuard<'_, bool> {
+        self.staged.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The folder this replica's writes create their temps in (SPEC §7.2):
+    /// on emulated storage a create costs more the fuller its folder, and a
+    /// rename into a folder costs less than a create in it.
+    fn staging(&self) -> PathBuf {
+        self.root.base().join(STAGING_DIR)
+    }
+
+    /// Creates the staging folder unless this session already has, and
+    /// answers whether it did. Remembered only after the create succeeds.
+    fn ensure_staging(&self) -> io::Result<bool> {
+        let mut staged = self.staged();
+        if *staged {
+            return Ok(false);
+        }
+        fs::create_dir_all(self.staging())?;
+        *staged = true;
+        Ok(true)
+    }
+
+    /// Removes the staging folder and whatever is in it: temps a crashed
+    /// or stopped write left. Called under the replica's lock, at lock and
+    /// at unlock, so no write of this replica is still using one (one that
+    /// is, after a hard stop, fails its rename and is retried next run).
+    /// Best effort: a leftover only costs space, and the scan skips it.
+    pub(crate) fn clear_staging(&self) {
+        let mut staged = self.staged();
+        let _ = fs::remove_dir_all(self.staging());
+        *staged = false;
     }
 
     /// Creates `folder` unless this session already has. A set lookup
@@ -198,12 +236,11 @@ fn next_temp() -> u64 {
 /// nothing is touched, and the write fails [`ReplicaError::Changed`] (SPEC
 /// §7.6). Checked by the stat the write makes anyway, just before acting.
 ///
-/// On failure the target is left as the write left it: torn if it was
-/// written in place, which is safe only because the caller marked the path
-/// untrusted, durably, first (SPEC §7.6). A scratch file is this write's
-/// own and is removed. The parent folder is forgotten, on any failure: a
-/// wrongly forgotten folder costs one redundant create on a path that was
-/// failing anyway.
+/// On failure the target is untouched: the bytes only ever reach it by
+/// the rename, whole (SPEC §7.6). The temp is this write's own and is
+/// removed. The parent folder and the staging folder are forgotten, on any
+/// failure: a wrongly forgotten folder costs one redundant create on a
+/// path that was failing anyway.
 pub(crate) fn write_file(
     destination: &Destination,
     path: &RelPath,
@@ -235,6 +272,9 @@ pub(crate) fn write_file(
         if let Some(parent) = located.rel.parent() {
             destination.forget(&parent);
         }
+        // Like the parent: a staging folder removed under the session is
+        // created again by the next write.
+        *destination.staged() = false;
         if let Some(scratch) = scratch {
             let _ = fs::remove_file(scratch.path);
         }
@@ -281,7 +321,7 @@ fn land(
         .map_err(at(Stage::Probe))?;
     // Before the folders too: a path whose parent is not there reads as
     // absent, and one that changed leaves nothing behind.
-    let (found, now) = probe(target);
+    let now = on_disk_at(target);
     timer.lap(Stage::Probe);
     expect.check(now)?;
     if let Some(parent) = rel.parent()
@@ -291,25 +331,11 @@ fn land(
     {
         timer.lap(Stage::Mkdir);
     }
+    if destination.ensure_staging().map_err(at(Stage::Mkdir))? {
+        timer.lap(Stage::Mkdir);
+    }
 
-    let mut file = match found.mode() {
-        WriteMode::InPlace => match open_in_place(target, &found) {
-            Ok(file) => {
-                timer.lap(stage_opening(&found));
-                file
-            }
-            // The probe reads permission bits; ownership can still refuse
-            // an open, and a refused open is exactly the not-writable case
-            // a rename exists for: it needs only the folder's permission.
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                timer.lap(Stage::Open);
-                create_scratch(target, scratch, timer)?
-            }
-            Err(error) => return Err(Failed::At(stage_opening(&found), error)),
-        },
-        WriteMode::TempAndRename => create_scratch(target, scratch, timer)?,
-    };
-
+    let mut file = create_scratch(&destination.staging(), target, scratch, timer)?;
     loop {
         let chunk = chunks.blocking_recv();
         timer.lap(Stage::Wait);
@@ -334,8 +360,8 @@ fn land(
     timer.lap(Stage::Mode);
     drop(file);
     timer.lap(Stage::Close);
-    if let Some(Scratch { path, onto }) = scratch.as_ref() {
-        fs::rename(path, onto).map_err(at(Stage::Rename))?;
+    if let Some(staged) = scratch.as_mut() {
+        rename_onto(staged, meta).map_err(at(Stage::Rename))?;
         *scratch = None;
         timer.lap(Stage::Rename);
     }
@@ -344,94 +370,29 @@ fn land(
     Ok(landed)
 }
 
-/// What is at `target`, read through a followed symlink: the write lands on
-/// the link's target (SPEC §5.1). Once as the write path needs it, once as
-/// the write's precondition does, from one stat.
-fn probe(target: &Path) -> (WriteTarget, OnDisk) {
-    match fs::metadata(target) {
-        Ok(meta) => (
-            WriteTarget::Existing {
-                link_count: link_count(&meta),
-                writable: !meta.permissions().readonly(),
-            },
-            on_disk(&meta),
-        ),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            (WriteTarget::Absent, OnDisk::Absent)
-        }
-        Err(error) => (
-            WriteTarget::Unknown {
-                reason: error.to_string(),
-            },
-            on_disk_failing(&error),
-        ),
-    }
-}
-
-#[cfg(unix)]
-fn link_count(meta: &fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    meta.nlink()
-}
-
-/// No portable link count off unix; a hard-linked file there is written
-/// in place.
-#[cfg(not(unix))]
-fn link_count(_: &fs::Metadata) -> u64 {
-    1
-}
-
-fn stage_opening(found: &WriteTarget) -> Stage {
-    match found {
-        WriteTarget::Absent => Stage::Create,
-        WriteTarget::Existing { .. } | WriteTarget::Unknown { .. } => Stage::Open,
-    }
-}
-
-/// Opens `target` for an in-place write, truncating whatever is there.
-/// No temp and no rename: on emulated storage those are ~22 ms of a ~32 ms
-/// write (SPEC §7.2).
-fn open_in_place(target: &Path, found: &WriteTarget) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).truncate(true);
-    if *found == WriteTarget::Absent {
-        options.create(true);
-    }
-    options.open(target)
-}
-
 /// The file a write to `target` lands on: its symlink's target when it is
-/// one, so a rename replaces that file and the link survives (SPEC §5.1);
+/// one, so the rename replaces that file and the link survives (SPEC §5.1);
 /// the path itself when it cannot be resolved.
 fn landing(target: &Path) -> PathBuf {
     fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf())
 }
 
-/// A replacing write's scratch file, and the file it is renamed onto.
+/// A write's temp, and the file it is renamed onto.
 struct Scratch {
     path: PathBuf,
     onto: PathBuf,
 }
 
-/// Creates the scratch file a replacing write streams into, beside the
-/// file it lands on, and records it in `scratch` for the rename or the
-/// cleanup.
+/// Creates the temp a write streams into, in `staging`, and records it in
+/// `scratch` for the rename or the cleanup.
 fn create_scratch(
+    staging: &Path,
     target: &Path,
     scratch: &mut Option<Scratch>,
     timer: &mut StageTimer,
 ) -> Result<File, Failed> {
     let onto = landing(target);
-    let name = onto
-        .file_name()
-        .ok_or_else(|| {
-            Failed::At(
-                Stage::Create,
-                io::Error::other("the target has no file name"),
-            )
-        })?
-        .to_string_lossy();
-    let path = onto.with_file_name(temp_name_for(&name, std::process::id(), next_temp()));
+    let path = staging.join(temp_name(&onto).map_err(at(Stage::Create))?);
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -440,6 +401,42 @@ fn create_scratch(
     *scratch = Some(Scratch { path, onto });
     timer.lap(Stage::Create);
     Ok(file)
+}
+
+/// A temp name for a write onto `onto`, unique within the host.
+fn temp_name(onto: &Path) -> io::Result<String> {
+    let name = onto
+        .file_name()
+        .ok_or_else(|| io::Error::other("the target has no file name"))?
+        .to_string_lossy();
+    Ok(temp_name_for(&name, std::process::id(), next_temp()))
+}
+
+/// Renames `scratch` onto its target. A target on another filesystem than
+/// the staging folder - behind a followed link onto another mount - cannot
+/// take a rename from it, so the temp is copied beside the target first,
+/// its mtime set again, and renamed from there. On success `scratch` no
+/// longer exists; on failure it names whichever temp is left to remove.
+fn rename_onto(scratch: &mut Scratch, meta: FileMeta) -> io::Result<()> {
+    match fs::rename(&scratch.path, &scratch.onto) {
+        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
+            let beside = scratch.onto.with_file_name(temp_name(&scratch.onto)?);
+            let copied = fs::copy(&scratch.path, &beside).and_then(|_| {
+                let file = OpenOptions::new().write(true).open(&beside)?;
+                // Best effort, as for the temp (SPEC §7.4).
+                let _ = file.set_modified(system_time(meta.mtime_us));
+                Ok(())
+            });
+            if let Err(error) = copied {
+                let _ = fs::remove_file(&beside);
+                return Err(error);
+            }
+            let _ = fs::remove_file(&scratch.path);
+            scratch.path = beside;
+            fs::rename(&scratch.path, &scratch.onto)
+        }
+        renamed => renamed,
+    }
 }
 
 /// Microseconds since the epoch, negative before it, as a time to set.

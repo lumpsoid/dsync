@@ -48,7 +48,7 @@ pub(crate) enum Kind {
     /// u32 of bytes (SPEC §4.2, [`crate::credit`]).
     Credit,
     /// The receiver of a read body asking its sender to stop: empty. The
-    /// sender ends the body with a `Fail` (protocol 1.1, SPEC §4.2).
+    /// sender ends the body with a `Fail` (SPEC §4.2).
     Cancel,
 }
 

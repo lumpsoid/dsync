@@ -176,18 +176,17 @@ fn the_plan_table_lists_every_action() {
 }
 
 #[test]
-fn a_conflict_names_each_side_status_and_an_interrupted_write() {
+fn a_conflict_names_each_side_status() {
     let text = out(
         Verbosity::Normal,
         &[
             RunEvent::Conflict(conflict("both", Some(created(1)), Some(Status::Deleted))),
-            RunEvent::Conflict(conflict("half", None, Some(Status::UntrustedAbsent))),
+            RunEvent::Conflict(conflict("half", None, Some(created(2)))),
         ],
     );
     assert_eq!(
         text,
-        "conflict  both  (A: created, B: deleted)\nconflict  half  (A: absent, B: untrusted)  \
-         interrupted, may be incomplete\n"
+        "conflict  both  (A: created, B: deleted)\nconflict  half  (A: absent, B: created)\n"
     );
 }
 

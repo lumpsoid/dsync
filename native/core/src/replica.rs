@@ -92,13 +92,11 @@ pub trait Replica: Send + Sync {
     /// (SPEC §7.4). `meta` is the source's: its mtime and mode are applied
     /// best effort; its size is not checked against the body.
     ///
-    /// In place over whatever is there, unless that would change another
-    /// hard link or fail on a read-only file (SPEC §7.2, §7.6). A write in
-    /// place that fails part-way leaves `path` torn, so the caller marks it
-    /// with an [`ArchiveCommit::Intent`] through [`Replica::commit`] first:
-    /// that is what makes the next scan read it as untrusted rather than as
-    /// the user's edit. A body that fails or is cut short fails the write;
-    /// nothing it wrote is ever reported as landed.
+    /// Into a temp in the replica's staging folder, renamed onto `path`
+    /// once whole (SPEC §7.2), so `path` holds the old file or the new one,
+    /// never a mix. A body that fails or is cut short fails the write and
+    /// leaves `path` as it was; nothing it wrote is ever reported as
+    /// landed.
     ///
     /// `expect` is what the scan saw at `path`. Just before acting the
     /// replica stats it, and if it no longer holds, touches nothing and
@@ -128,12 +126,11 @@ pub trait Replica: Send + Sync {
         path: &RelPath,
     ) -> impl Future<Output = Result<(), ReplicaError>> + Send;
 
-    /// Records `batch` in this replica's archive, in order (SPEC §7.3, §8).
-    /// A batch holding an intent is durable before this returns (SPEC
-    /// §7.6); the rest are durable by [`Replica::unlock`] at the latest.
+    /// Records `batch` in this replica's archive, in order (SPEC §7.3, §8),
+    /// durable by [`Replica::unlock`] at the latest.
     ///
     /// **Not atomic.** A batch that fails may have partly landed; the
-    /// caller treats every action in it as failed and untrusted. That is
+    /// caller treats every action in it as failed. That is
     /// harmless: a landed commit belongs to an action whose file work
     /// succeeded, so the next run finds that path in sync.
     fn commit(

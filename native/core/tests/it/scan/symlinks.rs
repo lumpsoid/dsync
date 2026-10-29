@@ -28,13 +28,10 @@ fn an_archived_file_replaced_by_an_unfollowed_link_is_not_deleted() {
     let tree = Tree::new();
     tree.write("target.txt", "hello");
     symlink(&tree.at("target.txt"), &tree.at("was-a-file.txt"));
-    let archive = archive_of(
-        &[
-            ("was-a-file.txt", archived(1, 1, hash_of("x"))),
-            ("gone.txt", archived(1, 1, hash_of("x"))),
-        ],
-        &[],
-    );
+    let archive = archive_of(&[
+        ("was-a-file.txt", archived(1, 1, hash_of("x"))),
+        ("gone.txt", archived(1, 1, hash_of("x"))),
+    ]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 

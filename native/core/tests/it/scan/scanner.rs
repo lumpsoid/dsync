@@ -4,9 +4,7 @@
 
 use std::fs;
 
-use dsync_domain::{
-    Archive, CaseFolding, FileMeta, FileState, Jobs, RuleSet, SkippedReason, Status, Unchanged,
-};
+use dsync_domain::{Archive, CaseFolding, Jobs, RuleSet, SkippedReason, Status, Unchanged};
 
 use crate::scan::support::*;
 
@@ -48,7 +46,7 @@ fn equal_size_and_mtime_is_unchanged_without_hashing() {
     // A hash the content does not have: were the file hashed, it would
     // come out modified.
     let stale = hash_of("something else");
-    let archive = archive_of(&[("a.txt", archived(5, MTIME_US, stale))], &[]);
+    let archive = archive_of(&[("a.txt", archived(5, MTIME_US, stale))]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -66,7 +64,7 @@ fn one_microsecond_of_mtime_drift_forces_a_hash() {
     tree.write("a.txt", "hello");
     tree.set_mtime_us("a.txt", MTIME_US);
     let stale = hash_of("something else");
-    let archive = archive_of(&[("a.txt", archived(5, MTIME_US - 1, stale))], &[]);
+    let archive = archive_of(&[("a.txt", archived(5, MTIME_US - 1, stale))]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -81,7 +79,7 @@ fn a_rehash_with_equal_content_is_unchanged_with_the_new_metadata() {
     let tree = Tree::new();
     tree.write("a.txt", "hello");
     tree.set_mtime_us("a.txt", MTIME_US);
-    let archive = archive_of(&[("a.txt", archived(5, 1, hash_of("hello")))], &[]);
+    let archive = archive_of(&[("a.txt", archived(5, 1, hash_of("hello")))]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -97,7 +95,7 @@ fn a_rehash_with_equal_content_is_unchanged_with_the_new_metadata() {
 fn different_content_against_an_entry_is_modified() {
     let tree = Tree::new();
     tree.write("a.txt", "changed");
-    let archive = archive_of(&[("a.txt", archived(5, 1, hash_of("hello")))], &[]);
+    let archive = archive_of(&[("a.txt", archived(5, 1, hash_of("hello")))]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -113,7 +111,7 @@ fn different_content_against_an_entry_is_modified() {
 fn an_archive_entry_with_no_file_is_deleted_after_the_present_ones() {
     let tree = Tree::new();
     tree.write("kept.txt", "x");
-    let archive = archive_of(&[("archived.txt", archived(3, 1, hash_of("old")))], &[]);
+    let archive = archive_of(&[("archived.txt", archived(3, 1, hash_of("old")))]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -153,14 +151,11 @@ fn an_ignored_directory_is_not_traversed() {
 fn an_ignored_path_still_archived_is_not_deleted() {
     let tree = Tree::new();
     tree.write("a.tmp", "scratch");
-    let archive = archive_of(
-        &[
-            ("a.tmp", archived(7, 1, hash_of("x"))),
-            (".git/config", archived(1, 1, hash_of("x"))),
-            ("gone.txt", archived(1, 1, hash_of("x"))),
-        ],
-        &[],
-    );
+    let archive = archive_of(&[
+        ("a.tmp", archived(7, 1, hash_of("x"))),
+        (".git/config", archived(1, 1, hash_of("x"))),
+        ("gone.txt", archived(1, 1, hash_of("x"))),
+    ]);
 
     // `**/.git` matches the folder, not the paths beneath it: only an
     // ancestor-aware ignore keeps the pruned subtree out of the deletions.
@@ -198,7 +193,7 @@ fn a_name_that_cannot_be_a_rel_path_is_reported_not_reshaped() {
     tree.write("a\\b.txt", "backslash");
     tree.write("dir/C:drive", "drive-shaped");
     tree.write("dir/fine.txt", "fine");
-    let archive = archive_of(&[("dir/gone.txt", archived(1, 1, hash_of("x")))], &[]);
+    let archive = archive_of(&[("dir/gone.txt", archived(1, 1, hash_of("x")))]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -401,7 +396,7 @@ fn fast_path_and_hashed_entries_interleave_in_walk_order() {
         tree.set_mtime_us(name, MTIME_US);
     }
     let matching = archived(1, MTIME_US, hash_of("x"));
-    let archive = archive_of(&[("a", matching), ("c", matching)], &[]);
+    let archive = archive_of(&[("a", matching), ("c", matching)]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -410,93 +405,19 @@ fn fast_path_and_hashed_entries_interleave_in_walk_order() {
     assert!(matches!(entry(&result, "b").status, Status::Created(_)));
 }
 
-// -- untrusted (SPEC §7.6) --
-
-fn state_of(tree: &Tree, relative: &str, content: &str) -> FileState {
-    let meta = fs::metadata(tree.at(relative)).unwrap();
-    let mtime = meta
-        .modified()
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-    FileState {
-        meta: FileMeta {
-            size: meta.len(),
-            mtime_us: i64::try_from(mtime.as_micros()).unwrap(),
-            mode: 0o644,
-        },
-        hash: hash_of(content),
-    }
-}
+// -- the staging folder (SPEC §7.2) --
 
 #[test]
-fn a_marked_file_that_still_matches_is_scanned_as_though_unmarked() {
+fn the_staging_folder_at_the_root_is_skipped_and_one_deeper_is_not() {
     let tree = Tree::new();
-    tree.write("a.txt", "same");
-    let archive = archive_of(&[("a.txt", state_of(&tree, "a.txt", "same"))], &["a.txt"]);
+    tree.write(".dsync-staging/f.dsync-tmp.1.2", "half");
+    tree.write(".dsync-staging/stray", "x");
+    tree.write("sub/.dsync-staging/kept", "k");
 
-    let status = entry(&tree.scan(&archive, &RuleSet::default()), "a.txt").status;
+    let result = tree.scan(&Archive::default(), &RuleSet::default());
 
-    assert!(matches!(
-        status,
-        Status::Unchanged {
-            by: Unchanged::MetadataMatched,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn a_marked_file_whose_content_still_matches_is_scanned_as_though_unmarked() {
-    let tree = Tree::new();
-    tree.write("a.txt", "same");
-    let mut state = state_of(&tree, "a.txt", "same");
-    state.meta.mtime_us -= 1;
-    let archive = archive_of(&[("a.txt", state)], &["a.txt"]);
-
-    let status = entry(&tree.scan(&archive, &RuleSet::default()), "a.txt").status;
-
-    assert!(matches!(
-        status,
-        Status::Unchanged {
-            by: Unchanged::HashMatched,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn a_marked_file_that_no_longer_matches_or_has_no_entry_is_untrusted() {
-    let tree = Tree::new();
-    tree.write("a.txt", "old");
-    let state = state_of(&tree, "a.txt", "old");
-    tree.write("a.txt", "torn, or edited");
-    tree.write("new.txt", "torn");
-    let archive = archive_of(&[("a.txt", state)], &["a.txt", "new.txt"]);
-
-    let result = tree.scan(&archive, &RuleSet::default());
-
-    for (name, content) in [("a.txt", "torn, or edited"), ("new.txt", "torn")] {
-        let Status::Untrusted(file) = entry(&result, name).status else {
-            panic!("{name}: {:?}", result.entries);
-        };
-        assert_eq!(file.hash, hash_of(content));
-    }
-}
-
-#[test]
-fn a_marked_path_with_no_file_is_deleted_with_an_entry_and_absent_without() {
-    let tree = Tree::new();
-    let archive = archive_of(
-        &[("had.txt", archived(1, 1, hash_of("x")))],
-        &["had.txt", "never.txt"],
-    );
-
-    let result = tree.scan(&archive, &RuleSet::default());
-
-    assert_eq!(result.entries.len(), 2);
-    assert_eq!(entry(&result, "had.txt").status, Status::Deleted);
-    assert_eq!(entry(&result, "never.txt").status, Status::UntrustedAbsent);
+    assert_eq!(paths(&result), ["sub/.dsync-staging/kept"]);
+    assert!(result.skipped.is_empty(), "{:?}", result.skipped);
 }
 
 // -- case-fold collisions (SPEC §16) --
@@ -554,7 +475,7 @@ fn two_live_spellings_are_reported_and_excluded_when_the_replica_folds() {
 fn a_live_path_colliding_with_an_archived_one_excludes_both() {
     let tree = Tree::new();
     tree.write("notes.txt", "renamed");
-    let archive = archive_of(&[("Notes.txt", archived(3, 1, hash_of("old")))], &[]);
+    let archive = archive_of(&[("Notes.txt", archived(3, 1, hash_of("old")))]);
 
     let result = folding_scanner()
         .scan(tree.root(), &archive, &RuleSet::default())
@@ -568,13 +489,10 @@ fn a_live_path_colliding_with_an_archived_one_excludes_both() {
 #[test]
 fn archived_spellings_alone_are_left_alone() {
     let tree = Tree::new();
-    let archive = archive_of(
-        &[
-            ("notes.txt", archived(1, 1, hash_of("x"))),
-            ("Notes.txt", archived(1, 1, hash_of("y"))),
-        ],
-        &[],
-    );
+    let archive = archive_of(&[
+        ("notes.txt", archived(1, 1, hash_of("x"))),
+        ("Notes.txt", archived(1, 1, hash_of("y"))),
+    ]);
 
     let result = folding_scanner()
         .scan(tree.root(), &archive, &RuleSet::default())
@@ -591,7 +509,7 @@ fn a_group_of_three_is_excluded_whole() {
     if !two_spellings(&tree) {
         return;
     }
-    let archive = archive_of(&[("NOTES.txt", archived(1, 1, hash_of("z")))], &[]);
+    let archive = archive_of(&[("NOTES.txt", archived(1, 1, hash_of("z")))]);
 
     let result = folding_scanner()
         .scan(tree.root(), &archive, &RuleSet::default())

@@ -9,7 +9,7 @@ use dsync_core::{ActionFailure, BatchDecider, RunEvent};
 use dsync_domain::{ArchiveCommit, ReplicaOp, Side, Tuning};
 
 use crate::run::flow::many;
-use crate::run::support::{Call, Fault, Log, Probe, Site, path, refused, run_with, sync};
+use crate::run::support::{Call, Fault, Probe, Site, path, refused, run_with, sync};
 
 fn batches_of(size: usize) -> Tuning {
     Tuning {
@@ -17,14 +17,6 @@ fn batches_of(size: usize) -> Tuning {
         commit_batch: size,
         ..Tuning::DEFAULT
     }
-}
-
-/// The record batches a side was sent: every commit but the marks.
-fn records(log: &Log) -> Vec<Vec<ArchiveCommit>> {
-    log.commits()
-        .into_iter()
-        .filter(|batch| !batch.iter().all(ArchiveCommit::is_intent))
-        .collect()
 }
 
 #[tokio::test]
@@ -39,14 +31,11 @@ async fn one_exchange_per_replica_per_batch_not_one_per_path() {
 
     assert_eq!(finished.exit_code(), 0);
     for log in [&log_a, &log_b] {
-        let sizes: Vec<usize> = records(log).iter().map(Vec::len).collect();
+        let sizes: Vec<usize> = log.commits().iter().map(Vec::len).collect();
         assert_eq!(sizes, [3, 3, 1]);
     }
-    // One mark exchange for the window, on the side written to only.
-    assert_eq!(log_b.commits().len() - records(&log_b).len(), 1);
-    assert_eq!(log_a.commits().len(), records(&log_a).len());
     let metrics = &finished.report.metrics;
-    assert_eq!(metrics.b.ops[&ReplicaOp::Commit].count, 4);
+    assert_eq!(metrics.b.ops[&ReplicaOp::Commit].count, 3);
     assert_eq!(names.len(), 7);
 }
 
@@ -66,10 +55,10 @@ async fn each_replica_gets_its_own_records() {
 
     run_with(&site, a, b, &options, &mut BatchDecider, batches_of(3)).await;
 
-    let [on_a] = &records(&log_a)[..] else {
+    let [on_a] = &log_a.commits()[..] else {
         panic!()
     };
-    let [on_b] = &records(&log_b)[..] else {
+    let [on_b] = &log_b.commits()[..] else {
         panic!()
     };
     let (ArchiveCommit::Upsert { file: a, .. }, ArchiveCommit::Upsert { file: b, .. }) =
@@ -149,14 +138,14 @@ async fn a_failed_action_costs_no_records_and_an_all_failed_batch_no_exchange() 
     let summary = finished.report.summary.unwrap();
     assert_eq!((summary.applied, summary.failed), (2, 2));
     for log in [&log_a, &log_b] {
-        let batches = records(log);
+        let batches = log.commits();
         assert_eq!(batches.len(), 1, "{batches:?}");
         assert_eq!(batches[0].len(), 2);
     }
 }
 
 #[tokio::test]
-async fn a_batch_that_fails_fails_every_action_in_it_and_they_stay_untrusted() {
+async fn a_batch_that_fails_fails_every_action_in_it_and_the_next_run_commits_them() {
     let site = Site::new();
     for name in ["a/1", "b/1", "a/2", "b/2"] {
         site.put(Side::A, name, name);
@@ -165,10 +154,7 @@ async fn a_batch_that_fails_fails_every_action_in_it_and_they_stay_untrusted() {
     let (b, _) = Probe::with_hook(
         site.replica(Side::B),
         Arc::new(move |call: &Call| match call {
-            Call::Commit(batch)
-                if !batch.iter().all(ArchiveCommit::is_intent)
-                    && !failed_once.swap(true, Ordering::SeqCst) =>
-            {
+            Call::Commit(_) if !failed_once.swap(true, Ordering::SeqCst) => {
                 Some(Fault::Fail(refused()))
             }
             _ => None,
@@ -199,14 +185,14 @@ async fn a_batch_that_fails_fails_every_action_in_it_and_they_stay_untrusted() {
     );
     assert_eq!(finished.exit_code(), 2);
     let b_archive = site.archive(Side::B);
-    assert!(b_archive.is_untrusted(&path("a/1")) && b_archive.is_untrusted(&path("b/1")));
-    assert!(!b_archive.is_untrusted(&path("a/2")), "positive control");
+    assert!(b_archive.get(&path("a/1")).is_none() && b_archive.get(&path("b/1")).is_none());
+    assert!(b_archive.get(&path("a/2")).is_some(), "positive control");
     // The landed files match the source: the next run commits them and
     // raises no conflict.
     let next = sync(&site).await;
     assert!(!next.kinds().contains(&"conflict"));
     assert_eq!(next.exit_code(), 0);
-    assert_eq!(site.archive(Side::B).untrusted().count(), 0);
+    assert!(site.archive(Side::B).get(&path("a/1")).is_some());
 }
 
 #[tokio::test]
@@ -218,9 +204,7 @@ async fn a_failed_action_keeps_its_own_error_when_its_batch_fails_too() {
         site.replica(Side::B),
         Arc::new(|call: &Call| match call {
             Call::Write(name) if name == "a/1" => Some(Fault::Fail(refused())),
-            Call::Commit(batch) if !batch.iter().all(ArchiveCommit::is_intent) => {
-                Some(Fault::Fail(refused()))
-            }
+            Call::Commit(_) => Some(Fault::Fail(refused())),
             _ => None,
         }),
     );

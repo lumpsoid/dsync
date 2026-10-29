@@ -83,7 +83,7 @@ fn sigterm_ends_the_listener_and_takes_the_socket_file_with_it() {
     assert!(!std::path::Path::new(&socket).exists());
 }
 
-/// A far side on the socket that speaks protocol 2.0: the run is refused
+/// A far side on the socket that speaks protocol 3.0: the run is refused
 /// at the handshake, naming both versions, before anything is scanned.
 #[test]
 fn a_far_side_of_another_protocol_major_is_refused_naming_both() {
@@ -94,7 +94,7 @@ fn a_far_side_of_another_protocol_major_is_refused_naming_both() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let far_side = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        stream.write_all(&version_frame(2, 0)).unwrap();
+        stream.write_all(&version_frame(3, 0)).unwrap();
         let mut heard = Vec::new();
         let _ = stream.read_to_end(&mut heard);
     });
@@ -107,7 +107,7 @@ fn a_far_side_of_another_protocol_major_is_refused_naming_both() {
     assert!(
         refused
             .stderr
-            .contains("protocol version mismatch: this side speaks 1.1, the far side 2.0"),
+            .contains("protocol version mismatch: this side speaks 2.0, the far side 3.0"),
         "{refused:#?}"
     );
     far_side.join().unwrap();

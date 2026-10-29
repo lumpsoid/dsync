@@ -300,7 +300,6 @@ wire.TallyView tally({
   modified: n(modified),
   created: n(created),
   deleted: n(deleted),
-  untrusted: n(0),
   total: n(total),
   changed: n(changed),
 );
@@ -405,7 +404,7 @@ wire.ConflictRowView conflictRow(
   wire.ResultView? outcome,
   wire.OfferView offer = const wire.OfferViewNotComparable(),
 }) => wire.ConflictRowView(
-  conflict: wire.ConflictView(path: path, a: a, b: b, interrupted: false),
+  conflict: wire.ConflictView(path: path, a: a, b: b),
   offered: offered,
   offer: offer,
   choice: choice,

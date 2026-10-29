@@ -8,6 +8,7 @@ mod commit;
 mod crash;
 mod file_root;
 mod hello_lock;
+mod killed_write;
 mod pipelining;
 mod read;
 mod remote;
@@ -17,7 +18,6 @@ mod served;
 #[cfg(unix)]
 mod ssh;
 mod support;
-mod torn;
 #[cfg(unix)]
 mod unix;
 mod write;
@@ -31,7 +31,7 @@ fn child_role() {
         return;
     };
     match role.as_str() {
-        "tear-write" => torn::tear_write(&path),
+        "tear-write" => killed_write::tear_write(&path),
         "hold-folder" => hello_lock::hold_folder(&path),
         other => panic!("unknown role {other}"),
     }

@@ -367,13 +367,9 @@ class _Session {
     final deviceName =
         before.peerName ?? _fail('d', 'the desktop is no longer paired');
     final run = await _run(_profileRequest(deviceName), step: 'd');
-    // A file torn by the kill is a conflict labelled interrupted (§7.6);
-    // the desktop's copy is the one that finished.
-    var interrupted = 0;
+    // A write the kill stopped left the old file whole (§7.6), so the run
+    // copies it again; any conflict takes the desktop's copy.
     for (final conflict in run.state.conflicts) {
-      if (conflict.local.status == SyncRunSideStatus.interrupted) {
-        interrupted++;
-      }
       if (!conflict.offered.contains(ConflictChoice.keepB)) {
         _fail('d', '${conflict.path} does not offer the desktop\'s copy');
       }
@@ -393,10 +389,7 @@ class _Session {
     if (after.lastRunUnfinished) {
       _fail('d', 'the run marker is still there after the recovery run');
     }
-    _mark(
-      'd|recovered|applied=${finished.applied} '
-      'interrupted=$interrupted',
-    );
+    _mark('d|recovered|applied=${finished.applied}');
     _say('done', 'Done. The desktop compares the trees now.');
   }
 

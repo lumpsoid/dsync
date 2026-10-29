@@ -27,12 +27,6 @@ pub(crate) enum Line {
     Delete {
         path: String,
     },
-    Intent {
-        path: String,
-    },
-    Withdraw {
-        path: String,
-    },
 }
 
 impl Line {
@@ -47,8 +41,6 @@ impl Line {
                 hash: file.hash.to_string(),
             },
             ArchiveCommit::Delete(_) => Line::Delete { path },
-            ArchiveCommit::Intent(_) => Line::Intent { path },
-            ArchiveCommit::Withdraw(_) => Line::Withdraw { path },
         }
     }
 
@@ -77,8 +69,6 @@ impl Line {
                 },
             },
             Line::Delete { path } => ArchiveCommit::Delete(parse_path(&path)?),
-            Line::Intent { path } => ArchiveCommit::Intent(parse_path(&path)?),
-            Line::Withdraw { path } => ArchiveCommit::Withdraw(parse_path(&path)?),
         })
     }
 

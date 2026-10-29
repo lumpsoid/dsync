@@ -78,15 +78,12 @@ fn an_unreadable_folder_suppresses_deletions_under_it_and_only_there() {
     if !permissions_bind(&tree, "sub") {
         return;
     }
-    let archive = archive_of(
-        &[
-            ("sub/inner.txt", archived(5, 1, hash_of("inner"))),
-            ("sub/deeper/gone.txt", archived(5, 1, hash_of("x"))),
-            ("gone.txt", archived(1, 1, hash_of("x"))),
-            ("submarine.txt", archived(1, 1, hash_of("x"))),
-        ],
-        &["sub/marked.txt"],
-    );
+    let archive = archive_of(&[
+        ("sub/inner.txt", archived(5, 1, hash_of("inner"))),
+        ("sub/deeper/gone.txt", archived(5, 1, hash_of("x"))),
+        ("gone.txt", archived(1, 1, hash_of("x"))),
+        ("submarine.txt", archived(1, 1, hash_of("x"))),
+    ]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 
@@ -104,7 +101,7 @@ fn an_unreadable_file_with_an_entry_is_not_deleted() {
     if !permissions_bind(&tree, "locked.txt") {
         return;
     }
-    let archive = archive_of(&[("locked.txt", archived(1, 1, hash_of("original")))], &[]);
+    let archive = archive_of(&[("locked.txt", archived(1, 1, hash_of("original")))]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 

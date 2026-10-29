@@ -3,9 +3,8 @@
 //! `<state>/<profileId>.run` ([`crate::StateDir::run_marker`]).
 //!
 //! Created before the apply writes anything and deleted when the apply
-//! returns, failed actions or not: those surface on the next run as
-//! conflicts labelled interrupted. A marker still there means the process
-//! died or the run aborted mid-apply. A file of its own rather than
+//! returns, failed actions or not: the next run syncs what they left. A
+//! marker still there means the process died or the run aborted mid-apply. A file of its own rather than
 //! something read out of the archive log, so "did the last run finish?"
 //! costs one stat per profile, not a replay.
 

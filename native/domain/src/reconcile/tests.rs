@@ -22,7 +22,6 @@ enum Kind {
 }
 
 const CHANGED: [Kind; 2] = [Kind::Created, Kind::Modified];
-const PRESENT: [Kind; 3] = [Kind::Unchanged, Kind::Created, Kind::Modified];
 
 fn path(text: &str) -> RelPath {
     RelPath::parse(text).unwrap_or_else(|e| panic!("{e}"))
@@ -65,14 +64,6 @@ fn hashed(p: &str, kind: Kind, tag: &str) -> ScanEntry {
 
 fn entry(p: &str, kind: Kind) -> ScanEntry {
     hashed(p, kind, "h")
-}
-
-fn untrusted(p: &str, tag: &str) -> ScanEntry {
-    ScanEntry::new(path(p), Status::Untrusted(file(tag, 3)))
-}
-
-fn untrusted_absent(p: &str) -> ScanEntry {
-    ScanEntry::new(path(p), Status::UntrustedAbsent)
 }
 
 fn run(a: Vec<ScanEntry>, b: Vec<ScanEntry>) -> Plan {
@@ -568,137 +559,6 @@ fn every_other_path_still_reconciles_normally() {
     assert_eq!(action_for(&plan, "ok.txt"), Some(Act::CopyAtoB));
 }
 
-// -- untrusted (SPEC §7.6) --
-
-#[test]
-fn untrusted_holding_the_other_sides_content_is_committed_not_copied() {
-    for other in PRESENT {
-        let toward_b = run(vec![entry("f", other)], vec![untrusted("f", "h")]);
-        assert_eq!(
-            action_for(&toward_b, "f"),
-            Some(Act::CommitOnly),
-            "{other:?}"
-        );
-        assert!(toward_b.conflicts.is_empty(), "{other:?}");
-
-        let toward_a = run(vec![untrusted("f", "h")], vec![entry("f", other)]);
-        assert_eq!(
-            action_for(&toward_a, "f"),
-            Some(Act::CommitOnly),
-            "{other:?}"
-        );
-        assert!(toward_a.conflicts.is_empty(), "{other:?}");
-    }
-}
-
-#[test]
-fn untrusted_holding_anything_else_is_an_interrupted_conflict() {
-    for other in PRESENT {
-        for plan in [
-            run(vec![entry("f", other)], vec![untrusted("f", "torn")]),
-            run(vec![untrusted("f", "torn")], vec![entry("f", other)]),
-        ] {
-            assert!(plan.actions.is_empty(), "{other:?}");
-            assert_eq!(plan.conflicts.len(), 1, "{other:?}");
-            assert!(plan.conflicts[0].interrupted(), "{other:?}");
-        }
-    }
-}
-
-#[test]
-fn untrusted_is_mirrored_onto_when_absent() {
-    let plan = run(
-        vec![entry("f", Kind::Unchanged)],
-        vec![untrusted_absent("f")],
-    );
-    assert_eq!(action_for(&plan, "f"), Some(Act::CopyAtoB));
-    let mirrored = run(
-        vec![untrusted_absent("f")],
-        vec![sized("f", Kind::Created, "h", 7)],
-    );
-    assert_eq!(
-        actions(&mirrored)[..],
-        [Action::Copy {
-            path: path("f"),
-            from: Side::B,
-            bytes: 7
-        }]
-    );
-}
-
-#[test]
-fn untrusted_with_nothing_on_the_other_side_is_a_conflict_rather_than_deleted() {
-    for (a, b) in [
-        (vec![], vec![untrusted("f", "torn")]),
-        (
-            vec![entry("f", Kind::Deleted)],
-            vec![untrusted("f", "torn")],
-        ),
-        (vec![untrusted("f", "torn")], vec![]),
-        (
-            vec![untrusted("f", "torn")],
-            vec![entry("f", Kind::Deleted)],
-        ),
-    ] {
-        let plan = run(a, b);
-        assert!(plan.actions.is_empty());
-        assert_eq!(plan.conflicts.len(), 1);
-        assert!(plan.conflicts[0].interrupted());
-    }
-}
-
-#[test]
-fn an_ordinary_conflict_is_not_labelled_interrupted() {
-    let plan = run(
-        vec![hashed("f", Kind::Modified, "x")],
-        vec![hashed("f", Kind::Modified, "y")],
-    );
-    assert_eq!(plan.conflicts.len(), 1);
-    assert!(!plan.conflicts[0].interrupted());
-}
-
-#[test]
-fn untrusted_with_nothing_to_mirror_and_no_file_only_clears_the_mark() {
-    for (a, b) in [
-        (vec![], vec![untrusted_absent("f")]),
-        (vec![entry("f", Kind::Deleted)], vec![untrusted_absent("f")]),
-        (vec![untrusted_absent("f")], vec![]),
-        (vec![untrusted_absent("f")], vec![entry("f", Kind::Deleted)]),
-    ] {
-        let plan = run(a, b);
-        assert_eq!(action_for(&plan, "f"), Some(Act::CommitOnly));
-        assert!(plan.conflicts.is_empty());
-    }
-}
-
-#[test]
-fn untrusted_on_both_sides_is_a_conflict() {
-    for (a, b) in [
-        (untrusted("f", "h"), untrusted("f", "h")),
-        (untrusted("f", "h"), untrusted_absent("f")),
-        (untrusted_absent("f"), untrusted_absent("f")),
-    ] {
-        let plan = run(vec![a], vec![b]);
-        assert!(plan.actions.is_empty());
-        assert!(is_conflict(&plan, "f"));
-    }
-}
-
-#[test]
-fn an_absent_untrusted_one_is_no_file_for_a_type_mismatch() {
-    let plan = run(
-        vec![untrusted_absent("d"), entry("d/x", Kind::Created)],
-        vec![entry("d/x", Kind::Created)],
-    );
-    assert!(plan.conflicts.is_empty());
-    // Control: a present untrusted file there is a mismatch.
-    let mismatch = run(
-        vec![untrusted("d", "h"), entry("d/x", Kind::Created)],
-        vec![entry("d/x", Kind::Created)],
-    );
-    assert!(is_conflict(&mismatch, "d"));
-}
-
 // -- beyond the Dart file --
 
 #[test]
@@ -717,7 +577,11 @@ fn a_conflict_carries_both_sides_statuses() {
         Some(hash("bb"))
     );
 
-    let one_sided = run(vec![untrusted("f", "h")], vec![]);
+    // A file against a directory: B has no record of the path itself.
+    let one_sided = run(
+        vec![entry("f", Kind::Created)],
+        vec![entry("f/x", Kind::Created)],
+    );
     assert_eq!(one_sided.conflicts[0].b, None);
 }
 
@@ -764,18 +628,11 @@ fn a_copy_over_a_file_reverses_to_the_opposite_copy_with_the_other_sides_size() 
 }
 
 #[test]
-fn a_mirror_onto_a_silent_or_untrusted_absent_side_offers_no_reversal() {
+fn a_mirror_onto_a_silent_side_offers_no_reversal() {
     let silent = run(vec![sized("f", Kind::Created, "a", 4096)], vec![]);
     assert_eq!(act(&only(&silent).action), Act::CopyAtoB);
     assert_eq!(only(&silent).reverse_bytes, None);
     assert_eq!(only(&silent).reversed(), None);
-
-    let absent = run(
-        vec![sized("f", Kind::Unchanged, "a", 4096)],
-        vec![untrusted_absent("f")],
-    );
-    assert_eq!(act(&only(&absent).action), Act::CopyAtoB);
-    assert_eq!(only(&absent).reversed(), None);
 
     // Control: the same copy onto a side holding a file is offered one.
     let over_a_file = run(

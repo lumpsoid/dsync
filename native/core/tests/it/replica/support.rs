@@ -368,10 +368,9 @@ pub enum CopyUntil {
     DestinationCommitted,
 }
 
-/// Copies `relative` from `from` to `to` in SPEC's order: the intent on
-/// the destination (durable before the bytes), the read, the write over
-/// what the destination's scan saw there (`expect`), then the upsert on
-/// each side.
+/// Copies `relative` from `from` to `to` in SPEC's order: the read, the
+/// write over what the destination's scan saw there (`expect`), then the
+/// upsert on each side.
 pub async fn copy(
     from: &impl Replica,
     to: &impl Replica,
@@ -381,9 +380,6 @@ pub async fn copy(
     until: CopyUntil,
 ) {
     let at = path(relative);
-    to.commit(vec![ArchiveCommit::Intent(at.clone())])
-        .await
-        .unwrap();
     let body = from.read(&at).await.unwrap().body;
     let landed = to.write(&at, body, source.meta, expect).await.unwrap();
     to.commit(vec![ArchiveCommit::Upsert {

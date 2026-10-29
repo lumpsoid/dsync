@@ -1,6 +1,6 @@
 //! The per-replica archive as an append-only JSON Lines log (SPEC §8.1,
-//! §8.2): a header line, then one line per commit - upsert, delete, intent
-//! or withdraw - replayed with last write wins ([`Archive::apply`]).
+//! §8.2): a header line, then one line per commit - upsert or delete -
+//! replayed with last write wins ([`Archive::apply`]).
 //!
 //! Durability, in the order it is paid for:
 //! - Commits are buffered and appended in one write + fsync per batch:
@@ -11,9 +11,6 @@
 //!   each commit arrives, not by a timer: a timer would only ever fire when
 //!   no more commits are coming, which is what [`ArchiveStore::flush`] and
 //!   dropping the store are for.
-//! - A batch holding an intent is written and fsynced before
-//!   [`ArchiveStore::commit`] returns: the mark has to be on disk before the
-//!   bytes it guards (SPEC §7.6).
 //! - A batch goes out as one write, so a crash can tear the last line but
 //!   not interleave two. Opening drops a torn last line and the next write
 //!   repairs the file by compaction first; appending after the fragment
@@ -41,7 +38,9 @@ use crate::replica_lock::RunLocks;
 /// The log's format, written in its header (SPEC §8.2, §8.4). A new field
 /// on a line is a minor bump; a new kind of line, or any change to what an
 /// existing one means, is a major one.
-pub const ARCHIVE_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 0);
+///
+/// 2.0 drops 1.0's `intent` and `withdraw` lines (SPEC §7.6).
+pub const ARCHIVE_FORMAT_VERSION: FormatVersion = FormatVersion::new(2, 0);
 
 /// Read buffer for replaying a log: about one line per live path in steady
 /// state, which is megabytes on a tree of any size.
@@ -197,16 +196,13 @@ impl ArchiveStore {
     }
 
     /// Records `batch` in order. Visible in [`ArchiveStore::archive`] at
-    /// once; durable once the batch is written - immediately if `batch`
-    /// holds an intent, else when the buffer is full or old enough, or on
-    /// [`ArchiveStore::flush`].
+    /// once; durable once the batch is written - when the buffer is full or
+    /// old enough, or on [`ArchiveStore::flush`].
     pub fn commit(
         &mut self,
         batch: impl IntoIterator<Item = ArchiveCommit>,
     ) -> Result<(), ArchiveError> {
-        let mut holds_intent = false;
         for commit in batch {
-            holds_intent |= commit.is_intent();
             Line::of_commit(&commit).write_to(&mut self.pending);
             self.pending_lines += 1;
             self.pending_since.get_or_insert_with(Instant::now);
@@ -216,7 +212,7 @@ impl ArchiveStore {
             || self
                 .pending_since
                 .is_some_and(|since| since.elapsed() >= self.batch_age);
-        if holds_intent || due {
+        if due {
             self.flush()?;
         }
         Ok(())
@@ -245,7 +241,7 @@ impl ArchiveStore {
         Ok(())
     }
 
-    /// Folds the log down to one line per live path and mark (SPEC §8.2).
+    /// Folds the log down to one line per live path (SPEC §8.2).
     /// A no-op when it already is that.
     pub fn compact(&mut self) -> Result<(), ArchiveError> {
         self.flush()?;

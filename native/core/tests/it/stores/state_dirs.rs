@@ -2,11 +2,9 @@
 //! `dsync/` and nothing else appears there.
 
 use dsync_core::{ArchiveHeader, ArchiveInventory, ArchiveStore, ReplicaLock, RunMarker, StateDir};
-use dsync_domain::{
-    ArchiveCommit, DirRule, HostFacts, Platform, Side, StateDirChoice, Tuning, config_dir,
-};
+use dsync_domain::{DirRule, HostFacts, Platform, Side, StateDirChoice, Tuning, config_dir};
 
-use crate::stores::support::{names_in, path, profile, upsert};
+use crate::stores::support::{names_in, profile, upsert};
 
 #[test]
 fn every_store_writes_under_the_dsync_leaf_only() {
@@ -48,7 +46,7 @@ fn every_store_writes_under_the_dsync_leaf_only() {
     store
         .commit([
             upsert("a.txt", crate::stores::support::file(1, 1)),
-            ArchiveCommit::Intent(path("b.txt")),
+            upsert("b.txt", crate::stores::support::file(1, 2)),
         ])
         .unwrap();
     store.compact().unwrap();

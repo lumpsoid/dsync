@@ -8,7 +8,6 @@ final class ScanTally {
     required this.modified,
     required this.created,
     required this.deleted,
-    required this.untrusted,
     required this.total,
     required this.changed,
   });
@@ -18,7 +17,6 @@ final class ScanTally {
   final int modified;
   final int created;
   final int deleted;
-  final int untrusted;
   final int total;
   final int changed;
 }

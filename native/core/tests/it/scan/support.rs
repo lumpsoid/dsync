@@ -97,16 +97,11 @@ pub fn archived(size: u64, mtime_us: i64, hash: ContentHash) -> FileState {
     }
 }
 
-pub fn archive_of(entries: &[(&str, FileState)], marked: &[&str]) -> Archive {
-    Archive::replay(
-        entries
-            .iter()
-            .map(|(p, file)| ArchiveCommit::Upsert {
-                path: path(p),
-                file: *file,
-            })
-            .chain(marked.iter().map(|p| ArchiveCommit::Intent(path(p)))),
-    )
+pub fn archive_of(entries: &[(&str, FileState)]) -> Archive {
+    Archive::replay(entries.iter().map(|(p, file)| ArchiveCommit::Upsert {
+        path: path(p),
+        file: *file,
+    }))
 }
 
 pub fn entry<'a>(result: &'a ScanResult, relative: &str) -> &'a ScanEntry {

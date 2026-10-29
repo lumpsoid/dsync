@@ -1,7 +1,6 @@
-//! How a write lands on what is already there (SPEC §7.2's WriteTarget,
-//! the cases of Dart's `write_target_probe_test` and `local_agent_test`):
-//! in place unless that would change another name or fail on a read-only
-//! file, then temp + rename.
+//! How a write lands on what is already there (SPEC §7.2): a temp renamed
+//! onto it, which replaces this one name - never another hard link's - and
+//! needs only the folder's permission, not the file's.
 
 #![cfg(unix)]
 
@@ -45,7 +44,7 @@ async fn a_hard_linked_target_is_replaced_and_the_other_name_keeps_its_bytes() {
 }
 
 #[tokio::test]
-async fn a_single_link_target_is_written_in_place() {
+async fn a_target_is_replaced_by_a_new_file_never_written_through() {
     let site = Site::new();
     let target = site.put(Side::B, "a.txt", "old");
     let inode = || std::os::unix::fs::MetadataExt::ino(&fs::metadata(&target).unwrap());
@@ -53,8 +52,8 @@ async fn a_single_link_target_is_written_in_place() {
 
     write_new(&site.replica(Side::B), "new").await;
 
-    // The same file, not a new one renamed over it.
-    assert_eq!(inode(), before);
+    // A new file renamed over it, not the same one rewritten.
+    assert_ne!(inode(), before);
     assert_eq!(fs::read(&target).unwrap(), b"new");
 }
 
@@ -88,8 +87,8 @@ async fn a_followed_symlink_is_written_through_and_stays_a_link() {
             .is_symlink()
     );
 
-    // Through the replace path: the scratch file goes beside the link's
-    // target, so the rename replaces the target, not the link.
+    // The rename replaces the link's target, not the link, and only that
+    // name of it.
     let other_name = site.dir().join("other-name.txt");
     fs::hard_link(&outside, &other_name).unwrap();
     write_new(&replica, "newer").await;
@@ -134,4 +133,40 @@ async fn a_target_that_cannot_be_probed_is_changed_since_the_scan_and_left_untou
             .is_symlink()
     );
     assert!(temp_files_under(site.dir()).is_empty());
+}
+
+#[tokio::test]
+async fn a_target_on_another_filesystem_is_renamed_onto_from_beside_it() {
+    use std::os::unix::fs::MetadataExt;
+
+    let site = Site::new();
+    let Ok(elsewhere) = tempfile::tempdir_in("/dev/shm") else {
+        eprintln!("skipped: no /dev/shm to put a second filesystem behind a link");
+        return;
+    };
+    let device = |path: &std::path::Path| fs::metadata(path).unwrap().dev();
+    if device(elsewhere.path()) == device(&site.root(Side::B)) {
+        eprintln!("skipped: /dev/shm is the same filesystem as the replica");
+        return;
+    }
+    let outside = elsewhere.path().join("target.txt");
+    fs::write(&outside, "old").unwrap();
+    let link = site.file(Side::B, "a.txt");
+    symlink(&outside, &link).unwrap();
+
+    write_new(&site.replica(Side::B), "new").await;
+
+    assert_eq!(fs::read(&outside).unwrap(), b"new");
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        meta(0o644).mtime_us,
+        site.state_of(Side::B, "a.txt").meta.mtime_us
+    );
+    assert!(temp_files_under(elsewhere.path()).is_empty());
+    assert!(temp_files_under(&site.root(Side::B)).is_empty());
 }

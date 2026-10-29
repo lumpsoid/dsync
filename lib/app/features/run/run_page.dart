@@ -1734,10 +1734,6 @@ class _ConflictSide extends StatelessWidget {
       SyncRunSideStatus.created => (Icons.add, 'created'),
       SyncRunSideStatus.modified => (Icons.edit_outlined, 'modified'),
       SyncRunSideStatus.deleted => (Icons.delete_outline, 'deleted'),
-      SyncRunSideStatus.interrupted => (
-        Icons.warning_amber_outlined,
-        'interrupted',
-      ),
       SyncRunSideStatus.none => (Icons.remove, 'no record'),
     };
     final radius = BorderRadius.circular(8);

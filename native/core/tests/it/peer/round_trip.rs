@@ -46,12 +46,6 @@ async fn a_replica_behind_the_listener_scans_writes_and_commits() {
         mtime_us: 1_704_067_200_000_000,
         mode: 0o644,
     };
-    with_deadline(
-        "intent",
-        replica.commit(vec![ArchiveCommit::Intent(path.clone())]),
-    )
-    .await
-    .unwrap();
     let landed = with_deadline(
         "write",
         replica.write(

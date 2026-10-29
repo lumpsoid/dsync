@@ -422,7 +422,6 @@ pub struct TallyView {
     pub modified: u64,
     pub created: u64,
     pub deleted: u64,
-    pub untrusted: u64,
     pub total: u64,
     pub changed: u64,
 }
@@ -436,7 +435,6 @@ impl From<&ScanTally> for TallyView {
             modified: count(tally.modified),
             created: count(tally.created),
             deleted: count(tally.deleted),
-            untrusted: count(tally.untrusted),
             total: count(total),
             changed: count(total - tally.metadata_matched - tally.hash_matched),
         }
@@ -490,13 +488,11 @@ impl SkippedView {
 }
 
 /// A conflict (SPEC §6), each side's status as the scan found it.
-/// `interrupted`: a side holds a write that never committed.
 #[derive(Clone, Serialize, SignalPiece)]
 pub struct ConflictView {
     pub path: String,
     pub a: Option<StatusView>,
     pub b: Option<StatusView>,
-    pub interrupted: bool,
 }
 
 impl From<&Conflict> for ConflictView {
@@ -505,7 +501,6 @@ impl From<&Conflict> for ConflictView {
             path: conflict.path.to_string(),
             a: conflict.a.as_ref().map(StatusView::from),
             b: conflict.b.as_ref().map(StatusView::from),
-            interrupted: conflict.interrupted(),
         }
     }
 }
@@ -516,8 +511,6 @@ pub enum StatusView {
     Created(FileView),
     Modified(FileView),
     Deleted,
-    Untrusted(FileView),
-    UntrustedAbsent,
 }
 
 #[derive(Clone, Serialize, SignalPiece)]
@@ -540,8 +533,6 @@ impl From<&Status> for StatusView {
             Status::Created(state) => StatusView::Created(file(state)),
             Status::Modified(state) => StatusView::Modified(file(state)),
             Status::Deleted => StatusView::Deleted,
-            Status::Untrusted(state) => StatusView::Untrusted(file(state)),
-            Status::UntrustedAbsent => StatusView::UntrustedAbsent,
         }
     }
 }

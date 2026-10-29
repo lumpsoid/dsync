@@ -203,9 +203,6 @@ fn conflict_fields(conflict: &Conflict) -> Map<String, Value> {
     };
     side("onA", conflict.a.as_ref());
     side("onB", conflict.b.as_ref());
-    if conflict.interrupted() {
-        fields.insert("interrupted".into(), json!(true));
-    }
     fields
 }
 
@@ -216,7 +213,6 @@ fn tally(tally: &ScanTally) -> Value {
         "modified": tally.modified,
         "created": tally.created,
         "deleted": tally.deleted,
-        "untrusted": tally.untrusted,
     })
 }
 

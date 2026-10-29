@@ -20,11 +20,9 @@ pub struct Tuning {
     pub apply_in_flight: usize,
     /// Actions per archive commit batch.
     pub commit_batch: usize,
-    /// Intents marked ahead of their writes, one window per commit batch.
-    pub mark_window: usize,
     /// Outstanding requests per replica session (SPEC §4.2 window): the
     /// read-ahead's streams, each holding a slot for its whole body on a
-    /// remote source, plus a lead of eight for marks and commits.
+    /// remote source, plus a lead of eight for commits.
     pub request_window: usize,
     /// Chunk size a streamed body is read ahead and sent in; also what the
     /// apply's read-ahead reserves for one source read (SPEC §7.2).
@@ -72,7 +70,6 @@ impl Tuning {
         writers: 16,
         apply_in_flight: 32,
         commit_batch: 64,
-        mark_window: 64,
         request_window: 40 + 8,
         read_ahead_chunk_bytes: 64 * 1024,
         read_ahead_budget_bytes: 1024 * 1024,
@@ -111,7 +108,6 @@ mod tests {
         assert_eq!(tuning.writers, 16);
         assert_eq!(tuning.apply_in_flight, 32);
         assert_eq!(tuning.commit_batch, 64);
-        assert_eq!(tuning.mark_window, 64);
         assert_eq!(tuning.request_window, 48);
         assert_eq!(tuning.read_ahead_chunk_bytes, 1 << 16);
         assert_eq!(tuning.read_ahead_budget_bytes, 1 << 20);

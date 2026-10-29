@@ -359,12 +359,6 @@ impl Soak {
         );
         for (side, tree) in Side::BOTH.into_iter().zip(&trees) {
             let archive = self.site.archive(side);
-            assert_eq!(
-                archive.untrusted().count(),
-                0,
-                "{}: marks left on {side}",
-                self.label
-            );
             let archived: BTreeMap<String, (u64, i64, ContentHash)> = archive
                 .entries()
                 .filter(|(path, _)| Some(path.as_str()) != exempt)

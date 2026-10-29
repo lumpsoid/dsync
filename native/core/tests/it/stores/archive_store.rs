@@ -90,10 +90,6 @@ fn committed(store: &mut ArchiveStore, batch: impl IntoIterator<Item = ArchiveCo
     store.commit(batch).unwrap();
 }
 
-fn marked(archive: &Archive) -> Vec<&str> {
-    archive.untrusted().map(|path| path.as_str()).collect()
-}
-
 fn names(archive: &Archive) -> Vec<&str> {
     archive.entries().map(|(path, _)| path.as_str()).collect()
 }
@@ -213,7 +209,7 @@ fn the_first_line_of_a_new_log_is_the_header() {
     let first = &fixture.lines()[0];
     assert!(first.contains(r#""op":"header""#), "{first}");
     assert!(first.contains(&format!(r#""version":"{ARCHIVE_FORMAT_VERSION}""#)));
-    assert_eq!(ARCHIVE_FORMAT_VERSION.to_string(), "1.0");
+    assert_eq!(ARCHIVE_FORMAT_VERSION.to_string(), "2.0");
     assert!(first.contains(&format!(r#""entry_id":"{}""#, profile().as_str())));
     assert!(first.contains(r#""rootPath":"/home/me/notes""#));
 }
@@ -281,7 +277,8 @@ fn write_log_of_version(fixture: &Fixture, version: &str) {
 fn refuses_a_log_of_another_major_naming_both_versions_and_the_file() {
     let fixture = Fixture::new();
     for (version, found) in [
-        ("2.0", FormatVersion::new(2, 0)),
+        ("3.0", FormatVersion::new(3, 0)),
+        ("1.0", FormatVersion::new(1, 0)),
         ("0.3", FormatVersion::new(0, 3)),
     ] {
         write_log_of_version(&fixture, version);
@@ -301,7 +298,7 @@ fn refuses_a_log_of_another_major_naming_both_versions_and_the_file() {
             message.contains(&format!("is format {version}")),
             "{message}"
         );
-        assert!(message.contains("(format 1.0)"), "{message}");
+        assert!(message.contains("(format 2.0)"), "{message}");
         let log = fixture.log().display().to_string();
         assert!(message.contains(&format!("delete {log}")), "{message}");
     }
@@ -320,11 +317,11 @@ fn reads_a_later_minor_whose_lines_carry_fields_it_does_not_know() {
     let text = fs::read_to_string(fixture.log())
         .unwrap()
         .replace(
-            r#""version":"1.0""#,
-            r#""version":"1.4","createdBy":"later""#,
+            r#""version":"2.0""#,
+            r#""version":"2.4","createdBy":"later""#,
         )
         .replace(r#""op":"upsert""#, r#""op":"upsert","xattrs":{"k":"v"}"#);
-    assert!(text.contains("1.4") && text.contains("xattrs"), "{text}");
+    assert!(text.contains("2.4") && text.contains("xattrs"), "{text}");
     fs::write(fixture.log(), text).unwrap();
 
     assert_eq!(fixture.reloaded(), expected);
@@ -591,19 +588,6 @@ fn the_buffer_is_written_once_its_oldest_commit_is_old_enough() {
 }
 
 #[test]
-fn an_intent_is_on_disk_before_the_commit_recording_it_returns() {
-    let fixture = Fixture::new();
-    let mut store = fixture.open();
-    committed(&mut store, [at("f0")]);
-    assert_eq!(fixture.commit_lines(), 0, "an ordinary commit is buffered");
-
-    committed(&mut store, [at("f1"), ArchiveCommit::Intent(path("f2"))]);
-
-    assert_eq!(fixture.commit_lines(), 3);
-    assert_eq!(marked(&fixture.reloaded()), ["f2"]);
-}
-
-#[test]
 fn flushing_nothing_writes_nothing() {
     let fixture = Fixture::new();
     let mut store = fixture.open();
@@ -777,101 +761,11 @@ fn a_compaction_that_cannot_swap_in_leaves_the_old_log_intact() {
     assert_eq!(fixture.lines().len(), 2);
 }
 
-// --- intents (SPEC §7.6) ---
-
 #[test]
-fn an_intent_marks_a_path_without_touching_its_entry_and_survives_a_reopen() {
+fn a_log_already_one_line_per_entry_is_not_rewritten() {
     let fixture = Fixture::new();
     let mut store = fixture.open();
-    committed(
-        &mut store,
-        [
-            entry(),
-            ArchiveCommit::Intent(path("a.txt")),
-            ArchiveCommit::Intent(path("new.txt")),
-        ],
-    );
-
-    let archive = fixture.reloaded();
-    assert_eq!(archive.get(&path("a.txt")), Some(&file(10, 1)));
-    assert_eq!(archive.get(&path("new.txt")), None);
-    assert_eq!(marked(&archive), ["a.txt", "new.txt"]);
-}
-
-#[test]
-fn an_upsert_or_tombstone_after_an_intent_clears_it_one_before_does_not() {
-    let fixture = Fixture::new();
-    let mut store = fixture.open();
-    committed(
-        &mut store,
-        [
-            ArchiveCommit::Intent(path("a.txt")),
-            ArchiveCommit::Intent(path("b.txt")),
-            ArchiveCommit::Intent(path("c.txt")),
-        ],
-    );
-    committed(&mut store, [entry(), ArchiveCommit::Delete(path("b.txt"))]);
-    store.flush().unwrap();
-
-    assert_eq!(marked(store.archive()), ["c.txt"]);
-    assert_eq!(marked(&fixture.reloaded()), ["c.txt"]);
-}
-
-#[test]
-fn a_withdrawal_clears_it_and_leaves_the_entry_across_a_reopen_and_a_compaction() {
-    let fixture = Fixture::new();
-    let mut store = fixture.open();
-    committed(
-        &mut store,
-        [
-            entry(),
-            ArchiveCommit::Intent(path("a.txt")),
-            ArchiveCommit::Intent(path("new.txt")),
-        ],
-    );
-    committed(
-        &mut store,
-        [
-            ArchiveCommit::Withdraw(path("a.txt")),
-            ArchiveCommit::Withdraw(path("new.txt")),
-        ],
-    );
-    store.flush().unwrap();
-
-    assert!(marked(store.archive()).is_empty());
-    let archive = fixture.reloaded();
-    assert!(marked(&archive).is_empty());
-    assert_eq!(archive.get(&path("a.txt")), Some(&file(10, 1)));
-    assert_eq!(archive.get(&path("new.txt")), None);
-
-    store.compact().unwrap();
-    // The header and the one live entry: nothing of the marks is left.
-    assert_eq!(fixture.lines().len(), 2);
-}
-
-#[test]
-fn compaction_carries_an_open_intent_forward_after_the_entry_it_qualifies() {
-    let fixture = Fixture::new();
-    let mut store = fixture.open();
-    committed(
-        &mut store,
-        [entry(), entry(), ArchiveCommit::Intent(path("a.txt"))],
-    );
-
-    store.compact().unwrap();
-
-    // The header, the one live entry, the one open intent.
-    assert_eq!(fixture.lines().len(), 3);
-    let archive = fixture.reloaded();
-    assert_eq!(archive.get(&path("a.txt")), Some(&file(10, 1)));
-    assert_eq!(marked(&archive), ["a.txt"]);
-}
-
-#[test]
-fn a_log_already_one_line_per_entry_and_intent_is_not_rewritten() {
-    let fixture = Fixture::new();
-    let mut store = fixture.open();
-    committed(&mut store, [entry(), ArchiveCommit::Intent(path("a.txt"))]);
+    committed(&mut store, [entry(), at("b.txt")]);
     drop(store);
     let before = fs::read_to_string(fixture.log()).unwrap();
     let mtime = fs::metadata(fixture.log()).unwrap().modified().unwrap();

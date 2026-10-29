@@ -392,8 +392,6 @@ mod tests {
                     file: file(2),
                 },
                 ArchiveCommit::Delete(path("x")),
-                ArchiveCommit::Intent(path("i")),
-                ArchiveCommit::Withdraw(path("w")),
             ]),
             Request::Compact,
         ] {
@@ -408,8 +406,6 @@ mod tests {
                 ScanEntry::new(path("c"), Status::Created(file(1))),
                 ScanEntry::new(path("m"), Status::Modified(file(2))),
                 ScanEntry::new(path("d"), Status::Deleted),
-                ScanEntry::new(path("t"), Status::Untrusted(file(3))),
-                ScanEntry::new(path("ta"), Status::UntrustedAbsent),
             ],
             skipped: vec![
                 SkippedPath::new(path("l"), SkippedReason::Symlink, "broken link"),
@@ -422,7 +418,6 @@ mod tests {
                 modified: 1,
                 created: 1,
                 deleted: 1,
-                untrusted: 2,
             },
         };
         for reply in [

@@ -13,7 +13,7 @@
 //!    of becoming the straggler every other worker waits on.
 //! 3. **Conclude** in the domain: [`Archive::fast_path`] and
 //!    [`Archive::hashed_status`] per file, [`ScanResult::assemble`] for the
-//!    deletions, untrusted-absent paths and case-fold collisions.
+//!    deletions and case-fold collisions.
 //!
 //! Everything reported comes back in walk order, however the pool's work
 //! fell.
@@ -26,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dsync_domain::{
     Archive, CaseFolding, ContentHash, FileMeta, FileState, Jobs, OnDisk, RelPath, RelPathError,
-    RuleSet, ScanEntry, ScanResult, SkippedPath, SkippedReason, Status, WalkedTree,
+    RuleSet, STAGING_DIR, ScanEntry, ScanResult, SkippedPath, SkippedReason, Status, WalkedTree,
     is_temp_file_name,
 };
 use ring::digest;
@@ -321,6 +321,10 @@ impl Walk<'_> {
             // A scratch file a crashed write left behind (SPEC §7.2):
             // reporting it would propagate dsync's own half-written data.
             if is_temp_file_name(text) {
+                continue;
+            }
+            // Where this replica's writes stage their temps (SPEC §7.2).
+            if parent.is_none() && text == STAGING_DIR {
                 continue;
             }
             let source = dir.join(&name);

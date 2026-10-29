@@ -68,8 +68,8 @@ pub struct RunStop {
 /// How a run was stopped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stopped {
-    /// Nothing further started; what was in flight finished and committed,
-    /// and unstarted marks were withdrawn. The run unlocked and closed.
+    /// Nothing further started; what was in flight finished and committed.
+    /// The run unlocked and closed.
     Gracefully,
     /// A second stop: whatever was in flight was dropped with both
     /// replicas, no unlock and no orderly close. A local replica's lock and

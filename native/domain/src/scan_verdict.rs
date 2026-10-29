@@ -1,4 +1,4 @@
-//! What a scan concludes from what its walk found (SPEC §5.2, §7.6, §16):
+//! What a scan concludes from what its walk found (SPEC §5.2, §16):
 //! the verdicts the core's scanner asks for, so none of them needs a disk
 //! to test.
 
@@ -16,9 +16,6 @@ impl Archive {
     /// SPEC §5.2 step 1: size and mtime (µs) equal to the entry's mean
     /// unchanged, and nothing is hashed; `None` means hash it. Keyed on
     /// size and mtime alone, so a mode-only change stays unchanged (§7.4).
-    /// Holds for a marked path too (§7.6): a plan only writes over a file
-    /// that matched its entry, so one that still does is a write that never
-    /// started.
     pub fn fast_path(&self, path: &RelPath, meta: FileMeta) -> Option<Status> {
         let archived = self.get(path)?;
         (archived.meta.size == meta.size && archived.meta.mtime_us == meta.mtime_us).then_some(
@@ -34,15 +31,13 @@ impl Archive {
 
     /// SPEC §5.2 steps 2-3 for a file the fast path did not settle: the
     /// same hash is unchanged (its entry refreshed with the new metadata);
-    /// otherwise a marked path is untrusted, since nothing on disk tells a
-    /// torn write from a user's edit, and the rest are modified or created.
+    /// the rest are modified or created.
     pub fn hashed_status(&self, path: &RelPath, file: FileState) -> Status {
         match self.get(path) {
             Some(archived) if archived.hash == file.hash => Status::Unchanged {
                 file,
                 by: Unchanged::HashMatched,
             },
-            _ if self.is_untrusted(path) => Status::Untrusted(file),
             Some(_) => Status::Modified(file),
             None => Status::Created(file),
         }
@@ -63,10 +58,7 @@ pub struct WalkedTree {
 
 impl ScanResult {
     /// The whole scan: `walked`'s entries, then every archived path the
-    /// walk did not see as deleted, then every marked path with neither a
-    /// file nor an entry as untrusted-absent (a marked path with an entry
-    /// and no file is an ordinary deletion: a write in place truncates, it
-    /// never removes).
+    /// walk did not see as deleted.
     ///
     /// An unseen path is not missing when a rule ignores it (SPEC §9:
     /// neither scanned nor deleted) or a skipped path covers it (the walk
@@ -98,15 +90,8 @@ impl ScanResult {
             .filter(missing)
             .cloned()
             .collect();
-        let absent_untrusted: Vec<RelPath> = archive
-            .untrusted()
-            .filter(|path| archive.get(path).is_none())
-            .filter(missing)
-            .cloned()
-            .collect();
 
-        let archived: Vec<RelPath> = deleted.iter().chain(&absent_untrusted).cloned().collect();
-        let collisions = folding.collisions(&seen, &archived);
+        let collisions = folding.collisions(&seen, &deleted);
         let collided: HashSet<RelPath> = collisions
             .iter()
             .filter_map(|s| s.path().cloned())
@@ -119,12 +104,6 @@ impl ScanResult {
                 .into_iter()
                 .filter(|p| kept(p))
                 .map(|p| ScanEntry::new(p, Status::Deleted)),
-        );
-        entries.extend(
-            absent_untrusted
-                .into_iter()
-                .filter(|p| kept(p))
-                .map(|p| ScanEntry::new(p, Status::UntrustedAbsent)),
         );
         skipped.extend(collisions);
         ScanResult { entries, skipped }
@@ -161,16 +140,11 @@ mod tests {
         }
     }
 
-    fn archive(entries: &[(&str, FileState)], marked: &[&str]) -> Archive {
-        Archive::replay(
-            entries
-                .iter()
-                .map(|(p, file)| ArchiveCommit::Upsert {
-                    path: path(p),
-                    file: *file,
-                })
-                .chain(marked.iter().map(|p| ArchiveCommit::Intent(path(p)))),
-        )
+    fn archive(entries: &[(&str, FileState)]) -> Archive {
+        Archive::replay(entries.iter().map(|(p, file)| ArchiveCommit::Upsert {
+            path: path(p),
+            file: *file,
+        }))
     }
 
     fn statuses(result: &ScanResult) -> Vec<(&str, Status)> {
@@ -183,7 +157,7 @@ mod tests {
 
     #[test]
     fn equal_size_and_mtime_is_unchanged_with_the_archived_hash() {
-        let archive = archive(&[("a", state(5, 100, 1))], &[]);
+        let archive = archive(&[("a", state(5, 100, 1))]);
         let on_disk = FileMeta {
             mode: 0o600,
             ..meta(5, 100)
@@ -198,24 +172,15 @@ mod tests {
 
     #[test]
     fn one_microsecond_of_drift_or_no_entry_means_hash() {
-        let archive = archive(&[("a", state(5, 100, 1))], &["a"]);
+        let archive = archive(&[("a", state(5, 100, 1))]);
         assert_eq!(archive.fast_path(&path("a"), meta(5, 101)), None);
         assert_eq!(archive.fast_path(&path("a"), meta(6, 100)), None);
         assert_eq!(archive.fast_path(&path("b"), meta(5, 100)), None);
-        // Marked, and still matching: scanned as though unmarked.
-        assert!(archive.fast_path(&path("a"), meta(5, 100)).is_some());
     }
 
     #[test]
     fn a_hash_decides_the_other_branches() {
-        let archive = archive(
-            &[
-                ("same", state(1, 1, 1)),
-                ("edited", state(1, 1, 1)),
-                ("torn", state(1, 1, 1)),
-            ],
-            &["torn", "fresh-mark"],
-        );
+        let archive = archive(&[("same", state(1, 1, 1)), ("edited", state(1, 1, 1))]);
         let now = |byte| state(2, 2, byte);
         assert_eq!(
             archive.hashed_status(&path("same"), now(1)),
@@ -232,22 +197,11 @@ mod tests {
             archive.hashed_status(&path("new"), now(2)),
             Status::Created(now(2))
         );
-        assert_eq!(
-            archive.hashed_status(&path("torn"), now(2)),
-            Status::Untrusted(now(2))
-        );
-        assert_eq!(
-            archive.hashed_status(&path("fresh-mark"), now(2)),
-            Status::Untrusted(now(2))
-        );
     }
 
     #[test]
-    fn unseen_archived_paths_are_deleted_and_marks_without_entries_absent() {
-        let archive = archive(
-            &[("seen", state(1, 1, 1)), ("gone", state(1, 1, 1))],
-            &["gone", "never"],
-        );
+    fn unseen_archived_paths_are_deleted() {
+        let archive = archive(&[("seen", state(1, 1, 1)), ("gone", state(1, 1, 1))]);
         let walked = WalkedTree {
             seen: vec![path("seen")],
             present: vec![ScanEntry::new(
@@ -263,21 +217,17 @@ mod tests {
             [
                 ("seen", Status::Created(state(1, 1, 1))),
                 ("gone", Status::Deleted),
-                ("never", Status::UntrustedAbsent),
             ]
         );
     }
 
     #[test]
     fn ignored_and_covered_paths_are_not_deleted() {
-        let archive = archive(
-            &[
-                (".git/config", state(1, 1, 1)),
-                ("locked/inner", state(1, 1, 1)),
-                ("outside", state(1, 1, 1)),
-            ],
-            &["locked/marked"],
-        );
+        let archive = archive(&[
+            (".git/config", state(1, 1, 1)),
+            ("locked/inner", state(1, 1, 1)),
+            ("outside", state(1, 1, 1)),
+        ]);
         let rules = RuleSet::new(vec![Glob::new("**/.git").unwrap()], vec![]);
         let walked = WalkedTree {
             skipped: vec![SkippedPath::new(
@@ -294,10 +244,7 @@ mod tests {
 
     #[test]
     fn collisions_take_live_and_missing_paths_out() {
-        let archive = archive(
-            &[("NOTES.txt", state(1, 1, 1)), ("other", state(1, 1, 1))],
-            &[],
-        );
+        let archive = archive(&[("NOTES.txt", state(1, 1, 1)), ("other", state(1, 1, 1))]);
         let live = |p: &str| ScanEntry::new(path(p), Status::Created(state(1, 1, 1)));
         let walked = WalkedTree {
             seen: vec![path("notes.txt"), path("Notes.txt"), path("keep")],

@@ -112,15 +112,13 @@ async fn a_destination_edited_after_the_scan_is_not_overwritten_and_its_mark_is_
             b"b's edit, made during review"
         );
         assert_eq!(site.get(Side::A, "f").unwrap(), b"two from a");
-        // Nothing recorded, and no mark left to make the edit look torn.
+        // Nothing recorded.
         assert_eq!(site.archive(Side::B).get(&path("f")).copied(), recorded);
-        assert!(!site.archive(Side::B).is_untrusted(&path("f")), "{reach:?}");
 
-        // The next run sees both edits: a conflict, not an interrupted one.
+        // The next run sees both edits: a conflict.
         let next = proposed_plan(&site).await;
         assert_eq!(next.conflicts.len(), 1, "{reach:?}: {next:?}");
         assert_eq!(next.conflicts[0].path, path("f"));
-        assert!(!next.conflicts[0].interrupted());
     }
 }
 
@@ -141,11 +139,9 @@ async fn a_destination_created_after_the_scan_is_not_overwritten() {
         assert_eq!(site.get(Side::B, "new").unwrap(), b"made on b meanwhile");
         assert!(site.archive(Side::B).get(&path("new")).is_none());
         assert!(site.archive(Side::A).get(&path("new")).is_none());
-        assert!(!site.archive(Side::B).is_untrusted(&path("new")));
 
         let next = proposed_plan(&site).await;
         assert_eq!(next.conflicts.len(), 1, "{reach:?}: {next:?}");
-        assert!(!next.conflicts[0].interrupted());
     }
 }
 
@@ -199,16 +195,14 @@ async fn a_source_edited_between_scan_and_read_lands_unrecorded_and_the_next_run
         let finished = sync_probing(&site, Side::A, reach, on(Call::Read("f".into()), edit)).await;
 
         assert!(changed_on(Side::A)(failure_of(&finished, "f")), "{reach:?}");
-        // The destination keeps the bytes, under its mark; neither
-        // archive records them.
+        // The destination keeps the bytes; neither archive records them.
         assert_eq!(site.get(Side::B, "f").unwrap(), b"v3");
-        assert!(site.archive(Side::B).is_untrusted(&path("f")), "{reach:?}");
         assert_eq!(
             [Side::A, Side::B].map(|side| site.archive(side).get(&path("f")).copied()),
             recorded
         );
 
-        // The next run finds the marked file holding A's content, and
+        // The next run finds both sides holding the same content, and
         // commits it: converged, with v3 on both sides.
         let next = sync(&site).await;
         assert_eq!(next.exit_code(), 0, "{reach:?}");

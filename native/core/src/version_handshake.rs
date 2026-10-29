@@ -14,23 +14,17 @@ use crate::link_error::LinkError;
 /// repurposed, an operation replaced; the minor on one an older peer can
 /// ignore or never be asked for.
 ///
-/// 1.1 adds the `Cancel` frame: a reader that drops a read body tells its
-/// sender to stop.
-pub const PROTOCOL_VERSION: FormatVersion = FormatVersion::new(1, 1);
-
-/// Whether a session at `agreed` may send `Cancel` (from 1.1): a 1.0 far
-/// end does not know the frame, so its read bodies are drained instead.
-pub(crate) fn cancels_reads(agreed: FormatVersion) -> bool {
-    agreed.minor() >= 1
-}
+/// 2.0 drops the write-in-place marks (the `Intent` and `Withdraw`
+/// commits, the untrusted statuses and their tally, the `open` write
+/// stage). Every 2.x session has the `Cancel` frame 1.1 added.
+pub const PROTOCOL_VERSION: FormatVersion = FormatVersion::new(2, 0);
 
 /// Opens every version frame, so a stream that happens to start with the
 /// version kind byte is still not mistaken for the protocol.
 const MAGIC: &[u8; 8] = b"dsync-rp";
 
 /// Sends this side's version and checks the far side's, answering the
-/// version the session speaks: the lower minor of the shared major. Only
-/// [`cancels_reads`] depends on the minor.
+/// version the session speaks: the lower minor of the shared major.
 ///
 /// Undecodable first bytes are not a protocol bug but a far side that is
 /// not speaking the protocol yet - in practice a remote shell printing a
@@ -176,16 +170,16 @@ mod tests {
     }
 
     const V1_0: FormatVersion = FormatVersion::new(1, 0);
-    const V1_1: FormatVersion = FormatVersion::new(1, 1);
     const V1_3: FormatVersion = FormatVersion::new(1, 3);
     const V2_0: FormatVersion = FormatVersion::new(2, 0);
+    const V2_3: FormatVersion = FormatVersion::new(2, 3);
 
     #[tokio::test]
     async fn succeeds_when_both_ends_speak_the_same_version() {
         let (near, far) = shake(PROTOCOL_VERSION, PROTOCOL_VERSION).await;
         assert_eq!(near.unwrap(), PROTOCOL_VERSION);
         assert_eq!(far.unwrap(), PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, V1_1);
+        assert_eq!(PROTOCOL_VERSION, V2_0);
     }
 
     #[tokio::test]
@@ -197,7 +191,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_later_minor_may_append_to_the_version_frame() {
-        let mut frame = version_frame(V1_3);
+        let mut frame = version_frame(V2_3);
         frame.payload.extend_from_slice(b"more");
         let (near, mut far) = duplex(1024);
         frame.write_to(&mut far).await.unwrap();
@@ -206,14 +200,7 @@ mod tests {
             tokio::time::timeout(DEADLINE, handshake(&mut BufReader::new(read), &mut write))
                 .await
                 .unwrap();
-        assert_eq!(agreed.unwrap(), V1_1);
-    }
-
-    #[test]
-    fn only_a_session_at_1_1_or_later_cancels_reads() {
-        assert!(!cancels_reads(V1_0));
-        assert!(cancels_reads(V1_1));
-        assert!(cancels_reads(V1_3));
+        assert_eq!(agreed.unwrap(), V2_0);
     }
 
     #[tokio::test]

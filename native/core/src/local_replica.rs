@@ -225,6 +225,9 @@ impl Replica for LocalReplica {
                 last_commit: store.last_commit()?,
                 archived_files: store.archive().len() as u64,
             };
+            // A crashed run's temps (SPEC §7.2): under the lock, nothing
+            // else of this replica's is writing.
+            shared.destination.clear_staging();
             *session = Session::Locked { store, lock };
             Ok(facts)
         })
@@ -237,6 +240,7 @@ impl Replica for LocalReplica {
             // this replica is this session's is given up (SPEC §8.2).
             match std::mem::replace(&mut *shared.session(), Session::Unlocked) {
                 Session::Locked { mut store, lock } => {
+                    shared.destination.clear_staging();
                     let flushed = store.flush();
                     // The archive goes before the lock it was read under.
                     drop(store);

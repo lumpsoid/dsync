@@ -1,10 +1,8 @@
 //! The apply (SPEC §7): three stages over the approved actions, each bound
 //! by what constrains it (SPEC §7.1).
 //!
-//! 1. **The pump** walks the actions in folder-spread order (§7.2), marks
-//!    each window of copies on the side they write onto before any of them
-//!    is read or written (§7.6), and admits each action under the
-//!    read-ahead's bounds: [`Tuning::read_ahead_streams`] actions under way
+//! 1. **The pump** walks the actions in folder-spread order (§7.2) and
+//!    admits each action under the read-ahead's bounds: [`Tuning::read_ahead_streams`] actions under way
 //!    at once, and for a copy a reservation of up to one chunk of
 //!    [`Tuning::read_ahead_budget_bytes`].
 //! 2. **The workers**: an admitted copy starts its source read at once,
@@ -19,7 +17,7 @@
 //!    flight, committed on both sides at once, and reports each action
 //!    once its batch has landed. A batch that fails fails every action in
 //!    it: the commit is not atomic, so some of it may have landed, and the
-//!    marks those actions keep make the next run read them as untrusted.
+//!    next run's scan settles which (SPEC §7.3).
 //!
 //! A slow consumer of the run's events parks the pipeline, which parks the
 //! workers, which parks the pump: the run stays within `read_ahead_streams`
@@ -28,20 +26,19 @@
 //! **Stopping.** Once the stop token is cancelled nothing further starts:
 //! the pump admits nothing, and an admitted action that has no worker slot
 //! yet is dropped with its read. Actions already writing finish and are
-//! committed. Marks on copies that never started are withdrawn at the end
-//! (best effort). A failure that ends the run ([`ReplicaError::ends_run`])
+//! committed. A failure that ends the run ([`ReplicaError::ends_run`])
 //! stops the apply the same way.
 //!
 //! Every stage runs on the caller's task (joined futures, not spawned
 //! tasks): what does the work is the replicas' own threads and
 //! connections, and a hard stop is dropping this future.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use dsync_domain::{
-    Action, ArchiveCommit, FileState, OwedCommits, Precondition, RelPath, ReplicaOp, ScanEntry,
-    Side, Status, Tuning, spread_across_folders,
+    Action, FileState, OwedCommits, Precondition, RelPath, ReplicaOp, ScanEntry, Side, Status,
+    Tuning, spread_across_folders,
 };
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
@@ -70,11 +67,10 @@ pub(crate) struct Applier<'r, A, B> {
     stop: CancellationToken,
 }
 
-/// One admitted action, handed from the pump to a worker with its window's
-/// mark verdict and the read-ahead room it holds until it is done.
+/// One admitted action, handed from the pump to a worker with the
+/// read-ahead room it holds until it is done.
 struct Ready<'s> {
     action: Action,
-    marked: Result<(), ActionFailure>,
     _admitted: SemaphorePermit<'s>,
     _reserved: Option<SemaphorePermit<'s>>,
 }
@@ -111,15 +107,6 @@ struct Owed {
     outcome: Result<OwedCommits, ActionFailure>,
 }
 
-/// Copies marked on the side and path they write, and the written path of
-/// every copy a worker started and did not find changed on its
-/// destination: the marks to withdraw are the difference.
-#[derive(Default)]
-struct Marks {
-    marked: Vec<(Side, RelPath)>,
-    started: HashSet<RelPath>,
-}
-
 impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
     /// `a` and `b` are the two status lists the plan was reconciled from:
     /// what a copy's source and a commit-only's records are read from.
@@ -152,20 +139,12 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let workers = Semaphore::new(self.tuning.apply_in_flight.max(1));
         let (ready, readied) = mpsc::channel(1);
         let (owed, owing) = mpsc::channel(self.tuning.commit_batch.max(1));
-        let marks = Mutex::new(Marks::default());
         let emptied = Mutex::new(Vec::new());
         let ((), (), applied) = tokio::join!(
-            self.pump(
-                spread_across_folders(actions),
-                &admitted,
-                &budget,
-                ready,
-                &marks
-            ),
-            self.dispatch(readied, &workers, owed, &marks, &emptied),
+            self.pump(spread_across_folders(actions), &admitted, &budget, ready),
+            self.dispatch(readied, &workers, owed, &emptied),
             self.commit_pipeline(owing, total),
         );
-        self.withdraw_unstarted(into_inner(marks)).await;
         self.prune(into_inner(emptied)).await;
         applied
     }
@@ -176,37 +155,18 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         admitted: &'s Semaphore,
         budget: &'s Semaphore,
         ready: mpsc::Sender<Ready<'s>>,
-        marks: &Mutex<Marks>,
     ) {
-        let window = self.tuning.mark_window.max(1);
-        let mut marked = Ok(());
-        for (index, action) in actions.iter().enumerate() {
+        for action in actions {
             if self.stop.is_cancelled() {
                 return;
-            }
-            // The next window is marked only when the pump reaches it, so
-            // a run that dies leaves marks on at most one window of copies
-            // it had not started.
-            if index % window == 0 {
-                let window = &actions[index..actions.len().min(index + window)];
-                marked = self.mark(window).await;
-                if marked.is_ok() {
-                    lock(marks)
-                        .marked
-                        .extend(window.iter().filter_map(|action| {
-                            action
-                                .written()
-                                .map(|(side, written)| (side, written.clone()))
-                        }));
-                }
             }
             let Some(admission) = self.until_stopped(admitted.acquire()).await else {
                 return;
             };
             let reserved = match action {
-                Action::Copy { bytes, .. } | Action::CopyAside { bytes, .. } if marked.is_ok() => {
+                Action::Copy { bytes, .. } | Action::CopyAside { bytes, .. } => {
                     let Some(reserved) = self
-                        .until_stopped(budget.acquire_many(self.reservation(*bytes)))
+                        .until_stopped(budget.acquire_many(self.reservation(bytes)))
                         .await
                     else {
                         return;
@@ -216,11 +176,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 _ => None,
             };
             let item = Ready {
-                action: action.clone(),
-                marked: match action.written() {
-                    Some(_) => marked.clone(),
-                    None => Ok(()),
-                },
+                action,
                 _admitted: admission,
                 _reserved: reserved,
             };
@@ -241,32 +197,11 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         u32::try_from(bytes.min(cap as u64)).unwrap_or(u32::MAX)
     }
 
-    /// Marks every copy in `window` on the side it writes onto, durably,
-    /// before any of them is read or written (SPEC §7.6); both sides at
-    /// once.
-    async fn mark(&self, window: &[Action]) -> Result<(), ActionFailure> {
-        let intents = |side| {
-            window
-                .iter()
-                .filter_map(Action::written)
-                .filter(|(on, _)| *on == side)
-                .map(|(_, written)| ArchiveCommit::Intent(written.clone()))
-                .collect()
-        };
-        let (a, b) = tokio::join!(
-            self.pair.commit(Side::A, intents(Side::A)),
-            self.pair.commit(Side::B, intents(Side::B)),
-        );
-        a.map_err(ActionFailure::replica(Side::A, ReplicaOp::Commit))?;
-        b.map_err(ActionFailure::replica(Side::B, ReplicaOp::Commit))
-    }
-
     async fn dispatch<'s>(
         &self,
         mut readied: mpsc::Receiver<Ready<'s>>,
         workers: &Semaphore,
         owed: mpsc::Sender<Owed>,
-        marks: &Mutex<Marks>,
         emptied: &Mutex<Vec<(Side, RelPath)>>,
     ) {
         let mut running = FuturesUnordered::new();
@@ -274,7 +209,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         loop {
             tokio::select! {
                 next = readied.recv(), if pumping => match next {
-                    Some(item) => running.push(self.work(item, workers, &owed, marks, emptied)),
+                    Some(item) => running.push(self.work(item, workers, &owed, emptied)),
                     None => pumping = false,
                 },
                 Some(()) = running.next(), if !running.is_empty() => {}
@@ -290,43 +225,23 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         item: Ready<'_>,
         workers: &Semaphore,
         owed: &mpsc::Sender<Owed>,
-        marks: &Mutex<Marks>,
         emptied: &Mutex<Vec<(Side, RelPath)>>,
     ) {
         let Ready {
             action,
-            marked,
             _admitted,
             _reserved,
         } = item;
-        let preparing = async {
-            match marked {
-                Ok(()) => self.prepare(&action).await,
-                Err(failure) => Prepared::Failed(failure),
-            }
-        };
         // The read opens while the action queues for a worker, and the
         // queue is joined as soon as the pump hands the action over: the
         // workers take actions in the spread order (SPEC §7.1), not in the
         // order their reads happened to open.
-        let (prepared, worker) = tokio::join!(preparing, self.until_stopped(workers.acquire()));
+        let (prepared, worker) =
+            tokio::join!(self.prepare(&action), self.until_stopped(workers.acquire()));
         let Some(_worker) = worker else {
             return;
         };
-        // Keyed on the path written, which is the one marked: a copy
-        // aside's destination, not its source.
-        if let Some((_, written)) = action.written() {
-            lock(marks).started.insert(written.clone());
-        }
         let outcome = self.perform(prepared, emptied).await;
-        if let Err(failure) = &outcome
-            && let Some((side, written)) = action.written()
-            && failure.changed_on(side)
-        {
-            // The write touched nothing: its mark is withdrawn like an
-            // unstarted copy's (SPEC §7.6).
-            lock(marks).started.remove(written);
-        }
         let _ = owed.send(Owed { action, outcome }).await;
     }
 
@@ -503,24 +418,6 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         );
         a.map_err(ActionFailure::replica(Side::A, ReplicaOp::Commit))?;
         b.map_err(ActionFailure::replica(Side::B, ReplicaOp::Commit))
-    }
-
-    /// Withdraws the marks of copies that were marked and never started
-    /// (SPEC §7.6): a stopped run's. Best effort - a withdrawal that fails
-    /// leaves the marks where they would have been without it.
-    async fn withdraw_unstarted(&self, marks: Marks) {
-        let Marks { marked, started } = marks;
-        let withdraw = |side| {
-            marked
-                .iter()
-                .filter(|(on, path)| *on == side && !started.contains(path))
-                .map(|(_, path)| ArchiveCommit::Withdraw(path.clone()))
-                .collect()
-        };
-        let _ = tokio::join!(
-            self.pair.commit(Side::A, withdraw(Side::A)),
-            self.pair.commit(Side::B, withdraw(Side::B)),
-        );
     }
 
     /// Removes the folders this run's deletes emptied (SPEC §7.5), once

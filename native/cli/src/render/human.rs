@@ -260,8 +260,7 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
             let _ = writeln!(
                 self.out,
                 "! The last run of this profile did not finish. This run picks up after it:\n  \
-                 files it never reached sync as usual, and a file it stopped mid-write\n  comes \
-                 back as a conflict marked interrupted."
+                 files it never reached, or stopped mid-write, sync as usual."
             );
         }
     }
@@ -343,14 +342,9 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
     }
 
     fn conflict(&mut self, conflict: &Conflict) {
-        let interrupted = if conflict.interrupted() {
-            "  interrupted, may be incomplete"
-        } else {
-            ""
-        };
         let _ = writeln!(
             self.out,
-            "conflict  {}  (A: {}, B: {}){interrupted}",
+            "conflict  {}  (A: {}, B: {})",
             conflict.path,
             self.describe(conflict.a.as_ref()),
             self.describe(conflict.b.as_ref())

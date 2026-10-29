@@ -42,13 +42,10 @@ fn a_fifo_and_a_socket_are_reported_with_their_kind_not_scanned() {
 fn an_archived_file_replaced_by_a_fifo_is_not_deleted() {
     let tree = Tree::new();
     mkfifo(&tree.at("was-a-file"));
-    let archive = archive_of(
-        &[
-            ("was-a-file", archived(1, 1, hash_of("x"))),
-            ("gone.txt", archived(1, 1, hash_of("x"))),
-        ],
-        &[],
-    );
+    let archive = archive_of(&[
+        ("was-a-file", archived(1, 1, hash_of("x"))),
+        ("gone.txt", archived(1, 1, hash_of("x"))),
+    ]);
 
     let result = tree.scan(&archive, &RuleSet::default());
 

@@ -27,14 +27,6 @@ impl Conflict {
         }
     }
 
-    /// Whether a side holds what a write in place never committed (SPEC
-    /// §7.6): it may be incomplete, and every head says so.
-    pub fn interrupted(&self) -> bool {
-        Side::BOTH
-            .iter()
-            .any(|&side| self.on(side).is_some_and(Status::is_untrusted))
-    }
-
     /// The ways this conflict can be settled: a side with no record of
     /// the path cannot be the one kept (there is nothing there to keep),
     /// and keeping both needs a file on both sides - otherwise there is
@@ -161,7 +153,7 @@ mod tests {
             (Status::Modified(file(3)), Status::Modified(file(5))),
             (Status::Created(file(3)), Status::Created(file(5))),
             (unchanged(3), unchanged(5)),
-            (Status::Untrusted(file(3)), Status::Created(file(5))),
+            (Status::Modified(file(3)), Status::Created(file(5))),
         ] {
             let both = conflict(Some(a), Some(b));
             assert_eq!(
@@ -179,14 +171,10 @@ mod tests {
     #[test]
     fn keeping_both_is_refused_unless_both_sides_hold_a_file() {
         for (a, b) in [
-            (Some(Status::Untrusted(file(4))), None),
+            (Some(Status::Modified(file(4))), None),
             (None, Some(Status::Created(file(4)))),
             (Some(Status::Modified(file(4))), Some(Status::Deleted)),
             (Some(Status::Deleted), Some(Status::Modified(file(4)))),
-            (
-                Some(Status::UntrustedAbsent),
-                Some(Status::Created(file(4))),
-            ),
         ] {
             assert_eq!(conflict(a, b).keep_both(aside()), None);
         }
@@ -199,11 +187,9 @@ mod tests {
         vec![
             None,
             Some(Status::Deleted),
-            Some(Status::UntrustedAbsent),
             Some(unchanged(1)),
             Some(Status::Created(file(1))),
             Some(Status::Modified(file(1))),
-            Some(Status::Untrusted(file(1))),
         ]
     }
 
@@ -280,7 +266,7 @@ mod tests {
                 on: Side::B
             }
         );
-        let silent = conflict(Some(Status::Untrusted(file(4))), None);
+        let silent = conflict(Some(Status::Modified(file(4))), None);
         assert_eq!(
             silent.resolve(Side::B),
             Action::Delete {

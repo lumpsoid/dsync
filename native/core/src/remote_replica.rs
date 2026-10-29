@@ -37,7 +37,7 @@ use crate::ssh_transport::{SshChild, SshLaunch};
 use crate::transport::{
     Liveness, Outbox, OutboxClosed, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
-use crate::version_handshake::{cancels_reads, handshake};
+use crate::version_handshake::handshake;
 use crate::wire::{self, Answer, Reply, Request, WireIo};
 
 /// How long [`RemoteReplica::close`] waits for the far side to end its
@@ -58,8 +58,6 @@ pub struct RemoteReplica {
 /// bodies being sent, and the exchanges waiting on the reader.
 struct Link {
     outbox: Outbox,
-    /// What a read body its consumer drops does, by the version agreed.
-    dropped_read: Dropped,
     credits: Arc<Credits>,
     routes: Mutex<Routes>,
 }
@@ -112,7 +110,7 @@ impl RemoteReplica {
         let silence = liveness.map(|liveness| liveness.silence_limit);
         let mut reader =
             BufReader::with_capacity(READ_BUFFER_BYTES, SilenceLimit::new(reader, silence));
-        let agreed = handshake(&mut reader, &mut writer)
+        handshake(&mut reader, &mut writer)
             .await
             .map_err(|error| silent_if_timed_out(error, liveness))?;
         let (outbox, written) = start_writer(
@@ -122,11 +120,6 @@ impl RemoteReplica {
         );
         let link = Arc::new(Link {
             outbox,
-            dropped_read: if cancels_reads(agreed) {
-                Dropped::Cancel
-            } else {
-                Dropped::Release
-            },
             credits: Credits::new(),
             routes: Mutex::new(Routes {
                 next_id: 1,
@@ -490,11 +483,11 @@ impl Replica for RemoteReplica {
     async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
         // Held by the body's route until the body is over, so a read costs
         // its place in the window for as long as its bytes are arriving -
-        // and, dropped at 1.1, until the far end has stopped sending them.
+        // and, dropped, until the far end has stopped sending them.
         let slot = self.window.enter([path.clone()]).await;
         let (id, answer, reading) = self.link.open(|id, reply| {
             let (inbound, body) =
-                Inbound::open(self.link.outbox.clone(), id, slot, self.link.dropped_read);
+                Inbound::open(self.link.outbox.clone(), id, slot, Dropped::Cancel);
             let (settle, settled) = Settled::channel();
             let route = Route::Read {
                 reply: Some(reply),
@@ -917,11 +910,11 @@ mod tests {
         Quiet,
     }
 
-    /// Against a far side at `version`: a read of `f` whose consumer drops
+    /// A read of `f` whose consumer drops
     /// its body after one chunk, then a second read of `f`. What the far
     /// side sees from the drop until the second read's request.
-    async fn a_dropped_read_then_another(version: FormatVersion) -> Vec<Saw> {
-        let (client, mut peer) = connected_as(version, None).await;
+    async fn a_dropped_read_then_another() -> Vec<Saw> {
+        let (client, mut peer) = connected(None).await;
         let f = RelPath::parse("f").unwrap();
         let far_side = async {
             let request = peer.next_request().await;
@@ -973,22 +966,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_dropped_read_at_1_1_cancels_and_holds_its_path_until_the_far_side_ends_it() {
+    async fn a_dropped_read_cancels_and_holds_its_path_until_the_far_side_ends_it() {
         assert_eq!(
-            a_dropped_read_then_another(PROTOCOL_VERSION).await,
+            a_dropped_read_then_another().await,
             [
                 Saw::Frame(Kind::Cancel),
                 Saw::Quiet,
                 Saw::Frame(Kind::Request)
             ]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_dropped_read_at_1_0_sends_no_cancel_and_frees_its_path_at_once() {
-        assert_eq!(
-            a_dropped_read_then_another(FormatVersion::new(1, 0)).await,
-            [Saw::Frame(Kind::Request)]
         );
     }
 

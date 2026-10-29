@@ -1,10 +1,10 @@
-//! `commit` and `compact`: batches through the archive store, an intent
-//! durable before the call returns, and a failed batch reported as failed.
+//! `commit` and `compact`: batches through the archive store, and a failed
+//! batch reported as failed.
 
 use std::fs;
 
 use dsync_core::{Replica, ReplicaError};
-use dsync_domain::{ArchiveCommit, Side};
+use dsync_domain::{ArchiveCommit, Side, Tuning};
 
 use crate::replica::support::{Site, path, recorded, with_deadline};
 
@@ -36,33 +36,6 @@ async fn an_upsert_and_a_tombstone_land_in_order() {
     let archive = site.archive(Side::A);
     assert_eq!(archive.get(&path("a.txt")), None);
     assert_eq!(archive.get(&path("b.txt")), Some(&recorded("b")));
-}
-
-#[tokio::test]
-async fn a_batch_holding_an_intent_is_on_disk_when_the_call_returns() {
-    let site = Site::new();
-    let replica = site.locked(Side::A).await;
-
-    with_deadline("upsert", replica.commit(vec![upsert("a.txt", "a")]))
-        .await
-        .unwrap();
-    // Positive control: an upsert alone is buffered.
-    assert_eq!(site.archive(Side::A).len(), 0);
-
-    with_deadline(
-        "intent",
-        replica.commit(vec![ArchiveCommit::Intent(path("b.txt"))]),
-    )
-    .await
-    .unwrap();
-
-    // Read off disk with the replica still open and unflushed.
-    let archive = site.archive(Side::A);
-    assert!(archive.is_untrusted(&path("b.txt")));
-    assert!(
-        archive.get(&path("a.txt")).is_some(),
-        "the batch before it too"
-    );
 }
 
 #[tokio::test]
@@ -106,12 +79,15 @@ async fn a_batch_that_cannot_be_made_durable_fails_and_earlier_batches_stand() {
     use crate::replica::support::set_mode;
 
     let site = Site::new();
-    let replica = site.locked(Side::A).await;
-    with_deadline("first batch", async {
-        replica
-            .commit(vec![ArchiveCommit::Intent(path("a.txt"))])
-            .await
-            .unwrap();
+    // Every commit is written out as it is made.
+    let tuning = Tuning {
+        archive_buffer_lines: 1,
+        ..Tuning::DEFAULT
+    };
+    let replica = site.replica_with(Side::A, tuning);
+    with_deadline("lock and first batch", async {
+        replica.lock().await.unwrap();
+        replica.commit(vec![upsert("a.txt", "a")]).await.unwrap();
     })
     .await;
     let log = site.log(Side::A);
@@ -124,10 +100,7 @@ async fn a_batch_that_cannot_be_made_durable_fails_and_earlier_batches_stand() {
 
     let failed = with_deadline(
         "failing batch",
-        replica.commit(vec![
-            upsert("a.txt", "a"),
-            ArchiveCommit::Intent(path("b.txt")),
-        ]),
+        replica.commit(vec![upsert("a.txt", "b"), upsert("b.txt", "b")]),
     )
     .await;
     set_mode(&log, 0o644);
@@ -140,7 +113,6 @@ async fn a_batch_that_cannot_be_made_durable_fails_and_earlier_batches_stand() {
     // commits are not durable, which is why the caller fails every action
     // in it.
     let on_disk = site.archive(Side::A);
-    assert!(on_disk.is_untrusted(&path("a.txt")));
-    assert!(on_disk.get(&path("a.txt")).is_none());
-    assert!(!on_disk.is_untrusted(&path("b.txt")));
+    assert_eq!(on_disk.get(&path("a.txt")), Some(&recorded("a")));
+    assert!(on_disk.get(&path("b.txt")).is_none());
 }

@@ -1646,8 +1646,7 @@ mod tests {
             hash_matched: 2,
             modified: 1,
             created: 1,
-            deleted: 0,
-            untrusted: 1,
+            deleted: 1,
         };
         let b = ScanTally {
             deleted: 3,

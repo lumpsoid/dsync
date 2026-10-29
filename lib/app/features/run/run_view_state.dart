@@ -377,17 +377,9 @@ final class SyncRunConflictSide {
 }
 
 /// One side's status for a conflicting path (SPEC §5.2), as the page draws
-/// it: an icon and a word per side. [interrupted] is a write that never
-/// committed, with or without a file left behind (SPEC §7.6); [none] is a
-/// side with no record of the path.
-enum SyncRunSideStatus {
-  unchanged,
-  created,
-  modified,
-  deleted,
-  interrupted,
-  none,
-}
+/// it: an icon and a word per side. [none] is a side with no record of the
+/// path.
+enum SyncRunSideStatus { unchanged, created, modified, deleted, none }
 
 /// Which direction one planned action moves in (Design C.5): the plan
 /// section it lands in, grouped so the page reads *where → what → how

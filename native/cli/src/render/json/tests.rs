@@ -146,7 +146,7 @@ fn scan_tally_counts_both_sides_by_branch() {
     });
     assert_eq!(
         line["a"],
-        json!({"metadataMatched": 3, "hashMatched": 2, "modified": 0, "created": 0, "deleted": 0, "untrusted": 0})
+        json!({"metadataMatched": 3, "hashMatched": 2, "modified": 0, "created": 0, "deleted": 0})
     );
     assert_eq!(line["b"]["metadataMatched"], 0);
 }
@@ -199,15 +199,14 @@ fn a_conflict_carries_each_side_status_and_reason() {
 }
 
 #[test]
-fn a_conflict_over_an_uncommitted_write_is_interrupted_and_an_absent_side_omits_its_keys() {
+fn an_absent_side_of_a_conflict_omits_its_keys() {
     let line = one(RunEvent::Conflict(conflict(
         "c",
         None,
-        Some(Status::Untrusted(fixtures::file(2))),
+        Some(Status::Modified(fixtures::file(2))),
     )));
-    assert_eq!(line["interrupted"], true);
     assert!(line.get("onA").is_none() && line.get("onAReason").is_none());
-    assert_eq!(line["onB"], "untrusted");
+    assert_eq!(line["onB"], "modified");
 }
 
 #[test]

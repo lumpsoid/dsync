@@ -162,9 +162,10 @@ async fn the_lock_is_released_when_the_connection_drops_mid_run() {
     with_deadline("lock", served.replica.lock()).await.unwrap();
     with_deadline(
         "commit",
-        served
-            .replica
-            .commit(vec![ArchiveCommit::Intent(path("f"))]),
+        served.replica.commit(vec![ArchiveCommit::Upsert {
+            path: path("f"),
+            file: recorded("x"),
+        }]),
     )
     .await
     .unwrap();
@@ -182,7 +183,7 @@ async fn the_lock_is_released_when_the_connection_drops_mid_run() {
         .unwrap();
     with_deadline("local lock", local.lock()).await.unwrap();
     // What it committed before it went is there for the next holder.
-    assert!(site.archive(Side::B).is_untrusted(&path("f")));
+    assert_eq!(site.archive(Side::B).get(&path("f")), Some(&recorded("x")));
 }
 
 #[tokio::test]
@@ -402,18 +403,7 @@ async fn commits_persist_through_the_real_archive() {
                 file: recorded("g"),
             },
             ArchiveCommit::Delete(path("gone")),
-            ArchiveCommit::Intent(path("marked")),
-            ArchiveCommit::Intent(path("withdrawn")),
         ]),
-    )
-    .await
-    .unwrap();
-    // A mark is durable when the call returns, without an unlock.
-    let archive = site.archive(Side::B);
-    assert!(archive.is_untrusted(&path("marked")));
-    with_deadline(
-        "withdraw",
-        b.commit(vec![ArchiveCommit::Withdraw(path("withdrawn"))]),
     )
     .await
     .unwrap();
@@ -423,8 +413,6 @@ async fn commits_persist_through_the_real_archive() {
     let archive = site.archive(Side::B);
     assert_eq!(archive.get(&path("u")), Some(&recorded("u")));
     assert_eq!(archive.get(&path("gone")), None);
-    assert!(archive.is_untrusted(&path("marked")));
-    assert!(!archive.is_untrusted(&path("withdrawn")));
     served.close().await;
 }
 

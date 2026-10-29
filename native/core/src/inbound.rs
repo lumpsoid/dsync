@@ -12,7 +12,7 @@
 //! credit is the far side breaking the protocol.
 //!
 //! A read body its consumer drops tells its sender to stop with a `Cancel`
-//! frame (protocol 1.1), and holds its guard - the read's window slot -
+//! frame, and holds its guard - the read's window slot -
 //! until the sender's terminating frame: the far end has the file open
 //! until then, so no write on that path may start under it. That is safe
 //! only because a sender always ends a cancelled body with a frame.
@@ -44,10 +44,10 @@ pub(crate) enum Piece {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Dropped {
     /// Releases the guard at once and lets the sender run to its end: a
-    /// served write's body, and a read from a 1.0 far end.
+    /// served write's body.
     Release,
     /// Sends `Cancel` once and holds the guard until the sender's
-    /// terminating frame: a read from a far end at 1.1 or later.
+    /// terminating frame: a read.
     Cancel,
 }
 

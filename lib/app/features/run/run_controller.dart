@@ -622,16 +622,14 @@ SyncRunSideStatus _status(FileStatus? status) => switch (status) {
   StatusCreated() => SyncRunSideStatus.created,
   StatusModified() => SyncRunSideStatus.modified,
   StatusDeleted() => SyncRunSideStatus.deleted,
-  StatusUntrusted() || StatusUntrustedAbsent() => SyncRunSideStatus.interrupted,
 };
 
 /// The file a side's status has on disk, if any.
 FileFacts? _file(FileStatus? status) => switch (status) {
   StatusUnchanged(:final file) ||
   StatusCreated(:final file) ||
-  StatusModified(:final file) ||
-  StatusUntrusted(:final file) => file,
-  null || StatusDeleted() || StatusUntrustedAbsent() => null,
+  StatusModified(:final file) => file,
+  null || StatusDeleted() => null,
 };
 
 const _months = [

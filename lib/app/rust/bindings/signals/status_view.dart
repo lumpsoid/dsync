@@ -14,8 +14,6 @@ abstract class StatusView {
       case 1: return StatusViewCreated.load(deserializer);
       case 2: return StatusViewModified.load(deserializer);
       case 3: return StatusViewDeleted.load(deserializer);
-      case 4: return StatusViewUntrusted.load(deserializer);
-      case 5: return StatusViewUntrustedAbsent.load(deserializer);
       default: throw Exception('Unknown variant index for StatusView: ' + index.toString());
     }
   }
@@ -266,108 +264,5 @@ class StatusViewDeleted extends StatusView {
     }());
 
     return fullString ?? 'StatusViewDeleted';
-  }
-}
-
-@immutable
-class StatusViewUntrusted extends StatusView {
-  const StatusViewUntrusted({
-    required this.value,
-  }) : super();
-
-  static StatusViewUntrusted load(BinaryDeserializer deserializer) {
-    deserializer.increaseContainerDepth();
-    final instance = StatusViewUntrusted(
-      value: FileView.deserialize(deserializer),
-    );
-    deserializer.decreaseContainerDepth();
-    return instance;
-  }
-
-  final FileView value;
-
-  StatusViewUntrusted copyWith({
-    FileView? value,
-  }) {
-    return StatusViewUntrusted(
-      value: value ?? this.value,
-    );
-  }
-
-  void serialize(BinarySerializer serializer) {
-    serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(4);
-    value.serialize(serializer);
-    serializer.decreaseContainerDepth();
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other.runtimeType != runtimeType) return false;
-
-    return other is StatusViewUntrusted
-      && value == other.value;
-  }
-
-  @override
-  int get hashCode => value.hashCode;
-
-  @override
-  String toString() {
-    String? fullString;
-
-    assert(() {
-      fullString = '$runtimeType('
-        'value: $value'
-        ')';
-      return true;
-    }());
-
-    return fullString ?? 'StatusViewUntrusted';
-  }
-}
-
-@immutable
-class StatusViewUntrustedAbsent extends StatusView {
-  const StatusViewUntrustedAbsent(
-  ) : super();
-
-  static StatusViewUntrustedAbsent load(BinaryDeserializer deserializer) {
-    deserializer.increaseContainerDepth();
-    final instance = StatusViewUntrustedAbsent(
-    );
-    deserializer.decreaseContainerDepth();
-    return instance;
-  }
-
-  void serialize(BinarySerializer serializer) {
-    serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(5);
-    serializer.decreaseContainerDepth();
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other.runtimeType != runtimeType) return false;
-
-    return other is StatusViewUntrustedAbsent;
-  }
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-
-  @override
-  String toString() {
-    String? fullString;
-
-    assert(() {
-      fullString = '$runtimeType('
-        ')';
-      return true;
-    }());
-
-    return fullString ?? 'StatusViewUntrustedAbsent';
   }
 }

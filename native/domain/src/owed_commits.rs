@@ -96,8 +96,7 @@ impl OwedCommits {
     }
 
     /// Same content on both sides, or gone from both (SPEC §6): each side
-    /// records its own file, or both tombstone the path - which also clears
-    /// a mark left on a path with no file (SPEC §7.6).
+    /// records its own file, or both tombstone the path.
     pub fn for_commit_only(
         path: &RelPath,
         a: Option<FileState>,

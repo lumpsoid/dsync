@@ -879,18 +879,8 @@ async fn stop_mid_apply() {
         summary.applied, written,
         "every write in flight finished and committed"
     );
-    let b = site.archive(Side::B);
-    assert_eq!(b.untrusted().count(), 0, "unstarted marks were withdrawn");
-    assert_eq!(b.len(), written);
+    assert_eq!(site.archive(Side::B).len(), written);
     assert!(!site.marker().exists());
-    // Positive control: the run did mark every copy of its window.
-    let marked: usize = log_b
-        .commits()
-        .iter()
-        .flatten()
-        .filter(|commit| matches!(commit, ArchiveCommit::Intent(_)))
-        .count();
-    assert_eq!(marked, names.len());
     while receiver.try_recv().is_ok() {}
 
     let next = sync(&site).await;
@@ -954,7 +944,6 @@ async fn consumer_parks_the_apply() {
     let names = many(&site, 120);
     let tuning = Tuning {
         commit_batch: 4,
-        mark_window: 4,
         ..Tuning::DEFAULT
     };
     let (b, log_b) = Probe::new(site.replica(Side::B));
@@ -1119,7 +1108,6 @@ async fn run_with_small_tuning_still_converges() {
         writers: 2,
         apply_in_flight: 2,
         commit_batch: 3,
-        mark_window: 5,
         read_ahead_streams: 3,
         read_ahead_budget_bytes: 8,
         read_ahead_chunk_bytes: 4,

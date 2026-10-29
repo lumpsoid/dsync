@@ -46,8 +46,8 @@ impl Action {
         }
     }
 
-    /// The side and path a copy writes: where it is marked before its
-    /// bytes land (SPEC §7.6). `None` for an action that writes no file.
+    /// The side and path a copy writes. `None` for an action that writes no
+    /// file.
     pub fn written(&self) -> Option<(Side, &RelPath)> {
         match self {
             Action::Copy { path, from, .. } => Some((from.other(), path)),

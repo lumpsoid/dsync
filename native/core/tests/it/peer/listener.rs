@@ -343,28 +343,28 @@ async fn session_speaking(version: FormatVersion) -> (Vec<u8>, Result<(), LinkEr
 
 #[tokio::test]
 async fn a_peer_of_another_protocol_major_is_refused_naming_both() {
-    let (answer, outcome) = session_speaking(FormatVersion::new(2, 0)).await;
+    let (answer, outcome) = session_speaking(FormatVersion::new(3, 0)).await;
     assert_eq!(answer, version_frame(PROTOCOL_VERSION));
     let error = outcome.unwrap_err();
     assert!(
         matches!(
             error,
             LinkError::VersionMismatch { local, remote }
-                if local == PROTOCOL_VERSION && remote == FormatVersion::new(2, 0)
+                if local == PROTOCOL_VERSION && remote == FormatVersion::new(3, 0)
         ),
         "{error:?}"
     );
     assert!(
         error
             .to_string()
-            .contains("this side speaks 1.1, the far side 2.0"),
+            .contains("this side speaks 2.0, the far side 3.0"),
         "{error}"
     );
 }
 
 #[tokio::test]
 async fn a_peer_of_a_later_protocol_minor_is_served() {
-    let (answer, outcome) = session_speaking(FormatVersion::new(1, 5)).await;
+    let (answer, outcome) = session_speaking(FormatVersion::new(2, 5)).await;
     assert_eq!(answer, version_frame(PROTOCOL_VERSION));
     outcome.unwrap();
 }

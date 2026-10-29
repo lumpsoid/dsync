@@ -55,14 +55,13 @@ pub fn action_type(action: &Action) -> &'static str {
     }
 }
 
-/// A status by SPEC §5.2's name: both untrusted kinds are `untrusted`.
+/// A status by SPEC §5.2's name.
 pub fn status(status: &Status) -> &'static str {
     match status {
         Status::Unchanged { .. } => "unchanged",
         Status::Created(_) => "created",
         Status::Modified(_) => "modified",
         Status::Deleted => "deleted",
-        Status::Untrusted(_) | Status::UntrustedAbsent => "untrusted",
     }
 }
 
@@ -80,7 +79,6 @@ pub fn reason(status: &Status) -> &'static str {
         Status::Created(_) => "created",
         Status::Modified(_) => "modified",
         Status::Deleted => "deleted",
-        Status::Untrusted(_) | Status::UntrustedAbsent => "untrusted",
     }
 }
 
@@ -98,8 +96,6 @@ pub fn reason_text(status: &Status) -> &'static str {
         Status::Modified(_) => "rehash differed from archive",
         Status::Created(_) => "no archive entry",
         Status::Deleted => "archive entry, file absent",
-        Status::Untrusted(_) => "written in place, never committed, changed since",
-        Status::UntrustedAbsent => "written in place, never committed, gone since",
     }
 }
 

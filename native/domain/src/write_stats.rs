@@ -15,13 +15,11 @@ use std::time::Duration;
 pub enum Stage {
     /// Creating the parent folders, once per folder per session.
     Mkdir,
-    /// Reading what is at the target already (SPEC §7.2's WriteTarget).
+    /// Reading what is at the target already, to check it against the
+    /// scan (SPEC §7.6).
     Probe,
-    /// Creating a file that was not there, or a temp beside one that
-    /// cannot be written in place (see [`Stage::Rename`]).
+    /// Creating the temp the bytes land in (SPEC §7.2).
     Create,
-    /// Opening an existing file to overwrite it in place (truncating).
-    Open,
     /// Waiting for the file's bytes to arrive; like [`Stage::Write`], once
     /// per chunk, not per file.
     Wait,
@@ -31,18 +29,17 @@ pub enum Stage {
     Mode,
     /// Closing the handle.
     Close,
-    /// Renaming a temp over a target that could not be written in place.
+    /// Renaming the temp onto the target.
     Rename,
     /// Reading back what actually landed (SPEC §7.4).
     Stat,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 11] = [
+    pub const ALL: [Stage; 10] = [
         Stage::Mkdir,
         Stage::Probe,
         Stage::Create,
-        Stage::Open,
         Stage::Wait,
         Stage::Write,
         Stage::Mtime,
@@ -57,7 +54,6 @@ impl Stage {
             Stage::Mkdir => "mkdir",
             Stage::Probe => "probe",
             Stage::Create => "create",
-            Stage::Open => "open",
             Stage::Wait => "wait",
             Stage::Write => "write",
             Stage::Mtime => "mtime",
