@@ -61,6 +61,7 @@ pub(crate) fn steer(session: u64, intent: RunIntent) -> CoreCommand {
 fn stage(view: &FoldedRunView) -> &'static str {
     match view.phase {
         RunPhaseView::Connecting => "connecting",
+        RunPhaseView::Reconnecting { .. } => "reconnecting",
         RunPhaseView::Scanning => "scanning",
         RunPhaseView::Reviewing(_) => "reviewing",
         RunPhaseView::ConfirmingDeletes { .. } => "confirming deletes",

@@ -891,6 +891,12 @@ pub struct RunView {
 #[derive(Serialize, SignalPiece)]
 pub enum RunPhaseView {
     Connecting,
+    /// A peer:// link dropped and is being re-dialled: the attempt just
+    /// made, and the backoff before the next dial.
+    Reconnecting {
+        attempt: u32,
+        next_in_ms: u64,
+    },
     /// Scanning and reconciling; a dry run stays here until its summary.
     Scanning,
     /// The plan waits on the head's review; the running total of its

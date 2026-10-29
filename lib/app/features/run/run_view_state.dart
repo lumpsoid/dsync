@@ -24,6 +24,14 @@ final class SyncRunConnecting extends SyncRunPhase {
   const SyncRunConnecting();
 }
 
+/// A peer:// link dropped mid-run and the core is re-dialling it: the
+/// [attempt] just made (from 1). The run is still live and stoppable.
+final class SyncRunReconnecting extends SyncRunPhase {
+  const SyncRunReconnecting(this.attempt);
+
+  final int attempt;
+}
+
 /// Both sides are connected and the core is scanning them and reconciling
 /// the two scans (SPEC §5, §6): the header, the tally, the path lists and
 /// the plan fill in as the views bring them. A dry run stays here until it

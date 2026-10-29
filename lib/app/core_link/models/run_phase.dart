@@ -12,6 +12,15 @@ final class RunConnecting extends RunPhase {
   const RunConnecting();
 }
 
+/// A peer:// link dropped and is being re-dialled: the [attempt] just made
+/// (from 1), and the backoff in milliseconds before the next dial.
+final class RunReconnecting extends RunPhase {
+  const RunReconnecting({required this.attempt, required this.nextInMs});
+
+  final int attempt;
+  final int nextInMs;
+}
+
 /// Scanning and reconciling; a dry run stays here until it ends.
 final class RunScanning extends RunPhase {
   const RunScanning();

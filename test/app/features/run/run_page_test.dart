@@ -293,6 +293,17 @@ void main() {
     expect(find.byKey(const Key('run-done')), findsNothing);
   });
 
+  testWidgets('reconnecting: the attempt in its line and Stop, no Done', (
+    tester,
+  ) async {
+    await open(tester, runView(phase: reconnecting(2)));
+
+    expect(find.text('Connection lost — reconnecting (2)'), findsOneWidget);
+    expect(find.text('Connecting…'), findsNothing);
+    expect(find.byKey(const Key('run-stop')), findsOneWidget);
+    expect(find.byKey(const Key('run-done')), findsNothing);
+  });
+
   group('nothing on the page animates while it waits', () {
     final indeterminateBar = find.byWidgetPredicate(
       (widget) => widget is LinearProgressIndicator && widget.value == null,
@@ -2635,9 +2646,7 @@ void main() {
       await openAt(tester, redialled());
 
       expect(
-        tester
-            .widget<Text>(find.byKey(const Key('run-review-recalled')))
-            .data,
+        tester.widget<Text>(find.byKey(const Key('run-review-recalled'))).data,
         'Reconnected. 3 changed since you approved, shown first; your '
         'other 3 choices are kept',
       );

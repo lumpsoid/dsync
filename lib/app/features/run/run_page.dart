@@ -249,6 +249,7 @@ class _RunPageState extends State<RunPage> {
             builder: (context, _) => switch (state.phase) {
               SyncRunIdle() => const SizedBox.shrink(),
               SyncRunConnecting() ||
+              SyncRunReconnecting() ||
               SyncRunScanning() ||
               SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
@@ -290,6 +291,7 @@ class _RunPageState extends State<RunPage> {
             builder: (context, _) => switch (state.phase) {
               SyncRunIdle() ||
               SyncRunConnecting() ||
+              SyncRunReconnecting() ||
               SyncRunScanning() ||
               SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
@@ -336,6 +338,7 @@ class _RunPageState extends State<RunPage> {
           ),
           SyncRunIdle() ||
           SyncRunConnecting() ||
+          SyncRunReconnecting() ||
           SyncRunScanning() ||
           SyncRunApplying() ||
           SyncRunFinished() ||
@@ -662,7 +665,7 @@ class _StageStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final phase = state.phase;
     final stage = switch (phase) {
-      SyncRunConnecting() => _Stage.connect,
+      SyncRunConnecting() || SyncRunReconnecting() => _Stage.connect,
       SyncRunScanning() => _Stage.scan,
       SyncRunAwaitingDecisions() || SyncRunConfirmingDeletes() => _Stage.review,
       SyncRunApplying() => _Stage.apply,
@@ -763,6 +766,10 @@ class _StageText extends StatelessWidget {
     return switch (state.phase) {
       SyncRunIdle() => const SizedBox.shrink(),
       SyncRunConnecting() => const Text('Connecting…'),
+      SyncRunReconnecting(:final attempt) => Text(
+        'Connection lost — reconnecting ($attempt)',
+        key: const Key('run-reconnecting'),
+      ),
       SyncRunScanning() => Text(
         state.dryRun
             ? 'Scanning both folders (dry run)…'

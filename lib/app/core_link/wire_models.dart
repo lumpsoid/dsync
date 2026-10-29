@@ -404,6 +404,8 @@ ActionResult? _outcome(wire.ResultView? result) => switch (result) {
 
 RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
   wire.RunPhaseViewConnecting() => const RunConnecting(),
+  wire.RunPhaseViewReconnecting(:final attempt, :final nextInMs) =>
+    RunReconnecting(attempt: attempt, nextInMs: _n(nextInMs)),
   wire.RunPhaseViewScanning() => const RunScanning(),
   wire.RunPhaseViewReviewing(:final value) => RunReviewing(
     DecisionSummary(

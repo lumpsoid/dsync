@@ -62,6 +62,12 @@ enum Suspend {
 
 enum Phase {
     Connecting,
+    /// A dropped peer:// link is being re-dialled: the attempt just made,
+    /// and the backoff before the next dial.
+    Reconnecting {
+        attempt: u32,
+        next_in_ms: u64,
+    },
     Scanning,
     /// The head reviews this plan, the decider waiting.
     Reviewing(Arc<PlanRows>),
@@ -84,6 +90,7 @@ impl Phase {
     fn standing(&self) -> RunStandingView {
         match self {
             Phase::Connecting
+            | Phase::Reconnecting { .. }
             | Phase::Scanning
             | Phase::Reviewing(_)
             | Phase::ConfirmingDeletes(_)
@@ -598,6 +605,23 @@ impl RunState {
         Urgency::Now
     }
 
+    /// A (re-)dial starts `entry` over: the dropped attempt's failure,
+    /// rows and progress go, and what it completed is kept in
+    /// `completed_earlier`.
+    fn restart_entry(&mut self, entry: usize, phase: Phase) {
+        self.completed_earlier += self.entry.completed();
+        let warn_size_bytes = self
+            .entries
+            .get(entry)
+            .and_then(|listed| listed.roots.warn_size_bytes);
+        self.entry = EntryState::new(warn_size_bytes, self.peek);
+        self.current = Some(entry);
+        self.phase = phase;
+        if let Some(listed) = self.entries.get_mut(entry) {
+            listed.status = EntryStatus::Running;
+        }
+    }
+
     /// One step of the profile run; `at_ms` is when it arrived.
     pub(crate) fn profile_event(&mut self, event: ProfileEvent, at_ms: i64) -> Urgency {
         match event {
@@ -606,19 +630,24 @@ impl RunState {
             // A re-dial starts the entry over, as its first connect did:
             // the dropped attempt's failure, rows and progress go, and
             // what it completed is kept in `completed_earlier`.
-            ProfileEvent::EntryConnecting { entry }
-            | ProfileEvent::EntryReconnecting { entry, .. } => {
-                self.completed_earlier += self.entry.completed();
-                let warn_size_bytes = self
-                    .entries
-                    .get(entry)
-                    .and_then(|listed| listed.roots.warn_size_bytes);
-                self.entry = EntryState::new(warn_size_bytes, self.peek);
-                self.current = Some(entry);
-                self.phase = Phase::Connecting;
-                if let Some(listed) = self.entries.get_mut(entry) {
-                    listed.status = EntryStatus::Running;
-                }
+            ProfileEvent::EntryConnecting { entry } => {
+                self.restart_entry(entry, Phase::Connecting);
+                Urgency::Now
+            }
+            ProfileEvent::EntryReconnecting {
+                entry,
+                attempt,
+                after,
+                ..
+            } => {
+                let next_in_ms = u64::try_from(after.as_millis()).unwrap_or(u64::MAX);
+                self.restart_entry(
+                    entry,
+                    Phase::Reconnecting {
+                        attempt,
+                        next_in_ms,
+                    },
+                );
                 Urgency::Now
             }
             ProfileEvent::EntryConnected { entry, .. } if self.current == Some(entry) => {
@@ -728,13 +757,13 @@ impl RunState {
     fn lone_entry_end(&mut self) -> Phase {
         match self.entries.first().map(|entry| &entry.status) {
             Some(EntryStatus::Ended(EntryOutcome::Failed(EntryFailure::Connect(error)))) => self
-                .suspended(0)
+                .suspended(self.completed_earlier)
                 .unwrap_or_else(|| Phase::Failed(error.to_string())),
-            Some(EntryStatus::Ended(EntryOutcome::NotRun)) => {
-                self.suspended(0).unwrap_or(Phase::Stopped(0))
-            }
+            Some(EntryStatus::Ended(EntryOutcome::NotRun)) => self
+                .suspended(self.completed_earlier)
+                .unwrap_or(Phase::Stopped(self.completed_earlier)),
             _ => {
-                let completed = self.entry.completed();
+                let completed = self.completed_earlier + self.entry.completed();
                 match (self.entry.failure.take(), self.entry.summary) {
                     (Some(failure), _) => failure.into(),
                     (None, summary) => self.suspended(completed).unwrap_or(match summary {
@@ -890,6 +919,13 @@ impl RunState {
     fn phase_view(&self) -> RunPhaseView {
         match &self.phase {
             Phase::Connecting => RunPhaseView::Connecting,
+            Phase::Reconnecting {
+                attempt,
+                next_in_ms,
+            } => RunPhaseView::Reconnecting {
+                attempt: *attempt,
+                next_in_ms: *next_in_ms,
+            },
             Phase::Scanning => RunPhaseView::Scanning,
             Phase::Reviewing(plan) => RunPhaseView::Reviewing(self.entry.choices.summary(plan)),
             Phase::ConfirmingDeletes(sides) => RunPhaseView::ConfirmingDeletes {
@@ -1711,7 +1747,14 @@ mod tests {
         state.listed(roots(1));
         dropped_attempt(&mut state, 0);
         reconnecting(&mut state, 0);
-        assert!(matches!(phase(&state), RunPhaseView::Connecting));
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Reconnecting {
+                attempt: 1,
+                next_in_ms: 1000
+            }
+        ));
+        assert_eq!(standing(&state), RunStandingView::Live);
         state.profile_event(
             ProfileEvent::EntryConnected {
                 entry: 0,
@@ -1754,6 +1797,46 @@ mod tests {
         assert!(matches!(
             phase(&state),
             RunPhaseView::Failed { ref message } if message.contains("closed")
+        ));
+    }
+
+    /// A stop or pause during the backoff reads after what the dropped
+    /// attempt completed, which the re-dial's reset moved aside.
+    #[test]
+    fn a_suspend_during_the_backoff_counts_the_dropped_attempts_actions() {
+        for pause in [true, false] {
+            let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+            state.listed(roots(1));
+            dropped_attempt(&mut state, 0);
+            state.event(RunEvent::Progress {
+                completed: 4,
+                total: 9,
+            });
+            reconnecting(&mut state, 0);
+            state.steer(if pause {
+                RunIntent::Pause
+            } else {
+                RunIntent::Stop
+            });
+            finish(&mut state, 0, EntryOutcome::NotRun);
+            state.ended(None);
+            match (pause, phase(&state)) {
+                (true, RunPhaseView::Paused { completed })
+                | (false, RunPhaseView::Stopped { completed }) => assert_eq!(completed, 4),
+                _ => panic!("unexpected phase"),
+            }
+        }
+
+        // Positive control: never connected, nothing was completed.
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(1));
+        state.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
+        state.steer(RunIntent::Stop);
+        finish(&mut state, 0, EntryOutcome::NotRun);
+        state.ended(None);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Stopped { completed: 0 }
         ));
     }
 

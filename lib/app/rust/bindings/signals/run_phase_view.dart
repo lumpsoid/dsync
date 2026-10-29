@@ -12,18 +12,19 @@ abstract class RunPhaseView {
     int index = deserializer.deserializeVariantIndex();
     switch (index) {
       case 0: return RunPhaseViewConnecting.load(deserializer);
-      case 1: return RunPhaseViewScanning.load(deserializer);
-      case 2: return RunPhaseViewReviewing.load(deserializer);
-      case 3: return RunPhaseViewConfirmingDeletes.load(deserializer);
-      case 4: return RunPhaseViewApplying.load(deserializer);
-      case 5: return RunPhaseViewFinished.load(deserializer);
-      case 6: return RunPhaseViewStopped.load(deserializer);
-      case 7: return RunPhaseViewPaused.load(deserializer);
-      case 8: return RunPhaseViewFailed.load(deserializer);
-      case 9: return RunPhaseViewReplicaBusy.load(deserializer);
-      case 10: return RunPhaseViewDeletesDeclined.load(deserializer);
-      case 11: return RunPhaseViewNoSummary.load(deserializer);
-      case 12: return RunPhaseViewFinishedWithIssues.load(deserializer);
+      case 1: return RunPhaseViewReconnecting.load(deserializer);
+      case 2: return RunPhaseViewScanning.load(deserializer);
+      case 3: return RunPhaseViewReviewing.load(deserializer);
+      case 4: return RunPhaseViewConfirmingDeletes.load(deserializer);
+      case 5: return RunPhaseViewApplying.load(deserializer);
+      case 6: return RunPhaseViewFinished.load(deserializer);
+      case 7: return RunPhaseViewStopped.load(deserializer);
+      case 8: return RunPhaseViewPaused.load(deserializer);
+      case 9: return RunPhaseViewFailed.load(deserializer);
+      case 10: return RunPhaseViewReplicaBusy.load(deserializer);
+      case 11: return RunPhaseViewDeletesDeclined.load(deserializer);
+      case 12: return RunPhaseViewNoSummary.load(deserializer);
+      case 13: return RunPhaseViewFinishedWithIssues.load(deserializer);
       default: throw Exception('Unknown variant index for RunPhaseView: ' + index.toString());
     }
   }
@@ -90,6 +91,76 @@ class RunPhaseViewConnecting extends RunPhaseView {
 }
 
 @immutable
+class RunPhaseViewReconnecting extends RunPhaseView {
+  const RunPhaseViewReconnecting({
+    required this.attempt,
+    required this.nextInMs,
+  }) : super();
+
+  static RunPhaseViewReconnecting load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = RunPhaseViewReconnecting(
+      attempt: deserializer.deserializeUint32(),
+      nextInMs: deserializer.deserializeUint64(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final int attempt;
+  final Uint64 nextInMs;
+
+  RunPhaseViewReconnecting copyWith({
+    int? attempt,
+    Uint64? nextInMs,
+  }) {
+    return RunPhaseViewReconnecting(
+      attempt: attempt ?? this.attempt,
+      nextInMs: nextInMs ?? this.nextInMs,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(1);
+    serializer.serializeUint32(attempt);
+    serializer.serializeUint64(nextInMs);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is RunPhaseViewReconnecting
+      && attempt == other.attempt
+      && nextInMs == other.nextInMs;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        attempt,
+        nextInMs,
+      );
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'attempt: $attempt, '
+        'nextInMs: $nextInMs'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'RunPhaseViewReconnecting';
+  }
+}
+
+@immutable
 class RunPhaseViewScanning extends RunPhaseView {
   const RunPhaseViewScanning(
   ) : super();
@@ -104,7 +175,7 @@ class RunPhaseViewScanning extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(1);
+    serializer.serializeVariantIndex(2);
     serializer.decreaseContainerDepth();
   }
 
@@ -160,7 +231,7 @@ class RunPhaseViewReviewing extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(2);
+    serializer.serializeVariantIndex(3);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -219,7 +290,7 @@ class RunPhaseViewConfirmingDeletes extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(3);
+    serializer.serializeVariantIndex(4);
     TraitHelpers.serializeVectorMassDeleteView(sides, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -266,7 +337,7 @@ class RunPhaseViewApplying extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(4);
+    serializer.serializeVariantIndex(5);
     serializer.decreaseContainerDepth();
   }
 
@@ -322,7 +393,7 @@ class RunPhaseViewFinished extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(5);
+    serializer.serializeVariantIndex(6);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -381,7 +452,7 @@ class RunPhaseViewStopped extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(6);
+    serializer.serializeVariantIndex(7);
     serializer.serializeUint64(completed);
     serializer.decreaseContainerDepth();
   }
@@ -440,7 +511,7 @@ class RunPhaseViewPaused extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(7);
+    serializer.serializeVariantIndex(8);
     serializer.serializeUint64(completed);
     serializer.decreaseContainerDepth();
   }
@@ -499,7 +570,7 @@ class RunPhaseViewFailed extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(8);
+    serializer.serializeVariantIndex(9);
     serializer.serializeString(message);
     serializer.decreaseContainerDepth();
   }
@@ -558,7 +629,7 @@ class RunPhaseViewReplicaBusy extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(9);
+    serializer.serializeVariantIndex(10);
     serializer.serializeString(message);
     serializer.decreaseContainerDepth();
   }
@@ -605,7 +676,7 @@ class RunPhaseViewDeletesDeclined extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(10);
+    serializer.serializeVariantIndex(11);
     serializer.decreaseContainerDepth();
   }
 
@@ -649,7 +720,7 @@ class RunPhaseViewNoSummary extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(11);
+    serializer.serializeVariantIndex(12);
     serializer.decreaseContainerDepth();
   }
 
@@ -705,7 +776,7 @@ class RunPhaseViewFinishedWithIssues extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(12);
+    serializer.serializeVariantIndex(13);
     TraitHelpers.serializeVectorEntryIssueView(entries, serializer);
     serializer.decreaseContainerDepth();
   }
