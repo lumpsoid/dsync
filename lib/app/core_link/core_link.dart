@@ -504,4 +504,19 @@ final class CoreLink {
       _ => _unexpected(result),
     },
   );
+
+  /// Notes [message], one of the head's own errors, in the diagnostics
+  /// log.
+  Future<void> noteDiagnostic(String message) =>
+      _ask(wire.CoreCommandNoteDiagnostic(message: message), _done);
+
+  /// The diagnostics log under the app's version and platform, as the text
+  /// a user attaches to a bug report.
+  Future<String> readDiagnostics() => _ask(
+    const wire.CoreCommandReadDiagnostics(),
+    (result) => switch (result) {
+      wire.ReplyResultDiagnostics(:final text) => text,
+      _ => _unexpected(result),
+    },
+  );
 }

@@ -9,10 +9,11 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use dsync_core::{ProfileStore, StateDir};
+use dsync_core::{DiagnosticsLog, ProfileStore, StateDir};
 use dsync_domain::{DirPath, DirRule, HostFacts, StateDirChoice, Tuning};
 use futures_util::FutureExt;
 
+use crate::diagnostics::log_panics_to;
 use crate::folders::check_ignore_pattern;
 use crate::outbox::Outbox;
 use crate::sessions::Sessions;
@@ -94,7 +95,7 @@ impl Core {
                 CoreCommand::Init {
                     support_dir,
                     device_name,
-                } => self.init(support_dir, device_name),
+                } => self.init(support_dir, device_name).await,
                 command => match self.hub() {
                     Some(hub) => hub.handle(id, command).await,
                     None => Err("the core is not initialised: send Init first".to_owned()),
@@ -117,7 +118,7 @@ impl Core {
 
     /// A second `Init` (a Dart hot restart) replaces the first; sessions
     /// already running go on under the hub that started them.
-    fn init(&self, support_dir: Option<String>, device_name: String) -> Handled {
+    async fn init(&self, support_dir: Option<String>, device_name: String) -> Handled {
         let rule = match support_dir {
             Some(dir) => DirRule::HostSupplied(DirPath::parse(&dir).map_err(text)?),
             None => DirRule::HOST,
@@ -129,6 +130,7 @@ impl Core {
             state_dir: state.path().to_string_lossy().into_owned(),
             profiles_dir: profiles.dir().to_string_lossy().into_owned(),
         };
+        log_panics_to(DiagnosticsLog::new(&state)).await;
         let hub = Hub {
             facts: self.facts.clone(),
             state,
@@ -238,6 +240,8 @@ impl Hub {
             } => self.list_filter_folder(root, folder, &ignore).await,
             CoreCommand::CheckIgnorePattern { pattern } => check_ignore_pattern(&pattern),
             CoreCommand::CheckFolder { path, kind } => self.check_folder(path, kind.into()).await,
+            CoreCommand::NoteDiagnostic { message } => self.note_diagnostic(message).await,
+            CoreCommand::ReadDiagnostics => self.read_diagnostics().await,
         }
     }
 }

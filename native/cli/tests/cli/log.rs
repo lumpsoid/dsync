@@ -73,3 +73,22 @@ fn a_profile_run_is_recorded_under_its_name() {
     assert_eq!(run["profile"], "work");
     assert_eq!(run["entries"][0]["a"], a);
 }
+
+#[test]
+fn a_run_leaves_its_key_events_in_the_diagnostics_log_without_paths() {
+    let site = Site::new();
+    let (a, b) = (site.root("a"), site.root("b"));
+    site.write("a/private-name.txt", "contents");
+    site.run(&["sync", &a, &b, "--batch"]).exits(0);
+    let log = std::fs::read_to_string(site.state_dir().join("diagnostics.log")).unwrap();
+    for expected in [
+        "run started: an ad-hoc pair, batch, 1 entry",
+        ": synced; copied 1",
+        "run ended after ",
+    ] {
+        assert!(log.contains(expected), "{expected}: {log}");
+    }
+    for private in [a.as_str(), b.as_str(), "private-name", "contents"] {
+        assert!(!log.contains(private), "{private}: {log}");
+    }
+}

@@ -349,4 +349,30 @@ void main() {
       expect(await file.readAsString(), '{"version": "1.0", "netw');
     });
   });
+
+  group('readDiagnostics', () {
+    test('answers with the core\'s text', () async {
+      final text = await controller.readDiagnostics();
+
+      expect(text, startsWith('dsync 0.1.0 on '));
+      expect(controller.state.outcome, isA<SettingsIdle>());
+    });
+
+    test('a log the core cannot read shows why, and answers nothing', () async {
+      final core = FakeHub()
+        ..reply<wire.CoreCommandReadDiagnostics>(
+          const wire.ReplyResultFailed(message: 'permission denied'),
+        );
+      final failing = SettingsController(fakeApp(core));
+      addTearDown(failing.dispose);
+
+      expect(await failing.readDiagnostics(), isNull);
+      final outcome = failing.state.outcome;
+      expect(outcome, isA<SettingsFailed>());
+      expect(
+        (outcome as SettingsFailed).message,
+        contains('permission denied'),
+      );
+    });
+  });
 }

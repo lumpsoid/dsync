@@ -26,6 +26,7 @@ abstract class ReplyResult {
       case 13: return ReplyResultFilterFolder.load(deserializer);
       case 14: return ReplyResultComparison.load(deserializer);
       case 15: return ReplyResultFolderChecked.load(deserializer);
+      case 16: return ReplyResultDiagnostics.load(deserializer);
       default: throw Exception('Unknown variant index for ReplyResult: ' + index.toString());
     }
   }
@@ -973,5 +974,64 @@ class ReplyResultFolderChecked extends ReplyResult {
     }());
 
     return fullString ?? 'ReplyResultFolderChecked';
+  }
+}
+
+@immutable
+class ReplyResultDiagnostics extends ReplyResult {
+  const ReplyResultDiagnostics({
+    required this.text,
+  }) : super();
+
+  static ReplyResultDiagnostics load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = ReplyResultDiagnostics(
+      text: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String text;
+
+  ReplyResultDiagnostics copyWith({
+    String? text,
+  }) {
+    return ReplyResultDiagnostics(
+      text: text ?? this.text,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(16);
+    serializer.serializeString(text);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is ReplyResultDiagnostics
+      && text == other.text;
+  }
+
+  @override
+  int get hashCode => text.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'text: $text'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'ReplyResultDiagnostics';
   }
 }

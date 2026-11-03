@@ -8,12 +8,11 @@
 //! and always holds the latest runs. A line cut short by a kill mid-append
 //! is skipped on reading; every line before and after it still reads.
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::io;
 
 use dsync_domain::RunRecord;
 
+use crate::rotating_file::RotatingFile;
 use crate::state_dir::StateDir;
 
 /// The size past which the history starts a new file.
@@ -21,15 +20,16 @@ const ROTATE_AT_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RunHistory {
-    path: PathBuf,
-    rotate_at: u64,
+    file: RotatingFile,
 }
 
 impl RunHistory {
     pub fn new(state: &StateDir) -> RunHistory {
         RunHistory {
-            path: state.run_history(),
-            rotate_at: ROTATE_AT_BYTES,
+            file: RotatingFile {
+                path: state.run_history(),
+                rotate_at: ROTATE_AT_BYTES,
+            },
         }
     }
 
@@ -39,56 +39,33 @@ impl RunHistory {
     pub fn append(&self, record: &RunRecord) -> io::Result<()> {
         let mut line = serde_json::to_vec(record).map_err(io::Error::other)?;
         line.push(b'\n');
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let size = match fs::metadata(&self.path) {
-            Ok(metadata) => metadata.len(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
-            Err(error) => return Err(error),
-        };
-        if size > 0 && size + line.len() as u64 > self.rotate_at {
-            fs::rename(&self.path, self.previous())?;
-        }
-        // One write of the whole line: two runs appending at once land
-        // their lines whole, one after the other.
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        file.write_all(&line)?;
-        file.sync_data()
+        self.file.append(&line)
     }
 
     /// Every run kept, oldest first.
     pub fn read(&self) -> io::Result<Vec<RunRecord>> {
-        let mut records = read_lines(&self.previous())?;
-        records.extend(read_lines(&self.path)?);
-        Ok(records)
-    }
-
-    fn previous(&self) -> PathBuf {
-        let mut name = self.path.clone().into_os_string();
-        name.push(".1");
-        PathBuf::from(name)
+        Ok(self
+            .file
+            .read()?
+            .iter()
+            .flat_map(|bytes| records(bytes))
+            .collect())
     }
 }
 
-/// The records in the file at `path`; none when there is no file.
-fn read_lines(path: &Path) -> io::Result<Vec<RunRecord>> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    Ok(bytes
+/// The records in `bytes`, a torn line skipped.
+fn records(bytes: &[u8]) -> Vec<RunRecord> {
+    bytes
         .split(|&byte| byte == b'\n')
         .filter_map(|line| serde_json::from_slice(line).ok())
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
     use dsync_domain::Mode;
 
     use super::*;
@@ -142,15 +119,13 @@ mod tests {
     fn rotates_past_its_size_keeping_one_previous_file() {
         let dir = tempfile::tempdir().unwrap();
         let line = serde_json::to_vec(&record(1)).unwrap().len() as u64 + 1;
-        let history = RunHistory {
-            rotate_at: 2 * line,
-            ..RunHistory::new(&StateDir::new(dir.path()))
-        };
+        let mut history = RunHistory::new(&StateDir::new(dir.path()));
+        history.file.rotate_at = 2 * line;
         for started_ms in 1..=5 {
             history.append(&record(started_ms)).unwrap();
         }
         // [1, 2] rotated out by 3, [3, 4] by 5, replacing [1, 2].
         assert_eq!(started(&history), vec![3, 4, 5]);
-        assert!(history.previous().exists());
+        assert!(history.file.previous().exists());
     }
 }

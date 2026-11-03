@@ -1,7 +1,7 @@
 //! The state directory and the names of the per-replica files in it
 //! (SPEC §8.3): `<entryId>-<side>.jsonl` (archive), `<entryId>-<side>.lock`
-//! and `<entryId>.run`; the per-folder `folder-<hash>.lock`; and the run
-//! history, `runs.jsonl`.
+//! and `<entryId>.run`; the per-folder `folder-<hash>.lock`; the run
+//! history, `runs.jsonl`; and the diagnostics log, `diagnostics.log`.
 
 use std::path::{Path, PathBuf};
 
@@ -80,6 +80,12 @@ impl StateDir {
     /// ([`crate::RunHistory`]).
     pub fn run_history(&self) -> PathBuf {
         self.0.join("runs.jsonl")
+    }
+
+    /// `<state>/diagnostics.log`: what a user can attach to a bug report
+    /// ([`crate::DiagnosticsLog`]).
+    pub fn diagnostics_log(&self) -> PathBuf {
+        self.0.join("diagnostics.log")
     }
 }
 

@@ -3,6 +3,7 @@ import 'dart:io';
 import '../../app_controller.dart';
 import '../../app_settings.dart';
 import '../../app_settings_store.dart';
+import '../../core_link/models/core_failure.dart';
 import '../../mass_delete_guard.dart';
 import '../../peer_port.dart';
 import '../../theme_preference.dart';
@@ -220,6 +221,22 @@ class SettingsController {
       return;
     }
     state.recordOutcome(const SettingsIdle());
+  }
+
+  /// The diagnostics a user attaches to a bug report — the app's version
+  /// and platform, then the core's log of errors and run events — or
+  /// `null`, with the core's reason shown, when it cannot be read.
+  Future<String?> readDiagnostics() async {
+    try {
+      final text = await app.core.readDiagnostics();
+      state.recordOutcome(const SettingsIdle());
+      return text;
+    } on CoreFailure catch (e) {
+      state.recordOutcome(
+        SettingsFailed('This device could not read its diagnostics: $e'),
+      );
+      return null;
+    }
   }
 
   /// Rewrites the stored settings as [change] of what is stored now, so one

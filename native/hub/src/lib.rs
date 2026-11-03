@@ -13,6 +13,7 @@
 
 mod archives;
 mod devices;
+mod diagnostics;
 mod dispatch;
 mod folders;
 mod outbox;
@@ -43,6 +44,7 @@ write_interface!();
 // itself never creates a runtime.
 #[tokio::main]
 async fn main() {
+    diagnostics::log_panics();
     let (out, mut outgoing) = Outbox::channel();
     let core = Arc::new(Core::new(host_facts(), out));
     tokio::spawn(async move {

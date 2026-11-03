@@ -45,6 +45,8 @@ abstract class CoreCommand {
       case 31: return CoreCommandListFilterFolder.load(deserializer);
       case 32: return CoreCommandCheckIgnorePattern.load(deserializer);
       case 33: return CoreCommandCheckFolder.load(deserializer);
+      case 34: return CoreCommandNoteDiagnostic.load(deserializer);
+      case 35: return CoreCommandReadDiagnostics.load(deserializer);
       default: throw Exception('Unknown variant index for CoreCommand: ' + index.toString());
     }
   }
@@ -2284,5 +2286,108 @@ class CoreCommandCheckFolder extends CoreCommand {
     }());
 
     return fullString ?? 'CoreCommandCheckFolder';
+  }
+}
+
+@immutable
+class CoreCommandNoteDiagnostic extends CoreCommand {
+  const CoreCommandNoteDiagnostic({
+    required this.message,
+  }) : super();
+
+  static CoreCommandNoteDiagnostic load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = CoreCommandNoteDiagnostic(
+      message: deserializer.deserializeString(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final String message;
+
+  CoreCommandNoteDiagnostic copyWith({
+    String? message,
+  }) {
+    return CoreCommandNoteDiagnostic(
+      message: message ?? this.message,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(34);
+    serializer.serializeString(message);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is CoreCommandNoteDiagnostic
+      && message == other.message;
+  }
+
+  @override
+  int get hashCode => message.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'message: $message'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'CoreCommandNoteDiagnostic';
+  }
+}
+
+@immutable
+class CoreCommandReadDiagnostics extends CoreCommand {
+  const CoreCommandReadDiagnostics(
+  ) : super();
+
+  static CoreCommandReadDiagnostics load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = CoreCommandReadDiagnostics(
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(35);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is CoreCommandReadDiagnostics;
+  }
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'CoreCommandReadDiagnostics';
   }
 }

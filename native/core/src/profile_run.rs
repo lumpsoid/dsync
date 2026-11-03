@@ -38,6 +38,7 @@ pub use event::{
 pub use redial::ReconnectCause;
 
 use crate::connector::{ConnectError, PeerContact};
+use crate::diagnostics_log::DiagnosticsLog;
 use crate::replica::Replica;
 use crate::replica_lock::canonical_root;
 use crate::run::{Decider, Recalled, Run, RunError, RunEvent, RunReport, RunStop, Stopped};
@@ -242,6 +243,14 @@ impl ProfileRun {
     {
         self.refuse_resolved_overlap(entries).await?;
         let started = SystemTime::now();
+        if let Some(recording) = &self.recording {
+            let line = RunRecord::started_diagnostic(
+                recording.profile.as_deref(),
+                recording.mode,
+                entries.len(),
+            );
+            self.note_diagnostics(vec![line]).await;
+        }
         let list = entries.iter().map(listed).collect();
         self.emit(ProfileEvent::Entries { list }).await;
         let mut reports = Vec::with_capacity(entries.len());
@@ -272,7 +281,8 @@ impl ProfileRun {
         })
     }
 
-    /// Appends this run's record to the history, when it is recorded.
+    /// Appends this run's record to the history, and its summary to the
+    /// diagnostics log, when it is recorded.
     async fn record(&self, started: SystemTime, entries: Vec<EntryRecord>) -> io::Result<()> {
         let Some(recording) = &self.recording else {
             return Ok(());
@@ -285,16 +295,16 @@ impl ProfileRun {
             stopped: self.stop.0.requested(),
             entries,
         };
+        self.note_diagnostics(record.ended_diagnostics()).await;
         let history = RunHistory::new(&self.state);
-        match tokio::task::spawn_blocking(move || history.append(&record)).await {
-            Ok(appended) => appended,
-            Err(error) => match error.try_into_panic() {
-                Ok(panic) => std::panic::resume_unwind(panic),
-                Err(_) => Err(io::Error::other(
-                    "the runtime shut down while the run was recorded",
-                )),
-            },
-        }
+        blocking(move || history.append(&record)).await
+    }
+
+    /// Appends `lines` to the diagnostics log. One that cannot be written
+    /// is let go: the log is for a bug report, never a reason a run fails.
+    async fn note_diagnostics(&self, lines: Vec<String>) {
+        let log = DiagnosticsLog::new(&self.state);
+        let _unlogged = blocking(move || lines.iter().try_for_each(|line| log.note(line))).await;
     }
 
     /// Connects and runs one entry, dialling a dropped `peer://` side
@@ -556,6 +566,20 @@ fn resolve<K>(sides: Vec<(K, PathBuf)>) -> Vec<(K, PathBuf)> {
         .into_iter()
         .filter_map(|(key, path)| Some((key, canonical_root(Path::new(&path)).ok()?)))
         .collect()
+}
+
+/// Runs blocking file work off the runtime's threads; a panic in `work`
+/// goes on in the caller.
+async fn blocking(work: impl FnOnce() -> io::Result<()> + Send + 'static) -> io::Result<()> {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(done) => done,
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(_) => Err(io::Error::other(
+                "the runtime shut down while the run was recorded",
+            )),
+        },
+    }
 }
 
 /// Milliseconds from the Unix epoch to `at`; 0 for a time before it.

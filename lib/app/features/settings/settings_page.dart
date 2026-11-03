@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../copy_value_button.dart';
 import '../../readable_width.dart';
 import '../../theme_preference.dart';
 import '../../warn_size.dart';
@@ -14,7 +15,8 @@ import 'settings_view_state.dart';
 /// **Power**, holding whether runs and serve keep the screen awake,
 /// **Sync**, holding the size a run's review warns above, and
 /// **Deletion safety**, holding when a run stops to ask before deleting —
-/// its thresholds only: the guard has no off switch here.
+/// its thresholds only: the guard has no off switch here — and
+/// **Diagnostics**, which copies what a user attaches to a bug report.
 ///
 /// Widgets only, per the page role in `app_scope.dart`: the stored settings
 /// arrive as one value the controller has already parsed, and the only
@@ -244,6 +246,22 @@ class _SettingsBody extends StatelessWidget {
                   _editMassDeletePercent(context, '${guard?.percent ?? ''}'),
             ),
           ),
+          const _SectionHeader('Diagnostics'),
+          SelectionContainer.disabled(
+            child: ListTile(
+              key: const Key('settings-copy-diagnostics'),
+              leading: const Icon(Icons.bug_report_outlined),
+              title: const Text('Copy diagnostics'),
+              subtitle: const Text(
+                'This app\'s version and platform, and its recent errors and '
+                'sync events, to paste into a bug report. No file contents, '
+                'and not the list of files a sync touched.',
+              ),
+              isThreeLine: true,
+              enabled: !working,
+              onTap: () => _copyDiagnostics(context),
+            ),
+          ),
           switch (outcome) {
             SettingsSaved(:final message) => _NoticeTile(
               message,
@@ -264,6 +282,12 @@ class _SettingsBody extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _copyDiagnostics(BuildContext context) async {
+    final text = await controller.readDiagnostics();
+    if (text == null || !context.mounted) return;
+    await copyValue(context, value: text, what: 'diagnostics');
   }
 
   Future<void> _editBindAddress(BuildContext context, String current) async {

@@ -366,6 +366,32 @@ async fn an_ignore_pattern_is_checked_on_its_own() {
     assert!(!bad.is_empty());
 }
 
+#[tokio::test]
+async fn the_heads_errors_are_noted_and_read_back_under_the_build() {
+    let mut head = Head::new("studio").await;
+    let (_, noted) = head
+        .ok(CoreCommand::NoteDiagnostic {
+            message: "dart error: Bad state\n#0 main".to_owned(),
+        })
+        .await;
+    assert!(matches!(noted, ReplyResult::Done));
+    let (_, read) = head.ok(CoreCommand::ReadDiagnostics).await;
+    let ReplyResult::Diagnostics { text } = read else {
+        panic!("expected the diagnostics");
+    };
+    let mut lines = text.lines();
+    let build = lines.next().unwrap_or_default();
+    assert!(
+        build.starts_with("dsync ") && build.contains(" on "),
+        "{text}"
+    );
+    assert!(text.contains("Z core started: dsync "), "{text}");
+    assert!(
+        text.contains("Z dart error: Bad state\n  #0 main"),
+        "{text}"
+    );
+}
+
 fn draft(head: &Head, peer: &str, local_leaf: &str) -> ProfileDraft {
     entries_draft(
         peer,

@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/affordances.dart';
+import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 
@@ -74,6 +75,28 @@ void main() {
     expect(find.text('Network'), findsOneWidget);
     expect(find.text('Pairing bind address'), findsOneWidget);
     expect(find.textContaining('10.8.0.3'), findsOneWidget);
+  });
+
+  testWidgets('Copy diagnostics puts the core\'s text on the clipboard', (
+    tester,
+  ) async {
+    final copied = recordClipboard(tester);
+    controller.state.recordSettings(at('0.0.0.0'));
+    await pumpPage(tester);
+
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('settings-copy-diagnostics')),
+      200,
+    );
+    await tester.ensureVisible(
+      find.byKey(const Key('settings-copy-diagnostics')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-copy-diagnostics')));
+    await tester.pumpAndSettle();
+
+    expect(copied, ['dsync 0.1.0 on linux x86_64\n\nNothing logged yet.\n']);
+    expect(find.text('Diagnostics copied.'), findsOneWidget);
   });
 
   testWidgets('asks the controller to read the store on mounting', (

@@ -287,7 +287,8 @@ wire.ReplyResult _neutral(wire.CoreCommand command) => switch (command) {
   wire.CoreCommandStartRun() ||
   wire.CoreCommandSteerRun() ||
   wire.CoreCommandStopServe() ||
-  wire.CoreCommandCheckIgnorePattern() => _done,
+  wire.CoreCommandCheckIgnorePattern() ||
+  wire.CoreCommandNoteDiagnostic() => _done,
   wire.CoreCommandReadPairCode() => const wire.ReplyResultPairCode(
     value: wire.PairCodeViewUnreadable(message: 'not a payload'),
   ),
@@ -330,6 +331,9 @@ wire.ReplyResult _neutral(wire.CoreCommand command) => switch (command) {
   ),
   wire.CoreCommandCheckFolder() => const wire.ReplyResultFolderChecked(
     refusal: null,
+  ),
+  wire.CoreCommandReadDiagnostics() => const wire.ReplyResultDiagnostics(
+    text: 'dsync 0.1.0 on linux x86_64\n\nNothing logged yet.\n',
   ),
   _ => throw StateError('script a reply for $command'),
 };

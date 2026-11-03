@@ -223,6 +223,12 @@ pub enum CoreCommand {
         path: String,
         kind: RootKindView,
     },
+    /// Notes one of the head's own errors in the diagnostics log: `Done`.
+    NoteDiagnostic {
+        message: String,
+    },
+    /// The diagnostics log, for the user to attach to a bug report.
+    ReadDiagnostics,
 }
 
 /// The head's profile: each entry's `local_root` on this device synced
@@ -337,6 +343,10 @@ pub enum ReplyResult {
     /// `None`: the folder is usable.
     FolderChecked {
         refusal: Option<String>,
+    },
+    /// The diagnostics log under the build it came from, as one text.
+    Diagnostics {
+        text: String,
     },
 }
 
