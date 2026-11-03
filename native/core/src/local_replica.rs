@@ -22,6 +22,7 @@ use dsync_domain::{
 };
 
 use crate::archive_store::ArchiveStore;
+use crate::atomic_write::{parent_of, sync_dir};
 use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
 use crate::confinement::Confinement;
@@ -370,7 +371,12 @@ impl Replica for LocalReplica {
                 .check(&rel)
                 .map_err(shared.file_error(FileOp::Delete, target.clone()))?;
             expect.check(on_disk_at(&target))?;
-            fs::remove_file(&target).map_err(shared.file_error(FileOp::Delete, target.clone()))
+            // The folder synced too, so the delete is durable before its
+            // record commits, like a write's rename (SPEC §7.5).
+            fs::remove_file(&target)
+                .and_then(|()| sync_dir(parent_of(&target)?))
+                .map(drop)
+                .map_err(shared.file_error(FileOp::Delete, target.clone()))
         })
         .await
     }

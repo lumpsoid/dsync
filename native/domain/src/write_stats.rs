@@ -27,9 +27,9 @@ pub enum Stage {
     Mtime,
     /// Setting the permission bits, or deciding once not to (SPEC §7.4).
     Mode,
-    /// Closing the handle.
+    /// Syncing the bytes to disk and closing the handle (SPEC §7.2).
     Close,
-    /// Renaming the temp onto the target.
+    /// Renaming the temp onto the target and syncing its folder.
     Rename,
     /// Reading back what actually landed (SPEC §7.4).
     Stat,

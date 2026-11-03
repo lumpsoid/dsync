@@ -1,10 +1,9 @@
 //! Landing one file on a writer thread (SPEC §7.2-§7.6): parent folders,
 //! what is at the target, a temp in the staging folder renamed onto it, the
 //! bytes - hashed as they are written, and checked against the source's
-//! hash before the rename - mtime, mode, and the state that actually
-//! landed. Blocking
-//! `std::fs` throughout; the pool (`writer_pool`) runs it on its own
-//! threads.
+//! hash before the rename - mtime, mode, the bytes and the rename made
+//! durable, and the state that actually landed. Blocking `std::fs`
+//! throughout; the pool (`writer_pool`) runs it on its own threads.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions, Permissions};
@@ -21,6 +20,7 @@ use dsync_domain::{
 use ring::digest;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
+use crate::atomic_write::{parent_of, sync_dir};
 use crate::body::BodyError;
 use crate::confinement::Confinement;
 use crate::local_root::{Located, Root};
@@ -51,6 +51,33 @@ pub(crate) struct Destination {
     modes: ModeStep,
     /// Refuses a write through a link the replica may not go through.
     confinement: Arc<Confinement>,
+    syncs: Syncs,
+}
+
+/// How a write makes what it landed durable before it answers (SPEC §7.2):
+/// the file's bytes before the rename, the rename's folder after it. A
+/// write answers only once both are on disk, and the archives record a
+/// path only for a write that answered, so no archive says a file is in
+/// sync whose bytes a power cut could still take back.
+///
+/// Plain functions rather than calls written in place, so a test can watch
+/// when each runs and make one fail.
+struct Syncs {
+    file: fn(&File) -> io::Result<()>,
+    folder: fn(&Path) -> io::Result<()>,
+}
+
+impl Syncs {
+    const DISK: Syncs = Syncs {
+        file: File::sync_all,
+        folder: sync_folder,
+    };
+}
+
+/// Fsyncs `folder`, making a rename into it or a delete from it durable
+/// (a no-op where a folder cannot be synced, [`sync_dir`]).
+fn sync_folder(folder: &Path) -> io::Result<()> {
+    sync_dir(folder).map(drop)
 }
 
 impl Destination {
@@ -61,6 +88,7 @@ impl Destination {
             staged: Mutex::new(false),
             modes: ModeStep::for_host(),
             confinement,
+            syncs: Syncs::DISK,
         }
     }
 
@@ -249,9 +277,13 @@ fn next_temp() -> u64 {
 /// and once more right before the rename: an edit made while the body
 /// streams is not replaced either.
 ///
+/// It answers only once the bytes and the rename are durable ([`Syncs`]).
+///
 /// On failure the target is untouched: the bytes only ever reach it by
-/// the rename, whole (SPEC §7.6). The temp is this write's own and is
-/// removed. The parent folder and the staging folder are forgotten, on any
+/// the rename, whole (SPEC §7.6) - unless the rename happened and only
+/// making it durable failed, when the target holds the new bytes and the
+/// write still fails, so nothing records them. The temp is this write's
+/// own and is removed. The parent folder and the staging folder are forgotten, on any
 /// failure: a wrongly forgotten folder costs one redundant create on a
 /// path that was failing anyway.
 pub(crate) fn write_file(
@@ -395,12 +427,19 @@ fn land(
         .modes
         .apply(destination.root.base(), &file, meta.mode);
     timer.lap(Stage::Mode);
+    // Timed as part of the close: a new stage would change the stats a
+    // replica server sends, and so the protocol.
+    (destination.syncs.file)(&file).map_err(at(Stage::Close))?;
     drop(file);
     timer.lap(Stage::Close);
     if let Some(staged) = scratch.as_mut() {
         // Again, since the target may have been edited while the body
         // streamed; the early check only spared streaming a doomed write.
-        rename_onto(staged, meta, || expect.check(on_disk_at(target)))?;
+        rename_onto(staged, meta, &destination.syncs, || {
+            expect.check(on_disk_at(target))
+        })?;
+        let folder = parent_of(&staged.onto).map_err(at(Stage::Rename))?;
+        (destination.syncs.folder)(folder).map_err(at(Stage::Rename))?;
         *scratch = None;
         timer.lap(Stage::Rename);
     }
@@ -454,8 +493,9 @@ fn temp_name(onto: &Path) -> io::Result<String> {
 /// Renames `scratch` onto its target. A target on another filesystem than
 /// the staging folder - behind a followed link onto another mount - cannot
 /// take a rename from it, so the temp is copied beside the target first,
-/// its mtime set again, and renamed from there. On success `scratch` no
-/// longer exists; on failure it names whichever temp is left to remove.
+/// its mtime set again, synced like the temp was, and renamed from there.
+/// On success `scratch` no longer exists; on failure it names whichever
+/// temp is left to remove.
 ///
 /// `unchanged` runs right before each rename - after the copy too, which
 /// takes long enough for an edit to land - and stops the write when the
@@ -463,6 +503,7 @@ fn temp_name(onto: &Path) -> io::Result<String> {
 fn rename_onto(
     scratch: &mut Scratch,
     meta: FileMeta,
+    syncs: &Syncs,
     unchanged: impl Fn() -> Result<(), ChangedDuringSync>,
 ) -> Result<(), Failed> {
     unchanged()?;
@@ -475,7 +516,7 @@ fn rename_onto(
                 let file = OpenOptions::new().write(true).open(&beside)?;
                 // Best effort, as for the temp (SPEC §7.4).
                 let _ = file.set_modified(system_time(meta.mtime_us));
-                Ok(())
+                (syncs.file)(&file)
             });
             if let Err(error) = copied {
                 let _ = fs::remove_file(&beside);
@@ -635,6 +676,110 @@ mod tests {
 
         assert!(landed.is_ok(), "{landed:?}");
         assert_eq!(fs::read(root.path().join("file")).unwrap(), b"hello");
+    }
+
+    /// A sync, as a test's [`Syncs`] saw it.
+    #[derive(Debug, PartialEq)]
+    enum Synced {
+        /// The file synced, and what its target held at that moment.
+        File(Vec<u8>),
+        /// The folder synced, and what the target held at that moment.
+        Folder(Vec<u8>),
+    }
+
+    thread_local! {
+        /// The syncs a write on this thread made, and the target they read.
+        static SYNCED: std::cell::RefCell<(PathBuf, Vec<Synced>)> =
+            const { std::cell::RefCell::new((PathBuf::new(), Vec::new())) };
+    }
+
+    fn target_now() -> Vec<u8> {
+        SYNCED.with_borrow(|(target, _)| fs::read(target).unwrap_or_default())
+    }
+
+    fn record_file(_: &File) -> io::Result<()> {
+        let now = target_now();
+        SYNCED.with_borrow_mut(|(_, log)| log.push(Synced::File(now)));
+        Ok(())
+    }
+
+    fn record_folder(_: &Path) -> io::Result<()> {
+        let now = target_now();
+        SYNCED.with_borrow_mut(|(_, log)| log.push(Synced::Folder(now)));
+        Ok(())
+    }
+
+    fn fail(_: &File) -> io::Result<()> {
+        Err(io::Error::other("sync refused"))
+    }
+
+    #[test]
+    fn a_write_answers_only_after_its_bytes_sync_before_the_rename_and_its_folder_after() {
+        let root = tempfile::tempdir().unwrap();
+        let mut destination = destination(root.path(), true);
+        destination.syncs = Syncs {
+            file: record_file,
+            folder: record_folder,
+        };
+        let target = root.path().join("file");
+        fs::write(&target, b"old").unwrap();
+        SYNCED.with_borrow_mut(|(watched, _)| *watched = target.clone());
+
+        let written = write_body(&destination, "file", b"new", source(b"new", 0o644));
+
+        assert!(written.is_ok(), "{written:?}");
+        // Both before the write answered - which is what the applier waits
+        // for before it hands the path's record to a commit batch.
+        let synced = SYNCED.with_borrow_mut(|(_, log)| std::mem::take(log));
+        assert_eq!(
+            synced,
+            [
+                Synced::File(b"old".to_vec()),
+                Synced::Folder(b"new".to_vec())
+            ]
+        );
+    }
+
+    #[test]
+    fn bytes_that_cannot_be_synced_are_never_renamed_onto_the_target() {
+        let root = tempfile::tempdir().unwrap();
+        let mut destination = destination(root.path(), true);
+        destination.syncs = Syncs {
+            file: fail,
+            folder: record_folder,
+        };
+        let target = root.path().join("file");
+        fs::write(&target, b"old").unwrap();
+
+        let written = write_body(&destination, "file", b"new", source(b"new", 0o644));
+
+        let Err(ReplicaError::Write(failed)) = written else {
+            panic!("{written:?}");
+        };
+        assert_eq!(failed.stage, Stage::Close);
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        let staging = root.path().join(STAGING_DIR);
+        assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_rename_that_cannot_be_made_durable_fails_the_write() {
+        let root = tempfile::tempdir().unwrap();
+        let mut destination = destination(root.path(), true);
+        destination.syncs = Syncs {
+            file: File::sync_all,
+            folder: |_| Err(io::Error::other("sync refused")),
+        };
+
+        let written = write_body(&destination, "file", b"new", source(b"new", 0o644));
+
+        // The bytes are there, but the write failed, so nothing records
+        // them: the next run finds them and commits or copies again.
+        let Err(ReplicaError::Write(failed)) = written else {
+            panic!("{written:?}");
+        };
+        assert_eq!(failed.stage, Stage::Rename);
+        assert_eq!(fs::read(root.path().join("file")).unwrap(), b"new");
     }
 
     #[test]
