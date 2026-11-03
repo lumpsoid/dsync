@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dsync_domain::{
     Archive, CaseFolding, ContentHash, FileMeta, FileState, Jobs, OnDisk, RelPath, RelPathError,
     RuleSet, ScanEntry, ScanResult, SkippedPath, SkippedReason, Status, WalkedTree,
-    is_staging_dir_name, is_temp_file_name,
+    is_root_lock_name, is_staging_dir_name, is_temp_file_name,
 };
 use ring::digest;
 
@@ -324,8 +324,9 @@ impl Walk<'_> {
                 continue;
             }
             // Where this replica's writes stage their temps, or a
-            // single-file replica's beside a file here (SPEC §7.2).
-            if parent.is_none() && is_staging_dir_name(text) {
+            // single-file replica's beside a file here (SPEC §7.2); and
+            // the in-root locks of either (SPEC §4.3).
+            if parent.is_none() && (is_staging_dir_name(text) || is_root_lock_name(text)) {
                 continue;
             }
             let source = dir.join(&name);

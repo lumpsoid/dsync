@@ -34,6 +34,26 @@ pub fn is_staging_dir_name(name: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.len() > 1 && rest.starts_with('.'))
 }
 
+/// The lock file at a folder replica's root that excludes a run from
+/// another installation over the same folder (SPEC §4.3). The scan skips
+/// it, like the staging folder beside it.
+pub const ROOT_LOCK_FILE: &str = ".dsync-lock";
+
+/// The in-root lock file of a single-file replica whose file is
+/// `file_name`: `.dsync-lock.<file_name>`, beside the file - named after
+/// it for the reason [`file_staging_dir_for`] is.
+pub fn file_root_lock_for(file_name: &str) -> String {
+    format!("{ROOT_LOCK_FILE}.{file_name}")
+}
+
+/// Whether `name` (one path segment at a folder replica's root) is an
+/// in-root lock file: the replica's own, or a single-file replica's beside
+/// a file in that folder. The scan skips both.
+pub fn is_root_lock_name(name: &str) -> bool {
+    name.strip_prefix(ROOT_LOCK_FILE)
+        .is_some_and(|rest| rest.is_empty() || rest.len() > 1 && rest.starts_with('.'))
+}
+
 /// Sits between the target's name and the parts that make it unique.
 pub const TEMP_FILE_MARKER: &str = ".dsync-tmp.";
 
@@ -90,5 +110,16 @@ mod tests {
         assert!(!is_staging_dir_name(".dsync-stagingx"));
         assert!(!is_staging_dir_name(".dsync-stag"));
         assert!(!is_staging_dir_name("notes.md"));
+    }
+
+    #[test]
+    fn both_root_lock_names_are_recognised_and_near_misses_are_not() {
+        assert!(is_root_lock_name(ROOT_LOCK_FILE));
+        assert!(is_root_lock_name(&file_root_lock_for("notes.md")));
+        assert_eq!(file_root_lock_for("notes.md"), ".dsync-lock.notes.md");
+        assert!(!is_root_lock_name(".dsync-lock."));
+        assert!(!is_root_lock_name(".dsync-lockx"));
+        assert!(!is_root_lock_name(".dsync-loc"));
+        assert!(!is_root_lock_name("notes.md"));
     }
 }

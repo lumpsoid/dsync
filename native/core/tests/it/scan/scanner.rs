@@ -437,6 +437,20 @@ fn a_single_file_roots_staging_folder_beside_its_file_is_skipped_at_the_root() {
     assert!(result.skipped.is_empty(), "{:?}", result.skipped);
 }
 
+#[test]
+fn the_root_lock_files_at_the_root_are_skipped_and_one_deeper_is_not() {
+    let tree = Tree::new();
+    tree.write(".dsync-lock", "{}");
+    tree.write(".dsync-lock.notes.md", "{}");
+    tree.write(".dsync-lockx", "kept");
+    tree.write("sub/.dsync-lock", "kept");
+
+    let result = tree.scan(&Archive::default(), &RuleSet::default());
+
+    assert_eq!(paths(&result), [".dsync-lockx", "sub/.dsync-lock"]);
+    assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+}
+
 // -- case-fold collisions (SPEC §16) --
 
 fn folding_scanner() -> dsync_core::Scanner {

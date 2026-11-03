@@ -269,13 +269,23 @@ async fn the_scan_reports_the_file_at_its_synced_name_whatever_the_rules_say() {
     let paths: Vec<&str> = scan.entries.iter().map(|e| e.path.as_str()).collect();
     assert_eq!(paths, [AS_PATH]);
     assert!(scan.skipped.is_empty(), "{:?}", scan.skipped);
-    // No probe is left beside the file.
+    // No probe is left beside the file; the run's own lock is, while the
+    // replica is locked (SPEC §4.3).
     let mut left: Vec<String> = fs::read_dir(site.root(Side::B))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     left.sort();
-    assert_eq!(left, ["empty", "mine.md", "sibling.md", "sub"]);
+    assert_eq!(
+        left,
+        [
+            ".dsync-lock.mine.md",
+            "empty",
+            "mine.md",
+            "sibling.md",
+            "sub"
+        ]
+    );
 }
 
 #[tokio::test]

@@ -16,6 +16,11 @@
 //! A run holds two of them on each local replica ([`RunLocks`]): one keyed
 //! by its profile and side, which guards the archive, and one keyed by its
 //! folder, which guards the files against a run under any other profile.
+//! Both live in the run's state directory, so a third, inside the root
+//! itself ([`root_lock`]), guards the files against a run of another
+//! installation.
+
+mod root_lock;
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -25,7 +30,9 @@ use std::sync::{Mutex, PoisonError};
 
 use dsync_domain::{EntryId, Side};
 
+use crate::local_root::Root;
 use crate::state_dir::StateDir;
+use root_lock::RootLock;
 
 /// Canonical paths of the locks this process holds.
 static HELD: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
@@ -54,6 +61,15 @@ pub enum LockError {
         lock.display()
     )]
     FolderInUse { folder: PathBuf, lock: PathBuf },
+    /// A run of another installation - another state directory, or another
+    /// host - holds the lock file inside the replica root; `owner` is who,
+    /// as that file records it.
+    #[error(
+        "Replica in use by another dsync run ({owner}). Run this again when that run \
+         finishes; if it is no longer running, delete {} and run this again.",
+        lock.display()
+    )]
+    RootInUse { lock: PathBuf, owner: String },
     #[error("Replica lock {}: {source}", path.display())]
     Io {
         path: PathBuf,
@@ -64,8 +80,10 @@ pub enum LockError {
 
 /// The locks a run holds on one local replica for its whole length:
 /// the profile's (the archive is this run's) and the folder's (the files
-/// are). The one place their order is decided: the profile's first, so a
-/// repeat of the same run is still refused as that; then the folder's.
+/// are), then the one inside the root (another installation's runs). The
+/// one place their order is decided: the profile's first, so a repeat of
+/// the same run is still refused as that; then the folder's; then the
+/// root's, so this installation's own refusals read as they always have.
 /// Released in the reverse order, as the fields drop.
 ///
 /// Holding one is the only way to a replica's archive
@@ -74,23 +92,27 @@ pub enum LockError {
 pub(crate) struct RunLocks {
     entry_id: EntryId,
     archive_log: PathBuf,
+    /// `None` while there is no folder to put it in (see
+    /// [`RootLock::acquire`]); [`RunLocks::claim_root`] takes it once the
+    /// run has created the root.
+    in_root: Option<RootLock>,
     _folder: ReplicaLock,
     _profile: ReplicaLock,
 }
 
 impl RunLocks {
-    /// Takes both for side `side` of `entry_id`, whose folder is `root`, in
-    /// `state`. `root` need not exist yet (SPEC §4.5): see
-    /// [`canonical_root`]. A refusal of either claims nothing.
+    /// Takes all three for side `side` of `entry_id`, whose root is
+    /// `root`, in `state`. `root` need not exist yet (SPEC §4.5): see
+    /// [`canonical_root`]. A refusal of any claims nothing.
     pub(crate) fn acquire(
         state: &StateDir,
         entry_id: &EntryId,
         side: Side,
-        root: &Path,
+        root: &Root,
     ) -> Result<RunLocks, LockError> {
         let profile = ReplicaLock::acquire(&state.lock(entry_id, side))?;
-        let folder = canonical_root(root).map_err(|source| LockError::Io {
-            path: root.to_owned(),
+        let folder = canonical_root(root.path()).map_err(|source| LockError::Io {
+            path: root.path().to_owned(),
             source,
         })?;
         let lock = state.folder_lock(&folder);
@@ -98,12 +120,24 @@ impl RunLocks {
             LockError::Held { path } => LockError::FolderInUse { folder, lock: path },
             other => other,
         })?;
+        let in_root = RootLock::acquire(&root.lock_file(), state.path())?;
         Ok(RunLocks {
             entry_id: entry_id.clone(),
             archive_log: state.archive_log(entry_id, side),
+            in_root,
             _folder: folder,
             _profile: profile,
         })
+    }
+
+    /// Takes the lock inside `root` - this run's root, its state in
+    /// `state` - if it was not taken at [`RunLocks::acquire`] because the
+    /// root did not exist yet.
+    pub(crate) fn claim_root(&mut self, state: &StateDir, root: &Root) -> Result<(), LockError> {
+        if self.in_root.is_none() {
+            self.in_root = RootLock::acquire(&root.lock_file(), state.path())?;
+        }
+        Ok(())
     }
 
     /// The entry whose archive these locks guard.

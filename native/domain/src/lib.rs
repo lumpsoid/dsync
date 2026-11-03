@@ -162,8 +162,8 @@ pub use skipped_path::{SkippedAt, SkippedPath, SkippedReason, failure_count, unr
 pub use ssh_access::{EmptySshValue, SshAccess, SshCommand, SshOption};
 pub use sync_target::{AdHocTarget, SyncTarget};
 pub use temp_name::{
-    STAGING_DIR, TEMP_FILE_MARKER, file_staging_dir_for, is_staging_dir_name, is_temp_file_name,
-    temp_name_for,
+    ROOT_LOCK_FILE, STAGING_DIR, TEMP_FILE_MARKER, file_root_lock_for, file_staging_dir_for,
+    is_root_lock_name, is_staging_dir_name, is_temp_file_name, temp_name_for,
 };
 pub use text_diff::{Block, Hunk, Line, Span, TextDiff};
 pub use tuning::Tuning;

@@ -467,6 +467,31 @@ fn a_folder_in_use_names_the_folder_and_says_to_run_again_even_when_quiet() {
 }
 
 #[test]
+fn a_root_in_use_names_its_owner_and_how_to_clear_it_even_when_quiet() {
+    let in_use = RunEvent::Error(RunError::Replica {
+        side: Side::A,
+        op: ReplicaOp::Lock,
+        source: Arc::new(ReplicaError::Lock(LockError::RootInUse {
+            lock: PathBuf::from("/sdcard/notes/.dsync-lock"),
+            owner: "pid 7 on host phone".to_owned(),
+        })),
+    });
+    for verbosity in [Verbosity::Quiet, Verbosity::Normal] {
+        let (out, err) = rendered(&fixtures::view(), verbosity, std::slice::from_ref(&in_use));
+        assert_eq!(out, "");
+        assert!(
+            err.starts_with("error: replica A (")
+                && err.ends_with(
+                    ") is in use by a dsync run of another installation (pid 7 on host phone).\n\
+                     Run this again when that run finishes. If it is no longer running, delete \
+                     /sdcard/notes/.dsync-lock and run this again.\n"
+                ),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 fn the_scan_tally_shows_only_when_verbose() {
     assert_eq!(out(Verbosity::Quiet, &[scan_tally()]), "");
     assert_eq!(out(Verbosity::Normal, &[scan_tally()]), "");

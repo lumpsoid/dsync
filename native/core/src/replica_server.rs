@@ -722,9 +722,14 @@ mod tests {
             let spec = self.spec();
             let state = StateDir::new(self.dir.path().join("state"));
             let root = self.dir.path().join("root");
+            let root = crate::Root::folder(root.display().to_string());
             match RunLocks::acquire(&state, &spec.entry, spec.side, &root) {
                 Ok(_) => true,
-                Err(LockError::Held { .. } | LockError::FolderInUse { .. }) => false,
+                Err(
+                    LockError::Held { .. }
+                    | LockError::FolderInUse { .. }
+                    | LockError::RootInUse { .. },
+                ) => false,
                 Err(error) => panic!("{error}"),
             }
         }

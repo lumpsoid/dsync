@@ -221,12 +221,8 @@ impl Replica for LocalReplica {
             let mut session = shared.session();
             // A second lock in one session is refused here as held, like
             // another run's.
-            let lock = RunLocks::acquire(
-                &shared.state,
-                &shared.entry_id,
-                shared.side,
-                shared.root.path(),
-            )?;
+            let lock =
+                RunLocks::acquire(&shared.state, &shared.entry_id, shared.side, &shared.root)?;
             let mut store = Box::new(ArchiveStore::open_replica(
                 &lock,
                 shared.root.text().to_owned(),
@@ -269,7 +265,12 @@ impl Replica for LocalReplica {
             shared
                 .root
                 .create()
-                .map_err(shared.file_error(FileOp::CreateRoot, shared.root.path().to_path_buf()))
+                .map_err(shared.file_error(FileOp::CreateRoot, shared.root.path().to_path_buf()))?;
+            // A root missing at lock had nowhere to hold its in-root lock.
+            if let Session::Locked { lock, .. } = &mut *shared.session() {
+                lock.claim_root(&shared.state, &shared.root)?;
+            }
+            Ok(())
         })
         .await
     }

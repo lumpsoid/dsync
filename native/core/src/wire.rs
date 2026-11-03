@@ -120,6 +120,10 @@ pub(crate) enum WireError {
     /// a [`RelPath`], a bucket out of range), or its own link failed.
     Protocol(String),
     Halted(String),
+    RootInUse {
+        lock: String,
+        owner: String,
+    },
 }
 
 /// An `io::Error` as it crosses the wire: its kind, where it has a name,
@@ -147,6 +151,10 @@ impl From<ReplicaError> for WireError {
             ReplicaError::Lock(LockError::FolderInUse { folder, lock }) => WireError::FolderInUse {
                 folder: shown(&folder),
                 lock: shown(&lock),
+            },
+            ReplicaError::Lock(LockError::RootInUse { lock, owner }) => WireError::RootInUse {
+                lock: shown(&lock),
+                owner,
             },
             ReplicaError::Lock(LockError::Io { path, source }) => WireError::Lock {
                 path: shown(&path),
@@ -191,6 +199,10 @@ impl From<WireError> for ReplicaError {
             WireError::FolderInUse { folder, lock } => ReplicaError::Lock(LockError::FolderInUse {
                 folder: PathBuf::from(folder),
                 lock: PathBuf::from(lock),
+            }),
+            WireError::RootInUse { lock, owner } => ReplicaError::Lock(LockError::RootInUse {
+                lock: PathBuf::from(lock),
+                owner,
             }),
             WireError::Lock { path, io } => ReplicaError::Lock(LockError::Io {
                 path: PathBuf::from(path),
@@ -524,6 +536,21 @@ mod tests {
             matches!(&back, ReplicaError::Lock(LockError::FolderInUse { folder, lock })
                 if folder == &PathBuf::from("/home/me/Docs")
                     && lock == &PathBuf::from("/state/folder-0123.lock")),
+            "{back:?}"
+        );
+    }
+
+    #[test]
+    fn a_root_in_use_comes_back_naming_its_owner() {
+        let wire = WireError::from(ReplicaError::Lock(LockError::RootInUse {
+            lock: PathBuf::from("/sdcard/Docs/.dsync-lock"),
+            owner: "pid 7 on host phone".to_owned(),
+        }));
+        let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
+        assert!(
+            matches!(&back, ReplicaError::Lock(LockError::RootInUse { lock, owner })
+                if lock == &PathBuf::from("/sdcard/Docs/.dsync-lock")
+                    && owner == "pid 7 on host phone"),
             "{back:?}"
         );
     }

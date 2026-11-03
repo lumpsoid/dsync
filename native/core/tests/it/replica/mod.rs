@@ -13,6 +13,7 @@ mod pipelining;
 mod read;
 mod remote;
 mod removal;
+mod root_lock;
 mod scan;
 mod served;
 #[cfg(unix)]
@@ -33,6 +34,7 @@ fn child_role() {
     match role.as_str() {
         "tear-write" => killed_write::tear_write(&path),
         "hold-folder" => hello_lock::hold_folder(&path),
+        "hold-root" => root_lock::hold_root(&path),
         other => panic!("unknown role {other}"),
     }
 }

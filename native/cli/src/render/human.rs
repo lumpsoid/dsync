@@ -425,6 +425,17 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
             );
             return;
         }
+        if let Some((side, lock, owner)) = root_in_use(error) {
+            let _ = writeln!(
+                self.err,
+                "error: {} is in use by a dsync run of another installation ({owner}).\n\
+                 Run this again when that run finishes. If it is no longer running, delete {} \
+                 and run this again.",
+                replica(side),
+                lock.display()
+            );
+            return;
+        }
         let _ = match error {
             RunError::MissingRoot(missing) => {
                 let device = self.view.replica(missing.side).device();
@@ -475,6 +486,18 @@ fn folder_in_use(error: &RunError) -> Option<(Side, &Path, &Path)> {
             ReplicaError::Lock(LockError::FolderInUse { folder, lock }) => {
                 Some((*side, folder, lock))
             }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The side, lock file and recorded owner of a replica root another
+/// installation's run has.
+fn root_in_use(error: &RunError) -> Option<(Side, &Path, &str)> {
+    match error {
+        RunError::Replica { side, source, .. } => match &**source {
+            ReplicaError::Lock(LockError::RootInUse { lock, owner }) => Some((*side, lock, owner)),
             _ => None,
         },
         _ => None,

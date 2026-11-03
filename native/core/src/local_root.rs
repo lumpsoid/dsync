@@ -6,7 +6,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use dsync_domain::{
-    Archive, RelPath, ReplicaRoot, RootKind, RuleSet, STAGING_DIR, ScanResult, file_staging_dir_for,
+    Archive, ROOT_LOCK_FILE, RelPath, ReplicaRoot, RootKind, RuleSet, STAGING_DIR, ScanResult,
+    file_root_lock_for, file_staging_dir_for,
 };
 
 use crate::scanner::{Scanner, UnreadableRoot};
@@ -121,6 +122,16 @@ impl Root {
         match &self.shape {
             Shape::Folder(folder) => folder.join(STAGING_DIR),
             Shape::File { dir, name, .. } => dir.join(file_staging_dir_for(name.as_str())),
+        }
+    }
+
+    /// The lock file a run takes inside this root (SPEC §4.3), named and
+    /// placed as [`Root::staging`] is, so a folder root and a file root
+    /// over the same folder lock apart.
+    pub(crate) fn lock_file(&self) -> PathBuf {
+        match &self.shape {
+            Shape::Folder(folder) => folder.join(ROOT_LOCK_FILE),
+            Shape::File { dir, name, .. } => dir.join(file_root_lock_for(name.as_str())),
         }
     }
 

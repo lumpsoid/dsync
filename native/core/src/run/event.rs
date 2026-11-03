@@ -135,7 +135,11 @@ impl RunError {
             RunError::Replica { source, .. }
                 if matches!(
                     **source,
-                    ReplicaError::Lock(LockError::Held { .. } | LockError::FolderInUse { .. })
+                    ReplicaError::Lock(
+                        LockError::Held { .. }
+                            | LockError::FolderInUse { .. }
+                            | LockError::RootInUse { .. }
+                    )
                 )
         )
     }
