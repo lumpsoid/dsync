@@ -71,8 +71,9 @@ impl Recall {
 
     /// What a re-plan `plan` recalls of `answer`, the answer given to
     /// `earlier`, as [`Recalled`] would build it; `None` when it could not
-    /// replay that answer. For tests of a decider's `decide_again`.
-    #[cfg(feature = "test-support")]
+    /// replay that answer. For a head that carries a review's unconfirmed
+    /// choices across a restart, and for tests of a decider's
+    /// `decide_again`.
     pub fn after(earlier: &Plan, answer: &[Action], plan: &Plan) -> Option<Recall> {
         let mut record = Record::default();
         record.note(earlier, answer).then(|| record.recall(plan))

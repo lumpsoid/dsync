@@ -875,14 +875,38 @@ const overwritesDeclinedMessage =
 
 /// A re-dialled review's header (SPEC §11.4): how many rows [changed]
 /// since the user approved them, which the review shows first, and how
-/// many other choices are [kept].
-String recalledLine({required int changed, required int kept}) {
-  final shown =
-      'Reconnected. ${formatCount(changed)} changed since you approved, '
-      'shown first';
+/// many other choices are [kept]. A [draft]'s choices were left
+/// unconfirmed when the app went to the background, and the review
+/// reopens even with none changed.
+String recalledLine({
+  required int changed,
+  required int kept,
+  required bool draft,
+}) {
+  if (draft && changed == 0) {
+    return 'Resumed. Your ${formatCount(kept)} '
+        '${kept == 1 ? 'choice is kept as you left it' : 'choices are kept as you left them'}';
+  }
+  final shown = draft
+      ? 'Resumed. ${formatCount(changed)} changed since you left, '
+            'shown first'
+      : 'Reconnected. ${formatCount(changed)} changed since you approved, '
+            'shown first';
   if (kept == 0) return shown;
   return '$shown; your other ${formatCount(kept)} '
       '${kept == 1 ? 'choice is' : 'choices are'} kept';
+}
+
+/// The title of a recalled review's group of [count] changed rows.
+String changedTitle(
+  ({int changed, int kept, bool draft})? recalled,
+  int count,
+) {
+  final since = switch (recalled) {
+    (draft: true, changed: _, kept: _) => 'Changed since you left',
+    _ => 'Changed since you approved',
+  };
+  return '$since (${formatCount(count)})';
 }
 
 const noSummaryMessage = 'The run ended without reporting a summary.';

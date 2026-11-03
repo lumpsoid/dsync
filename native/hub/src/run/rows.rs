@@ -90,12 +90,14 @@ impl PlanRows {
 
     /// [`PlanRows::of`] for a re-dialled entry's plan, each row marked by
     /// how `recall` (built over this very `plan`) found it: a changed row
-    /// with what it was, and the counts of changed and kept rows.
+    /// with what it was, and the counts of changed and kept rows. A
+    /// `draft` recall is of choices a paused review left unconfirmed.
     pub(super) fn recalled(
         plan: &Plan,
         warn_size_bytes: Option<u64>,
         limits: &PeekLimits,
         recall: &Recall,
+        draft: bool,
     ) -> PlanRows {
         let mut rows = PlanRows::of(plan, warn_size_bytes, limits);
         let (mut changed, mut kept) = (0, 0);
@@ -122,7 +124,11 @@ impl PlanRows {
             }
             tally(conflict.changed.is_some());
         }
-        rows.recalled = Some(RecalledView { changed, kept });
+        rows.recalled = Some(RecalledView {
+            changed,
+            kept,
+            draft,
+        });
         rows
     }
 

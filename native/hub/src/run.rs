@@ -817,9 +817,14 @@ impl HeadDecider {
                 let _ = ask.reply.send(view);
             }
         };
-        answered
-            .unwrap_or_else(|_| Choices::none())
-            .actions(plan, &peer_label)
+        match answered {
+            Ok(choices) => choices.actions(plan, &peer_label),
+            Err(_) => {
+                self.control
+                    .update(|state| state.unanswered(plan, &peer_label));
+                Vec::new()
+            }
+        }
     }
 }
 

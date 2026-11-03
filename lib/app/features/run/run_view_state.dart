@@ -625,7 +625,7 @@ final class SyncRunPlanReplaced extends SyncRunPlanChange {
   final ({int toDevice, int toThisDevice}) copyBytes;
   final int bytesToTransfer;
   final String? sizeWarning;
-  final ({int changed, int kept})? recalled;
+  final ({int changed, int kept, bool draft})? recalled;
 }
 
 /// The rows of the plan already shown whose choice or outcome changed.
@@ -742,7 +742,7 @@ class SyncRunViewState extends ChangeNotifier {
   List<int> _listedConflicts = const [];
   List<int> _changedConflicts = const [];
   List<int> _changedActions = const [];
-  ({int changed, int kept})? _recalled;
+  ({int changed, int kept, bool draft})? _recalled;
   final ValueNotifier<List<SyncRunPlanRow>> _plan = ValueNotifier(const []);
   Map<SyncRunPlanGroup, SyncRunPlanSection> _planSections = _emptyPlanSections;
   int _bytesToTransfer = 0;
@@ -818,7 +818,7 @@ class SyncRunViewState extends ChangeNotifier {
   /// A re-dialled entry's plan reviewed again with the earlier answers
   /// kept: how many of its rows changed, and how many kept their choice.
   /// `null` for a first review. Fixed with the plan.
-  ({int changed, int kept})? get recalled => _recalled;
+  ({int changed, int kept, bool draft})? get recalled => _recalled;
 
   /// The reconciled plan (SPEC §6).
   List<SyncRunPlanRow> get plan => _plan.value;

@@ -458,12 +458,14 @@ impl EntryState {
     /// replacing the unmarked rows its plan's event may have built
     /// already. Nothing is reported on them yet: the run applies only once
     /// the review is answered.
-    fn take_recalled(&mut self, plan: &Plan, recall: &Recall) -> Arc<PlanRows> {
+    /// A `draft` recall is of choices left unconfirmed, not of an answer.
+    fn take_recalled(&mut self, plan: &Plan, recall: &Recall, draft: bool) -> Arc<PlanRows> {
         let taken = Arc::new(PlanRows::recalled(
             plan,
             self.warn_size_bytes,
             &self.peek,
             recall,
+            draft,
         ));
         self.choices = Choices::recalled(&taken, recall);
         self.outcomes = Arc::new(Outcomes::over(&taken));
@@ -542,6 +544,15 @@ impl EntryState {
     }
 }
 
+/// A review left unconfirmed when the app went to the background: the
+/// entry's plan and the actions its choices so far keep, which preselect
+/// that entry's next review once the run restarts (SPEC §11.4).
+struct Draft {
+    entry: usize,
+    plan: Plan,
+    answer: Vec<Action>,
+}
+
 /// A run session's state: its entries, the running one's state, and how
 /// the head steered it.
 pub(crate) struct RunState {
@@ -559,6 +570,8 @@ pub(crate) struct RunState {
     /// Actions completed by the entries before `current`.
     completed_earlier: usize,
     entry: EntryState,
+    /// Kept across a restart until its entry is reviewed again.
+    draft: Option<Draft>,
     timings: Option<String>,
 }
 
@@ -576,13 +589,15 @@ impl RunState {
             current: None,
             completed_earlier: 0,
             entry: EntryState::new(None, peek, 0),
+            draft: None,
             timings: None,
         }
     }
 
     /// A fresh attempt, from the first entry: everything the last one
-    /// showed is gone but the entries' roots, and the count of plans
-    /// taken, so the attempt's plans are numbered past the last one's.
+    /// showed is gone but the entries' roots, a review's draft, and the
+    /// count of plans taken, so the attempt's plans are numbered past the
+    /// last one's.
     fn begin(&mut self) {
         let entries = std::mem::take(&mut self.entries)
             .into_iter()
@@ -595,6 +610,7 @@ impl RunState {
             closing: self.closing,
             entries,
             entry: EntryState::new(None, self.peek, self.entry.plans_taken),
+            draft: self.draft.take(),
             ..RunState::new(self.dry_run, self.peek)
         };
     }
@@ -726,11 +742,17 @@ impl RunState {
     /// review, and no entry running has none to review - or the review
     /// opens, every row as planned; or, for a re-dialled entry's plan
     /// that changed since it was answered, with what `recall` kept of the
-    /// earlier answers.
+    /// earlier answers; or, for the entry a paused review left a draft
+    /// for, with what the draft keeps of its choices.
     pub(crate) fn review(&mut self, plan: &Plan, recall: Option<&Recall>) -> Review {
-        let taken = match recall {
-            None => self.entry.take_plan(plan),
-            Some(recall) => self.entry.take_recalled(plan, recall),
+        let drafted = match (recall, self.take_draft()) {
+            (None, Some(draft)) => Recall::after(&draft.plan, &draft.answer, plan),
+            _ => None,
+        };
+        let taken = match (recall, &drafted) {
+            (Some(recall), _) => self.entry.take_recalled(plan, recall, false),
+            (None, Some(drafted)) => self.entry.take_recalled(plan, drafted, true),
+            (None, None) => self.entry.take_plan(plan),
         };
         let running = self.current.and_then(|index| self.entries.get(index));
         match running {
@@ -749,9 +771,34 @@ impl RunState {
     /// A re-dialled entry's `plan` was answered as it was before, without
     /// a review: it applies, its rows showing the choices `recall` kept.
     pub(crate) fn carried(&mut self, plan: &Plan, recall: &Recall) -> Urgency {
-        self.entry.take_recalled(plan, recall);
+        self.entry.take_recalled(plan, recall, false);
         self.phase = Phase::Applying;
         Urgency::Now
+    }
+
+    /// The review of `plan` closed unanswered. Paused, its choices so far
+    /// are kept as a draft for the entry's next review; `peer_label` names
+    /// a keep-both copy among them.
+    pub(crate) fn unanswered(&mut self, plan: &Plan, peer_label: &str) -> Urgency {
+        if let (Some(Suspend::Pause), Phase::Reviewing(_), Some(entry)) =
+            (self.suspend, &self.phase, self.current)
+        {
+            self.draft = Some(Draft {
+                entry,
+                plan: plan.clone(),
+                answer: self.entry.choices.actions(plan, peer_label),
+            });
+        }
+        Urgency::Unseen
+    }
+
+    /// The draft left for the running entry, taken: it preselects one
+    /// review only.
+    fn take_draft(&mut self) -> Option<Draft> {
+        match &self.draft {
+            Some(draft) if Some(draft.entry) == self.current => self.draft.take(),
+            _ => None,
+        }
     }
 
     /// SPEC §10's guard asks about `verdict`: `Some` answers at once (a
@@ -3077,7 +3124,8 @@ mod tests {
             shown.recalled,
             Some(RecalledView {
                 changed: 0,
-                kept: 4
+                kept: 4,
+                draft: false,
             })
         );
     }
@@ -3111,7 +3159,8 @@ mod tests {
             shown.recalled,
             Some(RecalledView {
                 changed: 2,
-                kept: 3
+                kept: 3,
+                draft: false,
             })
         );
         assert_eq!(
@@ -3244,5 +3293,124 @@ mod tests {
         assert_eq!(changed_actions(second.plan.new_plan()), [true, false]);
         let third = state.snapshot().view(&mut delivered);
         assert!(matches!(third.plan, PlanUpdateView::Same { .. }));
+    }
+
+    /// `answered_plan`'s review given `first_answer`'s choices, then left
+    /// in the background unconfirmed: paused, and come back to.
+    fn paused_with_choices(plan: &Plan) -> RunState {
+        let mut state = reviewing(plan);
+        choose(&mut state, 0, ActionChoiceView::Reversed);
+        choose(&mut state, 1, ActionChoiceView::Skipped);
+        settle(&mut state, 0, ConflictChoiceView::KeepB);
+        settle(&mut state, 1, ConflictChoiceView::KeepBoth);
+        assert_eq!(state.steer(RunIntent::Pause), Steer::Stop);
+        state.unanswered(plan, "b0");
+        finish(&mut state, 0, EntryOutcome::NotRun);
+        state.ended(None);
+        assert!(matches!(phase(&state), RunPhaseView::Paused { .. }));
+        assert_eq!(state.steer(RunIntent::Foreground), Steer::Restart);
+        state.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 0);
+        state.connected(1);
+        state
+    }
+
+    /// A review paused unconfirmed reopens on the restart with its choices
+    /// preselected - even with nothing changed, it waits for Confirm - and
+    /// marked as a draft.
+    #[test]
+    fn a_paused_review_reopens_with_its_unconfirmed_choices() {
+        let plan = answered_plan();
+        let mut state = paused_with_choices(&plan);
+        assert_eq!(state.review(&plan, None), asked("b0"));
+
+        let view = state.view();
+        assert!(matches!(view.phase, RunPhaseView::Reviewing { .. }));
+        let shown = view.plan.new_plan();
+        assert_eq!(
+            shown.recalled,
+            Some(RecalledView {
+                changed: 0,
+                kept: 4,
+                draft: true,
+            })
+        );
+        assert_eq!(
+            action_choices(shown),
+            [ActionChoiceView::Reversed, ActionChoiceView::Skipped]
+        );
+        assert_eq!(
+            conflict_choices(shown),
+            [ConflictChoiceView::KeepB, ConflictChoiceView::KeepBoth]
+        );
+    }
+
+    /// A row that changed while the app was away starts at its default,
+    /// marked; the unchanged rows keep the draft's choices.
+    #[test]
+    fn a_paused_review_s_changed_rows_start_at_their_defaults() {
+        let earlier = answered_plan();
+        let mut state = paused_with_choices(&earlier);
+        let now = Plan {
+            actions: vec![reversible("r"), proposed(copy_back("p"))],
+            conflicts: earlier.conflicts.clone(),
+        };
+        state.review(&now, None);
+
+        let view = state.view();
+        let shown = view.plan.new_plan();
+        assert_eq!(
+            action_choices(shown),
+            [ActionChoiceView::Reversed, ActionChoiceView::Proposed]
+        );
+        assert_eq!(changed_actions(shown), [false, true]);
+        assert_eq!(
+            shown.recalled,
+            Some(RecalledView {
+                changed: 1,
+                kept: 3,
+                draft: true,
+            })
+        );
+    }
+
+    /// The draft preselects one review only, and only its own entry's.
+    #[test]
+    fn a_draft_preselects_its_entry_s_next_review_only() {
+        let plan = answered_plan();
+        let mut state = paused_with_choices(&plan);
+        state.review(&plan, None);
+        assert!(state.draft.is_none(), "taken by the review it preselected");
+
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(2));
+        start(&mut state, 1);
+        assert_eq!(state.review(&plan, None), asked("b1"));
+        choose(&mut state, 0, ActionChoiceView::Skipped);
+        state.steer(RunIntent::Pause);
+        state.unanswered(&plan, "b1");
+        finish(&mut state, 1, EntryOutcome::NotRun);
+        state.ended(None);
+        state.steer(RunIntent::Foreground);
+        start(&mut state, 0);
+        state.review(&plan, None);
+        assert_eq!(state.view().plan.new_plan().recalled, None, "entry 0's");
+        finish(&mut state, 0, synced(0));
+        start(&mut state, 1);
+        state.review(&plan, None);
+        assert_eq!(
+            action_choices(state.view().plan.new_plan()),
+            [ActionChoiceView::Skipped, ActionChoiceView::Proposed]
+        );
+    }
+
+    /// A review closed by a stop, not a pause, leaves no draft.
+    #[test]
+    fn a_stopped_review_leaves_no_draft() {
+        let plan = answered_plan();
+        let mut state = reviewing(&plan);
+        choose(&mut state, 1, ActionChoiceView::Skipped);
+        state.steer(RunIntent::Stop);
+        state.unanswered(&plan, "b0");
+        assert!(state.draft.is_none());
     }
 }

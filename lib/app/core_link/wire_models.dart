@@ -370,6 +370,7 @@ RunPlanUpdate _planUpdate(wire.PlanUpdateView update) => switch (update) {
         final recalled? => (
           changed: _n(recalled.changed),
           kept: _n(recalled.kept),
+          draft: recalled.draft,
         ),
         null => null,
       },

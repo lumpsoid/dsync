@@ -622,4 +622,15 @@ void main() {
       expect(harness.hub.sent<wire.CoreCommandListProfiles>(), hasLength(1));
     });
   });
+
+  test('a resumed draft with nothing changed says its choices are as left', () {
+    expect(
+      recalledLine(changed: 0, kept: 1, draft: true),
+      'Resumed. Your 1 choice is kept as you left it',
+    );
+    expect(
+      recalledLine(changed: 0, kept: 4, draft: true),
+      'Resumed. Your 4 choices are kept as you left them',
+    );
+  });
 }

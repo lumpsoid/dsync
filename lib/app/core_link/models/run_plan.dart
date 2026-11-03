@@ -26,6 +26,8 @@ final class RunPlan {
 
   /// A re-dialled entry's plan reviewed again with the earlier answers
   /// kept: how many rows [changed] since the user answered them, and how
-  /// many [kept] their earlier choice. `null` on a first review.
-  final ({int changed, int kept})? recalled;
+  /// many [kept] their earlier choice. A [draft]'s earlier choices were a
+  /// review left unconfirmed when the app went to the background. `null`
+  /// on a first review.
+  final ({int changed, int kept, bool draft})? recalled;
 }

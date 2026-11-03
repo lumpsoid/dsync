@@ -146,7 +146,7 @@ WholeRunView runView({
   int? exceededWarnSizeBytes,
   int bytesToA = 0,
   int bytesToB = 0,
-  ({int changed, int kept})? recalled,
+  ({int changed, int kept, bool draft})? recalled,
   ({int completed, int total})? progress,
   int applied = 0,
   int failed = 0,
@@ -184,9 +184,10 @@ WholeRunView runView({
     },
     summary: wire.PlanSummaryView(bytesToA: n(bytesToA), bytesToB: n(bytesToB)),
     recalled: switch (recalled) {
-      (:final changed, :final kept) => wire.RecalledView(
+      (:final changed, :final kept, :final draft) => wire.RecalledView(
         changed: n(changed),
         kept: n(kept),
+        draft: draft,
       ),
       null => null,
     },

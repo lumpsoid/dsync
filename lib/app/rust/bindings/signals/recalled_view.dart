@@ -9,6 +9,7 @@ class RecalledView {
   const RecalledView({
     required this.changed,
     required this.kept,
+    required this.draft,
   });
 
   static RecalledView deserialize(BinaryDeserializer deserializer) {
@@ -16,6 +17,7 @@ class RecalledView {
     final instance = RecalledView(
       changed: deserializer.deserializeUint64(),
       kept: deserializer.deserializeUint64(),
+      draft: deserializer.deserializeBool(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -32,14 +34,17 @@ class RecalledView {
 
   final Uint64 changed;
   final Uint64 kept;
+  final bool draft;
 
   RecalledView copyWith({
     Uint64? changed,
     Uint64? kept,
+    bool? draft,
   }) {
     return RecalledView(
       changed: changed ?? this.changed,
       kept: kept ?? this.kept,
+      draft: draft ?? this.draft,
     );
   }
 
@@ -47,6 +52,7 @@ class RecalledView {
     serializer.increaseContainerDepth();
     serializer.serializeUint64(changed);
     serializer.serializeUint64(kept);
+    serializer.serializeBool(draft);
     serializer.decreaseContainerDepth();
   }
 
@@ -63,13 +69,15 @@ class RecalledView {
 
     return other is RecalledView
       && changed == other.changed
-      && kept == other.kept;
+      && kept == other.kept
+      && draft == other.draft;
   }
 
   @override
   int get hashCode => Object.hash(
         changed,
         kept,
+        draft,
       );
 
   @override
@@ -79,7 +87,8 @@ class RecalledView {
     assert(() {
       fullString = '$runtimeType('
         'changed: $changed, '
-        'kept: $kept'
+        'kept: $kept, '
+        'draft: $draft'
         ')';
       return true;
     }());

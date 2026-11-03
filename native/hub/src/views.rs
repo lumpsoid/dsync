@@ -1164,7 +1164,8 @@ pub struct PlanView {
     /// What the plan's copies write where.
     pub summary: PlanSummaryView,
     /// A re-dialled entry's plan reviewed again with the answers given
-    /// before kept; `None` on a first review.
+    /// before kept, or a resumed one with a paused review's unconfirmed
+    /// choices kept; `None` on a first review.
     pub recalled: Option<RecalledView>,
 }
 
@@ -1175,6 +1176,9 @@ pub struct PlanView {
 pub struct RecalledView {
     pub changed: u64,
     pub kept: u64,
+    /// The earlier choices were a draft - a review the app left
+    /// unconfirmed when it went to the background - not an answer.
+    pub draft: bool,
 }
 
 /// An action row's whole mutable state: its choice and its outcome, for

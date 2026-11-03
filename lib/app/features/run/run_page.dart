@@ -460,14 +460,20 @@ class _RunPageState extends State<RunPage> {
                   // A re-dialled review's rows that changed since the
                   // user answered them lead the plan area (SPEC §11.4),
                   // under the line that says so; every other row keeps
-                  // its earlier choice in its own section below.
-                  if (state.recalled case (:final changed, :final kept)
+                  // its earlier choice in its own section below. A
+                  // resumed review's draft reads the same.
+                  if (state.recalled
+                      case (:final changed, :final kept, :final draft)
                       when state.phase is SyncRunAwaitingDecisions)
                     SliverToBoxAdapter(
                       child: Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: Text(
-                          recalledLine(changed: changed, kept: kept),
+                          recalledLine(
+                            changed: changed,
+                            kept: kept,
+                            draft: draft,
+                          ),
                           key: const Key('run-review-recalled'),
                         ),
                       ),
@@ -476,9 +482,11 @@ class _RunPageState extends State<RunPage> {
                       state.changedActions.isNotEmpty)
                     RunListSection(
                       sectionKey: const Key('run-changed'),
-                      title:
-                          'Changed since you approved '
-                          '(${formatCount(state.changedConflicts.length + state.changedActions.length)})',
+                      title: changedTitle(
+                        state.recalled,
+                        state.changedConflicts.length +
+                            state.changedActions.length,
+                      ),
                       header: null,
                       itemExtent: null,
                       itemCount:

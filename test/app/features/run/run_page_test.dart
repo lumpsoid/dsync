@@ -2654,10 +2654,10 @@ void main() {
 
     // A re-dialled review: theirs.txt, gone.txt (once a copy) and the new
     // mirror.txt changed since the user approved; both.txt and new.txt
-    // keep their earlier choices.
-    WholeRunView redialled() => runView(
+    // keep their earlier choices. A [draft] is a resumed review's.
+    WholeRunView redialled({bool draft = false}) => runView(
       phase: reviewing(apply: 4, resolved: 1, keptBoth: 1, reversed: 1),
-      recalled: (changed: 3, kept: 3),
+      recalled: (changed: 3, kept: 3, draft: draft),
       bytesToB: 2048 + 4096,
       conflicts: [
         conflictRow(
@@ -2756,6 +2756,18 @@ void main() {
       expect(ringed(tester), ConflictTarget(0));
       await press(tester, LogicalKeyboardKey.home);
       expect(ringed(tester), ConflictTarget(1));
+    });
+
+    testWidgets('a resumed review\'s draft says the rows changed since '
+        'the user left', (tester) async {
+      await openAt(tester, redialled(draft: true));
+
+      expect(
+        tester.widget<Text>(find.byKey(const Key('run-review-recalled'))).data,
+        'Resumed. 3 changed since you left, shown first; your other 3 '
+        'choices are kept',
+      );
+      expect(find.text('Changed since you left (3)'), findsOneWidget);
     });
 
     testWidgets('a first review has no header line and no changed group', (
