@@ -26,10 +26,11 @@ import '../../support/focus.dart';
 /// scope contract in `app_scope.dart` intends: the controllers are pinned
 /// with `setController` and the page is pumped directly.
 ///
-/// The fake core never answers the pinned controller's request for a
-/// window, so the window a test opens stays in [PairShowStarting] and each test writes the status it
-/// is about — this file is about what the page shows for a status, not about
-/// how one is reached, which is the controller test's.
+/// The fake core opens the pinned controller's window but never sends a
+/// view of it, so the window a test opens stays in [PairShowStarting] and
+/// each test writes the status it is about — this file is about what the
+/// page shows for a status, not about how one is reached, which is the
+/// controller test's.
 void main() {
   late FakeHub core;
   late AppController app;
@@ -38,10 +39,11 @@ void main() {
   String? copied;
 
   setUp(() async {
-    // A window the core never answers for, so a test's own status is the
-    // only one the page ever renders.
-    core = FakeHub()
-      ..hold<wire.CoreCommandShowPairing>(Completer<void>().future);
+    // A window the core opens and never sends a view of, so a test's own
+    // status is the only one the page ever renders. Not a request left
+    // unanswered: that would leave the link's reply timeout pending when
+    // the test ends.
+    core = FakeHub();
     app = fakeApp(core);
     controller = PairShowController(
       app,

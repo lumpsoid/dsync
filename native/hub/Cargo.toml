@@ -24,6 +24,9 @@ wildcard_imports = "deny"
 [dependencies]
 dsync-core.workspace = true
 dsync-domain.workspace = true
+# `catch_unwind` on a future: a panic in a command or session becomes its
+# Failed answer instead of a reply that never comes.
+futures-util.workspace = true
 rinf = "=8.10.1"
 serde.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }

@@ -72,6 +72,7 @@ impl Hub {
             self.tuning,
         ));
         let serving = control.clone();
+        let crashed = control.clone();
         self.sessions.spawn(
             session,
             |task| Session::Serve(Serving { task, control }),
@@ -84,6 +85,7 @@ impl Hub {
                     .await;
                 serving.update(|state| state.ended(ended.err().map(text)));
             },
+            move |message| crashed.update(|state| state.ended(Some(message))),
         );
         Ok(ReplyResult::ServeStarted(ServeStartedView {
             port: bound.port(),

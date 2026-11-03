@@ -98,8 +98,13 @@ impl Hub {
             flags,
         };
         let running = run_session(control.clone(), self.clone(), launch, wakes);
-        self.sessions
-            .spawn(session, |_| Session::Run(control), running);
+        let crashed = control.clone();
+        self.sessions.spawn(
+            session,
+            |_| Session::Run(control),
+            running,
+            move |message| crashed.crashed(message),
+        );
         Ok(ReplyResult::Done)
     }
 
@@ -479,6 +484,12 @@ impl RunControl {
         self.publish(shared, urgency);
     }
 
+    /// The session's task panicked: nothing will run or answer again, so
+    /// the head is told it failed, for good.
+    fn crashed(self: &Arc<Self>, message: String) {
+        self.ended(|state| state.crashed(message));
+    }
+
     #[cfg(test)]
     fn current(&self) -> Option<usize> {
         self.lock().state.current()
@@ -826,6 +837,7 @@ mod tests {
 
     use super::{Delivered, RunControl, RunState, Sending, Shared, forward};
     use crate::outbox::{Outbox, Outgoing};
+    use crate::sessions::{Session, Sessions};
     use crate::signals::RunIntent;
     use crate::throttle::{REFRESH_INTERVAL, Throttle, Urgency};
     use crate::views::{EntryStatusView, PlanUpdateView, RunPhaseView, RunStandingView, RunView};
@@ -966,6 +978,39 @@ mod tests {
             lasts.push(snapshot.last);
         }
         assert_eq!(lasts, [false, true]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_whose_task_panics_ends_failed_and_is_removed() {
+        let (control, mut outgoing) = control();
+        control.update(|state| state.connected(1));
+        let sessions = Sessions::default();
+        let crashed = control.clone();
+        sessions.spawn(
+            7,
+            |_| Session::Run(control),
+            async { panic!("boom") },
+            move |message| crashed.crashed(message),
+        );
+        assert!(sessions.with(7, |_| ()).is_some(), "registered");
+        for _ in 0..100 {
+            if sessions.with(7, |_| ()).is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(sessions.with(7, |_| ()).is_none(), "removed");
+        let mut snapshots = Vec::new();
+        while let Ok(Outgoing::Run(snapshot)) = outgoing.try_recv() {
+            snapshots.push(snapshot);
+        }
+        let lasts: Vec<bool> = snapshots.iter().map(|snapshot| snapshot.last).collect();
+        assert_eq!(lasts, [false, true]);
+        let end = &snapshots[1].view;
+        assert!(
+            matches!(&end.phase, RunPhaseView::Failed { message } if message == "internal error: boom")
+        );
+        assert_eq!(end.standing, RunStandingView::Over);
     }
 
     #[tokio::test(start_paused = true)]

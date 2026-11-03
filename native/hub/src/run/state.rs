@@ -77,6 +77,9 @@ enum Phase {
     Stopped(usize),
     Paused(usize),
     Failed(String),
+    /// The session's task panicked: shown as failed, but over for good,
+    /// with nothing left to resume it.
+    Crashed(String),
     ReplicaBusy(String),
     DeletesDeclined,
     NoSummary,
@@ -101,7 +104,7 @@ impl Phase {
             | Phase::DeletesDeclined
             | Phase::NoSummary
             | Phase::FinishedWithIssues(_) => RunStandingView::Resumable,
-            Phase::Finished(_) | Phase::Stopped(_) => RunStandingView::Over,
+            Phase::Finished(_) | Phase::Stopped(_) | Phase::Crashed(_) => RunStandingView::Over,
         }
     }
 
@@ -585,6 +588,12 @@ impl RunState {
         Urgency::Now
     }
 
+    /// The session's task panicked, saying `message`.
+    pub(crate) fn crashed(&mut self, message: String) -> Urgency {
+        self.phase = Phase::Crashed(message);
+        Urgency::Now
+    }
+
     /// The target resolved to these entries, none started yet.
     pub(crate) fn listed(&mut self, entries: Vec<EntryRoots>) -> Urgency {
         self.entries = entries
@@ -939,7 +948,7 @@ impl RunState {
             Phase::Paused(completed) => RunPhaseView::Paused {
                 completed: count(*completed),
             },
-            Phase::Failed(message) => RunPhaseView::Failed {
+            Phase::Failed(message) | Phase::Crashed(message) => RunPhaseView::Failed {
                 message: message.clone(),
             },
             Phase::ReplicaBusy(message) => RunPhaseView::ReplicaBusy {

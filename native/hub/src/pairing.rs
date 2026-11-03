@@ -95,6 +95,7 @@ impl Hub {
         // not close a window the legitimate peer is still walking to.
         let refused = |EnrolmentEvent::Refused { .. }| {};
         let out = self.out.clone();
+        let crashed = self.out.clone();
         let pending = answer.clone();
         self.sessions.spawn(
             session,
@@ -103,6 +104,7 @@ impl Hub {
                 let ended = listener.serve(confirm, refused).await;
                 out.pairing(session, ended_view(ended, window.as_secs()), true);
             },
+            move |message| crashed.pairing(session, PairingView::Failed { message }, true),
         );
         Ok(ReplyResult::Done)
     }

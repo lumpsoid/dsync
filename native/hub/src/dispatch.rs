@@ -3,11 +3,15 @@
 //! state and config directories, the live sessions - and routes each
 //! command to the core flow that answers it.
 
+use std::any::Any;
 use std::fmt::Display;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use dsync_core::{ProfileStore, StateDir};
 use dsync_domain::{DirPath, DirRule, HostFacts, StateDirChoice, Tuning};
+use futures_util::FutureExt;
 
 use crate::folders::check_ignore_pattern;
 use crate::outbox::Outbox;
@@ -23,7 +27,28 @@ pub(crate) fn text(error: impl Display) -> String {
     error.to_string()
 }
 
-/// Runs blocking file work off the runtime's threads.
+/// What a panic said, as the head shows it: the hub's own fault, not the
+/// core's verdict.
+pub(crate) fn internal_error(panic: &(dyn Any + Send)) -> String {
+    let said = panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic with no message");
+    format!("internal error: {said}")
+}
+
+/// `work`'s answer, or `Failed` when it panicked: a command always gets
+/// its reply, so the head never waits on one that will not come.
+async fn caught(work: impl Future<Output = Handled>) -> Handled {
+    AssertUnwindSafe(work)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| Err(internal_error(&*panic)))
+}
+
+/// Runs blocking file work off the runtime's threads. A panic in `work`
+/// goes on in the caller, where [`Core::handle`] answers it.
 pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -64,16 +89,19 @@ impl Core {
 
     /// Answers request `id`.
     pub async fn handle(&self, id: u64, command: CoreCommand) -> CoreReply {
-        let result = match command {
-            CoreCommand::Init {
-                support_dir,
-                device_name,
-            } => self.init(support_dir, device_name),
-            command => match self.hub() {
-                Some(hub) => hub.handle(id, command).await,
-                None => Err("the core is not initialised: send Init first".to_owned()),
-            },
-        };
+        let result = caught(async {
+            match command {
+                CoreCommand::Init {
+                    support_dir,
+                    device_name,
+                } => self.init(support_dir, device_name),
+                command => match self.hub() {
+                    Some(hub) => hub.handle(id, command).await,
+                    None => Err("the core is not initialised: send Init first".to_owned()),
+                },
+            }
+        })
+        .await;
         CoreReply {
             id,
             result: result.unwrap_or_else(|message| ReplyResult::Failed { message }),
@@ -207,5 +235,34 @@ impl Hub {
             CoreCommand::CheckIgnorePattern { pattern } => check_ignore_pattern(&pattern),
             CoreCommand::CheckFolder { path, kind } => self.check_folder(path, kind.into()).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Handled, blocking, caught};
+    use crate::signals::ReplyResult;
+
+    #[tokio::test]
+    async fn a_command_that_panics_is_answered_failed() {
+        let answered = caught(async { panic!("boom") }).await;
+        assert_eq!(answered.err().as_deref(), Some("internal error: boom"));
+    }
+
+    #[tokio::test]
+    async fn blocking_work_that_panics_is_answered_failed() {
+        let answered = caught(async {
+            blocking(|| -> Result<ReplyResult, String> { panic!("disk {}", 7) }).await
+        })
+        .await;
+        assert_eq!(answered.err().as_deref(), Some("internal error: disk 7"));
+    }
+
+    #[tokio::test]
+    async fn a_command_that_answers_is_answered_as_it_said() {
+        let done: Handled = caught(async { Ok(ReplyResult::Done) }).await;
+        assert!(matches!(done, Ok(ReplyResult::Done)));
+        let refused = caught(async { Err::<ReplyResult, _>("no".to_owned()) }).await;
+        assert_eq!(refused.err().as_deref(), Some("no"));
     }
 }

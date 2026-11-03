@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dsync/app/core_link/core_link.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
@@ -370,5 +372,28 @@ void main() {
         isA<CoreFailure>().having((f) => f.message, 'message', 'cancelled'),
       );
     });
+  });
+
+  test('a call the core never answers fails once the reply timeout '
+      'passes, and a late reply is dropped', () async {
+    final late = Completer<void>();
+    final hub = FakeHub()..hold<wire.CoreCommandListDevices>(late.future);
+    final link = CoreLink(hub, replyTimeout: const Duration(milliseconds: 20));
+
+    await expectLater(
+      link.listDevices(),
+      throwsA(
+        isA<CoreFailure>().having(
+          (f) => f.message,
+          'message',
+          'the core did not answer in time',
+        ),
+      ),
+    );
+
+    late.complete();
+    await Future<void>.delayed(Duration.zero);
+    // An answered call never times out.
+    expect(await link.listDevices(), isEmpty);
   });
 }

@@ -46,7 +46,7 @@ import 'wire_models.dart';
 /// Every call throws `CoreFailure` with the core's own message when the
 /// core refuses or cannot carry it out; anything else thrown is a defect.
 final class CoreLink {
-  CoreLink(this._channel) {
+  CoreLink(this._channel, {this._replyTimeout = defaultReplyTimeout}) {
     _subscriptions.addAll([
       _channel.replies.listen((reply) {
         _requests.complete(reply.id.toInt(), reply.result);
@@ -75,7 +75,14 @@ final class CoreLink {
     ]);
   }
 
+  /// How long a call waits for its reply before it fails. Longer than any
+  /// command legitimately takes - accepting a pairing waits on the far
+  /// operator for up to the 5-minute token - so it only fires when the
+  /// core will never answer, and the page waiting on it is let go.
+  static const defaultReplyTimeout = Duration(minutes: 10);
+
   final CoreChannel _channel;
+  final Duration _replyTimeout;
   final _requests = Correlator<wire.ReplyResult>();
 
   /// Each closes a session's stream on the snapshot the core marks its
@@ -94,7 +101,9 @@ final class CoreLink {
 
   /// Sends [command] and waits for its reply, which [read] turns into the
   /// call's answer. [opening], when given, opens the session the command
-  /// starts (the request's id) before it is sent.
+  /// starts (the request's id) before it is sent. No reply within the
+  /// reply timeout is a [CoreFailure]; a reply arriving after it is
+  /// dropped.
   Future<T> _ask<T>(
     wire.CoreCommand command,
     T Function(wire.ReplyResult result) read, {
@@ -102,8 +111,20 @@ final class CoreLink {
   }) async {
     final (:id, :reply) = _requests.open();
     opening?.call(id);
-    _channel.send(wire.CoreRequest(id: wireId(id), command: command));
-    final result = await reply;
+    final silence = Timer(
+      _replyTimeout,
+      () => _requests.fail(
+        id,
+        const CoreFailure('the core did not answer in time'),
+      ),
+    );
+    final wire.ReplyResult result;
+    try {
+      _channel.send(wire.CoreRequest(id: wireId(id), command: command));
+      result = await reply;
+    } finally {
+      silence.cancel();
+    }
     if (result is wire.ReplyResultFailed) throw CoreFailure(result.message);
     return read(result);
   }

@@ -518,6 +518,7 @@ version = "0.1.0"
 dependencies = [
  "dsync-core",
  "dsync-domain",
+ "futures-util",
  "libc",
  "rinf",
  "serde",

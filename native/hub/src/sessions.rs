@@ -4,11 +4,14 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use futures_util::FutureExt;
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 
+use crate::dispatch::internal_error;
 use crate::run::RunControl;
 use crate::serve::Serving;
 
@@ -36,17 +39,23 @@ impl Sessions {
 
     /// Runs `work` as session `id`, registered under the handle `control`
     /// builds from the task's abort handle. Registered before the task can
-    /// end, so its own removal always finds it.
+    /// end, so its own removal always finds it. Should `work` panic,
+    /// `crashed` is told why - it sends the session's last snapshot, the
+    /// head's only word that the session is gone - and the session is
+    /// removed all the same.
     pub fn spawn(
         &self,
         id: u64,
         control: impl FnOnce(AbortHandle) -> Session,
         work: impl Future<Output = ()> + Send + 'static,
+        crashed: impl FnOnce(String) + Send + 'static,
     ) {
         let sessions = self.clone();
         let mut live = self.lock();
         let task = tokio::spawn(async move {
-            work.await;
+            if let Err(panic) = AssertUnwindSafe(work).catch_unwind().await {
+                crashed(internal_error(&*panic));
+            }
             sessions.lock().remove(&id);
         });
         live.insert(id, control(task.abort_handle()));
