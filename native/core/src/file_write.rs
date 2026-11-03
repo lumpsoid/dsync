@@ -6,6 +6,7 @@
 //! throughout; the pool (`writer_pool`) runs it on its own threads.
 
 use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -19,8 +20,8 @@ use dsync_domain::{
 use ring::digest;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
-use crate::atomic_write::{parent_of, sync_dir};
 use crate::body::BodyError;
+use crate::confined_folder::ConfinedFolder;
 use crate::confinement::Confinement;
 use crate::local_root::{Located, Root};
 use crate::replica_error::ReplicaError;
@@ -63,20 +64,14 @@ pub(crate) struct Destination {
 /// when each runs and make one fail.
 struct Syncs {
     file: fn(&File) -> io::Result<()>,
-    folder: fn(&Path) -> io::Result<()>,
+    folder: fn(&ConfinedFolder) -> io::Result<()>,
 }
 
 impl Syncs {
     const DISK: Syncs = Syncs {
         file: File::sync_all,
-        folder: sync_folder,
+        folder: ConfinedFolder::sync,
     };
-}
-
-/// Fsyncs `folder`, making a rename into it or a delete from it durable
-/// (a no-op where a folder cannot be synced, [`sync_dir`]).
-fn sync_folder(folder: &Path) -> io::Result<()> {
-    sync_dir(folder).map(drop)
 }
 
 impl Destination {
@@ -388,7 +383,7 @@ fn land(
         timer.lap(Stage::Mkdir);
     }
 
-    let mut file = create_scratch(&destination.staging(), target, scratch, timer)?;
+    let mut file = create_scratch(destination, target, scratch, timer)?;
     // Over each chunk as it is written: no second pass, no copy.
     let mut hashing = digest::Context::new(&digest::SHA256);
     loop {
@@ -437,8 +432,7 @@ fn land(
         rename_onto(staged, meta, &destination.syncs, || {
             holds_at(expect, target)
         })?;
-        let folder = parent_of(&staged.onto).map_err(at(Stage::Rename))?;
-        (destination.syncs.folder)(folder).map_err(at(Stage::Rename))?;
+        (destination.syncs.folder)(&staged.folder).map_err(at(Stage::Rename))?;
         *scratch = None;
         timer.lap(Stage::Rename);
     }
@@ -454,39 +448,47 @@ fn landing(target: &Path) -> PathBuf {
     fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf())
 }
 
-/// A write's temp, and the file it is renamed onto.
+/// A write's temp, and the file it is renamed onto: `name` in `folder`,
+/// held open from here to the rename, so the rename lands in the folder
+/// confirmed, whatever its path has been swapped for while the body
+/// streamed.
 struct Scratch {
     path: PathBuf,
-    onto: PathBuf,
+    folder: ConfinedFolder,
+    name: OsString,
 }
 
-/// Creates the temp a write streams into, in `staging`, and records it in
-/// `scratch` for the rename or the cleanup.
+/// Creates the temp a write streams into, in the staging folder, and
+/// records it in `scratch` for the rename or the cleanup.
 fn create_scratch(
-    staging: &Path,
+    destination: &Destination,
     target: &Path,
     scratch: &mut Option<Scratch>,
     timer: &mut StageTimer,
 ) -> Result<File, Failed> {
     let onto = landing(target);
-    let path = staging.join(temp_name(&onto).map_err(at(Stage::Create))?);
+    let (folder, name) = destination
+        .confinement
+        .open_parent(&onto)
+        .map_err(at(Stage::Create))?;
+    let path = destination.staging().join(temp_name(name));
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&path)
         .map_err(at(Stage::Create))?;
-    *scratch = Some(Scratch { path, onto });
+    *scratch = Some(Scratch {
+        path,
+        folder,
+        name: name.to_owned(),
+    });
     timer.lap(Stage::Create);
     Ok(file)
 }
 
-/// A temp name for a write onto `onto`, unique within the host.
-fn temp_name(onto: &Path) -> io::Result<String> {
-    let name = onto
-        .file_name()
-        .ok_or_else(|| io::Error::other("the target has no file name"))?
-        .to_string_lossy();
-    Ok(temp_name_for(&name, std::process::id(), next_temp()))
+/// A temp name for a write onto `name`, unique within the host.
+fn temp_name(name: &OsStr) -> String {
+    temp_name_for(&name.to_string_lossy(), std::process::id(), next_temp())
 }
 
 /// Renames `scratch` onto its target. A target on another filesystem than
@@ -506,25 +508,28 @@ fn rename_onto(
     unchanged: impl Fn() -> Result<(), ChangedDuringSync>,
 ) -> Result<(), Failed> {
     unchanged()?;
-    match fs::rename(&scratch.path, &scratch.onto) {
+    match scratch.folder.rename_into(&scratch.path, &scratch.name) {
         Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-            let beside = scratch
-                .onto
-                .with_file_name(temp_name(&scratch.onto).map_err(at(Stage::Rename))?);
-            let copied = fs::copy(&scratch.path, &beside).and_then(|_| {
-                let file = OpenOptions::new().write(true).open(&beside)?;
+            let beside = OsString::from(temp_name(&scratch.name));
+            let copied = scratch.folder.create_new(&beside).and_then(|mut file| {
+                let mut temp = File::open(&scratch.path)?;
+                file.set_permissions(temp.metadata()?.permissions())?;
+                io::copy(&mut temp, &mut file)?;
                 // Best effort, as for the temp (SPEC §7.4).
                 let _ = file.set_modified(system_time(meta.mtime_us));
                 (syncs.file)(&file)
             });
             if let Err(error) = copied {
-                let _ = fs::remove_file(&beside);
+                let _ = scratch.folder.remove_file(&beside);
                 return Err(Failed::At(Stage::Rename, error));
             }
             let _ = fs::remove_file(&scratch.path);
-            scratch.path = beside;
+            scratch.path = scratch.folder.path().join(&beside);
             unchanged()?;
-            fs::rename(&scratch.path, &scratch.onto).map_err(at(Stage::Rename))
+            scratch
+                .folder
+                .rename_within(&beside, &scratch.name)
+                .map_err(at(Stage::Rename))
         }
         renamed => renamed.map_err(at(Stage::Rename)),
     }
@@ -715,7 +720,7 @@ mod tests {
         Ok(())
     }
 
-    fn record_folder(_: &Path) -> io::Result<()> {
+    fn record_folder(_: &ConfinedFolder) -> io::Result<()> {
         let now = target_now();
         SYNCED.with_borrow_mut(|(_, log)| log.push(Synced::Folder(now)));
         Ok(())

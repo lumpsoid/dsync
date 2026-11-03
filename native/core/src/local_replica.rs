@@ -22,7 +22,6 @@ use dsync_domain::{
 };
 
 use crate::archive_store::ArchiveStore;
-use crate::atomic_write::{parent_of, sync_dir};
 use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
 use crate::confinement::Confinement;
@@ -372,10 +371,13 @@ impl Replica for LocalReplica {
                 let Located { path: source, rel } = shared.locate(FileOp::Read, &path)?;
                 // A peer can read without scanning: the scan's skip is
                 // not the only bound.
+                // Confirmed once open: the path may have been swapped for
+                // a link since the check.
                 shared
                     .confinement
                     .check(&rel)
                     .and_then(|()| open_regular(&source))
+                    .and_then(|file| shared.confinement.confirm(&file, &source).map(|()| file))
                     .map_err(shared.file_error(FileOp::Read, source.clone()))
             })
             .await?;
@@ -408,11 +410,17 @@ impl Replica for LocalReplica {
                 .check(&rel)
                 .map_err(shared.file_error(FileOp::Delete, target.clone()))?;
             holds_at(expect, &target)?;
+            // Removed through its folder as opened and confirmed, not by
+            // a path that may have been swapped for a link since the check.
             // The folder synced too, so the delete is durable before its
             // record commits, like a write's rename (SPEC §7.5).
-            fs::remove_file(&target)
-                .and_then(|()| sync_dir(parent_of(&target)?))
-                .map(drop)
+            shared
+                .confinement
+                .open_parent(&target)
+                .and_then(|(folder, name)| {
+                    folder.remove_file(name)?;
+                    folder.sync()
+                })
                 .map_err(shared.file_error(FileOp::Delete, target.clone()))
         })
         .await
@@ -432,7 +440,11 @@ impl Replica for LocalReplica {
             }
             while let Some(folder) = ancestor {
                 let at = folder.join_under(shared.root.base());
-                match fs::remove_dir(&at) {
+                let removed = shared
+                    .confinement
+                    .open_parent(&at)
+                    .and_then(|(parent, name)| parent.remove_dir(name));
+                match removed {
                     // Forgotten, so a later write into it this session
                     // creates it again instead of trusting it (SPEC §7.1
                     // runs deletes and copies in one apply).

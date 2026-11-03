@@ -12,6 +12,7 @@ pub mod atomic_write;
 mod body;
 mod case_folding;
 mod certificate;
+mod confined_folder;
 mod confinement;
 mod connector;
 mod cpu;

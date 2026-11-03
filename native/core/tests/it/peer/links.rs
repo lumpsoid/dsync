@@ -348,3 +348,59 @@ async fn a_local_replica_follows_links_as_its_own_rules_say() {
     );
     linked.close().await;
 }
+
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+#[tokio::test]
+async fn a_folder_swapped_for_a_link_outside_the_grants_after_its_check_is_refused() {
+    let linked = Linked::new().await;
+    let sub = linked.root.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("a.txt"), "inside").unwrap();
+    // The check finds `sub` a real folder and trusts it for the session.
+    assert_eq!(linked.read("sub/a.txt").await.unwrap(), b"inside");
+
+    fs::remove_dir_all(&sub).unwrap();
+    symlink(&linked.outside, &sub).unwrap();
+
+    const SWAPPED: &str = "now leads through a symlink, with its";
+    let read = linked.read("sub/secret.txt").await;
+    match read {
+        Err(error @ ReplicaError::File { .. }) => {
+            let text = error.to_string();
+            assert!(text.contains(SWAPPED) && text.contains(OUTSIDE), "{text}");
+        }
+        other => panic!("not a refused read: {other:?}"),
+    }
+    let secret = fs::metadata(linked.outside.join("secret.txt")).unwrap();
+    let mtime = secret
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH);
+    let held = Precondition::File {
+        size: secret.len(),
+        mtime_us: i64::try_from(mtime.unwrap().as_micros()).unwrap(),
+    };
+    let deleted = with_deadline(
+        "delete",
+        linked.peer.replica.delete(&rel("sub/secret.txt"), held),
+    )
+    .await;
+    match deleted {
+        Err(error @ ReplicaError::File { .. }) => {
+            assert!(error.to_string().contains(SWAPPED), "{error}");
+        }
+        other => panic!("not a refused delete: {other:?}"),
+    }
+    // Last: a failed write forgets its folder, so the check by path
+    // would refuse what follows.
+    match linked.write("sub/new.txt").await {
+        Err(ReplicaError::Write(error)) => {
+            let text = error.source.to_string();
+            assert!(text.contains(SWAPPED) && text.contains(OUTSIDE), "{text}");
+        }
+        other => panic!("not a refused write: {other:?}"),
+    }
+    fs::remove_file(&sub).unwrap();
+    linked.assert_untouched();
+    linked.close().await;
+}
