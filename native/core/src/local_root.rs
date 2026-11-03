@@ -134,8 +134,14 @@ impl Root {
 
     /// Whether the root is there to sync, as `hello` reports it (SPEC
     /// §4.5). A file root whose folder is there is present with or without
-    /// its file.
+    /// its file. Only "not found" reads as absent: any other failure to
+    /// look - a permission, an I/O error - is `Unreadable`, never taken
+    /// for a root to create or an empty one to sync.
     pub(crate) fn state(&self) -> ReplicaRoot {
+        let unreadable = |path: &Path, error: io::Error| ReplicaRoot::Unreadable {
+            root_path: self.text.clone(),
+            reason: format!("{}: {error}", path.display()),
+        };
         match &self.shape {
             Shape::Folder(folder) => match fs::metadata(folder) {
                 Ok(meta) if meta.is_dir() => ReplicaRoot::Present,
@@ -143,19 +149,27 @@ impl Root {
                     root_path: self.text.clone(),
                     expected: RootKind::Folder,
                 },
-                Err(_) => ReplicaRoot::Missing {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => ReplicaRoot::Missing {
                     root_path: self.text.clone(),
                 },
+                Err(error) => unreadable(folder, error),
             },
-            Shape::File { dir, .. } if !dir.is_dir() => ReplicaRoot::ParentMissing {
-                root_path: self.text.clone(),
-                folder: dir.display().to_string(),
+            Shape::File { dir, .. } => match fs::metadata(dir) {
+                Ok(meta) if meta.is_dir() => match fs::metadata(self.path()) {
+                    Ok(meta) if meta.is_dir() => ReplicaRoot::WrongKind {
+                        root_path: self.text.clone(),
+                        expected: RootKind::File,
+                    },
+                    Ok(_) => ReplicaRoot::Present,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => ReplicaRoot::Present,
+                    Err(error) => unreadable(self.path(), error),
+                },
+                Err(error) if error.kind() != io::ErrorKind::NotFound => unreadable(dir, error),
+                Ok(_) | Err(_) => ReplicaRoot::ParentMissing {
+                    root_path: self.text.clone(),
+                    folder: dir.display().to_string(),
+                },
             },
-            Shape::File { .. } if self.path().is_dir() => ReplicaRoot::WrongKind {
-                root_path: self.text.clone(),
-                expected: RootKind::File,
-            },
-            Shape::File { .. } => ReplicaRoot::Present,
         }
     }
 
@@ -240,5 +254,120 @@ mod tests {
         assert!(Root::new("/x/n.md".into(), RootKind::File, None).is_err());
         assert!(Root::new("/".into(), RootKind::File, Some(rel("n.md"))).is_err());
         assert!(Root::new("/x/n.md".into(), RootKind::File, Some(rel("n.md"))).is_ok());
+    }
+
+    /// A folder whose mode is 000 for as long as it lives, restored on
+    /// drop so the temp dir can be removed.
+    #[cfg(unix)]
+    struct Sealed<'a>(&'a Path);
+
+    #[cfg(unix)]
+    impl<'a> Sealed<'a> {
+        /// Seals `folder`, or `None` when this process can read it anyway
+        /// (root, or a capability that bypasses permissions): there is
+        /// nothing to test then.
+        fn new(folder: &'a Path) -> Option<Sealed<'a>> {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(folder, fs::Permissions::from_mode(0o000)).unwrap();
+            let sealed = Sealed(folder);
+            match fs::read_dir(folder) {
+                Ok(_) => None,
+                Err(_) => Some(sealed),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Sealed<'_> {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn only_a_root_that_is_not_found_reads_as_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Root::folder(text(&temp.path().join("gone")));
+        assert_eq!(
+            root.state(),
+            ReplicaRoot::Missing {
+                root_path: root.text().to_owned()
+            }
+        );
+        let file = file_root(&text(&temp.path().join("gone/notes.md")), "notes.md");
+        assert!(matches!(file.state(), ReplicaRoot::ParentMissing { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_root_that_cannot_be_looked_at_is_unreadable_not_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let sealed = temp.path().join("sealed");
+        fs::create_dir_all(sealed.join("notes")).unwrap();
+        let root = Root::folder(text(&sealed.join("notes")));
+        // Positive control: the same root reads as present while it can be
+        // looked at.
+        assert_eq!(root.state(), ReplicaRoot::Present);
+        let Some(_sealed) = Sealed::new(&sealed) else {
+            eprintln!("skipped: this process reads a mode-000 folder (root?)");
+            return;
+        };
+        let ReplicaRoot::Unreadable { root_path, reason } = root.state() else {
+            panic!("expected Unreadable, got {:?}", root.state());
+        };
+        assert_eq!(root_path, root.text());
+        assert!(
+            reason.contains("os error 13") && reason.contains("notes"),
+            "{reason}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_root_whose_folder_cannot_be_looked_at_is_unreadable_not_parent_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let sealed = temp.path().join("sealed");
+        fs::create_dir_all(sealed.join("dir")).unwrap();
+        let file = file_root(&text(&sealed.join("dir/notes.md")), "notes.md");
+        assert_eq!(file.state(), ReplicaRoot::Present);
+        let Some(_sealed) = Sealed::new(&sealed) else {
+            eprintln!("skipped: this process reads a mode-000 folder (root?)");
+            return;
+        };
+        let ReplicaRoot::Unreadable { root_path, reason } = file.state() else {
+            panic!("expected Unreadable, got {:?}", file.state());
+        };
+        assert_eq!(root_path, file.text());
+        assert!(reason.contains("os error 13"), "{reason}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_root_whose_file_cannot_be_looked_at_is_unreadable_not_present() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("dir");
+        fs::create_dir_all(&dir).unwrap();
+        let file = file_root(&text(&dir.join("notes.md")), "notes.md");
+        assert_eq!(file.state(), ReplicaRoot::Present);
+        // Readable but not searchable: its own metadata answers, the
+        // file's does not.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o444)).unwrap();
+        let _restore = Sealed(&dir);
+        let probe = fs::metadata(dir.join("notes.md")).err().map(|e| e.kind());
+        if probe == Some(io::ErrorKind::NotFound) {
+            eprintln!("skipped: this process searches a mode-444 folder (root?)");
+            return;
+        }
+        assert!(
+            matches!(file.state(), ReplicaRoot::Unreadable { .. }),
+            "{:?}",
+            file.state()
+        );
     }
 }

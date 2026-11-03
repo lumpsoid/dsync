@@ -2,6 +2,7 @@
 
 use crate::missing_parent_folder::MissingParentFolder;
 use crate::replica_info::MissingReplicaRoot;
+use crate::unreadable_replica_root::UnreadableReplicaRoot;
 use crate::wrong_root_kind::WrongRootKind;
 
 /// A root the run refuses before scanning: syncing it would read what is
@@ -14,4 +15,6 @@ pub enum UnusableRoot {
     ParentMissing(MissingParentFolder),
     #[error(transparent)]
     WrongKind(WrongRootKind),
+    #[error(transparent)]
+    Unreadable(UnreadableReplicaRoot),
 }

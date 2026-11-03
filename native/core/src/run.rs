@@ -280,11 +280,12 @@ impl Run {
         let (Some(root_b), Some(root_a)) = (roots.pop(), roots.pop()) else {
             return None;
         };
-        // Before either lock: a root of the wrong kind is not touched at
-        // all, not even by a lock beside it.
+        // Before either lock: a root of the wrong kind, or one that could
+        // not be looked at, is not touched at all, not even by a lock
+        // beside it.
         for (side, root) in [(Side::A, &root_a), (Side::B, &root_b)] {
-            if let Some(wrong) = root.wrong_kind(side) {
-                self.events.fail(RunError::WrongKind(wrong)).await;
+            if let Some(refused) = root.refused_before_lock(side) {
+                self.events.fail(RunError::from(refused)).await;
                 return None;
             }
         }

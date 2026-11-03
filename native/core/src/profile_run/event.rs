@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use dsync_domain::{
     EntryId, MissingParentFolder, MissingReplicaRoot, RootKind, RunOutcome, RunSummary, Side,
-    WrongRootKind,
+    UnreadableReplicaRoot, WrongRootKind,
 };
 
 use super::redial::ReconnectCause;
@@ -90,6 +90,9 @@ pub enum SkipReason {
     /// A root that is not the entry's kind: a folder where it syncs one
     /// file, or the reverse. Nothing was locked or written.
     WrongKind(WrongRootKind),
+    /// A root that could not be looked at: whether it is there is unknown,
+    /// so it is neither created nor synced. Nothing was locked or written.
+    Unreadable(UnreadableReplicaRoot),
 }
 
 /// Why an entry failed.
@@ -117,6 +120,9 @@ impl EntryOutcome {
             }
             (_, Some(RunError::WrongKind(wrong))) => {
                 EntryOutcome::Skipped(SkipReason::WrongKind(wrong))
+            }
+            (_, Some(RunError::RootUnreadable(unreadable))) => {
+                EntryOutcome::Skipped(SkipReason::Unreadable(unreadable))
             }
             (_, Some(error)) => EntryOutcome::Failed(EntryFailure::Run(error)),
             (Some(summary), None) => EntryOutcome::Synced(summary),

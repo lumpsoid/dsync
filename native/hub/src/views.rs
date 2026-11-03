@@ -398,11 +398,12 @@ impl From<&ReplicaInfo> for ReplicaInfoView {
             last_commit_ms: info.last_commit.map(millis),
             archive_path: info.archive_path.clone(),
             missing_root: match &info.root {
-                // The run refuses both with its own error, which the head
-                // shows; neither is a folder with files to count.
+                // The run refuses these with its own error, which the head
+                // shows; none is a folder with files to count.
                 ReplicaRoot::Present
                 | ReplicaRoot::ParentMissing { .. }
-                | ReplicaRoot::WrongKind { .. } => None,
+                | ReplicaRoot::WrongKind { .. }
+                | ReplicaRoot::Unreadable { .. } => None,
                 ReplicaRoot::Missing { root_path } => Some(MissingRootView {
                     root_path: root_path.clone(),
                     archived_files: info.archived_files,

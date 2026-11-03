@@ -361,6 +361,47 @@ async fn a_missing_folder_is_refused_and_never_created() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_folder_that_cannot_be_looked_at_is_refused_before_anything_is_locked() {
+    use std::os::unix::fs::PermissionsExt;
+    for reach in [Reach::Local, Reach::Served] {
+        let site = Site::new();
+        let entry = FileEntry {
+            a: site.file(Side::A, "notes.md"),
+            b: site.file(Side::B, "dir/other.md"),
+            site,
+            ignore: "",
+        };
+        entry.put(Side::A, "one");
+        fs::create_dir(entry.site.file(Side::B, "dir")).unwrap();
+        let sealed = entry.site.root(Side::B);
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&sealed).is_ok() {
+            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipped: this process reads a mode-000 folder (root?)");
+            return;
+        }
+
+        let finished = entry.sync(reach).await;
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let [RunError::RootUnreadable(unreadable)] = finished.errors()[..] else {
+            panic!("{reach:?}: {:?}", finished.errors());
+        };
+        assert_eq!(unreadable.side, Side::B, "{reach:?}");
+        assert!(unreadable.reason.contains("os error 13"), "{unreadable:?}");
+        assert_eq!(finished.exit_code(), 3);
+        assert!(entry.locks().is_empty(), "{reach:?}: {:?}", entry.locks());
+        assert!(!entry.b.exists(), "{reach:?}");
+        assert_eq!(entry.get(Side::A).as_deref(), Some("one"));
+
+        // Positive control: readable again, the entry syncs.
+        synced(&entry.sync(reach).await, reach);
+        assert_eq!(entry.get(Side::B).as_deref(), Some("one"), "{reach:?}");
+    }
+}
+
 async fn refused_as_the_wrong_kind(
     entry: &FileEntry,
     reach: Reach,

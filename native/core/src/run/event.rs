@@ -10,7 +10,7 @@ use std::sync::Arc;
 use dsync_domain::{
     Action, BucketCountMismatch, Conflict, IncompleteTransfer, MassDelete, MissingParentFolder,
     MissingReplicaRoot, Plan, ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side, SkippedPath,
-    UnevenCommitOnly, UnusableRoot, WrongRootKind,
+    UnevenCommitOnly, UnreadableReplicaRoot, UnusableRoot, WrongRootKind,
 };
 
 use crate::replica_error::ReplicaError;
@@ -82,6 +82,10 @@ pub enum RunError {
     /// is locked.
     #[error(transparent)]
     WrongKind(WrongRootKind),
+    /// A root that could not be looked at, refused before either replica
+    /// is locked: whether it is there is unknown.
+    #[error(transparent)]
+    RootUnreadable(UnreadableReplicaRoot),
     /// The two sides digested under different bucket counts: a far side
     /// that did not follow the exchange.
     #[error(transparent)]
@@ -104,6 +108,7 @@ impl From<UnusableRoot> for RunError {
             UnusableRoot::Missing(missing) => RunError::MissingRoot(missing),
             UnusableRoot::ParentMissing(missing) => RunError::ParentMissing(missing),
             UnusableRoot::WrongKind(wrong) => RunError::WrongKind(wrong),
+            UnusableRoot::Unreadable(unreadable) => RunError::RootUnreadable(unreadable),
         }
     }
 }
@@ -161,6 +166,7 @@ impl RunError {
             RunError::MissingRoot(missing) => Some(missing.side),
             RunError::ParentMissing(missing) => Some(missing.side),
             RunError::WrongKind(wrong) => Some(wrong.side),
+            RunError::RootUnreadable(unreadable) => Some(unreadable.side),
             RunError::Exchange(_) | RunError::DeletesNotConfirmed(_) | RunError::Marker { .. } => {
                 None
             }

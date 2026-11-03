@@ -347,6 +347,7 @@ fn skip_reason(reason: &SkipReason) -> String {
         SkipReason::Missing(missing) => missing.to_string(),
         SkipReason::ParentMissing(missing) => missing.to_string(),
         SkipReason::WrongKind(wrong) => wrong.to_string(),
+        SkipReason::Unreadable(unreadable) => unreadable.to_string(),
     }
 }
 

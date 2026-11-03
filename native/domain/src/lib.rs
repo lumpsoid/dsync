@@ -77,6 +77,7 @@ mod temp_name;
 mod text_diff;
 mod tuning;
 mod unreadable_paths;
+mod unreadable_replica_root;
 mod unusable_root;
 mod write_stats;
 mod wrong_root_kind;
@@ -162,6 +163,7 @@ pub use temp_name::{STAGING_DIR, TEMP_FILE_MARKER, is_temp_file_name, temp_name_
 pub use text_diff::{Block, Hunk, Line, Span, TextDiff};
 pub use tuning::Tuning;
 pub use unreadable_paths::UnreadablePaths;
+pub use unreadable_replica_root::UnreadableReplicaRoot;
 pub use unusable_root::UnusableRoot;
 pub use write_stats::{Stage, StageTime, WriteStats};
 pub use wrong_root_kind::WrongRootKind;

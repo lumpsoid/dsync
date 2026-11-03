@@ -438,6 +438,14 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
                 let device = self.view.replica(wrong.side).device();
                 writeln!(self.err, "error: {}", wrong.describe(device.as_deref()))
             }
+            RunError::RootUnreadable(unreadable) => {
+                let device = self.view.replica(unreadable.side).device();
+                writeln!(
+                    self.err,
+                    "error: {}",
+                    unreadable.describe(device.as_deref())
+                )
+            }
             RunError::DeletesNotConfirmed(verdict) => writeln!(
                 self.err,
                 "error: {}\nTo apply it, run interactively and answer y, or rerun with \
@@ -491,6 +499,9 @@ fn outcome_text(outcome: &EntryOutcome) -> String {
             format!("skipped: {missing}")
         }
         EntryOutcome::Skipped(SkipReason::WrongKind(wrong)) => format!("skipped: {wrong}"),
+        EntryOutcome::Skipped(SkipReason::Unreadable(unreadable)) => {
+            format!("skipped: {unreadable}")
+        }
         EntryOutcome::Failed(EntryFailure::Connect(error)) => format!("failed: {error}"),
         EntryOutcome::Failed(EntryFailure::Run(error)) => format!("failed: {error}"),
         EntryOutcome::Failed(EntryFailure::Dropped) => {

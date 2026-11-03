@@ -8,6 +8,7 @@ use crate::missing_parent_folder::MissingParentFolder;
 use crate::root_facts::RootFacts;
 use crate::root_kind::RootKind;
 use crate::side::Side;
+use crate::unreadable_replica_root::UnreadableReplicaRoot;
 use crate::unusable_root::UnusableRoot;
 use crate::wrong_root_kind::WrongRootKind;
 
@@ -32,6 +33,13 @@ pub enum ReplicaRoot {
     WrongKind {
         root_path: String,
         expected: RootKind,
+    },
+    /// Looking at the root - or a file root's folder - failed with
+    /// something other than "not found", so whether it is there is
+    /// unknown. `reason` is the OS's error text.
+    Unreadable {
+        root_path: String,
+        reason: String,
     },
 }
 
@@ -125,6 +133,13 @@ impl ReplicaInfo {
                 root_path: root_path.clone(),
                 expected: *expected,
             })),
+            (ReplicaRoot::Unreadable { root_path, reason }, _) => {
+                Err(UnusableRoot::Unreadable(UnreadableReplicaRoot {
+                    side,
+                    root_path: root_path.clone(),
+                    reason: reason.clone(),
+                }))
+            }
         }
     }
 }
@@ -231,6 +246,27 @@ mod tests {
         assert_eq!(
             info(None, wrong).must_create_root(Side::B),
             Err(UnusableRoot::WrongKind(expected))
+        );
+    }
+
+    #[test]
+    fn an_unreadable_root_is_refused_and_never_created_first_sync_or_not() {
+        let unreadable = ReplicaRoot::Unreadable {
+            root_path: "/media/sd/notes".into(),
+            reason: "Input/output error (os error 5)".into(),
+        };
+        let refused = Err(UnusableRoot::Unreadable(UnreadableReplicaRoot {
+            side: Side::A,
+            root_path: "/media/sd/notes".into(),
+            reason: "Input/output error (os error 5)".into(),
+        }));
+        assert_eq!(
+            info(None, unreadable.clone()).must_create_root(Side::A),
+            refused
+        );
+        assert_eq!(
+            info(committed(), unreadable).must_create_root(Side::A),
+            refused
         );
     }
 
