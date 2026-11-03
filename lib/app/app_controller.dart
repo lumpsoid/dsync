@@ -95,7 +95,10 @@ class AppController {
   /// a half-written identity (regenerating it would change this device's
   /// id under every recorded pairing) or a damaged device store (an empty
   /// set means "trust nobody", so damaged bytes must not read as that)
-  /// are both the core's to refuse, and its words name the file.
+  /// are both the core's to refuse, and its words name the file. Anything
+  /// else thrown on the way — a platform lookup of [supportDir], a reply
+  /// the link did not expect — is rendered the same way, so the user gets
+  /// the failed gate and its Retry rather than a loading screen forever.
   Future<void> bootstrap() async {
     state.recordBootstrap(const AppBootstrapLoading());
     try {
@@ -106,6 +109,8 @@ class AppController {
       state.recordReadyIdentity(identity);
     } on CoreFailure catch (e) {
       state.recordBootstrap(AppBootstrapFailed(e.message));
+    } on Object catch (e) {
+      state.recordBootstrap(AppBootstrapFailed('$e'));
     }
   }
 

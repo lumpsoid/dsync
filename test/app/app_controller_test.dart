@@ -198,6 +198,21 @@ void main() {
       expect(controller.state.devices, isEmpty);
     });
 
+    test('fails, rather than loading forever, on an error that is not the '
+        'core\'s', () async {
+      final app = AppController(
+        CoreLink(core),
+        supportDir: () async => throw StateError('no support dir lookup'),
+        now: fixedNow,
+      );
+
+      await app.bootstrap();
+
+      final failed = app.state.bootstrap as AppBootstrapFailed;
+      expect(failed.message, contains('no support dir lookup'));
+      app.dispose();
+    });
+
     test('a retry after a failure lands ready', () async {
       core.reply<wire.CoreCommandShowIdentity>(failed('damaged'));
       await controller.bootstrap();
