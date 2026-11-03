@@ -142,7 +142,9 @@ impl Record {
             .conflicts
             .iter()
             .map(|conflict| match self.conflicts.get(&conflict.path) {
-                Some((was, choice)) if was == conflict => RowRecall::Carried(choice.clone()),
+                Some((was, choice)) if was.is_same_as(conflict) => {
+                    RowRecall::Carried(choice.clone())
+                }
                 earlier => RowRecall::Changed {
                     was: earlier.map(|(was, _)| was.clone()),
                 },

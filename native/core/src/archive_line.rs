@@ -23,6 +23,11 @@ pub(crate) enum Line {
         mtime: i64,
         mode: u32,
         hash: String,
+        /// When `size` and `mtime` were read, microseconds since the
+        /// epoch (format 2.1). A 2.0 line has none, and reads as 0: read
+        /// before its mtime, so unsettled, and hashed once more.
+        #[serde(default)]
+        read: i64,
     },
     Delete {
         path: String,
@@ -39,6 +44,7 @@ impl Line {
                 mtime: file.meta.mtime_us,
                 mode: file.meta.mode,
                 hash: file.hash.to_string(),
+                read: file.meta.read_us,
             },
             ArchiveCommit::Delete(_) => Line::Delete { path },
         }
@@ -55,6 +61,7 @@ impl Line {
                 mtime,
                 mode,
                 hash,
+                read,
             } => ArchiveCommit::Upsert {
                 path: parse_path(&path)?,
                 file: FileState {
@@ -62,6 +69,7 @@ impl Line {
                         size,
                         mtime_us: mtime,
                         mode,
+                        read_us: read,
                     },
                     hash: hash
                         .parse::<ContentHash>()

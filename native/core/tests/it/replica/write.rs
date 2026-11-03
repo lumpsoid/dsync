@@ -7,7 +7,8 @@ use dsync_core::{Body, LocalReplica, Replica, ReplicaError, Stage, body_channel}
 use dsync_domain::{FileMeta, Precondition, STAGING_DIR, Side};
 
 use crate::replica::support::{
-    MTIME_US, Site, expect_at, failing_body, path, source_of, temp_files_under, with_deadline,
+    MTIME_US, Site, as_stat, expect_at, failing_body, path, source_of, temp_files_under,
+    with_deadline,
 };
 
 async fn write(replica: &LocalReplica, relative: &str, content: &str, mode: u32) -> FileMeta {
@@ -39,14 +40,18 @@ async fn lands_the_bytes_mtime_and_mode_and_returns_what_landed() {
 
     assert_eq!(site.get(Side::B, "a.txt"), b"hello");
     assert_eq!(
-        landed,
+        as_stat(landed),
         FileMeta {
             size: 5,
             mtime_us: MTIME_US,
             mode: 0o640,
+            read_us: 0,
         }
     );
-    assert_eq!(landed, site.state_of(Side::B, "a.txt").meta);
+    assert_eq!(
+        as_stat(landed),
+        as_stat(site.state_of(Side::B, "a.txt").meta)
+    );
     assert!(temp_files_under(&site.root(Side::B)).is_empty());
 }
 

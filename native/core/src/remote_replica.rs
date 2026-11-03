@@ -882,6 +882,7 @@ mod tests {
                 size: 0,
                 mtime_us: 0,
                 mode: 0o644,
+                read_us: 0,
             },
             hash: dsync_domain::ContentHash::from_digest([0; 32]),
         };
@@ -925,6 +926,7 @@ mod tests {
                 size: 0,
                 mtime_us: 0,
                 mode: 0o644,
+                read_us: 0,
             },
             hash: dsync_domain::ContentHash::from_digest([0; 32]),
         };

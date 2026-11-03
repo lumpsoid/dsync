@@ -143,6 +143,7 @@ async fn the_missing_root_rule_judges_the_archive_as_the_lock_read_it() {
                 size: 1,
                 mtime_us: 1,
                 mode: 0o644,
+                read_us: 1_700_000_000_000_000,
             },
             hash: ContentHash::from_digest([1; 32]),
         };

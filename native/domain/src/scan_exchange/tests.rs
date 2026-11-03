@@ -24,6 +24,7 @@ fn file(tag: &str) -> FileState {
             size: 1,
             mtime_us: 2,
             mode: 0o644,
+            read_us: 0,
         },
         hash: ContentHash::from_digest(digest),
     }

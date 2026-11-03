@@ -13,6 +13,7 @@ mod missing_root;
 mod out_of_space;
 mod peek;
 mod pipeline;
+mod recent;
 mod soak;
 #[cfg(unix)]
 mod special_files;

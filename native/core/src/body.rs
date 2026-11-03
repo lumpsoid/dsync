@@ -163,6 +163,9 @@ impl Body {
                 End::SourceMoved => return Err(BodyError::SourceMoved),
                 End::Settling(check) => {
                     let now = (&mut check.settled).await.unwrap_or(OnDisk::Unknown);
+                    // Any `Holds` will do: a source's content is
+                    // confirmed by the writer, which refuses bytes that do
+                    // not hash to the scan's (SPEC §7.2).
                     let held = check.expect.check(now).is_ok();
                     if !held {
                         check.moved.mark();

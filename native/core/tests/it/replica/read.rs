@@ -2,7 +2,7 @@
 //! `read_buffer_bytes` chunks (the cases of Dart's `read_pool_test`).
 
 use dsync_core::{Body, FileOp, LocalReplica, Reading, Replica, ReplicaError};
-use dsync_domain::{Side, Tuning};
+use dsync_domain::{Holds, Side, Tuning};
 
 use crate::replica::support::{Site, path, with_deadline};
 
@@ -135,5 +135,5 @@ async fn a_read_settles_on_what_its_file_was_once_read() {
     })
     .await;
 
-    assert_eq!(scanned.check(now), Ok(()));
+    assert_eq!(scanned.check(now), Ok(Holds::Surely));
 }

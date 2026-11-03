@@ -6,8 +6,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use dsync_core::{Scanner, Symlinks};
 use dsync_domain::{
-    Archive, ArchiveCommit, CaseFolding, ContentHash, FileMeta, FileState, Glob, Jobs, RelPath,
-    RuleSet, ScanEntry, ScanResult, SkippedReason, Status,
+    Archive, ArchiveCommit, CaseFolding, ContentHash, FileMeta, FileState, Glob, Jobs,
+    MTIME_WINDOW_US, RelPath, RuleSet, ScanEntry, ScanResult, SkippedReason, Status,
 };
 use tempfile::TempDir;
 
@@ -85,13 +85,20 @@ pub fn rules(ignore: &[&str], follow: &[&str]) -> RuleSet {
     RuleSet::new(globs(ignore), globs(follow))
 }
 
-/// An archive entry with arbitrary metadata.
+/// An archive entry with arbitrary metadata, recorded long enough after
+/// its mtime for the fast path to trust it.
 pub fn archived(size: u64, mtime_us: i64, hash: ContentHash) -> FileState {
+    archived_at(size, mtime_us, mtime_us + MTIME_WINDOW_US, hash)
+}
+
+/// An archive entry whose metadata was read at `read_us`.
+pub fn archived_at(size: u64, mtime_us: i64, read_us: i64, hash: ContentHash) -> FileState {
     FileState {
         meta: FileMeta {
             size,
             mtime_us,
             mode: 0o644,
+            read_us,
         },
         hash,
     }

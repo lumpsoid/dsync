@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dsync_domain::{
-    Archive, CaseFolding, ContentHash, FileMeta, FileState, Jobs, OnDisk, RelPath, RelPathError,
-    RuleSet, ScanEntry, ScanResult, SkippedPath, SkippedReason, Status, WalkedTree,
-    is_root_lock_name, is_staging_dir_name, is_temp_file_name,
+    Archive, CaseFolding, ChangedDuringSync, ContentHash, FileMeta, FileState, Holds, Jobs, OnDisk,
+    Precondition, RelPath, RelPathError, RuleSet, ScanEntry, ScanResult, SkippedPath,
+    SkippedReason, Status, WalkedTree, is_root_lock_name, is_staging_dir_name, is_temp_file_name,
 };
 use ring::digest;
 
@@ -443,14 +443,36 @@ pub(crate) fn describe(error: &io::Error) -> String {
 }
 
 /// A file's metadata as the fast path compares it. Follows a link, which
-/// only a followed link's target ever is.
+/// only a followed link's target ever is. The clock is read first, so an
+/// edit after the stat is after `read_us` too ([`FileMeta::settled`]).
 pub(crate) fn stat(source: &Path) -> io::Result<FileMeta> {
+    let read_us = mtime_us(SystemTime::now());
     let meta = fs::metadata(source)?;
     Ok(FileMeta {
         size: meta.len(),
         mtime_us: mtime_us(meta.modified()?),
         mode: mode_of(&meta),
+        read_us,
     })
+}
+
+/// Whether `path` still holds what `expect` says the scan saw there, by a
+/// stat - and, for a file the scan read within its mtime's window, by its
+/// content (SPEC §7.6). A read that fails is a change: the scan's content
+/// cannot be vouched for. A matching hash is followed by a second stat,
+/// so an edit made while the hash read does not slip through: the window
+/// left before the act stays the stat's, not the hash's.
+pub(crate) fn holds_at(expect: Precondition, path: &Path) -> Result<(), ChangedDuringSync> {
+    match expect.check(on_disk_at(path))? {
+        Holds::Surely => Ok(()),
+        Holds::IfContentIs(scanned) => {
+            let mut buffer = vec![0u8; HASH_READ_BUFFER_BYTES];
+            match hash_file(path, &mut buffer) {
+                Ok(now) if now == scanned => expect.check(on_disk_at(path)).map(drop),
+                _ => Err(ChangedDuringSync),
+            }
+        }
+    }
 }
 
 /// What `meta` says is at its path, as a precondition compares it (SPEC
@@ -566,6 +588,7 @@ mod tests {
             size,
             mtime_us: 0,
             mode: 0,
+            read_us: 0,
         };
         let path = Path::new("x");
         let mut queue = [

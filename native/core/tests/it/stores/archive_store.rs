@@ -209,7 +209,7 @@ fn the_first_line_of_a_new_log_is_the_header() {
     let first = &fixture.lines()[0];
     assert!(first.contains(r#""op":"header""#), "{first}");
     assert!(first.contains(&format!(r#""version":"{ARCHIVE_FORMAT_VERSION}""#)));
-    assert_eq!(ARCHIVE_FORMAT_VERSION.to_string(), "2.0");
+    assert_eq!(ARCHIVE_FORMAT_VERSION.to_string(), "2.1");
     assert!(first.contains(&format!(r#""entry_id":"{}""#, profile().as_str())));
     assert!(first.contains(r#""rootPath":"/home/me/notes""#));
 }
@@ -298,7 +298,7 @@ fn refuses_a_log_of_another_major_naming_both_versions_and_the_file() {
             message.contains(&format!("is format {version}")),
             "{message}"
         );
-        assert!(message.contains("(format 2.0)"), "{message}");
+        assert!(message.contains("(format 2.1)"), "{message}");
         let log = fixture.log().display().to_string();
         assert!(message.contains(&format!("delete {log}")), "{message}");
     }
@@ -317,7 +317,7 @@ fn reads_a_later_minor_whose_lines_carry_fields_it_does_not_know() {
     let text = fs::read_to_string(fixture.log())
         .unwrap()
         .replace(
-            r#""version":"2.0""#,
+            r#""version":"2.1""#,
             r#""version":"2.4","createdBy":"later""#,
         )
         .replace(r#""op":"upsert""#, r#""op":"upsert","xattrs":{"k":"v"}"#);
@@ -325,6 +325,33 @@ fn reads_a_later_minor_whose_lines_carry_fields_it_does_not_know() {
     fs::write(fixture.log(), text).unwrap();
 
     assert_eq!(fixture.reloaded(), expected);
+}
+
+/// A 2.0 upsert has no `read`: it replays as read at the epoch, so
+/// unsettled, and the next scan hashes it rather than trusting its stat.
+#[test]
+fn a_2_0_upsert_replays_unsettled() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    committed(&mut store, [entry()]);
+    drop(store);
+    let recorded = *fixture.reloaded().get(&path("a.txt")).unwrap();
+    assert!(
+        recorded.meta.settled(),
+        "the positive control: {recorded:?}"
+    );
+
+    let text = fs::read_to_string(fixture.log())
+        .unwrap()
+        .replace(r#""version":"2.1""#, r#""version":"2.0""#)
+        .replace(&format!(r#","read":{}"#, recorded.meta.read_us), "");
+    assert!(!text.contains("read"), "{text}");
+    fs::write(fixture.log(), text).unwrap();
+
+    let replayed = *fixture.reloaded().get(&path("a.txt")).unwrap();
+    assert_eq!(replayed.meta.read_us, 0);
+    assert!(!replayed.meta.settled());
+    assert_eq!(replayed.hash, recorded.hash);
 }
 
 #[test]

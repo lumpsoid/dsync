@@ -23,6 +23,18 @@ pub struct Conflict {
 }
 
 impl Conflict {
+    /// Whether `other` is this conflict found again: equal in all but
+    /// when each side's file was read (`FileMeta::read_us`), which every
+    /// scan reads afresh. What lets an answer carry across a re-dial.
+    pub fn is_same_as(&self, other: &Conflict) -> bool {
+        let unread = |conflict: &Conflict| Conflict {
+            a: conflict.a.map(Status::unread),
+            b: conflict.b.map(Status::unread),
+            ..conflict.clone()
+        };
+        unread(self) == unread(other)
+    }
+
     pub fn on(&self, side: Side) -> Option<&Status> {
         match side {
             Side::A => self.a.as_ref(),
@@ -101,6 +113,7 @@ mod tests {
                 size,
                 mtime_us: 1,
                 mode: 0o644,
+                read_us: 0,
             },
             hash: ContentHash::from_digest([size as u8; 32]),
         }
@@ -114,6 +127,33 @@ mod tests {
             root_kind: RootKind::Folder,
             cause: ConflictCause::Changes,
         }
+    }
+
+    #[test]
+    fn a_conflict_found_again_is_the_same_however_recently_it_was_read() {
+        let read_at = |read_us| FileState {
+            meta: FileMeta {
+                read_us,
+                ..file(3).meta
+            },
+            ..file(3)
+        };
+        let unchanged = |read_us| Status::Unchanged {
+            file: read_at(read_us),
+            by: Unchanged::HashMatched,
+        };
+        let first = conflict(Some(Status::Modified(read_at(1))), Some(unchanged(1)));
+        let again = conflict(Some(Status::Modified(read_at(9))), Some(unchanged(9)));
+        assert_ne!(first, again, "the read times differ");
+        assert!(first.is_same_as(&again));
+        // The positive controls: any other difference is a changed row.
+        let edited = conflict(Some(Status::Modified(file(4))), Some(unchanged(1)));
+        assert!(!first.is_same_as(&edited));
+        let caused = Conflict {
+            cause: ConflictCause::UnfinishedWrite(Side::A),
+            ..first.clone()
+        };
+        assert!(!first.is_same_as(&caused));
     }
 
     #[test]

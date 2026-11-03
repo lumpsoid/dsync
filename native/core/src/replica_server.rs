@@ -1130,6 +1130,7 @@ mod tests {
                     size: 2 * bytes as u64,
                     mtime_us: 0,
                     mode: 0o644,
+                    read_us: 0,
                 },
                 hash: ContentHash::from_digest([0; 32]),
             },

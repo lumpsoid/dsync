@@ -14,8 +14,8 @@ use dsync_core::{
 };
 use dsync_domain::{
     Action, Archive, ArchiveCommit, BucketCount, ContentHash, EntryId, FileMeta, FileState, Jobs,
-    Plan, Precondition, RelPath, RootKind, RuleSet, ScanEntry, Side, Status, Tuning,
-    UnreadablePaths, is_temp_file_name, reconcile, status_list,
+    MTIME_WINDOW_US, Plan, Precondition, RelPath, RootKind, RuleSet, ScanEntry, Side, Status,
+    Tuning, UnreadablePaths, is_temp_file_name, reconcile, status_list,
 };
 use tempfile::TempDir;
 
@@ -49,6 +49,7 @@ pub fn recorded(content: &str) -> FileState {
             size: content.len() as u64,
             mtime_us: 1,
             mode: 0o644,
+            read_us: 1_700_000_000_000_000,
         },
         hash: hash_of(content),
     }
@@ -64,6 +65,7 @@ pub fn source_of(content: impl AsRef<[u8]>, mode: u32) -> FileState {
             size: content.as_ref().len() as u64,
             mtime_us: MTIME_US,
             mode,
+            read_us: MTIME_US + MTIME_WINDOW_US,
         },
         hash: hash_of(content),
     }
@@ -124,11 +126,13 @@ impl Site {
         self.root(side).join(relative)
     }
 
-    /// Writes `content` at `relative` on `side`, creating its folders.
+    /// Writes `content` at `relative` on `side`, creating its folders, as
+    /// a file written a while ago ([`crate::run::support::backdate`]).
     pub fn put(&self, side: Side, relative: &str, content: impl AsRef<[u8]>) -> PathBuf {
         let file = self.file(side, relative);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, content).unwrap();
+        crate::run::support::backdate(&file);
         file
     }
 
@@ -200,14 +204,33 @@ impl Site {
         let file = self.file(side, relative);
         let metadata = fs::metadata(&file).unwrap();
         let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH);
+        let mtime_us = i64::try_from(mtime.unwrap().as_micros()).unwrap();
         FileState {
             meta: FileMeta {
                 size: metadata.len(),
-                mtime_us: i64::try_from(mtime.unwrap().as_micros()).unwrap(),
+                mtime_us,
                 mode: mode_of(&metadata),
+                // As a scan a while later would read it: settled, and the
+                // same however often it is asked for.
+                read_us: mtime_us + MTIME_WINDOW_US,
             },
             hash: hash_of(fs::read(&file).unwrap()),
         }
+    }
+}
+
+/// `meta` less when it was read: what two reads of one unchanged file
+/// agree on.
+pub fn as_stat(meta: FileMeta) -> FileMeta {
+    FileMeta { read_us: 0, ..meta }
+}
+
+/// `file` less when its metadata was read: what an archive record and a
+/// later look at the same disk agree on.
+pub fn as_found(file: FileState) -> FileState {
+    FileState {
+        meta: as_stat(file.meta),
+        ..file
     }
 }
 

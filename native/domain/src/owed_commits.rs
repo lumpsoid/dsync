@@ -163,6 +163,7 @@ mod tests {
                 size,
                 mtime_us,
                 mode: 0o644,
+                read_us: 0,
             },
             hash: ContentHash::from_digest([fill; 32]),
         }
@@ -175,6 +176,7 @@ mod tests {
             size: 5,
             mtime_us: 11,
             mode: 0o600,
+            read_us: 0,
         };
         let owed = OwedCommits::for_copy(&path(), Side::B, source, landed).unwrap();
         assert_eq!(
@@ -204,6 +206,7 @@ mod tests {
             size: 5,
             mtime_us: 11,
             mode: 0o600,
+            read_us: 0,
         };
         for from in Side::BOTH {
             let owed = OwedCommits::for_copy_aside(&to, from, source, landed).unwrap();
@@ -235,6 +238,7 @@ mod tests {
             size: 3,
             mtime_us: 10,
             mode: 0o644,
+            read_us: 0,
         };
         assert_eq!(
             OwedCommits::for_copy(&path(), Side::A, file(5, 10, 1), landed),

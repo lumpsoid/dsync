@@ -230,6 +230,56 @@ async fn a_kept_both_conflict_carries_its_copy_aside_without_asking() {
     assert_eq!(second, [plan.actions[0].action.clone(), aside]);
 }
 
+/// Conflict `c`, both sides modified, as a scan that read them at
+/// `read_us` would report it.
+fn conflict_read_at(read_us: i64) -> Conflict {
+    let file = |byte| dsync_domain::FileState {
+        meta: dsync_domain::FileMeta {
+            size: 3,
+            mtime_us: 1,
+            mode: 0o644,
+            read_us,
+        },
+        hash: dsync_domain::ContentHash::from_digest([byte; 32]),
+    };
+    Conflict {
+        a: Some(dsync_domain::Status::Modified(file(1))),
+        b: Some(dsync_domain::Status::Modified(file(2))),
+        ..conflict("c", RootKind::Folder)
+    }
+}
+
+#[tokio::test]
+async fn a_conflict_rescanned_unchanged_carries_its_answer_across_a_redial() {
+    // Every re-dial rescans, and every scan reads each file afresh.
+    let plan = |read_us| Plan {
+        actions: vec![copy("x", 10, None)],
+        conflicts: vec![conflict_read_at(read_us)],
+    };
+    let mut inner = Fake {
+        keeps: vec![("c", Side::B)],
+        ..Fake::default()
+    };
+    let mut recalled = Recalled::new(&mut inner);
+    let first = decide(&mut recalled, &plan(1)).await;
+    let again = decide(&mut recalled, &plan(2)).await;
+    // The positive control: a conflict that did change is asked again.
+    let mut edited = plan(3);
+    edited.conflicts[0].b = None;
+    decide(&mut recalled, &edited).await;
+    drop(recalled);
+
+    assert_eq!(inner.decides, 1);
+    assert_eq!(inner.carried, 1, "{:?}", inner.asked_again);
+    assert_eq!(again, first);
+    assert_eq!(
+        again[1],
+        conflict_read_at(2).resolve(Side::B),
+        "kept B, resolved over the new scan"
+    );
+    assert_eq!(inner.asked_again.len(), 1);
+}
+
 #[tokio::test]
 async fn one_changed_proposal_is_asked_again_with_the_rest_recalled() {
     let mut inner = answered();

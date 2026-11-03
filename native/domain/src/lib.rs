@@ -136,7 +136,7 @@ pub use peek_limits::PeekLimits;
 pub use peer_name::{PeerName, PeerNameError};
 pub use plan::Plan;
 pub use platform::Platform;
-pub use precondition::{ChangedDuringSync, Precondition};
+pub use precondition::{ChangedDuringSync, Holds, Precondition};
 pub use profile::{PROFILE_FORMAT_VERSION, Profile, ProfileError, ProfileName, ProfileNameError};
 pub use proposal::Proposal;
 pub use reconcile::reconcile;
@@ -151,7 +151,7 @@ pub use rule_set::RuleSet;
 pub use run_flags::{Command, Flags, Mode, RunFlags, Verbosity};
 pub use run_metrics::{OpStats, ReplicaMetrics, ReplicaOp, RunMetrics, RunPhase};
 pub use run_summary::RunSummary;
-pub use scan_entry::{FileMeta, FileState, ScanEntry, Status, Unchanged};
+pub use scan_entry::{FileMeta, FileState, MTIME_WINDOW_US, ScanEntry, Status, Unchanged};
 pub use scan_exchange::{
     Bucket, BucketCount, BucketCountMismatch, BucketDigests, Digested, UnchangedEntries,
     status_list,

@@ -39,8 +39,9 @@ use crate::replica_lock::RunLocks;
 /// on a line is a minor bump; a new kind of line, or any change to what an
 /// existing one means, is a major one.
 ///
-/// 2.0 drops 1.0's `intent` and `withdraw` lines (SPEC §7.6).
-pub const ARCHIVE_FORMAT_VERSION: FormatVersion = FormatVersion::new(2, 0);
+/// 2.0 drops 1.0's `intent` and `withdraw` lines (SPEC §7.6). 2.1 adds an
+/// upsert's `read`, when its size and mtime were read (SPEC §5.2).
+pub const ARCHIVE_FORMAT_VERSION: FormatVersion = FormatVersion::new(2, 1);
 
 /// Read buffer for replaying a log: about one line per live path in steady
 /// state, which is megabytes on a tree of any size.

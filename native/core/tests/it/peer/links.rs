@@ -137,6 +137,7 @@ async fn write(replica: &impl Replica, path: &str) -> Result<FileMeta, ReplicaEr
             size: content.len() as u64,
             mtime_us: 1_704_067_200_000_000,
             mode: 0o644,
+            read_us: 1_800_000_000_000_000,
         },
         hash: ContentHash::from_digest(digest.as_ref().try_into().unwrap()),
     };

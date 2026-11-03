@@ -48,6 +48,7 @@ async fn a_replica_behind_the_listener_scans_writes_and_commits() {
             size: content.len() as u64,
             mtime_us: 1_704_067_200_000_000,
             mode: 0o644,
+            read_us: 1_800_000_000_000_000,
         },
         hash,
     };

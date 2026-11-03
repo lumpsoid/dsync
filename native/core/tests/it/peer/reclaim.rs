@@ -227,6 +227,7 @@ async fn a_claim_ends_the_session_a_dead_push_left_and_frees_its_lock() {
             size: BIG as u64,
             mtime_us: 1_704_067_200_000_000,
             mode: 0o644,
+            read_us: 1_800_000_000_000_000,
         },
         hash: ContentHash::from_digest([0; 32]),
     };

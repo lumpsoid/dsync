@@ -390,6 +390,7 @@ mod tests {
                 size,
                 mtime_us: 1,
                 mode: 0o644,
+                read_us: 0,
             },
             hash: ContentHash::from_digest([1; 32]),
         }))

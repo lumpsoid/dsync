@@ -8,7 +8,7 @@ use dsync_domain::{
     temp_name_for,
 };
 
-use crate::replica::support::{Site, exchange, hash_of, path, seed, with_deadline};
+use crate::replica::support::{Site, as_found, exchange, hash_of, path, seed, with_deadline};
 
 #[tokio::test]
 async fn a_new_file_is_created_against_an_empty_archive() {
@@ -54,7 +54,13 @@ async fn a_rehash_that_confirms_the_content_refreshes_the_archive_keys() {
 
     // Without the write-back the fast path never matches again, and this
     // file is rehashed on every run (SPEC §5.2 step 2).
-    assert_eq!(site.archive(Side::A).get(&path("a.txt")), Some(&real));
+    assert_eq!(
+        site.archive(Side::A)
+            .get(&path("a.txt"))
+            .copied()
+            .map(as_found),
+        Some(as_found(real))
+    );
 }
 
 #[tokio::test]

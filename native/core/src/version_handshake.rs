@@ -19,8 +19,9 @@ use crate::link_error::LinkError;
 /// stage). Every 2.x session has the `Cancel` frame 1.1 added. 3.0's
 /// `Write` carries the source's whole scanned state, hash included, where
 /// 2.0's carried its metadata: a 2.0 request would decode with other bytes
-/// taken for the hash.
-pub const PROTOCOL_VERSION: FormatVersion = FormatVersion::new(3, 0);
+/// taken for the hash. 4.0's `FileMeta` carries when it was read
+/// (`read_us`), and with it every scan entry, write reply and commit.
+pub const PROTOCOL_VERSION: FormatVersion = FormatVersion::new(4, 0);
 
 /// Opens every version frame, so a stream that happens to start with the
 /// version kind byte is still not mistaken for the protocol.
@@ -175,15 +176,15 @@ mod tests {
     const V1_0: FormatVersion = FormatVersion::new(1, 0);
     const V1_3: FormatVersion = FormatVersion::new(1, 3);
     const V2_0: FormatVersion = FormatVersion::new(2, 0);
-    const V3_3: FormatVersion = FormatVersion::new(3, 3);
-    const V3_0: FormatVersion = FormatVersion::new(3, 0);
+    const V4_3: FormatVersion = FormatVersion::new(4, 3);
+    const V4_0: FormatVersion = FormatVersion::new(4, 0);
 
     #[tokio::test]
     async fn succeeds_when_both_ends_speak_the_same_version() {
         let (near, far) = shake(PROTOCOL_VERSION, PROTOCOL_VERSION).await;
         assert_eq!(near.unwrap(), PROTOCOL_VERSION);
         assert_eq!(far.unwrap(), PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, V3_0);
+        assert_eq!(PROTOCOL_VERSION, V4_0);
     }
 
     #[tokio::test]
@@ -195,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_later_minor_may_append_to_the_version_frame() {
-        let mut frame = version_frame(V3_3);
+        let mut frame = version_frame(V4_3);
         frame.payload.extend_from_slice(b"more");
         let (near, mut far) = duplex(1024);
         frame.write_to(&mut far).await.unwrap();
@@ -204,7 +205,7 @@ mod tests {
             tokio::time::timeout(DEADLINE, handshake(&mut BufReader::new(read), &mut write))
                 .await
                 .unwrap();
-        assert_eq!(agreed.unwrap(), V3_0);
+        assert_eq!(agreed.unwrap(), V4_0);
     }
 
     #[tokio::test]

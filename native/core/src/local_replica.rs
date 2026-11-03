@@ -34,7 +34,7 @@ use crate::replica::{
 use crate::replica_error::{FileOp, ReplicaError};
 use crate::replica_lock::RunLocks;
 use crate::scan_session::ScanSession;
-use crate::scanner::{Scanner, on_disk, on_disk_at};
+use crate::scanner::{Scanner, holds_at, on_disk};
 use crate::state_dir::StateDir;
 use crate::symlinks::Symlinks;
 use crate::writer_pool::WriterPool;
@@ -381,7 +381,7 @@ impl Replica for LocalReplica {
                 .confinement
                 .check(&rel)
                 .map_err(shared.file_error(FileOp::Delete, target.clone()))?;
-            expect.check(on_disk_at(&target))?;
+            holds_at(expect, &target)?;
             // The folder synced too, so the delete is durable before its
             // record commits, like a write's rename (SPEC §7.5).
             fs::remove_file(&target)

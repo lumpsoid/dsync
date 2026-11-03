@@ -39,6 +39,20 @@ pub async fn with_deadline<T>(label: &str, work: impl Future<Output = T>) -> T {
 /// The run's event channel: small, so a test sees backpressure.
 pub const EVENTS: usize = 8;
 
+/// Sets `file`'s mtime an hour back, still distinct per call, so a scan
+/// reads it long after its mtime and trusts size and mtime for it
+/// (`dsync_domain::FileMeta::settled`), as it would a file of the user's
+/// not touched in the last few seconds.
+pub fn backdate(file: &Path) {
+    let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    fs::File::options()
+        .write(true)
+        .open(file)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+}
+
 pub fn path(text: &str) -> RelPath {
     RelPath::parse(text).unwrap()
 }
@@ -122,8 +136,20 @@ impl Site {
         self.root(side).join(relative)
     }
 
-    /// Writes `content` at `relative` on `side`, creating its folders.
+    /// Writes `content` at `relative` on `side`, creating its folders, as
+    /// a file written a while ago ([`backdate`]).
     pub fn put(&self, side: Side, relative: &str, content: impl AsRef<[u8]>) -> PathBuf {
+        let file = self.file(side, relative);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, content).unwrap();
+        backdate(&file);
+        file
+    }
+
+    /// Writes `content` at `relative` on `side` with the mtime the write
+    /// itself stamps: a file the next scan reads within its mtime's window
+    /// (`dsync_domain::FileMeta::settled`).
+    pub fn put_now(&self, side: Side, relative: &str, content: impl AsRef<[u8]>) -> PathBuf {
         let file = self.file(side, relative);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, content).unwrap();

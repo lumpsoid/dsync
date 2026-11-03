@@ -41,6 +41,7 @@ pub fn file(size: u64, byte: u8) -> FileState {
             size,
             mtime_us: 123_456,
             mode: 0o644,
+            read_us: 1_700_000_000_000_000,
         },
         hash: ContentHash::from_digest([byte; 32]),
     }

@@ -1157,6 +1157,7 @@ mod tests {
                 size,
                 mtime_us,
                 mode: 0o644,
+                read_us: 0,
             },
             hash: ContentHash::from_digest([u8::try_from(size).unwrap_or(0); 32]),
         }

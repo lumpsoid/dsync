@@ -66,6 +66,7 @@ mod tests {
             size: 1,
             mtime_us: 1,
             mode: 0o644,
+            read_us: 0,
         },
         hash: ContentHash::from_digest([0; 32]),
     };

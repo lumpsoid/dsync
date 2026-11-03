@@ -13,20 +13,23 @@ use crate::scan_result::ScanResult;
 use crate::skipped_path::{SkippedPath, unreadable_of};
 
 impl Archive {
-    /// SPEC §5.2 step 1: size and mtime (µs) equal to the entry's mean
-    /// unchanged, and nothing is hashed; `None` means hash it. Keyed on
-    /// size and mtime alone, so a mode-only change stays unchanged (§7.4).
+    /// SPEC §5.2 step 1: size and mtime (µs) equal to a settled entry's
+    /// mean unchanged, and nothing is hashed; `None` means hash it. Keyed
+    /// on size and mtime alone, so a mode-only change stays unchanged
+    /// (§7.4). An unsettled entry ([`FileMeta::settled`]) is always
+    /// hashed: a same-size edit in its mtime's step would match it.
     pub fn fast_path(&self, path: &RelPath, meta: FileMeta) -> Option<Status> {
         let archived = self.get(path)?;
-        (archived.meta.size == meta.size && archived.meta.mtime_us == meta.mtime_us).then_some(
-            Status::Unchanged {
+        (archived.meta.settled()
+            && archived.meta.size == meta.size
+            && archived.meta.mtime_us == meta.mtime_us)
+            .then_some(Status::Unchanged {
                 file: FileState {
                     meta,
                     hash: archived.hash,
                 },
                 by: Unchanged::MetadataMatched,
-            },
-        )
+            })
     }
 
     /// SPEC §5.2 steps 2-3 for a file the fast path did not settle: the
@@ -119,6 +122,7 @@ mod tests {
     use crate::archive::ArchiveCommit;
     use crate::content_hash::ContentHash;
     use crate::glob::Glob;
+    use crate::scan_entry::MTIME_WINDOW_US;
     use crate::skipped_path::SkippedReason;
 
     fn path(text: &str) -> RelPath {
@@ -130,6 +134,7 @@ mod tests {
             size,
             mtime_us,
             mode: 0o644,
+            read_us: mtime_us + MTIME_WINDOW_US,
         }
     }
 
@@ -176,6 +181,23 @@ mod tests {
         assert_eq!(archive.fast_path(&path("a"), meta(5, 101)), None);
         assert_eq!(archive.fast_path(&path("a"), meta(6, 100)), None);
         assert_eq!(archive.fast_path(&path("b"), meta(5, 100)), None);
+    }
+
+    #[test]
+    fn an_entry_recorded_within_the_window_of_its_mtime_is_hashed() {
+        let recorded = |read_us| FileState {
+            meta: FileMeta {
+                read_us,
+                ..meta(5, 100)
+            },
+            hash: ContentHash::from_digest([1; 32]),
+        };
+        // A same-size edit in the mtime's step reads back the same stat.
+        let unsettled = archive(&[("a", recorded(100 + MTIME_WINDOW_US - 1))]);
+        assert_eq!(unsettled.fast_path(&path("a"), meta(5, 100)), None);
+        // The positive control: one read a window later is trusted.
+        let settled = archive(&[("a", recorded(100 + MTIME_WINDOW_US))]);
+        assert!(settled.fast_path(&path("a"), meta(5, 100)).is_some());
     }
 
     #[test]

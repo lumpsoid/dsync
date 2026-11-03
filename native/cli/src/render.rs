@@ -283,6 +283,7 @@ pub(crate) mod fixtures {
                 size,
                 mtime_us: 1,
                 mode: 0o644,
+                read_us: 0,
             },
             hash: ContentHash::from_digest([7; 32]),
         }

@@ -24,7 +24,7 @@ use crate::body::BodyError;
 use crate::confinement::Confinement;
 use crate::local_root::{Located, Root};
 use crate::replica_error::ReplicaError;
-use crate::scanner::{content_hash, on_disk_at, stat};
+use crate::scanner::{content_hash, holds_at, stat};
 use crate::write_error::WriteError;
 use dsync_domain::{Stage, WriteStats};
 
@@ -374,9 +374,9 @@ fn land(
         .map_err(at(Stage::Probe))?;
     // Before the folders too: a path whose parent is not there reads as
     // absent, and one that changed leaves nothing behind.
-    let now = on_disk_at(target);
+    let held = holds_at(expect, target);
     timer.lap(Stage::Probe);
-    expect.check(now)?;
+    held?;
     if let Some(parent) = rel.parent()
         && destination
             .ensure_parent(&parent)
@@ -435,7 +435,7 @@ fn land(
         // Again, since the target may have been edited while the body
         // streamed; the early check only spared streaming a doomed write.
         rename_onto(staged, meta, &destination.syncs, || {
-            expect.check(on_disk_at(target))
+            holds_at(expect, target)
         })?;
         let folder = parent_of(&staged.onto).map_err(at(Stage::Rename))?;
         (destination.syncs.folder)(folder).map_err(at(Stage::Rename))?;
@@ -595,6 +595,7 @@ mod tests {
                 size: content.len() as u64,
                 mtime_us: 0,
                 mode,
+                read_us: 0,
             },
             hash: content_hash(hashing),
         }

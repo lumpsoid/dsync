@@ -59,7 +59,9 @@ async fn copies_from(from: Side) {
     let on_source = *site.archive(from).get(&path("dir/f.txt")).unwrap();
     let on_destination = *site.archive(from.other()).get(&path("dir/f.txt")).unwrap();
     assert_eq!(on_source.hash, on_destination.hash);
-    assert_eq!(on_source.meta, on_destination.meta);
+    // Both as read, each by its own stat at its own time.
+    let read = |meta: dsync_domain::FileMeta| (meta.size, meta.mtime_us, meta.mode);
+    assert_eq!(read(on_source.meta), read(on_destination.meta));
 }
 
 #[tokio::test]
@@ -227,6 +229,7 @@ async fn a_path_one_side_never_had_is_still_tombstoned_on_the_side_that_records_
             size: 1,
             mtime_us: 1,
             mode: 0o644,
+            read_us: 1_700_000_000_000_000,
         },
         hash: dsync_domain::ContentHash::from_digest([1; 32]),
     };

@@ -64,7 +64,8 @@ impl Roots {
 fn put(root: &std::path::Path, relative: &str, content: &str) {
     let file = root.join(relative);
     fs::create_dir_all(file.parent().unwrap()).unwrap();
-    fs::write(file, content).unwrap();
+    fs::write(&file, content).unwrap();
+    crate::run::support::backdate(&file);
 }
 
 fn files(root: &std::path::Path) -> usize {

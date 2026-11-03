@@ -15,8 +15,8 @@ use dsync_domain::{
 use crate::replica::hello_lock::assert_folder_in_use;
 use crate::replica::served::Served;
 use crate::replica::support::{
-    OTHER_PROFILE, PROFILE, Site, apply, exchange, failing_body, path, recorded, source_of,
-    temp_files_under, with_deadline,
+    OTHER_PROFILE, PROFILE, Site, apply, as_found, as_stat, exchange, failing_body, path, recorded,
+    source_of, temp_files_under, with_deadline,
 };
 
 #[tokio::test]
@@ -40,8 +40,11 @@ async fn a_scan_write_and_commit_round_trip_lands_both_sides_in_sync() {
     assert_eq!(site.get(Side::A, "only-b.txt"), b"b");
     for relative in ["top.txt", "deep/er/file.bin", "only-b.txt"] {
         assert_eq!(
-            site.archive(Side::B).get(&path(relative)),
-            Some(&site.state_of(Side::B, relative)),
+            site.archive(Side::B)
+                .get(&path(relative))
+                .copied()
+                .map(as_found),
+            Some(as_found(site.state_of(Side::B, relative))),
             "{relative} archived on the far side"
         );
     }
@@ -295,7 +298,10 @@ async fn write_lands_through_the_wire_and_returns_what_landed() {
     .await
     .unwrap();
     assert_eq!(site.get(Side::B, "d/w.bin"), content);
-    assert_eq!(landed, site.state_of(Side::B, "d/w.bin").meta);
+    assert_eq!(
+        as_stat(landed),
+        as_stat(site.state_of(Side::B, "d/w.bin").meta)
+    );
     served.close().await;
 }
 
