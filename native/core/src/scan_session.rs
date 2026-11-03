@@ -1,7 +1,9 @@
 //! One replica's scan, handed over in the three phases of SPEC §6.1's
 //! exchange (plan OQ3): the local half, over a scan already in memory.
 
-use dsync_domain::{BucketCount, ChangedScan, Digested, RelPath, ScanResult, UnchangedEntries};
+use dsync_domain::{
+    BucketCount, ChangedScan, Digested, Naming, RelPath, ScanResult, UnchangedEntries,
+};
 
 /// A finished scan waiting to be exchanged.
 ///
@@ -22,8 +24,9 @@ pub struct ScanSession {
 }
 
 impl ScanSession {
-    pub fn new(result: ScanResult) -> ScanSession {
-        let (changed, unchanged) = result.split();
+    /// `naming` is the scanned replica's, sent with phase 1.
+    pub fn new(result: ScanResult, naming: Naming) -> ScanSession {
+        let (changed, unchanged) = result.split(naming);
         ScanSession { changed, unchanged }
     }
 

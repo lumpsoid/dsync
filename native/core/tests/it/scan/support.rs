@@ -7,7 +7,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use dsync_core::{Scanner, Symlinks};
 use dsync_domain::{
     Archive, ArchiveCommit, CaseFolding, ContentHash, FileMeta, FileState, Glob, Jobs,
-    MTIME_WINDOW_US, RelPath, RuleSet, ScanEntry, ScanResult, SkippedReason, Status,
+    MTIME_WINDOW_US, Naming, Platform, RelPath, RuleSet, ScanEntry, ScanResult, SkippedReason,
+    Status,
 };
 use tempfile::TempDir;
 
@@ -62,6 +63,12 @@ impl Tree {
 pub fn symlink(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
+
+/// What a test replica's filesystem holds: every name, every spelling.
+pub const NAMING: Naming = Naming {
+    folding: CaseFolding::Distinct,
+    platform: Platform::Unix,
+};
 
 pub fn scanner(jobs: i64) -> Scanner {
     Scanner::new(

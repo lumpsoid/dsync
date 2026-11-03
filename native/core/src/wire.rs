@@ -339,8 +339,8 @@ impl WireIo {
 mod tests {
     use super::*;
     use dsync_domain::{
-        ContentHash, EntryId, FileState, Glob, Jobs, ReplicaRoot, ScanTally, Side, SkippedPath,
-        SkippedReason, Status, Unchanged,
+        CaseFolding, ContentHash, EntryId, FileState, Glob, Jobs, Naming, Platform, ReplicaRoot,
+        ScanTally, Side, SkippedPath, SkippedReason, Status, Unchanged,
     };
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -435,6 +435,10 @@ mod tests {
                 modified: 1,
                 created: 1,
                 deleted: 1,
+            },
+            naming: Naming {
+                folding: CaseFolding::Folds,
+                platform: Platform::Windows,
             },
         };
         for reply in [

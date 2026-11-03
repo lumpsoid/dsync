@@ -4,7 +4,7 @@
 
 /// The two platform families whose rules differ here: Windows (drive
 /// letters, `\` separators, no unix sockets) and everything else.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Platform {
     Unix,
     Windows,

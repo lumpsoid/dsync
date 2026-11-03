@@ -48,3 +48,4 @@ time = { version = "0.3", features = ["std", "formatting", "parsing"] }
 if-addrs = "0.14"
 base64 = "0.22"
 subtle = "2"
+unicode-normalization = "0.1"

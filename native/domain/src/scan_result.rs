@@ -2,6 +2,7 @@
 
 use crate::archive::ArchiveCommit;
 use crate::changed_scan::ChangedScan;
+use crate::naming::Naming;
 use crate::scan_entry::{ScanEntry, Status, Unchanged};
 use crate::scan_exchange::UnchangedEntries;
 use crate::scan_tally::ScanTally;
@@ -15,9 +16,10 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
-    /// Phase 1's message (everything but `unchanged`, the skipped paths and
-    /// the tally), and the unchanged entries phases 2 and 3 serve from.
-    pub fn split(self) -> (ChangedScan, UnchangedEntries) {
+    /// Phase 1's message (everything but `unchanged`, the skipped paths, the
+    /// tally and the replica's `naming`), and the unchanged entries phases
+    /// 2 and 3 serve from.
+    pub fn split(self, naming: Naming) -> (ChangedScan, UnchangedEntries) {
         let tally = ScanTally::of(&self.entries);
         let (unchanged, changed): (Vec<_>, Vec<_>) = self
             .entries
@@ -28,6 +30,7 @@ impl ScanResult {
                 entries: changed,
                 skipped: self.skipped,
                 tally,
+                naming,
             },
             UnchangedEntries::new(unchanged),
         )

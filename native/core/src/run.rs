@@ -31,10 +31,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dsync_domain::{
-    Action, BucketCount, ChangedScan, EffectiveOptions, MassOverwritePolicy, Plan, ReplicaInfo,
-    ReplicaOp, RuleSet, RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side,
-    SkippedPath, StopSignal, Tuning, UnfinishedApply, failure_count, reconcile, status_list,
-    unreadable_of,
+    Action, BucketCount, ChangedScan, EffectiveOptions, MassOverwritePolicy, Naming, Plan,
+    ReplicaInfo, ReplicaOp, RuleSet, RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry,
+    ScanTally, Side, SkippedPath, StopSignal, Tuning, UnfinishedApply, failure_count, reconcile,
+    status_list, unreadable_of,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -168,11 +168,12 @@ impl Events {
 }
 
 /// One side's exchange, gathered: its status list, what its scan skipped,
-/// and its tally.
+/// its tally, and what names its filesystem can hold.
 struct Scanned {
     list: Vec<ScanEntry>,
     skipped: Vec<SkippedPath>,
     tally: ScanTally,
+    naming: Naming,
 }
 
 impl Run {
@@ -374,10 +375,11 @@ impl Run {
                 .map_err(RunError::replica(side, ReplicaOp::CreateRoot))?;
         }
 
-        let (a, b) = pair
+        let (mut a, mut b) = pair
             .clock
             .phase(RunPhase::Scan, exchange(pair, &options.rules))
             .await?;
+        hold_back_unholdable(&mut a, &mut b);
         self.events
             .emit(RunEvent::ScanTally {
                 a: a.tally,
@@ -692,12 +694,25 @@ fn scanned(changed: ChangedScan, owed: Vec<ScanEntry>, fetched: Vec<ScanEntry>) 
         entries,
         skipped,
         tally,
+        naming,
     } = changed;
     Scanned {
         list: status_list(entries, owed, fetched),
         skipped,
         tally,
+        naming,
     }
+}
+
+/// Skips, on the side it lands on, every create that side's filesystem
+/// cannot hold (SPEC §16), beside what the scans skipped: from here on it
+/// is left out of the plan, reported and counted like any skipped path.
+fn hold_back_unholdable(a: &mut Scanned, b: &mut Scanned) {
+    let scanned = unreadable_of(a.skipped.iter().chain(&b.skipped));
+    let on_a = a.naming.cannot_hold(&a.list, &b.list, &scanned);
+    let on_b = b.naming.cannot_hold(&b.list, &a.list, &scanned);
+    a.skipped.extend(on_a);
+    b.skipped.extend(on_b);
 }
 
 /// The run marker's path, and what it said when the run read it.

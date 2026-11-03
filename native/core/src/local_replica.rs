@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Digested, EntryId, FileMeta, FileState, Jobs,
-    OnDisk, Precondition, RelPath, RootFacts, RuleSet, ScanEntry, Side, Tuning,
+    Naming, OnDisk, Platform, Precondition, RelPath, RootFacts, RuleSet, ScanEntry, Side, Tuning,
 };
 
 use crate::archive_store::ArchiveStore;
@@ -277,21 +277,25 @@ impl Replica for LocalReplica {
 
     async fn open_scan(&self, rules: &RuleSet) -> Result<OpenedScan, ReplicaError> {
         let rules = rules.clone();
-        let result = self
+        let (result, naming) = self
             .blocking(move |shared| {
                 shared.archive(|store| {
+                    let naming = Naming {
+                        folding: probe_case_folding(shared.root.base()),
+                        platform: Platform::HOST,
+                    };
                     let scanner = Scanner::new(
                         shared.jobs,
-                        probe_case_folding(shared.root.base()),
+                        naming.folding,
                         shared.confinement.symlinks().clone(),
                     );
                     let result = shared.root.scan(&scanner, store.archive(), &rules)?;
                     store.commit(result.key_refreshes())?;
-                    Ok(result)
+                    Ok((result, naming))
                 })
             })
             .await?;
-        let session = ScanSession::new(result);
+        let session = ScanSession::new(result, naming);
         let changed = session.changed().clone();
         *self.shared.scan() = ScanPhase::Opened(session);
         Ok(OpenedScan {

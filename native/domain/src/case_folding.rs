@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::rel_path::RelPath;
 use crate::skipped_path::{SkippedPath, SkippedReason};
 
@@ -10,7 +12,11 @@ use crate::skipped_path::{SkippedPath, SkippedReason};
 /// the mounted filesystem, not the OS (a case-sensitive APFS volume, a
 /// case-insensitive Linux mount). The core probes it once per replica and
 /// passes it in as this value.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// A folding filesystem is taken to fold Unicode form too (APFS and NTFS
+/// lookups do; HFS+ stores NFD): `é` as one code point and as `e` plus an
+/// accent are one name there, as `Notes` and `notes` are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CaseFolding {
     /// Two spellings are two files; nothing collides.
     Distinct,
@@ -37,12 +43,10 @@ impl CaseFolding {
             .map(|path| (path, true))
             .chain(archived.iter().map(|path| (path, false)));
         for (path, is_live) in tagged {
-            let slot = *by_key
-                .entry(path.as_str().to_lowercase())
-                .or_insert_with(|| {
-                    groups.push((Vec::new(), false));
-                    groups.len() - 1
-                });
+            let slot = *by_key.entry(fold_key(path)).or_insert_with(|| {
+                groups.push((Vec::new(), false));
+                groups.len() - 1
+            });
             let (members, any_live) = &mut groups[slot];
             if !members.contains(&path) {
                 members.push(path);
@@ -66,6 +70,12 @@ impl CaseFolding {
             })
             .collect()
     }
+}
+
+/// The one name a folding filesystem holds for every spelling of `path`:
+/// lowercased, in NFC.
+fn fold_key(path: &RelPath) -> String {
+    path.as_str().to_lowercase().nfc().collect()
 }
 
 /// Names the other spellings, so the reader knows what to look at.
@@ -137,6 +147,12 @@ mod tests {
             skipped[2].detail,
             "folds to the same path as \"Notes.txt\", \"notes.txt\""
         );
+    }
+
+    #[test]
+    fn two_unicode_forms_of_one_name_collide() {
+        let skipped = CaseFolding::Folds.collisions(&paths(&["caf\u{e9}", "Cafe\u{301}"]), &[]);
+        assert_eq!(reported(&skipped), ["caf\u{e9}", "Cafe\u{301}"]);
     }
 
     #[test]

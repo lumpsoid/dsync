@@ -10,7 +10,7 @@ use crate::reconcile::reconcile;
 use crate::scan_entry::{FileMeta, FileState, Unchanged};
 use crate::scan_result::ScanResult;
 use crate::skipped_path::{SkippedPath, SkippedReason, unreadable_of};
-use crate::{Action, Plan, RootKind, Side, UnfinishedApply};
+use crate::{Action, CaseFolding, Naming, Plan, Platform, RootKind, Side, UnfinishedApply};
 
 fn path(text: &str) -> RelPath {
     RelPath::parse(text).unwrap_or_else(|e| panic!("{e}"))
@@ -80,10 +80,15 @@ struct Exchanged {
 
 use crate::changed_scan::ChangedScan;
 
+const NAMING: Naming = Naming {
+    folding: CaseFolding::Distinct,
+    platform: Platform::Unix,
+};
+
 /// The three phases in the order the core runs them.
 fn exchange(a: ScanResult, b: ScanResult) -> Exchanged {
-    let (changed_a, unchanged_a) = a.split();
-    let (changed_b, unchanged_b) = b.split();
+    let (changed_a, unchanged_a) = a.split(NAMING);
+    let (changed_b, unchanged_b) = b.split(NAMING);
     let count = BucketCount::for_entries(changed_a.tally.total().max(changed_b.tally.total()));
     let digested_a = unchanged_a.digest(count, &changed_b.paths());
     let digested_b = unchanged_b.digest(count, &changed_a.paths());

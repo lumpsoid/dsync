@@ -40,6 +40,7 @@ mod mass_delete;
 mod mass_overwrite;
 mod metric_format;
 mod missing_parent_folder;
+mod naming;
 mod on_disk;
 mod options_error;
 mod out_of_space;
@@ -127,6 +128,7 @@ pub use mass_delete::{MassDelete, MassDeletePolicy, MassDeletePolicyError, SideD
 pub use mass_overwrite::{MassOverwrite, MassOverwritePolicy, SideOverwrites};
 pub use metric_format::{format_bytes, format_count, format_duration};
 pub use missing_parent_folder::MissingParentFolder;
+pub use naming::Naming;
 pub use on_disk::OnDisk;
 pub use options_error::OptionsError;
 pub use out_of_space::OutOfSpace;

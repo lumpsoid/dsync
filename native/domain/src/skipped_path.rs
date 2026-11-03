@@ -3,7 +3,9 @@
 use crate::rel_path::RelPath;
 use crate::unreadable_paths::UnreadablePaths;
 
-/// Why the scan reported a path instead of giving it a status.
+/// Why the scan reported a path instead of giving it a status, or why a
+/// run held back a create the side it lands on cannot hold
+/// ([`crate::Naming::cannot_hold`]).
 ///
 /// Every reason keeps the path out of reconciliation (the scan's silence
 /// about it is not evidence it is absent); only some are failures.
@@ -16,11 +18,14 @@ pub enum SkippedReason {
     /// Permission denied, or the entry vanished between listing and read.
     Unreadable,
     /// Folds to the same key as another live or archived path on a replica
-    /// whose filesystem folds case (SPEC §16).
+    /// whose filesystem folds case or Unicode form, or as another create
+    /// in the same run onto one (SPEC §16).
     CaseFoldCollision,
     /// A name on disk no [`RelPath`] can spell (a `\`, a drive-shaped
-    /// segment, not UTF-8): it cannot travel portably, so it is not synced
-    /// until renamed. Only ever at a [`SkippedAt::UnrepresentableName`].
+    /// segment, not UTF-8), at a [`SkippedAt::UnrepresentableName`]; or,
+    /// at a [`SkippedAt::Path`], a create onto a Windows replica of a name
+    /// Windows refuses (a `:`, `aux.txt`, a trailing dot). Either way it
+    /// is not synced until renamed.
     UnrepresentableName,
     /// A fifo, socket or device file: nothing a run can copy, and reading
     /// or writing one can block. Like a link, the rules obeyed, not a

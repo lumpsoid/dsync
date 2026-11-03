@@ -80,7 +80,7 @@ fn plan_matching_whole_listings(a: ScanResult, b: ScanResult) -> (Plan, Exchange
         &dsync_domain::UnfinishedApply::default(),
         RootKind::Folder,
     );
-    let scans = exchange(ScanSession::new(a), ScanSession::new(b));
+    let scans = exchange(ScanSession::new(a, NAMING), ScanSession::new(b, NAMING));
     let phased = plan_of(&scans);
     assert_eq!(phased, whole);
     (phased, scans)
@@ -217,8 +217,8 @@ fn two_replicas_that_diverged_silently_are_found() {
     let (archive_a, archive_b) = (committed(&a), committed(&b));
 
     let scans = exchange(
-        ScanSession::new(a.scan(&archive_a, &RuleSet::default())),
-        ScanSession::new(b.scan(&archive_b, &RuleSet::default())),
+        ScanSession::new(a.scan(&archive_a, &RuleSet::default()), NAMING),
+        ScanSession::new(b.scan(&archive_b, &RuleSet::default()), NAMING),
     );
 
     assert!(scans.changed_a.entries.is_empty() && scans.changed_b.entries.is_empty());
@@ -238,8 +238,8 @@ fn skipped_paths_travel_in_phase_one() {
     a.write("a\\b.txt", "unrepresentable");
 
     let scans = exchange(
-        ScanSession::new(a.scan_fresh()),
-        ScanSession::new(b.scan_fresh()),
+        ScanSession::new(a.scan_fresh(), NAMING),
+        ScanSession::new(b.scan_fresh(), NAMING),
     );
 
     assert_eq!(scans.changed_a.unreadable_count(), 1);

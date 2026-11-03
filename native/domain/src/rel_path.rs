@@ -155,9 +155,10 @@ impl RelPath {
     /// nothing after the timestamp; `archive.tar.gz` keeps `tar` in the
     /// stem and `gz` as the extension.
     ///
-    /// `device` is sanitised to what a `RelPath` segment allows: `/`, `\`
-    /// and control characters (including NUL) become `_`; spaces are left
-    /// alone, since `RelPath::parse` already accepts them inside a segment.
+    /// `device` is sanitised to what a `RelPath` segment allows and Windows
+    /// can hold: `/`, `\`, `<>:"|?*` and control characters (including
+    /// NUL) become `_`; spaces are left alone, since `RelPath::parse`
+    /// already accepts them inside a segment and the timestamp follows.
     /// An empty label falls back to a fixed name, so the result always
     /// re-parses as a valid `RelPath`.
     ///
@@ -167,7 +168,10 @@ impl RelPath {
     /// from data the conflict already carries, never a clock. That makes
     /// the name identify the *version*: a repeat keep-both of the same peer
     /// version yields the same name (idempotent); a changed peer file gets
-    /// a new one. No collision handling - decided by the user.
+    /// a new one. No collision handling - decided by the user: on a
+    /// filesystem that folds case, a sibling that differs from a file
+    /// already there only by case is caught by the write's "absent"
+    /// precondition, which the filesystem answers folded (SPEC §16).
     pub fn conflict_copy(&self, device: &str, at: i64) -> RelPath {
         let (stem, ext) = split_stem_and_ext(self.name());
         let device = sanitize_device_label(device);
@@ -208,7 +212,7 @@ fn sanitize_device_label(device: &str) -> String {
     device
         .chars()
         .map(|c| {
-            if matches!(c, '/' | '\\') || c.is_control() {
+            if matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_control() {
                 '_'
             } else {
                 c
@@ -423,6 +427,13 @@ mod tests {
             "notes.dsync-copy-from-My Phone_2-2026-09-25-1403.md"
         );
         assert!(RelPath::parse(sibling.as_str()).is_ok());
+
+        // Nor does Windows hold any of these in a name.
+        let sibling = notes.conflict_copy("Pixel: \"work\"?", MTIME_2026_09_25_1403);
+        assert_eq!(
+            sibling.as_str(),
+            "notes.dsync-copy-from-Pixel_ _work__-2026-09-25-1403.md"
+        );
 
         // An empty label falls back rather than producing a broken name.
         let fallback = notes.conflict_copy("", MTIME_2026_09_25_1403);

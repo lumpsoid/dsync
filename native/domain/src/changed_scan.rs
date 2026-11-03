@@ -1,5 +1,6 @@
 //! Phase 1 of the scan exchange (SPEC §4.2, §6.1).
 
+use crate::naming::Naming;
 use crate::rel_path::RelPath;
 use crate::scan_entry::ScanEntry;
 use crate::scan_tally::ScanTally;
@@ -9,12 +10,15 @@ use crate::unreadable_paths::UnreadablePaths;
 /// What one side's scan found that the other side cannot work out for
 /// itself: the entries that are not `unchanged`, every skipped path (they
 /// have no `(path, hash)` pair to digest, and must reach the report and
-/// the exit code), and the tally over the whole scan.
-#[derive(Clone, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+/// the exit code), the tally over the whole scan, and what names its
+/// filesystem can hold, which the other side's creates are checked
+/// against (SPEC §16).
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChangedScan {
     pub entries: Vec<ScanEntry>,
     pub skipped: Vec<SkippedPath>,
     pub tally: ScanTally,
+    pub naming: Naming,
 }
 
 impl ChangedScan {
