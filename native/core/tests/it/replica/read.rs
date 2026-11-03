@@ -98,6 +98,48 @@ async fn a_path_that_cannot_be_opened_fails_the_read_itself() {
     ));
 }
 
+/// `result` is a refusal of `Read`, not of some other step.
+fn refused_read(result: Result<Reading, ReplicaError>) -> bool {
+    matches!(
+        result,
+        Err(ReplicaError::File {
+            op: FileOp::Read,
+            ..
+        })
+    )
+}
+
+#[tokio::test]
+async fn a_folder_is_refused_rather_than_read() {
+    let site = Site::new();
+    std::fs::create_dir(site.file(Side::A, "folder")).unwrap();
+    let replica = small_blocks(&site);
+
+    let result = with_deadline("read", replica.read(&path("folder"))).await;
+
+    assert!(refused_read(result));
+}
+
+/// A peer can name a path the scan never listed: a fifo with no writer
+/// would hold the opening thread forever.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_fifo_is_refused_without_waiting_for_a_writer() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let site = Site::new();
+    let fifo = site.file(Side::A, "pipe");
+    let at = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `at` is a valid NUL-terminated path for the call's duration.
+    assert_eq!(unsafe { libc::mkfifo(at.as_ptr(), 0o644) }, 0);
+    let replica = small_blocks(&site);
+
+    let result = with_deadline("read", replica.read(&path("pipe"))).await;
+
+    assert!(refused_read(result));
+}
+
 #[tokio::test]
 async fn many_reads_in_flight_at_once_all_complete() {
     let site = Site::new();

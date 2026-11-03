@@ -375,7 +375,7 @@ impl Replica for LocalReplica {
                 shared
                     .confinement
                     .check(&rel)
-                    .and_then(|()| File::open(&source))
+                    .and_then(|()| open_regular(&source))
                     .map_err(shared.file_error(FileOp::Read, source.clone()))
             })
             .await?;
@@ -477,6 +477,29 @@ impl Replica for LocalReplica {
 
     fn write_stats(&self) -> Option<WriteStats> {
         Some(LocalReplica::write_stats(self))
+    }
+}
+
+/// `source` opened for reading, or a refusal of anything but a regular
+/// file. A peer can name a path the scan never listed: opened without
+/// `O_NONBLOCK`, a FIFO would hold a blocking thread until a writer came.
+/// Regular files ignore the flag, so the read itself still blocks.
+fn open_regular(source: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(source)?;
+    if file.metadata()?.is_file() {
+        Ok(file)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ))
     }
 }
 
