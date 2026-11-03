@@ -134,17 +134,21 @@ impl LocalReplica {
             .map_or_else(WriteStats::default, WriterPool::stats)
     }
 
-    /// Runs `work` against the shared state on the blocking pool.
+    /// Runs `work` against the shared state on the blocking pool. A panic
+    /// in `work` goes on unwinding in the caller; a runtime shutting down
+    /// under it is a [`ReplicaError::Halted`].
     async fn blocking<T: Send + 'static>(
         &self,
-        work: impl FnOnce(&Shared) -> T + Send + 'static,
-    ) -> T {
+        work: impl FnOnce(&Shared) -> Result<T, ReplicaError> + Send + 'static,
+    ) -> Result<T, ReplicaError> {
         let shared = self.shared.clone();
         match tokio::task::spawn_blocking(move || work(&shared)).await {
-            Ok(value) => value,
+            Ok(result) => result,
             Err(error) => match error.try_into_panic() {
                 Ok(panic) => std::panic::resume_unwind(panic),
-                Err(_) => panic!("the runtime shut down under a replica operation"),
+                Err(_) => Err(ReplicaError::Halted(
+                    "the runtime shut down under a replica operation".into(),
+                )),
             },
         }
     }
@@ -171,14 +175,20 @@ impl Shared {
         self.scan.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn writers(&self) -> &WriterPool {
-        self.writers.get_or_init(|| {
-            WriterPool::start(
-                self.tuning.writers,
-                self.tuning.writer_buffer_bytes,
-                self.destination.clone(),
-            )
-        })
+    /// The writer pool, started on the first write. A start the OS refuses
+    /// is retried on the next write; of two racing starts, the loser's
+    /// threads end as its pool drops.
+    fn writers(&self) -> Result<&WriterPool, ReplicaError> {
+        if let Some(pool) = self.writers.get() {
+            return Ok(pool);
+        }
+        let started = WriterPool::start(
+            self.tuning.writers,
+            self.tuning.writer_buffer_bytes,
+            self.destination.clone(),
+        )
+        .map_err(|error| ReplicaError::Halted(format!("starting a writer thread: {error}")))?;
+        Ok(self.writers.get_or_init(|| started))
     }
 
     fn file_error(&self, op: FileOp, path: PathBuf) -> impl FnOnce(io::Error) -> ReplicaError {
@@ -357,7 +367,7 @@ impl Replica for LocalReplica {
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         self.shared
-            .writers()
+            .writers()?
             .write(path.clone(), body, source, expect)
             .await
     }

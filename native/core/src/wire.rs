@@ -119,6 +119,7 @@ pub(crate) enum WireError {
     /// The far side could not make sense of a request (a path that is not
     /// a [`RelPath`], a bucket out of range), or its own link failed.
     Protocol(String),
+    Halted(String),
 }
 
 /// An `io::Error` as it crosses the wire: its kind, where it has a name,
@@ -176,6 +177,7 @@ impl From<ReplicaError> for WireError {
             ReplicaError::Changed(ChangedDuringSync) => WireError::Changed,
             ReplicaError::RemoteArchive(message) => WireError::Archive(message),
             ReplicaError::Link(error) => WireError::Protocol(error.to_string()),
+            ReplicaError::Halted(message) => WireError::Halted(message),
         }
     }
 }
@@ -216,6 +218,7 @@ impl From<WireError> for ReplicaError {
             WireError::Protocol(message) => ReplicaError::Link(
                 crate::link_error::LinkError::Protocol(format!("the far side: {message}")),
             ),
+            WireError::Halted(message) => ReplicaError::Halted(message),
         }
     }
 }
@@ -530,6 +533,17 @@ mod tests {
         let wire = WireError::from(ReplicaError::NotLocked);
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(matches!(back, ReplicaError::NotLocked), "{back:?}");
+    }
+
+    #[test]
+    fn a_halted_replica_comes_back_halted_and_ends_the_run() {
+        let wire = WireError::from(ReplicaError::Halted("no writer thread".into()));
+        let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
+        assert!(
+            matches!(&back, ReplicaError::Halted(why) if why == "no writer thread"),
+            "{back:?}"
+        );
+        assert!(back.ends_run());
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //! can never be held by files no writer has reached while the files being
 //! written wait for it.
 
+use std::io;
 use std::sync::{Arc, Mutex, PoisonError, mpsc as std_mpsc};
 use std::thread;
 use std::time::Instant;
@@ -51,12 +52,13 @@ pub(crate) struct WriterPool {
 impl WriterPool {
     /// Starts `writers` threads landing files at `destination`, holding at
     /// most `budget_bytes` received and unwritten. The threads end once the
-    /// pool is dropped and the queue drains.
+    /// pool is dropped and the queue drains - or the OS refuses a thread,
+    /// and the ones already started end as the unfinished pool drops.
     pub(crate) fn start(
         writers: usize,
         budget_bytes: usize,
         destination: Arc<Destination>,
-    ) -> WriterPool {
+    ) -> io::Result<WriterPool> {
         let (jobs, queue) = std_mpsc::channel();
         let queue = Arc::new(Mutex::new(queue));
         let stats: Vec<_> = (0..writers)
@@ -68,16 +70,15 @@ impl WriterPool {
             let mine = mine.clone();
             thread::Builder::new()
                 .name("dsync-writer".into())
-                .spawn(move || run_writer(&queue, &destination, &mine))
-                .expect("spawning a writer thread");
+                .spawn(move || run_writer(&queue, &destination, &mine))?;
         }
-        WriterPool {
+        Ok(WriterPool {
             jobs,
             slots: Arc::new(Semaphore::new(writers)),
             budget: Arc::new(Semaphore::new(budget_bytes)),
             budget_bytes,
             stats,
-        }
+        })
     }
 
     /// Lands `body` at `path` on the next free writer, pacing the body by

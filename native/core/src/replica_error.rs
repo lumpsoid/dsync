@@ -55,6 +55,11 @@ pub enum ReplicaError {
     /// for the run, like a local [`ReplicaError::Archive`].
     #[error("the far side's archive: {0}")]
     RemoteArchive(String),
+    /// The replica could not run the operation at all: the OS refused a
+    /// writer thread, or the runtime shut down under it. Fatal for the
+    /// run: nothing after it can run either.
+    #[error("the replica cannot run: {0}")]
+    Halted(String),
 }
 
 impl ReplicaError {
@@ -68,6 +73,7 @@ impl ReplicaError {
                 | ReplicaError::Archive(_)
                 | ReplicaError::RemoteArchive(_)
                 | ReplicaError::NotLocked
+                | ReplicaError::Halted(_)
         )
     }
 }
