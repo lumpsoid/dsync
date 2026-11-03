@@ -13,13 +13,44 @@ use std::task::{Context, Poll, Waker};
 
 use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::credit::STREAM_CREDIT_BYTES;
+
 pub(crate) const HEADER_BYTES: usize = 9;
 
-/// The largest payload a frame may announce. Far above any real one - a
-/// scan reply for a million-file tree is a few tens of MiB - and there so a
-/// corrupt or hostile length is refused rather than trusted. The payload is
-/// never allocated up front at the announced size either.
-pub(crate) const MAX_PAYLOAD_BYTES: u32 = 512 * 1024 * 1024;
+// The largest payload each kind may announce ([`Kind::max_payload_bytes`]),
+// checked from the header before a byte of the payload is read, so a
+// corrupt or hostile length is refused rather than held: a peer can make
+// this end keep at most one frame of its kind's cap per connection. The
+// payload is never allocated up front at the announced size either.
+
+/// The magic and two `u32`s, with room for whatever a later minor appends
+/// (SPEC §4.2).
+pub(crate) const MAX_VERSION_BYTES: u32 = 1024;
+
+/// A reply carries a scan phase's listing (`Scan`, `Digests`, `Buckets`):
+/// a million-file tree's is a few tens of MiB, so this fits a tree of
+/// several million more. A listing is one reply, not paged.
+pub(crate) const MAX_REPLY_BYTES: u32 = 1024 * 1024 * 1024;
+
+/// A request cannot be small either: `ScanDigests` carries the other
+/// side's changed paths, every path of a tree on its first sync. Paths
+/// alone are about half of the same tree's scan reply.
+pub(crate) const MAX_REQUEST_BYTES: u32 = MAX_REPLY_BYTES / 2;
+
+/// No chunk is past its body's credit, so none is past the whole credit.
+pub(crate) const MAX_CHUNK_BYTES: u32 = STREAM_CREDIT_BYTES as u32;
+
+/// A read's `End` carries what the file was once read; a write's is empty.
+pub(crate) const MAX_END_BYTES: u32 = 4 * 1024;
+
+/// A postcard [`crate::wire::WireIo`]: an error kind and its message.
+pub(crate) const MAX_FAIL_BYTES: u32 = 64 * 1024;
+
+/// A big-endian `u32` of bytes.
+pub(crate) const MAX_CREDIT_BYTES: u32 = 4;
+
+/// `Heartbeat` and `Cancel` are empty.
+pub(crate) const MAX_EMPTY_BYTES: u32 = 0;
 
 /// How much of an undecodable stream an error keeps: enough to recognise a
 /// login banner or an error page, and no more.
@@ -82,6 +113,20 @@ impl Kind {
     fn from_byte(byte: u8) -> Option<Kind> {
         Kind::ALL.into_iter().find(|kind| kind.byte() == byte)
     }
+
+    /// The largest payload a frame of this kind may announce.
+    pub(crate) fn max_payload_bytes(self) -> u32 {
+        match self {
+            Kind::Version => MAX_VERSION_BYTES,
+            Kind::Request => MAX_REQUEST_BYTES,
+            Kind::Reply => MAX_REPLY_BYTES,
+            Kind::Chunk => MAX_CHUNK_BYTES,
+            Kind::End => MAX_END_BYTES,
+            Kind::Fail => MAX_FAIL_BYTES,
+            Kind::Credit => MAX_CREDIT_BYTES,
+            Kind::Heartbeat | Kind::Cancel => MAX_EMPTY_BYTES,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -114,17 +159,19 @@ impl Frame {
     }
 
     /// The header announcing this frame; an error, not a frame, for a
-    /// payload past [`MAX_PAYLOAD_BYTES`], which no reader would accept
-    /// (and past `u32::MAX`, no header could even announce).
+    /// payload past its kind's [`Kind::max_payload_bytes`], which no reader
+    /// would accept (and past `u32::MAX`, no header could even announce).
     pub fn header(&self) -> io::Result<[u8; HEADER_BYTES]> {
+        let most = self.kind.max_payload_bytes();
         let length = u32::try_from(self.payload.len())
             .ok()
-            .filter(|length| *length <= MAX_PAYLOAD_BYTES)
+            .filter(|length| *length <= most)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "a frame payload of {} bytes, past the {MAX_PAYLOAD_BYTES} a frame may carry",
+                        "a {:?} frame payload of {} bytes, past the {most} that kind may carry",
+                        self.kind,
                         self.payload.len()
                     ),
                 )
@@ -185,8 +232,12 @@ impl Frame {
         let kind = Kind::from_byte(header[0]).expect("checked as it arrived");
         let id = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
         let length = u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
-        if length > MAX_PAYLOAD_BYTES {
-            return Err(undecodable("frame length out of range", &header, reader));
+        if length > kind.max_payload_bytes() {
+            return Err(undecodable(
+                "frame length out of range for its kind",
+                &header,
+                reader,
+            ));
         }
         let length = length as usize;
         let mut payload = Vec::with_capacity(length.min(64 * 1024));
@@ -282,17 +333,107 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_payload_past_the_limit_is_an_error_and_writes_nothing() {
-        // `vec![0; n]` is a zeroed allocation: its pages are never touched.
-        let largest = Frame::new(Kind::Reply, 1, vec![0; MAX_PAYLOAD_BYTES as usize]);
-        assert!(largest.header().is_ok());
-        let oversized = Frame::new(Kind::Reply, 1, vec![0; MAX_PAYLOAD_BYTES as usize + 1]);
-        let error = oversized.header().unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        let mut written = Vec::new();
-        let error = oversized.write_to(&mut written).await.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(written.is_empty());
+    async fn a_payload_past_its_kind_s_cap_is_an_error_and_writes_nothing() {
+        for kind in Kind::ALL {
+            let cap = kind.max_payload_bytes() as usize;
+            // `vec![0; n]` is a zeroed allocation: its pages are never touched.
+            let largest = Frame::new(kind, 1, vec![0; cap]);
+            assert!(largest.header().is_ok(), "{kind:?}");
+            let oversized = Frame::new(kind, 1, vec![0; cap + 1]);
+            let error = oversized.header().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{kind:?}");
+            let mut written = Vec::new();
+            let error = oversized.write_to(&mut written).await.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{kind:?}");
+            assert!(written.is_empty(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_caps_bound_what_each_kind_genuinely_carries() {
+        assert_eq!(Kind::Heartbeat.max_payload_bytes(), 0);
+        assert_eq!(Kind::Cancel.max_payload_bytes(), 0);
+        assert_eq!(Kind::Credit.max_payload_bytes(), 4);
+        assert_eq!(
+            Kind::Chunk.max_payload_bytes() as usize,
+            STREAM_CREDIT_BYTES
+        );
+        // Every frame this protocol sends of the small kinds fits.
+        assert!(
+            crate::credit::grant_frame(1, STREAM_CREDIT_BYTES)
+                .header()
+                .is_ok()
+        );
+        assert!(
+            crate::version_handshake::version_frame(crate::version_handshake::PROTOCOL_VERSION)
+                .header()
+                .is_ok()
+        );
+        let read_end = crate::wire::encode(&dsync_domain::OnDisk::File {
+            size: u64::MAX,
+            mtime_us: i64::MIN,
+        });
+        assert!(Frame::new(Kind::End, 1, read_end).header().is_ok());
+        let failure = io::Error::other("x".repeat(4096));
+        let failure = crate::wire::WireIo::encode_failure(&failure);
+        assert!(Frame::new(Kind::Fail, 1, failure).header().is_ok());
+    }
+
+    /// A header announcing `length` for `kind`, fed alone over a stream
+    /// that stays open: what reading it comes to within `wait`, `None`
+    /// when it is still waiting on the payload.
+    async fn read_header_only(
+        kind: Kind,
+        length: u32,
+        wait: Duration,
+    ) -> Option<Result<Option<Frame>, FrameError>> {
+        let mut header = Frame::new(kind, 1, Vec::new()).header().unwrap();
+        header[5..9].copy_from_slice(&length.to_be_bytes());
+        let (mut near, far) = duplex(1024);
+        near.write_all(&header).await.unwrap();
+        let mut reader = BufReader::new(far);
+        let read = tokio::time::timeout(wait, Frame::read_from(&mut reader))
+            .await
+            .ok();
+        drop(near);
+        read
+    }
+
+    #[tokio::test]
+    async fn a_length_past_its_kind_s_cap_is_refused_from_the_header_alone() {
+        for kind in Kind::ALL {
+            let past = kind.max_payload_bytes() + 1;
+            let read = read_header_only(kind, past, DEADLINE)
+                .await
+                .unwrap_or_else(|| panic!("{kind:?} waited on a payload past its cap"));
+            let (received, _) = quoted(read.unwrap_err());
+            assert_eq!(received[0], kind.byte(), "{kind:?}");
+            assert_eq!(&received[5..9], past.to_be_bytes(), "{kind:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_length_at_its_kind_s_cap_waits_for_the_payload() {
+        // The control for the refusal above: at the cap the same header is
+        // taken, and the read waits on bytes that never come.
+        for kind in Kind::ALL {
+            let at = kind.max_payload_bytes();
+            let read = read_header_only(kind, at, Duration::from_millis(50)).await;
+            if at == 0 {
+                assert!(matches!(read, Some(Ok(Some(_)))), "{kind:?}: {read:?}");
+            } else {
+                assert!(read.is_none(), "{kind:?}: {read:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scan_sized_reply_past_the_old_global_limit_is_taken() {
+        // A tree whose listing is past the 512 MiB every kind once shared.
+        let old_limit = 512 * 1024 * 1024;
+        assert!(MAX_REPLY_BYTES > old_limit);
+        let read = read_header_only(Kind::Reply, old_limit + 1, Duration::from_millis(50)).await;
+        assert!(read.is_none(), "{read:?}");
     }
 
     #[tokio::test]
@@ -300,7 +441,10 @@ mod tests {
         let frames: Vec<Frame> = Kind::ALL
             .into_iter()
             .enumerate()
-            .map(|(n, kind)| Frame::new(kind, u32::MAX - n as u32, vec![n as u8; n]))
+            .map(|(n, kind)| {
+                let length = n.min(kind.max_payload_bytes() as usize);
+                Frame::new(kind, u32::MAX - n as u32, vec![n as u8; length])
+            })
             .collect();
         let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode().unwrap()).collect();
         // Several frames in one chunk.
@@ -354,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn fails_on_a_length_out_of_range_rather_than_trusting_it() {
         let mut bytes = Frame::new(Kind::Chunk, 1, Vec::new()).encode().unwrap();
-        bytes[5..9].copy_from_slice(&(MAX_PAYLOAD_BYTES + 1).to_be_bytes());
+        bytes[5..9].copy_from_slice(&(MAX_CHUNK_BYTES + 1).to_be_bytes());
         let (mut near, far) = duplex(1024);
         near.write_all(&bytes).await.unwrap();
         let mut reader = BufReader::new(far);

@@ -918,12 +918,20 @@ mod tests {
             let opened: Answer = Ok(Reply::Opened);
             peer.send(Frame::new(Kind::Reply, request.id, wire::encode(&opened)))
                 .await;
-            peer.send(Frame::new(
-                Kind::Chunk,
-                request.id,
-                vec![0; credit::STREAM_CREDIT_BYTES + 1],
-            ))
-            .await;
+            // No one chunk may be past the whole credit (`frame.rs`), so
+            // the body overruns it over several. Two of these are all the
+            // body's queue holds untaken, and short of a grant: with the
+            // body never taken, no credit comes back to hide the overrun.
+            let piece = credit::GRANT_BYTES / 2 - 1;
+            for _ in 0..=credit::STREAM_CREDIT_BYTES / piece {
+                peer.send(Frame::new(Kind::Chunk, request.id, vec![0; piece]))
+                    .await;
+            }
+            // The link ends on the overrun, before anything takes the body.
+            assert!(matches!(
+                Frame::read_from(&mut peer.reader).await,
+                Ok(None) | Err(_)
+            ));
         };
         let (read, ()) = within(REAL, async { tokio::join!(client.read(&f), far_side) }).await;
         assert!(within(REAL, read.unwrap().body.collect()).await.is_err());
