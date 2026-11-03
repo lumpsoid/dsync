@@ -19,7 +19,7 @@ use dsync_domain::{
 };
 use tokio::sync::oneshot;
 
-use crate::body::Body;
+use crate::body::{Body, SourceMoved};
 use crate::replica_error::ReplicaError;
 
 /// One replica, local or remote. Every path is a [`RelPath`]: confined to
@@ -180,6 +180,17 @@ pub struct DigestedScan {
 pub struct Reading {
     pub body: Body,
     pub settled: Settled,
+}
+
+impl Reading {
+    /// The body for a copy whose source the scan saw as `expect`: it ends
+    /// whole only if the file read still held that once read, and fails
+    /// in place of its end otherwise, so the write it feeds never renames
+    /// its bytes onto the destination (SPEC §7.6). The answer tells the
+    /// copy it failed for that.
+    pub fn checked(self, expect: Precondition) -> (Body, SourceMoved) {
+        self.body.settling(self.settled.0, expect)
+    }
 }
 
 /// What a read's file was once the read reached its end: size and mtime

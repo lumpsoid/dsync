@@ -72,7 +72,7 @@ mod writer_pool;
 pub use any_replica::AnyReplica;
 pub use archive_inventory::{ArchiveDeleteError, ArchiveInventory};
 pub use archive_store::{ARCHIVE_FORMAT_VERSION, ArchiveError, ArchiveHeader, ArchiveStore};
-pub use body::{Body, BodyDropped, BodyError, BodySender, body_channel};
+pub use body::{Body, BodyDropped, BodyError, BodySender, SourceMoved, body_channel};
 pub use case_folding::probe_case_folding;
 pub use certificate::{Certificate, CertificateError};
 pub use connector::{ConnectError, ConnectFailure, Connected, Connector, PeerContact};

@@ -1,8 +1,8 @@
 //! A path that changes between the scan and the apply (SPEC §7.6): a write
 //! or delete finds its destination no longer what the scan saw and leaves
-//! it; a copy whose source changes under its read lands but records
-//! nothing. Either way the next run reconciles the path, and nothing is
-//! lost. Local and over the protocol, since the check crosses the wire.
+//! it; a copy whose source changes under its read leaves the destination
+//! as it was too. Either way the next run reconciles the path, and nothing
+//! is lost. Local and over the protocol, since the check crosses the wire.
 
 use std::fs;
 use std::path::PathBuf;
@@ -175,7 +175,7 @@ async fn a_file_edited_after_the_scan_is_not_deleted() {
 }
 
 #[tokio::test]
-async fn a_source_edited_between_scan_and_read_lands_unrecorded_and_the_next_run_commits_it() {
+async fn a_source_edited_between_scan_and_read_leaves_the_destination_and_the_next_run_copies_it() {
     for reach in REACHES {
         let site = synced().await;
         site.put(Side::A, "f", "v2");
@@ -195,15 +195,16 @@ async fn a_source_edited_between_scan_and_read_lands_unrecorded_and_the_next_run
         let finished = sync_probing(&site, Side::A, reach, on(Call::Read("f".into()), edit)).await;
 
         assert!(changed_on(Side::A)(failure_of(&finished, "f")), "{reach:?}");
-        // The destination keeps the bytes; neither archive records them.
-        assert_eq!(site.get(Side::B, "f").unwrap(), b"v3");
+        // The destination keeps its last good version; neither archive
+        // records anything.
+        assert_eq!(site.get(Side::B, "f").unwrap(), b"one", "{reach:?}");
         assert_eq!(
             [Side::A, Side::B].map(|side| site.archive(side).get(&path("f")).copied()),
             recorded
         );
 
-        // The next run finds both sides holding the same content, and
-        // commits it: converged, with v3 on both sides.
+        // The next run finds the source edited, and copies it: converged,
+        // with v3 on both sides.
         let next = sync(&site).await;
         assert_eq!(next.exit_code(), 0, "{reach:?}");
         assert_eq!(next.results(), [("f".to_owned(), true)]);
@@ -211,5 +212,84 @@ async fn a_source_edited_between_scan_and_read_lands_unrecorded_and_the_next_run
         assert_eq!(site.get(Side::A, "f").unwrap(), b"v3");
         let settled = proposed_plan(&site).await;
         assert!(settled.actions.is_empty() && settled.conflicts.is_empty());
+    }
+}
+
+/// Bigger than everything a read may buffer ahead of its writer, locally
+/// or over the protocol, so its read is still under way when the write
+/// starts.
+const UNREAD_TAIL_BYTES: usize = 8 * 1024 * 1024;
+
+/// How a copy from A to B reaches its two sides: the source's read, and
+/// the destination's write, local or over the protocol.
+const COPY_ENDS: [(Reach, Reach); 3] = [
+    (Reach::Local, Reach::Local),
+    (Reach::Served, Reach::Local),
+    (Reach::Local, Reach::Served),
+];
+
+/// A batch sync from A to B, each side reached as `ends` says, with B's
+/// calls passed to `hook`.
+async fn sync_reading_from(site: &Site, ends: (Reach, Reach), hook: Hook) -> Finished {
+    match ends {
+        (Reach::Local, Reach::Local) => {
+            let (destination, _) = Probe::with_hook(site.replica(Side::B), hook);
+            run(site, site.replica(Side::A), destination, &mut BatchDecider).await
+        }
+        (Reach::Served, Reach::Local) => {
+            let (destination, _) = Probe::with_hook(site.replica(Side::B), hook);
+            let (source, serving) = served(site, Side::A).await;
+            let finished = run(site, source, destination, &mut BatchDecider).await;
+            with_deadline("the session's end", serving)
+                .await
+                .unwrap()
+                .unwrap();
+            finished
+        }
+        (Reach::Local, Reach::Served) => {
+            let (remote, serving) = served(site, Side::B).await;
+            let (destination, _) = Probe::with_hook(remote, hook);
+            let finished = run(site, site.replica(Side::A), destination, &mut BatchDecider).await;
+            with_deadline("the session's end", serving)
+                .await
+                .unwrap()
+                .unwrap();
+            finished
+        }
+        (Reach::Served, Reach::Served) => unreachable!("one session per test site"),
+    }
+}
+
+#[tokio::test]
+async fn a_source_rewritten_while_it_is_read_never_replaces_the_destination() {
+    for ends in COPY_ENDS {
+        let site = synced().await;
+        site.put(Side::A, "f", vec![b'x'; UNREAD_TAIL_BYTES]);
+        let recorded = [Side::A, Side::B].map(|side| site.archive(side).get(&path("f")).copied());
+        // Once B's write starts, A's read has bytes left to read.
+        let edit = writer(site.file(Side::A, "f"), "rewritten mid-read");
+
+        let finished = sync_reading_from(&site, ends, on(Call::Write("f".into()), edit)).await;
+
+        assert!(changed_on(Side::A)(failure_of(&finished, "f")), "{ends:?}");
+        assert_eq!(site.get(Side::B, "f").unwrap(), b"one", "{ends:?}");
+        assert_eq!(
+            [Side::A, Side::B].map(|side| site.archive(side).get(&path("f")).copied()),
+            recorded
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_source_left_alone_while_it_is_read_is_copied() {
+    // Positive control for the test above: the same copy, no edit.
+    for ends in COPY_ENDS {
+        let site = synced().await;
+        site.put(Side::A, "f", vec![b'x'; UNREAD_TAIL_BYTES]);
+
+        let finished = sync_reading_from(&site, ends, on(Call::Write("f".into()), || {})).await;
+
+        assert_eq!(finished.exit_code(), 0, "{ends:?}");
+        assert_eq!(site.get(Side::B, "f").unwrap().len(), UNREAD_TAIL_BYTES);
     }
 }
