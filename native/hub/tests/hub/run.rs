@@ -63,7 +63,7 @@ fn stage(view: &FoldedRunView) -> &'static str {
         RunPhaseView::Connecting => "connecting",
         RunPhaseView::Reconnecting { .. } => "reconnecting",
         RunPhaseView::Scanning => "scanning",
-        RunPhaseView::Reviewing(_) => "reviewing",
+        RunPhaseView::Reviewing { .. } => "reviewing",
         RunPhaseView::ConfirmingDeletes { .. } => "confirming deletes",
         RunPhaseView::ConfirmingOverwrites { .. } => "confirming overwrites",
         RunPhaseView::Applying => "applying",
@@ -89,6 +89,21 @@ fn stages(views: &[FoldedRunView]) -> Vec<&'static str> {
         }
     }
     stages
+}
+
+/// The plan `view` asks the head about, as an answer echoes it.
+pub(crate) fn plan_id(view: &FoldedRunView) -> u64 {
+    match view.phase {
+        RunPhaseView::Reviewing { plan_id, .. }
+        | RunPhaseView::ConfirmingDeletes { plan_id, .. }
+        | RunPhaseView::ConfirmingOverwrites { plan_id, .. } => plan_id,
+        _ => panic!("nothing is asked"),
+    }
+}
+
+/// The plan the last of `views` asks the head about.
+pub(crate) fn asked(views: &[FoldedRunView]) -> u64 {
+    plan_id(views.last().unwrap_or_else(|| unreachable!("a view came")))
 }
 
 pub(crate) fn is(wanted: &'static str) -> impl Fn(&FoldedRunView) -> bool {
@@ -143,10 +158,12 @@ async fn the_head_reviews_the_plan_and_the_run_applies_what_it_kept() {
     }));
     assert_eq!(review.plan.len(), 2);
     let skip = row(review, "skip.txt");
+    let plan = plan_id(review);
 
     let skipping = steer(
         session,
         RunIntent::ChooseAction {
+            plan_id: plan,
             index: skip,
             choice: ActionChoiceView::Skipped,
         },
@@ -161,14 +178,18 @@ async fn the_head_reviews_the_plan_and_the_run_applies_what_it_kept() {
         .await
         .pop()
         .unwrap_or_else(|| unreachable!("stopped at it"));
-    let RunPhaseView::Reviewing(total) = &tapped.phase else {
+    let RunPhaseView::Reviewing {
+        decisions: total, ..
+    } = &tapped.phase
+    else {
         panic!("still reviewing");
     };
     assert_eq!((total.apply, total.skipped), (1, 1));
     assert_eq!(tapped.plan[skip as usize].choice, ActionChoiceView::Skipped);
     views.push(tapped);
 
-    head.ok(steer(session, RunIntent::Confirm)).await;
+    head.ok(steer(session, RunIntent::Confirm { plan_id: plan }))
+        .await;
     views.extend(head.run_until(session, ended).await);
     assert_eq!(
         stages(&views),
@@ -257,8 +278,9 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
 
     // A first run keeps everything, so both sides share a baseline.
     let (session, _) = head.ok(start("local", false, None, GUARD)).await;
-    head.run_until(session, is("reviewing")).await;
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    let plan = asked(&head.run_until(session, is("reviewing")).await);
+    head.ok(steer(session, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
     head.run_until(session, ended).await;
     assert_eq!(read(&head.path("b/x.txt")), "one");
 
@@ -282,17 +304,21 @@ async fn the_head_reverses_an_action_and_keeps_both_sides_of_a_conflict() {
     assert_eq!(conflict.conflict.path, "n.md");
     assert!(conflict.offered.contains(&ConflictChoiceView::KeepBoth));
 
+    let plan = plan_id(&review);
     let reverse = RunIntent::ChooseAction {
+        plan_id: plan,
         index: x,
         choice: ActionChoiceView::Reversed,
     };
     head.ok(steer(session, reverse)).await;
     let keep_both = RunIntent::ChooseConflict {
+        plan_id: plan,
         index: 0,
         choice: ConflictChoiceView::KeepBoth,
     };
     head.ok(steer(session, keep_both)).await;
-    head.ok(steer(session, RunIntent::Confirm)).await;
+    head.ok(steer(session, RunIntent::Confirm { plan_id: plan }))
+        .await;
     let last = head
         .run_until(session, ended)
         .await
@@ -340,8 +366,9 @@ async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
     let (first, _) = head.ok(start("local", false, None, GUARD)).await;
-    head.run_until(first, is("reviewing")).await;
-    head.ok(steer(first, RunIntent::AcceptAll)).await;
+    let plan = asked(&head.run_until(first, is("reviewing")).await);
+    head.ok(steer(first, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
     head.run_until(first, ended).await;
     for index in 0..12 {
         std::fs::remove_file(head.path(&format!("a/f{index:02}")))
@@ -354,22 +381,24 @@ async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
     };
 
     let (session, _) = head.ok(start("local", false, None, GUARD)).await;
-    head.run_until(session, is("reviewing")).await;
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    let plan = asked(&head.run_until(session, is("reviewing")).await);
+    head.ok(steer(session, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
     let asking = head
         .run_until(session, is("confirming deletes"))
         .await
         .pop()
         .unwrap_or_else(|| unreachable!("stopped at it"));
-    let RunPhaseView::ConfirmingDeletes { sides } = &asking.phase else {
+    let RunPhaseView::ConfirmingDeletes { sides, .. } = &asking.phase else {
         unreachable!("confirming");
     };
     assert_eq!(
         sides.iter().map(|side| side.deletes).collect::<Vec<_>>(),
         [12]
     );
-    let answer = |proceed| steer(session, RunIntent::AnswerDeletes { proceed });
-    assert!(matches!(head.ok(answer(false)).await.1, ReplyResult::Done));
+    let answer = |plan_id, proceed| steer(session, RunIntent::AnswerDeletes { plan_id, proceed });
+    let declining = answer(plan_id(&asking), false);
+    assert!(matches!(head.ok(declining).await.1, ReplyResult::Done));
     let declined = head.run_until(session, ended).await;
     assert_eq!(
         stages(&declined),
@@ -383,9 +412,11 @@ async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
     let again = head.run_until(session, is("reviewing")).await;
     assert_eq!(stage(&again[0]), "connecting");
     assert!(again[0].plan.is_empty(), "a new attempt shows nothing old");
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
-    head.run_until(session, is("confirming deletes")).await;
-    head.ok(answer(true)).await;
+    let plan = asked(&again);
+    head.ok(steer(session, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
+    let asking = head.run_until(session, is("confirming deletes")).await;
+    head.ok(answer(asked(&asking), true)).await;
     let confirmed = head.run_until(session, ended).await;
     assert!(matches!(
         confirmed.last().map(|view| &view.phase),
@@ -403,8 +434,9 @@ async fn rewriting_one_side_asks_the_head_about_the_overwrites() {
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
     let (first, _) = head.ok(start("local", false, None, GUARD)).await;
-    head.run_until(first, is("reviewing")).await;
-    head.ok(steer(first, RunIntent::AcceptAll)).await;
+    let plan = asked(&head.run_until(first, is("reviewing")).await);
+    head.ok(steer(first, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
     head.run_until(first, ended).await;
     for index in 0..12 {
         write(&head.path(&format!("a/f{index:02}")), "encrypted");
@@ -419,14 +451,15 @@ async fn rewriting_one_side_asks_the_head_about_the_overwrites() {
     };
 
     let (session, _) = head.ok(start("local", false, None, GUARD)).await;
-    head.run_until(session, is("reviewing")).await;
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    let plan = asked(&head.run_until(session, is("reviewing")).await);
+    head.ok(steer(session, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
     let asking = head
         .run_until(session, is("confirming overwrites"))
         .await
         .pop()
         .unwrap_or_else(|| unreachable!("stopped at it"));
-    let RunPhaseView::ConfirmingOverwrites { sides } = &asking.phase else {
+    let RunPhaseView::ConfirmingOverwrites { sides, .. } = &asking.phase else {
         unreachable!("confirming");
     };
     assert_eq!(
@@ -437,10 +470,21 @@ async fn rewriting_one_side_asks_the_head_about_the_overwrites() {
         [(12, 0, 12)]
     );
     // The delete guard's answer is not this question's.
-    let deletes = steer(session, RunIntent::AnswerDeletes { proceed: true });
+    let plan = plan_id(&asking);
+    let deletes = steer(
+        session,
+        RunIntent::AnswerDeletes {
+            plan_id: plan,
+            proceed: true,
+        },
+    );
     head.ok(deletes).await;
-    let answer = |proceed| steer(session, RunIntent::AnswerOverwrites { proceed });
-    assert!(matches!(head.ok(answer(false)).await.1, ReplyResult::Done));
+    let answer =
+        |plan_id, proceed| steer(session, RunIntent::AnswerOverwrites { plan_id, proceed });
+    assert!(matches!(
+        head.ok(answer(plan, false)).await.1,
+        ReplyResult::Done
+    ));
     let declined = head.run_until(session, ended).await;
     assert_eq!(
         stages(&declined),
@@ -449,10 +493,11 @@ async fn rewriting_one_side_asks_the_head_about_the_overwrites() {
     assert_eq!(untouched(&head), 12);
 
     head.ok(steer(session, RunIntent::Resume)).await;
-    head.run_until(session, is("reviewing")).await;
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
-    head.run_until(session, is("confirming overwrites")).await;
-    head.ok(answer(true)).await;
+    let plan = asked(&head.run_until(session, is("reviewing")).await);
+    head.ok(steer(session, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
+    let asking = head.run_until(session, is("confirming overwrites")).await;
+    head.ok(answer(asked(&asking), true)).await;
     let confirmed = head.run_until(session, ended).await;
     assert!(matches!(
         confirmed.last().map(|view| &view.phase),
@@ -473,8 +518,9 @@ async fn the_head_s_delete_thresholds_decide_when_the_run_asks() {
     std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
     local_profile(&head, "local", "a", "b");
     let (first, _) = head.ok(start("local", false, None, GUARD)).await;
-    head.run_until(first, is("reviewing")).await;
-    head.ok(steer(first, RunIntent::AcceptAll)).await;
+    let plan = asked(&head.run_until(first, is("reviewing")).await);
+    head.ok(steer(first, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
     head.run_until(first, ended).await;
     for index in 0..3 {
         std::fs::remove_file(head.path(&format!("a/f{index:02}")))
@@ -487,22 +533,26 @@ async fn the_head_s_delete_thresholds_decide_when_the_run_asks() {
     }
 
     let (session, _) = head.ok(start("local", false, None, (3, 50))).await;
-    head.run_until(session, is("reviewing")).await;
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    let plan = asked(&head.run_until(session, is("reviewing")).await);
+    head.ok(steer(session, RunIntent::AcceptAll { plan_id: plan }))
+        .await;
     let asking = head
         .run_until(session, is("confirming deletes"))
         .await
         .pop()
         .unwrap_or_else(|| unreachable!("stopped at it"));
-    let RunPhaseView::ConfirmingDeletes { sides } = &asking.phase else {
+    let RunPhaseView::ConfirmingDeletes { sides, .. } = &asking.phase else {
         unreachable!("confirming");
     };
     assert_eq!(
         sides.iter().map(|side| side.deletes).collect::<Vec<_>>(),
         [3]
     );
-    head.ok(steer(session, RunIntent::AnswerDeletes { proceed: false }))
-        .await;
+    let declining = RunIntent::AnswerDeletes {
+        plan_id: plan_id(&asking),
+        proceed: false,
+    };
+    head.ok(steer(session, declining)).await;
     head.run_until(session, ended).await;
 }
 
@@ -558,8 +608,9 @@ async fn a_paused_run_resumes_when_the_app_comes_back() {
     assert!(!head.path("b/new.txt").exists());
 
     head.ok(steer(session, RunIntent::Foreground)).await;
-    head.run_until(session, is("reviewing")).await;
-    head.ok(steer(session, RunIntent::Confirm)).await;
+    let plan = asked(&head.run_until(session, is("reviewing")).await);
+    head.ok(steer(session, RunIntent::Confirm { plan_id: plan }))
+        .await;
     let views = head.run_until(session, ended).await;
     assert_eq!(
         stage(views.last().unwrap_or_else(|| unreachable!("ended"))),
@@ -658,14 +709,26 @@ async fn a_profile_s_entries_run_in_turn_and_a_missing_one_is_skipped_for_the_re
     assert_eq!(first.entries.len(), 2);
     assert_eq!(first.entries[1].local_root, head.path_text("c"));
     assert_eq!(first.entries[1].remote_root, head.path_text("d"));
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    head.ok(steer(
+        session,
+        RunIntent::AcceptAll {
+            plan_id: asked(&views),
+        },
+    ))
+    .await;
     views.extend(
         head.run_until(session, |view| {
             is("reviewing")(view) && view.current == Some(1)
         })
         .await,
     );
-    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    head.ok(steer(
+        session,
+        RunIntent::AcceptAll {
+            plan_id: asked(&views),
+        },
+    ))
+    .await;
     views.extend(head.run_until(session, ended).await);
     live_until_the_end(&views);
     let done = views.last().unwrap_or_else(|| unreachable!("ended"));
@@ -697,12 +760,15 @@ async fn a_profile_s_entries_run_in_turn_and_a_missing_one_is_skipped_for_the_re
     ));
     // The intents index the running entry's plan.
     let skip = row(review, "skip.txt");
+    let plan = plan_id(review);
     let skipping = RunIntent::ChooseAction {
+        plan_id: plan,
         index: skip,
         choice: ActionChoiceView::Skipped,
     };
     head.ok(steer(session, skipping)).await;
-    head.ok(steer(session, RunIntent::Confirm)).await;
+    head.ok(steer(session, RunIntent::Confirm { plan_id: plan }))
+        .await;
     views.extend(head.run_until(session, ended).await);
     live_until_the_end(&views);
     let done = views.last().unwrap_or_else(|| unreachable!("ended"));
@@ -750,7 +816,13 @@ async fn a_pause_in_the_second_entry_resumes_from_the_first() {
         .find_map(|view| view.current)
         .unwrap_or_else(|| unreachable!("the second entry started"));
     assert_eq!(started, 0, "the first entry runs again first");
-    head.ok(steer(session, RunIntent::Confirm)).await;
+    head.ok(steer(
+        session,
+        RunIntent::Confirm {
+            plan_id: asked(&again),
+        },
+    ))
+    .await;
     let views = head.run_until(session, ended).await;
     assert_eq!(
         stage(views.last().unwrap_or_else(|| unreachable!("ended"))),

@@ -1588,6 +1588,7 @@ class CoreCommandSteerRun extends CoreCommand {
 class CoreCommandCompareRow extends CoreCommand {
   const CoreCommandCompareRow({
     required this.session,
+    required this.planId,
     required this.row,
   }) : super();
 
@@ -1595,6 +1596,7 @@ class CoreCommandCompareRow extends CoreCommand {
     deserializer.increaseContainerDepth();
     final instance = CoreCommandCompareRow(
       session: deserializer.deserializeUint64(),
+      planId: deserializer.deserializeUint64(),
       row: RowRef.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
@@ -1602,14 +1604,17 @@ class CoreCommandCompareRow extends CoreCommand {
   }
 
   final Uint64 session;
+  final Uint64 planId;
   final RowRef row;
 
   CoreCommandCompareRow copyWith({
     Uint64? session,
+    Uint64? planId,
     RowRef? row,
   }) {
     return CoreCommandCompareRow(
       session: session ?? this.session,
+      planId: planId ?? this.planId,
       row: row ?? this.row,
     );
   }
@@ -1618,6 +1623,7 @@ class CoreCommandCompareRow extends CoreCommand {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(23);
     serializer.serializeUint64(session);
+    serializer.serializeUint64(planId);
     row.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -1629,12 +1635,14 @@ class CoreCommandCompareRow extends CoreCommand {
 
     return other is CoreCommandCompareRow
       && session == other.session
+      && planId == other.planId
       && row == other.row;
   }
 
   @override
   int get hashCode => Object.hash(
         session,
+        planId,
         row,
       );
 
@@ -1645,6 +1653,7 @@ class CoreCommandCompareRow extends CoreCommand {
     assert(() {
       fullString = '$runtimeType('
         'session: $session, '
+        'planId: $planId, '
         'row: $row'
         ')';
       return true;

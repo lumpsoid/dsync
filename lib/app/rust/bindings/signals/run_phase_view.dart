@@ -209,32 +209,38 @@ class RunPhaseViewScanning extends RunPhaseView {
 @immutable
 class RunPhaseViewReviewing extends RunPhaseView {
   const RunPhaseViewReviewing({
-    required this.value,
+    required this.planId,
+    required this.decisions,
   }) : super();
 
   static RunPhaseViewReviewing load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = RunPhaseViewReviewing(
-      value: DecisionSummaryView.deserialize(deserializer),
+      planId: deserializer.deserializeUint64(),
+      decisions: DecisionSummaryView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
-  final DecisionSummaryView value;
+  final Uint64 planId;
+  final DecisionSummaryView decisions;
 
   RunPhaseViewReviewing copyWith({
-    DecisionSummaryView? value,
+    Uint64? planId,
+    DecisionSummaryView? decisions,
   }) {
     return RunPhaseViewReviewing(
-      value: value ?? this.value,
+      planId: planId ?? this.planId,
+      decisions: decisions ?? this.decisions,
     );
   }
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(3);
-    value.serialize(serializer);
+    serializer.serializeUint64(planId);
+    decisions.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -244,11 +250,15 @@ class RunPhaseViewReviewing extends RunPhaseView {
     if (other.runtimeType != runtimeType) return false;
 
     return other is RunPhaseViewReviewing
-      && value == other.value;
+      && planId == other.planId
+      && decisions == other.decisions;
   }
 
   @override
-  int get hashCode => value.hashCode;
+  int get hashCode => Object.hash(
+        planId,
+        decisions,
+      );
 
   @override
   String toString() {
@@ -256,7 +266,8 @@ class RunPhaseViewReviewing extends RunPhaseView {
 
     assert(() {
       fullString = '$runtimeType('
-        'value: $value'
+        'planId: $planId, '
+        'decisions: $decisions'
         ')';
       return true;
     }());
@@ -268,24 +279,29 @@ class RunPhaseViewReviewing extends RunPhaseView {
 @immutable
 class RunPhaseViewConfirmingDeletes extends RunPhaseView {
   const RunPhaseViewConfirmingDeletes({
+    required this.planId,
     required this.sides,
   }) : super();
 
   static RunPhaseViewConfirmingDeletes load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = RunPhaseViewConfirmingDeletes(
+      planId: deserializer.deserializeUint64(),
       sides: TraitHelpers.deserializeVectorMassDeleteView(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
+  final Uint64 planId;
   final List<MassDeleteView> sides;
 
   RunPhaseViewConfirmingDeletes copyWith({
+    Uint64? planId,
     List<MassDeleteView>? sides,
   }) {
     return RunPhaseViewConfirmingDeletes(
+      planId: planId ?? this.planId,
       sides: sides ?? this.sides,
     );
   }
@@ -293,6 +309,7 @@ class RunPhaseViewConfirmingDeletes extends RunPhaseView {
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(4);
+    serializer.serializeUint64(planId);
     TraitHelpers.serializeVectorMassDeleteView(sides, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -303,11 +320,15 @@ class RunPhaseViewConfirmingDeletes extends RunPhaseView {
     if (other.runtimeType != runtimeType) return false;
 
     return other is RunPhaseViewConfirmingDeletes
+      && planId == other.planId
       && listEquals(sides, other.sides);
   }
 
   @override
-  int get hashCode => sides.hashCode;
+  int get hashCode => Object.hash(
+        planId,
+        sides,
+      );
 
   @override
   String toString() {
@@ -315,6 +336,7 @@ class RunPhaseViewConfirmingDeletes extends RunPhaseView {
 
     assert(() {
       fullString = '$runtimeType('
+        'planId: $planId, '
         'sides: $sides'
         ')';
       return true;
@@ -327,24 +349,29 @@ class RunPhaseViewConfirmingDeletes extends RunPhaseView {
 @immutable
 class RunPhaseViewConfirmingOverwrites extends RunPhaseView {
   const RunPhaseViewConfirmingOverwrites({
+    required this.planId,
     required this.sides,
   }) : super();
 
   static RunPhaseViewConfirmingOverwrites load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = RunPhaseViewConfirmingOverwrites(
+      planId: deserializer.deserializeUint64(),
       sides: TraitHelpers.deserializeVectorMassOverwriteView(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
+  final Uint64 planId;
   final List<MassOverwriteView> sides;
 
   RunPhaseViewConfirmingOverwrites copyWith({
+    Uint64? planId,
     List<MassOverwriteView>? sides,
   }) {
     return RunPhaseViewConfirmingOverwrites(
+      planId: planId ?? this.planId,
       sides: sides ?? this.sides,
     );
   }
@@ -352,6 +379,7 @@ class RunPhaseViewConfirmingOverwrites extends RunPhaseView {
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(5);
+    serializer.serializeUint64(planId);
     TraitHelpers.serializeVectorMassOverwriteView(sides, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -362,11 +390,15 @@ class RunPhaseViewConfirmingOverwrites extends RunPhaseView {
     if (other.runtimeType != runtimeType) return false;
 
     return other is RunPhaseViewConfirmingOverwrites
+      && planId == other.planId
       && listEquals(sides, other.sides);
   }
 
   @override
-  int get hashCode => sides.hashCode;
+  int get hashCode => Object.hash(
+        planId,
+        sides,
+      );
 
   @override
   String toString() {
@@ -374,6 +406,7 @@ class RunPhaseViewConfirmingOverwrites extends RunPhaseView {
 
     assert(() {
       fullString = '$runtimeType('
+        'planId: $planId, '
         'sides: $sides'
         ')';
       return true;

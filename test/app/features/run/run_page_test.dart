@@ -836,6 +836,7 @@ void main() {
         tester,
         runView(
           phase: wire.RunPhaseViewConfirmingDeletes(
+            planId: n(askedPlan),
             sides: [
               wire.MassDeleteView(
                 side: wire.SideView.a,
@@ -1763,7 +1764,7 @@ void main() {
       await open(tester, review());
 
       final rowOf = find.ancestor(
-        of: find.byKey(const Key('decision-gone.txt')),
+        of: find.byKey(Key('decision-gone.txt')),
         matching: find.byType(ListTile),
       );
       final heightBefore = tester.getSize(rowOf).height;
@@ -1777,12 +1778,14 @@ void main() {
         tester.widget<Text>(find.text('gone.txt')).style?.decoration,
         isNot(TextDecoration.lineThrough),
       );
-      expect(intents(), const [
+      expect(intents(), [
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 0,
           choice: wire.ActionChoiceView.reversed,
         ),
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 1,
           choice: wire.ActionChoiceView.skipped,
         ),
@@ -1827,7 +1830,7 @@ void main() {
 
       await tester.tap(find.byKey(const Key('run-confirm')));
       await tester.pump();
-      expect(intents().last, const wire.RunIntentConfirm());
+      expect(intents().last, wire.RunIntentConfirm(planId: n(askedPlan)));
       // Still the review until the core says otherwise.
       expect(find.byKey(const Key('run-confirm')), findsOneWidget);
 
@@ -1902,7 +1905,7 @@ void main() {
       await tester.tap(find.byKey(const Key('run-sync-all-except-conflicts')));
       await tester.pump();
 
-      expect(intents(), const [wire.RunIntentAcceptAll()]);
+      expect(intents(), [wire.RunIntentAcceptAll(planId: n(askedPlan))]);
     });
 
     testWidgets('a keep-both result reads as a saved copy beside a conflict '
@@ -2263,7 +2266,9 @@ void main() {
 
       await tester.tap(find.byKey(const Key('run-deletes-confirm')));
       await tester.pump();
-      expect(intents(), const [wire.RunIntentAnswerDeletes(proceed: true)]);
+      expect(intents(), [
+        wire.RunIntentAnswerDeletes(planId: n(askedPlan), proceed: true),
+      ]);
 
       await deliver(tester, runView(phase: applying));
       expect(find.byKey(const Key('run-deletes-bar')), findsNothing);
@@ -2276,7 +2281,9 @@ void main() {
 
       await tester.tap(find.byKey(const Key('run-deletes-decline')));
       await tester.pump();
-      expect(intents(), const [wire.RunIntentAnswerDeletes(proceed: false)]);
+      expect(intents(), [
+        wire.RunIntentAnswerDeletes(planId: n(askedPlan), proceed: false),
+      ]);
 
       await deliver(
         tester,
@@ -2327,11 +2334,11 @@ void main() {
 
       await tester.tap(find.byKey(const Key('run-overwrites-confirm')));
       await tester.pump();
-      await tester.tap(find.byKey(const Key('run-overwrites-decline')));
+      await tester.tap(find.byKey(Key('run-overwrites-decline')));
       await tester.pump();
-      expect(intents(), const [
-        wire.RunIntentAnswerOverwrites(proceed: true),
-        wire.RunIntentAnswerOverwrites(proceed: false),
+      expect(intents(), [
+        wire.RunIntentAnswerOverwrites(planId: n(askedPlan), proceed: true),
+        wire.RunIntentAnswerOverwrites(planId: n(askedPlan), proceed: false),
       ]);
 
       await deliver(
@@ -2439,8 +2446,9 @@ void main() {
       await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
-      expect(intents(), const [
+      expect(intents(), [
         wire.RunIntentChooseConflict(
+          planId: n(askedPlan),
           index: 0,
           choice: wire.ConflictChoiceView.keepA,
         ),
@@ -2745,9 +2753,9 @@ void main() {
       await press(tester, down);
       expect(ringed(tester), const ActionTarget(1));
       await pressAll(tester, [down, down]);
-      expect(ringed(tester), const ConflictTarget(0));
+      expect(ringed(tester), ConflictTarget(0));
       await press(tester, LogicalKeyboardKey.home);
-      expect(ringed(tester), const ConflictTarget(1));
+      expect(ringed(tester), ConflictTarget(1));
     });
 
     testWidgets('a first review has no header line and no changed group', (
@@ -2755,8 +2763,8 @@ void main() {
     ) async {
       await openAt(tester, review());
 
-      expect(find.byKey(const Key('run-review-recalled')), findsNothing);
-      expect(find.byKey(const Key('run-changed')), findsNothing);
+      expect(find.byKey(Key('run-review-recalled')), findsNothing);
+      expect(find.byKey(Key('run-changed')), findsNothing);
       expect(find.text('Conflicts (2)'), findsOneWidget);
     });
 
@@ -2787,20 +2795,24 @@ void main() {
         LogicalKeyboardKey.keyS,
       ]);
 
-      expect(intents(), const [
+      expect(intents(), [
         wire.RunIntentChooseConflict(
+          planId: n(askedPlan),
           index: 0,
           choice: wire.ConflictChoiceView.keepBoth,
         ),
         wire.RunIntentChooseConflict(
+          planId: n(askedPlan),
           index: 1,
           choice: wire.ConflictChoiceView.keepB,
         ),
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 0,
           choice: wire.ActionChoiceView.reversed,
         ),
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 2,
           choice: wire.ActionChoiceView.skipped,
         ),
@@ -2812,14 +2824,14 @@ void main() {
       await openAt(tester, review());
 
       await press(tester, LogicalKeyboardKey.enter);
-      expect(intents(), const [wire.RunIntentConfirm()]);
+      expect(intents(), [wire.RunIntentConfirm(planId: n(askedPlan))]);
 
       await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
       await press(tester, LogicalKeyboardKey.enter);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      expect(intents(), const [
-        wire.RunIntentConfirm(),
-        wire.RunIntentAcceptAll(),
+      expect(intents(), [
+        wire.RunIntentConfirm(planId: n(askedPlan)),
+        wire.RunIntentAcceptAll(planId: n(askedPlan)),
       ]);
     });
 
@@ -2891,8 +2903,9 @@ void main() {
       await press(tester, down);
       expect(ringed(tester), const ActionTarget(3));
       await press(tester, LogicalKeyboardKey.keyS);
-      expect(intents(), const [
+      expect(intents(), [
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 3,
           choice: wire.ActionChoiceView.skipped,
         ),
@@ -2945,8 +2958,9 @@ void main() {
       await press(tester, down);
       await press(tester, LogicalKeyboardKey.keyS);
       // The key landed on the row after new.txt: mirror.txt, index 2.
-      expect(intents(), const [
+      expect(intents(), [
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 2,
           choice: wire.ActionChoiceView.skipped,
         ),
@@ -3130,9 +3144,9 @@ void main() {
     });
 
     testWidgets('a conflict opens its page with the local file old and the '
-        'remote new', (tester) async {
+        'remote new, in the plan the page shows', (tester) async {
       hub.holdCompareUntilCancelled();
-      await open(tester, review());
+      await open(tester, review(phase: reviewing(planId: 12)));
 
       await tapCompare(tester, 'both.txt');
 
@@ -3145,6 +3159,7 @@ void main() {
       expect(args.newSide.side, ReplicaSide.b);
       final sent = hub.sent<wire.CoreCommandCompareRow>().single;
       expect(sent.row, const wire.RowRefConflict(index: 0));
+      expect(sent.planId.toInt(), 12);
       expect(sent.session.toInt(), session());
     });
 

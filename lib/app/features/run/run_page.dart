@@ -149,7 +149,7 @@ class _RunPageState extends State<RunPage> {
   }
 
   void _compareConflict(SyncRunConflictRow row) => _openComparison(
-    ConflictRowRef(row.index),
+    (planId) => ConflictRowRef(row.index, planId: planId),
     row.path,
     oldSide: ComparedSide(ReplicaSide.a, row.local.file?.bytes),
     newSide: ComparedSide(ReplicaSide.b, row.remote.file?.bytes),
@@ -162,7 +162,7 @@ class _RunPageState extends State<RunPage> {
         ? ReplicaSide.a
         : ReplicaSide.b;
     _openComparison(
-      ActionRowRef(row.index),
+      (planId) => ActionRowRef(row.index, planId: planId),
       row.path,
       oldSide: ComparedSide(
         source == ReplicaSide.a ? ReplicaSide.b : ReplicaSide.a,
@@ -172,20 +172,23 @@ class _RunPageState extends State<RunPage> {
     );
   }
 
+  /// Opens the comparison of the row [row] names in the plan under
+  /// review — the one this page rendered.
   void _openComparison(
-    RowRef row,
+    RowRef Function(int planId) row,
     String path, {
     required ComparedSide oldSide,
     required ComparedSide newSide,
   }) {
     final session = _controller.session;
-    if (session == null) return;
+    final planId = _controller.askedPlan;
+    if (session == null || planId == null) return;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => FileDiffPage(
           args: FileDiffArgs(
             session: session,
-            row: row,
+            row: row(planId),
             path: path,
             oldSide: oldSide,
             newSide: newSide,

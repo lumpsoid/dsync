@@ -211,26 +211,30 @@ wire.RunTarget wireTarget(RunTarget target) => switch (target) {
 };
 
 wire.RunIntent wireIntent(RunIntent intent) => switch (intent) {
-  ChooseAction(:final index, :final choice) => wire.RunIntentChooseAction(
-    index: index,
-    choice: switch (choice) {
-      ActionChoice.proposed => wire.ActionChoiceView.proposed,
-      ActionChoice.reversed => wire.ActionChoiceView.reversed,
-      ActionChoice.skipped => wire.ActionChoiceView.skipped,
-    },
-  ),
-  ChooseConflict(:final index, :final choice) => wire.RunIntentChooseConflict(
-    index: index,
-    choice: _wireConflictChoice(choice),
-  ),
-  ConfirmReview() => const wire.RunIntentConfirm(),
-  AcceptAll() => const wire.RunIntentAcceptAll(),
-  AnswerDeletes(:final proceed) => wire.RunIntentAnswerDeletes(
+  ChooseAction(:final planId, :final index, :final choice) =>
+    wire.RunIntentChooseAction(
+      planId: wireId(planId),
+      index: index,
+      choice: switch (choice) {
+        ActionChoice.proposed => wire.ActionChoiceView.proposed,
+        ActionChoice.reversed => wire.ActionChoiceView.reversed,
+        ActionChoice.skipped => wire.ActionChoiceView.skipped,
+      },
+    ),
+  ChooseConflict(:final planId, :final index, :final choice) =>
+    wire.RunIntentChooseConflict(
+      planId: wireId(planId),
+      index: index,
+      choice: _wireConflictChoice(choice),
+    ),
+  ConfirmReview(:final planId) => wire.RunIntentConfirm(planId: wireId(planId)),
+  AcceptAll(:final planId) => wire.RunIntentAcceptAll(planId: wireId(planId)),
+  AnswerDeletes(:final planId, :final proceed) => wire.RunIntentAnswerDeletes(
+    planId: wireId(planId),
     proceed: proceed,
   ),
-  AnswerOverwrites(:final proceed) => wire.RunIntentAnswerOverwrites(
-    proceed: proceed,
-  ),
+  AnswerOverwrites(:final planId, :final proceed) =>
+    wire.RunIntentAnswerOverwrites(planId: wireId(planId), proceed: proceed),
   StopRun() => const wire.RunIntentStop(),
   PauseRun() => const wire.RunIntentPause(),
   ResumeRun() => const wire.RunIntentResume(),
@@ -411,25 +415,27 @@ RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
   wire.RunPhaseViewReconnecting(:final attempt, :final nextInMs) =>
     RunReconnecting(attempt: attempt, nextInMs: _n(nextInMs)),
   wire.RunPhaseViewScanning() => const RunScanning(),
-  wire.RunPhaseViewReviewing(:final value) => RunReviewing(
+  wire.RunPhaseViewReviewing(:final planId, :final decisions) => RunReviewing(
     DecisionSummary(
-      apply: _n(value.apply),
-      reversed: _n(value.reversed),
-      skipped: _n(value.skipped),
-      resolved: _n(value.resolved),
-      keptBoth: _n(value.keptBoth),
-      leftOpen: _n(value.leftOpen),
+      apply: _n(decisions.apply),
+      reversed: _n(decisions.reversed),
+      skipped: _n(decisions.skipped),
+      resolved: _n(decisions.resolved),
+      keptBoth: _n(decisions.keptBoth),
+      leftOpen: _n(decisions.leftOpen),
     ),
+    planId: _n(planId),
   ),
-  wire.RunPhaseViewConfirmingDeletes(:final sides) => RunConfirmingDeletes([
-    for (final s in sides)
-      MassDeleteSide(
-        side: side(s.side),
-        deletes: _n(s.deletes),
-        archived: _n(s.archived),
-      ),
-  ]),
-  wire.RunPhaseViewConfirmingOverwrites(:final sides) =>
+  wire.RunPhaseViewConfirmingDeletes(:final planId, :final sides) =>
+    RunConfirmingDeletes([
+      for (final s in sides)
+        MassDeleteSide(
+          side: side(s.side),
+          deletes: _n(s.deletes),
+          archived: _n(s.archived),
+        ),
+    ], planId: _n(planId)),
+  wire.RunPhaseViewConfirmingOverwrites(:final planId, :final sides) =>
     RunConfirmingOverwrites([
       for (final s in sides)
         MassOverwriteSide(
@@ -438,7 +444,7 @@ RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
           truncated: _n(s.truncated),
           archived: _n(s.archived),
         ),
-    ]),
+    ], planId: _n(planId)),
   wire.RunPhaseViewApplying() => const RunApplying(),
   wire.RunPhaseViewFinished(:final value) => RunFinished(_summary(value)),
   wire.RunPhaseViewStopped(:final completed) => RunStopped(_n(completed)),

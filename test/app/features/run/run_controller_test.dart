@@ -38,7 +38,7 @@ void main() {
         final asked = harness.hub.sent<wire.CoreCommandStartRun>().single;
         expect(
           (asked.target as wire.RunTargetPair).draft,
-          const wire.ProfileDraft(
+          wire.ProfileDraft(
             peerDeviceId: 'aaaa-bbbb-cccc-dddd',
             entries: [
               wire.EntryDraft(
@@ -58,7 +58,7 @@ void main() {
 
     test('a saved profile is run by its name', () async {
       await harness.start(
-        const RunRequest(
+        RunRequest(
           target: SavedProfileTarget('notes'),
           deviceName: 'desktop',
           address: null,
@@ -67,7 +67,7 @@ void main() {
       );
 
       final asked = harness.hub.sent<wire.CoreCommandStartRun>().single;
-      expect(asked.target, const wire.RunTargetProfile(name: 'notes'));
+      expect(asked.target, wire.RunTargetProfile(name: 'notes'));
       expect(asked.address, isNull);
     });
 
@@ -107,7 +107,7 @@ void main() {
       await controller().resumeFromBackground();
       await controller().resume();
 
-      expect(harness.intents, const [
+      expect(harness.intents, [
         wire.RunIntentStop(),
         wire.RunIntentPause(),
         wire.RunIntentForeground(),
@@ -125,32 +125,39 @@ void main() {
       await controller().resolveConflict(2, ConflictChoice.keepBoth);
       await controller().resolveConflict(2, ConflictChoice.unresolved);
 
-      expect(harness.intents, const [
+      expect(harness.intents, [
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 1,
           choice: wire.ActionChoiceView.reversed,
         ),
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 0,
           choice: wire.ActionChoiceView.skipped,
         ),
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 0,
           choice: wire.ActionChoiceView.proposed,
         ),
         wire.RunIntentChooseConflict(
+          planId: n(askedPlan),
           index: 2,
           choice: wire.ConflictChoiceView.keepA,
         ),
         wire.RunIntentChooseConflict(
+          planId: n(askedPlan),
           index: 2,
           choice: wire.ConflictChoiceView.keepB,
         ),
         wire.RunIntentChooseConflict(
+          planId: n(askedPlan),
           index: 2,
           choice: wire.ConflictChoiceView.keepBoth,
         ),
         wire.RunIntentChooseConflict(
+          planId: n(askedPlan),
           index: 2,
           choice: wire.ConflictChoiceView.unresolved,
         ),
@@ -165,13 +172,13 @@ void main() {
       await controller().confirmOverwrites();
       await controller().declineOverwrites();
 
-      expect(harness.intents, const [
-        wire.RunIntentConfirm(),
-        wire.RunIntentAcceptAll(),
-        wire.RunIntentAnswerDeletes(proceed: true),
-        wire.RunIntentAnswerDeletes(proceed: false),
-        wire.RunIntentAnswerOverwrites(proceed: true),
-        wire.RunIntentAnswerOverwrites(proceed: false),
+      expect(harness.intents, [
+        wire.RunIntentConfirm(planId: n(askedPlan)),
+        wire.RunIntentAcceptAll(planId: n(askedPlan)),
+        wire.RunIntentAnswerDeletes(planId: n(askedPlan), proceed: true),
+        wire.RunIntentAnswerDeletes(planId: n(askedPlan), proceed: false),
+        wire.RunIntentAnswerOverwrites(planId: n(askedPlan), proceed: true),
+        wire.RunIntentAnswerOverwrites(planId: n(askedPlan), proceed: false),
       ]);
     });
 
@@ -198,6 +205,38 @@ void main() {
     await stopping;
 
     expect(harness.intents, const [wire.RunIntentStop()]);
+  });
+
+  group('an answer names the plan it answers', () {
+    setUp(() => harness.start());
+
+    test('the plan the latest view asks about, not an earlier one', () async {
+      await harness.show(runView(phase: reviewing(planId: 3)));
+      await harness.show(runView(phase: reviewing(planId: 4)));
+      await controller().choose(0, ActionChoice.skipped);
+      await harness.show(runView(phase: confirmingDeletes(planId: 5)));
+      await controller().confirmDeletes();
+
+      expect(harness.intents, [
+        wire.RunIntentChooseAction(
+          planId: n(4),
+          index: 0,
+          choice: wire.ActionChoiceView.skipped,
+        ),
+        wire.RunIntentAnswerDeletes(planId: n(5), proceed: true),
+      ]);
+    });
+
+    test('with nothing asked, an answer is not sent', () async {
+      await harness.show(runView(phase: reviewing(planId: 3)));
+      await harness.show(runView(phase: applying));
+      await controller().confirm();
+      await controller().choose(0, ActionChoice.skipped);
+      await controller().declineDeletes();
+      await controller().stop();
+
+      expect(harness.intents, const [wire.RunIntentStop()]);
+    });
   });
 
   group('what follows the latest view', () {

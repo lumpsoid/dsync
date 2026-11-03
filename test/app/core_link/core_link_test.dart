@@ -46,21 +46,22 @@ void main() {
     hub.emitRun(run.session, runView(phase: reviewing(apply: 2)), last: false);
     await link.steerRun(
       run.session,
-      const ChooseAction(1, ActionChoice.skipped),
+      const ChooseAction(1, ActionChoice.skipped, planId: askedPlan),
     );
-    await link.steerRun(run.session, const ConfirmReview());
+    await link.steerRun(run.session, const ConfirmReview(planId: askedPlan));
     await Future<void>.delayed(Duration.zero);
 
     expect(views.single.phase, isA<RunReviewing>());
     expect((views.single.phase as RunReviewing).summary.apply, 2);
     expect(
       [for (final steer in hub.sent<wire.CoreCommandSteerRun>()) steer.intent],
-      const [
+      [
         wire.RunIntentChooseAction(
+          planId: n(askedPlan),
           index: 1,
           choice: wire.ActionChoiceView.skipped,
         ),
-        wire.RunIntentConfirm(),
+        wire.RunIntentConfirm(planId: n(askedPlan)),
       ],
     );
 
@@ -221,7 +222,9 @@ void main() {
         ..reply<wire.CoreCommandCompareRow>(
           wire.ReplyResultComparison(value: view),
         );
-      return CoreLink(hub).compareRow(1, const ActionRowRef(0)).reply;
+      return CoreLink(hub)
+          .compareRow(1, const ActionRowRef(0, planId: 1))
+          .reply;
     }
 
     wire.ComparisonView compared(wire.ComparedView verdict) =>
@@ -331,8 +334,8 @@ void main() {
           ),
         );
       final link = CoreLink(hub);
-      final first = link.compareRow(5, const ActionRowRef(2));
-      final second = link.compareRow(5, const ConflictRowRef(1));
+      final first = link.compareRow(5, const ActionRowRef(2, planId: 3));
+      final second = link.compareRow(5, const ConflictRowRef(1, planId: 4));
       await first.reply;
       await second.reply;
       await link.cancelCompare(5, second.id);
@@ -341,6 +344,7 @@ void main() {
       expect(a.session.toInt(), 5);
       expect(a.row, const wire.RowRefAction(index: 2));
       expect(c.row, const wire.RowRefConflict(index: 1));
+      expect((a.planId.toInt(), c.planId.toInt()), (3, 4));
       final ids = [
         for (final r in hub.requests)
           if (r.command is wire.CoreCommandCompareRow) r.id.toInt(),
@@ -356,7 +360,7 @@ void main() {
     test('a held compare, cancelled, fails with cancelled', () async {
       final hub = FakeHub()..holdCompareUntilCancelled();
       final link = CoreLink(hub);
-      final compare = link.compareRow(1, const ActionRowRef(0));
+      final compare = link.compareRow(1, const ActionRowRef(0, planId: 1));
       var settled = false;
       final failure = compare.reply.then<Object?>(
         (_) => null,

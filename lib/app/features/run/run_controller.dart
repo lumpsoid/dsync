@@ -145,6 +145,13 @@ class SyncRunController {
   /// review can only be up after it opened, which is when a page needs it.
   int? get session => _sessionId;
   int? _sessionId;
+
+  /// The plan the view last rendered asks about — under review, or behind
+  /// a guard — and `null` when it asks nothing. Every answer, and a review
+  /// row's compare, carries it back, so the core can turn away one given
+  /// on a plan it has since replaced (a resume, a re-dial, the next entry).
+  int? get askedPlan => _askedPlan;
+  int? _askedPlan;
   StreamSubscription<RunView>? _views;
   bool _screenHeld = false;
   bool _screenWanted = false;
@@ -205,32 +212,42 @@ class SyncRunController {
 
   /// The choice made for the conflict at [index] under review.
   Future<void> resolveConflict(int index, ConflictChoice choice) =>
-      _steer(ChooseConflict(index, choice));
+      _answer((planId) => ChooseConflict(index, choice, planId: planId));
 
   /// The choice made for the planned action at [index] under review.
   Future<void> choose(int index, ActionChoice choice) =>
-      _steer(ChooseAction(index, choice));
+      _answer((planId) => ChooseAction(index, choice, planId: planId));
 
   /// "Sync all except conflicts": the plan unchanged, whatever the rows
   /// say (`--batch`).
-  Future<void> acceptAll() => _steer(const AcceptAll());
+  Future<void> acceptAll() => _answer((planId) => AcceptAll(planId: planId));
 
   /// Apply the review's choices.
-  Future<void> confirm() => _steer(const ConfirmReview());
+  Future<void> confirm() => _answer((planId) => ConfirmReview(planId: planId));
 
   /// SPEC §10: apply the deletions the guard stopped for.
-  Future<void> confirmDeletes() => _steer(const AnswerDeletes(proceed: true));
+  Future<void> confirmDeletes() =>
+      _answer((planId) => AnswerDeletes(planId: planId, proceed: true));
 
   /// SPEC §10: apply nothing; the run ends without touching either side.
-  Future<void> declineDeletes() => _steer(const AnswerDeletes(proceed: false));
+  Future<void> declineDeletes() =>
+      _answer((planId) => AnswerDeletes(planId: planId, proceed: false));
 
   /// SPEC §10: apply the overwrites the guard stopped for.
   Future<void> confirmOverwrites() =>
-      _steer(const AnswerOverwrites(proceed: true));
+      _answer((planId) => AnswerOverwrites(planId: planId, proceed: true));
 
   /// SPEC §10: apply nothing; the run ends without touching either side.
   Future<void> declineOverwrites() =>
-      _steer(const AnswerOverwrites(proceed: false));
+      _answer((planId) => AnswerOverwrites(planId: planId, proceed: false));
+
+  /// Sends the answer about [askedPlan]; with no plan asked about, there
+  /// is no question to answer and nothing is sent.
+  Future<void> _answer(AnswerIntent Function(int planId) answer) async {
+    final planId = _askedPlan;
+    if (planId == null) return;
+    await _steer(answer(planId));
+  }
 
   void dispose() {
     _disposed = true;
@@ -295,6 +312,12 @@ class SyncRunController {
       null => null,
     };
     final phase = _phase(view.phase, view.entries, entry);
+    _askedPlan = switch (view.phase) {
+      RunReviewing(:final planId) ||
+      RunConfirmingDeletes(:final planId) ||
+      RunConfirmingOverwrites(:final planId) => planId,
+      _ => null,
+    };
     final skipped = [
       for (final skipped in view.skipped)
         (line: _skippedLine(skipped), isFailure: skipped.isFailure),

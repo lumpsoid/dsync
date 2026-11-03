@@ -214,7 +214,9 @@ final class CoreLink {
     }
   }
 
-  /// Asks for the comparison of [row]'s two files in run [session]. The
+  /// Asks for the comparison of [row]'s two files in run [session], in the
+  /// review of the plan the row names (a review since replaced fails it
+  /// as a closed one does). The
   /// request's [id] comes back with the reply so the caller can
   /// [cancelCompare] it; a cancelled compare fails with `cancelled`.
   ({int id, Future<FileComparison> reply}) compareRow(int session, RowRef row) {
@@ -222,6 +224,7 @@ final class CoreLink {
     final reply = _ask(
       wire.CoreCommandCompareRow(
         session: wireId(session),
+        planId: wireId(row.planId),
         row: wireRowRef(row),
       ),
       opening: (opened) => id = opened,

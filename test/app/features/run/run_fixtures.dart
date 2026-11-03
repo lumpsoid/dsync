@@ -203,8 +203,12 @@ wire.RunPhaseView reconnecting(int attempt, {int nextInMs = 1000}) =>
 const scanning = wire.RunPhaseViewScanning();
 const applying = wire.RunPhaseViewApplying();
 
-/// Reviewing, the running total as given.
+/// The plan the phases below ask about unless told another.
+const askedPlan = 1;
+
+/// Reviewing the plan [planId] names, the running total as given.
 wire.RunPhaseView reviewing({
+  int planId = askedPlan,
   int apply = 0,
   int reversed = 0,
   int skipped = 0,
@@ -212,7 +216,8 @@ wire.RunPhaseView reviewing({
   int keptBoth = 0,
   int leftOpen = 0,
 }) => wire.RunPhaseViewReviewing(
-  value: wire.DecisionSummaryView(
+  planId: n(planId),
+  decisions: wire.DecisionSummaryView(
     apply: n(apply),
     reversed: n(reversed),
     skipped: n(skipped),
@@ -258,24 +263,30 @@ wire.RunPhaseView finishedWithIssues(int index, String reason) =>
     );
 
 /// SPEC §10's guard over the remote: [deletes] of its [archived] files.
-wire.RunPhaseView confirmingDeletes({int deletes = 40, int archived = 50}) =>
-    wire.RunPhaseViewConfirmingDeletes(
-      sides: [
-        wire.MassDeleteView(
-          side: wire.SideView.b,
-          deletes: n(deletes),
-          archived: n(archived),
-        ),
-      ],
-    );
+wire.RunPhaseView confirmingDeletes({
+  int planId = askedPlan,
+  int deletes = 40,
+  int archived = 50,
+}) => wire.RunPhaseViewConfirmingDeletes(
+  planId: n(planId),
+  sides: [
+    wire.MassDeleteView(
+      side: wire.SideView.b,
+      deletes: n(deletes),
+      archived: n(archived),
+    ),
+  ],
+);
 
 /// SPEC §10's overwrite guard over the remote: [overwrites] of its
 /// [archived] files, [truncated] of them emptied.
 wire.RunPhaseView confirmingOverwrites({
+  int planId = askedPlan,
   int overwrites = 40,
   int truncated = 0,
   int archived = 50,
 }) => wire.RunPhaseViewConfirmingOverwrites(
+  planId: n(planId),
   sides: [
     wire.MassOverwriteView(
       side: wire.SideView.b,

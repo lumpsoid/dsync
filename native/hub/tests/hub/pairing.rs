@@ -256,7 +256,7 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
     let (session, _) = phone.ok(run).await;
     let reviewing = phone
         .run_until(session, |view| {
-            matches!(view.phase, RunPhaseView::Reviewing(_))
+            matches!(view.phase, RunPhaseView::Reviewing { .. })
         })
         .await;
     assert!(
@@ -264,9 +264,16 @@ async fn a_paired_phone_probes_and_syncs_with_the_desktop_it_serves() {
             .iter()
             .any(|view| matches!(view.phase, RunPhaseView::Scanning))
     );
+    let RunPhaseView::Reviewing { plan_id, .. } = reviewing
+        .last()
+        .unwrap_or_else(|| unreachable!("stopped at it"))
+        .phase
+    else {
+        unreachable!("reviewing");
+    };
     let confirm = CoreCommand::SteerRun {
         session,
-        intent: RunIntent::Confirm,
+        intent: RunIntent::Confirm { plan_id },
     };
     phone.ok(confirm).await;
     let finished = phone

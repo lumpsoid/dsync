@@ -217,7 +217,7 @@ void main() {
         ..recordReading(
           FileDiffArgs(
             session: 1,
-            row: const ActionRowRef(0),
+            row: const ActionRowRef(0, planId: 1),
             path: 'p',
             oldSide: oldSide,
             newSide: newSide,

@@ -114,12 +114,19 @@ impl Hub {
         Ok(ReplyResult::Done)
     }
 
-    /// `row`'s two files in the review open in `session`, as the review's
-    /// decider reads and diffs them; `request` is this command's id, which
-    /// a [`Hub::cancel_compare`] names.
-    pub(crate) async fn compare_row(&self, request: u64, session: u64, row: RowRef) -> Handled {
+    /// `row`'s two files in the review open in `session` over the plan
+    /// `plan_id` names, as the review's decider reads and diffs them;
+    /// `request` is this command's id, which a [`Hub::cancel_compare`]
+    /// names.
+    pub(crate) async fn compare_row(
+        &self,
+        request: u64,
+        session: u64,
+        plan_id: u64,
+        row: RowRef,
+    ) -> Handled {
         let control = self.run_control(session)?;
-        let comparing = control.ask_compare(request, row)?;
+        let comparing = control.ask_compare(request, plan_id, row)?;
         let answer = comparing.answer().await;
         control.compared(request);
         answer.map(ReplyResult::Comparison)
@@ -536,10 +543,12 @@ impl RunControl {
     }
 
     /// Asks the open review's decider for `row`'s compare, unless
-    /// `request` was cancelled already. Its cancel is registered in the
-    /// same lock that sends the ask.
-    fn ask_compare(&self, request: u64, row: RowRef) -> Result<Comparing, String> {
+    /// `request` was cancelled already or the review open is over another
+    /// plan than `plan_id` names - a row of a plan since replaced. Its
+    /// cancel is registered in the same lock that sends the ask.
+    fn ask_compare(&self, request: u64, plan_id: u64, row: RowRef) -> Result<Comparing, String> {
         let mut shared = self.lock();
+        let current = shared.state.is_reviewing(plan_id);
         let Some(Pending::Review {
             compares, cancels, ..
         }) = &mut shared.pending
@@ -548,6 +557,9 @@ impl RunControl {
         };
         if let Some(Cancel::Cancelled) = cancels.remove(&request) {
             return Err(CANCELLED.to_owned());
+        }
+        if !current {
+            return Err(REVIEW_CLOSED.to_owned());
         }
         let (reply, replied) = oneshot::channel();
         // Fails when the decider is gone - stopped - before the review is

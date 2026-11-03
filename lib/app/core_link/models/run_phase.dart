@@ -27,27 +27,32 @@ final class RunScanning extends RunPhase {
   const RunScanning();
 }
 
-/// The plan waits on the review; [summary] is the running total.
+/// The plan [planId] names waits on the review; [summary] is the running
+/// total. The core numbers each plan it takes in a session — a new one per
+/// entry, re-dial and resume — and every answer about it echoes [planId].
 final class RunReviewing extends RunPhase {
-  const RunReviewing(this.summary);
+  const RunReviewing(this.summary, {required this.planId});
 
   final DecisionSummary summary;
+  final int planId;
 }
 
-/// SPEC §10's delete guard waits on an answer: one entry per side it
-/// tripped on.
+/// SPEC §10's delete guard waits on an answer about the plan [planId]
+/// names: one entry per side it tripped on.
 final class RunConfirmingDeletes extends RunPhase {
-  const RunConfirmingDeletes(this.sides);
+  const RunConfirmingDeletes(this.sides, {required this.planId});
 
   final List<MassDeleteSide> sides;
+  final int planId;
 }
 
-/// SPEC §10's overwrite guard waits on an answer: one entry per side it
-/// tripped on.
+/// SPEC §10's overwrite guard waits on an answer about the plan [planId]
+/// names: one entry per side it tripped on.
 final class RunConfirmingOverwrites extends RunPhase {
-  const RunConfirmingOverwrites(this.sides);
+  const RunConfirmingOverwrites(this.sides, {required this.planId});
 
   final List<MassOverwriteSide> sides;
+  final int planId;
 }
 
 final class RunApplying extends RunPhase {

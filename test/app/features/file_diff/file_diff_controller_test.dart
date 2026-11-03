@@ -44,7 +44,7 @@ void main() {
     final controller = FileDiffController(fakeApp(hub));
     addTearDown(controller.dispose);
 
-    final read = controller.open(args(const ConflictRowRef(3)));
+    final read = controller.open(args(const ConflictRowRef(3, planId: 1)));
     expect(
       (controller.state.view as FileDiffReading).line,
       'Reading Remote · 2.0 KiB…',
@@ -70,7 +70,7 @@ void main() {
     final controller = FileDiffController(fakeApp(hub));
     addTearDown(controller.dispose);
 
-    await controller.open(args(const ActionRowRef(0)));
+    await controller.open(args(const ActionRowRef(0, planId: 1)));
     expect(
       (controller.state.view as FileDiffFailed).message,
       'the review is no longer open',
@@ -96,9 +96,11 @@ void main() {
     final controller = FileDiffController(fakeApp(hub));
     addTearDown(controller.dispose);
 
-    final first = controller.open(args(const ActionRowRef(0)));
+    final first = controller.open(args(const ActionRowRef(0, planId: 1)));
     hub.hold<wire.CoreCommandCompareRow>(Future<void>.value());
-    await controller.open(args(const ConflictRowRef(0), path: 'new.txt'));
+    await controller.open(
+      args(const ConflictRowRef(0, planId: 1), path: 'new.txt'),
+    );
     expect(
       (controller.state.view as FileDiffSentence).sentence,
       'Nothing to compare for this row',
@@ -120,7 +122,7 @@ void main() {
     final hub = FakeHub()..holdCompareUntilCancelled();
     final controller = FileDiffController(fakeApp(hub));
 
-    final read = controller.open(args(const ActionRowRef(1)));
+    final read = controller.open(args(const ActionRowRef(1, planId: 1)));
     await drain();
     controller.dispose();
     await read;
@@ -140,7 +142,7 @@ void main() {
       );
     final controller = FileDiffController(fakeApp(hub));
 
-    await controller.open(args(const ActionRowRef(1)));
+    await controller.open(args(const ActionRowRef(1, planId: 1)));
     controller.dispose();
     await drain();
 

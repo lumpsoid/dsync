@@ -924,16 +924,24 @@ pub enum RunPhaseView {
     /// Scanning and reconciling; a dry run stays here until its summary.
     Scanning,
     /// The plan waits on the head's review; the running total of its
-    /// choices so far.
-    Reviewing(DecisionSummaryView),
+    /// choices so far. `plan_id`, here and in the guards, names the plan
+    /// asked about: the session numbers each plan it takes, a new one per
+    /// entry, re-dial and resume, and every answer echoes the number it
+    /// was shown ([`crate::signals::RunIntent`]).
+    Reviewing {
+        plan_id: u64,
+        decisions: DecisionSummaryView,
+    },
     /// SPEC §10's delete guard waits on the head: one entry per side it
     /// tripped on.
     ConfirmingDeletes {
+        plan_id: u64,
         sides: Vec<MassDeleteView>,
     },
     /// SPEC §10's overwrite guard waits on the head: one entry per side it
     /// tripped on.
     ConfirmingOverwrites {
+        plan_id: u64,
         sides: Vec<MassOverwriteView>,
     },
     Applying,

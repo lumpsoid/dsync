@@ -215,7 +215,11 @@ impl Hub {
                 (mass_delete_min_files, mass_delete_percent),
             ),
             CoreCommand::SteerRun { session, intent } => self.steer_run(session, intent),
-            CoreCommand::CompareRow { session, row } => self.compare_row(id, session, row).await,
+            CoreCommand::CompareRow {
+                session,
+                plan_id,
+                row,
+            } => self.compare_row(id, session, plan_id, row).await,
             CoreCommand::CancelCompare { session, request } => {
                 self.cancel_compare(session, request)
             }

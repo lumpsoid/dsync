@@ -400,6 +400,11 @@ struct EntryState {
     skipped: Vec<(Side, SkippedPath)>,
     /// The plan's rows, built once it is taken.
     plan: Option<Arc<PlanRows>>,
+    /// How many plans the session has taken, counting across its entries
+    /// and attempts: once `plan` is taken, its number, which every answer
+    /// about it echoes ([`RunState::steer`]). Never reused within a
+    /// session, so an answer about an earlier plan matches no later one.
+    plans_taken: u64,
     choices: Choices,
     /// Shown on the plan's rows; shared with the snapshots taken.
     outcomes: Arc<Outcomes>,
@@ -412,7 +417,8 @@ struct EntryState {
 }
 
 impl EntryState {
-    fn new(warn_size_bytes: Option<u64>, peek: PeekLimits) -> EntryState {
+    /// An entry with nothing yet; `plans_taken` before it, the session's.
+    fn new(warn_size_bytes: Option<u64>, peek: PeekLimits, plans_taken: u64) -> EntryState {
         EntryState {
             warn_size_bytes,
             peek,
@@ -424,6 +430,7 @@ impl EntryState {
             tallies: None,
             skipped: Vec::new(),
             plan: None,
+            plans_taken,
             choices: Choices::none(),
             outcomes: Arc::default(),
             reported: HashMap::new(),
@@ -442,6 +449,7 @@ impl EntryState {
         self.choices = Choices::as_planned(&taken);
         self.outcomes = Arc::new(Outcomes::over(&taken));
         self.plan = Some(taken.clone());
+        self.plans_taken += 1;
         taken
     }
 
@@ -460,7 +468,14 @@ impl EntryState {
         self.choices = Choices::recalled(&taken, recall);
         self.outcomes = Arc::new(Outcomes::over(&taken));
         self.plan = Some(taken.clone());
+        self.plans_taken += 1;
         taken
+    }
+
+    /// Whether `plan_id` names the plan taken: an answer about any other
+    /// is stale.
+    fn is_plan(&self, plan_id: u64) -> bool {
+        self.plan.is_some() && self.plans_taken == plan_id
     }
 
     fn completed(&self) -> usize {
@@ -560,13 +575,14 @@ impl RunState {
             entries: Vec::new(),
             current: None,
             completed_earlier: 0,
-            entry: EntryState::new(None, peek),
+            entry: EntryState::new(None, peek, 0),
             timings: None,
         }
     }
 
     /// A fresh attempt, from the first entry: everything the last one
-    /// showed is gone but the entries' roots.
+    /// showed is gone but the entries' roots, and the count of plans
+    /// taken, so the attempt's plans are numbered past the last one's.
     fn begin(&mut self) {
         let entries = std::mem::take(&mut self.entries)
             .into_iter()
@@ -578,6 +594,7 @@ impl RunState {
         *self = RunState {
             closing: self.closing,
             entries,
+            entry: EntryState::new(None, self.peek, self.entry.plans_taken),
             ..RunState::new(self.dry_run, self.peek)
         };
     }
@@ -640,7 +657,7 @@ impl RunState {
             .entries
             .get(entry)
             .and_then(|listed| listed.roots.warn_size_bytes);
-        self.entry = EntryState::new(warn_size_bytes, self.peek);
+        self.entry = EntryState::new(warn_size_bytes, self.peek, self.entry.plans_taken);
         self.current = Some(entry);
         self.phase = phase;
         if let Some(listed) = self.entries.get_mut(entry) {
@@ -866,11 +883,21 @@ impl RunState {
         )
     }
 
-    fn reviewing(&self) -> Option<&PlanRows> {
+    /// The plan under review, when `plan_id` names it and the run is not
+    /// stopping.
+    fn reviewing(&self, plan_id: u64) -> Option<&PlanRows> {
         match &self.phase {
-            Phase::Reviewing(plan) if self.suspend.is_none() => Some(plan),
+            Phase::Reviewing(plan) if self.suspend.is_none() && self.entry.is_plan(plan_id) => {
+                Some(plan)
+            }
             _ => None,
         }
+    }
+
+    /// Whether the review open is over the plan `plan_id` names: what a
+    /// compare of one of its rows is asked against.
+    pub(crate) fn is_reviewing(&self, plan_id: u64) -> bool {
+        matches!(self.phase, Phase::Reviewing(_)) && self.entry.is_plan(plan_id)
     }
 
     /// What `intent` means where the run stands.
@@ -880,11 +907,15 @@ impl RunState {
         }
         let live = self.phase.is_live();
         match intent {
-            RunIntent::ChooseAction { index, choice } => {
+            RunIntent::ChooseAction {
+                plan_id,
+                index,
+                choice,
+            } => {
                 let Ok(at) = usize::try_from(index) else {
                     return Steer::Ignored;
                 };
-                match self.reviewing() {
+                match self.reviewing(plan_id) {
                     Some(plan) if plan.action_offers(at, choice) => {
                         self.entry.choices.actions[at] = choice;
                         Steer::Changed
@@ -892,11 +923,15 @@ impl RunState {
                     _ => Steer::Ignored,
                 }
             }
-            RunIntent::ChooseConflict { index, choice } => {
+            RunIntent::ChooseConflict {
+                plan_id,
+                index,
+                choice,
+            } => {
                 let Ok(at) = usize::try_from(index) else {
                     return Steer::Ignored;
                 };
-                match self.reviewing() {
+                match self.reviewing(plan_id) {
                     Some(plan) if plan.conflict_offers(at, choice) => {
                         self.entry.choices.conflicts[at] = choice;
                         Steer::Changed
@@ -904,14 +939,14 @@ impl RunState {
                     _ => Steer::Ignored,
                 }
             }
-            RunIntent::Confirm => match self.reviewing() {
+            RunIntent::Confirm { plan_id } => match self.reviewing(plan_id) {
                 Some(_) => {
                     self.phase = Phase::Applying;
                     Steer::Decide(self.entry.choices.clone())
                 }
                 None => Steer::Ignored,
             },
-            RunIntent::AcceptAll => match self.reviewing() {
+            RunIntent::AcceptAll { plan_id } => match self.reviewing(plan_id) {
                 Some(plan) => {
                     // The rows go back to what is sent.
                     self.entry.choices = Choices::as_planned(plan);
@@ -920,15 +955,17 @@ impl RunState {
                 }
                 None => Steer::Ignored,
             },
-            RunIntent::AnswerDeletes { proceed } => {
-                let asked = matches!(self.phase, Phase::ConfirmingDeletes(_));
+            RunIntent::AnswerDeletes { plan_id, proceed } => {
+                let asked = matches!(self.phase, Phase::ConfirmingDeletes(_))
+                    && self.entry.is_plan(plan_id);
                 if !self.answer_guard(asked, Guard::Deletes, proceed) {
                     return Steer::Ignored;
                 }
                 Steer::AnswerDeletes(proceed)
             }
-            RunIntent::AnswerOverwrites { proceed } => {
-                let asked = matches!(self.phase, Phase::ConfirmingOverwrites(_));
+            RunIntent::AnswerOverwrites { plan_id, proceed } => {
+                let asked = matches!(self.phase, Phase::ConfirmingOverwrites(_))
+                    && self.entry.is_plan(plan_id);
                 if !self.answer_guard(asked, Guard::Overwrites, proceed) {
                     return Steer::Ignored;
                 }
@@ -980,11 +1017,16 @@ impl RunState {
                 next_in_ms: *next_in_ms,
             },
             Phase::Scanning => RunPhaseView::Scanning,
-            Phase::Reviewing(plan) => RunPhaseView::Reviewing(self.entry.choices.summary(plan)),
+            Phase::Reviewing(plan) => RunPhaseView::Reviewing {
+                plan_id: self.entry.plans_taken,
+                decisions: self.entry.choices.summary(plan),
+            },
             Phase::ConfirmingDeletes(sides) => RunPhaseView::ConfirmingDeletes {
+                plan_id: self.entry.plans_taken,
                 sides: sides.iter().map(MassDeleteView::from).collect(),
             },
             Phase::ConfirmingOverwrites(sides) => RunPhaseView::ConfirmingOverwrites {
+                plan_id: self.entry.plans_taken,
                 sides: sides.iter().map(MassOverwriteView::from).collect(),
             },
             Phase::Applying => RunPhaseView::Applying,
@@ -1257,12 +1299,37 @@ mod tests {
         state
     }
 
+    /// A state whose review of [`plan`] was answered: where SPEC §10's
+    /// guards ask, about the same plan.
+    fn answered() -> RunState {
+        let mut state = reviewing(&plan());
+        let plan_id = plan_id(&state);
+        assert!(matches!(
+            state.steer(RunIntent::Confirm { plan_id }),
+            Steer::Decide(_)
+        ));
+        state
+    }
+
     fn choose(state: &mut RunState, index: u32, choice: ActionChoiceView) -> Steer {
-        state.steer(RunIntent::ChooseAction { index, choice })
+        state.steer(RunIntent::ChooseAction {
+            plan_id: plan_id(state),
+            index,
+            choice,
+        })
     }
 
     fn settle(state: &mut RunState, index: u32, choice: ConflictChoiceView) -> Steer {
-        state.steer(RunIntent::ChooseConflict { index, choice })
+        state.steer(RunIntent::ChooseConflict {
+            plan_id: plan_id(state),
+            index,
+            choice,
+        })
+    }
+
+    /// The plan the run now asks about, as an answer echoes it.
+    fn plan_id(state: &RunState) -> u64 {
+        state.entry.plans_taken
     }
 
     fn choices_of(steer: Steer) -> Choices {
@@ -1402,7 +1469,10 @@ mod tests {
         let plan = plan();
         let state = reviewing(&plan);
         let view = state.view();
-        let RunPhaseView::Reviewing(total) = view.phase else {
+        let RunPhaseView::Reviewing {
+            decisions: total, ..
+        } = view.phase
+        else {
             panic!("reviewing");
         };
         assert_eq!((total.apply, total.skipped, total.left_open), (2, 0, 1));
@@ -1515,7 +1585,10 @@ mod tests {
         choose(&mut state, 0, ActionChoiceView::Reversed);
         choose(&mut state, 1, ActionChoiceView::Skipped);
         settle(&mut state, 0, ConflictChoiceView::KeepBoth);
-        let RunPhaseView::Reviewing(total) = phase(&state) else {
+        let RunPhaseView::Reviewing {
+            decisions: total, ..
+        } = phase(&state)
+        else {
             panic!("reviewing");
         };
         assert_eq!(
@@ -1530,7 +1603,10 @@ mod tests {
             (1, 1, 1, 0, 1, 0)
         );
         settle(&mut state, 0, ConflictChoiceView::KeepA);
-        let RunPhaseView::Reviewing(total) = phase(&state) else {
+        let RunPhaseView::Reviewing {
+            decisions: total, ..
+        } = phase(&state)
+        else {
             panic!("reviewing");
         };
         assert_eq!((total.resolved, total.kept_both), (1, 0));
@@ -1543,14 +1619,26 @@ mod tests {
         choose(&mut state, 0, ActionChoiceView::Reversed);
         choose(&mut state, 1, ActionChoiceView::Skipped);
         settle(&mut state, 0, ConflictChoiceView::KeepA);
-        let choices = choices_of(state.steer(RunIntent::Confirm));
+        let choices = choices_of(state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        }));
         assert_eq!(
             choices.actions(&plan, PEER),
             [copy_back("r"), plan.conflicts[0].resolve(Side::A)]
         );
         assert!(matches!(phase(&state), RunPhaseView::Applying));
-        assert_eq!(state.steer(RunIntent::Confirm), Steer::Ignored);
-        assert_eq!(state.steer(RunIntent::AcceptAll), Steer::Ignored);
+        assert_eq!(
+            state.steer(RunIntent::Confirm {
+                plan_id: plan_id(&state)
+            }),
+            Steer::Ignored
+        );
+        assert_eq!(
+            state.steer(RunIntent::AcceptAll {
+                plan_id: plan_id(&state)
+            }),
+            Steer::Ignored
+        );
         assert_eq!(
             choose(&mut state, 1, ActionChoiceView::Proposed),
             Steer::Ignored,
@@ -1564,7 +1652,9 @@ mod tests {
         let mut state = reviewing(&plan);
         choose(&mut state, 1, ActionChoiceView::Skipped);
         settle(&mut state, 0, ConflictChoiceView::KeepB);
-        let choices = choices_of(state.steer(RunIntent::AcceptAll));
+        let choices = choices_of(state.steer(RunIntent::AcceptAll {
+            plan_id: plan_id(&state),
+        }));
         assert_eq!(choices.actions(&plan, PEER), [copy("r"), copy("p")]);
         let view = state.view();
         assert_eq!(
@@ -1590,7 +1680,9 @@ mod tests {
         };
         let mut state = reviewing(&plan);
         settle(&mut state, 0, ConflictChoiceView::KeepBoth);
-        let choices = choices_of(state.steer(RunIntent::Confirm));
+        let choices = choices_of(state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        }));
         assert_eq!(
             choices.actions(&plan, PEER),
             [Action::CopyAside {
@@ -1607,22 +1699,168 @@ mod tests {
         assert!(Choices::none().actions(&plan(), PEER).is_empty());
     }
 
+    /// The plan the phase the head is shown asks about.
+    fn shown(state: &RunState) -> u64 {
+        match phase(state) {
+            RunPhaseView::Reviewing { plan_id, .. }
+            | RunPhaseView::ConfirmingDeletes { plan_id, .. }
+            | RunPhaseView::ConfirmingOverwrites { plan_id, .. } => plan_id,
+            _ => panic!("nothing is asked"),
+        }
+    }
+
+    #[test]
+    fn a_choice_about_the_plan_a_resume_replaced_changes_nothing() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        let before = shown(&state);
+        state.steer(RunIntent::Pause);
+        state.ended(ran());
+        assert_eq!(state.steer(RunIntent::Resume), Steer::Restart);
+        state.listed(roots(1));
+        start(&mut state, 0);
+        state.review(&plan, None);
+        let now = shown(&state);
+        assert_ne!(before, now, "the same rows, re-planned: another plan");
+
+        // Each row offers the choice: only the plan named turns it away.
+        let stale = [
+            RunIntent::ChooseAction {
+                plan_id: before,
+                index: 0,
+                choice: ActionChoiceView::Reversed,
+            },
+            RunIntent::ChooseConflict {
+                plan_id: before,
+                index: 0,
+                choice: ConflictChoiceView::KeepB,
+            },
+            RunIntent::Confirm { plan_id: before },
+            RunIntent::AcceptAll { plan_id: before },
+        ];
+        for intent in stale {
+            assert_eq!(state.steer(intent), Steer::Ignored);
+        }
+        let view = state.view();
+        assert!(matches!(view.phase, RunPhaseView::Reviewing { .. }));
+        assert_eq!(
+            view.plan.new_plan().actions[0].choice,
+            ActionChoiceView::Proposed
+        );
+        assert_eq!(
+            view.plan.new_plan().conflicts[0].choice,
+            ConflictChoiceView::Unresolved
+        );
+        assert!(!state.is_reviewing(before), "nor is its row compared");
+
+        assert!(state.is_reviewing(now));
+        let current = RunIntent::ChooseAction {
+            plan_id: now,
+            index: 0,
+            choice: ActionChoiceView::Reversed,
+        };
+        assert_eq!(state.steer(current), Steer::Changed);
+        assert_eq!(
+            state.view().plan.new_plan().actions[0].choice,
+            ActionChoiceView::Reversed
+        );
+    }
+
+    #[test]
+    fn a_confirm_for_one_entry_is_ignored_in_the_next_entry_s_review() {
+        let plan = plan();
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(2));
+        start(&mut state, 0);
+        state.review(&plan, None);
+        let first = shown(&state);
+        assert!(matches!(
+            state.steer(RunIntent::Confirm { plan_id: first }),
+            Steer::Decide(_)
+        ));
+        finish(&mut state, 0, synced(2));
+        start(&mut state, 1);
+        state.review(&plan, None);
+        let second = shown(&state);
+        assert_ne!(first, second);
+
+        // A second tap on the first entry's Apply, arriving late.
+        assert_eq!(
+            state.steer(RunIntent::Confirm { plan_id: first }),
+            Steer::Ignored
+        );
+        assert_eq!(
+            state.steer(RunIntent::AcceptAll { plan_id: first }),
+            Steer::Ignored
+        );
+        assert!(matches!(phase(&state), RunPhaseView::Reviewing { .. }));
+        assert!(matches!(
+            state.steer(RunIntent::Confirm { plan_id: second }),
+            Steer::Decide(_)
+        ));
+        assert!(matches!(phase(&state), RunPhaseView::Applying));
+    }
+
+    #[test]
+    fn a_guard_answer_for_one_entry_is_ignored_in_the_next_entry_s_guard() {
+        let plan = plan();
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(2));
+        start(&mut state, 0);
+        state.review(&plan, None);
+        let first = shown(&state);
+        state.steer(RunIntent::AcceptAll { plan_id: first });
+        assert_eq!(state.ask_deletes(&emptied_b()), None);
+        assert_eq!(shown(&state), first, "the guard asks about the same plan");
+        let proceed = |plan_id| RunIntent::AnswerDeletes {
+            plan_id,
+            proceed: true,
+        };
+        assert_eq!(state.steer(proceed(first)), Steer::AnswerDeletes(true));
+        finish(&mut state, 0, synced(2));
+        start(&mut state, 1);
+        state.review(&plan, None);
+        let second = shown(&state);
+        state.steer(RunIntent::AcceptAll { plan_id: second });
+        assert_eq!(state.ask_overwrites(&rewritten_b()), None);
+
+        let late = RunIntent::AnswerOverwrites {
+            plan_id: first,
+            proceed: false,
+        };
+        assert_eq!(state.steer(late), Steer::Ignored);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::ConfirmingOverwrites { .. }
+        ));
+        let current = RunIntent::AnswerOverwrites {
+            plan_id: second,
+            proceed: true,
+        };
+        assert_eq!(state.steer(current), Steer::AnswerOverwrites(true));
+    }
+
     #[test]
     fn the_delete_guard_asks_once_and_a_decline_reads_as_the_head_s_choice() {
-        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
-        state.connected(1);
+        let mut state = answered();
         let verdict = emptied_b();
         assert_eq!(state.ask_deletes(&verdict), None);
-        let RunPhaseView::ConfirmingDeletes { sides } = phase(&state) else {
+        let RunPhaseView::ConfirmingDeletes { sides, .. } = phase(&state) else {
             panic!("asking");
         };
         assert_eq!((sides[0].deletes, sides[0].archived), (10, 12));
         assert_eq!(
-            state.steer(RunIntent::AnswerDeletes { proceed: false }),
+            state.steer(RunIntent::AnswerDeletes {
+                plan_id: plan_id(&state),
+                proceed: false
+            }),
             Steer::AnswerDeletes(false)
         );
         assert_eq!(
-            state.steer(RunIntent::AnswerDeletes { proceed: true }),
+            state.steer(RunIntent::AnswerDeletes {
+                plan_id: plan_id(&state),
+                proceed: true
+            }),
             Steer::Ignored,
             "answered already"
         );
@@ -1634,11 +1872,13 @@ mod tests {
 
     #[test]
     fn confirming_the_deletes_moves_on_to_applying() {
-        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
-        state.connected(1);
+        let mut state = answered();
         state.ask_deletes(&emptied_b());
         assert_eq!(
-            state.steer(RunIntent::AnswerDeletes { proceed: true }),
+            state.steer(RunIntent::AnswerDeletes {
+                plan_id: plan_id(&state),
+                proceed: true
+            }),
             Steer::AnswerDeletes(true)
         );
         assert!(matches!(phase(&state), RunPhaseView::Applying));
@@ -1646,11 +1886,10 @@ mod tests {
 
     #[test]
     fn the_overwrite_guard_takes_only_its_own_answer_and_a_decline_reads_as_its_own() {
-        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
-        state.connected(1);
+        let mut state = answered();
         let verdict = rewritten_b();
         assert_eq!(state.ask_overwrites(&verdict), None);
-        let RunPhaseView::ConfirmingOverwrites { sides } = phase(&state) else {
+        let RunPhaseView::ConfirmingOverwrites { sides, .. } = phase(&state) else {
             panic!("asking");
         };
         assert_eq!(
@@ -1658,16 +1897,25 @@ mod tests {
             (10, 1, 12)
         );
         assert_eq!(
-            state.steer(RunIntent::AnswerDeletes { proceed: true }),
+            state.steer(RunIntent::AnswerDeletes {
+                plan_id: plan_id(&state),
+                proceed: true
+            }),
             Steer::Ignored,
             "not the delete guard's question"
         );
         assert_eq!(
-            state.steer(RunIntent::AnswerOverwrites { proceed: false }),
+            state.steer(RunIntent::AnswerOverwrites {
+                plan_id: plan_id(&state),
+                proceed: false
+            }),
             Steer::AnswerOverwrites(false)
         );
         assert_eq!(
-            state.steer(RunIntent::AnswerOverwrites { proceed: true }),
+            state.steer(RunIntent::AnswerOverwrites {
+                plan_id: plan_id(&state),
+                proceed: true
+            }),
             Steer::Ignored,
             "answered already"
         );
@@ -1679,11 +1927,13 @@ mod tests {
 
     #[test]
     fn confirming_the_overwrites_moves_on_to_applying() {
-        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
-        state.connected(1);
+        let mut state = answered();
         state.ask_overwrites(&rewritten_b());
         assert_eq!(
-            state.steer(RunIntent::AnswerOverwrites { proceed: true }),
+            state.steer(RunIntent::AnswerOverwrites {
+                plan_id: plan_id(&state),
+                proceed: true
+            }),
             Steer::AnswerOverwrites(true)
         );
         assert!(matches!(phase(&state), RunPhaseView::Applying));
@@ -1693,7 +1943,9 @@ mod tests {
     fn results_mark_their_rows_and_are_counted_once_per_path() {
         let plan = plan();
         let mut state = reviewing(&plan);
-        state.steer(RunIntent::Confirm);
+        state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        });
         state.event(RunEvent::Result {
             action: copy("r"),
             outcome: Ok(()),
@@ -2127,7 +2379,9 @@ mod tests {
     fn a_snapshot_shows_the_outcomes_reported_before_it_was_taken() {
         let plan = plan();
         let mut state = reviewing(&plan);
-        state.steer(RunIntent::Confirm);
+        state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        });
         let before = state.snapshot();
         state.event(RunEvent::Result {
             action: copy("p"),
@@ -2202,7 +2456,9 @@ mod tests {
     fn a_result_sends_its_row_alone() {
         let plan = plan();
         let mut state = reviewing(&plan);
-        state.steer(RunIntent::Confirm);
+        state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        });
         let mut delivered = Delivered::default();
         deliver(&state, &mut delivered);
         state.event(landed(copy("p")));
@@ -2231,7 +2487,9 @@ mod tests {
         choose(&mut state, 0, ActionChoiceView::Reversed);
         settle(&mut state, 0, ConflictChoiceView::KeepA);
         deliver(&state, &mut delivered);
-        state.steer(RunIntent::AcceptAll);
+        state.steer(RunIntent::AcceptAll {
+            plan_id: plan_id(&state),
+        });
         assert_eq!(
             changed(deliver(&state, &mut delivered)),
             (
@@ -2311,7 +2569,9 @@ mod tests {
     fn the_last_view_carries_its_changed_rows_and_is_marked_last() {
         let plan = plan();
         let mut state = reviewing(&plan);
-        state.steer(RunIntent::Confirm);
+        state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        });
         let mut delivered = Delivered::default();
         deliver(&state, &mut delivered);
         state.event(landed(copy("r")));
@@ -2420,7 +2680,9 @@ mod tests {
         let mut state = reviewing(&plan);
         choose(&mut state, 7, ActionChoiceView::Skipped);
         cost("per tap (reviewing)", &state);
-        state.steer(RunIntent::Confirm);
+        state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        });
         delta_cost("per refresh (applying)", &mut state, &plan);
         for proposal in &plan.actions {
             state.event(RunEvent::Result {
@@ -2632,7 +2894,9 @@ mod tests {
             conflicts: Vec::new(),
         };
         state.review(&first, None);
-        state.steer(RunIntent::AcceptAll);
+        state.steer(RunIntent::AcceptAll {
+            plan_id: plan_id(&state),
+        });
         finish(&mut state, 0, synced(1));
         start(&mut state, 1);
         assert!(
@@ -2650,7 +2914,9 @@ mod tests {
             Steer::Changed,
             "a row the first entry's plan did not have"
         );
-        let choices = choices_of(state.steer(RunIntent::Confirm));
+        let choices = choices_of(state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        }));
         assert_eq!(
             choices.actions(&second, PEER),
             [copy("r")],
@@ -2731,7 +2997,10 @@ mod tests {
         choose(&mut state, 1, ActionChoiceView::Skipped);
         settle(&mut state, 0, ConflictChoiceView::KeepB);
         settle(&mut state, 1, ConflictChoiceView::KeepBoth);
-        choices_of(state.steer(RunIntent::Confirm)).actions(plan, "b0")
+        choices_of(state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        }))
+        .actions(plan, "b0")
     }
 
     fn recall(earlier: &Plan, answer: &[Action], now: &Plan) -> Recall {
@@ -2879,13 +3148,18 @@ mod tests {
             ),
             "p was a copy from A"
         );
-        let RunPhaseView::Reviewing(total) = view.phase else {
+        let RunPhaseView::Reviewing {
+            decisions: total, ..
+        } = view.phase
+        else {
             panic!("reviewing");
         };
         assert_eq!((total.reversed, total.skipped, total.kept_both), (1, 0, 1));
 
         choose(&mut state, 0, ActionChoiceView::Skipped);
-        let choices = choices_of(state.steer(RunIntent::Confirm));
+        let choices = choices_of(state.steer(RunIntent::Confirm {
+            plan_id: plan_id(&state),
+        }));
         let aside = answer
             .last()
             .cloned()

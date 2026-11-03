@@ -42,7 +42,7 @@ void main() {
 
   const args = FileDiffArgs(
     session: 4,
-    row: ActionRowRef(2),
+    row: ActionRowRef(2, planId: 1),
     path: 'docs/notes.txt',
     oldSide: ComparedSide(ReplicaSide.b, 13 * 1024),
     newSide: ComparedSide(ReplicaSide.a, 12),

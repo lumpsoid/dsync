@@ -13,14 +13,18 @@ use dsync_domain::{PeekLimits, Tuning};
 use hub::signals::{CoreCommand, ReplyResult, RowRef, RunIntent};
 use hub::views::{BlockView, ComparedView, ComparisonView, LineView, OfferView, SideView};
 
-use crate::run::{GUARD, ended, is, local_profile, row, start, steer};
+use crate::run::{GUARD, ended, is, local_profile, plan_id, row, start, steer};
 use crate::support::{FoldedRunView, Head, write};
 
 const REVIEW_CLOSED: &str = "the review is no longer open";
 const CANCELLED: &str = "cancelled";
 
-fn compare(session: u64, row: RowRef) -> CoreCommand {
-    CoreCommand::CompareRow { session, row }
+fn compare(session: u64, plan_id: u64, row: RowRef) -> CoreCommand {
+    CoreCommand::CompareRow {
+        session,
+        plan_id,
+        row,
+    }
 }
 
 fn action(index: u32) -> RowRef {
@@ -113,6 +117,7 @@ async fn a_review_row_s_two_files_compare_as_a_line_diff() {
     local_profile(&head, "local", "a", "b");
     let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     let view = review(&mut head, session).await;
+    let plan = plan_id(&view);
     let new = row(&view, "new.txt");
     let both = conflict(&view, "both.txt");
     assert!(matches!(
@@ -122,12 +127,13 @@ async fn a_review_row_s_two_files_compare_as_a_line_diff() {
     assert!(matches!(view.conflicts[0].offer, OfferView::Readable));
 
     // A copy onto no file: the old side has none, the whole file is added.
-    let (path, old, new_size, verdict) = compared(head.ok(compare(session, action(new))).await.1);
+    let (path, old, new_size, verdict) =
+        compared(head.ok(compare(session, plan, action(new))).await.1);
     assert_eq!((path.as_str(), old, new_size), ("new.txt", None, Some(6)));
     assert_eq!(blocks(&verdict), [(1, 1, vec!["+hello".to_owned()])]);
 
     // A conflict: A is old, B is new, the changed word emphasized.
-    let (path, old, new_size, verdict) = compared(head.ok(compare(session, both)).await.1);
+    let (path, old, new_size, verdict) = compared(head.ok(compare(session, plan, both)).await.1);
     assert_eq!(
         (path.as_str(), old, new_size),
         ("both.txt", Some(8), Some(8))
@@ -153,13 +159,20 @@ async fn a_review_row_s_two_files_compare_as_a_line_diff() {
 
     // No such row: nothing to compare, and no failure.
     assert!(matches!(
-        head.ok(compare(session, action(99))).await.1,
+        head.ok(compare(session, plan, action(99))).await.1,
         ReplyResult::Comparison(ComparisonView::NotComparable)
     ));
 
-    head.ok(steer(session, RunIntent::Confirm)).await;
+    // A row of another plan than the one under review: not this review's.
+    assert_eq!(
+        failure(head.ask(compare(session, plan + 1, action(new))).await.1),
+        REVIEW_CLOSED
+    );
+
+    head.ok(steer(session, RunIntent::Confirm { plan_id: plan }))
+        .await;
     head.run_until(session, ended).await;
-    let after = failure(head.ask(compare(session, action(new))).await.1);
+    let after = failure(head.ask(compare(session, plan, action(new))).await.1);
     assert!(after.contains("no run"), "{after}");
 }
 
@@ -171,7 +184,7 @@ async fn a_compare_with_no_review_open_fails() {
     let (session, _) = head.ok(start("nothing-here", false, None, GUARD)).await;
     head.run_until(session, is("failed")).await;
     assert_eq!(
-        failure(head.ask(compare(session, action(0))).await.1),
+        failure(head.ask(compare(session, 1, action(0))).await.1),
         REVIEW_CLOSED
     );
     head.ok(steer(session, RunIntent::Close)).await;
@@ -196,6 +209,7 @@ async fn row_offers_and_the_compare_agree_under_the_hub_s_tuning() {
     let (session, _) = head.ok(start("local", false, None, GUARD)).await;
     let view = review(&mut head, session).await;
     let (big, small) = (row(&view, "big.txt"), row(&view, "small.txt"));
+    let plan = plan_id(&view);
 
     assert!(matches!(
         view.plan[big as usize].proposal.offer,
@@ -204,7 +218,7 @@ async fn row_offers_and_the_compare_agree_under_the_hub_s_tuning() {
             size: 11
         }
     ));
-    let (_, _, _, verdict) = compared(head.ok(compare(session, action(big))).await.1);
+    let (_, _, _, verdict) = compared(head.ok(compare(session, plan, action(big))).await.1);
     assert!(matches!(
         verdict,
         ComparedView::TooLarge {
@@ -217,7 +231,7 @@ async fn row_offers_and_the_compare_agree_under_the_hub_s_tuning() {
         view.plan[small as usize].proposal.offer,
         OfferView::Readable
     ));
-    let (_, _, _, verdict) = compared(head.ok(compare(session, action(small))).await.1);
+    let (_, _, _, verdict) = compared(head.ok(compare(session, plan, action(small))).await.1);
     assert_eq!(blocks(&verdict), [(1, 1, vec!["+hi".to_owned()])]);
     head.ok(steer(session, RunIntent::Stop)).await;
     head.run_until(session, ended).await;
@@ -238,7 +252,7 @@ mod held {
     use super::{
         CANCELLED, REVIEW_CLOSED, action, blocks, compare, compared, failure, review, row,
     };
-    use crate::run::{GUARD, ended, is, local_profile, start, steer};
+    use crate::run::{GUARD, ended, is, local_profile, plan_id, start, steer};
     use crate::support::{Head, read, with_deadline, write};
 
     /// Replaces `path` with a FIFO: a read of it waits for a writer.
@@ -275,8 +289,8 @@ mod held {
     }
 
     /// A review of `held.txt` and `new.txt`, both copies from A; `held.txt`
-    /// already a FIFO. The session and both rows.
-    async fn reviewing(head: &mut Head) -> (u64, u32, u32) {
+    /// already a FIFO. The session, the plan under review and both rows.
+    async fn reviewing(head: &mut Head) -> (u64, u64, u32, u32) {
         write(&head.path("a/held.txt"), "held\n");
         write(&head.path("a/new.txt"), "hello\n");
         std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
@@ -284,23 +298,26 @@ mod held {
         let (session, _) = head.ok(start("local", false, None, GUARD)).await;
         let view = review(head, session).await;
         fifo(&head.path("a/held.txt"));
-        (session, row(&view, "held.txt"), row(&view, "new.txt"))
+        let plan = plan_id(&view);
+        (session, plan, row(&view, "held.txt"), row(&view, "new.txt"))
     }
 
     #[tokio::test]
     async fn confirm_during_a_compare_applies_at_once_and_fails_the_compare() {
         let mut head = Head::new("studio").await;
-        let (session, held, _) = reviewing(&mut head).await;
+        let (session, plan, held, _) = reviewing(&mut head).await;
         let skip = RunIntent::ChooseAction {
+            plan_id: plan,
             index: held,
             choice: hub::views::ActionChoiceView::Skipped,
         };
         head.ok(steer(session, skip)).await;
         let id = head.fresh_id();
-        let comparing = head.spawn(id, compare(session, action(held)));
+        let comparing = head.spawn(id, compare(session, plan, action(held)));
         let writer = read_started(&head.path("a/held.txt")).await;
 
-        head.ok(steer(session, RunIntent::Confirm)).await;
+        head.ok(steer(session, RunIntent::Confirm { plan_id: plan }))
+            .await;
         let reply = comparing.await;
         assert_eq!(
             failure(reply.unwrap_or_else(|e| panic!("{e}"))),
@@ -315,9 +332,9 @@ mod held {
     #[tokio::test]
     async fn a_cancelled_compare_fails_and_the_review_stays_open() {
         let mut head = Head::new("studio").await;
-        let (session, held, new) = reviewing(&mut head).await;
+        let (session, plan, held, new) = reviewing(&mut head).await;
         let id = head.fresh_id();
-        let comparing = head.spawn(id, compare(session, action(held)));
+        let comparing = head.spawn(id, compare(session, plan, action(held)));
         let writer = read_started(&head.path("a/held.txt")).await;
 
         let cancel = CoreCommand::CancelCompare {
@@ -330,7 +347,7 @@ mod held {
         drop(writer);
 
         // Still under review: the next compare is served.
-        let (_, _, _, verdict) = compared(head.ok(compare(session, action(new))).await.1);
+        let (_, _, _, verdict) = compared(head.ok(compare(session, plan, action(new))).await.1);
         assert_eq!(blocks(&verdict), [(1, 1, vec!["+hello".to_owned()])]);
         head.ok(steer(session, RunIntent::Stop)).await;
         head.run_until(session, ended).await;
@@ -339,14 +356,14 @@ mod held {
     #[tokio::test]
     async fn a_cancel_handled_before_its_compare_fails_it_unread() {
         let mut head = Head::new("studio").await;
-        let (session, held, _) = reviewing(&mut head).await;
+        let (session, plan, held, _) = reviewing(&mut head).await;
         let id = head.fresh_id();
         let cancel = CoreCommand::CancelCompare {
             session,
             request: id,
         };
         head.ok(cancel).await;
-        let reply = head.spawn(id, compare(session, action(held))).await;
+        let reply = head.spawn(id, compare(session, plan, action(held))).await;
         // Probed before any assert: a read found here is released at once,
         // so a failing run fails rather than hangs on the waiting open.
         let read = writer(&head.path("a/held.txt")).is_some();
@@ -355,7 +372,7 @@ mod held {
 
         // The same probe sees a compare that does read it.
         let id = head.fresh_id();
-        let comparing = head.spawn(id, compare(session, action(held)));
+        let comparing = head.spawn(id, compare(session, plan, action(held)));
         let mut writer = read_started(&head.path("a/held.txt")).await;
         writer
             .write_all(b"late\n")
@@ -371,9 +388,9 @@ mod held {
     #[tokio::test]
     async fn a_pause_during_the_review_fails_the_pending_compare() {
         let mut head = Head::new("studio").await;
-        let (session, held, new) = reviewing(&mut head).await;
+        let (session, plan, held, new) = reviewing(&mut head).await;
         let id = head.fresh_id();
-        let comparing = head.spawn(id, compare(session, action(held)));
+        let comparing = head.spawn(id, compare(session, plan, action(held)));
         let writer = read_started(&head.path("a/held.txt")).await;
 
         head.ok(steer(session, RunIntent::Pause)).await;
@@ -385,7 +402,7 @@ mod held {
         drop(writer);
         head.run_until(session, is("paused")).await;
         assert_eq!(
-            failure(head.ask(compare(session, action(new))).await.1),
+            failure(head.ask(compare(session, plan, action(new))).await.1),
             REVIEW_CLOSED
         );
         head.ok(steer(session, RunIntent::Close)).await;

@@ -156,17 +156,21 @@ void main() {
         decode(runView(phase: phase)).phase;
 
     expect(
-      phase(reviewing(apply: 3, reversed: 1, leftOpen: 2)),
+      phase(reviewing(planId: 7, apply: 3, reversed: 1, leftOpen: 2)),
       isA<RunReviewing>()
+          .having((r) => r.planId, 'plan', 7)
           .having((r) => r.summary.apply, 'apply', 3)
           .having((r) => r.summary.reversed, 'reversed', 1)
           .having((r) => r.summary.leftOpen, 'left open', 2),
     );
-    final guard = phase(confirmingDeletes()) as RunConfirmingDeletes;
+    final guard = phase(confirmingDeletes(planId: 8)) as RunConfirmingDeletes;
+    expect(guard.planId, 8);
     final side = guard.sides.single;
     expect((side.side, side.deletes, side.archived), (ReplicaSide.b, 40, 50));
-    final overwrites =
-        phase(confirmingOverwrites(truncated: 3)) as RunConfirmingOverwrites;
+    final overwrites = phase(
+      confirmingOverwrites(planId: 9, truncated: 3),
+    ) as RunConfirmingOverwrites;
+    expect(overwrites.planId, 9);
     final rewritten = overwrites.sides.single;
     expect(
       (
@@ -349,26 +353,38 @@ void main() {
 
   test('an intent is written as the hub reads it', () {
     expect(
-      link.wireIntent(const ChooseAction(2, ActionChoice.reversed)),
-      const wire.RunIntentChooseAction(
+      link.wireIntent(const ChooseAction(2, ActionChoice.reversed, planId: 4)),
+      wire.RunIntentChooseAction(
+        planId: n(4),
         index: 2,
         choice: wire.ActionChoiceView.reversed,
       ),
     );
     expect(
-      link.wireIntent(const ChooseConflict(1, ConflictChoice.keepBoth)),
-      const wire.RunIntentChooseConflict(
+      link.wireIntent(
+        const ChooseConflict(1, ConflictChoice.keepBoth, planId: 4),
+      ),
+      wire.RunIntentChooseConflict(
+        planId: n(4),
         index: 1,
         choice: wire.ConflictChoiceView.keepBoth,
       ),
     );
     expect(
-      link.wireIntent(const AnswerDeletes(proceed: false)),
-      const wire.RunIntentAnswerDeletes(proceed: false),
+      link.wireIntent(const ConfirmReview(planId: 5)),
+      wire.RunIntentConfirm(planId: n(5)),
     );
     expect(
-      link.wireIntent(const AnswerOverwrites(proceed: true)),
-      const wire.RunIntentAnswerOverwrites(proceed: true),
+      link.wireIntent(const AcceptAll(planId: 5)),
+      wire.RunIntentAcceptAll(planId: n(5)),
+    );
+    expect(
+      link.wireIntent(const AnswerDeletes(planId: 6, proceed: false)),
+      wire.RunIntentAnswerDeletes(planId: n(6), proceed: false),
+    );
+    expect(
+      link.wireIntent(const AnswerOverwrites(planId: 6, proceed: true)),
+      wire.RunIntentAnswerOverwrites(planId: n(6), proceed: true),
     );
     expect(link.wireIntent(const CloseRun()), const wire.RunIntentClose());
   });

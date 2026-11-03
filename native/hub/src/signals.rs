@@ -167,10 +167,12 @@ pub enum CoreCommand {
     /// each other: answered `Comparison`, or `Failed` when no review is
     /// open (or it closes first) or the compare is cancelled. One at a
     /// time per review: a second waits for the first. The row is named by
-    /// its index in whichever review is open when the compare is served,
-    /// never by a path.
+    /// its index in the plan `plan_id` names - the one the review the head
+    /// showed was over - never by a path; with that plan no longer under
+    /// review, it fails as with none open.
     CompareRow {
         session: u64,
+        plan_id: u64,
         row: RowRef,
     },
     /// Drops the `CompareRow` with request id `request`: its read stops,
@@ -250,29 +252,38 @@ pub enum RunTarget {
 
 /// What the user did to a run. The run holds the review's choices and
 /// decides what each intent means where it stands: one it cannot take -
-/// a choice the row does not offer, an answer nobody asked for, a resume
-/// of a live run - changes nothing.
+/// a choice the row does not offer, an answer nobody asked for, an answer
+/// about a plan other than the one asked about, a resume of a live run -
+/// changes nothing.
+///
+/// Every answer to a question about a plan - the review's and SPEC §10's
+/// guards' - carries `plan_id`, the plan the snapshot the head showed
+/// asked about ([`crate::views::RunPhaseView`]), and the run takes it only
+/// while that same plan is asked about: a tap on a plan that a resume,
+/// a re-dial or the next entry has since replaced lands nowhere.
 #[derive(Deserialize, SignalPiece)]
 pub enum RunIntent {
     /// The planned action at `index` under review.
     ChooseAction {
+        plan_id: u64,
         index: u32,
         choice: ActionChoiceView,
     },
     /// The conflict at `index` under review.
     ChooseConflict {
+        plan_id: u64,
         index: u32,
         choice: ConflictChoiceView,
     },
     /// Answers the review with the choices made.
-    Confirm,
+    Confirm { plan_id: u64 },
     /// Answers the review with the plan unchanged and every conflict left
     /// open (`--batch`), whatever was chosen.
-    AcceptAll,
+    AcceptAll { plan_id: u64 },
     /// SPEC §10's delete guard: apply the deletions, or apply nothing.
-    AnswerDeletes { proceed: bool },
+    AnswerDeletes { plan_id: u64, proceed: bool },
     /// SPEC §10's overwrite guard: apply the overwrites, or apply nothing.
-    AnswerOverwrites { proceed: bool },
+    AnswerOverwrites { plan_id: u64, proceed: bool },
     /// The user's stop: graceful - nothing further starts, what is in
     /// flight finishes.
     Stop,
