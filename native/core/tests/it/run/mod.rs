@@ -10,6 +10,7 @@ mod file_entry;
 mod flow;
 mod mass_delete;
 mod missing_root;
+mod out_of_space;
 mod peek;
 mod pipeline;
 mod soak;

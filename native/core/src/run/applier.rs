@@ -29,16 +29,25 @@
 //! committed. A failure that ends the run ([`ReplicaError::ends_run`])
 //! stops the apply the same way.
 //!
+//! **Out of space.** A write that finds a side out of space
+//! ([`ReplicaError::out_of_space`]) stops the apply the same way, as soon
+//! as it fails rather than once its batch commits: every later write there
+//! would fail alike. The whole apply stops, not just that side's writes:
+//! the pump takes actions in one spread order across both sides, and the
+//! run ends failed either way. What was not attempted is reported once, as
+//! [`RunError::OutOfSpace`] with its count and bytes, and owes the
+//! archives nothing, so the next run plans it again.
+//!
 //! Every stage runs on the caller's task (joined futures, not spawned
 //! tasks): what does the work is the replicas' own threads and
 //! connections, and a hard stop is dropping this future.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
-    Action, FileMeta, FileState, OwedCommits, Precondition, RelPath, ReplicaOp, ScanEntry, Side,
-    Status, Tuning, spread_across_folders,
+    Action, FileMeta, FileState, OutOfSpace, OwedCommits, Precondition, RelPath, ReplicaOp,
+    ScanEntry, Side, Status, Tuning, spread_across_folders,
 };
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
@@ -55,7 +64,8 @@ use crate::run::pair::Pair;
 pub(crate) struct Applied {
     pub(crate) applied: usize,
     pub(crate) failed: usize,
-    /// The first failure that ended the run, if one did.
+    /// The first failure that ended the run, if one did; a side out of
+    /// space with actions left unattempted is one, unless another came.
     pub(crate) fatal: Option<RunError>,
 }
 
@@ -65,6 +75,8 @@ pub(crate) struct Applier<'r, A, B> {
     tuning: &'r Tuning,
     events: &'r Events,
     stop: CancellationToken,
+    /// The first side a write found out of space.
+    full: OnceLock<Side>,
 }
 
 /// One admitted action, handed from the pump to a worker with the
@@ -129,11 +141,13 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             tuning,
             events,
             stop,
+            full: OnceLock::new(),
         }
     }
 
     pub(crate) async fn apply(&self, actions: Vec<Action>) -> Applied {
         let total = actions.len();
+        let total_bytes = actions.iter().map(Action::bytes).sum();
         let admitted = Semaphore::new(self.tuning.read_ahead_streams.max(1));
         let budget = Semaphore::new(self.tuning.read_ahead_budget_bytes);
         let workers = Semaphore::new(self.tuning.apply_in_flight.max(1));
@@ -143,7 +157,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let ((), (), applied) = tokio::join!(
             self.pump(spread_across_folders(actions), &admitted, &budget, ready),
             self.dispatch(readied, &workers, owed, &emptied),
-            self.commit_pipeline(owing, total),
+            self.commit_pipeline(owing, total, total_bytes),
         );
         self.prune(into_inner(emptied)).await;
         applied
@@ -242,6 +256,12 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             return;
         };
         let outcome = self.perform(prepared, emptied).await;
+        if let Err(failure) = &outcome
+            && let Some(side) = failure.out_of_space()
+        {
+            let _ = self.full.set(side);
+            self.stop.cancel();
+        }
         let _ = owed.send(Owed { action, outcome }).await;
     }
 
@@ -378,10 +398,18 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
     }
 
     /// Batches what the workers hand over, one batch in flight, and reports
-    /// each action once its batch has landed.
-    async fn commit_pipeline(&self, mut owing: mpsc::Receiver<Owed>, total: usize) -> Applied {
+    /// each action once its batch has landed. `total` and `total_bytes`:
+    /// the apply's actions and their bytes, what an out-of-space stop
+    /// counts its unattempted ones against.
+    async fn commit_pipeline(
+        &self,
+        mut owing: mpsc::Receiver<Owed>,
+        total: usize,
+        total_bytes: u64,
+    ) -> Applied {
         let size = self.tuning.commit_batch.max(1);
         let mut applied = Applied::default();
+        let mut reported_bytes = 0;
         let mut batch = Vec::with_capacity(size);
         loop {
             while batch.len() < size {
@@ -391,10 +419,23 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 }
             }
             if batch.is_empty() {
+                let left = total - (applied.applied + applied.failed);
+                if let Some(&side) = self.full.get()
+                    && left > 0
+                {
+                    applied
+                        .fatal
+                        .get_or_insert(RunError::OutOfSpace(OutOfSpace {
+                            side,
+                            left,
+                            left_bytes: total_bytes - reported_bytes,
+                        }));
+                }
                 return applied;
             }
             let committed = self.commit(&batch).await;
             for Owed { action, outcome } in batch.drain(..) {
+                reported_bytes += action.bytes();
                 let outcome = match outcome {
                     Ok(_) => committed.clone(),
                     Err(own) => Err(own),

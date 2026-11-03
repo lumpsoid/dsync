@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use dsync_domain::{
     Action, BucketCountMismatch, Conflict, IncompleteTransfer, MassDelete, MissingParentFolder,
-    MissingReplicaRoot, Plan, ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side, SkippedPath,
-    UnevenCommitOnly, UnreadableReplicaRoot, UnusableRoot, WrongRootKind,
+    MissingReplicaRoot, OutOfSpace, Plan, ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side,
+    SkippedPath, UnevenCommitOnly, UnreadableReplicaRoot, UnusableRoot, WrongRootKind,
 };
 
 use crate::replica_error::ReplicaError;
@@ -94,6 +94,10 @@ pub enum RunError {
     /// confirm. Nothing was applied.
     #[error("{}", .0.describe())]
     DeletesNotConfirmed(MassDelete),
+    /// A write found a side out of space: the apply stopped, and what it
+    /// had not attempted is left for the next run.
+    #[error(transparent)]
+    OutOfSpace(OutOfSpace),
     #[error("the run marker {}: {source}", path.display())]
     Marker {
         path: PathBuf,
@@ -167,6 +171,7 @@ impl RunError {
             RunError::ParentMissing(missing) => Some(missing.side),
             RunError::WrongKind(wrong) => Some(wrong.side),
             RunError::RootUnreadable(unreadable) => Some(unreadable.side),
+            RunError::OutOfSpace(full) => Some(full.side),
             RunError::Exchange(_) | RunError::DeletesNotConfirmed(_) | RunError::Marker { .. } => {
                 None
             }
@@ -225,6 +230,15 @@ impl ActionFailure {
                     source: source.clone(),
                 })
             }
+            _ => None,
+        }
+    }
+
+    /// The side this failure found out of space, when it is one (see
+    /// [`ReplicaError::out_of_space`]): the apply writes nothing more.
+    pub(crate) fn out_of_space(&self) -> Option<Side> {
+        match self {
+            ActionFailure::Replica { side, source, .. } if source.out_of_space() => Some(*side),
             _ => None,
         }
     }

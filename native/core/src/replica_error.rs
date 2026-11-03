@@ -76,6 +76,21 @@ impl ReplicaError {
                 | ReplicaError::Halted(_)
         )
     }
+
+    /// Whether this failure says the replica's filesystem has no room left
+    /// (ENOSPC, or a quota reached): every later write there would fail
+    /// the same way.
+    pub fn out_of_space(&self) -> bool {
+        let kind = match self {
+            ReplicaError::Write(write) => write.kind(),
+            ReplicaError::File { source, .. } => source.kind(),
+            _ => return false,
+        };
+        matches!(
+            kind,
+            io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+        )
+    }
 }
 
 /// The filesystem operation a [`ReplicaError::File`] failed in.
