@@ -14,8 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dsync_domain::{
-    ChangedDuringSync, ContentHash, FileMeta, FileState, Precondition, RelPath, STAGING_DIR,
-    temp_name_for,
+    ChangedDuringSync, ContentHash, FileMeta, FileState, Precondition, RelPath, temp_name_for,
 };
 use ring::digest;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
@@ -111,7 +110,7 @@ impl Destination {
     /// on emulated storage a create costs more the fuller its folder, and a
     /// rename into a folder costs less than a create in it.
     fn staging(&self) -> PathBuf {
-        self.root.base().join(STAGING_DIR)
+        self.root.staging()
     }
 
     /// Creates the staging folder unless this session already has, and
@@ -566,11 +565,23 @@ impl<'a> StageTimer<'a> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use dsync_domain::{RootKind, STAGING_DIR};
 
     fn destination(root: &Path, modes_apply: bool) -> Destination {
-        let confinement = Confinement::new(root.to_path_buf(), crate::Symlinks::AsRuled);
         let folder = Root::folder(root.to_str().unwrap().to_owned());
-        let destination = Destination::new(Arc::new(folder), Arc::new(confinement));
+        destination_at(root, folder, modes_apply)
+    }
+
+    /// The destination of a single-file root syncing `name` in `dir`.
+    fn file_destination(dir: &Path, name: &str) -> Destination {
+        let text = dir.join(name).to_str().unwrap().to_owned();
+        let file = Root::new(text, RootKind::File, Some(RelPath::parse(name).unwrap())).unwrap();
+        destination_at(dir, file, true)
+    }
+
+    fn destination_at(base: &Path, root: Root, modes_apply: bool) -> Destination {
+        let confinement = Confinement::new(base.to_path_buf(), crate::Symlinks::AsRuled);
+        let destination = Destination::new(Arc::new(root), Arc::new(confinement));
         destination.modes.applies.set(modes_apply).unwrap();
         destination
     }
@@ -875,5 +886,60 @@ mod tests {
 
         assert!(written.is_ok());
         assert_eq!(fs::read(&target).unwrap(), b"new");
+    }
+
+    /// Overwrites `name` through `writing` while `other` - another root
+    /// over the same folder - sweeps its staging folder, as its lock and
+    /// unlock do, with the temp mid-stream.
+    fn overwrite_while_swept(dir: &Path, writing: &Destination, name: &str, other: &Destination) {
+        let target = dir.join(name);
+        fs::write(&target, b"old").unwrap();
+
+        let written = overwrite_editing_midway(writing, name, || other.clear_staging());
+
+        assert!(written.is_ok(), "{written:?}");
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+    }
+
+    #[test]
+    fn a_folder_roots_sweep_leaves_a_file_roots_in_flight_temp_in_the_same_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = destination(dir.path(), true);
+        let file = file_destination(dir.path(), "notes.md");
+
+        overwrite_while_swept(dir.path(), &file, "notes.md", &folder);
+    }
+
+    #[test]
+    fn a_file_roots_sweep_leaves_a_folder_roots_in_flight_temp_in_the_same_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = destination(dir.path(), true);
+        let file = file_destination(dir.path(), "notes.md");
+
+        overwrite_while_swept(dir.path(), &folder, "other.md", &file);
+    }
+
+    #[test]
+    fn a_file_roots_sweep_leaves_another_file_roots_in_flight_temp_in_the_same_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = file_destination(dir.path(), "notes.md");
+        let todo = file_destination(dir.path(), "todo.md");
+
+        overwrite_while_swept(dir.path(), &notes, "notes.md", &todo);
+    }
+
+    #[test]
+    fn a_sweep_of_the_staging_folder_a_write_is_using_fails_it_and_leaves_the_target() {
+        // Positive control for the three above: the sweep does take a
+        // temp in its own staging folder.
+        let dir = tempfile::tempdir().unwrap();
+        let file = file_destination(dir.path(), "notes.md");
+        let target = dir.path().join("notes.md");
+        fs::write(&target, b"old").unwrap();
+
+        let written = overwrite_editing_midway(&file, "notes.md", || file.clear_staging());
+
+        assert!(written.is_err(), "{written:?}");
+        assert_eq!(fs::read(&target).unwrap(), b"old");
     }
 }

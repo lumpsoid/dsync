@@ -161,7 +161,10 @@ pub use side::Side;
 pub use skipped_path::{SkippedAt, SkippedPath, SkippedReason, failure_count, unreadable_of};
 pub use ssh_access::{EmptySshValue, SshAccess, SshCommand, SshOption};
 pub use sync_target::{AdHocTarget, SyncTarget};
-pub use temp_name::{STAGING_DIR, TEMP_FILE_MARKER, is_temp_file_name, temp_name_for};
+pub use temp_name::{
+    STAGING_DIR, TEMP_FILE_MARKER, file_staging_dir_for, is_staging_dir_name, is_temp_file_name,
+    temp_name_for,
+};
 pub use text_diff::{Block, Hunk, Line, Span, TextDiff};
 pub use tuning::Tuning;
 pub use unreadable_paths::UnreadablePaths;

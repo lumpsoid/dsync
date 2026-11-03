@@ -5,7 +5,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use dsync_domain::{Archive, RelPath, ReplicaRoot, RootKind, RuleSet, ScanResult};
+use dsync_domain::{
+    Archive, RelPath, ReplicaRoot, RootKind, RuleSet, STAGING_DIR, ScanResult, file_staging_dir_for,
+};
 
 use crate::scanner::{Scanner, UnreadableRoot};
 
@@ -109,6 +111,16 @@ impl Root {
         match &self.shape {
             Shape::Folder(folder) => folder,
             Shape::File { dir, .. } => dir,
+        }
+    }
+
+    /// The folder this root's writes stage their temps in (SPEC §7.2): a
+    /// folder root's own at its top, a file root's named after its file
+    /// beside it, so no other root over the same folder sweeps it.
+    pub(crate) fn staging(&self) -> PathBuf {
+        match &self.shape {
+            Shape::Folder(folder) => folder.join(STAGING_DIR),
+            Shape::File { dir, name, .. } => dir.join(file_staging_dir_for(name.as_str())),
         }
     }
 

@@ -10,9 +10,29 @@
 //! replica unasked is not something a sync tool does on a guess about a
 //! name.
 
-/// The hidden folder at a replica's base where its writes create their
-/// temps (SPEC §7.2). The scan skips it; leftovers are swept at lock.
+/// The hidden folder at a folder replica's root where its writes create
+/// their temps (SPEC §7.2). The scan skips it; leftovers are swept at lock.
 pub const STAGING_DIR: &str = ".dsync-staging";
+
+/// The staging folder of a single-file replica whose file is `file_name`:
+/// `.dsync-staging.<file_name>`, beside the file (SPEC §7.2).
+///
+/// Named after the file rather than [`STAGING_DIR`]: a file replica locks
+/// its file, not its folder, so a folder replica over the same folder - or
+/// a file replica for another file in it - can lock and sweep alongside it,
+/// and sweeping a shared staging folder would delete the other's in-flight
+/// temps.
+pub fn file_staging_dir_for(file_name: &str) -> String {
+    format!("{STAGING_DIR}.{file_name}")
+}
+
+/// Whether `name` (one path segment at a folder replica's root) is a
+/// staging folder: the replica's own, or a single-file replica's beside a
+/// file in that folder. The scan skips both.
+pub fn is_staging_dir_name(name: &str) -> bool {
+    name.strip_prefix(STAGING_DIR)
+        .is_some_and(|rest| rest.is_empty() || rest.len() > 1 && rest.starts_with('.'))
+}
 
 /// Sits between the target's name and the parts that make it unique.
 pub const TEMP_FILE_MARKER: &str = ".dsync-tmp.";
@@ -59,5 +79,16 @@ mod tests {
         assert!(!is_temp_file_name("notes.dsync-tmp.12.x"));
         assert!(!is_temp_file_name("notes.dsync-tmp.1.2.txt"));
         assert!(!is_temp_file_name("notes.dsync-tmp.a.2"));
+    }
+
+    #[test]
+    fn both_staging_folder_names_are_recognised_and_near_misses_are_not() {
+        assert!(is_staging_dir_name(STAGING_DIR));
+        assert!(is_staging_dir_name(&file_staging_dir_for("notes.md")));
+        assert_eq!(file_staging_dir_for("notes.md"), ".dsync-staging.notes.md");
+        assert!(!is_staging_dir_name(".dsync-staging."));
+        assert!(!is_staging_dir_name(".dsync-stagingx"));
+        assert!(!is_staging_dir_name(".dsync-stag"));
+        assert!(!is_staging_dir_name("notes.md"));
     }
 }

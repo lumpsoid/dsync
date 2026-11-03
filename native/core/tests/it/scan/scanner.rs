@@ -420,6 +420,23 @@ fn the_staging_folder_at_the_root_is_skipped_and_one_deeper_is_not() {
     assert!(result.skipped.is_empty(), "{:?}", result.skipped);
 }
 
+#[test]
+fn a_single_file_roots_staging_folder_beside_its_file_is_skipped_at_the_root() {
+    let tree = Tree::new();
+    tree.write(".dsync-staging.notes.md/notes.md.dsync-tmp.1.2", "half");
+    tree.write(".dsync-staging.notes.md/stray", "x");
+    tree.write(".dsync-stagingx/kept", "k");
+    tree.write("sub/.dsync-staging.notes.md/kept", "k");
+
+    let result = tree.scan(&Archive::default(), &RuleSet::default());
+
+    assert_eq!(
+        paths(&result),
+        [".dsync-stagingx/kept", "sub/.dsync-staging.notes.md/kept"]
+    );
+    assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+}
+
 // -- case-fold collisions (SPEC §16) --
 
 fn folding_scanner() -> dsync_core::Scanner {
