@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use dsync_core::{
     ArchiveHeader, ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan,
-    LinkError, LocalReplica, OpenedScan, Peek, Reading, RemoteReplica, Replica, ReplicaError,
-    ReplicaServer, Run, RunEvent, RunReport, ServedReads, StateDir, Transport,
+    LinkError, Listing, LocalReplica, OpenedScan, Peek, Reading, RemoteReplica, Replica,
+    ReplicaError, ReplicaServer, Run, RunEvent, RunReport, ServedReads, StateDir, Transport,
 };
 use dsync_domain::{
     Action, Archive, ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Command, EffectiveOptions,
@@ -468,7 +468,7 @@ impl<R: Replica> Replica for Probe<R> {
         &self,
         ticket: DigestTicket,
         count: BucketCount,
-        peer_changed: &[RelPath],
+        peer_changed: Listing<RelPath>,
     ) -> Result<DigestedScan, ReplicaError> {
         self.inner.scan_digests(ticket, count, peer_changed).await
     }

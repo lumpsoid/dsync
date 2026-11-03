@@ -20,6 +20,7 @@ use dsync_domain::{
 use tokio::sync::oneshot;
 
 use crate::body::{Body, SourceMoved};
+use crate::listing::Listing;
 use crate::replica_error::ReplicaError;
 
 /// One replica, local or remote. Every path is a [`RelPath`]: confined to
@@ -66,12 +67,13 @@ pub trait Replica: Send + Sync {
     /// Phase 2: digests over the unchanged entries except `peer_changed`
     /// (the other side's phase-1 paths), and this side's entries owed for
     /// exactly those paths. `count` is the initiator's, from the larger
-    /// side's tally.
+    /// side's tally. The paths may be arriving from the initiator while
+    /// they are taken, so a replica keeps only those it holds.
     fn scan_digests(
         &self,
         ticket: DigestTicket,
         count: BucketCount,
-        peer_changed: &[RelPath],
+        peer_changed: Listing<RelPath>,
     ) -> impl Future<Output = Result<DigestedScan, ReplicaError>> + Send;
 
     /// Phase 3: the entries in `buckets`, the ones whose digests

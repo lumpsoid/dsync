@@ -1,6 +1,8 @@
 //! The replica protocol's control messages (plan D5): what a request asks,
 //! what a reply answers, and how a failure on the far side crosses the
-//! wire. All postcard.
+//! wire. All postcard. A scan phase's listing is not in its message but
+//! follows it as a body of items ([`crate::listing`]): [`ScanItem`],
+//! [`DigestItem`], [`ScanEntry`], [`RelPath`] or a bucket index.
 //!
 //! Every path in a request is a [`RelPath`], decoded through
 //! [`RelPath::parse`]: a request naming `../x` does not decode, so it is
@@ -12,8 +14,8 @@ use std::io;
 use std::path::PathBuf;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, ChangedDuringSync, ChangedScan, FileMeta, FileState, Precondition,
-    RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Stage, WriteStats,
+    ArchiveCommit, ArchiveFacts, ChangedDuringSync, FileMeta, FileState, Naming, Precondition,
+    RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, ScanTally, SkippedPath, Stage, WriteStats,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,12 +32,16 @@ pub(crate) enum Request {
     Lock,
     Unlock,
     CreateRoot,
+    /// Answered with [`Reply::Scan`], then its listing.
     OpenScan(RuleSet),
+    /// Followed by the listing of the other side's changed paths;
+    /// answered with [`Reply::Digests`], then its listing.
     ScanDigests {
         count: u32,
-        peer_changed: Vec<RelPath>,
     },
-    ScanBuckets(Vec<u32>),
+    /// Followed by the listing of the bucket indices; answered with
+    /// [`Reply::Buckets`], then its listing.
+    ScanBuckets,
     /// Answered with [`Reply::Opened`], then the body's frames; its `End`
     /// carries what the file was once read ([`dsync_domain::OnDisk`]).
     Read(RelPath),
@@ -62,18 +68,47 @@ pub(crate) enum Reply {
     /// The lock is taken; with the archive as its one replay read it.
     Locked(ArchiveFacts),
     Done,
-    Scan(ChangedScan),
-    Digests {
-        digests: Vec<[u8; 32]>,
-        owed: Vec<ScanEntry>,
+    /// Phase 1's whole-scan facts; its [`ScanItem`]s follow.
+    Scan {
+        tally: ScanTally,
+        naming: Naming,
     },
-    Buckets(Vec<ScanEntry>),
+    /// Phase 2's [`DigestItem`]s follow.
+    Digests,
+    /// Phase 3's entries follow.
+    Buckets,
     /// The file opened; its body follows under the same id.
     Opened,
     Written(FileMeta),
     /// The lock is released; with the served replica's writer stats, for
     /// the initiator's report (SPEC §17).
     Unlocked(Option<Box<WriteStats>>),
+}
+
+impl Request {
+    /// Whether a body follows this request under its id.
+    pub(crate) fn has_body(&self) -> bool {
+        matches!(
+            self,
+            Request::Write { .. } | Request::ScanDigests { .. } | Request::ScanBuckets
+        )
+    }
+}
+
+/// One item of phase 1's listing: an entry that is not unchanged, or a
+/// skipped path.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub(crate) enum ScanItem {
+    Entry(ScanEntry),
+    Skipped(SkippedPath),
+}
+
+/// One item of phase 2's listing: a bucket's digest, in bucket order, or
+/// an entry owed for a path the other side changed.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub(crate) enum DigestItem {
+    Digest([u8; 32]),
+    Owed(ScanEntry),
 }
 
 /// A reply frame's payload.
@@ -339,8 +374,8 @@ impl WireIo {
 mod tests {
     use super::*;
     use dsync_domain::{
-        CaseFolding, ContentHash, EntryId, FileState, Glob, Jobs, Naming, Platform, ReplicaRoot,
-        ScanTally, Side, SkippedPath, SkippedReason, Status, Unchanged,
+        CaseFolding, ContentHash, EntryId, FileState, Glob, Jobs, Platform, ReplicaRoot, Side,
+        SkippedReason, Status, Unchanged,
     };
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -384,11 +419,8 @@ mod tests {
             Request::Unlock,
             Request::CreateRoot,
             Request::OpenScan(rules),
-            Request::ScanDigests {
-                count: 3,
-                peer_changed: vec![path("a/b")],
-            },
-            Request::ScanBuckets(vec![0, 2]),
+            Request::ScanDigests { count: 3 },
+            Request::ScanBuckets,
             Request::Read(path("r")),
             Request::Write {
                 path: path("w"),
@@ -417,30 +449,41 @@ mod tests {
     }
 
     #[test]
-    fn every_reply_round_trips_with_both_kinds_of_skipped_entry() {
-        let changed = ChangedScan {
-            entries: vec![
-                ScanEntry::new(path("c"), Status::Created(file(1))),
-                ScanEntry::new(path("m"), Status::Modified(file(2))),
-                ScanEntry::new(path("d"), Status::Deleted),
-            ],
-            skipped: vec![
-                SkippedPath::new(path("l"), SkippedReason::Symlink, "broken link"),
-                SkippedPath::unrepresentable_name(Some(path("dir")), "a\\b", "backslash"),
-                SkippedPath::unrepresentable_name(None, "C:", "drive"),
-            ],
-            tally: ScanTally {
-                metadata_matched: 7,
-                hash_matched: 1,
-                modified: 1,
-                created: 1,
-                deleted: 1,
-            },
-            naming: Naming {
-                folding: CaseFolding::Folds,
-                platform: Platform::Windows,
-            },
-        };
+    fn every_listing_item_round_trips_with_both_kinds_of_skipped_entry() {
+        for item in [
+            ScanItem::Entry(ScanEntry::new(path("c"), Status::Created(file(1)))),
+            ScanItem::Entry(ScanEntry::new(path("m"), Status::Modified(file(2)))),
+            ScanItem::Entry(ScanEntry::new(path("d"), Status::Deleted)),
+            ScanItem::Skipped(SkippedPath::new(
+                path("l"),
+                SkippedReason::Symlink,
+                "broken link",
+            )),
+            ScanItem::Skipped(SkippedPath::unrepresentable_name(
+                Some(path("dir")),
+                "a\\b",
+                "backslash",
+            )),
+            ScanItem::Skipped(SkippedPath::unrepresentable_name(None, "C:", "drive")),
+        ] {
+            round_trip(item);
+        }
+        for item in [
+            DigestItem::Digest([9; 32]),
+            DigestItem::Owed(ScanEntry::new(
+                path("o"),
+                Status::Unchanged {
+                    file: file(4),
+                    by: Unchanged::HashMatched,
+                },
+            )),
+        ] {
+            round_trip(item);
+        }
+    }
+
+    #[test]
+    fn every_reply_round_trips() {
         for reply in [
             Reply::Hello(RootFacts {
                 archive_path: Some("/state/x-a.jsonl".into()),
@@ -461,24 +504,21 @@ mod tests {
                 archived_files: 0,
             }),
             Reply::Done,
-            Reply::Scan(changed),
-            Reply::Digests {
-                digests: vec![[9; 32], [0; 32]],
-                owed: vec![ScanEntry::new(
-                    path("o"),
-                    Status::Unchanged {
-                        file: file(4),
-                        by: Unchanged::HashMatched,
-                    },
-                )],
-            },
-            Reply::Buckets(vec![ScanEntry::new(
-                path("b"),
-                Status::Unchanged {
-                    file: file(5),
-                    by: Unchanged::MetadataMatched,
+            Reply::Scan {
+                tally: ScanTally {
+                    metadata_matched: 7,
+                    hash_matched: 1,
+                    modified: 1,
+                    created: 1,
+                    deleted: 1,
                 },
-            )]),
+                naming: Naming {
+                    folding: CaseFolding::Folds,
+                    platform: Platform::Windows,
+                },
+            },
+            Reply::Digests,
+            Reply::Buckets,
             Reply::Opened,
             Reply::Written(file(6).meta),
             Reply::Unlocked(None),

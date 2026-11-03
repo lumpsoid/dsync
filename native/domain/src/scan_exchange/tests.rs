@@ -90,8 +90,10 @@ fn exchange(a: ScanResult, b: ScanResult) -> Exchanged {
     let (changed_a, unchanged_a) = a.split(NAMING);
     let (changed_b, unchanged_b) = b.split(NAMING);
     let count = BucketCount::for_entries(changed_a.tally.total().max(changed_b.tally.total()));
-    let digested_a = unchanged_a.digest(count, &changed_b.paths());
-    let digested_b = unchanged_b.digest(count, &changed_a.paths());
+    let peer_changed_b = noted(&unchanged_a, &changed_b);
+    let peer_changed_a = noted(&unchanged_b, &changed_a);
+    let digested_a = unchanged_a.digest(count, &peer_changed_b);
+    let digested_b = unchanged_b.digest(count, &peer_changed_a);
     let dirty = digested_a
         .digests()
         .disagreeing_with(digested_b.digests())
@@ -114,6 +116,15 @@ fn exchange(a: ScanResult, b: ScanResult) -> Exchanged {
         count,
         dirty,
     }
+}
+
+/// The peer's changed paths as phase 2 keeps them, noted as they arrive.
+fn noted(unchanged: &UnchangedEntries, peer: &ChangedScan) -> Vec<RelPath> {
+    let mut noted = unchanged.peer_changed();
+    for path in peer.paths() {
+        noted.note(path);
+    }
+    noted.into_paths()
 }
 
 fn plan_of(scans: &Exchanged) -> Plan {
@@ -234,6 +245,16 @@ fn digests_over_different_counts_are_refused() {
     let two = BucketDigests::of(&[], BucketCount::new(2).unwrap());
     assert!(one.disagreeing_with(&two).is_err());
     assert_eq!(BucketDigests::from_digests(one.as_slice().to_vec()), one);
+}
+
+#[test]
+fn a_peer_changed_list_keeps_only_this_sides_unchanged_paths_once() {
+    let unchanged = UnchangedEntries::new(vec![unchanged("a", "h"), unchanged("b", "h")]);
+    let mut noted = unchanged.peer_changed();
+    for p in ["a", "elsewhere", "a", "b", "also/elsewhere"] {
+        noted.note(path(p));
+    }
+    assert_eq!(noted.into_paths(), [path("a"), path("b")]);
 }
 
 #[test]

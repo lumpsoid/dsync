@@ -27,6 +27,7 @@ use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
 use crate::confinement::Confinement;
 use crate::file_write::Destination;
+use crate::listing::Listing;
 use crate::local_root::{Located, Root};
 use crate::replica::{
     BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
@@ -308,18 +309,39 @@ impl Replica for LocalReplica {
         &self,
         _ticket: DigestTicket,
         count: BucketCount,
-        peer_changed: &[RelPath],
+        mut peer_changed: Listing<RelPath>,
     ) -> Result<DigestedScan, ReplicaError> {
-        let peer_changed = peer_changed.to_vec();
-        self.blocking(move |shared| {
-            let mut phase = shared.scan();
-            let session = match std::mem::replace(&mut *phase, ScanPhase::Closed) {
+        let session = {
+            let mut phase = self.shared.scan();
+            match std::mem::replace(&mut *phase, ScanPhase::Closed) {
                 ScanPhase::Opened(session) => session,
                 other => {
                     *phase = other;
                     return Err(ReplicaError::NoScan);
                 }
-            };
+            }
+        };
+        // Kept as they arrive, only those this side holds unchanged: a
+        // peer's list costs no more than this side's own scan.
+        let noted = async {
+            let mut noted = session.peer_changed();
+            while let Some(page) = peer_changed.next_page().await? {
+                for path in page {
+                    noted.note(path);
+                }
+            }
+            Ok(noted.into_paths())
+        }
+        .await;
+        let peer_changed = match noted {
+            Ok(paths) => paths,
+            Err(error) => {
+                *self.shared.scan() = ScanPhase::Opened(session);
+                return Err(error);
+            }
+        };
+        self.blocking(move |shared| {
+            let mut phase = shared.scan();
             let digested = session.digests(count, &peer_changed);
             let reply = DigestedScan {
                 digests: digested.digests().clone(),

@@ -46,6 +46,7 @@ pub use peek::Peek;
 pub(crate) use recalled::Recalled;
 pub use recalled::{ActionChoice, ConflictChoice, Recall, RowRecall};
 
+use crate::listing::Listing;
 use crate::replica::Replica;
 use crate::run_marker::RunMarker;
 use crate::state_dir::StateDir;
@@ -647,17 +648,20 @@ async fn exchange<A: Replica, B: Replica>(
             .total()
             .max(opened_b.changed.tally.total()),
     );
-    let (changed_a, changed_b) = (opened_a.changed.paths(), opened_b.changed.paths());
+    let (changed_a, changed_b) = (
+        Listing::from_vec(opened_a.changed.paths()),
+        Listing::from_vec(opened_b.changed.paths()),
+    );
     let (digested_a, digested_b) = tokio::join!(
         clock.op(
             Side::A,
             ReplicaOp::Scan,
-            pair.a.scan_digests(opened_a.next, count, &changed_b)
+            pair.a.scan_digests(opened_a.next, count, changed_b)
         ),
         clock.op(
             Side::B,
             ReplicaOp::Scan,
-            pair.b.scan_digests(opened_b.next, count, &changed_a)
+            pair.b.scan_digests(opened_b.next, count, changed_a)
         ),
     );
     let digested_a = digested_a.map_err(scan(Side::A))?;

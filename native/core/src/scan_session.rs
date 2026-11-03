@@ -2,7 +2,7 @@
 //! exchange (plan OQ3): the local half, over a scan already in memory.
 
 use dsync_domain::{
-    BucketCount, ChangedScan, Digested, Naming, RelPath, ScanResult, UnchangedEntries,
+    BucketCount, ChangedScan, Digested, Naming, PeerChanged, RelPath, ScanResult, UnchangedEntries,
 };
 
 /// A finished scan waiting to be exchanged.
@@ -34,6 +34,12 @@ impl ScanSession {
     /// the whole scan's tally.
     pub fn changed(&self) -> &ChangedScan {
         &self.changed
+    }
+
+    /// The peer's changed paths, noted as they arrive, as phase 2 keeps
+    /// them.
+    pub fn peer_changed(&self) -> PeerChanged<'_> {
+        self.unchanged.peer_changed()
     }
 
     /// Phase 2: digests over the unchanged entries minus `peer_changed`

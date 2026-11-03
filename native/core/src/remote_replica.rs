@@ -4,7 +4,11 @@
 //!
 //! Each operation is an exchange under its own request id, so replies may
 //! come back in any order and several operations are outstanding at once,
-//! within the [`RequestWindow`]'s rules. Which operations are barriers:
+//! within the [`RequestWindow`]'s rules. A scan phase's listings - the
+//! changed paths and bucket indices it sends, the entries and digests it
+//! takes - travel as bodies after their request and reply
+//! ([`crate::listing`]), and a commit batch too big for one request goes
+//! as several. Which operations are barriers:
 //! `hello`, `lock`, `unlock`, `create_root`, all three scan phases,
 //! `remove_empty_dirs` (it reaches ancestors a concurrent write may be
 //! about to write into) and `compact`. Windowed, per path: `read` (holding
@@ -17,17 +21,21 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, FileMeta, FileState, OnDisk,
-    Precondition, RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Tuning, WriteStats,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta,
+    FileState, OnDisk, Precondition, RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Tuning,
+    WriteStats,
 };
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::oneshot;
 
 use crate::body::Body;
-use crate::credit::{self, Credits};
-use crate::frame::{Frame, FrameError, Kind};
+use crate::credit::{self, Credit, Credits};
+use crate::frame::{Frame, FrameError, Kind, MAX_REQUEST_BYTES};
 use crate::inbound::{Dropped, Inbound, Piece};
 use crate::link_error::LinkError;
+use crate::listing::{Listing, ListingWriter};
 use crate::replica::{
     BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
 };
@@ -38,7 +46,7 @@ use crate::transport::{
     Liveness, Outbox, OutboxClosed, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
 use crate::version_handshake::handshake;
-use crate::wire::{self, Answer, Reply, Request, WireIo};
+use crate::wire::{self, Answer, DigestItem, Reply, Request, ScanItem, WireIo};
 
 /// How long [`RemoteReplica::close`] waits for the far side to end its
 /// stream once this side has ended its own.
@@ -78,6 +86,11 @@ enum Route {
         reply: Option<oneshot::Sender<Answer>>,
         body: Inbound,
         settle: oneshot::Sender<OnDisk>,
+    },
+    /// A scan phase: its reply, then its listing.
+    Listing {
+        reply: Option<oneshot::Sender<Answer>>,
+        body: Inbound,
     },
 }
 
@@ -229,6 +242,74 @@ impl RemoteReplica {
             .await?;
         self.link.answer(answer).await
     }
+
+    /// Opens an exchange whose reply a listing follows.
+    fn open_listing<T: DeserializeOwned>(
+        &self,
+    ) -> Result<(u32, oneshot::Receiver<Answer>, Listing<T>), LinkError> {
+        self.link.open(|id, reply| {
+            let (inbound, body) = Inbound::open(self.link.outbox.clone(), id, (), Dropped::Release);
+            let route = Route::Listing {
+                reply: Some(reply),
+                body: inbound,
+            };
+            (route, Listing::arriving(body))
+        })
+    }
+
+    /// Sends `items` as the body of the request `id` just sent, and its
+    /// answer. A far side that answers before the listing is over has
+    /// refused it: the rest is not worth sending, and a `Fail` ends the
+    /// body's route there.
+    async fn send_listing<T: Serialize + DeserializeOwned>(
+        &self,
+        id: u32,
+        credit: &Credit,
+        items: Listing<T>,
+        mut answer: oneshot::Receiver<Answer>,
+    ) -> Result<Reply, ReplicaError> {
+        let outbox = &self.link.outbox;
+        let answered = tokio::select! {
+            answered = &mut answer => {
+                let abandoned =
+                    io::Error::other("the request was answered before its listing ended");
+                let _ = outbox.fail(id, &abandoned).await;
+                answered
+            }
+            // Only the connection closing stops it: the server never
+            // cancels a body (`Link::route` refuses it).
+            sent = ListingWriter::new(outbox, id, credit).send(items) => match sent {
+                Ok(()) => answer.await,
+                Err(_) => return Err(self.link.failure().into()),
+            },
+        };
+        match answered {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_) => Err(self.link.failure().into()),
+        }
+    }
+}
+
+/// Splits `batch` into commit requests that each fit a request frame,
+/// in order. An empty batch is one empty request, as it always was.
+fn commits_within(batch: Vec<ArchiveCommit>, most: usize) -> Vec<Vec<ArchiveCommit>> {
+    // The request's own tag and the batch's length.
+    const ENVELOPE_BYTES: usize = 16;
+    let mut parts = vec![Vec::new()];
+    let mut bytes = ENVELOPE_BYTES;
+    for commit in batch {
+        let size = wire::encode(&commit).len();
+        let part = parts.last_mut().expect("never empty");
+        if !part.is_empty() && bytes + size > most {
+            parts.push(vec![commit]);
+            bytes = ENVELOPE_BYTES + size;
+        } else {
+            part.push(commit);
+            bytes += size;
+        }
+    }
+    parts
 }
 
 impl Link {
@@ -275,6 +356,15 @@ impl Link {
     /// otherwise.
     fn failure(&self) -> LinkError {
         self.routes().ended.clone().unwrap_or(LinkError::Closed)
+    }
+
+    /// What taking a listing came to: a listing cut short by the link
+    /// ending fails with why it ended.
+    fn listed<T>(&self, taken: Result<T, ReplicaError>) -> Result<T, ReplicaError> {
+        taken.map_err(|error| match self.routes().ended.clone() {
+            Some(ended) => ended.into(),
+            None => error,
+        })
     }
 
     /// Ends the link with `why`, failing every exchange still open: their
@@ -328,38 +418,58 @@ impl Link {
                             );
                         }
                     }
+                    Some(Route::Listing { reply, body }) => {
+                        let failed = answer.is_err();
+                        if let Some(reply) = reply {
+                            let _ = reply.send(answer);
+                        }
+                        // A phase that failed sends no listing.
+                        if !failed {
+                            routes
+                                .open
+                                .insert(frame.id, Route::Listing { reply: None, body });
+                        }
+                    }
                     // The caller gave up on it; nobody is waiting.
                     None => {}
                 }
                 Ok(())
             }
             Kind::Chunk | Kind::End | Kind::Fail => {
-                let (piece, settled) = match frame.kind {
-                    Kind::Chunk => (Piece::Chunk(frame.payload), None),
-                    Kind::End => {
-                        let now = wire::decode::<OnDisk>(&frame.payload).map_err(|error| {
+                let Frame { kind, id, payload } = frame;
+                let mut routes = self.routes();
+                let (body, read) = match routes.open.get(&id) {
+                    Some(Route::Read { body, .. }) => (body, true),
+                    Some(Route::Listing { body, .. }) => (body, false),
+                    // A body frame for an exchange nobody waits on.
+                    Some(Route::Reply(_)) | None => return Ok(()),
+                };
+                let (piece, settled) = match kind {
+                    Kind::Chunk => (Piece::Chunk(payload), None),
+                    // A read's end says what the file was once read; a
+                    // listing's says nothing.
+                    Kind::End if read => {
+                        let now = wire::decode::<OnDisk>(&payload).map_err(|error| {
                             LinkError::Protocol(format!("an undecodable read end: {error}"))
                         })?;
                         (Piece::End, Some(now))
                     }
+                    Kind::End => (Piece::End, None),
                     _ => (
-                        Piece::Fail(wire::decode::<WireIo>(&frame.payload).map_err(|error| {
+                        Piece::Fail(wire::decode::<WireIo>(&payload).map_err(|error| {
                             LinkError::Protocol(format!("an undecodable body failure: {error}"))
                         })?),
                         None,
                     ),
                 };
-                let mut routes = self.routes();
-                if let Some(Route::Read { body, .. }) = routes.open.get(&frame.id) {
-                    let over = body
-                        .push(piece)
-                        .map_err(|_| LinkError::Protocol("a body frame past its credit".into()))?;
-                    if over
-                        && let Some(Route::Read { settle, .. }) = routes.open.remove(&frame.id)
-                        && let Some(now) = settled
-                    {
-                        let _ = settle.send(now);
-                    }
+                let over = body
+                    .push(piece)
+                    .map_err(|_| LinkError::Protocol("a body frame past its credit".into()))?;
+                if over
+                    && let Some(Route::Read { settle, .. }) = routes.open.remove(&id)
+                    && let Some(now) = settled
+                {
+                    let _ = settle.send(now);
                 }
                 Ok(())
             }
@@ -454,36 +564,68 @@ impl Replica for RemoteReplica {
 
     async fn open_scan(&self, rules: &RuleSet) -> Result<OpenedScan, ReplicaError> {
         let _all = self.window.barrier().await;
-        match self.call(Request::OpenScan(rules.clone())).await? {
-            Reply::Scan(changed) => Ok(OpenedScan {
-                changed,
-                next: DigestTicket::issue(),
-            }),
-            _ => Err(unexpected("open_scan")),
+        let (id, answer, mut listing) = self.open_listing::<ScanItem>()?;
+        let request = Request::OpenScan(rules.clone());
+        self.link
+            .send(Frame::new(Kind::Request, id, wire::encode(&request)))
+            .await?;
+        let Reply::Scan { tally, naming } = self.link.answer(answer).await? else {
+            return Err(unexpected("open_scan"));
+        };
+        let (mut entries, mut skipped) = (Vec::new(), Vec::new());
+        while let Some(page) = self.link.listed(listing.next_page().await)? {
+            for item in page {
+                match item {
+                    ScanItem::Entry(entry) => entries.push(entry),
+                    ScanItem::Skipped(path) => skipped.push(path),
+                }
+            }
         }
+        Ok(OpenedScan {
+            changed: ChangedScan {
+                entries,
+                skipped,
+                tally,
+                naming,
+            },
+            next: DigestTicket::issue(),
+        })
     }
 
     async fn scan_digests(
         &self,
         _ticket: DigestTicket,
         count: BucketCount,
-        peer_changed: &[RelPath],
+        peer_changed: Listing<RelPath>,
     ) -> Result<DigestedScan, ReplicaError> {
         let _all = self.window.barrier().await;
-        let request = Request::ScanDigests {
-            count: count.get(),
-            peer_changed: peer_changed.to_vec(),
+        let (id, answer, mut listing) = self.open_listing::<DigestItem>()?;
+        let credit = self.link.credits.open(id);
+        let request = Request::ScanDigests { count: count.get() };
+        self.link
+            .send(Frame::new(Kind::Request, id, wire::encode(&request)))
+            .await?;
+        let reply = self.send_listing(id, &credit, peer_changed, answer).await?;
+        let Reply::Digests = reply else {
+            return Err(unexpected("scan_digests"));
         };
-        match self.call(request).await? {
-            Reply::Digests { digests, owed } if digests.len() == count.get() as usize => {
-                Ok(DigestedScan {
-                    digests: BucketDigests::from_digests(digests),
-                    owed,
-                    next: BucketTicket::issue(),
-                })
+        let (mut digests, mut owed) = (Vec::new(), Vec::new());
+        while let Some(page) = self.link.listed(listing.next_page().await)? {
+            for item in page {
+                match item {
+                    DigestItem::Digest(digest) => digests.push(digest),
+                    DigestItem::Owed(entry) => owed.push(entry),
+                }
             }
-            _ => Err(unexpected("scan_digests")),
         }
+        if digests.len() != count.get() as usize {
+            return Err(unexpected("scan_digests"));
+        }
+        Ok(DigestedScan {
+            digests: BucketDigests::from_digests(digests),
+            owed,
+            next: BucketTicket::issue(),
+        })
     }
 
     async fn scan_buckets(
@@ -492,11 +634,21 @@ impl Replica for RemoteReplica {
         buckets: &[Bucket],
     ) -> Result<Vec<ScanEntry>, ReplicaError> {
         let _all = self.window.barrier().await;
-        let indices = buckets.iter().map(|bucket| bucket.index()).collect();
-        match self.call(Request::ScanBuckets(indices)).await? {
-            Reply::Buckets(entries) => Ok(entries),
-            _ => Err(unexpected("scan_buckets")),
-        }
+        let (id, answer, listing) = self.open_listing::<ScanEntry>()?;
+        let credit = self.link.credits.open(id);
+        self.link
+            .send(Frame::new(
+                Kind::Request,
+                id,
+                wire::encode(&Request::ScanBuckets),
+            ))
+            .await?;
+        let indices = Listing::from_vec(buckets.iter().map(|bucket| bucket.index()).collect());
+        let reply = self.send_listing(id, &credit, indices, answer).await?;
+        let Reply::Buckets = reply else {
+            return Err(unexpected("scan_buckets"));
+        };
+        self.link.listed(listing.collect().await)
     }
 
     async fn read(&self, path: &RelPath) -> Result<Reading, ReplicaError> {
@@ -622,7 +774,10 @@ impl Replica for RemoteReplica {
             .window
             .enter(batch.iter().map(|commit| commit.path().clone()))
             .await;
-        done(self.call(Request::Commit(batch)).await?, "commit")
+        for part in commits_within(batch, MAX_REQUEST_BYTES as usize) {
+            done(self.call(Request::Commit(part)).await?, "commit")?;
+        }
+        Ok(())
     }
 
     async fn compact(&self) -> Result<(), ReplicaError> {
@@ -672,6 +827,28 @@ mod tests {
     use super::*;
     use crate::version_handshake::{PROTOCOL_VERSION, handshake_as};
     use crate::wire::WireError;
+
+    #[test]
+    fn a_commit_batch_splits_into_requests_that_each_fit_in_order() {
+        let commits: Vec<ArchiveCommit> = (0..100)
+            .map(|n| {
+                ArchiveCommit::Delete(
+                    RelPath::parse(&format!("{n:03}-{}", "x".repeat(96))).unwrap(),
+                )
+            })
+            .collect();
+        let most = 1024;
+        let parts = commits_within(commits.clone(), most);
+        assert!(parts.len() > 1, "{}", parts.len());
+        for part in &parts {
+            assert!(!part.is_empty());
+            assert!(wire::encode(&Request::Commit(part.clone())).len() <= most);
+        }
+        assert_eq!(parts.concat(), commits);
+        // One that fits stays one, and an empty batch is still asked.
+        assert_eq!(commits_within(commits.clone(), usize::MAX), [commits]);
+        assert_eq!(commits_within(Vec::new(), most), [Vec::new()]);
+    }
 
     /// The far side, speaking frames by hand.
     struct Peer {

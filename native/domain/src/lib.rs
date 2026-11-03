@@ -161,8 +161,8 @@ pub use run_record::{
 pub use run_summary::RunSummary;
 pub use scan_entry::{FileMeta, FileState, MTIME_WINDOW_US, ScanEntry, Status, Unchanged};
 pub use scan_exchange::{
-    Bucket, BucketCount, BucketCountMismatch, BucketDigests, Digested, UnchangedEntries,
-    status_list,
+    Bucket, BucketCount, BucketCountMismatch, BucketDigests, Digested, PeerChanged,
+    UnchangedEntries, status_list,
 };
 pub use scan_probe_report::{ScanProbeLayer, ScanProbeLayerResult, ScanProbePass, ScanProbeReport};
 pub use scan_result::ScanResult;

@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use dsync_core::{Replica, ReplicaError};
+use dsync_core::{Listing, Replica, ReplicaError};
 use dsync_domain::{
     ArchiveCommit, BucketCount, FileMeta, FileState, RuleSet, Side, Status, Unchanged,
     temp_name_for,
@@ -160,12 +160,16 @@ async fn a_ticket_only_opens_the_phase_of_the_replica_that_issued_it() {
         let opened = a.open_scan(&RuleSet::default()).await.unwrap();
         let count = BucketCount::for_entries(0);
         assert!(matches!(
-            b.scan_digests(opened.next, count, &[]).await,
+            b.scan_digests(opened.next, count, Listing::from_vec(Vec::new()))
+                .await,
             Err(ReplicaError::NoScan)
         ));
         // Positive control: the same step on the replica that scanned.
         let opened = a.open_scan(&RuleSet::default()).await.unwrap();
-        let digested = a.scan_digests(opened.next, count, &[]).await.unwrap();
+        let digested = a
+            .scan_digests(opened.next, count, Listing::from_vec(Vec::new()))
+            .await
+            .unwrap();
         assert!(
             a.scan_buckets(&digested.next, &[])
                 .await

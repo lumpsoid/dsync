@@ -6,7 +6,7 @@
 use std::io;
 use std::sync::atomic::Ordering;
 
-use dsync_core::{Body, FileOp, LockError, Replica, ReplicaError, Stage, body_channel};
+use dsync_core::{Body, FileOp, Listing, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, BucketCount, EntryId, Glob, Precondition, ReplicaRoot, RuleSet,
     Side, Status, Tuning,
@@ -209,6 +209,55 @@ async fn the_scan_applies_the_initiators_rules_on_the_far_side() {
         .map(|entry| entry.path.as_str())
         .collect();
     assert_eq!(paths, ["keep.txt"]);
+    served.close().await;
+}
+
+#[tokio::test]
+async fn every_scan_listing_past_a_body_s_credit_crosses_the_link_whole() {
+    // Long names, so each listing is several times the 256 KiB a body may
+    // send before its first grant.
+    const FILES: usize = 4_000;
+    let name = |n: usize| format!("{n:04}-{}", "x".repeat(200));
+    let site = Site::new();
+    for n in 0..FILES {
+        site.put(Side::B, &name(n), "f");
+    }
+    let served = Served::new(&site, Side::B).await;
+    let b = served.replica.as_ref();
+    with_deadline("hello", b.hello()).await.unwrap();
+    with_deadline("lock", b.lock()).await.unwrap();
+    let opened = with_deadline("open_scan", b.open_scan(&RuleSet::default()))
+        .await
+        .unwrap();
+    let mut scanned: Vec<_> = opened
+        .changed
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str().to_owned())
+        .collect();
+    scanned.sort();
+    assert_eq!(scanned, (0..FILES).map(name).collect::<Vec<_>>());
+
+    // The other side's paths, none of them held unchanged here.
+    let peer_changed = (0..FILES).map(|n| path(&format!("peer/{}", name(n))));
+    let count = BucketCount::for_entries(FILES);
+    let digested = with_deadline(
+        "digests",
+        b.scan_digests(
+            opened.next,
+            count,
+            Listing::from_vec(peer_changed.collect()),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(digested.digests.as_slice().len(), count.get() as usize);
+    assert!(digested.owed.is_empty());
+    let every: Vec<_> = (0..count.get()).filter_map(|n| count.bucket(n)).collect();
+    let fetched = with_deadline("buckets", b.scan_buckets(&digested.next, &every))
+        .await
+        .unwrap();
+    assert!(fetched.is_empty(), "{fetched:?}");
     served.close().await;
 }
 
@@ -478,7 +527,11 @@ async fn scan_tickets_are_checked_on_the_far_side() {
         .await
         .unwrap();
     let count = BucketCount::for_entries(1);
-    let refused = with_deadline("digests", b.scan_digests(foreign.next, count, &[])).await;
+    let refused = with_deadline(
+        "digests",
+        b.scan_digests(foreign.next, count, Listing::from_vec(Vec::new())),
+    )
+    .await;
     assert!(matches!(refused, Err(ReplicaError::NoScan)), "{refused:?}");
     // Its own exchange runs.
     let opened = with_deadline("open_scan", b.open_scan(&RuleSet::default()))
@@ -488,9 +541,12 @@ async fn scan_tickets_are_checked_on_the_far_side() {
         opened.changed.entries[0].status,
         Status::Created(_)
     ));
-    let digested = with_deadline("digests", b.scan_digests(opened.next, count, &[]))
-        .await
-        .unwrap();
+    let digested = with_deadline(
+        "digests",
+        b.scan_digests(opened.next, count, Listing::from_vec(Vec::new())),
+    )
+    .await
+    .unwrap();
     assert_eq!(digested.digests.as_slice().len(), 1);
     served.close().await;
 }

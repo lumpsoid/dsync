@@ -13,7 +13,8 @@
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use dsync_domain::{Bucket, BucketCount, RelPath, ReplicaSpec, Tuning};
+use dsync_domain::{Bucket, BucketCount, ChangedScan, RelPath, ReplicaSpec, Tuning};
+use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
@@ -23,6 +24,7 @@ use crate::credit::{self, Credits};
 use crate::frame::{Frame, FrameError, Kind};
 use crate::inbound::{Dropped, Inbound, Piece};
 use crate::link_error::LinkError;
+use crate::listing::{Listing, ListingWriter};
 use crate::remote_replica::silent_if_timed_out;
 use crate::replica::{BucketTicket, DigestTicket, Replica};
 use crate::replica_error::ReplicaError;
@@ -31,7 +33,7 @@ use crate::transport::{
     Liveness, Outbox, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
 use crate::version_handshake::handshake;
-use crate::wire::{self, Answer, Reply, Request, WireError, WireIo};
+use crate::wire::{self, Answer, DigestItem, Reply, Request, ScanItem, WireError, WireIo};
 
 /// Serves replicas opened by `open`, one per session.
 ///
@@ -303,14 +305,32 @@ impl<R: Replica> Served<R> {
                 .await
                 .map(|()| Reply::Unlocked(replica.write_stats().map(Box::new))),
             Request::CreateRoot => replica.create_root().await.map(|()| Reply::Done),
-            Request::OpenScan(rules) => replica.open_scan(&rules).await.map(|opened| {
-                self.set_scan(ServedScan::Opened(opened.next));
-                Reply::Scan(opened.changed)
-            }),
-            Request::ScanDigests {
-                count,
-                peer_changed,
-            } => {
+            Request::OpenScan(rules) => {
+                let opened = replica.open_scan(&rules).await.map(|opened| {
+                    self.set_scan(ServedScan::Opened(opened.next));
+                    let ChangedScan {
+                        entries,
+                        skipped,
+                        tally,
+                        naming,
+                    } = opened.changed;
+                    let items = entries
+                        .into_iter()
+                        .map(ScanItem::Entry)
+                        .chain(skipped.into_iter().map(ScanItem::Skipped));
+                    (Reply::Scan { tally, naming }, items)
+                });
+                return self.reply_listed(id, opened).await;
+            }
+            Request::ScanDigests { count } => {
+                let Some(body) = body else {
+                    return reply(
+                        &self.outbox,
+                        id,
+                        Err(protocol("digests without their paths")),
+                    )
+                    .await;
+                };
                 let Some(count) = BucketCount::new(count) else {
                     let why = format!(
                         "a bucket count of {count}, outside 1..={}",
@@ -323,18 +343,29 @@ impl<R: Replica> Served<R> {
                     ServedScan::Opened(ticket) => ticket,
                     _ => return reply(&self.outbox, id, Err(WireError::NoScan)).await,
                 };
-                replica
-                    .scan_digests(ticket, count, &peer_changed)
+                let digested = replica
+                    .scan_digests(ticket, count, Listing::arriving(body))
                     .await
                     .map(|digested| {
                         self.set_scan(ServedScan::Digested(digested.next, count));
-                        Reply::Digests {
-                            digests: digested.digests.as_slice().to_vec(),
-                            owed: digested.owed,
-                        }
-                    })
+                        let digests = digested.digests.as_slice().to_vec();
+                        let items = digests
+                            .into_iter()
+                            .map(DigestItem::Digest)
+                            .chain(digested.owed.into_iter().map(DigestItem::Owed));
+                        (Reply::Digests, items)
+                    });
+                return self.reply_listed(id, digested).await;
             }
-            Request::ScanBuckets(indices) => {
+            Request::ScanBuckets => {
+                let Some(body) = body else {
+                    return reply(
+                        &self.outbox,
+                        id,
+                        Err(protocol("buckets without their indices")),
+                    )
+                    .await;
+                };
                 let taken = self.take_scan();
                 let (ticket, count) = match taken {
                     ServedScan::Digested(ticket, count) => (ticket, count),
@@ -343,18 +374,13 @@ impl<R: Replica> Served<R> {
                         return reply(&self.outbox, id, Err(WireError::NoScan)).await;
                     }
                 };
-                let buckets: Option<Vec<Bucket>> = indices
-                    .into_iter()
-                    .map(|index| count.bucket(index))
-                    .collect();
-                let answer = match buckets {
-                    Some(buckets) => replica.scan_buckets(&ticket, &buckets).await,
-                    None => Err(ReplicaError::Link(LinkError::Protocol(
-                        "a bucket out of range".into(),
-                    ))),
+                let entries = match asked_buckets(Listing::arriving(body), count).await {
+                    Ok(buckets) => replica.scan_buckets(&ticket, &buckets).await,
+                    Err(error) => Err(error),
                 };
                 self.set_scan(ServedScan::Digested(ticket, count));
-                answer.map(Reply::Buckets)
+                let entries = entries.map(|entries| (Reply::Buckets, entries));
+                return self.reply_listed(id, entries).await;
             }
             Request::Read(path) => {
                 // Taken before the replica starts the read's blocking
@@ -397,6 +423,30 @@ impl<R: Replica> Served<R> {
         reply(&self.outbox, id, answer.map_err(WireError::from)).await;
     }
 
+    /// The reply and its listing, or the failure.
+    async fn reply_listed<T: Serialize>(
+        &self,
+        id: u32,
+        listed: Result<(Reply, impl IntoIterator<Item = T>), ReplicaError>,
+    ) {
+        let (header, items) = match listed {
+            Ok(listed) => listed,
+            Err(error) => return reply(&self.outbox, id, Err(error.into())).await,
+        };
+        // Open before the reply, so no grant can arrive ahead of it.
+        let credit = self.credits.open(id);
+        reply(&self.outbox, id, Ok(header)).await;
+        let mut listing = ListingWriter::new(&self.outbox, id, &credit);
+        for item in items {
+            // Only the connection closing stops a listing: the client
+            // never cancels one.
+            if listing.put(&item).await.is_err() {
+                return;
+            }
+        }
+        let _ = listing.end().await;
+    }
+
     /// Opens `path` and sends its body as it is read, or the failure.
     async fn serve_read(&self, id: u32, path: &RelPath) {
         let reading = match self.replica.read(path).await {
@@ -416,6 +466,27 @@ async fn reply(outbox: &Outbox, id: u32, answer: Answer) {
     let _ = outbox
         .send(Frame::new(Kind::Reply, id, wire::encode(&answer)))
         .await;
+}
+
+/// The buckets phase 3 asks for, each one of `count`'s and no more of
+/// them than it has.
+async fn asked_buckets(
+    mut indices: Listing<u32>,
+    count: BucketCount,
+) -> Result<Vec<Bucket>, ReplicaError> {
+    let out_of_range = || ReplicaError::Link(LinkError::Protocol("a bucket out of range".into()));
+    let mut buckets = Vec::new();
+    while let Some(page) = indices.next_page().await? {
+        for index in page {
+            buckets.push(count.bucket(index).ok_or_else(out_of_range)?);
+        }
+        if buckets.len() > count.get() as usize {
+            return Err(ReplicaError::Link(LinkError::Protocol(
+                "more buckets than the count has".into(),
+            )));
+        }
+    }
+    Ok(buckets)
 }
 
 fn protocol(what: &str) -> WireError {
@@ -494,7 +565,7 @@ async fn route_requests<R: AsyncRead + Unpin>(
                 let request = wire::decode::<Request>(&frame.payload);
                 // The body's route opens before the next frame is read, so
                 // none of the body can arrive ahead of it.
-                let body = matches!(request, Ok(Request::Write { .. })).then(|| {
+                let body = matches!(&request, Ok(request) if request.has_body()).then(|| {
                     let (inbound, body) =
                         Inbound::open(outbox.clone(), frame.id, (), Dropped::Release);
                     bodies.insert(frame.id, inbound);
@@ -599,6 +670,43 @@ mod tests {
                 .unwrap();
             assert_eq!((frame.kind, frame.id), (Kind::Reply, id));
             wire::decode(&frame.payload).unwrap()
+        }
+
+        /// Asks `request`, sending `listing` as its body when given, and
+        /// the answer with the listing that follows it, granting its
+        /// credit as it arrives.
+        async fn ask_listed(
+            &mut self,
+            request: &Request,
+            listing: Option<Vec<u8>>,
+        ) -> (Answer, Vec<u8>) {
+            let id = self.send_raw(Kind::Request, wire::encode(request)).await;
+            if let Some(listing) = listing {
+                if !listing.is_empty() {
+                    self.send_to(Kind::Chunk, id, listing).await;
+                }
+                self.send_to(Kind::End, id, Vec::new()).await;
+            }
+            let frame = self.next().await;
+            assert_eq!((frame.kind, frame.id), (Kind::Reply, id));
+            let answer: Answer = wire::decode(&frame.payload).unwrap();
+            let mut listed = Vec::new();
+            if answer.is_err() {
+                return (answer, listed);
+            }
+            loop {
+                let frame = self.next().await;
+                assert_eq!(frame.id, id);
+                match frame.kind {
+                    Kind::Chunk => {
+                        let grant = crate::credit::grant_frame(id, frame.payload.len());
+                        self.send_to(Kind::Credit, id, grant.payload).await;
+                        listed.extend(frame.payload);
+                    }
+                    Kind::End => return (answer, listed),
+                    other => panic!("a {other:?} frame in a listing"),
+                }
+            }
         }
 
         async fn send_to(&mut self, kind: Kind, id: u32, payload: Vec<u8>) {
@@ -870,18 +978,15 @@ mod tests {
             client.ask(&Request::Lock).await,
             Ok(Reply::Locked(_))
         ));
-        assert!(matches!(
-            client.ask(&Request::OpenScan(RuleSet::default())).await,
-            Ok(Reply::Scan(_))
-        ));
+        let (scan, _) = client
+            .ask_listed(&Request::OpenScan(RuleSet::default()), None)
+            .await;
+        assert!(matches!(scan, Ok(Reply::Scan { .. })), "{scan:?}");
 
         // u32::MAX buckets would be a ~100 GB allocation: refused unread.
         for count in [u32::MAX, BucketCount::MAX + 1] {
-            let refused = client
-                .ask(&Request::ScanDigests {
-                    count,
-                    peer_changed: Vec::new(),
-                })
+            let (refused, _) = client
+                .ask_listed(&Request::ScanDigests { count }, Some(Vec::new()))
                 .await;
             assert!(
                 matches!(&refused, Err(WireError::Protocol(why)) if why.contains("bucket count")),
@@ -890,20 +995,74 @@ mod tests {
         }
 
         // The session and its open scan survive: the cap itself is served.
-        let digests = client
-            .ask(&Request::ScanDigests {
-                count: BucketCount::MAX,
-                peer_changed: Vec::new(),
-            })
+        let (digests, listed) = client
+            .ask_listed(
+                &Request::ScanDigests {
+                    count: BucketCount::MAX,
+                },
+                Some(Vec::new()),
+            )
             .await;
+        assert_eq!(digests, Ok(Reply::Digests));
+        let digests = items::<DigestItem>(&listed);
+        assert_eq!(digests.len(), BucketCount::MAX as usize);
         assert!(
-            matches!(&digests, Ok(Reply::Digests { digests, .. })
-                if digests.len() == BucketCount::MAX as usize),
-            "{:?}",
             digests
-                .as_ref()
-                .map(|_| "a reply that is not the cap's digests")
+                .iter()
+                .all(|item| matches!(item, DigestItem::Digest(_)))
         );
+        drop(client);
+        within(DEADLINE, serving).await.unwrap().unwrap();
+    }
+
+    /// A listing's items, decoded.
+    fn items<T: serde::de::DeserializeOwned>(mut listed: &[u8]) -> Vec<T> {
+        let mut items = Vec::new();
+        while !listed.is_empty() {
+            let (item, rest) = postcard::take_from_bytes(listed).unwrap();
+            items.push(item);
+            listed = rest;
+        }
+        items
+    }
+
+    fn listing<T: Serialize>(items: &[T]) -> Vec<u8> {
+        items.iter().flat_map(wire::encode).collect()
+    }
+
+    #[tokio::test]
+    async fn bucket_listings_past_the_count_or_out_of_its_range_are_refused() {
+        let site = Site::new();
+        let (mut client, serving) = site.serve(None).await;
+        client.ask(&Request::Hello(site.spec())).await.unwrap();
+        client.ask(&Request::Lock).await.unwrap();
+        let (scan, _) = client
+            .ask_listed(&Request::OpenScan(RuleSet::default()), None)
+            .await;
+        assert!(scan.is_ok(), "{scan:?}");
+        let (digests, _) = client
+            .ask_listed(&Request::ScanDigests { count: 2 }, Some(Vec::new()))
+            .await;
+        assert!(digests.is_ok(), "{digests:?}");
+
+        for (indices, saying) in [
+            (vec![0u32, 1, 0], "more buckets than the count"),
+            (vec![2], "out of range"),
+        ] {
+            let (refused, _) = client
+                .ask_listed(&Request::ScanBuckets, Some(listing(&indices)))
+                .await;
+            assert!(
+                matches!(&refused, Err(WireError::Protocol(why)) if why.contains(saying)),
+                "{indices:?}: {refused:?}"
+            );
+        }
+        // The control: every bucket once is served.
+        let (buckets, listed) = client
+            .ask_listed(&Request::ScanBuckets, Some(listing(&[0u32, 1])))
+            .await;
+        assert_eq!(buckets, Ok(Reply::Buckets));
+        assert!(items::<ScanEntry>(&listed).is_empty());
         drop(client);
         within(DEADLINE, serving).await.unwrap().unwrap();
     }
@@ -1384,7 +1543,7 @@ mod tests {
             &self,
             ticket: DigestTicket,
             count: BucketCount,
-            peer_changed: &[RelPath],
+            peer_changed: Listing<RelPath>,
         ) -> Result<DigestedScan, ReplicaError> {
             self.inner.scan_digests(ticket, count, peer_changed).await
         }

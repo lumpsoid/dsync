@@ -178,6 +178,15 @@ impl UnchangedEntries {
         self.0.is_empty()
     }
 
+    /// The peer's changed paths as phase 2 needs them, noted one at a time
+    /// as they arrive.
+    pub fn peer_changed(&self) -> PeerChanged<'_> {
+        PeerChanged {
+            unchanged: self.0.iter().map(|entry| &entry.path).collect(),
+            kept: Vec::new(),
+        }
+    }
+
     /// Phase 2: digests over these entries minus the paths the peer just
     /// reported changed, and this side's own entries for exactly those
     /// paths, owed outright.
@@ -199,6 +208,29 @@ impl UnchangedEntries {
             owed,
             digested,
         }
+    }
+}
+
+/// The paths a peer reported changed that phase 2 subtracts: only those
+/// this side holds unchanged, once each. A path it does not hold
+/// unchanged changes neither its digests nor what it owes, so however long
+/// the peer's list, keeping it costs no more than this side's own entries.
+#[derive(Debug)]
+pub struct PeerChanged<'a> {
+    unchanged: HashSet<&'a RelPath>,
+    kept: Vec<RelPath>,
+}
+
+impl PeerChanged<'_> {
+    pub fn note(&mut self, path: RelPath) {
+        if self.unchanged.remove(&path) {
+            self.kept.push(path);
+        }
+    }
+
+    /// What [`UnchangedEntries::digest`] subtracts.
+    pub fn into_paths(self) -> Vec<RelPath> {
+        self.kept
     }
 }
 

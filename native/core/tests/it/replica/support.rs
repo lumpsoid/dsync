@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use dsync_core::{
-    ArchiveHeader, ArchiveStore, Body, LocalReplica, Replica, StateDir, body_channel,
+    ArchiveHeader, ArchiveStore, Body, Listing, LocalReplica, Replica, StateDir, body_channel,
 };
 use dsync_domain::{
     Action, Archive, ArchiveCommit, BucketCount, ContentHash, EntryId, FileMeta, FileState, Jobs,
@@ -321,11 +321,19 @@ pub async fn exchange(a: &impl Replica, b: &impl Replica) -> Exchanged {
             .max(opened_b.changed.tally.total()),
     );
     let digested_a = a
-        .scan_digests(opened_a.next, count, &opened_b.changed.paths())
+        .scan_digests(
+            opened_a.next,
+            count,
+            Listing::from_vec(opened_b.changed.paths()),
+        )
         .await
         .unwrap();
     let digested_b = b
-        .scan_digests(opened_b.next, count, &opened_a.changed.paths())
+        .scan_digests(
+            opened_b.next,
+            count,
+            Listing::from_vec(opened_a.changed.paths()),
+        )
         .await
         .unwrap();
     let disagreeing = digested_a

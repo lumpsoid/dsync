@@ -8,6 +8,7 @@ use dsync_domain::{
 };
 
 use crate::body::Body;
+use crate::listing::Listing;
 use crate::local_replica::LocalReplica;
 use crate::remote_replica::RemoteReplica;
 use crate::replica::{BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica};
@@ -53,7 +54,7 @@ impl Replica for AnyReplica {
         &self,
         ticket: DigestTicket,
         count: BucketCount,
-        peer_changed: &[RelPath],
+        peer_changed: Listing<RelPath>,
     ) -> Result<DigestedScan, ReplicaError> {
         delegate!(self.scan_digests(ticket, count, peer_changed))
     }

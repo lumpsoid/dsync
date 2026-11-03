@@ -27,15 +27,13 @@ pub(crate) const HEADER_BYTES: usize = 9;
 /// (SPEC §4.2).
 pub(crate) const MAX_VERSION_BYTES: u32 = 1024;
 
-/// A reply carries a scan phase's listing (`Scan`, `Digests`, `Buckets`):
-/// a million-file tree's is a few tens of MiB, so this fits a tree of
-/// several million more. A listing is one reply, not paged.
-pub(crate) const MAX_REPLY_BYTES: u32 = 1024 * 1024 * 1024;
+/// A request or reply carries no listing - a scan phase's follows it as
+/// a body ([`crate::listing`]) - so its largest is a commit batch, which
+/// the initiator splits to fit ([`crate::remote_replica`]), or a path or
+/// two and an error's message.
+pub(crate) const MAX_REQUEST_BYTES: u32 = 256 * 1024;
 
-/// A request cannot be small either: `ScanDigests` carries the other
-/// side's changed paths, every path of a tree on its first sync. Paths
-/// alone are about half of the same tree's scan reply.
-pub(crate) const MAX_REQUEST_BYTES: u32 = MAX_REPLY_BYTES / 2;
+pub(crate) const MAX_REPLY_BYTES: u32 = 256 * 1024;
 
 /// No chunk is past its body's credit, so none is past the whole credit.
 pub(crate) const MAX_CHUNK_BYTES: u32 = STREAM_CREDIT_BYTES as u32;
@@ -428,15 +426,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_scan_sized_reply_past_the_old_global_limit_is_taken() {
-        // A tree whose listing is past the 512 MiB every kind once shared.
-        let old_limit = 512 * 1024 * 1024;
-        assert!(MAX_REPLY_BYTES > old_limit);
-        let read = read_header_only(Kind::Reply, old_limit + 1, Duration::from_millis(50)).await;
-        assert!(read.is_none(), "{read:?}");
-    }
-
-    #[tokio::test]
     async fn every_kind_round_trips_with_its_id_even_past_a_signed_int() {
         let frames: Vec<Frame> = Kind::ALL
             .into_iter()
@@ -475,8 +464,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decodes_a_multi_megabyte_frame() {
-        let frame = Frame::new(Kind::Reply, 1, vec![3; 16 * 1024 * 1024]);
+    async fn decodes_a_frame_at_its_kind_s_cap() {
+        let frame = Frame::new(Kind::Reply, 1, vec![3; MAX_REPLY_BYTES as usize]);
         let bytes = frame.encode().unwrap();
         let mut reader = BufReader::new(bytes.as_slice());
         assert_eq!(read(&mut reader).await.unwrap(), Some(frame));
