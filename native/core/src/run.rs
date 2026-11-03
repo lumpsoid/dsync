@@ -33,7 +33,7 @@ use std::time::Instant;
 use dsync_domain::{
     Action, BucketCount, ChangedScan, EffectiveOptions, Plan, ReplicaInfo, ReplicaOp, RuleSet,
     RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side, SkippedPath,
-    StopSignal, Tuning, failure_count, reconcile, status_list, unreadable_of,
+    StopSignal, Tuning, UnfinishedApply, failure_count, reconcile, status_list, unreadable_of,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -312,16 +312,20 @@ impl Run {
         // read it.
         let info_a = ReplicaInfo::new(root_a, archive_a);
         let info_b = ReplicaInfo::new(root_b, archive_b);
-        let last_run_unfinished = marker_present(marker).await;
+        let unfinished = marker_read(marker).await;
         self.events
             .emit(RunEvent::Replicas {
                 a: info_a.clone(),
                 b: info_b.clone(),
-                last_run_unfinished,
+                last_run_unfinished: unfinished.is_some(),
             })
             .await;
+        let marked = Marked {
+            path: marker,
+            unfinished: unfinished.unwrap_or_default(),
+        };
         let summary = match self
-            .locked(pair, [&info_a, &info_b], options, decider, marker)
+            .locked(pair, [&info_a, &info_b], options, decider, marked)
             .await
         {
             Ok(summary) => Some(summary),
@@ -353,7 +357,7 @@ impl Run {
         infos: [&ReplicaInfo; 2],
         options: &EffectiveOptions,
         decider: &mut impl Decider,
-        marker: &Path,
+        marker: Marked<'_>,
     ) -> Result<RunSummary, RunError> {
         // Both sides are judged before either is created, so a refusal of
         // one leaves the other as it was (SPEC §4.5).
@@ -393,11 +397,13 @@ impl Run {
         // needs a status from both (SPEC §6).
         let skipped = || a.skipped.iter().chain(&b.skipped);
         let unreadable = failure_count(skipped());
+        let unreadable_paths = unreadable_of(skipped());
         let reconciling = Instant::now();
         let plan = reconcile(
             a.list.clone(),
             b.list.clone(),
-            &unreadable_of(skipped()),
+            &unreadable_paths,
+            &marker.unfinished,
             options.kind(),
         );
         pair.clock
@@ -419,8 +425,13 @@ impl Run {
         for action in &kept {
             self.events.emit(RunEvent::Action(action.clone())).await;
         }
+        // The writes still held stay recorded beside this apply's: were it
+        // to die too, a path held back now must still be held back next
+        // time.
+        let recorded = marker.unfinished.adding(&kept);
         if !kept.is_empty() {
-            marker_io(marker, RunMarker::create).await?;
+            let writes = recorded.clone();
+            marker_io(marker.path, move |at| at.create(&writes)).await?;
         }
         let applier = Applier::new(
             pair,
@@ -439,10 +450,28 @@ impl Run {
         if let Some(fatal) = applied.fatal {
             return Err(fatal);
         }
-        // Failed actions or not: the next run sorts out what a failed
-        // write left, and the marker only says the run died. A plan with
-        // nothing to apply clears a stale one here.
-        marker_io(marker, RunMarker::delete).await?;
+        // The apply returned, so this apply's own writes each landed whole,
+        // failed leaving their target as it was, or were never started
+        // (SPEC §7.2): none of them is held. What stays held is the
+        // earlier dead apply's writes this run did not settle. A run that
+        // applied nothing - a dry run, a stopped review, conflicts left
+        // open - settles only what is quiet, so a path it held back stays
+        // held for the next. Settling by action needs every one applied:
+        // the applier reports counts, not which failed or which a stop
+        // left unattempted.
+        let settled: &[Action] = if applied.applied == kept.len() {
+            &kept
+        } else {
+            &[]
+        };
+        let held = marker
+            .unfinished
+            .still_held(&plan, &unreadable_paths, settled);
+        if held.is_empty() {
+            marker_io(marker.path, RunMarker::delete).await?;
+        } else if held != recorded {
+            marker_io(marker.path, move |at| at.create(&held)).await?;
+        }
         // SPEC §8.2: a run that committed nothing does not compact.
         if applied.applied > 0 {
             for side in Side::BOTH {
@@ -604,18 +633,28 @@ fn scanned(changed: ChangedScan, owed: Vec<ScanEntry>, fetched: Vec<ScanEntry>) 
     }
 }
 
-/// Whether the marker was left by a run that never finished its apply. A
-/// marker that cannot be read is reported absent: it is a warning, not a
-/// reason to stop.
-async fn marker_present(path: &Path) -> bool {
+/// The run marker's path, and what it said when the run read it.
+struct Marked<'a> {
+    path: &'a Path,
+    unfinished: UnfinishedApply,
+}
+
+/// What the run that left the marker was writing when its apply died;
+/// `None` when the last apply finished. A marker that cannot be read is
+/// reported absent: it is a warning, not a reason to stop.
+async fn marker_read(path: &Path) -> Option<UnfinishedApply> {
     let marker = RunMarker::new(path.to_path_buf());
-    tokio::task::spawn_blocking(move || marker.is_present().unwrap_or(false))
+    tokio::task::spawn_blocking(move || marker.read().ok().flatten())
         .await
-        .unwrap_or(false)
+        .ok()
+        .flatten()
 }
 
 /// Creates or deletes the marker, off the runtime's threads (it fsyncs).
-async fn marker_io(path: &Path, op: fn(&RunMarker) -> io::Result<()>) -> Result<(), RunError> {
+async fn marker_io(
+    path: &Path,
+    op: impl FnOnce(&RunMarker) -> io::Result<()> + Send + 'static,
+) -> Result<(), RunError> {
     let marker = RunMarker::new(path.to_path_buf());
     let failed = |source: io::Error| RunError::Marker {
         path: PathBuf::from(path),

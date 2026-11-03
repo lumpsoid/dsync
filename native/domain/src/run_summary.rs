@@ -62,6 +62,7 @@ impl RunSummary {
 mod tests {
     use super::*;
     use crate::conflict::Conflict;
+    use crate::conflict_cause::ConflictCause;
     use crate::proposal::Proposal;
     use crate::root_kind::RootKind;
     use crate::side::Side;
@@ -96,6 +97,7 @@ mod tests {
                 a: None,
                 b: None,
                 root_kind: RootKind::Folder,
+                cause: ConflictCause::Changes,
             }],
         }
     }
@@ -153,6 +155,7 @@ mod tests {
             a: None,
             b: None,
             root_kind: RootKind::Folder,
+            cause: ConflictCause::Changes,
         });
         let mut kept = all(&plan);
         kept.push(Action::Delete {

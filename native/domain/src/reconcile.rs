@@ -4,12 +4,14 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::action::Action;
 use crate::conflict::Conflict;
+use crate::conflict_cause::ConflictCause;
 use crate::plan::Plan;
 use crate::proposal::Proposal;
 use crate::rel_path::RelPath;
 use crate::root_kind::RootKind;
 use crate::scan_entry::{FileState, ScanEntry, Status, Unchanged};
 use crate::side::Side;
+use crate::unfinished_apply::UnfinishedApply;
 use crate::unreadable_paths::UnreadablePaths;
 
 #[cfg(test)]
@@ -29,12 +31,20 @@ mod tests;
 /// unreadable side's silence would otherwise read as "never seen" and
 /// mirror the other side's copy over a file the tool never looked at.
 ///
+/// `unfinished` is what the last run's apply was writing when it died
+/// (SPEC §7.6), empty when it finished: a change the table would
+/// propagate *from* a side where that apply was writing the path is made a
+/// conflict instead ([`ConflictCause::UnfinishedWrite`]), since it may be
+/// the write's damage. A change that agrees with the other side (same
+/// hash, or both gone) is the write having landed, and still only commits.
+///
 /// `root_kind` is the entry's: each conflict carries it, for what it can
 /// offer ([`Conflict::offers`]).
 pub fn reconcile(
     a: Vec<ScanEntry>,
     b: Vec<ScanEntry>,
     unreadable: &UnreadablePaths,
+    unfinished: &UnfinishedApply,
     root_kind: RootKind,
 ) -> Plan {
     let a = by_path(a);
@@ -56,21 +66,30 @@ pub fn reconcile(
             continue;
         }
         let (on_a, on_b) = (a.get(path), b.get(path));
-        let conflict = || Conflict {
+        let conflict = |cause| Conflict {
             path: path.clone(),
             a: on_a.copied(),
             b: on_b.copied(),
             root_kind,
+            cause,
         };
         // A file on one side and a directory with files on the other.
         if is_file_vs_dir(on_a, path, &dirs_b) || is_file_vs_dir(on_b, path, &dirs_a) {
-            plan.conflicts.push(conflict());
+            plan.conflicts.push(conflict(ConflictCause::Changes));
             continue;
         }
-        let action = match resolve(seen(on_a), seen(on_b)) {
+        let verdict = resolve(seen(on_a), seen(on_b));
+        if let Some(side) = verdict.propagates_from()
+            && unfinished.covers(side, path)
+        {
+            plan.conflicts
+                .push(conflict(ConflictCause::UnfinishedWrite(side)));
+            continue;
+        }
+        let action = match verdict {
             Verdict::Nothing => continue,
             Verdict::Conflict => {
-                plan.conflicts.push(conflict());
+                plan.conflicts.push(conflict(ConflictCause::Changes));
                 continue;
             }
             Verdict::CommitOnly => Action::CommitOnly { path: path.clone() },
@@ -97,6 +116,18 @@ enum Verdict<'a> {
     DeleteOn(Side),
     CommitOnly,
     Conflict,
+}
+
+impl Verdict<'_> {
+    /// The side whose change this verdict carries to the other: a copy's
+    /// source, or the side a delete propagates from.
+    fn propagates_from(self) -> Option<Side> {
+        match self {
+            Verdict::CopyFrom(from, _) => Some(from),
+            Verdict::DeleteOn(on) => Some(on.other()),
+            Verdict::Nothing | Verdict::CommitOnly | Verdict::Conflict => None,
+        }
+    }
 }
 
 /// What one side says about a path, `Silent` when it has no entry. Flat so

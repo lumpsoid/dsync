@@ -67,7 +67,23 @@ fn entry(p: &str, kind: Kind) -> ScanEntry {
 }
 
 fn run(a: Vec<ScanEntry>, b: Vec<ScanEntry>) -> Plan {
-    reconcile(a, b, &UnreadablePaths::default(), RootKind::Folder)
+    reconcile(
+        a,
+        b,
+        &UnreadablePaths::default(),
+        &UnfinishedApply::default(),
+        RootKind::Folder,
+    )
+}
+
+fn after_unfinished(a: Vec<ScanEntry>, b: Vec<ScanEntry>, unfinished: &UnfinishedApply) -> Plan {
+    reconcile(
+        a,
+        b,
+        &UnreadablePaths::default(),
+        unfinished,
+        RootKind::Folder,
+    )
 }
 
 fn unreadable(roots: &[&str]) -> UnreadablePaths {
@@ -506,7 +522,13 @@ fn a_path_one_side_could_not_read_gets_no_action() {
         Some(Act::CopyBtoA)
     );
 
-    let plan = reconcile(vec![], b, &unreadable(&["f.txt"]), RootKind::Folder);
+    let plan = reconcile(
+        vec![],
+        b,
+        &unreadable(&["f.txt"]),
+        &UnfinishedApply::default(),
+        RootKind::Folder,
+    );
     assert_eq!(plan, Plan::default());
 }
 
@@ -516,7 +538,13 @@ fn nor_a_conflict() {
     let b = vec![hashed("f.txt", Kind::Modified, "b")];
     assert!(is_conflict(&run(a.clone(), b.clone()), "f.txt"));
 
-    let plan = reconcile(a, b, &unreadable(&["f.txt"]), RootKind::Folder);
+    let plan = reconcile(
+        a,
+        b,
+        &unreadable(&["f.txt"]),
+        &UnfinishedApply::default(),
+        RootKind::Folder,
+    );
     assert_eq!(plan, Plan::default());
 }
 
@@ -526,6 +554,7 @@ fn an_unreadable_directory_covers_everything_beneath_it() {
         vec![],
         vec![hashed("sub/inner.txt", Kind::Unchanged, "b")],
         &unreadable(&["sub"]),
+        &UnfinishedApply::default(),
         RootKind::Folder,
     );
     assert!(plan.actions.is_empty());
@@ -537,6 +566,7 @@ fn a_sibling_whose_name_merely_starts_with_an_unreadable_path_is_reconciled() {
         vec![],
         vec![sized("submarine.txt", Kind::Created, "b", 4)],
         &unreadable(&["sub"]),
+        &UnfinishedApply::default(),
         RootKind::Folder,
     );
     let paths: Vec<_> = plan
@@ -553,6 +583,7 @@ fn every_other_path_still_reconciles_normally() {
         vec![sized("ok.txt", Kind::Created, "a", 5)],
         vec![],
         &unreadable(&["locked.txt"]),
+        &UnfinishedApply::default(),
         RootKind::Folder,
     );
     assert_eq!(plan.actions.len(), 1);
@@ -599,6 +630,86 @@ fn a_path_beneath_a_file_on_either_side_is_left_to_that_conflict() {
         .map(|a| a.action.path().as_str())
         .collect();
     assert_eq!(actions, ["x"]);
+}
+
+// -- after an unfinished apply (SPEC §7.6) --
+
+/// The last run died while copying `f` from A onto B.
+fn died_writing_f_on_b() -> UnfinishedApply {
+    UnfinishedApply::of(&[Action::Copy {
+        path: path("f"),
+        from: Side::A,
+        bytes: 1,
+    }])
+}
+
+#[test]
+fn a_change_where_the_dead_apply_was_writing_is_a_conflict_not_propagated() {
+    for b in [
+        hashed("f", Kind::Modified, "cut-short"),
+        entry("f", Kind::Deleted),
+    ] {
+        let a = vec![hashed("f", Kind::Unchanged, "whole")];
+        // Without the fact the table propagates B's change onto A.
+        let plain = run(a.clone(), vec![b.clone()]);
+        assert!(plain.conflicts.is_empty(), "{plain:?}");
+        assert!(
+            matches!(
+                action_for(&plain, "f"),
+                Some(Act::CopyBtoA | Act::DeleteOnA)
+            ),
+            "{plain:?}"
+        );
+
+        let after = after_unfinished(a, vec![b], &died_writing_f_on_b());
+        assert!(after.actions.is_empty(), "{after:?}");
+        assert_eq!(after.conflicts.len(), 1, "{after:?}");
+        assert_eq!(
+            after.conflicts[0].cause,
+            ConflictCause::UnfinishedWrite(Side::B)
+        );
+    }
+}
+
+#[test]
+fn a_write_that_landed_before_the_death_still_only_commits() {
+    let plan = after_unfinished(
+        vec![hashed("f", Kind::Unchanged, "same")],
+        vec![hashed("f", Kind::Modified, "same")],
+        &died_writing_f_on_b(),
+    );
+    assert!(plan.conflicts.is_empty(), "{plan:?}");
+    assert_eq!(action_for(&plan, "f"), Some(Act::CommitOnly));
+}
+
+#[test]
+fn only_the_written_side_and_path_are_held_back() {
+    let unfinished = died_writing_f_on_b();
+    // The side it was copying from: its change still propagates.
+    let from_a = after_unfinished(
+        vec![hashed("f", Kind::Modified, "edit")],
+        vec![hashed("f", Kind::Unchanged, "old")],
+        &unfinished,
+    );
+    assert_eq!(action_for(&from_a, "f"), Some(Act::CopyAtoB));
+    // Another path on the written side: still propagates.
+    let other = after_unfinished(
+        vec![hashed("g", Kind::Unchanged, "old")],
+        vec![hashed("g", Kind::Modified, "edit")],
+        &unfinished,
+    );
+    assert_eq!(action_for(&other, "g"), Some(Act::CopyBtoA));
+    assert!(from_a.conflicts.is_empty() && other.conflicts.is_empty());
+}
+
+#[test]
+fn a_conflict_from_the_table_keeps_its_own_cause() {
+    let plan = after_unfinished(
+        vec![hashed("f", Kind::Modified, "a")],
+        vec![hashed("f", Kind::Modified, "b")],
+        &died_writing_f_on_b(),
+    );
+    assert_eq!(plan.conflicts[0].cause, ConflictCause::Changes);
 }
 
 // -- reversals (SPEC §6: "a proposal may carry a reversal") --

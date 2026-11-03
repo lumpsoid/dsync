@@ -191,6 +191,23 @@ fn a_conflict_names_each_side_status() {
 }
 
 #[test]
+fn a_conflict_held_back_after_an_unfinished_apply_says_why() {
+    let held = dsync_domain::Conflict {
+        cause: dsync_domain::ConflictCause::UnfinishedWrite(dsync_domain::Side::B),
+        ..conflict(
+            "f",
+            Some(unchanged(Unchanged::MetadataMatched)),
+            Some(created(2)),
+        )
+    };
+    assert_eq!(
+        out(Verbosity::Normal, &[RunEvent::Conflict(held)]),
+        "conflict  f  (A: unchanged, B: created) — the last run died while writing it on B; \
+         check that copy before keeping it\n"
+    );
+}
+
+#[test]
 fn normal_hides_the_reason_behind_a_status_and_verbose_shows_it() {
     let event = RunEvent::Conflict(conflict(
         "c",

@@ -9,7 +9,9 @@ use std::io::Write;
 use std::time::Duration;
 
 use dsync_core::{ConnectError, ListedEntry, ReconnectCause, RunEvent};
-use dsync_domain::{Action, Conflict, Location, MassDelete, ReplicaInfo, ScanTally, Side, Status};
+use dsync_domain::{
+    Action, Conflict, ConflictCause, Location, MassDelete, ReplicaInfo, ScanTally, Side, Status,
+};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -207,7 +209,8 @@ fn action_fields(action: &Action) -> Map<String, Value> {
 }
 
 /// A side with no record of the path omits its keys rather than carrying
-/// nulls.
+/// nulls; `unfinishedWriteOn` names the side a dead apply was writing the
+/// path on (SPEC §7.6), and only a conflict held back for that has it.
 fn conflict_fields(conflict: &Conflict) -> Map<String, Value> {
     let mut fields = Map::new();
     fields.insert("path".into(), json!(conflict.path.as_str()));
@@ -219,6 +222,9 @@ fn conflict_fields(conflict: &Conflict) -> Map<String, Value> {
     };
     side("onA", conflict.a.as_ref());
     side("onB", conflict.b.as_ref());
+    if let ConflictCause::UnfinishedWrite(on) = conflict.cause {
+        fields.insert("unfinishedWriteOn".into(), json!(words::side(on)));
+    }
     fields
 }
 

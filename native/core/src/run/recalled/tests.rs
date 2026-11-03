@@ -38,6 +38,7 @@ fn conflict(at: &str, root_kind: RootKind) -> Conflict {
         a: None,
         b: None,
         root_kind,
+        cause: dsync_domain::ConflictCause::Changes,
     }
 }
 

@@ -12,8 +12,8 @@ use dsync_core::{
     ReplicaError, RunError, RunEvent, SkipReason,
 };
 use dsync_domain::{
-    Action, Conflict, ReplicaInfo, RunSummary, ScanTally, Side, SkippedPath, SkippedReason, Status,
-    Verbosity,
+    Action, Conflict, ConflictCause, ReplicaInfo, RunSummary, ScanTally, Side, SkippedPath,
+    SkippedReason, Status, Verbosity,
 };
 use time::OffsetDateTime;
 use time::macros::format_description;
@@ -356,9 +356,16 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
     }
 
     fn conflict(&mut self, conflict: &Conflict) {
+        let why = match conflict.cause {
+            ConflictCause::Changes => String::new(),
+            ConflictCause::UnfinishedWrite(side) => format!(
+                " — the last run died while writing it on {}; check that copy before keeping it",
+                words::side(side)
+            ),
+        };
         let _ = writeln!(
             self.out,
-            "conflict  {}  (A: {}, B: {})",
+            "conflict  {}  (A: {}, B: {}){why}",
             conflict.path,
             self.describe(conflict.a.as_ref()),
             self.describe(conflict.b.as_ref())

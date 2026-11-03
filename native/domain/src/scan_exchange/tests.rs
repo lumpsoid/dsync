@@ -10,7 +10,7 @@ use crate::reconcile::reconcile;
 use crate::scan_entry::{FileMeta, FileState, Unchanged};
 use crate::scan_result::ScanResult;
 use crate::skipped_path::{SkippedPath, SkippedReason, unreadable_of};
-use crate::{Action, Plan, RootKind, Side};
+use crate::{Action, Plan, RootKind, Side, UnfinishedApply};
 
 fn path(text: &str) -> RelPath {
     RelPath::parse(text).unwrap_or_else(|e| panic!("{e}"))
@@ -122,6 +122,7 @@ fn plan_of(scans: &Exchanged) -> Plan {
         scans.on_a.clone(),
         scans.on_b.clone(),
         &unreadable,
+        &UnfinishedApply::default(),
         RootKind::Folder,
     )
 }
@@ -133,6 +134,7 @@ fn plan_matching_full_exchange(a: ScanResult, b: ScanResult) -> Plan {
         a.entries.clone(),
         b.entries.clone(),
         &unreadable,
+        &UnfinishedApply::default(),
         RootKind::Folder,
     );
     let phased = plan_of(&exchange(a, b));

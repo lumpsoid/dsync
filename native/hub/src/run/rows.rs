@@ -401,6 +401,7 @@ mod tests {
             a: modified(a),
             b: modified(b),
             root_kind: RootKind::Folder,
+            cause: dsync_domain::ConflictCause::Changes,
         }
     }
 

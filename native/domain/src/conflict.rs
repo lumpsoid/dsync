@@ -1,6 +1,7 @@
 //! A path the reconciler will not resolve on its own (SPEC §6).
 
 use crate::action::Action;
+use crate::conflict_cause::ConflictCause;
 use crate::rel_path::RelPath;
 use crate::resolution::Resolution;
 use crate::root_kind::RootKind;
@@ -10,13 +11,15 @@ use crate::side::Side;
 /// "Conflicts are never auto-resolved" (SPEC §6). Each side's whole status
 /// travels with it, so a head can say which branch of §5.2 produced it;
 /// `None` means that side has no record of the path at all. `root_kind`
-/// is the kind of the entry whose run found it.
+/// is the kind of the entry whose run found it; `cause` is why it was not
+/// settled, for a head to say so.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Conflict {
     pub path: RelPath,
     pub a: Option<Status>,
     pub b: Option<Status>,
     pub root_kind: RootKind,
+    pub cause: ConflictCause,
 }
 
 impl Conflict {
@@ -109,6 +112,7 @@ mod tests {
             a,
             b,
             root_kind: RootKind::Folder,
+            cause: ConflictCause::Changes,
         }
     }
 

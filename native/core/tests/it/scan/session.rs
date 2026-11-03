@@ -65,6 +65,7 @@ fn plan_of(scans: &Exchanged) -> Plan {
         scans.on_a.clone(),
         scans.on_b.clone(),
         &unreadable,
+        &dsync_domain::UnfinishedApply::default(),
         RootKind::Folder,
     )
 }
@@ -76,6 +77,7 @@ fn plan_matching_whole_listings(a: ScanResult, b: ScanResult) -> (Plan, Exchange
         a.entries.clone(),
         b.entries.clone(),
         &unreadable,
+        &dsync_domain::UnfinishedApply::default(),
         RootKind::Folder,
     );
     let scans = exchange(ScanSession::new(a), ScanSession::new(b));

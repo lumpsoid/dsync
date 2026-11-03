@@ -210,6 +210,21 @@ fn an_absent_side_of_a_conflict_omits_its_keys() {
 }
 
 #[test]
+fn a_conflict_held_back_after_an_unfinished_apply_names_the_side_written() {
+    let plain = conflict("c", Some(unchanged(Unchanged::MetadataMatched)), None);
+    assert!(
+        one(RunEvent::Conflict(plain.clone()))
+            .get("unfinishedWriteOn")
+            .is_none()
+    );
+    let held = dsync_domain::Conflict {
+        cause: dsync_domain::ConflictCause::UnfinishedWrite(dsync_domain::Side::B),
+        ..plain
+    };
+    assert_eq!(one(RunEvent::Conflict(held))["unfinishedWriteOn"], "B");
+}
+
+#[test]
 fn action_progress_result_summary_and_error_lines() {
     assert_eq!(
         one(RunEvent::Action(copy("f"))),

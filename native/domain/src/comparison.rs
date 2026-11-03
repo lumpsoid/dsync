@@ -162,6 +162,7 @@ mod tests {
             a,
             b,
             root_kind: RootKind::Folder,
+            cause: crate::conflict_cause::ConflictCause::Changes,
         }
     }
 

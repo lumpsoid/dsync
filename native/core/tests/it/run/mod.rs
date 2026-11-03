@@ -17,3 +17,4 @@ mod soak;
 #[cfg(unix)]
 mod special_files;
 pub(crate) mod support;
+mod unfinished;

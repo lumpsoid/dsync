@@ -302,6 +302,7 @@ pub(crate) mod fixtures {
             a,
             b,
             root_kind: dsync_domain::RootKind::Folder,
+            cause: dsync_domain::ConflictCause::Changes,
         }
     }
 

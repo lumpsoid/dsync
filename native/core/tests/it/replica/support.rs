@@ -333,6 +333,7 @@ pub async fn exchange(a: &impl Replica, b: &impl Replica) -> Exchanged {
             list_a.clone(),
             list_b.clone(),
             &unreadable,
+            &dsync_domain::UnfinishedApply::default(),
             RootKind::Folder,
         ),
         a: list_a,
