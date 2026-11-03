@@ -18,9 +18,10 @@
 //! only because a sender always ends a cancelled body with a frame.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::body::{Body, BodySender, body_channel};
 use crate::credit::{GRANT_BYTES, STREAM_CREDIT_BYTES, grant_frame};
@@ -61,6 +62,11 @@ pub(crate) struct Inbound {
     pieces: mpsc::UnboundedSender<Piece>,
     /// Bytes the sender may still send.
     credit: Arc<AtomicUsize>,
+    /// Whether the body's end or failure has been queued.
+    over: AtomicBool,
+    /// Cancelled when the route goes before its body is over - the
+    /// connection ended - so a feed parked on a full body gives it up.
+    cut: CancellationToken,
 }
 
 impl Inbound {
@@ -83,8 +89,15 @@ impl Inbound {
             credit: credit.clone(),
             taken: 0,
         };
-        tokio::spawn(feed(queue, sender, granting, guard, dropped));
-        (Inbound { pieces, credit }, body)
+        let cut = CancellationToken::new();
+        tokio::spawn(feed(queue, sender, granting, guard, dropped, cut.clone()));
+        let inbound = Inbound {
+            pieces,
+            credit,
+            over: AtomicBool::new(false),
+            cut,
+        };
+        (inbound, body)
     }
 
     /// Queues `piece` for the consumer; never waits. Whether the body is
@@ -98,9 +111,20 @@ impl Inbound {
                 .map_err(|_| Overrun)?;
         }
         let over = !matches!(piece, Piece::Chunk(_));
+        if over {
+            self.over.store(true, Ordering::Relaxed);
+        }
         // A consumer gone and drained: the piece has nowhere to go.
         let _ = self.pieces.send(piece);
         Ok(over)
+    }
+}
+
+impl Drop for Inbound {
+    fn drop(&mut self) {
+        if !*self.over.get_mut() {
+            self.cut.cancel();
+        }
     }
 }
 
@@ -129,21 +153,29 @@ impl Granting {
 
 /// Hands `queue`'s pieces to the body, granting credit as the consumer
 /// takes each chunk. A consumer that goes away leaves the rest of the body
-/// to be drained, as `dropped` says; a queue closed without an end (the
+/// to be drained, as `dropped` says. A route gone without an end (the
 /// connection dropped) drops the sender, which the consumer reads as
-/// [`crate::BodyError::CutShort`], and the guard.
+/// [`crate::BodyError::CutShort`], and the guard - at once, even while
+/// parked on a body its consumer is not taking: `cut` says so.
 async fn feed(
     mut queue: mpsc::UnboundedReceiver<Piece>,
     sender: BodySender,
     mut granting: Granting,
     guard: impl Send,
     dropped: Dropped,
+    cut: CancellationToken,
 ) {
     while let Some(piece) = queue.recv().await {
         match piece {
             Piece::Chunk(bytes) => {
                 let taken = bytes.len();
-                let delivered = sender.send(bytes).await;
+                // Biased so a chunk with room is still delivered: the cut
+                // lands where the body stops having room, never earlier.
+                let delivered = tokio::select! {
+                    biased;
+                    delivered = sender.send(bytes) => delivered,
+                    () = cut.cancelled() => return,
+                };
                 granting.took(taken).await;
                 if delivered.is_err() {
                     match dropped {
@@ -190,6 +222,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
+    use crate::body::BodyError;
     use crate::transport::{Task, start_writer};
 
     const DEADLINE: Duration = Duration::from_secs(5);
@@ -280,5 +313,55 @@ mod tests {
         assert!(released(&mut held).await, "held until the end");
         assert_eq!(next_frame(&mut wire).await, None, "a frame was sent");
         assert!(inbound.push(Piece::End).unwrap());
+    }
+
+    /// Pushes one chunk more than the body holds, so the feed parks on it.
+    fn overfill(inbound: &Inbound) {
+        for byte in 0..=BODY_CHUNKS as u8 {
+            assert!(!inbound.push(Piece::Chunk(vec![byte; 10])).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_route_gone_while_its_body_is_full_releases_its_guard_and_cuts_the_body_short() {
+        let Routed {
+            inbound,
+            mut body,
+            mut held,
+            wire: _wire,
+            _writing,
+        } = routed(Dropped::Cancel);
+        overfill(&inbound);
+        drop(inbound);
+        assert!(released(&mut held).await, "held past the link's end");
+        for byte in 0..BODY_CHUNKS as u8 {
+            assert_eq!(body.next().await.unwrap(), Some(vec![byte; 10]));
+        }
+        assert!(matches!(body.next().await, Err(BodyError::CutShort)));
+    }
+
+    #[tokio::test]
+    async fn a_route_gone_after_its_end_still_delivers_the_whole_body() {
+        let Routed {
+            inbound,
+            body,
+            mut held,
+            wire: _wire,
+            _writing,
+        } = routed(Dropped::Cancel);
+        overfill(&inbound);
+        assert!(inbound.push(Piece::End).unwrap());
+        drop(inbound);
+        let whole: Vec<u8> = (0..=BODY_CHUNKS as u8)
+            .flat_map(|byte| vec![byte; 10])
+            .collect();
+        assert_eq!(
+            tokio::time::timeout(DEADLINE, body.collect())
+                .await
+                .unwrap()
+                .unwrap(),
+            whole
+        );
+        assert!(released(&mut held).await);
     }
 }
