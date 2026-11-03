@@ -165,6 +165,22 @@ void main() {
     final guard = phase(confirmingDeletes()) as RunConfirmingDeletes;
     final side = guard.sides.single;
     expect((side.side, side.deletes, side.archived), (ReplicaSide.b, 40, 50));
+    final overwrites =
+        phase(confirmingOverwrites(truncated: 3)) as RunConfirmingOverwrites;
+    final rewritten = overwrites.sides.single;
+    expect(
+      (
+        rewritten.side,
+        rewritten.overwrites,
+        rewritten.truncated,
+        rewritten.archived,
+      ),
+      (ReplicaSide.b, 40, 3, 50),
+    );
+    expect(
+      phase(const wire.RunPhaseViewOverwritesDeclined()),
+      isA<RunOverwritesDeclined>(),
+    );
     expect(
       phase(finished(applied: 1, skipped: 2)),
       isA<RunFinished>()
@@ -349,6 +365,10 @@ void main() {
     expect(
       link.wireIntent(const AnswerDeletes(proceed: false)),
       const wire.RunIntentAnswerDeletes(proceed: false),
+    );
+    expect(
+      link.wireIntent(const AnswerOverwrites(proceed: true)),
+      const wire.RunIntentAnswerOverwrites(proceed: true),
     );
     expect(link.wireIntent(const CloseRun()), const wire.RunIntentClose());
   });

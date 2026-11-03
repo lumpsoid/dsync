@@ -3,12 +3,13 @@
 //! but never resolves a conflict (SPEC §6: conflicts are never
 //! auto-resolved); `q` leaves everything not yet decided out; a closed
 //! input is a `q`, the one answer that decides nothing on the user's
-//! behalf. SPEC §10's delete guard is asked last, and defaults to no.
+//! behalf. SPEC §10's delete guard is asked last, then its overwrite
+//! guard; both default to no.
 
 use std::io::Write;
 
 use dsync_core::{Decider, Peek, Recall, Replica};
-use dsync_domain::{Action, Conflict, MassDelete, Plan, Resolution, Side, Status};
+use dsync_domain::{Action, Conflict, MassDelete, MassOverwrite, Plan, Resolution, Side, Status};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, Lines};
 use tokio::sync::watch;
 
@@ -193,6 +194,39 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> InteractiveDecider<R, W> {
             }
         }
         let _ = write!(self.output, "  Apply these deletions? [y/N] > ");
+        self.yes_or_no().await
+    }
+
+    /// SPEC §10's overwrite guard, as [`Self::confirm`]: each tripped
+    /// side's count, how many it empties, and first paths - emptied first.
+    async fn confirm_overwrite(&mut self, verdict: &MassOverwrite) -> bool {
+        let _ = writeln!(
+            self.output,
+            "--- this run overwrites most of a replica's files, or empties many (SPEC §10):"
+        );
+        for overwrites in verdict.sides() {
+            let _ = writeln!(
+                self.output,
+                "  on {}: {} of the {} files it last synced, {} of them emptied to 0 bytes, e.g.",
+                words::side(overwrites.side),
+                overwrites.overwrites,
+                overwrites.archived,
+                overwrites.truncated
+            );
+            for path in &overwrites.sample {
+                let _ = writeln!(self.output, "    {path}");
+            }
+            let more = overwrites.overwrites - overwrites.sample.len();
+            if more > 0 {
+                let _ = writeln!(self.output, "    and {more} more");
+            }
+        }
+        let _ = write!(self.output, "  Apply these overwrites? [y/N] > ");
+        self.yes_or_no().await
+    }
+
+    /// A yes/no whose default - an empty line, a closed input - is no.
+    async fn yes_or_no(&mut self) -> bool {
         let _ = self.output.flush();
         loop {
             let Ok(Some(line)) = self.input.next_line().await else {
@@ -250,6 +284,10 @@ impl<R: AsyncBufRead + Unpin + Send, W: Write + Send> Decider for InteractiveDec
 
     async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {
         self.confirm(verdict).await
+    }
+
+    async fn confirm_overwrites(&mut self, verdict: &MassOverwrite) -> bool {
+        self.confirm_overwrite(verdict).await
     }
 }
 

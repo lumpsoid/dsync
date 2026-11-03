@@ -4,7 +4,7 @@
 
 use std::future::Future;
 
-use dsync_domain::{Action, MassDelete, Plan};
+use dsync_domain::{Action, MassDelete, MassOverwrite, Plan};
 
 use crate::replica::Replica;
 use crate::run::peek::Peek;
@@ -46,6 +46,11 @@ pub trait Decider: Send {
     /// Whether to apply the approved actions although they trip SPEC §10's
     /// delete guard (`verdict`). `false` ends the run with nothing applied.
     fn confirm_deletes(&mut self, verdict: &MassDelete) -> impl Future<Output = bool> + Send;
+
+    /// Whether to apply the approved actions although they trip SPEC §10's
+    /// overwrite guard (`verdict`). `false` ends the run with nothing
+    /// applied.
+    fn confirm_overwrites(&mut self, verdict: &MassOverwrite) -> impl Future<Output = bool> + Send;
 }
 
 /// `--batch`: every action as reconciled, no conflict resolved (SPEC §6:
@@ -71,6 +76,11 @@ impl Decider for BatchDecider {
     async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
         false
     }
+
+    /// No one to ask: `--allow-mass-overwrite` is how a batch run proceeds.
+    async fn confirm_overwrites(&mut self, _: &MassOverwrite) -> bool {
+        false
+    }
 }
 
 impl Decider for DryRunDecider {
@@ -81,6 +91,11 @@ impl Decider for DryRunDecider {
     /// Never asked - nothing approved deletes anything - and a dry run
     /// would not apply it anyway.
     async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
+        false
+    }
+
+    /// Never asked, as [`DryRunDecider::confirm_deletes`].
+    async fn confirm_overwrites(&mut self, _: &MassOverwrite) -> bool {
         false
     }
 }

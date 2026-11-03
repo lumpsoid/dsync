@@ -49,6 +49,7 @@ part 'hunk_view.dart';
 part 'identity_view.dart';
 part 'line_view.dart';
 part 'mass_delete_view.dart';
+part 'mass_overwrite_view.dart';
 part 'missing_root_view.dart';
 part 'offer_view.dart';
 part 'other_entry_view.dart';

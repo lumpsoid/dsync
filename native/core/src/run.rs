@@ -31,9 +31,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dsync_domain::{
-    Action, BucketCount, ChangedScan, EffectiveOptions, Plan, ReplicaInfo, ReplicaOp, RuleSet,
-    RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side, SkippedPath,
-    StopSignal, Tuning, UnfinishedApply, failure_count, reconcile, status_list, unreadable_of,
+    Action, BucketCount, ChangedScan, EffectiveOptions, MassOverwritePolicy, Plan, ReplicaInfo,
+    ReplicaOp, RuleSet, RunMetrics, RunOutcome, RunPhase, RunSummary, ScanEntry, ScanTally, Side,
+    SkippedPath, StopSignal, Tuning, UnfinishedApply, failure_count, reconcile, status_list,
+    unreadable_of,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -422,6 +423,16 @@ impl Run {
         let kept = self
             .guard_deletes(kept, [&a.tally, &b.tally], options, decider, pair.clock)
             .await?;
+        let kept = self
+            .guard_overwrites(
+                kept,
+                [&a.list, &b.list],
+                [&a.tally, &b.tally],
+                options,
+                decider,
+                pair.clock,
+            )
+            .await?;
         for action in &kept {
             self.events.emit(RunEvent::Action(action.clone())).await;
         }
@@ -541,17 +552,73 @@ impl Run {
         if allowed {
             return Ok(kept);
         }
+        match self
+            .ask_guard(clock, decider.confirm_deletes(&verdict))
+            .await
+        {
+            Some(true) => Ok(kept),
+            Some(false) => Err(RunError::DeletesNotConfirmed(verdict)),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// SPEC §10's overwrite guard, after the delete guard and the same
+    /// way: when the approved copies overwrite too much of a side, or
+    /// empty too many of its files, the verdict is reported and - unless
+    /// `--allow-mass-overwrite` - the decider asked. `entries` are the
+    /// scans' lists, which hold each side's entry at every path a copy
+    /// writes there. The thresholds are [`MassOverwritePolicy::DEFAULT`].
+    async fn guard_overwrites(
+        &self,
+        kept: Vec<Action>,
+        entries: [&[ScanEntry]; 2],
+        tallies: [&ScanTally; 2],
+        options: &EffectiveOptions,
+        decider: &mut impl Decider,
+        clock: &RunClock,
+    ) -> Result<Vec<Action>, RunError> {
+        let archived = tallies.map(ScanTally::archived);
+        let Some(verdict) = MassOverwritePolicy::DEFAULT.judge(&kept, entries, archived) else {
+            return Ok(kept);
+        };
+        let allowed = options.allow_mass_overwrite;
+        self.events
+            .emit(RunEvent::MassOverwrite {
+                verdict: verdict.clone(),
+                allowed,
+            })
+            .await;
+        if allowed {
+            return Ok(kept);
+        }
+        match self
+            .ask_guard(clock, decider.confirm_overwrites(&verdict))
+            .await
+        {
+            Some(true) => Ok(kept),
+            Some(false) => Err(RunError::OverwritesNotConfirmed(verdict)),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// A guard's question to the decider, timed as presenting: `None` when
+    /// the run was stopped while - or by the time - it was answered, so a
+    /// stopped run applies nothing, as [`Run::decide`].
+    async fn ask_guard(
+        &self,
+        clock: &RunClock,
+        confirming: impl Future<Output = bool> + Send,
+    ) -> Option<bool> {
         let asking = async {
             tokio::select! {
                 biased;
                 () = self.stop.graceful.cancelled() => None,
-                confirmed = decider.confirm_deletes(&verdict) => Some(confirmed),
+                confirmed = confirming => Some(confirmed),
             }
         };
         match clock.phase(RunPhase::Present, asking).await {
-            Some(true) if !self.stop.graceful.is_cancelled() => Ok(kept),
-            Some(false) => Err(RunError::DeletesNotConfirmed(verdict)),
-            Some(true) | None => Ok(Vec::new()),
+            Some(true) if self.stop.graceful.is_cancelled() => None,
+            answered => answered,
         }
     }
 }

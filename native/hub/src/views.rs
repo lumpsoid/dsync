@@ -9,8 +9,9 @@ use dsync_core::{ActionFailure, Certificate, DeviceIdentity, PairedDevice, Store
 use dsync_domain::{
     Action, Block, CertificateExpiry, CertificateOwner, Comparison, Conflict, EntryKind,
     FilterFolderRow, FilterPreviewFolder, FilterPreviewReport, Hunk, Line, Offer, PeekLimits, Plan,
-    Proposal, ReplicaInfo, ReplicaRoot, RootKind, RunSummary, ScanTally, Side, SideDeletes, Sided,
-    SkippedAt, SkippedPath, SkippedReason, Span, Status, TextDiff, Unchanged,
+    Proposal, ReplicaInfo, ReplicaRoot, RootKind, RunSummary, ScanTally, Side, SideDeletes,
+    SideOverwrites, Sided, SkippedAt, SkippedPath, SkippedReason, Span, Status, TextDiff,
+    Unchanged,
 };
 use rinf::SignalPiece;
 use serde::{Deserialize, Serialize};
@@ -845,6 +846,28 @@ impl From<&SideDeletes> for MassDeleteView {
     }
 }
 
+/// One side's share of SPEC §10's overwrite-guard verdict: how many files
+/// the run overwrites there, how many of those it empties to 0 bytes, out
+/// of how many its archive holds.
+#[derive(Serialize, SignalPiece)]
+pub struct MassOverwriteView {
+    pub side: SideView,
+    pub overwrites: u64,
+    pub truncated: u64,
+    pub archived: u64,
+}
+
+impl From<&SideOverwrites> for MassOverwriteView {
+    fn from(overwrites: &SideOverwrites) -> MassOverwriteView {
+        MassOverwriteView {
+            side: overwrites.side.into(),
+            overwrites: count(overwrites.overwrites),
+            truncated: count(overwrites.truncated),
+            archived: count(overwrites.archived),
+        }
+    }
+}
+
 /// A run as the head shows it, sent after every change. Everything but
 /// the plan's rows is whole in every view. The plan is sent whole once -
 /// the first view after the hub takes it - and thereafter each view says
@@ -908,6 +931,11 @@ pub enum RunPhaseView {
     ConfirmingDeletes {
         sides: Vec<MassDeleteView>,
     },
+    /// SPEC §10's overwrite guard waits on the head: one entry per side it
+    /// tripped on.
+    ConfirmingOverwrites {
+        sides: Vec<MassOverwriteView>,
+    },
     Applying,
     Finished(SummaryView),
     /// Stopped by the head after `completed` actions.
@@ -929,6 +957,9 @@ pub enum RunPhaseView {
     /// The head declined the deletions the guard asked about; nothing was
     /// applied.
     DeletesDeclined,
+    /// The head declined the overwrites the guard asked about; nothing was
+    /// applied.
+    OverwritesDeclined,
     /// The run ended without a summary and nobody stopped it.
     NoSummary,
     /// A profile of several entries ran to its end, and these did not

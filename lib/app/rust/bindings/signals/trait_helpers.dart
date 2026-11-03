@@ -463,6 +463,18 @@ class TraitHelpers {
     return List.generate(length, (_) => MassDeleteView.deserialize(deserializer));
   }
 
+  static void serializeVectorMassOverwriteView(List<MassOverwriteView> value, BinarySerializer serializer) {
+    serializer.serializeLength(value.length);
+    for (final item in value) {
+        item.serialize(serializer);
+    }
+  }
+
+  static List<MassOverwriteView> deserializeVectorMassOverwriteView(BinaryDeserializer deserializer) {
+    final length = deserializer.deserializeLength();
+    return List.generate(length, (_) => MassOverwriteView.deserialize(deserializer));
+  }
+
   static void serializeVectorOtherEntryView(List<OtherEntryView> value, BinarySerializer serializer) {
     serializer.serializeLength(value.length);
     for (final item in value) {

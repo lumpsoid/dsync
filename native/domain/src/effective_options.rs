@@ -33,6 +33,9 @@ pub struct EffectiveOptions {
     /// `--allow-mass-delete`: SPEC §10's delete guard reports, but does not
     /// ask. A flag only; no profile sets it.
     pub allow_mass_delete: bool,
+    /// `--allow-mass-overwrite`: SPEC §10's overwrite guard reports, but
+    /// does not ask. A flag only; no profile sets it.
+    pub allow_mass_overwrite: bool,
     /// When SPEC §10's delete guard trips: the head's thresholds, or the
     /// default. No profile sets it.
     pub mass_delete: MassDeletePolicy,
@@ -72,6 +75,7 @@ impl EffectiveOptions {
                 .or(flags.default_warn_size_bytes),
             jobs: flags.jobs.or(profile.jobs()),
             allow_mass_delete: flags.allow_mass_delete,
+            allow_mass_overwrite: flags.allow_mass_overwrite,
             mass_delete: flags.mass_delete,
             entry_id: EntryId::for_entry(entry.kind(), canonical_a, canonical_b),
             ssh_a: ssh(Side::A),
@@ -124,6 +128,7 @@ impl EffectiveOptions {
             warn_size_bytes: flags.warn_size_bytes.or(flags.default_warn_size_bytes),
             jobs: flags.jobs,
             allow_mass_delete: flags.allow_mass_delete,
+            allow_mass_overwrite: flags.allow_mass_overwrite,
             mass_delete: flags.mass_delete,
             entry_id: EntryId::for_pair(&canonical_first, &canonical_second),
             ssh_a: access.clone(),

@@ -24,8 +24,8 @@ use dsync_core::{
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
-    Action, Command, Comparison, EffectiveOptions, Flags, MassDelete, Mode, Plan, ProfileName,
-    RunFlags, Side, TextDiff,
+    Action, Command, Comparison, EffectiveOptions, Flags, MassDelete, MassOverwrite, Mode, Plan,
+    ProfileName, RunFlags, Side, TextDiff,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -269,6 +269,9 @@ pub(crate) fn run_flags(
             jobs: jobs.map(i64::from),
             default_warn_size_bytes,
             mass_delete,
+            // The head always asks: neither guard is switched off here.
+            allow_mass_delete: false,
+            allow_mass_overwrite: false,
             ..Flags::default()
         },
     )
@@ -292,6 +295,7 @@ enum Pending {
         cancels: HashMap<u64, Cancel>,
     },
     Deletes(oneshot::Sender<bool>),
+    Overwrites(oneshot::Sender<bool>),
 }
 
 /// A compare the head asked of the review's decider.
@@ -449,6 +453,12 @@ impl RunControl {
                 }
                 self.publish(shared, Urgency::Now);
             }
+            Steer::AnswerOverwrites(proceed) => {
+                if let Some(Pending::Overwrites(answer)) = shared.pending.take() {
+                    let _ = answer.send(proceed);
+                }
+                self.publish(shared, Urgency::Now);
+            }
             Steer::Stop => {
                 // An attempt not yet attached is stopped as it attaches.
                 if let Some(stop) = &shared.stop {
@@ -574,6 +584,20 @@ impl RunControl {
             None => {
                 let (answer, answered) = oneshot::channel();
                 shared.pending = Some(Pending::Deletes(answer));
+                Asked::Waiting(answered)
+            }
+        };
+        self.publish(shared, Urgency::Now);
+        asked
+    }
+
+    fn ask_overwrites(self: &Arc<Self>, verdict: &MassOverwrite) -> Asked<bool> {
+        let mut shared = self.lock();
+        let asked = match shared.state.ask_overwrites(verdict) {
+            Some(now) => Asked::Answered(now),
+            None => {
+                let (answer, answered) = oneshot::channel();
+                shared.pending = Some(Pending::Overwrites(answer));
                 Asked::Waiting(answered)
             }
         };
@@ -726,6 +750,13 @@ impl Decider for HeadDecider {
 
     async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {
         match self.control.ask_deletes(verdict) {
+            Asked::Answered(confirmed) => confirmed,
+            Asked::Waiting(answer) => answer.await.unwrap_or(false),
+        }
+    }
+
+    async fn confirm_overwrites(&mut self, verdict: &MassOverwrite) -> bool {
+        match self.control.ask_overwrites(verdict) {
             Asked::Answered(confirmed) => confirmed,
             Asked::Waiting(answer) => answer.await.unwrap_or(false),
         }

@@ -65,6 +65,7 @@ fn stage(view: &FoldedRunView) -> &'static str {
         RunPhaseView::Scanning => "scanning",
         RunPhaseView::Reviewing(_) => "reviewing",
         RunPhaseView::ConfirmingDeletes { .. } => "confirming deletes",
+        RunPhaseView::ConfirmingOverwrites { .. } => "confirming overwrites",
         RunPhaseView::Applying => "applying",
         RunPhaseView::Finished(_) => "finished",
         RunPhaseView::Stopped { .. } => "stopped",
@@ -72,6 +73,7 @@ fn stage(view: &FoldedRunView) -> &'static str {
         RunPhaseView::Failed { .. } => "failed",
         RunPhaseView::ReplicaBusy { .. } => "replica busy",
         RunPhaseView::DeletesDeclined => "deletes declined",
+        RunPhaseView::OverwritesDeclined => "overwrites declined",
         RunPhaseView::NoSummary => "no summary",
         RunPhaseView::FinishedWithIssues { .. } => "finished with issues",
     }
@@ -390,6 +392,73 @@ async fn emptying_one_side_asks_the_head_and_a_resume_asks_again() {
         Some(RunPhaseView::Finished(summary)) if summary.applied == 12
     ));
     assert_eq!(remaining(&head), 0);
+}
+
+#[tokio::test]
+async fn rewriting_one_side_asks_the_head_about_the_overwrites() {
+    let mut head = Head::new("studio").await;
+    for index in 0..12 {
+        write(&head.path(&format!("a/f{index:02}")), "plain");
+    }
+    std::fs::create_dir_all(head.path("b")).unwrap_or_else(|error| panic!("{error}"));
+    local_profile(&head, "local", "a", "b");
+    let (first, _) = head.ok(start("local", false, None, GUARD)).await;
+    head.run_until(first, is("reviewing")).await;
+    head.ok(steer(first, RunIntent::AcceptAll)).await;
+    head.run_until(first, ended).await;
+    for index in 0..12 {
+        write(&head.path(&format!("a/f{index:02}")), "encrypted");
+    }
+    let untouched = |head: &Head| {
+        (0..12)
+            .filter(|index| {
+                std::fs::read_to_string(head.path(&format!("b/f{index:02}"))).ok()
+                    == Some("plain".into())
+            })
+            .count()
+    };
+
+    let (session, _) = head.ok(start("local", false, None, GUARD)).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    let asking = head
+        .run_until(session, is("confirming overwrites"))
+        .await
+        .pop()
+        .unwrap_or_else(|| unreachable!("stopped at it"));
+    let RunPhaseView::ConfirmingOverwrites { sides } = &asking.phase else {
+        unreachable!("confirming");
+    };
+    assert_eq!(
+        sides
+            .iter()
+            .map(|side| (side.overwrites, side.truncated, side.archived))
+            .collect::<Vec<_>>(),
+        [(12, 0, 12)]
+    );
+    // The delete guard's answer is not this question's.
+    let deletes = steer(session, RunIntent::AnswerDeletes { proceed: true });
+    head.ok(deletes).await;
+    let answer = |proceed| steer(session, RunIntent::AnswerOverwrites { proceed });
+    assert!(matches!(head.ok(answer(false)).await.1, ReplyResult::Done));
+    let declined = head.run_until(session, ended).await;
+    assert_eq!(
+        stages(&declined),
+        ["confirming overwrites", "overwrites declined"]
+    );
+    assert_eq!(untouched(&head), 12);
+
+    head.ok(steer(session, RunIntent::Resume)).await;
+    head.run_until(session, is("reviewing")).await;
+    head.ok(steer(session, RunIntent::AcceptAll)).await;
+    head.run_until(session, is("confirming overwrites")).await;
+    head.ok(answer(true)).await;
+    let confirmed = head.run_until(session, ended).await;
+    assert!(matches!(
+        confirmed.last().map(|view| &view.phase),
+        Some(RunPhaseView::Finished(summary)) if summary.applied == 12
+    ));
+    assert_eq!(untouched(&head), 0);
 }
 
 /// The head's own thresholds decide when the guard asks: three of four

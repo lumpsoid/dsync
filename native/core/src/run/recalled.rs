@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use dsync_domain::{Action, Conflict, MassDelete, Plan, Proposal, RelPath, Side};
+use dsync_domain::{Action, Conflict, MassDelete, MassOverwrite, Plan, Proposal, RelPath, Side};
 
 use crate::replica::Replica;
 use crate::run::decider::Decider;
@@ -210,12 +210,15 @@ impl Record {
 /// a re-dial answers an unchanged plan itself - telling `inner` it was
 /// [`Decider::carried`] - or asks [`Decider::decide_again`] with a
 /// [`Recall`]. The delete guard is not asked again while no side deletes
-/// more than an earlier confirmation covered ([`MassDelete::within`]).
+/// more than an earlier confirmation covered ([`MassDelete::within`]), nor
+/// the overwrite guard while no side overwrites more
+/// ([`MassOverwrite::within`]).
 pub(crate) struct Recalled<'d, D> {
     inner: &'d mut D,
     /// `None` until `inner` has answered a plan this record can replay.
     record: Option<Record>,
     confirmed: Option<MassDelete>,
+    confirmed_overwrites: Option<MassOverwrite>,
 }
 
 impl<'d, D: Decider> Recalled<'d, D> {
@@ -224,6 +227,7 @@ impl<'d, D: Decider> Recalled<'d, D> {
             inner,
             record: None,
             confirmed: None,
+            confirmed_overwrites: None,
         }
     }
 }
@@ -266,6 +270,21 @@ impl<D: Decider> Decider for Recalled<'_, D> {
         let confirmed = self.inner.confirm_deletes(verdict).await;
         if confirmed {
             self.confirmed = Some(verdict.clone());
+        }
+        confirmed
+    }
+
+    async fn confirm_overwrites(&mut self, verdict: &MassOverwrite) -> bool {
+        if self
+            .confirmed_overwrites
+            .as_ref()
+            .is_some_and(|confirmed| verdict.within(confirmed))
+        {
+            return true;
+        }
+        let confirmed = self.inner.confirm_overwrites(verdict).await;
+        if confirmed {
+            self.confirmed_overwrites = Some(verdict.clone());
         }
         confirmed
     }

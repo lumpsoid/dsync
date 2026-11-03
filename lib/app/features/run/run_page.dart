@@ -255,6 +255,7 @@ class _RunPageState extends State<RunPage> {
               SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
               SyncRunConfirmingDeletes() ||
+              SyncRunConfirmingOverwrites() ||
               SyncRunFinished() ||
               SyncRunFinishedWithIssues() ||
               SyncRunStopped() ||
@@ -296,7 +297,8 @@ class _RunPageState extends State<RunPage> {
               SyncRunScanning() ||
               SyncRunApplying() ||
               SyncRunAwaitingDecisions() ||
-              SyncRunConfirmingDeletes() => TextButton(
+              SyncRunConfirmingDeletes() ||
+              SyncRunConfirmingOverwrites() => TextButton(
                 key: const Key('run-stop'),
                 onPressed: _controller.stop,
                 child: const Text('Stop'),
@@ -333,6 +335,11 @@ class _RunPageState extends State<RunPage> {
             conflicts: state.conflicts.isNotEmpty,
           ),
           SyncRunConfirmingDeletes(:final sides) => _DeletesBar(
+            sides: sides,
+            controller: _controller,
+            layout: layout,
+          ),
+          SyncRunConfirmingOverwrites(:final sides) => _OverwritesBar(
             sides: sides,
             controller: _controller,
             layout: layout,
@@ -668,7 +675,9 @@ class _StageStrip extends StatelessWidget {
     final stage = switch (phase) {
       SyncRunConnecting() || SyncRunReconnecting() => _Stage.connect,
       SyncRunScanning() => _Stage.scan,
-      SyncRunAwaitingDecisions() || SyncRunConfirmingDeletes() => _Stage.review,
+      SyncRunAwaitingDecisions() ||
+      SyncRunConfirmingDeletes() ||
+      SyncRunConfirmingOverwrites() => _Stage.review,
       SyncRunApplying() => _Stage.apply,
       SyncRunFinished() => _Stage.done,
       SyncRunIdle() ||
@@ -783,6 +792,10 @@ class _StageText extends StatelessWidget {
       SyncRunConfirmingDeletes() => const Text(
         'Waiting for you to confirm the deletions',
         key: Key('run-confirming-deletes'),
+      ),
+      SyncRunConfirmingOverwrites() => const Text(
+        'Waiting for you to confirm the overwrites',
+        key: Key('run-confirming-overwrites'),
       ),
       SyncRunApplying() => _ApplyProgress(state.progress),
       // A single line: the five numbers this used to carry live in the
@@ -1568,6 +1581,93 @@ class _DeletesBar extends StatelessWidget {
                         ),
                         onPressed: controller.confirmDeletes,
                         child: Text('Delete ${formatCount(total)} files'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// SPEC §10's overwrite guard, in the review bar's place as
+/// [_DeletesBar]: what the decided copies overwrite — how many files, of
+/// how many, how many emptied, on which side and in which folder — and the
+/// two answers.
+class _OverwritesBar extends StatelessWidget {
+  const _OverwritesBar({
+    required this.sides,
+    required this.controller,
+    required this.layout,
+  });
+
+  final List<SyncRunOverwritesOnSide> sides;
+  final SyncRunController controller;
+  final RunLayout layout;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final total = sides.fold(0, (sum, side) => sum + side.overwrites);
+    return Material(
+      key: const Key('run-overwrites-bar'),
+      elevation: 8,
+      child: SafeArea(
+        top: false,
+        child: ReadableColumn(
+          width: layout.width,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'This sync overwrites many files at once',
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                for (final side in sides)
+                  Text(
+                    '${formatCount(side.overwrites)} of the '
+                    '${formatCount(side.archived)} files on ${side.where}'
+                    '${switch (side.root) {
+                      final root? => ' ($root)',
+                      null => '',
+                    }} would be overwritten'
+                    '${side.truncated > 0 ? ', ${formatCount(side.truncated)} '
+                              'of them with an empty file' : ''}.',
+                  ),
+                const SizedBox(height: 4),
+                const Text(
+                  'If the other side was encrypted, emptied or rewritten by '
+                  "a tool you didn't mean to run, don't overwrite.",
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      TextButton(
+                        key: const Key('run-overwrites-decline'),
+                        onPressed: controller.declineOverwrites,
+                        child: const Text("Don't overwrite"),
+                      ),
+                      FilledButton(
+                        key: const Key('run-overwrites-confirm'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: theme.colorScheme.error,
+                          foregroundColor: theme.colorScheme.onError,
+                        ),
+                        onPressed: controller.confirmOverwrites,
+                        child: Text('Overwrite ${formatCount(total)} files'),
                       ),
                     ],
                   ),

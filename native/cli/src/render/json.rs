@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use dsync_core::{ConnectError, ListedEntry, ReconnectCause, RunEvent};
 use dsync_domain::{
-    Action, Conflict, ConflictCause, Location, MassDelete, ReplicaInfo, ScanTally, Side, Status,
+    Action, Conflict, ConflictCause, Location, MassDelete, MassOverwrite, ReplicaInfo, ScanTally,
+    Side, Status,
 };
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
@@ -127,6 +128,12 @@ impl<O: Write> JsonRenderer<O> {
                 "a": side_deletes(verdict, Side::A),
                 "b": side_deletes(verdict, Side::B),
             }),
+            RunEvent::MassOverwrite { verdict, allowed } => json!({
+                "type": "massOverwrite",
+                "allowed": allowed,
+                "a": side_overwrites(verdict, Side::A),
+                "b": side_overwrites(verdict, Side::B),
+            }),
             RunEvent::Action(action) => typed("action", action_fields(action)),
             RunEvent::Result { action, outcome } => {
                 let mut fields = Map::new();
@@ -189,6 +196,19 @@ fn side_deletes(verdict: &MassDelete, side: Side) -> Value {
             "deletes": deletes.deletes,
             "archived": deletes.archived,
             "paths": deletes.sample.iter().map(|path| path.as_str()).collect::<Vec<_>>(),
+        })
+    })
+}
+
+/// One side's share of SPEC §10's overwrite verdict, `null` when that side
+/// did not trip it.
+fn side_overwrites(verdict: &MassOverwrite, side: Side) -> Value {
+    verdict.side(side).map_or(Value::Null, |overwrites| {
+        json!({
+            "overwrites": overwrites.overwrites,
+            "truncated": overwrites.truncated,
+            "archived": overwrites.archived,
+            "paths": overwrites.sample.iter().map(|path| path.as_str()).collect::<Vec<_>>(),
         })
     })
 }

@@ -215,6 +215,23 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
                     }
                 }
             }
+            RunEvent::MassOverwrite { verdict, allowed } => {
+                if *allowed {
+                    for overwrites in verdict.sides() {
+                        let _ = writeln!(
+                            self.out,
+                            "warning: overwriting {} of the {} files replica {} ({}) last \
+                             synced, {} of them emptied to 0 bytes, as --allow-mass-overwrite \
+                             allows (SPEC §10)",
+                            overwrites.overwrites,
+                            overwrites.archived,
+                            words::side(overwrites.side),
+                            self.view.replica(overwrites.side).location,
+                            overwrites.truncated
+                        );
+                    }
+                }
+            }
             RunEvent::Action(action) => {
                 let _ = writeln!(self.out, "> {}  {}", words::action(action), action.path());
             }
@@ -468,6 +485,12 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
                 self.err,
                 "error: {}\nTo apply it, run interactively and answer y, or rerun with \
                  --allow-mass-delete.",
+                verdict.describe()
+            ),
+            RunError::OverwritesNotConfirmed(verdict) => writeln!(
+                self.err,
+                "error: {}\nTo apply it, run interactively and answer y, or rerun with \
+                 --allow-mass-overwrite.",
                 verdict.describe()
             ),
             other => writeln!(self.err, "error: {other}"),

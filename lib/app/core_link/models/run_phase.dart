@@ -1,6 +1,7 @@
 import 'decision_summary.dart';
 import 'entry_issue.dart';
 import 'mass_delete_side.dart';
+import 'mass_overwrite_side.dart';
 import 'run_summary_info.dart';
 
 /// Where a run stands, as the core decided it.
@@ -39,6 +40,14 @@ final class RunConfirmingDeletes extends RunPhase {
   const RunConfirmingDeletes(this.sides);
 
   final List<MassDeleteSide> sides;
+}
+
+/// SPEC §10's overwrite guard waits on an answer: one entry per side it
+/// tripped on.
+final class RunConfirmingOverwrites extends RunPhase {
+  const RunConfirmingOverwrites(this.sides);
+
+  final List<MassOverwriteSide> sides;
 }
 
 final class RunApplying extends RunPhase {
@@ -83,6 +92,12 @@ final class RunReplicaBusy extends RunPhase {
 /// applied.
 final class RunDeletesDeclined extends RunPhase {
   const RunDeletesDeclined();
+}
+
+/// The user declined the overwrites the guard asked about: nothing was
+/// applied.
+final class RunOverwritesDeclined extends RunPhase {
+  const RunOverwritesDeclined();
 }
 
 /// The run ended without a summary, and nobody stopped it.

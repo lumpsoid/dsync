@@ -9,6 +9,7 @@ mod entries;
 mod file_entry;
 mod flow;
 mod mass_delete;
+mod mass_overwrite;
 mod missing_root;
 mod out_of_space;
 mod peek;

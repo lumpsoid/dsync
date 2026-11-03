@@ -3,8 +3,8 @@
 
 use dsync_core::{Compared, Decider, Peek, Replica, RunEvent};
 use dsync_domain::{
-    Action, Comparison, FileText, MassDelete, PeekLimits, Plan, RelPath, ReplicaOp, Side, Sided,
-    Tuning,
+    Action, Comparison, FileText, MassDelete, MassOverwrite, PeekLimits, Plan, RelPath, ReplicaOp,
+    Side, Sided, Tuning,
 };
 
 use crate::run::support::{Finished, Site, path, run, run_with, served, sync, with_deadline};
@@ -62,6 +62,10 @@ impl Decider for Peeking {
     }
 
     async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
+        false
+    }
+
+    async fn confirm_overwrites(&mut self, _: &MassOverwrite) -> bool {
         false
     }
 }

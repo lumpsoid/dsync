@@ -8,9 +8,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dsync_domain::{
-    Action, BucketCountMismatch, Conflict, IncompleteTransfer, MassDelete, MissingParentFolder,
-    MissingReplicaRoot, OutOfSpace, Plan, ReplicaInfo, ReplicaOp, RunSummary, ScanTally, Side,
-    SkippedPath, UnevenCommitOnly, UnreadableReplicaRoot, UnusableRoot, WrongRootKind,
+    Action, BucketCountMismatch, Conflict, IncompleteTransfer, MassDelete, MassOverwrite,
+    MissingParentFolder, MissingReplicaRoot, OutOfSpace, Plan, ReplicaInfo, ReplicaOp, RunSummary,
+    ScanTally, Side, SkippedPath, UnevenCommitOnly, UnreadableReplicaRoot, UnusableRoot,
+    WrongRootKind,
 };
 
 use crate::replica_error::ReplicaError;
@@ -42,6 +43,14 @@ pub enum RunEvent {
     /// of them is reported. `allowed`: the run's `--allow-mass-delete`
     /// applies them without asking; otherwise the decider is asked next.
     MassDelete { verdict: MassDelete, allowed: bool },
+    /// SPEC §10's overwrite guard tripped on the approved actions, after
+    /// the delete guard let them through and before any is reported.
+    /// `allowed`: the run's `--allow-mass-overwrite` applies them without
+    /// asking; otherwise the decider is asked next.
+    MassOverwrite {
+        verdict: MassOverwrite,
+        allowed: bool,
+    },
     /// One action the decider approved, conflict resolutions included,
     /// before the apply starts.
     Action(Action),
@@ -94,6 +103,10 @@ pub enum RunError {
     /// confirm. Nothing was applied.
     #[error("{}", .0.describe())]
     DeletesNotConfirmed(MassDelete),
+    /// SPEC §10's overwrite guard tripped and the decider did not confirm.
+    /// Nothing was applied.
+    #[error("{}", .0.describe())]
+    OverwritesNotConfirmed(MassOverwrite),
     /// A write found a side out of space: the apply stopped, and what it
     /// had not attempted is left for the next run.
     #[error(transparent)]
@@ -176,9 +189,10 @@ impl RunError {
             RunError::WrongKind(wrong) => Some(wrong.side),
             RunError::RootUnreadable(unreadable) => Some(unreadable.side),
             RunError::OutOfSpace(full) => Some(full.side),
-            RunError::Exchange(_) | RunError::DeletesNotConfirmed(_) | RunError::Marker { .. } => {
-                None
-            }
+            RunError::Exchange(_)
+            | RunError::DeletesNotConfirmed(_)
+            | RunError::OverwritesNotConfirmed(_)
+            | RunError::Marker { .. } => None,
         }
     }
 }

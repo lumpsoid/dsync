@@ -239,8 +239,8 @@ pub(crate) mod fixtures {
 
     use dsync_domain::{
         Action, Conflict, ContentHash, EntryId, FileMeta, FileState, Glob, Locality, Location,
-        MassDelete, MassDeletePolicy, Platform, ProfileName, Proposal, RelPath, ReplicaLocation,
-        RuleSet, Side, Status, Unchanged,
+        MassDelete, MassDeletePolicy, MassOverwrite, MassOverwritePolicy, Platform, ProfileName,
+        Proposal, RelPath, ReplicaLocation, RuleSet, ScanEntry, Side, Status, Unchanged,
     };
     use time::UtcOffset;
 
@@ -275,6 +275,46 @@ pub(crate) mod fixtures {
         let mut sides = [0, 0];
         sides[usize::from(on == Side::B)] = archived;
         MassDeletePolicy::DEFAULT.judge(&kept, sides).unwrap()
+    }
+
+    /// SPEC §10's overwrite verdict on copies onto `f00`, `f01`, ... on
+    /// `on`, which holds `archived` 4-byte files: `overwrites` copies, the
+    /// last `truncated` of them empty.
+    pub fn mass_overwrite(
+        on: Side,
+        overwrites: usize,
+        truncated: usize,
+        archived: usize,
+    ) -> MassOverwrite {
+        let entries: Vec<ScanEntry> = (0..archived)
+            .map(|index| {
+                ScanEntry::new(
+                    path(&format!("f{index:02}")),
+                    Status::Unchanged {
+                        file: file(4),
+                        by: Unchanged::MetadataMatched,
+                    },
+                )
+            })
+            .collect();
+        let kept: Vec<Action> = (0..overwrites)
+            .map(|index| Action::Copy {
+                path: path(&format!("f{index:02}")),
+                from: on.other(),
+                bytes: if index + truncated >= overwrites {
+                    0
+                } else {
+                    4
+                },
+            })
+            .collect();
+        let mut sides: [&[ScanEntry]; 2] = [&[], &[]];
+        sides[usize::from(on == Side::B)] = &entries;
+        let mut counts = [0, 0];
+        counts[usize::from(on == Side::B)] = archived;
+        MassOverwritePolicy::DEFAULT
+            .judge(&kept, sides, counts)
+            .unwrap()
     }
 
     pub fn file(size: u64) -> FileState {

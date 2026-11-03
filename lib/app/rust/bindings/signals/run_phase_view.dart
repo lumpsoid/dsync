@@ -16,15 +16,17 @@ abstract class RunPhaseView {
       case 2: return RunPhaseViewScanning.load(deserializer);
       case 3: return RunPhaseViewReviewing.load(deserializer);
       case 4: return RunPhaseViewConfirmingDeletes.load(deserializer);
-      case 5: return RunPhaseViewApplying.load(deserializer);
-      case 6: return RunPhaseViewFinished.load(deserializer);
-      case 7: return RunPhaseViewStopped.load(deserializer);
-      case 8: return RunPhaseViewPaused.load(deserializer);
-      case 9: return RunPhaseViewFailed.load(deserializer);
-      case 10: return RunPhaseViewReplicaBusy.load(deserializer);
-      case 11: return RunPhaseViewDeletesDeclined.load(deserializer);
-      case 12: return RunPhaseViewNoSummary.load(deserializer);
-      case 13: return RunPhaseViewFinishedWithIssues.load(deserializer);
+      case 5: return RunPhaseViewConfirmingOverwrites.load(deserializer);
+      case 6: return RunPhaseViewApplying.load(deserializer);
+      case 7: return RunPhaseViewFinished.load(deserializer);
+      case 8: return RunPhaseViewStopped.load(deserializer);
+      case 9: return RunPhaseViewPaused.load(deserializer);
+      case 10: return RunPhaseViewFailed.load(deserializer);
+      case 11: return RunPhaseViewReplicaBusy.load(deserializer);
+      case 12: return RunPhaseViewDeletesDeclined.load(deserializer);
+      case 13: return RunPhaseViewOverwritesDeclined.load(deserializer);
+      case 14: return RunPhaseViewNoSummary.load(deserializer);
+      case 15: return RunPhaseViewFinishedWithIssues.load(deserializer);
       default: throw Exception('Unknown variant index for RunPhaseView: ' + index.toString());
     }
   }
@@ -323,6 +325,65 @@ class RunPhaseViewConfirmingDeletes extends RunPhaseView {
 }
 
 @immutable
+class RunPhaseViewConfirmingOverwrites extends RunPhaseView {
+  const RunPhaseViewConfirmingOverwrites({
+    required this.sides,
+  }) : super();
+
+  static RunPhaseViewConfirmingOverwrites load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = RunPhaseViewConfirmingOverwrites(
+      sides: TraitHelpers.deserializeVectorMassOverwriteView(deserializer),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final List<MassOverwriteView> sides;
+
+  RunPhaseViewConfirmingOverwrites copyWith({
+    List<MassOverwriteView>? sides,
+  }) {
+    return RunPhaseViewConfirmingOverwrites(
+      sides: sides ?? this.sides,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(5);
+    TraitHelpers.serializeVectorMassOverwriteView(sides, serializer);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is RunPhaseViewConfirmingOverwrites
+      && listEquals(sides, other.sides);
+  }
+
+  @override
+  int get hashCode => sides.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'sides: $sides'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'RunPhaseViewConfirmingOverwrites';
+  }
+}
+
+@immutable
 class RunPhaseViewApplying extends RunPhaseView {
   const RunPhaseViewApplying(
   ) : super();
@@ -337,7 +398,7 @@ class RunPhaseViewApplying extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(5);
+    serializer.serializeVariantIndex(6);
     serializer.decreaseContainerDepth();
   }
 
@@ -393,7 +454,7 @@ class RunPhaseViewFinished extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(6);
+    serializer.serializeVariantIndex(7);
     value.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
@@ -452,7 +513,7 @@ class RunPhaseViewStopped extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(7);
+    serializer.serializeVariantIndex(8);
     serializer.serializeUint64(completed);
     serializer.decreaseContainerDepth();
   }
@@ -511,7 +572,7 @@ class RunPhaseViewPaused extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(8);
+    serializer.serializeVariantIndex(9);
     serializer.serializeUint64(completed);
     serializer.decreaseContainerDepth();
   }
@@ -570,7 +631,7 @@ class RunPhaseViewFailed extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(9);
+    serializer.serializeVariantIndex(10);
     serializer.serializeString(message);
     serializer.decreaseContainerDepth();
   }
@@ -629,7 +690,7 @@ class RunPhaseViewReplicaBusy extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(10);
+    serializer.serializeVariantIndex(11);
     serializer.serializeString(message);
     serializer.decreaseContainerDepth();
   }
@@ -676,7 +737,7 @@ class RunPhaseViewDeletesDeclined extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(11);
+    serializer.serializeVariantIndex(12);
     serializer.decreaseContainerDepth();
   }
 
@@ -706,6 +767,50 @@ class RunPhaseViewDeletesDeclined extends RunPhaseView {
 }
 
 @immutable
+class RunPhaseViewOverwritesDeclined extends RunPhaseView {
+  const RunPhaseViewOverwritesDeclined(
+  ) : super();
+
+  static RunPhaseViewOverwritesDeclined load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = RunPhaseViewOverwritesDeclined(
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(13);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is RunPhaseViewOverwritesDeclined;
+  }
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'RunPhaseViewOverwritesDeclined';
+  }
+}
+
+@immutable
 class RunPhaseViewNoSummary extends RunPhaseView {
   const RunPhaseViewNoSummary(
   ) : super();
@@ -720,7 +825,7 @@ class RunPhaseViewNoSummary extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(12);
+    serializer.serializeVariantIndex(14);
     serializer.decreaseContainerDepth();
   }
 
@@ -776,7 +881,7 @@ class RunPhaseViewFinishedWithIssues extends RunPhaseView {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(13);
+    serializer.serializeVariantIndex(15);
     TraitHelpers.serializeVectorEntryIssueView(entries, serializer);
     serializer.decreaseContainerDepth();
   }

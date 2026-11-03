@@ -1,6 +1,7 @@
 use dsync_domain::{
-    Action, Conflict, EntryId, Jobs, MassDelete, MassDeletePolicy, Plan, Proposal, RelPath,
-    RootKind, Side, Tuning,
+    Action, Conflict, ContentHash, EntryId, FileMeta, FileState, Jobs, MassDelete,
+    MassDeletePolicy, MassOverwrite, MassOverwritePolicy, Plan, Proposal, RelPath, RootKind,
+    ScanEntry, Side, Status, Tuning, Unchanged,
 };
 
 use super::{ActionChoice, ConflictChoice, Recall, Recalled, RowRecall};
@@ -57,6 +58,7 @@ struct Fake {
     asked_again: Vec<Recall>,
     carried: usize,
     asked_deletes: usize,
+    asked_overwrites: usize,
 }
 
 impl Fake {
@@ -110,6 +112,11 @@ impl Decider for Fake {
 
     async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
         self.asked_deletes += 1;
+        self.confirms
+    }
+
+    async fn confirm_overwrites(&mut self, _: &MassOverwrite) -> bool {
+        self.asked_overwrites += 1;
         self.confirms
     }
 }
@@ -425,4 +432,56 @@ async fn an_unconfirmed_delete_guard_is_asked_every_time() {
 
     assert!(!first && !second);
     assert_eq!(inner.asked_deletes, 2);
+}
+
+/// `b` of side B's 20 files overwritten from A.
+fn overwritten(b: usize) -> MassOverwrite {
+    let on_b: Vec<ScanEntry> = (0..20)
+        .map(|index| {
+            let file = FileState {
+                meta: FileMeta {
+                    size: 1,
+                    mtime_us: 0,
+                    mode: 0o644,
+                    read_us: 0,
+                },
+                hash: ContentHash::from_digest([1; 32]),
+            };
+            ScanEntry::new(
+                path(&format!("f{index:02}")),
+                Status::Unchanged {
+                    file,
+                    by: Unchanged::MetadataMatched,
+                },
+            )
+        })
+        .collect();
+    let kept: Vec<Action> = (0..b)
+        .map(|index| Action::Copy {
+            path: path(&format!("f{index:02}")),
+            from: Side::A,
+            bytes: 1,
+        })
+        .collect();
+    MassOverwritePolicy::DEFAULT
+        .judge(&kept, [&[], &on_b], [0, 20])
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_confirmed_overwrite_guard_holds_until_a_side_overwrites_more() {
+    let mut inner = Fake {
+        confirms: true,
+        ..Fake::default()
+    };
+    let mut recalled = Recalled::new(&mut inner);
+    let mut answers = Vec::new();
+    for verdict in [overwritten(15), overwritten(12), overwritten(16)] {
+        answers.push(recalled.confirm_overwrites(&verdict).await);
+    }
+    drop(recalled);
+
+    assert_eq!(answers, [true; 3]);
+    // Asked first, then at 16; the delete guard's memory is its own.
+    assert_eq!((inner.asked_overwrites, inner.asked_deletes), (2, 0));
 }

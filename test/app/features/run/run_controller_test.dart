@@ -157,17 +157,21 @@ void main() {
       ]);
     });
 
-    test('the review\'s two answers and the delete guard\'s', () async {
+    test('the review\'s two answers and the guards\'', () async {
       await controller().confirm();
       await controller().acceptAll();
       await controller().confirmDeletes();
       await controller().declineDeletes();
+      await controller().confirmOverwrites();
+      await controller().declineOverwrites();
 
       expect(harness.intents, const [
         wire.RunIntentConfirm(),
         wire.RunIntentAcceptAll(),
         wire.RunIntentAnswerDeletes(proceed: true),
         wire.RunIntentAnswerDeletes(proceed: false),
+        wire.RunIntentAnswerOverwrites(proceed: true),
+        wire.RunIntentAnswerOverwrites(proceed: false),
       ]);
     });
 
@@ -253,6 +257,7 @@ void main() {
           (scanning, live),
           (reviewing(), live),
           (confirmingDeletes(), live),
+          (confirmingOverwrites(), live),
           (applying, live),
           (finished(), over),
         ]) {

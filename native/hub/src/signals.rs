@@ -271,6 +271,8 @@ pub enum RunIntent {
     AcceptAll,
     /// SPEC §10's delete guard: apply the deletions, or apply nothing.
     AnswerDeletes { proceed: bool },
+    /// SPEC §10's overwrite guard: apply the overwrites, or apply nothing.
+    AnswerOverwrites { proceed: bool },
     /// The user's stop: graceful - nothing further starts, what is in
     /// flight finishes.
     Stop,

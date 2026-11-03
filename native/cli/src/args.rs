@@ -248,6 +248,11 @@ pub struct RunArgs {
     /// without asking; without it, --batch refuses such a run (SPEC §10).
     #[arg(long)]
     pub allow_mass_delete: bool,
+    /// Apply copies that overwrite over half of a side's files (10 or
+    /// more), or empty 5 or more of its files to 0 bytes, without asking;
+    /// without it, --batch refuses such a run (SPEC §10).
+    #[arg(long)]
+    pub allow_mass_overwrite: bool,
     /// Machine-readable output (JSON Lines) on stdout.
     #[arg(long)]
     pub json: bool,
@@ -303,6 +308,7 @@ impl RunArgs {
             ssh_options: self.ssh_option,
             remote_dsync: self.remote_dsync,
             allow_mass_delete: self.allow_mass_delete,
+            allow_mass_overwrite: self.allow_mass_overwrite,
             mass_delete: None,
         }
     }
@@ -486,6 +492,7 @@ mod tests {
             "--timings",
             "--verbose",
             "--allow-mass-delete",
+            "--allow-mass-overwrite",
         ])
         else {
             panic!("sync did not parse");
@@ -509,6 +516,7 @@ mod tests {
                 ssh_options: vec!["-p".into(), "-i".into()],
                 remote_dsync: Some("/opt/dsync".into()),
                 allow_mass_delete: true,
+                allow_mass_overwrite: true,
                 mass_delete: None,
             }
         );

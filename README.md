@@ -338,8 +338,10 @@ SPEC section that owns the detail.
   §7.6).
 - **Nothing is kept of what a sync overwrites or deletes.** There is no trash
   and no version history; the guard that asks before a run deletes at least
-  10 files and more than half of one side is the only brake, and
-  `--allow-mass-delete` switches it off for that run (SPEC §10).
+  10 files and more than half of one side, and its sibling that asks before
+  a run overwrites as many or empties 5 or more files, are the only brakes;
+  `--allow-mass-delete` and `--allow-mass-overwrite` switch each off for
+  that run (SPEC §10).
 - **No watch mode and no delta transfer.** A sync happens when you start one,
   and a changed file is copied whole (SPEC §16).
 

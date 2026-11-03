@@ -19,8 +19,8 @@ use dsync_core::{
     RunError, RunEvent,
 };
 use dsync_domain::{
-    Action, Command, EffectiveOptions, Flags, HostFacts, Location, MassDelete, Plan, Platform,
-    ReplicaLocation, ReplicaOp, RunFlags, STAGING_DIR, Side, Tuning,
+    Action, Command, EffectiveOptions, Flags, HostFacts, Location, MassDelete, MassOverwrite, Plan,
+    Platform, ReplicaLocation, ReplicaOp, RunFlags, STAGING_DIR, Side, Tuning,
 };
 use tokio::sync::{Semaphore, mpsc};
 
@@ -518,6 +518,10 @@ impl Decider for Counting {
     }
 
     async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
+        false
+    }
+
+    async fn confirm_overwrites(&mut self, _: &MassOverwrite) -> bool {
         false
     }
 }

@@ -38,6 +38,7 @@ pub struct Flags {
     pub ssh_options: Vec<String>,
     pub remote_dsync: Option<String>,
     pub allow_mass_delete: bool,
+    pub allow_mass_overwrite: bool,
     /// Not a CLI flag: the head's own setting, the mass-delete guard's
     /// thresholds as `(min_files, percent)`. `None` is
     /// [`MassDeletePolicy::DEFAULT`].
@@ -82,6 +83,10 @@ pub struct RunFlags {
     /// `--allow-mass-delete`: apply deletions SPEC §10's guard would stop
     /// for without asking.
     pub allow_mass_delete: bool,
+    /// `--allow-mass-overwrite`: apply overwrites SPEC §10's overwrite
+    /// guard would stop for without asking. Its own flag: allowing a big
+    /// delete says nothing about a folder's files all being rewritten.
+    pub allow_mass_overwrite: bool,
     /// When SPEC §10's guard trips: the head's thresholds, or the default.
     pub mass_delete: MassDeletePolicy,
 }
@@ -156,6 +161,7 @@ impl RunFlags {
             ssh_options,
             remote_dsync,
             allow_mass_delete: flags.allow_mass_delete,
+            allow_mass_overwrite: flags.allow_mass_overwrite,
             mass_delete,
         })
     }
@@ -185,7 +191,26 @@ mod tests {
         assert_eq!(flags.jobs, None);
         assert_eq!(flags.apply_concurrency, None);
         assert!(!flags.allow_mass_delete);
+        assert!(!flags.allow_mass_overwrite);
         assert_eq!(flags.mass_delete, MassDeletePolicy::DEFAULT);
+    }
+
+    #[test]
+    fn the_two_guard_allowances_are_separate_flags() {
+        let overwrite = sync(Flags {
+            allow_mass_overwrite: true,
+            ..Flags::default()
+        })
+        .unwrap();
+        assert!(overwrite.allow_mass_overwrite);
+        assert!(!overwrite.allow_mass_delete);
+        let delete = sync(Flags {
+            allow_mass_delete: true,
+            ..Flags::default()
+        })
+        .unwrap();
+        assert!(delete.allow_mass_delete);
+        assert!(!delete.allow_mass_overwrite);
     }
 
     #[test]

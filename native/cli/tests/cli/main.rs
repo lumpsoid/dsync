@@ -15,6 +15,7 @@ mod folder_in_use;
 #[cfg(unix)]
 mod interactive;
 mod mass_delete;
+mod mass_overwrite;
 mod output;
 mod pair;
 #[cfg(unix)]

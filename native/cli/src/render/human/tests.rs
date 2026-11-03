@@ -10,7 +10,8 @@ use dsync_domain::{
 
 use super::HumanRenderer;
 use crate::render::fixtures::{
-    self, PROFILE_ID, clock, conflict, created, mass_delete, path, proposed, unchanged,
+    self, PROFILE_ID, clock, conflict, created, mass_delete, mass_overwrite, path, proposed,
+    unchanged,
 };
 use crate::render::{RunName, RunView};
 
@@ -442,6 +443,39 @@ fn unconfirmed_deletions_are_refused_with_the_way_to_apply_them_even_when_quiet(
         "error: not applied: this run would delete 12 of the 20 files replica B last synced, \
          and that was not confirmed (SPEC §10). Nothing was changed.\nTo apply it, run \
          interactively and answer y, or rerun with --allow-mass-delete.\n"
+    );
+}
+
+#[test]
+fn an_allowed_mass_overwrite_is_a_warning_naming_the_replica_and_the_emptied() {
+    let event = |allowed| RunEvent::MassOverwrite {
+        verdict: mass_overwrite(Side::B, 12, 2, 20),
+        allowed,
+    };
+    assert_eq!(
+        out(Verbosity::Normal, &[event(true)]),
+        "warning: overwriting 12 of the 20 files replica B (box:notes) last synced, 2 of them \
+         emptied to 0 bytes, as --allow-mass-overwrite allows (SPEC §10)\n"
+    );
+    assert_eq!(out(Verbosity::Normal, &[event(false)]), "");
+}
+
+#[test]
+fn unconfirmed_overwrites_are_refused_naming_their_own_flag_even_when_quiet() {
+    let refused = RunEvent::Error(RunError::OverwritesNotConfirmed(mass_overwrite(
+        Side::B,
+        12,
+        0,
+        20,
+    )));
+    let (out, err) = rendered(&fixtures::view(), Verbosity::Quiet, &[refused]);
+    assert_eq!(out, "");
+    assert_eq!(
+        err,
+        "error: not applied: this run would overwrite 12 of the 20 files replica B last synced \
+         (0 of them emptied to 0 bytes), and that was not confirmed (SPEC §10). Nothing was \
+         changed.\nTo apply it, run interactively and answer y, or rerun with \
+         --allow-mass-overwrite.\n"
     );
 }
 

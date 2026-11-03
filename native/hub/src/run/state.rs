@@ -20,8 +20,8 @@ use dsync_core::{
     RunEvent, SkipReason,
 };
 use dsync_domain::{
-    Action, MassDelete, PeekLimits, Plan, RelPath, ReplicaInfo, RootKind, RunSummary, ScanTally,
-    Side, SideDeletes, SkippedPath, Status,
+    Action, MassDelete, MassOverwrite, PeekLimits, Plan, RelPath, ReplicaInfo, RootKind,
+    RunSummary, ScanTally, Side, SideDeletes, SideOverwrites, SkippedPath, Status,
 };
 
 use super::rows::{Delivered, Outcomes, PlanRows};
@@ -29,8 +29,8 @@ use crate::signals::RunIntent;
 use crate::throttle::Urgency;
 use crate::views::{
     ActionChoiceView, ConflictChoiceView, DecisionSummaryView, EntryIssueView, EntryRunView,
-    EntryStatusView, MassDeleteView, PlanUpdateView, ProgressView, ReplicasView, ResultView,
-    RunPhaseView, RunStandingView, RunView, SkippedView, SummaryView, TalliesView,
+    EntryStatusView, MassDeleteView, MassOverwriteView, PlanUpdateView, ProgressView, ReplicasView,
+    ResultView, RunPhaseView, RunStandingView, RunView, SkippedView, SummaryView, TalliesView,
 };
 
 /// What an intent asks the session to carry out.
@@ -44,6 +44,8 @@ pub(crate) enum Steer {
     Decide(Choices),
     /// Answer the waiting delete guard.
     AnswerDeletes(bool),
+    /// Answer the waiting overwrite guard.
+    AnswerOverwrites(bool),
     /// Stop the live attempt once more: the first stop is graceful, a
     /// second drops it.
     Stop,
@@ -72,6 +74,7 @@ enum Phase {
     /// The head reviews this plan, the decider waiting.
     Reviewing(Arc<PlanRows>),
     ConfirmingDeletes(Vec<SideDeletes>),
+    ConfirmingOverwrites(Vec<SideOverwrites>),
     Applying,
     Finished(RunSummary),
     Stopped(usize),
@@ -82,6 +85,7 @@ enum Phase {
     Crashed(String),
     ReplicaBusy(String),
     DeletesDeclined,
+    OverwritesDeclined,
     NoSummary,
     /// Several entries ran and these did not sync: each one's position
     /// and why.
@@ -97,11 +101,13 @@ impl Phase {
             | Phase::Scanning
             | Phase::Reviewing(_)
             | Phase::ConfirmingDeletes(_)
+            | Phase::ConfirmingOverwrites(_)
             | Phase::Applying => RunStandingView::Live,
             Phase::Paused(_)
             | Phase::Failed(_)
             | Phase::ReplicaBusy(_)
             | Phase::DeletesDeclined
+            | Phase::OverwritesDeclined
             | Phase::NoSummary
             | Phase::FinishedWithIssues(_) => RunStandingView::Resumable,
             Phase::Finished(_) | Phase::Stopped(_) | Phase::Crashed(_) => RunStandingView::Over,
@@ -277,8 +283,9 @@ enum Failure {
     Failed(String),
     /// SPEC §4.3's held lock.
     ReplicaBusy(String),
-    /// The refusal that follows the head declining the delete guard.
-    DeletesDeclined,
+    /// The refusal that follows the head declining one of SPEC §10's
+    /// guards.
+    Declined(Guard),
 }
 
 impl From<Failure> for Phase {
@@ -286,9 +293,17 @@ impl From<Failure> for Phase {
         match failure {
             Failure::Failed(message) => Phase::Failed(message),
             Failure::ReplicaBusy(message) => Phase::ReplicaBusy(message),
-            Failure::DeletesDeclined => Phase::DeletesDeclined,
+            Failure::Declined(Guard::Deletes) => Phase::DeletesDeclined,
+            Failure::Declined(Guard::Overwrites) => Phase::OverwritesDeclined,
         }
     }
+}
+
+/// Which of SPEC §10's guards the head was asked about.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Guard {
+    Deletes,
+    Overwrites,
 }
 
 /// One entry of a session as the head lists it: its kind and its two
@@ -371,8 +386,8 @@ struct EntryState {
     warn_size_bytes: Option<u64>,
     /// What its rows' compares are judged by.
     peek: PeekLimits,
-    /// The head declined the delete guard's deletions.
-    declined: bool,
+    /// The guard whose question the head declined, if it did.
+    declined: Option<Guard>,
     /// The run's summary, once reported; what a lone entry ends as is
     /// decided when the session has ended, so nothing resumes a run still
     /// closing.
@@ -401,7 +416,7 @@ impl EntryState {
         EntryState {
             warn_size_bytes,
             peek,
-            declined: false,
+            declined: None,
             summary: None,
             failure: None,
             connected_at_ms: None,
@@ -467,9 +482,10 @@ impl EntryState {
                 Urgency::Routine
             }
             // The plan carries them, in the same order.
-            RunEvent::Conflict(_) | RunEvent::MassDelete { .. } | RunEvent::Action(_) => {
-                Urgency::Unseen
-            }
+            RunEvent::Conflict(_)
+            | RunEvent::MassDelete { .. }
+            | RunEvent::MassOverwrite { .. }
+            | RunEvent::Action(_) => Urgency::Unseen,
             RunEvent::Plan { plan, .. } => {
                 if self.plan.is_some() {
                     return Urgency::Unseen;
@@ -500,8 +516,8 @@ impl EntryState {
                 let message = error.to_string();
                 self.failure = Some(if error.replica_busy() {
                     Failure::ReplicaBusy(message)
-                } else if self.declined {
-                    Failure::DeletesDeclined
+                } else if let Some(guard) = self.declined {
+                    Failure::Declined(guard)
                 } else {
                     Failure::Failed(message)
                 });
@@ -732,6 +748,32 @@ impl RunState {
         None
     }
 
+    /// SPEC §10's overwrite guard asks about `verdict`, as
+    /// [`RunState::ask_deletes`].
+    pub(crate) fn ask_overwrites(&mut self, verdict: &MassOverwrite) -> Option<bool> {
+        if self.suspend.is_some() {
+            return Some(false);
+        }
+        self.phase = Phase::ConfirmingOverwrites(verdict.sides().to_vec());
+        None
+    }
+
+    /// The head's answer to `guard`'s question, which the run is `asked`
+    /// when it waits on it: whether the answer goes to the decider. A
+    /// question answered once, or a run stopping, takes no answer.
+    fn answer_guard(&mut self, asked: bool, guard: Guard, proceed: bool) -> bool {
+        if !asked || self.entry.declined.is_some() || self.suspend.is_some() {
+            return false;
+        }
+        if proceed {
+            self.phase = Phase::Applying;
+        } else {
+            // The refusal that follows reads as the head's choice.
+            self.entry.declined = Some(guard);
+        }
+        true
+    }
+
     /// Stopped or paused after `completed` actions, when the head asked.
     fn suspended(&self, completed: usize) -> Option<Phase> {
         self.suspend.map(|suspend| match suspend {
@@ -880,16 +922,17 @@ impl RunState {
             },
             RunIntent::AnswerDeletes { proceed } => {
                 let asked = matches!(self.phase, Phase::ConfirmingDeletes(_));
-                if !asked || self.entry.declined || self.suspend.is_some() {
+                if !self.answer_guard(asked, Guard::Deletes, proceed) {
                     return Steer::Ignored;
                 }
-                if proceed {
-                    self.phase = Phase::Applying;
-                } else {
-                    // The refusal that follows reads as the head's choice.
-                    self.entry.declined = true;
-                }
                 Steer::AnswerDeletes(proceed)
+            }
+            RunIntent::AnswerOverwrites { proceed } => {
+                let asked = matches!(self.phase, Phase::ConfirmingOverwrites(_));
+                if !self.answer_guard(asked, Guard::Overwrites, proceed) {
+                    return Steer::Ignored;
+                }
+                Steer::AnswerOverwrites(proceed)
             }
             RunIntent::Stop | RunIntent::Pause if !live || self.suspend.is_some() => Steer::Ignored,
             RunIntent::Stop => {
@@ -941,6 +984,9 @@ impl RunState {
             Phase::ConfirmingDeletes(sides) => RunPhaseView::ConfirmingDeletes {
                 sides: sides.iter().map(MassDeleteView::from).collect(),
             },
+            Phase::ConfirmingOverwrites(sides) => RunPhaseView::ConfirmingOverwrites {
+                sides: sides.iter().map(MassOverwriteView::from).collect(),
+            },
             Phase::Applying => RunPhaseView::Applying,
             Phase::Finished(summary) => RunPhaseView::Finished(SummaryView::from(summary)),
             Phase::Stopped(completed) => RunPhaseView::Stopped {
@@ -956,6 +1002,7 @@ impl RunState {
                 message: message.clone(),
             },
             Phase::DeletesDeclined => RunPhaseView::DeletesDeclined,
+            Phase::OverwritesDeclined => RunPhaseView::OverwritesDeclined,
             Phase::NoSummary => RunPhaseView::NoSummary,
             Phase::FinishedWithIssues(issues) => RunPhaseView::FinishedWithIssues {
                 entries: issues
@@ -1089,8 +1136,9 @@ mod tests {
 
     use dsync_domain::{
         Action, Conflict, ContentHash, FileMeta, FileState, MassDelete, MassDeletePolicy,
-        MissingReplicaRoot, Plan, Proposal, RelPath, ReplicaInfo, ReplicaRoot, RunSummary,
-        ScanTally, Side, Status, Tuning,
+        MassOverwrite, MassOverwritePolicy, MissingReplicaRoot, Plan, Proposal, RelPath,
+        ReplicaInfo, ReplicaRoot, RunSummary, ScanEntry, ScanTally, Side, Status, Tuning,
+        Unchanged,
     };
 
     use super::{Choices, Delivered, EntryRoots, Review, RunState, Steer};
@@ -1237,6 +1285,40 @@ mod tests {
             .collect();
         MassDeletePolicy::DEFAULT
             .judge(&kept, [0, 12])
+            .unwrap_or_else(|| panic!("10 of 12 trips the guard"))
+    }
+
+    /// Ten of B's twelve files overwritten from A, one of them emptied.
+    fn rewritten_b() -> MassOverwrite {
+        let on_b: Vec<ScanEntry> = (0..12)
+            .map(|index| {
+                let file = FileState {
+                    meta: FileMeta {
+                        size: 4,
+                        mtime_us: 0,
+                        mode: 0o644,
+                        read_us: 0,
+                    },
+                    hash: ContentHash::from_digest([1; 32]),
+                };
+                ScanEntry::new(
+                    path(&format!("f{index}")),
+                    Status::Unchanged {
+                        file,
+                        by: Unchanged::MetadataMatched,
+                    },
+                )
+            })
+            .collect();
+        let kept: Vec<Action> = (0..10)
+            .map(|index| Action::Copy {
+                path: path(&format!("f{index}")),
+                from: Side::A,
+                bytes: if index == 0 { 0 } else { 4 },
+            })
+            .collect();
+        MassOverwritePolicy::DEFAULT
+            .judge(&kept, [&[], &on_b], [0, 12])
             .unwrap_or_else(|| panic!("10 of 12 trips the guard"))
     }
 
@@ -1558,6 +1640,51 @@ mod tests {
         assert_eq!(
             state.steer(RunIntent::AnswerDeletes { proceed: true }),
             Steer::AnswerDeletes(true)
+        );
+        assert!(matches!(phase(&state), RunPhaseView::Applying));
+    }
+
+    #[test]
+    fn the_overwrite_guard_takes_only_its_own_answer_and_a_decline_reads_as_its_own() {
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.connected(1);
+        let verdict = rewritten_b();
+        assert_eq!(state.ask_overwrites(&verdict), None);
+        let RunPhaseView::ConfirmingOverwrites { sides } = phase(&state) else {
+            panic!("asking");
+        };
+        assert_eq!(
+            (sides[0].overwrites, sides[0].truncated, sides[0].archived),
+            (10, 1, 12)
+        );
+        assert_eq!(
+            state.steer(RunIntent::AnswerDeletes { proceed: true }),
+            Steer::Ignored,
+            "not the delete guard's question"
+        );
+        assert_eq!(
+            state.steer(RunIntent::AnswerOverwrites { proceed: false }),
+            Steer::AnswerOverwrites(false)
+        );
+        assert_eq!(
+            state.steer(RunIntent::AnswerOverwrites { proceed: true }),
+            Steer::Ignored,
+            "answered already"
+        );
+        state.event(RunEvent::Error(RunError::OverwritesNotConfirmed(verdict)));
+        state.ended(ran());
+        assert!(matches!(phase(&state), RunPhaseView::OverwritesDeclined));
+        assert!(!state.is_over(), "a resume asks again");
+    }
+
+    #[test]
+    fn confirming_the_overwrites_moves_on_to_applying() {
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.connected(1);
+        state.ask_overwrites(&rewritten_b());
+        assert_eq!(
+            state.steer(RunIntent::AnswerOverwrites { proceed: true }),
+            Steer::AnswerOverwrites(true)
         );
         assert!(matches!(phase(&state), RunPhaseView::Applying));
     }

@@ -37,6 +37,7 @@ pub mod host_port;
 mod jobs;
 mod location;
 mod mass_delete;
+mod mass_overwrite;
 mod metric_format;
 mod missing_parent_folder;
 mod on_disk;
@@ -123,6 +124,7 @@ pub use location::{
     SshLocation, UnixLocation,
 };
 pub use mass_delete::{MassDelete, MassDeletePolicy, MassDeletePolicyError, SideDeletes};
+pub use mass_overwrite::{MassOverwrite, MassOverwritePolicy, SideOverwrites};
 pub use metric_format::{format_bytes, format_count, format_duration};
 pub use missing_parent_folder::MissingParentFolder;
 pub use on_disk::OnDisk;

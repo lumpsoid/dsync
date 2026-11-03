@@ -18,11 +18,12 @@ abstract class RunIntent {
       case 2: return RunIntentConfirm.load(deserializer);
       case 3: return RunIntentAcceptAll.load(deserializer);
       case 4: return RunIntentAnswerDeletes.load(deserializer);
-      case 5: return RunIntentStop.load(deserializer);
-      case 6: return RunIntentPause.load(deserializer);
-      case 7: return RunIntentResume.load(deserializer);
-      case 8: return RunIntentForeground.load(deserializer);
-      case 9: return RunIntentClose.load(deserializer);
+      case 5: return RunIntentAnswerOverwrites.load(deserializer);
+      case 6: return RunIntentStop.load(deserializer);
+      case 7: return RunIntentPause.load(deserializer);
+      case 8: return RunIntentResume.load(deserializer);
+      case 9: return RunIntentForeground.load(deserializer);
+      case 10: return RunIntentClose.load(deserializer);
       default: throw Exception('Unknown variant index for RunIntent: ' + index.toString());
     }
   }
@@ -332,6 +333,65 @@ class RunIntentAnswerDeletes extends RunIntent {
 }
 
 @immutable
+class RunIntentAnswerOverwrites extends RunIntent {
+  const RunIntentAnswerOverwrites({
+    required this.proceed,
+  }) : super();
+
+  static RunIntentAnswerOverwrites load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = RunIntentAnswerOverwrites(
+      proceed: deserializer.deserializeBool(),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final bool proceed;
+
+  RunIntentAnswerOverwrites copyWith({
+    bool? proceed,
+  }) {
+    return RunIntentAnswerOverwrites(
+      proceed: proceed ?? this.proceed,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(5);
+    serializer.serializeBool(proceed);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is RunIntentAnswerOverwrites
+      && proceed == other.proceed;
+  }
+
+  @override
+  int get hashCode => proceed.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'proceed: $proceed'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'RunIntentAnswerOverwrites';
+  }
+}
+
+@immutable
 class RunIntentStop extends RunIntent {
   const RunIntentStop(
   ) : super();
@@ -346,7 +406,7 @@ class RunIntentStop extends RunIntent {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(5);
+    serializer.serializeVariantIndex(6);
     serializer.decreaseContainerDepth();
   }
 
@@ -390,7 +450,7 @@ class RunIntentPause extends RunIntent {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(6);
+    serializer.serializeVariantIndex(7);
     serializer.decreaseContainerDepth();
   }
 
@@ -434,7 +494,7 @@ class RunIntentResume extends RunIntent {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(7);
+    serializer.serializeVariantIndex(8);
     serializer.decreaseContainerDepth();
   }
 
@@ -478,7 +538,7 @@ class RunIntentForeground extends RunIntent {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(8);
+    serializer.serializeVariantIndex(9);
     serializer.decreaseContainerDepth();
   }
 
@@ -522,7 +582,7 @@ class RunIntentClose extends RunIntent {
 
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
-    serializer.serializeVariantIndex(9);
+    serializer.serializeVariantIndex(10);
     serializer.decreaseContainerDepth();
   }
 

@@ -260,6 +260,7 @@ pub fn kind(event: &RunEvent) -> &'static str {
         RunEvent::Conflict(_) => "conflict",
         RunEvent::Plan { .. } => "plan",
         RunEvent::MassDelete { .. } => "massDelete",
+        RunEvent::MassOverwrite { .. } => "massOverwrite",
         RunEvent::Action(_) => "action",
         RunEvent::Result { .. } => "result",
         RunEvent::Progress { .. } => "progress",
@@ -335,6 +336,11 @@ impl Decider for Answer {
     /// Its lists never delete enough to trip SPEC §10's guard.
     async fn confirm_deletes(&mut self, verdict: &dsync_domain::MassDelete) -> bool {
         panic!("an Answer was asked to confirm deletions: {verdict:?}")
+    }
+
+    /// Nor overwrite enough to trip the overwrite guard.
+    async fn confirm_overwrites(&mut self, verdict: &dsync_domain::MassOverwrite) -> bool {
+        panic!("an Answer was asked to confirm overwrites: {verdict:?}")
     }
 }
 

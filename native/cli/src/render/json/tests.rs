@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use super::JsonRenderer;
 use crate::render::RunView;
 use crate::render::fixtures::{
-    self, PROFILE_ID, conflict, created, mass_delete, path, proposed, unchanged,
+    self, PROFILE_ID, conflict, created, mass_delete, mass_overwrite, path, proposed, unchanged,
 };
 
 fn lines(view: &RunView, events: &[RunEvent]) -> Vec<Value> {
@@ -343,6 +343,39 @@ fn a_mass_delete_reports_each_side_count_share_and_sample() {
         refused["message"]
             .as_str()
             .is_some_and(|message| message.starts_with("not applied: this run would delete 11")),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_mass_overwrite_reports_each_side_count_emptied_share_and_sample() {
+    let line = one(RunEvent::MassOverwrite {
+        verdict: mass_overwrite(Side::B, 12, 1, 12),
+        allowed: true,
+    });
+    assert_eq!(
+        line,
+        json!({
+            "type": "massOverwrite",
+            "entry": 0,
+            "allowed": true,
+            "a": null,
+            "b": {
+                "overwrites": 12,
+                "truncated": 1,
+                "archived": 12,
+                "paths": ["f11", "f00", "f01", "f02", "f03"],
+            },
+        })
+    );
+    let refused = one(RunEvent::Error(RunError::OverwritesNotConfirmed(
+        mass_overwrite(Side::B, 12, 0, 12),
+    )));
+    assert_eq!(refused["type"], "error");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("not applied: this run would overwrite 12")),
         "{refused}"
     );
 }

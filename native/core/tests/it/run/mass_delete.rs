@@ -3,7 +3,7 @@
 //! decider confirms or the run allows it.
 
 use dsync_core::{BatchDecider, Decider, Peek, Replica, RunError, RunEvent};
-use dsync_domain::{Action, Flags, MassDelete, Plan, Side, Tuning};
+use dsync_domain::{Action, Flags, MassDelete, MassOverwrite, Plan, Side, Tuning};
 
 use crate::run::support::{Finished, Site, run, run_with, sync};
 
@@ -26,6 +26,10 @@ impl Decider for Confirming {
     async fn confirm_deletes(&mut self, verdict: &MassDelete) -> bool {
         self.asked = Some(verdict.clone());
         self.confirm
+    }
+
+    async fn confirm_overwrites(&mut self, _: &MassOverwrite) -> bool {
+        false
     }
 }
 

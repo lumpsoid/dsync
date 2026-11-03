@@ -2299,6 +2299,54 @@ void main() {
     });
   });
 
+  group('the overwrite guard (SPEC §10)', () {
+    testWidgets('asks before applying, naming how many files, how many '
+        'emptied and where', (tester) async {
+      await open(tester, runView(phase: confirmingOverwrites(truncated: 6)));
+
+      expect(
+        find.byKey(const Key('run-confirming-overwrites')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('run-overwrites-bar')), findsOneWidget);
+      expect(find.byKey(const Key('run-deletes-bar')), findsNothing);
+      expect(
+        find.text(
+          '40 of the 50 files on the remote (~/notes) would be '
+          'overwritten, 6 of them with an empty file.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Overwrite 40 files'), findsOneWidget);
+      expect(find.byKey(const Key('run-stop')), findsOneWidget);
+    });
+
+    testWidgets('Overwrite answers yes, and Don\'t overwrite answers no and '
+        'ends saying nothing was changed', (tester) async {
+      await open(tester, runView(phase: confirmingOverwrites()));
+
+      await tester.tap(find.byKey(const Key('run-overwrites-confirm')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('run-overwrites-decline')));
+      await tester.pump();
+      expect(intents(), const [
+        wire.RunIntentAnswerOverwrites(proceed: true),
+        wire.RunIntentAnswerOverwrites(proceed: false),
+      ]);
+
+      await deliver(
+        tester,
+        runView(
+          standing: resumable,
+          phase: const wire.RunPhaseViewOverwritesDeclined(),
+        ),
+      );
+      expect(find.text(overwritesDeclinedMessage), findsOneWidget);
+      expect(find.byKey(const Key('run-resume')), findsOneWidget);
+      expect(find.byKey(const Key('run-overwrites-bar')), findsNothing);
+    });
+  });
+
   group('affordances for a mouse and a keyboard', () {
     // Everything the review page can show at once: the scan tally's
     // disclosure, a conflict's two boxes, action rows with their controls

@@ -224,6 +224,14 @@ class SyncRunController {
   /// SPEC §10: apply nothing; the run ends without touching either side.
   Future<void> declineDeletes() => _steer(const AnswerDeletes(proceed: false));
 
+  /// SPEC §10: apply the overwrites the guard stopped for.
+  Future<void> confirmOverwrites() =>
+      _steer(const AnswerOverwrites(proceed: true));
+
+  /// SPEC §10: apply nothing; the run ends without touching either side.
+  Future<void> declineOverwrites() =>
+      _steer(const AnswerOverwrites(proceed: false));
+
   void dispose() {
     _disposed = true;
     // Not awaited: the rest of the run belongs to the core, not to the
@@ -461,6 +469,22 @@ class SyncRunController {
           archived: side.archived,
         ),
     ]),
+    RunConfirmingOverwrites(:final sides) => SyncRunConfirmingOverwrites([
+      for (final side in sides)
+        SyncRunOverwritesOnSide(
+          where: switch (side.side) {
+            ReplicaSide.a => 'this device',
+            ReplicaSide.b => 'the remote',
+          },
+          root: switch (side.side) {
+            ReplicaSide.a => entry?.localRoot,
+            ReplicaSide.b => entry?.remoteRoot,
+          },
+          overwrites: side.overwrites,
+          truncated: side.truncated,
+          archived: side.archived,
+        ),
+    ]),
     RunApplying() => const SyncRunApplying(),
     RunFinished(:final summary) => SyncRunFinished(
       applied: summary.applied,
@@ -474,6 +498,7 @@ class SyncRunController {
     RunFailed(:final message) => SyncRunFailed(message),
     RunReplicaBusy(:final message) => SyncRunReplicaBusy(message),
     RunDeletesDeclined() => const SyncRunFailed(deletesDeclinedMessage),
+    RunOverwritesDeclined() => const SyncRunFailed(overwritesDeclinedMessage),
     RunNoSummary() => const SyncRunFailed(noSummaryMessage),
     RunFinishedWithIssues(entries: final issues) => SyncRunFinishedWithIssues([
       for (final issue in issues)
@@ -801,6 +826,10 @@ SyncRunPlanGroup _group(PlanAction action) => switch (action) {
 const deletesDeclinedMessage =
     'Not applied: you chose not to delete those files. Nothing was changed '
     'on either side.';
+
+const overwritesDeclinedMessage =
+    'Not applied: you chose not to overwrite those files. Nothing was '
+    'changed on either side.';
 
 /// A re-dialled review's header (SPEC §11.4): how many rows [changed]
 /// since the user approved them, which the review shows first, and how

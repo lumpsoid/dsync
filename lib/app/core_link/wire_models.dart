@@ -24,6 +24,7 @@ import 'models/filter_folder_summary.dart';
 import 'models/filter_preview.dart';
 import 'models/filter_row.dart';
 import 'models/mass_delete_side.dart';
+import 'models/mass_overwrite_side.dart';
 import 'models/other_entry.dart';
 import 'models/pair_code_reading.dart';
 import 'models/paired_device_info.dart';
@@ -227,6 +228,9 @@ wire.RunIntent wireIntent(RunIntent intent) => switch (intent) {
   AnswerDeletes(:final proceed) => wire.RunIntentAnswerDeletes(
     proceed: proceed,
   ),
+  AnswerOverwrites(:final proceed) => wire.RunIntentAnswerOverwrites(
+    proceed: proceed,
+  ),
   StopRun() => const wire.RunIntentStop(),
   PauseRun() => const wire.RunIntentPause(),
   ResumeRun() => const wire.RunIntentResume(),
@@ -425,6 +429,16 @@ RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
         archived: _n(s.archived),
       ),
   ]),
+  wire.RunPhaseViewConfirmingOverwrites(:final sides) =>
+    RunConfirmingOverwrites([
+      for (final s in sides)
+        MassOverwriteSide(
+          side: side(s.side),
+          overwrites: _n(s.overwrites),
+          truncated: _n(s.truncated),
+          archived: _n(s.archived),
+        ),
+    ]),
   wire.RunPhaseViewApplying() => const RunApplying(),
   wire.RunPhaseViewFinished(:final value) => RunFinished(_summary(value)),
   wire.RunPhaseViewStopped(:final completed) => RunStopped(_n(completed)),
@@ -432,6 +446,7 @@ RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
   wire.RunPhaseViewFailed(:final message) => RunFailed(message),
   wire.RunPhaseViewReplicaBusy(:final message) => RunReplicaBusy(message),
   wire.RunPhaseViewDeletesDeclined() => const RunDeletesDeclined(),
+  wire.RunPhaseViewOverwritesDeclined() => const RunOverwritesDeclined(),
   wire.RunPhaseViewNoSummary() => const RunNoSummary(),
   wire.RunPhaseViewFinishedWithIssues(:final entries) => RunFinishedWithIssues([
     for (final issue in entries)

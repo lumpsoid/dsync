@@ -40,6 +40,13 @@ final class AnswerDeletes extends RunIntent {
   final bool proceed;
 }
 
+/// SPEC §10's overwrite answer: overwrite, or apply nothing.
+final class AnswerOverwrites extends RunIntent {
+  const AnswerOverwrites({required this.proceed});
+
+  final bool proceed;
+}
+
 /// The Stop button.
 final class StopRun extends RunIntent {
   const StopRun();

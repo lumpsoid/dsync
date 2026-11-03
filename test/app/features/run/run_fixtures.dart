@@ -269,6 +269,23 @@ wire.RunPhaseView confirmingDeletes({int deletes = 40, int archived = 50}) =>
       ],
     );
 
+/// SPEC §10's overwrite guard over the remote: [overwrites] of its
+/// [archived] files, [truncated] of them emptied.
+wire.RunPhaseView confirmingOverwrites({
+  int overwrites = 40,
+  int truncated = 0,
+  int archived = 50,
+}) => wire.RunPhaseViewConfirmingOverwrites(
+  sides: [
+    wire.MassOverwriteView(
+      side: wire.SideView.b,
+      overwrites: n(overwrites),
+      truncated: n(truncated),
+      archived: n(archived),
+    ),
+  ],
+);
+
 wire.ReplicaInfoView replicaInfo(DateTime? lastCommit) => wire.ReplicaInfoView(
   lastCommitMs: lastCommit?.millisecondsSinceEpoch,
   archivePath: null,

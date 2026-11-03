@@ -3,7 +3,7 @@ use dsync_domain::{Action, Plan, Side, Status};
 use tokio::sync::watch;
 
 use super::InteractiveDecider;
-use crate::render::fixtures::{conflict, created, mass_delete, path, proposed};
+use crate::render::fixtures::{conflict, created, mass_delete, mass_overwrite, path, proposed};
 use crate::test_support::with_deadline;
 
 fn copy(at: &str, from: Side, bytes: u64) -> Action {
@@ -295,4 +295,40 @@ async fn batch_and_dry_run_never_confirm_deletions() {
     let verdict = mass_delete(Side::A, 10, 10);
     assert!(!with_deadline("batch", BatchDecider.confirm_deletes(&verdict)).await);
     assert!(!with_deadline("dry run", DryRunDecider.confirm_deletes(&verdict)).await);
+}
+
+/// The overwrite guard's answer to `script`, and what was printed.
+async fn confirm_overwrites(script: &str) -> (bool, String) {
+    let (_shown, plan_shown) = watch::channel(1);
+    let mut output = Vec::new();
+    let mut decider = InteractiveDecider::new(script.as_bytes(), &mut output, plan_shown);
+    let verdict = mass_overwrite(Side::B, 12, 1, 12);
+    let confirmed = with_deadline("the confirmation", decider.confirm_overwrites(&verdict)).await;
+    drop(decider);
+    (confirmed, String::from_utf8(output).unwrap())
+}
+
+#[tokio::test]
+async fn the_overwrite_guard_shows_the_counts_and_proceeds_only_on_yes() {
+    let (confirmed, printed) = confirm_overwrites("y\n").await;
+    assert!(confirmed);
+    assert!(
+        printed.contains("on B: 12 of the 12 files it last synced, 1 of them emptied to 0 bytes"),
+        "{printed}"
+    );
+    assert!(printed.contains("    f11\n"), "{printed}");
+    assert!(printed.contains("and 7 more"), "{printed}");
+    assert!(
+        printed.contains("Apply these overwrites? [y/N]"),
+        "{printed}"
+    );
+    assert!(!confirm_overwrites("\n").await.0, "an empty line");
+    assert!(!confirm_overwrites("").await.0, "a closed input");
+}
+
+#[tokio::test]
+async fn batch_and_dry_run_never_confirm_overwrites() {
+    let verdict = mass_overwrite(Side::A, 10, 0, 10);
+    assert!(!with_deadline("batch", BatchDecider.confirm_overwrites(&verdict)).await);
+    assert!(!with_deadline("dry run", DryRunDecider.confirm_overwrites(&verdict)).await);
 }

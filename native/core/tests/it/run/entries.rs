@@ -16,8 +16,9 @@ use dsync_core::{
     ProfileStop, Replica, ReplicaError, ResolvedOverlap, RunError, SkipReason, StateDir,
 };
 use dsync_domain::{
-    Action, Command, EffectiveOptions, Entry, Flags, HostFacts, Location, MassDelete, Plan,
-    Platform, Profile, ProfileName, ReplicaLocation, ReplicaOp, RunFlags, Side, Tuning,
+    Action, Command, EffectiveOptions, Entry, Flags, HostFacts, Location, MassDelete,
+    MassOverwrite, Plan, Platform, Profile, ProfileName, ReplicaLocation, ReplicaOp, RunFlags,
+    Side, Tuning,
 };
 use tempfile::TempDir;
 use tokio::sync::{Notify, Semaphore, mpsc};
@@ -263,6 +264,10 @@ impl Decider for Confirming {
     async fn confirm_deletes(&mut self, _: &MassDelete) -> bool {
         self.asked += 1;
         self.confirm
+    }
+
+    async fn confirm_overwrites(&mut self, _: &MassOverwrite) -> bool {
+        false
     }
 }
 

@@ -157,6 +157,57 @@ final class SyncRunDeletesOnSide {
   int get hashCode => Object.hash(where, root, deletes, archived);
 }
 
+/// SPEC §10's overwrite guard stopped the run between the review and the
+/// apply: what was decided overwrites most of a side's files, or empties
+/// many of them — what ransomware or a runaway tool leaves on the other
+/// side — and the core waits, holding both locks, for the user to say
+/// whether to go on. [sides] names each side it tripped on. Nothing has
+/// been applied yet.
+final class SyncRunConfirmingOverwrites extends SyncRunPhase {
+  const SyncRunConfirmingOverwrites(this.sides);
+
+  final List<SyncRunOverwritesOnSide> sides;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunConfirmingOverwrites && listEquals(other.sides, sides);
+
+  @override
+  int get hashCode => Object.hashAll(sides);
+}
+
+/// One side of [SyncRunConfirmingOverwrites]: the run overwrites
+/// [overwrites] of the [archived] files the last sync saw in [root],
+/// [truncated] of them emptied to 0 bytes, on [where] — as
+/// [SyncRunDeletesOnSide].
+final class SyncRunOverwritesOnSide {
+  const SyncRunOverwritesOnSide({
+    required this.where,
+    required this.root,
+    required this.overwrites,
+    required this.truncated,
+    required this.archived,
+  });
+
+  final String where;
+  final String? root;
+  final int overwrites;
+  final int truncated;
+  final int archived;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SyncRunOverwritesOnSide &&
+      other.where == where &&
+      other.root == root &&
+      other.overwrites == overwrites &&
+      other.truncated == truncated &&
+      other.archived == archived;
+
+  @override
+  int get hashCode => Object.hash(where, root, overwrites, truncated, archived);
+}
+
 /// The review's running total, for the bar under the page: how many of
 /// the plan's actions will be applied ([apply], reversed ones included)
 /// and how many of those are [reversed], how many are [skipped], and what

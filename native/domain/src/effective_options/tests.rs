@@ -237,6 +237,19 @@ fn allow_mass_delete_comes_from_the_flag_alone() {
     assert!(work(&run).allow_mass_delete);
     assert!(!work(&no_flags()).allow_mass_delete);
     assert!(ad_hoc("/home/me/a", "/home/me/b", &run).allow_mass_delete);
+    assert!(!work(&run).allow_mass_overwrite);
+}
+
+#[test]
+fn allow_mass_overwrite_comes_from_the_flag_alone() {
+    let run = flags(Flags {
+        allow_mass_overwrite: true,
+        ..Flags::default()
+    });
+    assert!(work(&run).allow_mass_overwrite);
+    assert!(!work(&run).allow_mass_delete);
+    assert!(!work(&no_flags()).allow_mass_overwrite);
+    assert!(ad_hoc("/home/me/a", "/home/me/b", &run).allow_mass_overwrite);
 }
 
 #[test]
