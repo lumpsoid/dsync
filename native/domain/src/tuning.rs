@@ -47,6 +47,11 @@ pub struct Tuning {
     pub silence_limit: Duration,
     /// Deadline for a TLS handshake and hello.
     pub handshake: Duration,
+    /// Deadline, from accept, for a listener to have the peer's whole TLS
+    /// ClientHello (SPEC §4.4). Inside [`Tuning::handshake`] and far
+    /// shorter: a dialer sends its hello the moment it connects, so a
+    /// socket silent this long is idle and gives its slot back early.
+    pub client_hello: Duration,
     /// How long a peer listener waits for a session a reclaim ended to
     /// let go of its replica before serving the dialer that claimed it
     /// (SPEC §4.3). Below [`Tuning::handshake`]: the listener answers the
@@ -67,6 +72,10 @@ pub struct Tuning {
     pub reconnects_per_entry: u32,
     /// Concurrent connections not yet authenticated.
     pub unauthenticated_connections: usize,
+    /// Of those, how many one address may hold at once (SPEC §4.4): past
+    /// it a connection is closed at accept without taking one of the
+    /// [`Tuning::unauthenticated_connections`].
+    pub unauthenticated_per_address: usize,
     /// Lifetime of a pairing token.
     pub pairing_token: Duration,
     /// Scan threads (stat + hash) when neither profile nor flag says.
@@ -97,12 +106,14 @@ impl Tuning {
         heartbeat: Duration::from_secs(5),
         silence_limit: Duration::from_secs(30),
         handshake: Duration::from_secs(10),
+        client_hello: Duration::from_secs(3),
         reclaim_wait: Duration::from_secs(5),
         reconnect_backoff: Duration::from_secs(1),
         reconnect_backoff_max: Duration::from_secs(15),
         reconnect_window: Duration::from_secs(120),
         reconnects_per_entry: 10,
         unauthenticated_connections: 16,
+        unauthenticated_per_address: 4,
         pairing_token: Duration::from_secs(5 * 60),
         scan_jobs: Jobs::DEFAULT,
         archive_buffer_lines: 256,
@@ -143,12 +154,14 @@ mod tests {
         assert_eq!(tuning.heartbeat, Duration::from_secs(5));
         assert_eq!(tuning.silence_limit, Duration::from_secs(30));
         assert_eq!(tuning.handshake, Duration::from_secs(10));
+        assert_eq!(tuning.client_hello, Duration::from_secs(3));
         assert_eq!(tuning.reclaim_wait, Duration::from_secs(5));
         assert_eq!(tuning.reconnect_backoff, Duration::from_secs(1));
         assert_eq!(tuning.reconnect_backoff_max, Duration::from_secs(15));
         assert_eq!(tuning.reconnect_window, Duration::from_secs(120));
         assert_eq!(tuning.reconnects_per_entry, 10);
         assert_eq!(tuning.unauthenticated_connections, 16);
+        assert_eq!(tuning.unauthenticated_per_address, 4);
         assert_eq!(tuning.pairing_token, Duration::from_secs(300));
         assert_eq!(tuning.scan_jobs.get(), 4);
         assert_eq!(tuning.archive_buffer_lines, 256);
@@ -164,5 +177,16 @@ mod tests {
     #[test]
     fn a_reclaim_waits_less_than_a_handshake_allows() {
         assert!(Tuning::DEFAULT.reclaim_wait < Tuning::DEFAULT.handshake);
+    }
+
+    /// The hello's deadline frees an idle socket's slot early only if it
+    /// ends before the handshake's; one address must not fill every slot.
+    #[test]
+    fn the_unauthenticated_bounds_are_tighter_per_socket_and_per_address() {
+        assert!(Tuning::DEFAULT.client_hello < Tuning::DEFAULT.handshake);
+        assert!(
+            Tuning::DEFAULT.unauthenticated_per_address
+                < Tuning::DEFAULT.unauthenticated_connections
+        );
     }
 }

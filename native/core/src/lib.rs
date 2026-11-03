@@ -62,6 +62,7 @@ mod state_dir;
 mod stored_archive;
 mod symlinks;
 mod transport;
+mod unauthenticated_slots;
 #[cfg(unix)]
 mod unix_transport;
 mod version_handshake;

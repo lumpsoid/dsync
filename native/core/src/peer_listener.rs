@@ -2,12 +2,13 @@
 //! --serve` and the head's Serve page. Serves paired devices over mutual
 //! TLS, each connection its own [`ReplicaServer`] session.
 //!
-//! Two bounds hold before a peer has authenticated, so a stranger costs
-//! this host at most a descriptor and a TLS session for a while: at most
-//! [`Tuning::unauthenticated_connections`] connections mid-handshake (the
-//! next is closed at accept, before any TLS), each cut off at
-//! [`Tuning::handshake`]. A timer and a counter, not a rate limiter: they
-//! need no key, and per-address is wrong behind NAT.
+//! Bounds hold before a peer has authenticated, so a stranger costs this
+//! host at most a descriptor and a TLS session for a while: at most
+//! [`Tuning::unauthenticated_connections`] connections mid-handshake, at
+//! most [`Tuning::unauthenticated_per_address`] of them from one address
+//! (past either, the next is closed at accept, before any TLS), each cut
+//! off at [`Tuning::client_hello`] if it has not sent its whole hello and
+//! at [`Tuning::handshake`] in all.
 //!
 //! After the handshake the authenticated key selects the paired device,
 //! and its `hello` is held to that device's grants: the root, expanded as
@@ -27,8 +28,7 @@ use std::time::SystemTime;
 use dsync_domain::{DeviceId, HostFacts, ReplicaSpec, Tuning};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::LazyConfigAcceptor;
 use tokio_rustls::server::TlsStream;
 
 use crate::device_identity::DeviceIdentity;
@@ -46,6 +46,7 @@ use crate::replica_error::ReplicaError;
 use crate::replica_server::ReplicaServer;
 use crate::symlinks::Symlinks;
 use crate::transport::{Liveness, Transport};
+use crate::unauthenticated_slots::{SlotRefusal, UnauthenticatedSlot, UnauthenticatedSlots};
 
 /// The one answer to a `hello` for a root the device may not reach -
 /// whether it exists, is readable or is simply not granted.
@@ -124,19 +125,24 @@ where
         events: impl Fn(PeerEvent) + Send + Sync + 'static,
     ) -> io::Result<()> {
         let events = Arc::new(events);
-        let limit = self.tuning.unauthenticated_connections;
-        let unauthenticated = Arc::new(Semaphore::new(limit));
+        let unauthenticated = UnauthenticatedSlots::new(&self.tuning);
         loop {
             let (stream, from) = listener.accept().await?;
-            // Taken here, in accept order, so the connection over the
-            // limit is the one refused, before it costs a task or any TLS.
-            let Ok(permit) = unauthenticated.clone().try_acquire_owned() else {
-                drop(stream);
-                events(PeerEvent::Refused {
-                    from,
-                    why: PeerRefusal::OverCapacity { limit },
-                });
-                continue;
+            // Taken here, in accept order, so the connection over a cap is
+            // the one refused, before it costs a task or any TLS.
+            let slot = match unauthenticated.admit(from.ip()) {
+                Ok(slot) => slot,
+                Err(refusal) => {
+                    drop(stream);
+                    let why = match refusal {
+                        SlotRefusal::OverCapacity { limit } => PeerRefusal::OverCapacity { limit },
+                        SlotRefusal::OverAddressCapacity { limit } => {
+                            PeerRefusal::OverAddressCapacity { limit }
+                        }
+                    };
+                    events(PeerEvent::Refused { from, why });
+                    continue;
+                }
             };
             let (served, events) = (self.clone(), events.clone());
             tokio::spawn(async move {
@@ -144,7 +150,7 @@ where
                     let why = PeerRefusal::Handshake(error);
                     return events(PeerEvent::Refused { from, why });
                 }
-                let authenticated = served.authenticate(stream, permit).await;
+                let authenticated = served.authenticate(stream, slot).await;
                 let (mut tls, device) = match authenticated {
                     Ok(authenticated) => authenticated,
                     Err(why) => return events(PeerEvent::Refused { from, why }),
@@ -225,11 +231,12 @@ where
     }
 
     /// The TLS handshake against the paired set as it is now, under the
-    /// deadline, holding `permit` until it is done either way.
+    /// deadlines - the hello's, inside the whole handshake's - holding
+    /// `slot` until it is done either way.
     async fn authenticate<S>(
         &self,
         stream: S,
-        permit: OwnedSemaphorePermit,
+        slot: UnauthenticatedSlot,
     ) -> Result<(TlsStream<S>, PairedDevice), PeerRefusal>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -238,18 +245,22 @@ where
         let pin = PeerPin::new(paired.iter().map(PairedDevice::device_id));
         let config = server_config(&self.identity, pin.clone())
             .map_err(|error| PeerRefusal::Handshake(io::Error::other(error)))?;
-        let accepting = TlsAcceptor::from(Arc::new(config)).accept(stream);
-        let accepted = tokio::time::timeout(self.tuning.handshake, accepting).await;
-        drop(permit);
-        let tls = match accepted {
-            Err(_) => {
-                return Err(PeerRefusal::HandshakeTimedOut {
-                    limit: self.tuning.handshake,
-                });
-            }
-            Ok(Err(error)) => return Err(self.why_refused(&pin, &paired, error)),
-            Ok(Ok(tls)) => tls,
+        let accepting = async {
+            let hello = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
+            let limit = self.tuning.client_hello;
+            let started = match tokio::time::timeout(limit, hello).await {
+                Err(_) => return Err(PeerRefusal::HelloTimedOut { limit }),
+                Ok(Err(error)) => return Err(self.why_refused(&pin, &paired, error)),
+                Ok(Ok(started)) => started,
+            };
+            (started.into_stream(Arc::new(config)).await)
+                .map_err(|error| self.why_refused(&pin, &paired, error))
         };
+        let accepted = tokio::time::timeout(self.tuning.handshake, accepting).await;
+        drop(slot);
+        let tls = accepted.map_err(|_| PeerRefusal::HandshakeTimedOut {
+            limit: self.tuning.handshake,
+        })??;
         let device = presented(tls.get_ref().1)
             .and_then(|certificate| paired.get(&certificate.device_id()).cloned())
             .ok_or_else(|| {
@@ -325,8 +336,12 @@ mod tests {
         )
     }
 
-    fn permit() -> OwnedSemaphorePermit {
-        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap()
+    const FROM: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+    fn slot() -> UnauthenticatedSlot {
+        UnauthenticatedSlots::new(&Tuning::DEFAULT)
+            .admit(FROM)
+            .unwrap()
     }
 
     fn cut(refused: Result<impl Sized, PeerRefusal>) -> Option<Duration> {
@@ -336,15 +351,47 @@ mod tests {
         }
     }
 
+    /// Cut at the hello's deadline, well inside the handshake's, and its
+    /// slot is free again from that instant.
     #[tokio::test(start_paused = true)]
-    async fn a_peer_that_never_speaks_is_cut_at_the_deadline() {
+    async fn a_peer_that_never_speaks_is_cut_at_the_hello_deadline_and_frees_its_slot() {
         let dir = tempfile::tempdir().unwrap();
         let listener = listener(&StateDir::new(dir.path()));
+        let only = UnauthenticatedSlots::new(&Tuning {
+            unauthenticated_connections: 1,
+            ..Tuning::DEFAULT
+        });
+        let held = only.admit(FROM).unwrap();
+        assert!(only.admit(FROM).is_err(), "the one slot is held");
         let (_client, server) = duplex(64 * 1024);
         let started = Instant::now();
-        let refused = listener.authenticate(server, permit()).await;
-        assert_eq!(started.elapsed(), Tuning::DEFAULT.handshake);
-        assert_eq!(cut(refused), Some(Tuning::DEFAULT.handshake));
+        let refused = listener.authenticate(server, held).await;
+        assert_eq!(started.elapsed(), Tuning::DEFAULT.client_hello);
+        assert!(
+            matches!(refused, Err(PeerRefusal::HelloTimedOut { limit }) if limit == Tuning::DEFAULT.client_hello),
+            "{:?}",
+            refused.err()
+        );
+        assert!(only.admit(FROM).is_ok(), "the slot came back");
+    }
+
+    /// Part of a hello is no hello: a peer that sends one byte and stalls
+    /// is cut at the same deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_stalls_inside_its_hello_is_cut_at_the_hello_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let (mut client, server) = duplex(64 * 1024);
+        // A TLS handshake record's first byte.
+        client.write_all(&[0x16]).await.unwrap();
+        let started = Instant::now();
+        let refused = listener.authenticate(server, slot()).await;
+        assert_eq!(started.elapsed(), Tuning::DEFAULT.client_hello);
+        assert!(
+            matches!(refused, Err(PeerRefusal::HelloTimedOut { .. })),
+            "{:?}",
+            refused.err()
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -370,7 +417,7 @@ mod tests {
         client.write_all(&hello).await.unwrap();
 
         let started = Instant::now();
-        let (refused, answered) = tokio::join!(listener.authenticate(server, permit()), async {
+        let (refused, answered) = tokio::join!(listener.authenticate(server, slot()), async {
             let mut answer = [0u8; 1];
             client.read(&mut answer).await.unwrap()
         });
@@ -379,7 +426,7 @@ mod tests {
         assert_eq!(cut(refused), Some(Tuning::DEFAULT.handshake));
     }
 
-    /// Positive control for both: the same stream and clock, a peer that
+    /// Positive control for all three: the same stream and clock, a peer that
     /// completes nothing but closes, is refused at once - not at the
     /// deadline.
     #[tokio::test(start_paused = true)]
@@ -389,7 +436,7 @@ mod tests {
         let (client, server) = duplex(64 * 1024);
         drop(client);
         let started = Instant::now();
-        let refused = listener.authenticate(server, permit()).await;
+        let refused = listener.authenticate(server, slot()).await;
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert!(matches!(refused, Err(PeerRefusal::Handshake(_))));
     }

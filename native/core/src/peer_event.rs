@@ -39,6 +39,14 @@ pub enum PeerRefusal {
     /// mid-handshake.
     #[error("refused at once: {limit} connections are already authenticating")]
     OverCapacity { limit: usize },
+    /// Closed at accept, before any TLS and without taking a slot: `limit`
+    /// connections from the same address were already mid-handshake.
+    #[error("refused at once: {limit} connections from this address are already authenticating")]
+    OverAddressCapacity { limit: usize },
+    /// The socket stayed silent: no whole TLS ClientHello within `limit`
+    /// of accept.
+    #[error("no TLS ClientHello arrived within {limit:?}")]
+    HelloTimedOut { limit: Duration },
     #[error("the TLS handshake did not finish within {limit:?}")]
     HandshakeTimedOut { limit: Duration },
     #[error("the paired devices could not be read: {0}")]

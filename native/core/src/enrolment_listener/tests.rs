@@ -41,8 +41,10 @@ fn name(text: &str) -> PeerName {
     PeerName::parse(text).unwrap()
 }
 
-fn permit() -> OwnedSemaphorePermit {
-    Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap()
+fn slot() -> UnauthenticatedSlot {
+    UnauthenticatedSlots::new(&Tuning::DEFAULT)
+        .admit(FROM.ip())
+        .unwrap()
 }
 
 /// The showing side, bound (on loopback, unused: connections come over
@@ -86,7 +88,7 @@ where
     let (client, server) = duplex(64 * 1024);
     tokio::join!(
         dialer.enrol_over(client, payload, device, SERVES_ON),
-        enrolling.enrol(server, FROM, permit())
+        enrolling.enrol(server, FROM, slot())
     )
 }
 
@@ -155,23 +157,33 @@ async fn a_confirmation_nobody_answers_is_refused_when_the_token_expires() {
     assert!(phone.paired.load().unwrap().is_empty());
 }
 
+/// Cut at the hello's deadline, well inside the handshake's, and its slot
+/// is free again from that instant.
 #[tokio::test(start_paused = true)]
-async fn a_peer_that_never_speaks_is_cut_at_the_handshake_deadline() {
+async fn a_peer_that_never_speaks_is_cut_at_the_hello_deadline_and_frees_its_slot() {
     let desktop = side("desktop");
     let (_, enrolling) = showing(&desktop, yes).await;
+    let only = UnauthenticatedSlots::new(&Tuning {
+        unauthenticated_connections: 1,
+        ..Tuning::DEFAULT
+    });
+    let held = only.admit(FROM.ip()).unwrap();
+    assert!(only.admit(FROM.ip()).is_err(), "the one slot is held");
     let (_client, server) = duplex(64 * 1024);
     let started = Instant::now();
 
-    let ended = enrolling.enrol(server, FROM, permit()).await;
-    assert_eq!(started.elapsed(), Tuning::DEFAULT.handshake);
+    let ended = enrolling.enrol(server, FROM, held).await;
+    assert_eq!(started.elapsed(), Tuning::DEFAULT.client_hello);
     assert!(
-        matches!(ended, Err(EnrolmentRefusal::TimedOut { limit }) if limit == Tuning::DEFAULT.handshake),
+        matches!(ended, Err(EnrolmentRefusal::HelloTimedOut { limit }) if limit == Tuning::DEFAULT.client_hello),
         "{ended:?}"
     );
+    assert!(only.admit(FROM.ip()).is_ok(), "the slot came back");
 }
 
 /// The deadline covers the request as well as the handshake: a peer that
-/// completes TLS and then sends nothing is cut at the same instant.
+/// completes TLS and then sends nothing is cut at the handshake's deadline
+/// (its hello arrived, so not at the hello's).
 #[tokio::test(start_paused = true)]
 async fn a_peer_that_stalls_after_the_handshake_is_cut_at_the_deadline() {
     let desktop = side("desktop");
@@ -179,7 +191,7 @@ async fn a_peer_that_stalls_after_the_handshake_is_cut_at_the_deadline() {
     let (client, server) = duplex(64 * 1024);
     let started = Instant::now();
 
-    let (ended, _connected) = tokio::join!(enrolling.enrol(server, FROM, permit()), async {
+    let (ended, _connected) = tokio::join!(enrolling.enrol(server, FROM, slot()), async {
         let config = enrolment_client_config(PeerPin::new([desktop.identity.device_id()])).unwrap();
         let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(server_name(), client)
@@ -208,7 +220,7 @@ async fn a_malformed_certificate_is_refused_without_asking_anyone_or_spending_th
     .await;
 
     let (client, server) = duplex(64 * 1024);
-    let (ended, reply) = tokio::join!(enrolling.enrol(server, FROM, permit()), async {
+    let (ended, reply) = tokio::join!(enrolling.enrol(server, FROM, slot()), async {
         let config = enrolment_client_config(PeerPin::new([desktop.identity.device_id()])).unwrap();
         let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(server_name(), client)
@@ -280,7 +292,7 @@ async fn a_request_serving_on_port_zero_is_refused_as_malformed_and_spends_nothi
     .await;
 
     let (client, server) = duplex(64 * 1024);
-    let (ended, ()) = tokio::join!(enrolling.enrol(server, FROM, permit()), async {
+    let (ended, ()) = tokio::join!(enrolling.enrol(server, FROM, slot()), async {
         let config = enrolment_client_config(PeerPin::new([desktop.identity.device_id()])).unwrap();
         let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(server_name(), client)

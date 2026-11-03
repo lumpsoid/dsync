@@ -1,5 +1,6 @@
 //! The bounds on connections that have not authenticated: the handshake
-//! deadline and the cap on connections mid-handshake.
+//! deadline and the caps on connections mid-handshake, in all and per
+//! address.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::time::Instant;
 
 use crate::peer::support::{
-    Host, identity, raw_client_config, raw_server_name, serve, serve_with, somewhere, with_deadline,
+    Host, identity, raw_client_config, raw_server_name, serve_with, somewhere, with_deadline,
 };
 
 /// A handshake deadline short enough to wait out in real time. (The
@@ -118,8 +119,14 @@ async fn the_connection_over_the_cap_is_refused_and_a_freed_slot_is_reusable() {
     let client = Host::new(identity("phone"));
     server.pair(&client.identity, "phone", somewhere(), &[]);
     client.pair(&server.identity, "desktop", somewhere(), &[]);
-    let mut serving = serve(&server).await;
     let cap = Tuning::DEFAULT.unauthenticated_connections;
+    // Every connection here is from loopback: the per-address cap is
+    // lifted past the global one so this proves the global cap alone.
+    let tuning = Tuning {
+        unauthenticated_per_address: cap + 1,
+        ..Tuning::DEFAULT
+    };
+    let mut serving = serve_with(&server, tuning).await;
 
     // One short of the cap, a real peer still gets through (the positive
     // control), and an authenticated session holds no slot.
@@ -173,4 +180,54 @@ async fn the_connection_over_the_cap_is_refused_and_a_freed_slot_is_reusable() {
     with_deadline("close", served.replica.close())
         .await
         .unwrap();
+}
+
+/// One address past its cap is refused at accept, while another address
+/// still gets a slot. Linux only: it alone routes all of 127/8 to
+/// loopback, which gives the test a second address.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_address_over_its_cap_is_refused_while_another_still_gets_a_slot() {
+    let server = Host::new(identity("desktop"));
+    let tuning = Tuning {
+        unauthenticated_per_address: 2,
+        ..short_deadline()
+    };
+    let mut serving = serve_with(&server, tuning).await;
+    let _held = [
+        TcpStream::connect(serving.at).await.unwrap(),
+        TcpStream::connect(serving.at).await.unwrap(),
+    ];
+    let mut third = TcpStream::connect(serving.at).await.unwrap();
+    assert!(with_deadline("third", closed_after(&mut third)).await < SHORT);
+    let event = serving.next_event().await;
+    assert!(
+        matches!(
+            event,
+            PeerEvent::Refused {
+                why: PeerRefusal::OverAddressCapacity { limit: 2 },
+                ..
+            }
+        ),
+        "{event:?}"
+    );
+
+    // The positive control: from 127.0.0.2 the same listener takes the
+    // connection - held to the deadline, not closed at accept.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind(([127, 0, 0, 2], 0).into()).unwrap();
+    let mut elsewhere = socket.connect(serving.at).await.unwrap();
+    assert!(with_deadline("elsewhere", closed_after(&mut elsewhere)).await >= SHORT);
+    // The two held from 127.0.0.1 are cut first, then this one.
+    let mut cut = Vec::new();
+    for _ in 0..3 {
+        cut.push(serving.next_event().await);
+    }
+    assert!(
+        cut.iter().any(|event| matches!(
+            event,
+            PeerEvent::Refused { from, .. } if from.ip() == std::net::IpAddr::from([127, 0, 0, 2])
+        ) && cut_at(event) == Some(SHORT)),
+        "{cut:?}"
+    );
 }

@@ -4,11 +4,14 @@
 //! payload's token once, puts the enrolling device's id in front of the
 //! operator, and records that device only if they confirm.
 //!
-//! The same two bounds as the peer listener hold before a peer has shown
-//! the token: at most [`Tuning::unauthenticated_connections`] connections
-//! between accept and a read request (the next is closed at accept), each
-//! cut off at [`Tuning::handshake`]. The operator's answer is bounded by
-//! the token's own expiry: a window that closes unanswered is a decline.
+//! The same bounds as the peer listener hold before a peer has shown the
+//! token: at most [`Tuning::unauthenticated_connections`] connections
+//! between accept and a read request, at most
+//! [`Tuning::unauthenticated_per_address`] of them from one address (past
+//! either, the next is closed at accept), each cut off at
+//! [`Tuning::client_hello`] if it has not sent its whole hello and at
+//! [`Tuning::handshake`] in all. The operator's answer is bounded by the
+//! token's own expiry: a window that closes unanswered is a decline.
 
 use std::future::Future;
 use std::io;
@@ -20,12 +23,12 @@ use std::time::{Duration, SystemTime};
 
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{DeviceId, PairingPayload, PairingPayloadError, PeerName, Tuning};
+use rustls::ServerConfig;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::LazyConfigAcceptor;
 use tokio_rustls::server::TlsStream;
 
 use crate::certificate::{Certificate, CertificateError};
@@ -39,6 +42,7 @@ use crate::paired_device::PairedDevice;
 use crate::paired_device_store::{PairedDeviceStore, PairedDeviceStoreError};
 use crate::peer_listener::{PeerBindError, bind_peer};
 use crate::peer_pin::enrolment_server_config;
+use crate::unauthenticated_slots::{SlotRefusal, UnauthenticatedSlot, UnauthenticatedSlots};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EnrolmentBindError {
@@ -76,6 +80,13 @@ pub enum EnrolmentEvent {
 pub enum EnrolmentRefusal {
     #[error("refused at once: {limit} connections are already presenting a token")]
     OverCapacity { limit: usize },
+    /// Closed at accept without taking a slot.
+    #[error(
+        "refused at once: {limit} connections from this address are already presenting a token"
+    )]
+    OverAddressCapacity { limit: usize },
+    #[error("no TLS ClientHello arrived within {limit:?}")]
+    HelloTimedOut { limit: Duration },
     #[error("no enrolment request arrived within {limit:?}")]
     TimedOut { limit: Duration },
     #[error("the TLS handshake failed: {0}")]
@@ -183,8 +194,7 @@ impl EnrolmentListener {
         Confirming: Future<Output = bool> + Send + 'static,
     {
         let (tcp, enrolling) = self.into_parts(confirm)?;
-        let limit = enrolling.tuning.unauthenticated_connections;
-        let unauthenticated = Arc::new(Semaphore::new(limit));
+        let unauthenticated = UnauthenticatedSlots::new(&enrolling.tuning);
         // Aborted on return: nothing outlives the pairing.
         let mut connections = JoinSet::new();
         let mut expiry = pin!(tokio::time::sleep_until(enrolling.expires_at));
@@ -207,19 +217,27 @@ impl EnrolmentListener {
                 },
                 accepted = tcp.accept() => {
                     let (stream, from) = accepted?;
-                    // Taken in accept order, so the connection over the
-                    // limit is the one refused, before any TLS.
-                    let Ok(permit) = unauthenticated.clone().try_acquire_owned() else {
-                        drop(stream);
-                        events(EnrolmentEvent::Refused {
-                            from,
-                            why: EnrolmentRefusal::OverCapacity { limit },
-                        });
-                        continue;
+                    // Taken in accept order, so the connection over a cap
+                    // is the one refused, before any TLS.
+                    let slot = match unauthenticated.admit(from.ip()) {
+                        Ok(slot) => slot,
+                        Err(refusal) => {
+                            drop(stream);
+                            let why = match refusal {
+                                SlotRefusal::OverCapacity { limit } => {
+                                    EnrolmentRefusal::OverCapacity { limit }
+                                }
+                                SlotRefusal::OverAddressCapacity { limit } => {
+                                    EnrolmentRefusal::OverAddressCapacity { limit }
+                                }
+                            };
+                            events(EnrolmentEvent::Refused { from, why });
+                            continue;
+                        }
                     };
                     let enrolling = enrolling.clone();
                     connections.spawn(async move {
-                        enrolling.enrol(stream, from, permit).await.map_err(|why| (from, why))
+                        enrolling.enrol(stream, from, slot).await.map_err(|why| (from, why))
                     });
                 }
             }
@@ -229,7 +247,7 @@ impl EnrolmentListener {
     fn into_parts<C>(self, confirm: C) -> io::Result<(TcpListener, Arc<Enrolling<C>>)> {
         let config = enrolment_server_config(&self.identity).map_err(io::Error::other)?;
         let enrolling = Enrolling {
-            acceptor: TlsAcceptor::from(Arc::new(config)),
+            config: Arc::new(config),
             paired: self.paired,
             peer_name: self.peer_name,
             expires_at: self.gate.expires_at(),
@@ -243,7 +261,7 @@ impl EnrolmentListener {
 
 /// One listener's state while it serves.
 struct Enrolling<C> {
-    acceptor: TlsAcceptor,
+    config: Arc<ServerConfig>,
     paired: PairedDeviceStore,
     peer_name: PeerName,
     expires_at: Instant,
@@ -264,23 +282,29 @@ where
             .is_burned()
     }
 
-    /// One connection: the handshake and the request under the deadline
-    /// (holding `permit` until then), the certificate, the token, the
-    /// operator, the store. `Ok` once the token was spent - the pairing
-    /// has ended - and `Err` for a connection turned away before it.
+    /// One connection: the handshake and the request under the deadlines,
+    /// the hello's inside the whole one's (holding `slot` until then),
+    /// the certificate, the token, the operator, the store. `Ok`
+    /// once the token was spent - the pairing has ended - and `Err` for a
+    /// connection turned away before it.
     async fn enrol<S>(
         &self,
         stream: S,
         from: SocketAddr,
-        permit: OwnedSemaphorePermit,
+        slot: UnauthenticatedSlot,
     ) -> Result<EnrolmentEnd, EnrolmentRefusal>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let receiving = async {
-            let mut tls = self
-                .acceptor
-                .accept(stream)
+            let hello = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
+            let limit = self.tuning.client_hello;
+            let started = tokio::time::timeout(limit, hello)
+                .await
+                .map_err(|_| EnrolmentRefusal::HelloTimedOut { limit })?
+                .map_err(EnrolmentRefusal::Handshake)?;
+            let mut tls = started
+                .into_stream(self.config.clone())
                 .await
                 .map_err(EnrolmentRefusal::Handshake)?;
             let request: EnrolmentRequest = read_message(&mut tls)
@@ -290,7 +314,7 @@ where
         };
         let limit = self.tuning.handshake;
         let received = tokio::time::timeout(limit, receiving).await;
-        drop(permit);
+        drop(slot);
         let (mut tls, request) = received.map_err(|_| EnrolmentRefusal::TimedOut { limit })??;
 
         // Before the token: a certificate with no id to compare is no
