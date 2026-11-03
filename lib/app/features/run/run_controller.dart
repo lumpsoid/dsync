@@ -98,7 +98,9 @@ import 'run_view_state.dart';
 /// **The app is told each time an attempt stops being live**
 /// (`AppController.runEnded`): that is when the core writes or clears the
 /// run marker the home list warns with. A page that leaves a live run
-/// keeps listening, and only for that, until the run winds down.
+/// keeps listening, and only for that, until the run winds down — and
+/// keeps the run held until then too, so a backgrounding right after
+/// cannot freeze the actions still in flight.
 class SyncRunController {
   SyncRunController(
     this.app, {
@@ -265,12 +267,15 @@ class SyncRunController {
     // Not awaited: the rest of the run belongs to the core, not to the
     // page that just left.
     unawaited(_steer(const CloseRun()));
-    // A live run is still winding down in the core, and its end still
-    // changes the home list: [_show] cancels once it stops being live.
-    if (!_live) unawaited(_views?.cancel());
+    // A live run is still winding down in the core — its in-flight
+    // actions finishing — and its end still changes the home list:
+    // [_show] lets go of the hold and the views once it stops being live.
+    if (!_live) {
+      unawaited(_views?.cancel());
+      _syncRunKeepAlive(keep: false);
+    }
     // The page is gone, so there is no screen of this head's to hold on.
     _syncScreenWake(live: false);
-    _syncRunKeepAlive(keep: false);
     timings.dispose();
     state.dispose();
   }
@@ -315,7 +320,10 @@ class SyncRunController {
   void _show(RunView view) {
     _trackLive(view.standing);
     if (_disposed) {
-      if (!_live) unawaited(_views?.cancel());
+      if (!_live) {
+        unawaited(_views?.cancel());
+        _syncRunKeepAlive(keep: false);
+      }
       return;
     }
     final entry = switch (view.current) {

@@ -466,8 +466,21 @@ void main() {
       expect(harness.intents, const [wire.RunIntentPause()]);
     });
 
-    test('leaving the page lets it go', () async {
+    test('leaving the page lets it go once the run winds down', () async {
       await harness.show(runView(phase: applying));
+      controller().dispose();
+      await pump();
+      // The in-flight actions are still finishing.
+      expect(harness.runKeepAlive.held, isTrue);
+
+      await harness.show(runView(standing: over, phase: stopped(2)));
+
+      expect(harness.runKeepAlive.held, isFalse);
+    });
+
+    test('leaving the page of a run that is over lets it go', () async {
+      await harness.show(runView(phase: applying));
+      await harness.show(runView(standing: over, phase: finished()));
 
       controller().dispose();
       await pump();
