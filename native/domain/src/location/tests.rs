@@ -555,3 +555,25 @@ fn a_peer_location_from_its_parts_is_the_one_parse_reads() {
         Err(LocationError::Nul(_))
     ));
 }
+
+#[test]
+fn a_user_or_host_that_starts_with_a_dash_is_refused() {
+    for raw in [
+        "ssh://-oProxyCommand=touch /tmp/x:/srv",
+        "ssh://-oProxyCommand=x@host:/srv",
+        "ssh://me@-oProxyCommand=x:/srv",
+        "-oProxyCommand=x:/srv",
+        "-l@host:/srv",
+        "me@-host:/srv",
+    ] {
+        assert!(
+            matches!(
+                Location::parse(raw, Platform::Unix),
+                Err(LocationError::LeadingDash { .. })
+            ),
+            "{raw:?}"
+        );
+    }
+    assert_eq!(ssh("ssh://my-host:/srv").host(), "my-host");
+    assert_eq!(ssh("me-too@host:/srv").user(), Some("me-too"));
+}

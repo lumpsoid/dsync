@@ -83,6 +83,10 @@ pub enum LocationError {
     #[error("invalid location {raw:?}: the {part} is empty")]
     EmptyPart { raw: String, part: &'static str },
     #[error(
+        "invalid location {raw:?}: the {part} starts with \"-\", which ssh would read as an option"
+    )]
+    LeadingDash { raw: String, part: &'static str },
+    #[error(
         "{raw:?}: \"{scheme}\" needs a \":\" between the {what} and the path, as in \"{example}\""
     )]
     MissingSeparator {
@@ -392,20 +396,35 @@ fn split_scheme<'a>(
     Ok((head, path))
 }
 
-/// Splits a leading `user@` off `destination`, refusing an empty user.
+/// Splits a leading `user@` off `destination`, refusing an empty user and
+/// a user or host that ssh would take for an option.
 fn split_user<'a>(
     raw: &str,
     destination: &'a str,
 ) -> Result<(Option<String>, &'a str), LocationError> {
-    match destination.split_once('@') {
-        Some(("", _)) => Err(empty(raw, "user")),
-        Some((user, host)) => Ok((Some(user.to_owned()), host)),
-        None => Ok((None, destination)),
+    let (user, host) = match destination.split_once('@') {
+        Some(("", _)) => return Err(empty(raw, "user")),
+        Some((user, host)) => (Some(user), host),
+        None => (None, destination),
+    };
+    if user.is_some_and(|user| user.starts_with('-')) {
+        return Err(leading_dash(raw, "user"));
     }
+    if host.starts_with('-') {
+        return Err(leading_dash(raw, "host"));
+    }
+    Ok((user.map(str::to_owned), host))
 }
 
 fn empty(raw: &str, part: &'static str) -> LocationError {
     LocationError::EmptyPart {
+        raw: raw.to_owned(),
+        part,
+    }
+}
+
+fn leading_dash(raw: &str, part: &'static str) -> LocationError {
+    LocationError::LeadingDash {
         raw: raw.to_owned(),
         part,
     }

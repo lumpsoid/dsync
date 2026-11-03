@@ -39,7 +39,8 @@ impl SshLaunch {
     /// refuses a pseudo-terminal, which would echo input and translate
     /// newlines in the binary stream; the command takes the place of the
     /// bare `dsync` for a far side that keeps it off the non-interactive
-    /// PATH. The destination is handed to ssh unexamined.
+    /// PATH. The destination is handed to ssh as parsed; `Location::parse`
+    /// refuses a user or host that starts with `-`.
     pub fn new(access: &SshAccess, user: Option<&str>, host: &str) -> SshLaunch {
         let destination = match user {
             Some(user) => format!("{user}@{host}"),
