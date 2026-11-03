@@ -57,12 +57,15 @@ pub fn recorded(content: &str) -> FileState {
 /// 2024-01-01T00:00:00Z.
 pub const MTIME_US: i64 = 1_704_067_200_000_000;
 
-/// A source's metadata for a write: `mode`, at [`MTIME_US`].
-pub fn meta(mode: u32) -> FileMeta {
-    FileMeta {
-        size: 0,
-        mtime_us: MTIME_US,
-        mode,
+/// A write's source, scanned holding `content`: `mode`, at [`MTIME_US`].
+pub fn source_of(content: impl AsRef<[u8]>, mode: u32) -> FileState {
+    FileState {
+        meta: FileMeta {
+            size: content.as_ref().len() as u64,
+            mtime_us: MTIME_US,
+            mode,
+        },
+        hash: hash_of(content),
     }
 }
 
@@ -381,7 +384,7 @@ pub async fn copy(
 ) {
     let at = path(relative);
     let body = from.read(&at).await.unwrap().body;
-    let landed = to.write(&at, body, source.meta, expect).await.unwrap();
+    let landed = to.write(&at, body, source, expect).await.unwrap();
     to.commit(vec![ArchiveCommit::Upsert {
         path: at.clone(),
         file: FileState {

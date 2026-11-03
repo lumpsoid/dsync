@@ -17,7 +17,8 @@ use dsync_domain::{Action, ArchiveCommit, STAGING_DIR, Side};
 
 use crate::replica::child::{ChildProcess, READY, wait_for_parent};
 use crate::replica::support::{
-    Site, apply, exchange, failing_body, hash_of, meta, path, seed, temp_files_under, with_deadline,
+    Site, apply, exchange, failing_body, hash_of, path, seed, source_of, temp_files_under,
+    with_deadline,
 };
 
 /// Long enough that every kill point is a different file, and unlike
@@ -145,7 +146,9 @@ async fn a_body_failing_part_way_leaves_the_old_file_whole() {
                 let (a, b) = killed_run(&site, async |b: &LocalReplica| {
                     let body = failing_body(&SOURCE[..at]).await;
                     let expect = site.expect(Side::B, "f");
-                    let written = b.write(&path("f"), body, meta(0o644), expect).await;
+                    let written = b
+                        .write(&path("f"), body, source_of(SOURCE, 0o644), expect)
+                        .await;
                     assert!(written.is_err(), "{cell:?} at {at}");
                 })
                 .await;
@@ -172,7 +175,7 @@ async fn a_write_whose_commit_batch_is_lost_converges() {
             let (a, b) = killed_run(&site, async |b: &LocalReplica| {
                 let body = a_whole_body();
                 let expect = site.expect(Side::B, "f");
-                b.write(&path("f"), body, meta(0o644), expect)
+                b.write(&path("f"), body, source_of(SOURCE, 0o644), expect)
                     .await
                     .unwrap();
             })
@@ -194,7 +197,7 @@ async fn a_write_killed_before_its_commits_are_flushed_converges() {
             let (a, b) = killed_run(&site, async |b: &LocalReplica| {
                 let expect = site.expect(Side::B, "f");
                 let landed = b
-                    .write(&path("f"), a_whole_body(), meta(0o644), expect)
+                    .write(&path("f"), a_whole_body(), source_of(SOURCE, 0o644), expect)
                     .await
                     .unwrap();
                 b.commit(vec![ArchiveCommit::Upsert {
@@ -233,8 +236,10 @@ pub fn tear_write(dir: &Path) {
         let b = site.locked(Side::B).await;
         let (sender, body) = body_channel(1);
         let expect = site.expect(Side::B, "f");
-        let _write =
-            tokio::spawn(async move { b.write(&path("f"), body, meta(0o644), expect).await });
+        let _write = tokio::spawn(async move {
+            b.write(&path("f"), body, source_of(SOURCE, 0o644), expect)
+                .await
+        });
         sender
             .send(SOURCE[..SOURCE.len() / 2].to_vec())
             .await

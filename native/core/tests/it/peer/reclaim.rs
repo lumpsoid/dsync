@@ -13,7 +13,9 @@ use dsync_core::{
     LinkError, LockError, PeerDialer, PeerEvent, PeerSessions, RemoteReplica, Replica,
     ReplicaError, body_channel,
 };
-use dsync_domain::{EntryId, FileMeta, Precondition, RelPath, ReplicaSpec, Tuning};
+use dsync_domain::{
+    ContentHash, EntryId, FileMeta, FileState, Precondition, RelPath, ReplicaSpec, Tuning,
+};
 
 use crate::cut_link::CutLink;
 use crate::peer::support::{Host, Serving, address_of, identity, serve_with, somewhere, spec};
@@ -219,10 +221,14 @@ async fn a_claim_ends_the_session_a_dead_push_left_and_frees_its_lock() {
     let sessions = Arc::new(PeerSessions::new());
     let (locked, first) = scene.dial(&scene.phone, &sessions).await;
     locked.unwrap();
-    let meta = FileMeta {
-        size: BIG as u64,
-        mtime_us: 1_704_067_200_000_000,
-        mode: 0o644,
+    // Never whole: the link dies first, so the hash is never checked.
+    let source = FileState {
+        meta: FileMeta {
+            size: BIG as u64,
+            mtime_us: 1_704_067_200_000_000,
+            mode: 0o644,
+        },
+        hash: ContentHash::from_digest([0; 32]),
     };
     let (feeding, writes): (Vec<_>, Vec<_>) = (0..32)
         .map(|n| {
@@ -238,7 +244,7 @@ async fn a_claim_ends_the_session_a_dead_push_left_and_frees_its_lock() {
         .unzip();
     let writing = futures_util::future::join_all(writes.into_iter().map(|(path, body)| {
         let first = &first;
-        async move { first.write(&path, body, meta, Precondition::Absent).await }
+        async move { first.write(&path, body, source, Precondition::Absent).await }
     }));
     let black_hole = async {
         tokio::time::sleep(Duration::from_millis(300)).await;

@@ -12,8 +12,8 @@ use std::io;
 use std::path::PathBuf;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, ChangedDuringSync, ChangedScan, FileMeta, Precondition, RelPath,
-    ReplicaSpec, RootFacts, RuleSet, ScanEntry, Stage, WriteStats,
+    ArchiveCommit, ArchiveFacts, ChangedDuringSync, ChangedScan, FileMeta, FileState, Precondition,
+    RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Stage, WriteStats,
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,10 +39,11 @@ pub(crate) enum Request {
     /// Answered with [`Reply::Opened`], then the body's frames; its `End`
     /// carries what the file was once read ([`dsync_domain::OnDisk`]).
     Read(RelPath),
-    /// Followed by the body's frames under the same id.
+    /// Followed by the body's frames under the same id. `source` carries
+    /// the hash the far writer checks the landed bytes against.
     Write {
         path: RelPath,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     },
     Delete {
@@ -375,7 +376,7 @@ mod tests {
             Request::Read(path("r")),
             Request::Write {
                 path: path("w"),
-                meta: file(1).meta,
+                source: file(1),
                 expect: Precondition::Absent,
             },
             Request::Delete {

@@ -333,9 +333,13 @@ impl<R: Replica> Served<R> {
                 }
                 Err(error) => Err(error),
             },
-            Request::Write { path, meta, expect } => match body {
+            Request::Write {
+                path,
+                source,
+                expect,
+            } => match body {
                 Some(body) => replica
-                    .write(&path, body, meta, expect)
+                    .write(&path, body, source, expect)
                     .await
                     .map(Reply::Written),
                 None => {
@@ -493,8 +497,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use dsync_domain::{
-        ArchiveCommit, ArchiveFacts, EntryId, FileMeta, Jobs, Precondition, RelPath, RootFacts,
-        RuleSet, STAGING_DIR, ScanEntry, Side, WriteStats,
+        ArchiveCommit, ArchiveFacts, ContentHash, EntryId, FileMeta, FileState, Jobs, Precondition,
+        RelPath, RootFacts, RuleSet, STAGING_DIR, ScanEntry, Side, WriteStats,
     };
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, duplex};
     use tokio::sync::{Notify, Semaphore, oneshot};
@@ -1008,10 +1012,13 @@ mod tests {
     async fn send_unended_write(client: &mut Client, path: &str, bytes: usize) -> u32 {
         let request = Request::Write {
             path: RelPath::parse(path).unwrap(),
-            meta: FileMeta {
-                size: 2 * bytes as u64,
-                mtime_us: 0,
-                mode: 0o644,
+            source: FileState {
+                meta: FileMeta {
+                    size: 2 * bytes as u64,
+                    mtime_us: 0,
+                    mode: 0o644,
+                },
+                hash: ContentHash::from_digest([0; 32]),
             },
             expect: Precondition::Absent,
         };
@@ -1139,12 +1146,12 @@ mod tests {
             &self,
             path: &RelPath,
             body: Body,
-            meta: FileMeta,
+            source: FileState,
             expect: Precondition,
         ) -> Result<FileMeta, ReplicaError> {
             self.entered.notify_one();
             let _permit = self.gate.acquire().await;
-            self.inner.write(path, body, meta, expect).await
+            self.inner.write(path, body, source, expect).await
         }
 
         async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {

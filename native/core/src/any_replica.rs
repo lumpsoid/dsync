@@ -3,8 +3,8 @@
 //! enum dispatches by delegation, statically.
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, FileMeta, Precondition, RelPath, RootFacts,
-    RuleSet, ScanEntry, WriteStats,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, FileMeta, FileState, Precondition, RelPath,
+    RootFacts, RuleSet, ScanEntry, WriteStats,
 };
 
 use crate::body::Body;
@@ -74,10 +74,10 @@ impl Replica for AnyReplica {
         &self,
         path: &RelPath,
         body: Body,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
-        delegate!(self.write(path, body, meta, expect))
+        delegate!(self.write(path, body, source, expect))
     }
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {

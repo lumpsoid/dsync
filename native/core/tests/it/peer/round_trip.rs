@@ -41,24 +41,27 @@ async fn a_replica_behind_the_listener_scans_writes_and_commits() {
 
     let path = RelPath::parse("sent.txt").unwrap();
     let content = b"over the wire".to_vec();
-    let meta = FileMeta {
-        size: content.len() as u64,
-        mtime_us: 1_704_067_200_000_000,
-        mode: 0o644,
+    let digest = ring::digest::digest(&ring::digest::SHA256, &content);
+    let hash = dsync_domain::ContentHash::from_digest(digest.as_ref().try_into().unwrap());
+    let source = FileState {
+        meta: FileMeta {
+            size: content.len() as u64,
+            mtime_us: 1_704_067_200_000_000,
+            mode: 0o644,
+        },
+        hash,
     };
     let landed = with_deadline(
         "write",
         replica.write(
             &path,
             Body::from_bytes(content.clone()),
-            meta,
+            source,
             Precondition::Absent,
         ),
     )
     .await
     .unwrap();
-    let digest = ring::digest::digest(&ring::digest::SHA256, &content);
-    let hash = dsync_domain::ContentHash::from_digest(digest.as_ref().try_into().unwrap());
     with_deadline(
         "commit",
         replica.commit(vec![ArchiveCommit::Upsert {

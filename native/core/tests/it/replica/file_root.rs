@@ -15,7 +15,7 @@ use dsync_domain::{
 };
 
 use crate::replica::served::open_local;
-use crate::replica::support::{PROFILE, Site, expect_at, meta, path, recorded, with_deadline};
+use crate::replica::support::{PROFILE, Site, expect_at, path, recorded, source_of, with_deadline};
 
 /// The name the entry syncs its file under (side A's); side B's own file
 /// is `mine.md`.
@@ -89,7 +89,7 @@ async fn write(
         replica.write(
             &path(relative),
             Body::from_bytes(content.as_bytes().to_vec()),
-            meta(0o644),
+            source_of(content, 0o644),
             expect,
         ),
     )

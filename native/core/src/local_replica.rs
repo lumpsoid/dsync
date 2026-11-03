@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Digested, EntryId, FileMeta, Jobs, OnDisk,
-    Precondition, RelPath, RootFacts, RuleSet, ScanEntry, Side, Tuning,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Digested, EntryId, FileMeta, FileState, Jobs,
+    OnDisk, Precondition, RelPath, RootFacts, RuleSet, ScanEntry, Side, Tuning,
 };
 
 use crate::archive_store::ArchiveStore;
@@ -352,12 +352,12 @@ impl Replica for LocalReplica {
         &self,
         path: &RelPath,
         body: Body,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         self.shared
             .writers()
-            .write(path.clone(), body, meta, expect)
+            .write(path.clone(), body, source, expect)
             .await
     }
 

@@ -12,16 +12,21 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::replica::served::{Served, still_pending};
-use crate::replica::support::{Site, meta, path, recorded, with_deadline};
+use crate::replica::support::{Site, path, recorded, source_of, with_deadline};
 
 /// A write of `relative` whose body stays open until the returned sender
-/// finishes it.
-fn held_write(served: &Served, relative: &'static str) -> (BodySender, JoinHandle<()>) {
+/// finishes it, having sent `content`.
+fn held_write(
+    served: &Served,
+    relative: &'static str,
+    content: &[u8],
+) -> (BodySender, JoinHandle<()>) {
     let (sender, body) = body_channel(4);
     let replica = served.replica.clone();
+    let source = source_of(content, 0o644);
     let write = tokio::spawn(async move {
         replica
-            .write(&path(relative), body, meta(0o644), Precondition::Absent)
+            .write(&path(relative), body, source, Precondition::Absent)
             .await
             .unwrap();
     });
@@ -53,7 +58,7 @@ async fn a_later_operation_on_another_path_completes_before_an_earlier_one() {
     site.put(Side::B, "other", "x");
     let served = Served::new(&site, Side::B).await;
     hello_and_lock(&served).await;
-    let (sender, mut write) = held_write(&served, "slow");
+    let (sender, mut write) = held_write(&served, "slow", b"late");
     // Issued after the write, answered first: the reply for `other`
     // reaches its own caller while the write's exchange is still open.
     let expect = site.expect(Side::B, "other");
@@ -74,7 +79,7 @@ async fn operations_on_one_path_keep_the_order_they_were_issued_in() {
     let served = Served::new(&site, Side::B).await;
     hello_and_lock(&served).await;
     let log = Arc::new(Mutex::new(Vec::new()));
-    let (sender, write) = held_write(&served, "p");
+    let (sender, write) = held_write(&served, "p", b"");
     tokio::task::yield_now().await;
     // The upsert of `p` cannot overtake the write it records.
     let replica = served.replica.clone();
@@ -104,7 +109,7 @@ async fn a_barrier_drains_the_window_and_holds_what_comes_after_it() {
     let served = Served::new(&site, Side::B).await;
     hello_and_lock(&served).await;
     let log = Arc::new(Mutex::new(Vec::new()));
-    let (sender, write) = held_write(&served, "p");
+    let (sender, write) = held_write(&served, "p", b"");
     tokio::task::yield_now().await;
     let replica = served.replica.clone();
     let mut compact = logged(&log, "compact", async move { replica.compact().await });
@@ -131,7 +136,7 @@ async fn a_tombstone_commit_is_windowed_not_a_barrier() {
     let site = Site::new();
     let served = Served::new(&site, Side::B).await;
     hello_and_lock(&served).await;
-    let (sender, write) = held_write(&served, "p");
+    let (sender, write) = held_write(&served, "p", b"");
     tokio::task::yield_now().await;
     with_deadline(
         "commit on another path",
@@ -205,7 +210,12 @@ fn held_write_failing(
     let replica = served.replica.clone();
     let write = tokio::spawn(async move {
         replica
-            .write(&path(relative), body, meta(0o644), Precondition::Absent)
+            .write(
+                &path(relative),
+                body,
+                source_of(b"", 0o644),
+                Precondition::Absent,
+            )
             .await
     });
     (sender, write)

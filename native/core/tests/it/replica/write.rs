@@ -7,7 +7,7 @@ use dsync_core::{Body, LocalReplica, Replica, ReplicaError, Stage, body_channel}
 use dsync_domain::{FileMeta, Precondition, STAGING_DIR, Side};
 
 use crate::replica::support::{
-    MTIME_US, Site, expect_at, failing_body, meta, path, temp_files_under, with_deadline,
+    MTIME_US, Site, expect_at, failing_body, path, source_of, temp_files_under, with_deadline,
 };
 
 async fn write(replica: &LocalReplica, relative: &str, content: &str, mode: u32) -> FileMeta {
@@ -16,7 +16,7 @@ async fn write(replica: &LocalReplica, relative: &str, content: &str, mode: u32)
         replica.write(
             &path(relative),
             Body::from_bytes(content.as_bytes().to_vec()),
-            meta(mode),
+            source_of(content, mode),
             expect_at(&replica.root().join(relative)),
         ),
     )
@@ -103,7 +103,7 @@ async fn a_parent_is_created_once_a_session_and_forgotten_when_a_write_fails() {
         replica.write(
             &path("sub/b.txt"),
             Body::from_bytes(b"x".to_vec()),
-            meta(0o644),
+            source_of(b"x", 0o644),
             Precondition::Absent,
         ),
     )
@@ -153,9 +153,8 @@ async fn a_body_failing_mid_way_fails_the_write_and_leaves_the_target_whole() {
     let result = with_deadline("write", async {
         let body = failing_body(b"partial").await;
         let expect = site.expect(Side::B, "a.txt");
-        replica
-            .write(&path("a.txt"), body, meta(0o644), expect)
-            .await
+        let source = source_of(b"partial and the rest", 0o644);
+        replica.write(&path("a.txt"), body, source, expect).await
     })
     .await;
 
@@ -182,9 +181,8 @@ async fn a_body_whose_sender_goes_away_unfinished_is_cut_short_not_complete() {
         sender.send(b"all it sent".to_vec()).await.unwrap();
         drop(sender);
         let expect = site.expect(Side::B, "a.txt");
-        replica
-            .write(&path("a.txt"), body, meta(0o644), expect)
-            .await
+        let source = source_of(b"all it sent and the rest", 0o644);
+        replica.write(&path("a.txt"), body, source, expect).await
     })
     .await;
 
@@ -203,7 +201,8 @@ async fn streams_into_a_temp_in_the_staging_folder_and_renames_it_on() {
     with_deadline("write", async {
         let (sender, body) = body_channel(2);
         let target = path("a.txt");
-        let write = replica.write(&target, body, meta(0o644), site.expect(Side::B, "a.txt"));
+        let source = source_of(b"first half second half", 0o644);
+        let write = replica.write(&target, body, source, site.expect(Side::B, "a.txt"));
         let feed = async {
             sender.send(b"first half ".to_vec()).await.unwrap();
             // Mid-write: the temp holds the first half, the target the old.
@@ -241,7 +240,8 @@ async fn a_write_dropped_mid_body_lands_nothing_and_leaves_no_scratch() {
         let (sender, body) = body_channel(2);
         let at = path("a.txt");
         let expect = site.expect(Side::B, "a.txt");
-        let mut write = Box::pin(replica.write(&at, body, meta(0o644), expect));
+        let mut write =
+            Box::pin(replica.write(&at, body, source_of(b"partial and the rest", 0o644), expect));
         sender.send(b"partial".to_vec()).await.unwrap();
         // Drive the write until the writer is streaming into its scratch
         // file, then drop it the way a run's second stop does.
@@ -278,7 +278,7 @@ async fn a_target_no_longer_what_the_scan_saw_is_left_untouched() {
         replica.write(
             &path("edited"),
             Body::from_bytes(b"new".to_vec()),
-            meta(0o644),
+            source_of(b"new", 0o644),
             scanned,
         ),
     )
@@ -291,7 +291,7 @@ async fn a_target_no_longer_what_the_scan_saw_is_left_untouched() {
         replica.write(
             &path("sub/created"),
             Body::from_bytes(b"new".to_vec()),
-            meta(0o644),
+            source_of(b"new", 0o644),
             Precondition::Absent,
         ),
     )

@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use dsync_core::{Body, DialedPeer, LocalReplica, Replica, ReplicaError, Symlinks};
 use dsync_domain::{
-    EntryId, FileMeta, Glob, Jobs, Precondition, RelPath, RuleSet, ScanEntry, Side, SkippedReason,
-    Stage, Tuning,
+    ContentHash, EntryId, FileMeta, FileState, Glob, Jobs, Precondition, RelPath, RuleSet,
+    ScanEntry, Side, SkippedReason, Stage, Tuning,
 };
 
 use crate::peer::support::{Host, Serving, identity, serve, somewhere, with_deadline};
@@ -131,16 +131,20 @@ impl Linked {
 
 async fn write(replica: &impl Replica, path: &str) -> Result<FileMeta, ReplicaError> {
     let content = b"from the peer".to_vec();
-    let meta = FileMeta {
-        size: content.len() as u64,
-        mtime_us: 1_704_067_200_000_000,
-        mode: 0o644,
+    let digest = ring::digest::digest(&ring::digest::SHA256, &content);
+    let source = FileState {
+        meta: FileMeta {
+            size: content.len() as u64,
+            mtime_us: 1_704_067_200_000_000,
+            mode: 0o644,
+        },
+        hash: ContentHash::from_digest(digest.as_ref().try_into().unwrap()),
     };
     replica
         .write(
             &rel(path),
             Body::from_bytes(content),
-            meta,
+            source,
             Precondition::Absent,
         )
         .await

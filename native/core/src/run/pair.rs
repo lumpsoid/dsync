@@ -3,8 +3,8 @@
 //! dyn-compatible), so each call picks its side here once.
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, FileMeta, Precondition, RelPath, ReplicaOp, RootFacts, Side,
-    WriteStats,
+    ArchiveCommit, ArchiveFacts, FileMeta, FileState, Precondition, RelPath, ReplicaOp, RootFacts,
+    Side, WriteStats,
 };
 
 use crate::body::Body;
@@ -74,10 +74,10 @@ impl<A: Replica, B: Replica> Pair<'_, A, B> {
         side: Side,
         path: &RelPath,
         body: Body,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
-        on_side!(self, side, ReplicaOp::Write, replica => replica.write(path, body, meta, expect))
+        on_side!(self, side, ReplicaOp::Write, replica => replica.write(path, body, source, expect))
     }
 
     pub(crate) async fn delete(

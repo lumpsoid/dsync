@@ -94,7 +94,7 @@ fn a_far_side_of_another_protocol_major_is_refused_naming_both() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let far_side = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        stream.write_all(&version_frame(3, 0)).unwrap();
+        stream.write_all(&version_frame(4, 0)).unwrap();
         let mut heard = Vec::new();
         let _ = stream.read_to_end(&mut heard);
     });
@@ -107,7 +107,7 @@ fn a_far_side_of_another_protocol_major_is_refused_naming_both() {
     assert!(
         refused
             .stderr
-            .contains("protocol version mismatch: this side speaks 2.0, the far side 3.0"),
+            .contains("protocol version mismatch: this side speaks 3.0, the far side 4.0"),
         "{refused:#?}"
     );
     far_side.join().unwrap();

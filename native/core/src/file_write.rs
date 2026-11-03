@@ -1,6 +1,8 @@
 //! Landing one file on a writer thread (SPEC §7.2-§7.6): parent folders,
 //! what is at the target, a temp in the staging folder renamed onto it, the
-//! bytes, mtime, mode, and the state that actually landed. Blocking
+//! bytes - hashed as they are written, and checked against the source's
+//! hash before the rename - mtime, mode, and the state that actually
+//! landed. Blocking
 //! `std::fs` throughout; the pool (`writer_pool`) runs it on its own
 //! threads.
 
@@ -13,15 +15,17 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dsync_domain::{
-    ChangedDuringSync, FileMeta, Precondition, RelPath, STAGING_DIR, temp_name_for,
+    ChangedDuringSync, ContentHash, FileMeta, FileState, Precondition, RelPath, STAGING_DIR,
+    temp_name_for,
 };
+use ring::digest;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::body::BodyError;
 use crate::confinement::Confinement;
 use crate::local_root::{Located, Root};
 use crate::replica_error::ReplicaError;
-use crate::scanner::{on_disk_at, stat};
+use crate::scanner::{content_hash, on_disk_at, stat};
 use crate::write_error::WriteError;
 use dsync_domain::{Stage, WriteStats};
 
@@ -230,7 +234,14 @@ fn next_temp() -> u64 {
 
 /// Lands `path` with the bytes arriving on `chunks`, and returns the
 /// metadata that actually landed (SPEC §7.4: the post-write state, not the
-/// one asked for). Every stage is timed into `stats`.
+/// one asked for). `source` is the scanned source's state: its mtime and
+/// mode are applied, its hash is what the bytes must hash to. Every stage
+/// is timed into `stats`.
+///
+/// Bytes that hash otherwise - corrupted in transit or on the way to disk,
+/// routed to the wrong file - are never renamed onto `path`: the write
+/// fails at [`Stage::Write`] with [`LandedMismatch`] (SPEC §7.2), since the
+/// archive records the source's hash for what landed without rehashing it.
 ///
 /// Unless `path` is no longer what `expect` says the scan saw there: then
 /// nothing is touched, and the write fails [`ReplicaError::Changed`] (SPEC
@@ -246,7 +257,7 @@ fn next_temp() -> u64 {
 pub(crate) fn write_file(
     destination: &Destination,
     path: &RelPath,
-    meta: FileMeta,
+    source: FileState,
     expect: Precondition,
     chunks: &mut mpsc::UnboundedReceiver<Chunk>,
     stats: &mut WriteStats,
@@ -264,7 +275,7 @@ pub(crate) fn write_file(
     let landed = land(
         destination,
         &located,
-        meta,
+        source,
         expect,
         chunks,
         &mut timer,
@@ -291,6 +302,15 @@ pub(crate) fn write_file(
     })
 }
 
+/// The bytes a write received hash to something other than its source's
+/// scanned hash, so they are not renamed onto the target (SPEC §7.2).
+#[derive(Debug, thiserror::Error)]
+#[error("the bytes received hash to {landed}, not the source's {expected}")]
+pub(crate) struct LandedMismatch {
+    expected: ContentHash,
+    landed: ContentHash,
+}
+
 enum Failed {
     At(Stage, io::Error),
     Changed(ChangedDuringSync),
@@ -309,7 +329,7 @@ fn at(stage: Stage) -> impl FnOnce(io::Error) -> Failed {
 fn land(
     destination: &Destination,
     located: &Located,
-    meta: FileMeta,
+    source: FileState,
     expect: Precondition,
     chunks: &mut mpsc::UnboundedReceiver<Chunk>,
     timer: &mut StageTimer,
@@ -338,12 +358,15 @@ fn land(
     }
 
     let mut file = create_scratch(&destination.staging(), target, scratch, timer)?;
+    // Over each chunk as it is written: no second pass, no copy.
+    let mut hashing = digest::Context::new(&digest::SHA256);
     loop {
         let chunk = chunks.blocking_recv();
         timer.lap(Stage::Wait);
         match chunk {
             Some(Chunk::Bytes(bytes, budget)) => {
                 file.write_all(&bytes).map_err(at(Stage::Write))?;
+                hashing.update(&bytes);
                 drop(budget);
                 timer.lap(Stage::Write);
             }
@@ -352,6 +375,18 @@ fn land(
             None => return Err(Failed::At(Stage::Wait, BodyError::CutShort.into())),
         }
     }
+    let landed = content_hash(hashing);
+    if landed != source.hash {
+        let mismatch = LandedMismatch {
+            expected: source.hash,
+            landed,
+        };
+        return Err(Failed::At(
+            Stage::Write,
+            io::Error::new(io::ErrorKind::InvalidData, mismatch),
+        ));
+    }
+    let meta = source.meta;
 
     // Best effort (SPEC §7.4): the stat below records whatever landed.
     let _ = file.set_modified(system_time(meta.mtime_us));
@@ -499,27 +534,107 @@ mod tests {
         destination
     }
 
-    /// Lands `content` at `name` with `mode` asked.
-    fn land_file(destination: &Destination, name: &str, mode: u32) -> FileMeta {
-        let (chunks_tx, mut chunks) = mpsc::unbounded_channel();
-        let budget = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = budget.try_acquire_owned().unwrap();
-        chunks_tx.send(Chunk::Bytes(b"hello".to_vec(), permit)).ok();
-        chunks_tx.send(Chunk::End).ok();
-        let meta = FileMeta {
-            size: 5,
-            mtime_us: 0,
-            mode,
+    /// A source scanned holding `content`, with `mode`.
+    fn source(content: &[u8], mode: u32) -> FileState {
+        let mut hashing = digest::Context::new(&digest::SHA256);
+        hashing.update(content);
+        FileState {
+            meta: FileMeta {
+                size: content.len() as u64,
+                mtime_us: 0,
+                mode,
+            },
+            hash: content_hash(hashing),
+        }
+    }
+
+    /// Writes `body`, whole, at `name` over whatever the scan saw there,
+    /// announced as `source`.
+    fn write_body(
+        destination: &Destination,
+        name: &str,
+        body: &[u8],
+        source: FileState,
+    ) -> Result<FileMeta, ReplicaError> {
+        let path = RelPath::parse(name).unwrap();
+        let target = destination.root.locate(&path).unwrap();
+        let expect = match stat(&target.path) {
+            Ok(now) => Precondition::File {
+                size: now.size,
+                mtime_us: now.mtime_us,
+            },
+            Err(_) => Precondition::Absent,
         };
+        let (chunks_tx, mut chunks) = mpsc::unbounded_channel();
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = budget.try_acquire_owned().unwrap();
+        chunks_tx.send(Chunk::Bytes(body.to_vec(), permit)).ok();
+        chunks_tx.send(Chunk::End).ok();
         write_file(
             destination,
-            &RelPath::parse(name).unwrap(),
-            meta,
-            Precondition::Absent,
+            &path,
+            source,
+            expect,
             &mut chunks,
             &mut WriteStats::one_writer(),
         )
-        .unwrap()
+    }
+
+    /// Lands `hello` at `name` with `mode` asked.
+    fn land_file(destination: &Destination, name: &str, mode: u32) -> FileMeta {
+        write_body(destination, name, b"hello", source(b"hello", mode)).unwrap()
+    }
+
+    #[test]
+    fn bytes_that_do_not_hash_to_the_sources_hash_are_never_renamed_onto_the_target() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = destination(root.path(), true);
+        let target = root.path().join("file");
+        fs::write(&target, b"old").unwrap();
+
+        // Same size as the source, so only the hash tells them apart.
+        let corrupt = write_body(&destination, "file", b"hellO", source(b"hello", 0o644));
+
+        let Err(ReplicaError::Write(failed)) = corrupt else {
+            panic!("{corrupt:?}");
+        };
+        assert_eq!(failed.stage, Stage::Write);
+        assert_eq!(failed.kind(), io::ErrorKind::InvalidData);
+        assert!(failed.source.get_ref().unwrap().is::<LandedMismatch>());
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        let staging = root.path().join(STAGING_DIR);
+        assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+
+        // Positive control: the same write, with the bytes the source holds.
+        let whole = write_body(&destination, "file", b"hello", source(b"hello", 0o644));
+
+        assert!(whole.is_ok(), "{whole:?}");
+        assert_eq!(fs::read(&target).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_file_received_in_several_chunks_is_hashed_across_all_of_them() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = destination(root.path(), true);
+        let (chunks_tx, mut chunks) = mpsc::unbounded_channel();
+        let budget = Arc::new(tokio::sync::Semaphore::new(3));
+        for piece in [&b"he"[..], b"", b"llo"] {
+            let permit = budget.clone().try_acquire_owned().unwrap();
+            chunks_tx.send(Chunk::Bytes(piece.to_vec(), permit)).ok();
+        }
+        chunks_tx.send(Chunk::End).ok();
+
+        let landed = write_file(
+            &destination,
+            &RelPath::parse("file").unwrap(),
+            source(b"hello", 0o644),
+            Precondition::Absent,
+            &mut chunks,
+            &mut WriteStats::one_writer(),
+        );
+
+        assert!(landed.is_ok(), "{landed:?}");
+        assert_eq!(fs::read(root.path().join("file")).unwrap(), b"hello");
     }
 
     #[test]
@@ -564,11 +679,7 @@ mod tests {
             size: before.size,
             mtime_us: before.mtime_us,
         };
-        let meta = FileMeta {
-            size: 3,
-            mtime_us: 0,
-            mode: 0o644,
-        };
+        let source = source(b"new", 0o644);
         let (chunks_tx, mut chunks) = mpsc::unbounded_channel();
         let budget = Arc::new(tokio::sync::Semaphore::new(1));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -578,7 +689,7 @@ mod tests {
             let writer = scope.spawn(|| {
                 let path = RelPath::parse(name).unwrap();
                 let stats = &mut WriteStats::one_writer();
-                write_file(destination, &path, meta, expect, &mut chunks, stats)
+                write_file(destination, &path, source, expect, &mut chunks, stats)
             });
             let permit = budget.clone().try_acquire_owned().unwrap();
             chunks_tx.send(Chunk::Bytes(b"new".to_vec(), permit)).ok();

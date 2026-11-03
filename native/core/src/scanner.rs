@@ -528,9 +528,15 @@ fn hash_file(source: &Path, buffer: &mut [u8]) -> io::Result<ContentHash> {
             Err(error) => return Err(error),
         }
     }
+    Ok(content_hash(context))
+}
+
+/// The content hash a SHA-256 `context` has digested: the scan's, and a
+/// write's of the bytes it landed (`file_write`), so the two compare.
+pub(crate) fn content_hash(context: digest::Context) -> ContentHash {
     let mut bytes = [0u8; 32];
     bytes.copy_from_slice(context.finish().as_ref());
-    Ok(ContentHash::from_digest(bytes))
+    ContentHash::from_digest(bytes)
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc as std_mpsc};
 use std::thread;
 use std::time::Instant;
 
-use dsync_domain::{FileMeta, Precondition, RelPath};
+use dsync_domain::{FileMeta, FileState, Precondition, RelPath};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::body::Body;
@@ -31,7 +31,7 @@ use dsync_domain::{Stage, WriteStats};
 /// `chunks`.
 struct Job {
     path: RelPath,
-    meta: FileMeta,
+    source: FileState,
     expect: Precondition,
     queued: Instant,
     chunks: mpsc::UnboundedReceiver<Chunk>,
@@ -82,12 +82,13 @@ impl WriterPool {
 
     /// Lands `body` at `path` on the next free writer, pacing the body by
     /// the byte budget, and returns what landed - unless `path` is no
-    /// longer what `expect` says (see [`write_file`]).
+    /// longer what `expect` says, or the bytes do not hash to `source`'s
+    /// hash (see [`write_file`]).
     pub(crate) async fn write(
         &self,
         path: RelPath,
         mut body: Body,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         let stopped = |path: RelPath| {
@@ -104,7 +105,7 @@ impl WriterPool {
         let (landed_tx, landed) = oneshot::channel();
         let job = Job {
             path: path.clone(),
-            meta,
+            source,
             expect,
             queued: Instant::now(),
             chunks,
@@ -173,7 +174,7 @@ fn run_writer(
         let landed = write_file(
             destination,
             &job.path,
-            job.meta,
+            job.source,
             job.expect,
             &mut job.chunks,
             &mut file,

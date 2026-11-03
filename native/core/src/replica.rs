@@ -14,8 +14,8 @@
 use std::future::Future;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, OnDisk,
-    Precondition, RelPath, RootFacts, RuleSet, ScanEntry, WriteStats,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta,
+    FileState, OnDisk, Precondition, RelPath, RootFacts, RuleSet, ScanEntry, WriteStats,
 };
 use tokio::sync::oneshot;
 
@@ -88,9 +88,12 @@ pub trait Replica: Send + Sync {
     fn read(&self, path: &RelPath) -> impl Future<Output = Result<Reading, ReplicaError>> + Send;
 
     /// Lands `body` at `path` and returns the metadata that actually
-    /// landed, which the caller archives even where it differs from `meta`
-    /// (SPEC §7.4). `meta` is the source's: its mtime and mode are applied
-    /// best effort; its size is not checked against the body.
+    /// landed, which the caller archives even where it differs from the
+    /// source's (SPEC §7.4). `source` is the scanned source's state: its
+    /// mtime and mode are applied best effort; its size is not checked
+    /// against the body; its hash is: a body whose bytes hash otherwise
+    /// fails the write before the rename, and `path` is left as it was
+    /// (SPEC §7.2).
     ///
     /// Into a temp in the replica's staging folder, renamed onto `path`
     /// once whole (SPEC §7.2), so `path` holds the old file or the new one,
@@ -105,7 +108,7 @@ pub trait Replica: Send + Sync {
         &self,
         path: &RelPath,
         body: Body,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     ) -> impl Future<Output = Result<FileMeta, ReplicaError>> + Send;
 

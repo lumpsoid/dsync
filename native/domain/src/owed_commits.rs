@@ -34,7 +34,9 @@ pub struct UnevenCommitOnly;
 
 impl OwedCommits {
     /// A copy from `from`: the destination records what landed under the
-    /// source's hash, the source its own scanned state.
+    /// source's hash, the source its own scanned state. The writer refused
+    /// to land bytes that hash otherwise (SPEC §7.2 step 5), so the hash is
+    /// the landed bytes' own.
     pub fn for_copy(
         path: &RelPath,
         from: Side,

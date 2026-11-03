@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, FileMeta, OnDisk,
+    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, FileMeta, FileState, OnDisk,
     Precondition, RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Tuning, WriteStats,
 };
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
@@ -527,7 +527,7 @@ impl Replica for RemoteReplica {
         &self,
         path: &RelPath,
         mut body: Body,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         let _slot = self.window.enter([path.clone()]).await;
@@ -535,7 +535,7 @@ impl Replica for RemoteReplica {
         let credit = self.link.credits.open(id);
         let request = Request::Write {
             path: path.clone(),
-            meta,
+            source,
             expect,
         };
         self.link
@@ -838,10 +838,14 @@ mod tests {
     #[tokio::test]
     async fn a_write_body_stops_at_its_credit_and_goes_on_as_it_is_granted() {
         let (client, mut peer) = connected(None).await;
-        let meta = FileMeta {
-            size: 0,
-            mtime_us: 0,
-            mode: 0o644,
+        // The far side here is a fake that never lands the bytes.
+        let source = FileState {
+            meta: FileMeta {
+                size: 0,
+                mtime_us: 0,
+                mode: 0o644,
+            },
+            hash: dsync_domain::ContentHash::from_digest([0; 32]),
         };
         let body = Body::from_bytes(vec![1; 3 * credit::STREAM_CREDIT_BYTES]);
         let f = RelPath::parse("f").unwrap();
@@ -859,7 +863,10 @@ mod tests {
             request.id
         };
         let (wrote, id) = within(REAL, async {
-            tokio::join!(client.write(&f, body, meta, Precondition::Absent), far_side)
+            tokio::join!(
+                client.write(&f, body, source, Precondition::Absent),
+                far_side
+            )
         })
         .await;
         assert!(matches!(wrote, Err(ReplicaError::Refused(_))), "{wrote:?}");
@@ -874,17 +881,21 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn writes_stuck_behind_a_full_outbox_end_at_the_silence_limit() {
         let (client, peer) = connected(network()).await;
-        let meta = FileMeta {
-            size: 0,
-            mtime_us: 0,
-            mode: 0o644,
+        // The far side here is a fake that never lands the bytes.
+        let source = FileState {
+            meta: FileMeta {
+                size: 0,
+                mtime_us: 0,
+                mode: 0o644,
+            },
+            hash: dsync_domain::ContentHash::from_digest([0; 32]),
         };
         let paths: Vec<_> = (0..8)
             .map(|n| RelPath::parse(&format!("f{n}")).unwrap())
             .collect();
         let writes = paths.iter().map(|path| {
             let body = Body::from_bytes(vec![1; 3 * credit::STREAM_CREDIT_BYTES]);
-            client.write(path, body, meta, Precondition::Absent)
+            client.write(path, body, source, Precondition::Absent)
         });
         let started = Instant::now();
         let wrote = within(VIRTUAL, futures_util::future::join_all(writes)).await;

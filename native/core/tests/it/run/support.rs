@@ -18,8 +18,9 @@ use dsync_core::{
 };
 use dsync_domain::{
     Action, Archive, ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Command, EffectiveOptions,
-    FileMeta, Flags, HostFacts, Location, Platform, Precondition, RelPath, ReplicaLocation,
-    ReplicaSpec, RootFacts, RuleSet, RunFlags, ScanEntry, Side, Tuning, WriteStats,
+    FileMeta, FileState, Flags, HostFacts, Location, Platform, Precondition, RelPath,
+    ReplicaLocation, ReplicaSpec, RootFacts, RuleSet, RunFlags, ScanEntry, Side, Tuning,
+    WriteStats,
 };
 use tempfile::TempDir;
 use tokio::sync::{Semaphore, mpsc};
@@ -457,11 +458,11 @@ impl<R: Replica> Replica for Probe<R> {
         &self,
         path: &RelPath,
         body: Body,
-        meta: FileMeta,
+        source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         let reported = self.enter(Call::Write(path.as_str().to_owned())).await?;
-        let landed = self.inner.write(path, body, meta, expect).await?;
+        let landed = self.inner.write(path, body, source, expect).await?;
         Ok(FileMeta {
             size: reported.unwrap_or(landed.size),
             ..landed

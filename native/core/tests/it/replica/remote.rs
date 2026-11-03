@@ -15,8 +15,8 @@ use dsync_domain::{
 use crate::replica::hello_lock::assert_folder_in_use;
 use crate::replica::served::Served;
 use crate::replica::support::{
-    OTHER_PROFILE, PROFILE, Site, apply, exchange, failing_body, meta, path, recorded,
-    with_deadline,
+    OTHER_PROFILE, PROFILE, Site, apply, exchange, failing_body, path, recorded, source_of,
+    temp_files_under, with_deadline,
 };
 
 #[tokio::test]
@@ -288,7 +288,7 @@ async fn write_lands_through_the_wire_and_returns_what_landed() {
         b.write(
             &path("d/w.bin"),
             Body::from_bytes(content.clone()),
-            meta(0o600),
+            source_of(&content, 0o600),
             Precondition::Absent,
         ),
     )
@@ -296,6 +296,43 @@ async fn write_lands_through_the_wire_and_returns_what_landed() {
     .unwrap();
     assert_eq!(site.get(Side::B, "d/w.bin"), content);
     assert_eq!(landed, site.state_of(Side::B, "d/w.bin").meta);
+    served.close().await;
+}
+
+#[tokio::test]
+async fn a_body_that_does_not_hash_to_its_source_never_replaces_the_far_target() {
+    let site = Site::new();
+    site.put(Side::B, "f", "old");
+    let served = Served::new(&site, Side::B).await;
+    let b = served.replica.as_ref();
+    with_deadline("hello", b.hello()).await.unwrap();
+    let f = path("f");
+    let write = |body: &[u8]| {
+        b.write(
+            &f,
+            Body::from_bytes(body.to_vec()),
+            source_of(b"hello", 0o644),
+            site.expect(Side::B, "f"),
+        )
+    };
+
+    // Same size as the source: only the hash, carried by the request,
+    // tells them apart on the far side.
+    let corrupt = with_deadline("corrupt write", write(b"hellO")).await;
+
+    let Err(ReplicaError::Write(error)) = corrupt else {
+        panic!("not a write error: {corrupt:?}");
+    };
+    assert_eq!(
+        (error.stage, error.kind()),
+        (Stage::Write, io::ErrorKind::InvalidData)
+    );
+    assert_eq!(site.get(Side::B, "f"), b"old");
+    assert!(temp_files_under(&site.root(Side::B)).is_empty());
+
+    // Positive control: the bytes the source holds land.
+    with_deadline("whole write", write(b"hello")).await.unwrap();
+    assert_eq!(site.get(Side::B, "f"), b"hello");
     served.close().await;
 }
 
@@ -314,7 +351,7 @@ async fn a_failed_write_leaves_the_session_usable() {
         b.write(
             &path("file/x"),
             Body::from_bytes(vec![1; 3_000_000]),
-            meta(0o644),
+            source_of(vec![1; 3_000_000], 0o644),
             Precondition::Absent,
         ),
     )
@@ -331,7 +368,7 @@ async fn a_failed_write_leaves_the_session_usable() {
         b.write(
             &path("torn"),
             failing_body(b"half").await,
-            meta(0o644),
+            source_of(b"half and the rest", 0o644),
             Precondition::Absent,
         ),
     )
@@ -344,7 +381,12 @@ async fn a_failed_write_leaves_the_session_usable() {
     drop(sender);
     let cut = with_deadline(
         "write of a cut body",
-        b.write(&path("cut"), body, meta(0o644), Precondition::Absent),
+        b.write(
+            &path("cut"),
+            body,
+            source_of(b"partial and the rest", 0o644),
+            Precondition::Absent,
+        ),
     )
     .await;
     assert!(matches!(cut, Err(ReplicaError::Write(_))), "{cut:?}");
@@ -355,7 +397,7 @@ async fn a_failed_write_leaves_the_session_usable() {
         b.write(
             &path("ok"),
             Body::from_bytes(b"fine".to_vec()),
-            meta(0o644),
+            source_of(b"fine", 0o644),
             Precondition::Absent,
         ),
     )

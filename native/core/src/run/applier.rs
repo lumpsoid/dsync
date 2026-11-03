@@ -366,7 +366,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let onto = from.other();
         let (body, moved) = reading.checked(Precondition::of(Some(source)));
         self.pair
-            .write(onto, to, body, source.meta, expect)
+            .write(onto, to, body, *source, expect)
             .await
             .map_err(|error| {
                 if moved.happened() {

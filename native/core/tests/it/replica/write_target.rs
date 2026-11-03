@@ -11,7 +11,8 @@ use dsync_core::{Body, LocalReplica, Replica, ReplicaError};
 use dsync_domain::{Precondition, Side};
 
 use crate::replica::support::{
-    Site, expect_at, failing_body, meta, mode_of, path, set_mode, temp_files_under, with_deadline,
+    MTIME_US, Site, expect_at, failing_body, mode_of, path, set_mode, source_of, temp_files_under,
+    with_deadline,
 };
 
 async fn write_new(replica: &LocalReplica, content: &str) {
@@ -20,7 +21,7 @@ async fn write_new(replica: &LocalReplica, content: &str) {
         replica.write(
             &path("a.txt"),
             Body::from_bytes(content.as_bytes().to_vec()),
-            meta(0o644),
+            source_of(content, 0o644),
             expect_at(&replica.root().join("a.txt")),
         ),
     )
@@ -117,7 +118,12 @@ async fn a_target_that_cannot_be_probed_is_changed_since_the_scan_and_left_untou
     let refused = with_deadline("write", async {
         let body = failing_body(b"partial").await;
         replica
-            .write(&path("a.txt"), body, meta(0o644), Precondition::Absent)
+            .write(
+                &path("a.txt"),
+                body,
+                source_of(b"partial and the rest", 0o644),
+                Precondition::Absent,
+            )
             .await
     })
     .await;
@@ -163,10 +169,7 @@ async fn a_target_on_another_filesystem_is_renamed_onto_from_beside_it() {
             .file_type()
             .is_symlink()
     );
-    assert_eq!(
-        meta(0o644).mtime_us,
-        site.state_of(Side::B, "a.txt").meta.mtime_us
-    );
+    assert_eq!(MTIME_US, site.state_of(Side::B, "a.txt").meta.mtime_us);
     assert!(temp_files_under(elsewhere.path()).is_empty());
     assert!(temp_files_under(&site.root(Side::B)).is_empty());
 }
