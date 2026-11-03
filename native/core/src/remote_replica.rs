@@ -107,12 +107,16 @@ impl RemoteReplica {
             mut writer,
             liveness,
         } = transport;
-        let silence = liveness.map(|liveness| liveness.silence_limit);
+        // The handshake is not the silence limit's: over ssh, the far side's
+        // version frame waits on ssh's own login - a password, a host key
+        // to confirm - which may take a person longer than the limit. A
+        // peer:// dial bounds it with its own handshake deadline instead.
         let mut reader =
-            BufReader::with_capacity(READ_BUFFER_BYTES, SilenceLimit::new(reader, silence));
-        handshake(&mut reader, &mut writer)
-            .await
-            .map_err(|error| silent_if_timed_out(error, liveness))?;
+            BufReader::with_capacity(READ_BUFFER_BYTES, SilenceLimit::new(reader, None));
+        handshake(&mut reader, &mut writer).await?;
+        reader
+            .get_mut()
+            .limit_to(liveness.map(|liveness| liveness.silence_limit));
         let (outbox, written) = start_writer(
             writer,
             liveness.map(|liveness| liveness.heartbeat),
@@ -171,6 +175,7 @@ impl RemoteReplica {
         tuning: &Tuning,
     ) -> Result<RemoteReplica, LinkError> {
         let (transport, ssh) = launch.spawn()?;
+        let transport = transport.with_liveness(Liveness::of(tuning));
         match RemoteReplica::connect(transport, spec, tuning).await {
             Ok(mut replica) => {
                 replica.ssh = Some(Box::new(ssh));
@@ -766,7 +771,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stdio_and_unix_transports_send_no_heartbeat() {
+    async fn a_unix_transport_sends_no_heartbeat() {
         let (_client, mut peer) = connected(None).await;
         let waited = tokio::time::timeout(Duration::from_secs(60), peer.next()).await;
         assert!(waited.is_err(), "a frame arrived: {waited:?}");
@@ -783,6 +788,39 @@ mod tests {
         assert_eq!(request.kind, Kind::Request);
         assert!(
             matches!(said, Err(ReplicaError::Link(LinkError::PeerSilent { limit })) if limit == Duration::from_secs(30)),
+            "{said:?}"
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_handshake_waits_past_the_silence_limit_and_the_connection_then_does_not() {
+        // An ssh login a person is typing a password into: the far side's
+        // version frame comes after a minute, and the connection is up.
+        let (near, far) = duplex(64 * 1024);
+        let transport = Transport::split(near).with_liveness(Liveness::of(&Tuning::DEFAULT));
+        let (reader, mut writer) = tokio::io::split(far);
+        let mut reader = BufReader::new(reader);
+        let (client, far_side) = within(VIRTUAL, async {
+            tokio::join!(
+                RemoteReplica::connect(transport, spec(), &Tuning::DEFAULT),
+                async {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    handshake_as(PROTOCOL_VERSION, &mut reader, &mut writer).await
+                }
+            )
+        })
+        .await;
+        far_side.unwrap();
+        let client = client.unwrap();
+        let mut peer = Peer { reader, writer };
+        let started = Instant::now();
+        let (said, _request) = within(VIRTUAL, async {
+            tokio::join!(client.hello(), peer.next_request())
+        })
+        .await;
+        assert!(
+            matches!(said, Err(ReplicaError::Link(LinkError::PeerSilent { .. }))),
             "{said:?}"
         );
         assert_eq!(started.elapsed(), Duration::from_secs(30));

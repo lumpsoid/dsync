@@ -36,11 +36,18 @@ fn launch(program: &Path) -> SshLaunch {
 const TEXT_FILE_BUSY: i32 = 26;
 
 async fn connect(site: &Site, program: &Path) -> Result<RemoteReplica, LinkError> {
+    connect_tuned(site, program, &Tuning::DEFAULT).await
+}
+
+async fn connect_tuned(
+    site: &Site,
+    program: &Path,
+    tuning: &Tuning,
+) -> Result<RemoteReplica, LinkError> {
     with_deadline("connect over the stand-in", async {
         loop {
             let connected =
-                RemoteReplica::over_ssh(&launch(program), spec(site, Side::B), &Tuning::DEFAULT)
-                    .await;
+                RemoteReplica::over_ssh(&launch(program), spec(site, Side::B), tuning).await;
             // A script just written can be briefly unexecutable while a
             // child another test forked still holds its write descriptor
             // between fork and exec: a race in the harness, not the code.
@@ -130,6 +137,26 @@ async fn what_ssh_printed_on_stderr_comes_with_a_connection_that_never_opened() 
         "{cause:?}"
     );
     assert_eq!(stderr, &["bash: /opt/dsync: No such file or directory"]);
+}
+
+#[tokio::test]
+async fn a_far_side_gone_silent_ends_the_call_at_the_silence_limit() {
+    let site = Site::new();
+    // Logs in slower than the silence limit, answers the 25-byte version
+    // frame with itself, then never sends another byte nor closes: a
+    // half-open link. The login's wait is not the limit's to cut.
+    let program = stand_in(site.dir(), "sleep 1\nhead -c 25\nexec sleep 30");
+    let tuning = Tuning {
+        heartbeat: Duration::from_millis(200),
+        silence_limit: Duration::from_millis(500),
+        ..Tuning::DEFAULT
+    };
+    let replica = connect_tuned(&site, &program, &tuning).await.unwrap();
+    let said = with_deadline("hello", replica.hello()).await;
+    assert!(
+        matches!(&said, Err(ReplicaError::Link(LinkError::PeerSilent { limit })) if *limit == tuning.silence_limit),
+        "{said:?}"
+    );
 }
 
 #[tokio::test]

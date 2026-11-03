@@ -208,15 +208,18 @@ where
 
 impl<F> ReplicaServer<F> {
     /// Serves one session over this process's own stdin and stdout: the
-    /// far end of an ssh transport (`dsync agent --stdio`).
+    /// far end of an ssh transport (`dsync agent --stdio`), with the
+    /// liveness bound: a dead ssh link ends the session and releases its
+    /// lock at the silence limit, not when sshd's TCP gives up.
     pub async fn serve_stdio<Opening, R>(&self) -> Result<(), LinkError>
     where
         F: Fn(ReplicaSpec) -> Opening + Send + Sync,
         Opening: Future<Output = Result<R, ReplicaError>> + Send,
         R: Replica + 'static,
     {
-        self.serve(Transport::new(tokio::io::stdin(), tokio::io::stdout()))
-            .await
+        let transport = Transport::new(tokio::io::stdin(), tokio::io::stdout())
+            .with_liveness(Liveness::of(&self.tuning));
+        self.serve(transport).await
     }
 }
 

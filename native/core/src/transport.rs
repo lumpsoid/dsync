@@ -35,16 +35,17 @@ pub struct Transport<R, W> {
     pub(crate) liveness: Option<Liveness>,
 }
 
-/// SPEC §4.2's liveness bound for network transports (peer://): send a
-/// heartbeat whenever this side has sent nothing for `heartbeat`, and fail
-/// the connection when nothing at all - not even a heartbeat - arrives for
-/// `silence_limit` while this side is reading.
+/// SPEC §4.2's liveness bound for transports that cross a network
+/// (peer://, ssh://): send a heartbeat whenever this side has sent nothing
+/// for `heartbeat`, and fail the connection when nothing at all - not even
+/// a heartbeat - arrives for `silence_limit` while this side is reading.
 ///
-/// Not for stdio or unix transports, on purpose: a dead unix peer is a
-/// process on this machine whose socket the kernel closes, and ssh watches
-/// its own connection (`ServerAliveInterval`). Between two dsync processes
-/// on a raw network socket nobody does, and a sleeping laptop or an
-/// expired NAT flow would otherwise leave a run waiting forever.
+/// Not for unix transports, on purpose: a dead unix peer is a process on
+/// this machine whose socket the kernel closes. Over a network nobody
+/// watches the link for us: ssh's `ServerAliveInterval` is off unless the
+/// user turns it on and only ever ends the client, never the far agent,
+/// and a sleeping laptop or an expired NAT flow would otherwise leave a
+/// run - and both sides' locks - waiting forever.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Liveness {
     pub heartbeat: Duration,
@@ -73,8 +74,8 @@ where
         }
     }
 
-    /// Bounds the far side's silence and sends heartbeats: for network
-    /// transports only (see [`Liveness`]).
+    /// Bounds the far side's silence and sends heartbeats: for transports
+    /// that cross a network only (see [`Liveness`]).
     pub fn with_liveness(self, liveness: Liveness) -> Transport<R, W> {
         Transport {
             liveness: Some(liveness),
@@ -313,6 +314,12 @@ impl<R> SilenceLimit<R> {
             deadline: Box::pin(tokio::time::sleep_until(Instant::now())),
             waiting: false,
         }
+    }
+
+    /// Bounds every read from now on by `limit`: for a reader whose
+    /// connection is only bounded once it is up.
+    pub fn limit_to(&mut self, limit: Option<Duration>) {
+        self.limit = limit;
     }
 }
 
