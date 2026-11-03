@@ -38,15 +38,26 @@ impl BucketCount {
     /// buckets and ~1.8 KiB of digests a side on a 14,471-file tree).
     pub const TARGET_ENTRIES: usize = 256;
 
+    /// The most buckets a count may hold. The count arrives over the wire
+    /// and sizes an allocation and a reply (32 bytes a bucket), so it is
+    /// bounded: 2^20 buckets is a 32 MiB digest reply, well inside a
+    /// frame, and still ~268 million entries at [`Self::TARGET_ENTRIES`].
+    /// Past that, buckets simply grow fuller.
+    pub const MAX: u32 = 1 << 20;
+
     /// The count for a scan of `entries` paths, the larger side's total.
     pub fn for_entries(entries: usize) -> BucketCount {
-        let count = entries.div_ceil(Self::TARGET_ENTRIES).max(1);
-        BucketCount(u32::try_from(count).unwrap_or(u32::MAX))
+        let count = entries
+            .div_ceil(Self::TARGET_ENTRIES)
+            .clamp(1, Self::MAX as usize);
+        BucketCount(count as u32)
     }
 
-    /// A count received over the wire; `None` for zero.
+    /// A count received over the wire; `None` for zero or past [`Self::MAX`].
     pub fn new(count: u32) -> Option<BucketCount> {
-        (count > 0).then_some(BucketCount(count))
+        (1..=Self::MAX)
+            .contains(&count)
+            .then_some(BucketCount(count))
     }
 
     pub fn get(self) -> u32 {

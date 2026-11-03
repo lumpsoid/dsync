@@ -69,15 +69,15 @@ where
             });
         }
     };
-    let remote = version_of(&frame).ok_or_else(|| {
-        let mut received = frame.encode();
+    let Some(remote) = version_of(&frame) else {
+        let mut received = frame.encode()?;
         let truncated = received.len() > QUOTED_BYTES;
         received.truncate(QUOTED_BYTES);
-        LinkError::NotSpeakingProtocol {
+        return Err(LinkError::NotSpeakingProtocol {
             received,
             truncated,
-        }
-    })?;
+        });
+    };
     let agreed = version
         .agree(remote)
         .map_err(|mismatch| LinkError::VersionMismatch {
@@ -249,7 +249,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_frame_that_is_not_a_version_frame_is_not_the_protocol_either() {
-        let request = Frame::new(Kind::Request, 1, b"hi".to_vec()).encode();
+        let request = Frame::new(Kind::Request, 1, b"hi".to_vec())
+            .encode()
+            .unwrap();
         assert!(matches!(
             against(&request, false).await,
             LinkError::NotSpeakingProtocol { received, .. } if received == request

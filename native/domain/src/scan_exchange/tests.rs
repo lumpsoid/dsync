@@ -159,6 +159,13 @@ fn bucket_count_scales_with_entries_and_is_never_zero() {
     assert_eq!(BucketCount::for_entries(14_471).get(), 57);
     assert_eq!(BucketCount::new(0), None);
     assert_eq!(
+        BucketCount::new(BucketCount::MAX).map(BucketCount::get),
+        Some(BucketCount::MAX)
+    );
+    assert_eq!(BucketCount::new(BucketCount::MAX + 1), None);
+    assert_eq!(BucketCount::new(u32::MAX), None);
+    assert_eq!(BucketCount::for_entries(usize::MAX).get(), BucketCount::MAX);
+    assert_eq!(
         BucketCount::new(3)
             .and_then(|c| c.bucket(2))
             .map(Bucket::index),

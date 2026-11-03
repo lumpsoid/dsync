@@ -113,26 +113,41 @@ impl Frame {
         Frame::new(Kind::Heartbeat, NO_REQUEST, Vec::new())
     }
 
-    pub fn header(&self) -> [u8; HEADER_BYTES] {
-        let length = u32::try_from(self.payload.len()).expect("a frame payload fits in a u32");
+    /// The header announcing this frame; an error, not a frame, for a
+    /// payload past [`MAX_PAYLOAD_BYTES`], which no reader would accept
+    /// (and past `u32::MAX`, no header could even announce).
+    pub fn header(&self) -> io::Result<[u8; HEADER_BYTES]> {
+        let length = u32::try_from(self.payload.len())
+            .ok()
+            .filter(|length| *length <= MAX_PAYLOAD_BYTES)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "a frame payload of {} bytes, past the {MAX_PAYLOAD_BYTES} a frame may carry",
+                        self.payload.len()
+                    ),
+                )
+            })?;
         let mut header = [0; HEADER_BYTES];
         header[0] = self.kind.byte();
         header[1..5].copy_from_slice(&self.id.to_be_bytes());
         header[5..9].copy_from_slice(&length.to_be_bytes());
-        header
+        Ok(header)
     }
 
     /// Header and payload, as written.
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(HEADER_BYTES + self.payload.len());
-        bytes.extend_from_slice(&self.header());
+        bytes.extend_from_slice(&self.header()?);
         bytes.extend_from_slice(&self.payload);
-        bytes
+        Ok(bytes)
     }
 
-    /// Writes this frame; the caller flushes.
+    /// Writes this frame; the caller flushes. An oversized payload fails
+    /// before a byte is written, so the stream stays in step.
     pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
-        writer.write_all(&self.header()).await?;
+        writer.write_all(&self.header()?).await?;
         writer.write_all(&self.payload).await
     }
 
@@ -251,7 +266,7 @@ mod tests {
     fn encodes_the_kind_then_a_big_endian_id_and_length() {
         let frame = Frame::new(Kind::Request, 0x0102_0304, vec![0xaa, 0xbb]);
         assert_eq!(
-            frame.encode(),
+            frame.encode().unwrap(),
             [
                 0x02, 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x02, 0xaa, 0xbb
             ]
@@ -261,9 +276,23 @@ mod tests {
     #[test]
     fn an_empty_payload_encodes_as_a_zero_length_frame() {
         assert_eq!(
-            Frame::new(Kind::End, 7, Vec::new()).encode(),
+            Frame::new(Kind::End, 7, Vec::new()).encode().unwrap(),
             [0x05, 0, 0, 0, 7, 0, 0, 0, 0]
         );
+    }
+
+    #[tokio::test]
+    async fn a_payload_past_the_limit_is_an_error_and_writes_nothing() {
+        // `vec![0; n]` is a zeroed allocation: its pages are never touched.
+        let largest = Frame::new(Kind::Reply, 1, vec![0; MAX_PAYLOAD_BYTES as usize]);
+        assert!(largest.header().is_ok());
+        let oversized = Frame::new(Kind::Reply, 1, vec![0; MAX_PAYLOAD_BYTES as usize + 1]);
+        let error = oversized.header().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        let mut written = Vec::new();
+        let error = oversized.write_to(&mut written).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(written.is_empty());
     }
 
     #[tokio::test]
@@ -273,7 +302,7 @@ mod tests {
             .enumerate()
             .map(|(n, kind)| Frame::new(kind, u32::MAX - n as u32, vec![n as u8; n]))
             .collect();
-        let bytes: Vec<u8> = frames.iter().flat_map(Frame::encode).collect();
+        let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode().unwrap()).collect();
         // Several frames in one chunk.
         let mut reader = BufReader::new(bytes.as_slice());
         for frame in &frames {
@@ -287,7 +316,7 @@ mod tests {
         let frames: Vec<Frame> = (0..50)
             .map(|n| Frame::new(Kind::Chunk, n, vec![n as u8; (n as usize * 37) % 300]))
             .collect();
-        let bytes: Vec<u8> = frames.iter().flat_map(Frame::encode).collect();
+        let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode().unwrap()).collect();
         let (mut near, far) = duplex(64);
         let writer = tokio::spawn(async move {
             for piece in bytes.chunks(7) {
@@ -304,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn decodes_a_multi_megabyte_frame() {
         let frame = Frame::new(Kind::Reply, 1, vec![3; 16 * 1024 * 1024]);
-        let bytes = frame.encode();
+        let bytes = frame.encode().unwrap();
         let mut reader = BufReader::new(bytes.as_slice());
         assert_eq!(read(&mut reader).await.unwrap(), Some(frame));
     }
@@ -324,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn fails_on_a_length_out_of_range_rather_than_trusting_it() {
-        let mut bytes = Frame::new(Kind::Chunk, 1, Vec::new()).encode();
+        let mut bytes = Frame::new(Kind::Chunk, 1, Vec::new()).encode().unwrap();
         bytes[5..9].copy_from_slice(&(MAX_PAYLOAD_BYTES + 1).to_be_bytes());
         let (mut near, far) = duplex(1024);
         near.write_all(&bytes).await.unwrap();
@@ -345,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stream_ending_inside_a_header_is_not_a_clean_end() {
-        let bytes = &Frame::new(Kind::End, 1, Vec::new()).encode()[..4];
+        let bytes = &Frame::new(Kind::End, 1, Vec::new()).encode().unwrap()[..4];
         let mut reader = BufReader::new(bytes);
         let (received, _) = quoted(read(&mut reader).await.unwrap_err());
         assert_eq!(received, bytes);
@@ -353,7 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stream_ending_inside_a_payload_fails_as_cut_short() {
-        let bytes = Frame::new(Kind::Chunk, 1, vec![1; 10]).encode();
+        let bytes = Frame::new(Kind::Chunk, 1, vec![1; 10]).encode().unwrap();
         let mut reader = BufReader::new(&bytes[..15]);
         match read(&mut reader).await {
             Err(FrameError::Io(error)) => assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof),

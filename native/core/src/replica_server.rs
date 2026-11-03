@@ -276,7 +276,11 @@ impl<R: Replica> Served<R> {
                 peer_changed,
             } => {
                 let Some(count) = BucketCount::new(count) else {
-                    return reply(&self.outbox, id, Err(protocol("a bucket count of 0"))).await;
+                    let why = format!(
+                        "a bucket count of {count}, outside 1..={}",
+                        BucketCount::MAX
+                    );
+                    return reply(&self.outbox, id, Err(protocol(&why))).await;
                 };
                 let taken = self.take_scan();
                 let ticket = match taken {
@@ -780,6 +784,56 @@ mod tests {
                 Err(error) => panic!("{error:?}"),
             }
         }
+        within(DEADLINE, serving).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_bucket_count_past_the_cap_is_refused_and_the_scan_carries_on() {
+        let site = Site::new();
+        let (mut client, serving) = site.serve(None).await;
+        assert!(matches!(
+            client.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        assert!(matches!(
+            client.ask(&Request::Lock).await,
+            Ok(Reply::Locked(_))
+        ));
+        assert!(matches!(
+            client.ask(&Request::OpenScan(RuleSet::default())).await,
+            Ok(Reply::Scan(_))
+        ));
+
+        // u32::MAX buckets would be a ~100 GB allocation: refused unread.
+        for count in [u32::MAX, BucketCount::MAX + 1] {
+            let refused = client
+                .ask(&Request::ScanDigests {
+                    count,
+                    peer_changed: Vec::new(),
+                })
+                .await;
+            assert!(
+                matches!(&refused, Err(WireError::Protocol(why)) if why.contains("bucket count")),
+                "{refused:?}"
+            );
+        }
+
+        // The session and its open scan survive: the cap itself is served.
+        let digests = client
+            .ask(&Request::ScanDigests {
+                count: BucketCount::MAX,
+                peer_changed: Vec::new(),
+            })
+            .await;
+        assert!(
+            matches!(&digests, Ok(Reply::Digests { digests, .. })
+                if digests.len() == BucketCount::MAX as usize),
+            "{:?}",
+            digests
+                .as_ref()
+                .map(|_| "a reply that is not the cap's digests")
+        );
+        drop(client);
         within(DEADLINE, serving).await.unwrap().unwrap();
     }
 
