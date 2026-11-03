@@ -254,7 +254,9 @@ anything that backgrounded itself later would break every integration at once.
 **It logs to stdout and stderr and manages no log files.** No rotation, no log
 path setting, no syslog socket. journald, svlogd, s6-log and launchd all
 capture the two streams they already have; a program writing its own log file
-fights all four. Startup lines and errors go to stderr — a listener's stdout
+fights all four. (The run history in the state directory, `runs.jsonl`, is not a
+log of the process: it is one record per sync run this host started, rotated
+by size, and read with `dsync log` — SPEC §8.3.) Startup lines and errors go to stderr — a listener's stdout
 carries nothing, and `--json` on the run commands keeps stdout parseable
 (SPEC §11.4).
 

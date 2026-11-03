@@ -667,7 +667,8 @@ async fn attempt(
         hub.tuning,
         hub.facts.home().map(str::to_owned),
         stop,
-    );
+    )
+    .recording(Some(&name), mode);
     let mut head = HeadDecider {
         control: control.clone(),
         diff_deadline: hub.tuning.peek.diff_deadline,

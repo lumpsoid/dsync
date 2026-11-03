@@ -14,6 +14,7 @@ mod entries;
 mod folder_in_use;
 #[cfg(unix)]
 mod interactive;
+mod log;
 mod mass_delete;
 mod mass_overwrite;
 mod output;

@@ -51,6 +51,7 @@ mod replica_lock;
 mod replica_server;
 mod request_window;
 pub mod run;
+mod run_history;
 mod run_marker;
 mod scan_pool;
 mod scan_probe;
@@ -121,6 +122,7 @@ pub use run::{
     ActionChoice, ActionFailure, BatchDecider, Compared, ConflictChoice, Decider, DryRunDecider,
     Peek, Recall, RowRecall, Run, RunError, RunEvent, RunReport, RunStop, Stopped,
 };
+pub use run_history::RunHistory;
 pub use run_marker::RunMarker;
 pub use scan_probe::ScanProbe;
 pub use scan_session::ScanSession;

@@ -66,6 +66,7 @@ mod root_kind;
 mod rule_set;
 mod run_flags;
 mod run_metrics;
+mod run_record;
 mod run_summary;
 mod scan_entry;
 mod scan_exchange;
@@ -154,6 +155,9 @@ pub use root_kind::RootKind;
 pub use rule_set::RuleSet;
 pub use run_flags::{Command, Flags, Mode, RunFlags, Verbosity};
 pub use run_metrics::{OpStats, ReplicaMetrics, ReplicaOp, RunMetrics, RunPhase};
+pub use run_record::{
+    ActionCounts, EntryRecord, RecordedFailure, RecordedOutcome, RunRecord, SidePath,
+};
 pub use run_summary::RunSummary;
 pub use scan_entry::{FileMeta, FileState, MTIME_WINDOW_US, ScanEntry, Status, Unchanged};
 pub use scan_exchange::{

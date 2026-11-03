@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use dsync_core::{
     ActionChoice, ConflictChoice, EntryFailure, EntryOutcome, ProfileEvent, Recall, RowRecall,
-    RunEvent, SkipReason,
+    RunEvent,
 };
 use dsync_domain::{
     Action, MassDelete, MassOverwrite, PeekLimits, Plan, RelPath, ReplicaInfo, RootKind,
@@ -335,10 +335,10 @@ impl EntryStatus {
             EntryStatus::Running => EntryStatusView::Running,
             EntryStatus::Ended(EntryOutcome::Synced(_)) => EntryStatusView::Synced,
             EntryStatus::Ended(EntryOutcome::Skipped(reason)) => EntryStatusView::Skipped {
-                reason: skip_reason(reason),
+                reason: reason.to_string(),
             },
             EntryStatus::Ended(EntryOutcome::Failed(failure)) => EntryStatusView::Failed {
-                message: failure_message(failure),
+                message: failure.to_string(),
             },
             EntryStatus::Ended(EntryOutcome::NotRun) => EntryStatusView::NotRun,
         }
@@ -348,29 +348,12 @@ impl EntryStatus {
     fn issue(&self) -> Option<String> {
         match self {
             EntryStatus::Ended(EntryOutcome::Synced(_)) => None,
-            EntryStatus::Ended(EntryOutcome::Skipped(reason)) => Some(skip_reason(reason)),
-            EntryStatus::Ended(EntryOutcome::Failed(failure)) => Some(failure_message(failure)),
+            EntryStatus::Ended(EntryOutcome::Skipped(reason)) => Some(reason.to_string()),
+            EntryStatus::Ended(EntryOutcome::Failed(failure)) => Some(failure.to_string()),
             EntryStatus::Pending
             | EntryStatus::Running
             | EntryStatus::Ended(EntryOutcome::NotRun) => Some("not run".to_owned()),
         }
-    }
-}
-
-fn skip_reason(reason: &SkipReason) -> String {
-    match reason {
-        SkipReason::Missing(missing) => missing.to_string(),
-        SkipReason::ParentMissing(missing) => missing.to_string(),
-        SkipReason::WrongKind(wrong) => wrong.to_string(),
-        SkipReason::Unreadable(unreadable) => unreadable.to_string(),
-    }
-}
-
-fn failure_message(failure: &EntryFailure) -> String {
-    match failure {
-        EntryFailure::Connect(error) => error.to_string(),
-        EntryFailure::Run(error) => error.to_string(),
-        EntryFailure::Dropped => "dropped mid-way by a second stop".to_owned(),
     }
 }
 

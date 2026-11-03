@@ -78,32 +78,39 @@ pub enum EntryOutcome {
 }
 
 /// Why an entry was skipped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum SkipReason {
     /// SPEC §4.5: a root missing once its replica has synced. Never taken
     /// for an empty one, which would delete every archived file on the
     /// other side.
+    #[error(transparent)]
     Missing(MissingReplicaRoot),
     /// A single-file entry whose file's folder is missing: never created,
     /// and never taken for an empty folder either.
+    #[error(transparent)]
     ParentMissing(MissingParentFolder),
     /// A root that is not the entry's kind: a folder where it syncs one
     /// file, or the reverse. Nothing was locked or written.
+    #[error(transparent)]
     WrongKind(WrongRootKind),
     /// A root that could not be looked at: whether it is there is unknown,
     /// so it is neither created nor synced. Nothing was locked or written.
+    #[error(transparent)]
     Unreadable(UnreadableReplicaRoot),
 }
 
 /// Why an entry failed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum EntryFailure {
     /// A side could not be connected.
+    #[error(transparent)]
     Connect(Arc<ConnectError>),
     /// The run failed (a refused hello, a held lock, declined deletions,
     /// ...): the first error it emitted.
+    #[error(transparent)]
     Run(RunError),
     /// A second stop dropped the run mid-way.
+    #[error("dropped mid-way by a second stop")]
     Dropped,
 }
 

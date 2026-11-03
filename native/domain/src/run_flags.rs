@@ -46,7 +46,8 @@ pub struct Flags {
 }
 
 /// How the plan is decided.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Mode {
     /// Ask about each action and conflict.
     Interactive,

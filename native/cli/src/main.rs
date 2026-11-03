@@ -8,6 +8,7 @@ mod args;
 mod failure;
 mod host;
 mod interactive;
+mod log;
 mod pair;
 mod qr;
 mod render;
@@ -61,6 +62,7 @@ fn run(cli: Cli, host: &Host) -> u8 {
             CliCommand::Agent(args) => agent::agent(args, host).await,
             CliCommand::Pair(command) => pair::pair(command, host).await,
             CliCommand::Archive(command) => archive::archive(command, host),
+            CliCommand::Log(args) => log::log(&args, host),
         }
     });
     // Not a graceful drop: a blocking read of stdin, or a session still

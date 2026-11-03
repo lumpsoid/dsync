@@ -136,7 +136,7 @@ fn clear_finds_every_entry_of_a_two_entry_profile() {
     let left = site.listing(&site.state_dir());
     assert!(
         left.iter()
-            .all(|name| !name.ends_with(".jsonl") || name.starts_with(P2)),
+            .all(|name| !name.ends_with(".jsonl") || name.starts_with(P2) || name == "runs.jsonl"),
         "an entry's archive survived: {left:?}"
     );
     assert!(other.exists(), "cleared another profile's archive");

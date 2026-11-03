@@ -1,6 +1,7 @@
 //! The state directory and the names of the per-replica files in it
 //! (SPEC §8.3): `<entryId>-<side>.jsonl` (archive), `<entryId>-<side>.lock`
-//! and `<entryId>.run`; and the per-folder `folder-<hash>.lock`.
+//! and `<entryId>.run`; the per-folder `folder-<hash>.lock`; and the run
+//! history, `runs.jsonl`.
 
 use std::path::{Path, PathBuf};
 
@@ -74,6 +75,12 @@ impl StateDir {
     pub fn run_marker(&self, entry_id: &EntryId) -> PathBuf {
         self.0.join(format!("{}.run", entry_id.as_str()))
     }
+
+    /// `<state>/runs.jsonl`: what each run this host started did
+    /// ([`crate::RunHistory`]).
+    pub fn run_history(&self) -> PathBuf {
+        self.0.join("runs.jsonl")
+    }
 }
 
 /// The replica an archive log's file name belongs to, or `None` for any
@@ -136,6 +143,7 @@ mod tests {
             format!("{ID}.jsonl"),
             format!("{ID}-a.jsonl.dsync-tmp.1.2"),
             "notes-a.jsonl".to_owned(),
+            "runs.jsonl".to_owned(),
             "paired-devices.json".to_owned(),
         ] {
             assert_eq!(archive_log_owner(&other), None, "{other}");

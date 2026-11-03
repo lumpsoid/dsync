@@ -17,16 +17,18 @@
 //! checked lexically only. A far side's paths are its host's to resolve.
 
 mod event;
+mod record;
 mod redial;
 
 use std::future::Future;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use dsync_domain::{
-    EffectiveOptions, PathStyle, Platform, ReplicaLocation, RunMetrics, Side, StopSignal, Tuning,
-    first_nesting,
+    EffectiveOptions, EntryRecord, Mode, PathStyle, Platform, ProfileName, ReplicaLocation,
+    RunMetrics, RunRecord, Side, StopSignal, Tuning, first_nesting,
 };
 use tokio::sync::mpsc;
 
@@ -39,7 +41,9 @@ use crate::connector::{ConnectError, PeerContact};
 use crate::replica::Replica;
 use crate::replica_lock::canonical_root;
 use crate::run::{Decider, Recalled, Run, RunError, RunEvent, RunReport, RunStop, Stopped};
+use crate::run_history::RunHistory;
 use crate::state_dir::StateDir;
+use record::EntryRecorder;
 use redial::{Attempt, Verdict, Window, verdict};
 
 /// Each entry's run event channel: small, as the profile's consumer paces
@@ -53,6 +57,13 @@ pub struct ProfileRun {
     tuning: Tuning,
     home: Option<String>,
     stop: ProfileStop,
+    recording: Option<Recording>,
+}
+
+/// What a recorded run's [`RunRecord`] says it ran.
+struct Recording {
+    profile: Option<String>,
+    mode: Mode,
 }
 
 /// Stops a profile run from outside it. Made before the run, so whoever
@@ -78,6 +89,9 @@ pub struct ProfileReport {
     /// One per entry, in order.
     pub entries: Vec<EntryReport>,
     pub stopped: Option<Stopped>,
+    /// Why the run's [`RunRecord`] could not be added to the history, when
+    /// it was recorded and could not be.
+    pub unrecorded: Option<io::Error>,
 }
 
 /// How one entry went.
@@ -194,6 +208,20 @@ impl ProfileRun {
             tuning,
             home,
             stop,
+            recording: None,
+        }
+    }
+
+    /// This run, its [`RunRecord`] appended to the state directory's
+    /// [`RunHistory`] once it ends: `profile` its name (`None` for an
+    /// ad-hoc pair), `mode` how its plan was decided.
+    pub fn recording(self, profile: Option<&ProfileName>, mode: Mode) -> ProfileRun {
+        ProfileRun {
+            recording: Some(Recording {
+                profile: profile.map(|name| name.as_str().to_owned()),
+                mode,
+            }),
+            ..self
         }
     }
 
@@ -213,15 +241,19 @@ impl ProfileRun {
         B: Replica,
     {
         self.refuse_resolved_overlap(entries).await?;
+        let started = SystemTime::now();
         let list = entries.iter().map(listed).collect();
         self.emit(ProfileEvent::Entries { list }).await;
         let mut reports = Vec::with_capacity(entries.len());
+        let mut records = Vec::with_capacity(entries.len());
         let mut ended = false;
         for (index, options) in entries.iter().enumerate() {
+            let mut recorder = EntryRecorder::default();
             let report = if ended || self.stop.0.requested() {
                 EntryReport::unrun(EntryOutcome::NotRun)
             } else {
-                self.entry(index, options, &mut connect, decider).await
+                self.entry(index, options, &mut connect, decider, &mut recorder)
+                    .await
             };
             ended |= report.outcome.ends_profile();
             self.emit(ProfileEvent::EntryFinished {
@@ -229,12 +261,40 @@ impl ProfileRun {
                 outcome: report.outcome.clone(),
             })
             .await;
+            records.push(recorder.finish(options, &report));
             reports.push(report);
         }
+        let unrecorded = self.record(started, records).await.err();
         Ok(ProfileReport {
             entries: reports,
             stopped: self.stop.0.stopped(),
+            unrecorded,
         })
+    }
+
+    /// Appends this run's record to the history, when it is recorded.
+    async fn record(&self, started: SystemTime, entries: Vec<EntryRecord>) -> io::Result<()> {
+        let Some(recording) = &self.recording else {
+            return Ok(());
+        };
+        let record = RunRecord {
+            started_ms: unix_ms(started),
+            ended_ms: unix_ms(SystemTime::now()),
+            profile: recording.profile.clone(),
+            mode: recording.mode,
+            stopped: self.stop.0.requested(),
+            entries,
+        };
+        let history = RunHistory::new(&self.state);
+        match tokio::task::spawn_blocking(move || history.append(&record)).await {
+            Ok(appended) => appended,
+            Err(error) => match error.try_into_panic() {
+                Ok(panic) => std::panic::resume_unwind(panic),
+                Err(_) => Err(io::Error::other(
+                    "the runtime shut down while the run was recorded",
+                )),
+            },
+        }
     }
 
     /// Connects and runs one entry, dialling a dropped `peer://` side
@@ -248,6 +308,7 @@ impl ProfileRun {
         options: &'o EffectiveOptions,
         connect: &mut C,
         decider: &mut impl Decider,
+        recorder: &mut EntryRecorder,
     ) -> EntryReport
     where
         C: FnMut(&'o EffectiveOptions) -> F,
@@ -273,7 +334,7 @@ impl ProfileRun {
             peers,
         })
         .await;
-        let mut ran = self.run(index, a, b, options, decider).await;
+        let mut ran = self.run(index, a, b, options, decider, recorder).await;
         let mut attempts = Attempts::default();
         let mut attempt = Attempt::First;
         // The window the re-dials share, and the drop that opened it: a
@@ -345,7 +406,7 @@ impl ProfileRun {
                 }
             };
             attempts.applied_before += ran.counted.applied;
-            ran = self.run(index, a, b, options, decider).await;
+            ran = self.run(index, a, b, options, decider, recorder).await;
             attempt = Attempt::Redial;
         }
     }
@@ -385,12 +446,13 @@ impl ProfileRun {
         b: B,
         options: &EffectiveOptions,
         decider: &mut impl Decider,
+        recorder: &mut EntryRecorder,
     ) -> Ran {
         let (sender, receiver) = mpsc::channel(ENTRY_EVENTS);
         let run = Run::new(sender, self.state.clone(), self.tuning).with_stop(self.stop.0.clone());
         let (report, counted) = tokio::join!(
             run.execute(a, b, options, decider),
-            self.forward(index, receiver),
+            self.forward(index, receiver, recorder),
         );
         Ran { report, counted }
     }
@@ -399,9 +461,15 @@ impl ProfileRun {
     /// counting the actions approved and those that reported an outcome,
     /// and noting whether it got past its locks: [`RunEvent::Replicas`]
     /// goes out only once both are taken.
-    async fn forward(&self, index: usize, mut events: mpsc::Receiver<RunEvent>) -> Counted {
+    async fn forward(
+        &self,
+        index: usize,
+        mut events: mpsc::Receiver<RunEvent>,
+        recorder: &mut EntryRecorder,
+    ) -> Counted {
         let mut counted = Counted::default();
         while let Some(event) = events.recv().await {
+            recorder.observe(&event);
             match &event {
                 RunEvent::Action(_) => counted.planned += 1,
                 RunEvent::Result { outcome, .. } => {
@@ -488,6 +556,14 @@ fn resolve<K>(sides: Vec<(K, PathBuf)>) -> Vec<(K, PathBuf)> {
         .into_iter()
         .filter_map(|(key, path)| Some((key, canonical_root(Path::new(&path)).ok()?)))
         .collect()
+}
+
+/// Milliseconds from the Unix epoch to `at`; 0 for a time before it.
+fn unix_ms(at: SystemTime) -> u64 {
+    at.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn listed(options: &EffectiveOptions) -> ListedEntry {

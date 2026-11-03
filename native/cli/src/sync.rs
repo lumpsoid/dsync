@@ -114,6 +114,13 @@ pub async fn sync(
         tuning,
         facts.home().map(str::to_owned),
         profile_stop,
+    )
+    .recording(
+        match &name {
+            RunName::Profile(profile) => Some(profile),
+            RunName::AdHoc => None,
+        },
+        flags.mode,
     );
     let (plan_shown, shown) = watch::channel(0usize);
     let executing = async {
@@ -166,6 +173,12 @@ pub async fn sync(
     renderer.entry_outcomes(&views, &report.entries);
     let interrupted_by = stop_sequence.interrupted_by();
     let mut err = io::stderr().lock();
+    if let Some(error) = &report.unrecorded {
+        let _ = writeln!(
+            err,
+            "warning: this run was not added to the run history: {error}"
+        );
+    }
     if let Some(signal) = interrupted_by {
         let _ = writeln!(
             err,

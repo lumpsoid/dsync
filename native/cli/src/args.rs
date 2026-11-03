@@ -39,6 +39,9 @@ pub enum CliCommand {
     /// (SPEC §8).
     #[command(subcommand, arg_required_else_help = false)]
     Archive(ArchiveCommand),
+    /// Show what each run this host started did: when, how each entry
+    /// ended, and every file it deleted, overwrote or failed on.
+    Log(ListArgs),
 }
 
 /// `dsync pair …` (SPEC §4.4). Missing a subcommand is a usage error.
@@ -139,7 +142,7 @@ pub struct PairAcceptArgs {
     pub state: StateDirArgs,
 }
 
-/// A listing: `pair list` and `archive list`.
+/// A listing: `pair list`, `archive list` and `log`.
 #[derive(Args, Debug)]
 pub struct ListArgs {
     /// Machine-readable output (JSON Lines) on stdout (SPEC §11.4).
