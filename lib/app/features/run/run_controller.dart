@@ -454,6 +454,11 @@ class SyncRunController {
       runKeepAlive.hold(onExpired: _keepAliveExpired).then((held) {
         // A release may have overtaken the hold.
         _runKept = held && _keepAliveWanted;
+        // Refused from the background: [pause] has been and gone, so the
+        // pause the hold would have stood in for is due now.
+        if (!held && _keepAliveWanted && _backgrounded && !_disposed) {
+          unawaited(_steer(const PauseRun()));
+        }
       }),
     );
   }

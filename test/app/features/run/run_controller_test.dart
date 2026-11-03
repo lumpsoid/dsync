@@ -393,6 +393,23 @@ void main() {
       expect(harness.intents, const [wire.RunIntentPause()]);
     });
 
+    test('a hold the platform refuses while backgrounded pauses the '
+        'run', () async {
+      await harness.show(runView(standing: resumable, phase: paused(3)));
+      await controller().pause();
+      expect(harness.intents, const [wire.RunIntentPause()]);
+
+      // Live again behind the user's back, past the pause that came first.
+      harness.runKeepAlive.grants = false;
+      await harness.show(runView(phase: connecting));
+      await pump();
+
+      expect(harness.intents, const [
+        wire.RunIntentPause(),
+        wire.RunIntentPause(),
+      ]);
+    });
+
     test('a hold the platform takes back pauses the run', () async {
       await harness.show(runView(phase: applying));
 
