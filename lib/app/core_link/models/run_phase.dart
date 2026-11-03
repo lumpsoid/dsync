@@ -7,6 +7,15 @@ import 'run_summary_info.dart';
 /// Where a run stands, as the core decided it.
 sealed class RunPhase {
   const RunPhase();
+
+  /// Whether the run stands on a question to the user — the review or one
+  /// of §10's guards — rather than working: live, but idle until answered.
+  bool get waitsOnUser => switch (this) {
+    RunReviewing() ||
+    RunConfirmingDeletes() ||
+    RunConfirmingOverwrites() => true,
+    _ => false,
+  };
 }
 
 final class RunConnecting extends RunPhase {

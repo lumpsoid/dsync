@@ -361,7 +361,7 @@ void main() {
       await harness.start();
     });
 
-    test('held for exactly as long as the view is live, whatever the '
+    test('held while the view is live and working, whatever the '
         'keep-awake setting', () async {
       harness.dispose();
       harness = RunHarness(keepScreenAwake: () async => false);
@@ -404,6 +404,58 @@ void main() {
       await harness.show(runView(standing: resumable, phase: paused(3)));
       await harness.show(runView(phase: connecting));
       expect(harness.runKeepAlive.held, isTrue);
+    });
+
+    test('let go while the run waits on the user, held again once it '
+        'works', () async {
+      for (final question in [
+        reviewing(),
+        confirmingDeletes(),
+        confirmingOverwrites(),
+      ]) {
+        await harness.show(runView(phase: scanning));
+        expect(harness.runKeepAlive.held, isTrue);
+
+        await harness.show(runView(phase: question));
+        expect(harness.runKeepAlive.held, isFalse);
+      }
+
+      await harness.show(runView(phase: applying));
+      expect(harness.runKeepAlive.held, isTrue);
+    });
+
+    test('a run waiting on the user is paused by backgrounding', () async {
+      await harness.show(runView(phase: reviewing()));
+
+      await controller().pause();
+
+      expect(harness.intents, const [wire.RunIntentPause()]);
+    });
+
+    test('a kept run that reaches a question while backgrounded pauses '
+        'there', () async {
+      await harness.show(runView(phase: scanning));
+      await pump();
+      await controller().pause();
+      expect(harness.intents, isEmpty);
+
+      await harness.show(runView(phase: reviewing()));
+      await pump();
+
+      expect(harness.intents, const [wire.RunIntentPause()]);
+    });
+
+    test('a kept run reaching a question in the foreground is not '
+        'paused', () async {
+      await harness.show(runView(phase: scanning));
+      await pump();
+      await controller().pause();
+      await controller().resumeFromBackground();
+
+      await harness.show(runView(phase: reviewing()));
+      await pump();
+
+      expect(harness.intents, const [wire.RunIntentForeground()]);
     });
 
     test('a run that is not live is paused as before', () async {

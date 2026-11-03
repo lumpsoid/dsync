@@ -12,7 +12,8 @@ import 'package:flutter/services.dart';
 ///
 /// **This is not `ScreenWake`.** That one holds the *screen* on, and the
 /// Settings page can turn it off; this one keeps the *run* alive with the
-/// screen off or the app backgrounded, and is held for every live run. A
+/// screen off or the app backgrounded, and is held for every live run
+/// except while it waits on the user (the review, a guard's question). A
 /// run it holds does not need the lifecycle pause in `SyncRunController`;
 /// one it does not hold falls back to that pause.
 abstract interface class RunKeepAlive {

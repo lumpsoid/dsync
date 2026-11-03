@@ -69,12 +69,16 @@ import 'run_view_state.dart';
 /// an incoming call are `inactive`. Do not widen it to `inactive`.
 ///
 /// **Unless the run is kept alive** ([RunKeepAlive], injected): held for
-/// as long as a run is live, and where the platform keeps a backgrounded
-/// run going (Android's foreground service) [pause] sends nothing — the run
-/// carries on with the screen off. A hold the platform refused, or later
-/// took back (Android 15's time cap), means the pause again: an expired
-/// hold pauses the run there and then, since the app is backgrounded by
-/// then.
+/// as long as a run is live and working, and where the platform keeps a
+/// backgrounded run going (Android's foreground service) [pause] sends
+/// nothing — the run carries on with the screen off. A hold the platform
+/// refused, or later took back (Android 15's time cap), means the pause
+/// again: an expired hold pauses the run there and then, since the app is
+/// backgrounded by then. **A run waiting on the user** — the review, a
+/// guard's question — **is not held**: it has nothing to do until answered,
+/// and the hold's wake and Wi-Fi locks would burn the battery for as long
+/// as the user stays away. It falls back to the pause, and one that
+/// reaches its question while backgrounded pauses there and then too.
 ///
 /// **The screen is held awake while a run is live** ([ScreenWake],
 /// injected) — live as the core says, from connecting to applying — and
@@ -159,6 +163,9 @@ class SyncRunController {
 
   /// Whether [runKeepAlive] said it holds the run: what decides [pause].
   bool _runKept = false;
+
+  /// Between [pause] and [resumeFromBackground]: the app is backgrounded.
+  bool _backgrounded = false;
   bool _live = false;
   bool _disposed = false;
 
@@ -200,12 +207,16 @@ class SyncRunController {
   /// The app is being backgrounded: the run pauses, unless it is kept
   /// alive; see the class doc comment.
   Future<void> pause() async {
+    _backgrounded = true;
     if (_runKept) return;
     await _steer(const PauseRun());
   }
 
   /// The app came back to the foreground.
-  Future<void> resumeFromBackground() => _steer(const ForegroundRun());
+  Future<void> resumeFromBackground() {
+    _backgrounded = false;
+    return _steer(const ForegroundRun());
+  }
 
   /// Runs the target again after a pause, a failure or a busy replica.
   Future<void> resume() => _steer(const ResumeRun());
@@ -259,7 +270,7 @@ class SyncRunController {
     if (!_live) unawaited(_views?.cancel());
     // The page is gone, so there is no screen of this head's to hold on.
     _syncScreenWake(live: false);
-    _syncRunKeepAlive(live: false);
+    _syncRunKeepAlive(keep: false);
     timings.dispose();
     state.dispose();
   }
@@ -296,7 +307,7 @@ class SyncRunController {
       currentEntry: null,
     );
     _syncScreenWake(live: false);
-    _syncRunKeepAlive(live: false);
+    _syncRunKeepAlive(keep: false);
   }
 
   /// Renders [view]: the core's values in this page's words, nothing
@@ -397,7 +408,9 @@ class SyncRunController {
     );
     timings.value = view.timings;
     _syncScreenWake(live: view.standing == RunStanding.live);
-    _syncRunKeepAlive(live: view.standing == RunStanding.live);
+    _syncRunKeepAlive(
+      keep: view.standing == RunStanding.live && !view.phase.waitsOnUser,
+    );
   }
 
   /// Tells the app when the run goes from live to not; see the class doc
@@ -415,12 +428,18 @@ class SyncRunController {
     unawaited(hold ? screenWake.enable() : screenWake.disable());
   }
 
-  void _syncRunKeepAlive({required bool live}) {
-    if (live == _keepAliveWanted) return;
-    _keepAliveWanted = live;
-    if (!live) {
+  void _syncRunKeepAlive({required bool keep}) {
+    if (keep == _keepAliveWanted) return;
+    _keepAliveWanted = keep;
+    if (!keep) {
+      final wasKept = _runKept;
       _runKept = false;
       unawaited(runKeepAlive.release());
+      // A live run let go while backgrounded is now waiting on the user:
+      // the pause the hold stood in for is due.
+      if (wasKept && _backgrounded && _live && !_disposed) {
+        unawaited(_steer(const PauseRun()));
+      }
       return;
     }
     unawaited(
