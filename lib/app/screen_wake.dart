@@ -12,8 +12,9 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 /// reach.** It stops the *idle timeout* from locking the phone in the
 /// middle of an apply loop, which is the common case and the one the user
 /// never asked for. It does nothing about a user who presses the power
-/// button, or who switches to another app: that is the lifecycle pause in
-/// `SyncRunController`, and the two together are SPEC §11.4's requirement.
+/// button, or who switches to another app: that is `RunKeepAlive` where the
+/// platform has one, and the lifecycle pause in `SyncRunController` where
+/// it does not — SPEC §11.4.
 abstract interface class ScreenWake {
   /// Holds the screen on. Safe to call when it is already held.
   Future<void> enable();

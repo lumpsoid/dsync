@@ -311,6 +311,75 @@ void main() {
     });
   });
 
+  group('keeping a backgrounded run alive', () {
+    setUp(() async {
+      harness.runKeepAlive.grants = true;
+      await harness.start();
+    });
+
+    test('held for exactly as long as the view is live, whatever the '
+        'keep-awake setting', () async {
+      harness.dispose();
+      harness = RunHarness(keepScreenAwake: () async => false);
+      harness.runKeepAlive.grants = true;
+      await harness.start();
+
+      await harness.show(runView(phase: applying));
+      expect(harness.runKeepAlive.held, isTrue);
+
+      await harness.show(runView(standing: over, phase: finished()));
+      expect(harness.runKeepAlive.held, isFalse);
+    });
+
+    test('a kept run is not paused by backgrounding', () async {
+      await harness.show(runView(phase: applying));
+
+      await controller().pause();
+      await controller().resumeFromBackground();
+
+      expect(harness.intents, const [wire.RunIntentForeground()]);
+    });
+
+    test('a hold the platform refuses leaves the pause as it was', () async {
+      harness.runKeepAlive.grants = false;
+      await harness.show(runView(phase: applying));
+
+      await controller().pause();
+
+      expect(harness.intents, const [wire.RunIntentPause()]);
+    });
+
+    test('a hold the platform takes back pauses the run', () async {
+      await harness.show(runView(phase: applying));
+
+      harness.runKeepAlive.expire();
+      await pump();
+      expect(harness.intents, const [wire.RunIntentPause()]);
+
+      // Paused, then live again once the app is back: held again.
+      await harness.show(runView(standing: resumable, phase: paused(3)));
+      await harness.show(runView(phase: connecting));
+      expect(harness.runKeepAlive.held, isTrue);
+    });
+
+    test('a run that is not live is paused as before', () async {
+      await harness.show(runView(standing: over, phase: finished()));
+
+      await controller().pause();
+
+      expect(harness.intents, const [wire.RunIntentPause()]);
+    });
+
+    test('leaving the page lets it go', () async {
+      await harness.show(runView(phase: applying));
+
+      controller().dispose();
+      await pump();
+
+      expect(harness.runKeepAlive.held, isFalse);
+    });
+  });
+
   group('the keep-awake setting', () {
     test('off: a live run never holds the screen', () async {
       harness.dispose();

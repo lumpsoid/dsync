@@ -27,6 +27,7 @@ import '../../core_link/models/sync_history.dart';
 import '../../format_bytes.dart';
 import '../../format_count.dart';
 import '../../mass_delete_guard.dart';
+import '../../run_keep_alive.dart';
 import '../../run_request.dart';
 import '../../screen_wake.dart';
 import '../../warn_size.dart';
@@ -67,6 +68,14 @@ import 'run_view_state.dart';
 /// and nothing above it — a notification shade, a permission dialog and
 /// an incoming call are `inactive`. Do not widen it to `inactive`.
 ///
+/// **Unless the run is kept alive** ([RunKeepAlive], injected): held for
+/// as long as a run is live, and where the platform keeps a backgrounded
+/// run going (Android's foreground service) [pause] sends nothing — the run
+/// carries on with the screen off. A hold the platform refused, or later
+/// took back (Android 15's time cap), means the pause again: an expired
+/// hold pauses the run there and then, since the app is backgrounded by
+/// then.
+///
 /// **The screen is held awake while a run is live** ([ScreenWake],
 /// injected) — live as the core says, from connecting to applying — and
 /// released the moment it stops being live, including while paused. The
@@ -90,6 +99,7 @@ class SyncRunController {
   SyncRunController(
     this.app, {
     required this.screenWake,
+    required this.runKeepAlive,
     required this.keepScreenAwake,
     required this.defaultWarnSize,
     required this.massDeleteGuard,
@@ -100,6 +110,10 @@ class SyncRunController {
   /// Held while a run is live; see the class doc comment. A platform
   /// channel, so a test hands over one it can watch.
   final ScreenWake screenWake;
+
+  /// Held while a run is live, whatever the Settings page says; see the
+  /// class doc comment. A platform channel, like [screenWake].
+  final RunKeepAlive runKeepAlive;
 
   /// Whether the Settings page wants the screen held, read once per [start]
   /// so a change applies from the next run. Throws
@@ -134,6 +148,10 @@ class SyncRunController {
   StreamSubscription<RunView>? _views;
   bool _screenHeld = false;
   bool _screenWanted = false;
+  bool _keepAliveWanted = false;
+
+  /// Whether [runKeepAlive] said it holds the run: what decides [pause].
+  bool _runKept = false;
   bool _live = false;
   bool _disposed = false;
 
@@ -172,8 +190,12 @@ class SyncRunController {
   /// Stops the run gracefully; see the class doc comment.
   Future<void> stop() => _steer(const StopRun());
 
-  /// The app is being backgrounded.
-  Future<void> pause() => _steer(const PauseRun());
+  /// The app is being backgrounded: the run pauses, unless it is kept
+  /// alive; see the class doc comment.
+  Future<void> pause() async {
+    if (_runKept) return;
+    await _steer(const PauseRun());
+  }
 
   /// The app came back to the foreground.
   Future<void> resumeFromBackground() => _steer(const ForegroundRun());
@@ -212,6 +234,7 @@ class SyncRunController {
     if (!_live) unawaited(_views?.cancel());
     // The page is gone, so there is no screen of this head's to hold on.
     _syncScreenWake(live: false);
+    _syncRunKeepAlive(live: false);
     timings.dispose();
     state.dispose();
   }
@@ -248,6 +271,7 @@ class SyncRunController {
       currentEntry: null,
     );
     _syncScreenWake(live: false);
+    _syncRunKeepAlive(live: false);
   }
 
   /// Renders [view]: the core's values in this page's words, nothing
@@ -342,6 +366,7 @@ class SyncRunController {
     );
     timings.value = view.timings;
     _syncScreenWake(live: view.standing == RunStanding.live);
+    _syncRunKeepAlive(live: view.standing == RunStanding.live);
   }
 
   /// Tells the app when the run goes from live to not; see the class doc
@@ -357,6 +382,29 @@ class SyncRunController {
     if (hold == _screenHeld) return;
     _screenHeld = hold;
     unawaited(hold ? screenWake.enable() : screenWake.disable());
+  }
+
+  void _syncRunKeepAlive({required bool live}) {
+    if (live == _keepAliveWanted) return;
+    _keepAliveWanted = live;
+    if (!live) {
+      _runKept = false;
+      unawaited(runKeepAlive.release());
+      return;
+    }
+    unawaited(
+      runKeepAlive.hold(onExpired: _keepAliveExpired).then((held) {
+        // A release may have overtaken the hold.
+        _runKept = held && _keepAliveWanted;
+      }),
+    );
+  }
+
+  /// The platform took the hold back while the app is backgrounded.
+  void _keepAliveExpired() {
+    _runKept = false;
+    _keepAliveWanted = false;
+    unawaited(_steer(const PauseRun()));
   }
 
   /// The stored keep-awake switch. A settings file that cannot be read

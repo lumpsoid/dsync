@@ -41,6 +41,7 @@ import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' show assignRustSignal;
+import 'package:dsync/app/run_keep_alive.dart';
 import 'package:dsync/app/screen_wake.dart';
 import 'package:dsync/app/warn_size.dart';
 import 'package:flutter/material.dart';
@@ -164,6 +165,7 @@ void main() {
       () => run = SyncRunController(
         app,
         screenWake: const _NoScreenWake(),
+        runKeepAlive: const NoRunKeepAlive(),
         keepScreenAwake: () async => true,
         defaultWarnSize: () async => const WarnSizeOff(),
         massDeleteGuard: () async => MassDeleteGuard.defaults,

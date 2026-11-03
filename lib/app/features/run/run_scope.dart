@@ -1,5 +1,6 @@
 import '../../app_scope.dart';
 import '../../mass_delete_guard.dart';
+import '../../run_keep_alive.dart';
 import '../../screen_wake.dart';
 import '../../warn_size.dart';
 import 'run_controller.dart';
@@ -10,8 +11,8 @@ import 'run_controller.dart';
 /// `SyncRunController`'s doc comment says what dispose closes.
 ///
 /// The default factory names the real [PlatformScreenWake],
-/// [storedKeepScreenAwake], [storedWarnSize] and [storedMassDeleteGuard];
-/// a test that
+/// [platformRunKeepAlive], [storedKeepScreenAwake], [storedWarnSize] and
+/// [storedMassDeleteGuard]; a test that
 /// wants a real controller over a fake core and a fake wakelock uses
 /// `setFactory`.
 final class SyncRunScope extends Scope<SyncRunController> {
@@ -20,6 +21,7 @@ final class SyncRunScope extends Scope<SyncRunController> {
         () => SyncRunController(
           appScope.controller,
           screenWake: const PlatformScreenWake(),
+          runKeepAlive: platformRunKeepAlive,
           keepScreenAwake: storedKeepScreenAwake,
           defaultWarnSize: storedWarnSize,
           massDeleteGuard: storedMassDeleteGuard,

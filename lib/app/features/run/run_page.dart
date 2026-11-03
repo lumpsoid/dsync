@@ -51,7 +51,8 @@ import 'run_view_state.dart';
 /// `inactive`; pausing for those would stop a run that was never in
 /// danger. The platform walks every state in between on the way down and
 /// back up (`inactive`, `hidden`, then `paused`), so these two callbacks
-/// see a backgrounding and a return, never a jump.
+/// see a backgrounding and a return, never a jump. Where the run is kept
+/// alive (Android), `onPause` reaches the controller and sends nothing.
 ///
 /// **Resuming is automatic, and the button is the fallback.** `onResume`
 /// continues a paused run without asking, because the user did not ask for

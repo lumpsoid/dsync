@@ -51,6 +51,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_folder_picker.dart';
+import '../support/fake_run_keep_alive.dart';
 import '../support/fake_screen_wake.dart';
 import 'features/run/run_fixtures.dart' show failedWith, resumable, runView;
 import 'support/affordances.dart';
@@ -439,6 +440,7 @@ void main() {
       return SyncRunController(
         app,
         screenWake: FakeScreenWake(),
+        runKeepAlive: FakeRunKeepAlive(),
         keepScreenAwake: () async => true,
         defaultWarnSize: () async => const WarnSizeOff(),
         massDeleteGuard: () async => MassDeleteGuard.defaults,

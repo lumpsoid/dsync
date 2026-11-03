@@ -11,6 +11,7 @@ import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/warn_size.dart';
 
+import '../../../support/fake_run_keep_alive.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/fake_head.dart';
 import '../../support/fake_hub.dart';
@@ -48,11 +49,13 @@ class RunHarness {
     Future<WarnSize> Function()? defaultWarnSize,
     Future<MassDeleteGuard> Function()? massDeleteGuard,
   }) : hub = FakeHub(),
-       screenWake = FakeScreenWake() {
+       screenWake = FakeScreenWake(),
+       runKeepAlive = FakeRunKeepAlive() {
     app = fakeApp(hub, now: now);
     controller = SyncRunController(
       app,
       screenWake: screenWake,
+      runKeepAlive: runKeepAlive,
       keepScreenAwake: keepScreenAwake ?? () async => true,
       defaultWarnSize: defaultWarnSize ?? () async => const WarnSizeOff(),
       massDeleteGuard: massDeleteGuard ?? () async => MassDeleteGuard.defaults,
@@ -61,6 +64,7 @@ class RunHarness {
 
   final FakeHub hub;
   final FakeScreenWake screenWake;
+  final FakeRunKeepAlive runKeepAlive;
   late final AppController app;
   late final SyncRunController controller;
 

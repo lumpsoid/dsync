@@ -22,6 +22,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../support/fake_run_keep_alive.dart';
 import '../../../support/fake_screen_wake.dart';
 import '../../support/affordances.dart';
 import '../../support/fake_head.dart';
@@ -41,6 +42,7 @@ void main() {
   late FakeHub hub;
   late SyncRunController controller;
   late FakeScreenWake screenWake;
+  late FakeRunKeepAlive runKeepAlive;
   var doneTaps = 0;
 
   /// The app's clock, which relative dates read.
@@ -50,11 +52,13 @@ void main() {
 
   setUp(() {
     screenWake = FakeScreenWake();
+    runKeepAlive = FakeRunKeepAlive();
     hub = FakeHub();
     clock = DateTime(2026, 9, 16, 12);
     controller = SyncRunController(
       fakeApp(hub, now: () => clock),
       screenWake: screenWake,
+      runKeepAlive: runKeepAlive,
       keepScreenAwake: () async => true,
       defaultWarnSize: () async => const WarnSizeOff(),
       massDeleteGuard: () async => MassDeleteGuard.defaults,
