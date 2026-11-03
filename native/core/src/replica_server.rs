@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dsync_domain::{Bucket, BucketCount, ReplicaSpec, Tuning};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 
 use crate::body::Body;
@@ -108,8 +108,9 @@ where
             liveness.map(|liveness| liveness.heartbeat),
             self.tuning.read_ahead_chunk_bytes,
         );
-        // Bounded by the client's window in practice; the bound here only
-        // keeps a flooding client from queueing without limit.
+        // Requests waiting for a place in the session's window: past this
+        // many the reader stops reading, so a client that overruns its
+        // window cannot queue without limit.
         let (arrived, incoming) = mpsc::channel(self.tuning.request_window.max(1));
         let credits = Credits::new();
         let mut reading = Task::spawn(read_requests(
@@ -196,9 +197,28 @@ where
         });
         let hello = hello.map(Reply::Hello);
         reply(outbox, first.id, hello.map_err(WireError::from)).await;
+        // At most a window of requests served at once (SPEC §4.2): a served
+        // read holds a blocking thread until its body is over, so without
+        // a bound a client that never grants credit could park every one
+        // the process has. One past the window waits here for a place;
+        // the reader queues a window's more behind it and then stops
+        // reading, so a client that overruns stalls only itself.
+        let window = Arc::new(Semaphore::new(self.tuning.request_window.max(1)));
         let mut running = JoinSet::new();
-        while let Some(next) = incoming.recv().await {
-            running.spawn(served.clone().handle(next));
+        loop {
+            // Nothing closes the window, so this always gets a place; were
+            // it closed, the session would simply stop taking requests.
+            let Ok(place) = window.clone().acquire_owned().await else {
+                break;
+            };
+            let Some(next) = incoming.recv().await else {
+                break;
+            };
+            let served = served.clone();
+            running.spawn(async move {
+                let _place = place;
+                served.handle(next).await;
+            });
             while running.try_join_next().is_some() {}
         }
         while running.join_next().await.is_some() {}
@@ -615,13 +635,18 @@ mod tests {
 
     struct Site {
         dir: tempfile::TempDir,
+        /// What the server is tuned with.
+        tuning: Tuning,
     }
 
     impl Site {
         fn new() -> Site {
             let dir = tempfile::tempdir().unwrap();
             fs::create_dir(dir.path().join("root")).unwrap();
-            Site { dir }
+            Site {
+                dir,
+                tuning: Tuning::DEFAULT,
+            }
         }
 
         fn spec(&self) -> ReplicaSpec {
@@ -670,7 +695,7 @@ mod tests {
                     ));
                     async move { Ok(replica) }
                 },
-                Tuning::DEFAULT,
+                self.tuning,
             );
             let (near, far) = duplex(link_bytes);
             let transport = Transport::split(near);
@@ -922,6 +947,86 @@ mod tests {
         let again = client.open_read("small").await;
         let (bytes, end) = client.body_to_its_end(again).await;
         assert_eq!((bytes, end.kind), (5, Kind::End));
+        drop(client);
+        within(DEADLINE, serving).await.unwrap().unwrap();
+    }
+
+    /// Every frame the server sends until it goes quiet: the reads it
+    /// opened, in order, and the reads it ended.
+    async fn until_quiet(client: &mut Client) -> (Vec<u32>, Vec<u32>) {
+        let (mut opened, mut ended) = (Vec::new(), Vec::new());
+        while let Some(frame) = client.next_if_any().await {
+            match frame.kind {
+                Kind::Reply => {
+                    assert_eq!(
+                        wire::decode::<Answer>(&frame.payload).unwrap(),
+                        Ok(Reply::Opened)
+                    );
+                    opened.push(frame.id);
+                }
+                Kind::Chunk => {}
+                Kind::End | Kind::Fail => ended.push(frame.id),
+                other => panic!("{other:?}"),
+            }
+        }
+        (opened, ended)
+    }
+
+    #[tokio::test]
+    async fn reads_past_the_window_wait_for_a_place_and_pipelined_reads_within_it_are_served() {
+        const WINDOW: usize = 4;
+        let mut site = Site::new();
+        site.tuning.request_window = WINDOW;
+        fs::write(site.dir.path().join("root/big"), vec![7u8; BIG]).unwrap();
+        fs::write(site.dir.path().join("root/small"), "small").unwrap();
+        let (mut client, serving) = site.serve(None).await;
+        assert!(matches!(
+            client.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        let read = wire::encode(&Request::Read(RelPath::parse("big").unwrap()));
+
+        // Two more reads than the window, none granted past its first
+        // credit: each opened one parks a blocking thread waiting for
+        // credit, so only the window's worth may be opened.
+        let mut ids = Vec::new();
+        for _ in 0..WINDOW + 2 {
+            ids.push(client.send_raw(Kind::Request, read.clone()).await);
+        }
+        let (mut opened, ended) = until_quiet(&mut client).await;
+        opened.sort_unstable();
+        assert_eq!(opened, ids[..WINDOW], "the reads let past the window");
+        assert_eq!(ended, Vec::<u32>::new());
+
+        // A place given back lets exactly the next one in.
+        client.send_to(Kind::Cancel, ids[0], Vec::new()).await;
+        let (opened, ended) = until_quiet(&mut client).await;
+        assert_eq!((opened, ended), (vec![ids[WINDOW]], vec![ids[0]]));
+
+        for &id in &ids[1..=WINDOW] {
+            client.send_to(Kind::Cancel, id, Vec::new()).await;
+        }
+        let (opened, ended) = until_quiet(&mut client).await;
+        assert_eq!((opened, ended.len()), (vec![ids[WINDOW + 1]], WINDOW));
+        client
+            .send_to(Kind::Cancel, ids[WINDOW + 1], Vec::new())
+            .await;
+        assert_eq!(
+            until_quiet(&mut client).await,
+            (vec![], vec![ids[WINDOW + 1]])
+        );
+
+        // A window's worth sent at once, as a client pipelines them, is
+        // served whole.
+        let small = wire::encode(&Request::Read(RelPath::parse("small").unwrap()));
+        let mut pipelined = Vec::new();
+        for _ in 0..WINDOW {
+            pipelined.push(client.send_raw(Kind::Request, small.clone()).await);
+        }
+        let (mut opened, mut ended) = until_quiet(&mut client).await;
+        opened.sort_unstable();
+        ended.sort_unstable();
+        assert_eq!((&opened, &ended), (&pipelined, &pipelined));
         drop(client);
         within(DEADLINE, serving).await.unwrap().unwrap();
     }
