@@ -234,7 +234,9 @@ fn next_temp() -> u64 {
 ///
 /// Unless `path` is no longer what `expect` says the scan saw there: then
 /// nothing is touched, and the write fails [`ReplicaError::Changed`] (SPEC
-/// §7.6). Checked by the stat the write makes anyway, just before acting.
+/// §7.6). Checked by the stat the write makes anyway, just before acting,
+/// and once more right before the rename: an edit made while the body
+/// streams is not replaced either.
 ///
 /// On failure the target is untouched: the bytes only ever reach it by
 /// the rename, whole (SPEC §7.6). The temp is this write's own and is
@@ -361,7 +363,9 @@ fn land(
     drop(file);
     timer.lap(Stage::Close);
     if let Some(staged) = scratch.as_mut() {
-        rename_onto(staged, meta).map_err(at(Stage::Rename))?;
+        // Again, since the target may have been edited while the body
+        // streamed; the early check only spared streaming a doomed write.
+        rename_onto(staged, meta, || expect.check(on_disk_at(target)))?;
         *scratch = None;
         timer.lap(Stage::Rename);
     }
@@ -417,10 +421,21 @@ fn temp_name(onto: &Path) -> io::Result<String> {
 /// take a rename from it, so the temp is copied beside the target first,
 /// its mtime set again, and renamed from there. On success `scratch` no
 /// longer exists; on failure it names whichever temp is left to remove.
-fn rename_onto(scratch: &mut Scratch, meta: FileMeta) -> io::Result<()> {
+///
+/// `unchanged` runs right before each rename - after the copy too, which
+/// takes long enough for an edit to land - and stops the write when the
+/// target is no longer what the write expects.
+fn rename_onto(
+    scratch: &mut Scratch,
+    meta: FileMeta,
+    unchanged: impl Fn() -> Result<(), ChangedDuringSync>,
+) -> Result<(), Failed> {
+    unchanged()?;
     match fs::rename(&scratch.path, &scratch.onto) {
         Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-            let beside = scratch.onto.with_file_name(temp_name(&scratch.onto)?);
+            let beside = scratch
+                .onto
+                .with_file_name(temp_name(&scratch.onto).map_err(at(Stage::Rename))?);
             let copied = fs::copy(&scratch.path, &beside).and_then(|_| {
                 let file = OpenOptions::new().write(true).open(&beside)?;
                 // Best effort, as for the temp (SPEC §7.4).
@@ -429,13 +444,14 @@ fn rename_onto(scratch: &mut Scratch, meta: FileMeta) -> io::Result<()> {
             });
             if let Err(error) = copied {
                 let _ = fs::remove_file(&beside);
-                return Err(error);
+                return Err(Failed::At(Stage::Rename, error));
             }
             let _ = fs::remove_file(&scratch.path);
             scratch.path = beside;
-            fs::rename(&scratch.path, &scratch.onto)
+            unchanged()?;
+            fs::rename(&scratch.path, &scratch.onto).map_err(at(Stage::Rename))
         }
-        renamed => renamed,
+        renamed => renamed.map_err(at(Stage::Rename)),
     }
 }
 
@@ -530,5 +546,78 @@ mod tests {
             mode_bits(&fs::metadata(root.path().join("skipped")).unwrap())
         );
         assert_eq!(applied.mode, 0o700);
+    }
+
+    /// Overwrites `name`, expected as it is now, with `new`; `edit` runs
+    /// once the first chunk is written, before the body ends.
+    fn overwrite_editing_midway(
+        destination: &Destination,
+        name: &str,
+        edit: impl FnOnce(),
+    ) -> Result<FileMeta, ReplicaError> {
+        let target = destination
+            .root
+            .locate(&RelPath::parse(name).unwrap())
+            .unwrap();
+        let before = stat(&target.path).unwrap();
+        let expect = Precondition::File {
+            size: before.size,
+            mtime_us: before.mtime_us,
+        };
+        let meta = FileMeta {
+            size: 3,
+            mtime_us: 0,
+            mode: 0o644,
+        };
+        let (chunks_tx, mut chunks) = mpsc::unbounded_channel();
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                let path = RelPath::parse(name).unwrap();
+                let stats = &mut WriteStats::one_writer();
+                write_file(destination, &path, meta, expect, &mut chunks, stats)
+            });
+            let permit = budget.clone().try_acquire_owned().unwrap();
+            chunks_tx.send(Chunk::Bytes(b"new".to_vec(), permit)).ok();
+            // The permit comes back once the writer has written the chunk:
+            // past the early check, mid-stream.
+            drop(runtime.block_on(budget.acquire()).unwrap());
+            edit();
+            chunks_tx.send(Chunk::End).ok();
+            writer.join().unwrap()
+        })
+    }
+
+    #[test]
+    fn a_target_edited_while_the_body_streams_is_left_as_edited_and_the_write_fails_changed() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = destination(root.path(), true);
+        let target = root.path().join("file");
+        fs::write(&target, b"old").unwrap();
+
+        let written = overwrite_editing_midway(&destination, "file", || {
+            fs::write(&target, b"edited").unwrap();
+        });
+
+        assert!(matches!(written, Err(ReplicaError::Changed(_))));
+        assert_eq!(fs::read(&target).unwrap(), b"edited");
+        let staging = root.path().join(STAGING_DIR);
+        assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_target_left_alone_while_the_body_streams_is_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = destination(root.path(), true);
+        let target = root.path().join("file");
+        fs::write(&target, b"old").unwrap();
+
+        let written = overwrite_editing_midway(&destination, "file", || {});
+
+        assert!(written.is_ok());
+        assert_eq!(fs::read(&target).unwrap(), b"new");
     }
 }
