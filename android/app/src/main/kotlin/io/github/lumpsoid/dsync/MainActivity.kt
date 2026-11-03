@@ -37,16 +37,15 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Swiped away from recents: the engine, and the head's side of the run,
-     * go with this activity, so the service must not keep a run nobody can
-     * see or steer. The far end's heartbeat deadline, or the next dial's
-     * session claim, ends the session there.
+     * Swiped away from recents, or destroyed by the system in the
+     * background without finishing: either way the engine, and the head's
+     * side of the run, go with this activity, so the service must not keep
+     * a run nobody can see or steer. The far end's heartbeat deadline, or
+     * the next dial's session claim, ends the session there.
      */
     override fun onDestroy() {
-        if (isFinishing) {
-            SyncService.onExpired = null
-            SyncService.stop()
-        }
+        SyncService.onExpired = null
+        SyncService.stop()
         super.onDestroy()
     }
 
