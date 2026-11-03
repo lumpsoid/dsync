@@ -126,6 +126,11 @@ impl Tuning {
     };
 }
 
+// One address must not fill every unauthenticated slot.
+const _: () = assert!(
+    Tuning::DEFAULT.unauthenticated_per_address < Tuning::DEFAULT.unauthenticated_connections
+);
+
 impl Default for Tuning {
     fn default() -> Self {
         Tuning::DEFAULT
@@ -180,13 +185,9 @@ mod tests {
     }
 
     /// The hello's deadline frees an idle socket's slot early only if it
-    /// ends before the handshake's; one address must not fill every slot.
+    /// ends before the handshake's.
     #[test]
-    fn the_unauthenticated_bounds_are_tighter_per_socket_and_per_address() {
+    fn the_hello_deadline_is_tighter_than_the_handshake() {
         assert!(Tuning::DEFAULT.client_hello < Tuning::DEFAULT.handshake);
-        assert!(
-            Tuning::DEFAULT.unauthenticated_per_address
-                < Tuning::DEFAULT.unauthenticated_connections
-        );
     }
 }
