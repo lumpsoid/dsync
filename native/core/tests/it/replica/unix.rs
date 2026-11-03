@@ -7,7 +7,8 @@ use std::os::unix::net::UnixListener as StdUnixListener;
 use std::sync::Arc;
 
 use dsync_core::{
-    LinkError, RemoteReplica, Replica, ReplicaServer, UnixBindError, bind_unix, dial_unix,
+    LinkError, RemoteReplica, Replica, ReplicaServer, ServedReads, UnixBindError, bind_unix,
+    dial_unix,
 };
 use dsync_domain::{Side, Tuning};
 use tokio::sync::mpsc;
@@ -23,6 +24,7 @@ async fn a_listener_serves_each_connection_as_its_own_session() {
     let server = Arc::new(ReplicaServer::new(
         open_local(site.state()),
         Tuning::DEFAULT,
+        ServedReads::new(&Tuning::DEFAULT),
     ));
     let (ended, mut sessions) = mpsc::unbounded_channel::<Result<(), LinkError>>();
     let listening = tokio::spawn(server.serve_unix(listener, move |end| {

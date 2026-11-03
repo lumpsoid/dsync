@@ -11,7 +11,8 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use dsync_core::{
-    LinkError, LocalReplica, RemoteReplica, ReplicaError, ReplicaServer, StateDir, Transport,
+    LinkError, LocalReplica, RemoteReplica, ReplicaError, ReplicaServer, ServedReads, StateDir,
+    Transport,
 };
 use dsync_domain::{EntryId, Jobs, ReplicaSpec, Side, Tuning};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
@@ -91,7 +92,11 @@ impl Served {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let server = ReplicaServer::new(open_local(site.state()), Tuning::DEFAULT);
+        let server = ReplicaServer::new(
+            open_local(site.state()),
+            Tuning::DEFAULT,
+            ServedReads::new(&Tuning::DEFAULT),
+        );
         let serving = tokio::spawn(async move { server.serve(far).await });
         let replica = with_deadline(
             "connect",

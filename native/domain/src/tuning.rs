@@ -24,6 +24,12 @@ pub struct Tuning {
     /// read-ahead's streams, each holding a slot for its whole body on a
     /// remote source, plus a lead of eight for commits.
     pub request_window: usize,
+    /// Served reads one process sends at once, across every session it
+    /// serves (SPEC §4.2): each holds a blocking thread until its body is
+    /// over, parked on its peer's credit. Four sessions' windows, so one
+    /// session never takes every place, and well under tokio's 512
+    /// blocking threads, so the rest of the process keeps its own.
+    pub served_reads: usize,
     /// Chunk size a streamed body is read ahead and sent in; also what the
     /// apply's read-ahead reserves for one source read (SPEC §7.2).
     pub read_ahead_chunk_bytes: usize,
@@ -98,6 +104,7 @@ impl Tuning {
         apply_in_flight: 32,
         commit_batch: 64,
         request_window: 40 + 8,
+        served_reads: 4 * (40 + 8),
         read_ahead_chunk_bytes: 64 * 1024,
         read_ahead_budget_bytes: 1024 * 1024,
         read_ahead_streams: 32 + 8,
@@ -126,6 +133,11 @@ impl Tuning {
     };
 }
 
+// One session must not take every place for a served read, and the
+// places must leave tokio's 512 blocking threads room for the rest.
+const _: () = assert!(Tuning::DEFAULT.request_window < Tuning::DEFAULT.served_reads);
+const _: () = assert!(Tuning::DEFAULT.served_reads <= 512 / 2);
+
 // One address must not fill every unauthenticated slot.
 const _: () = assert!(
     Tuning::DEFAULT.unauthenticated_per_address < Tuning::DEFAULT.unauthenticated_connections
@@ -148,6 +160,7 @@ mod tests {
         assert_eq!(tuning.apply_in_flight, 32);
         assert_eq!(tuning.commit_batch, 64);
         assert_eq!(tuning.request_window, 48);
+        assert_eq!(tuning.served_reads, 192);
         assert_eq!(tuning.read_ahead_chunk_bytes, 1 << 16);
         assert_eq!(tuning.read_ahead_budget_bytes, 1 << 20);
         assert_eq!(tuning.read_ahead_streams, 40);

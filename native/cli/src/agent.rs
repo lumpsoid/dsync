@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use dsync_core::{
     DeviceIdentityStore, LocalReplica, PairedDeviceStore, PeerEvent, PeerListener, ReplicaError,
-    ReplicaServer, Root, StateDir, Symlinks, bind_peer,
+    ReplicaServer, Root, ServedReads, StateDir, Symlinks, bind_peer,
 };
 use dsync_domain::host_port::{format_host_port, is_wildcard_address};
 use dsync_domain::{HostFacts, ReplicaSpec, Tuning};
@@ -75,7 +75,11 @@ impl Opener {
 async fn serve_stdio(opener: Opener) -> Result<u8, Failure> {
     let tuning = opener.tuning;
     // Over ssh the user owns both ends: their rules decide (SPEC §4.4).
-    let server = ReplicaServer::new(move |spec| opener.open(spec, Symlinks::AsRuled), tuning);
+    let server = ReplicaServer::new(
+        move |spec| opener.open(spec, Symlinks::AsRuled),
+        tuning,
+        ServedReads::new(&tuning),
+    );
     match server.serve_stdio().await {
         Ok(()) => Ok(0),
         Err(error) => Err(Failure::Fatal(format!("dsync agent: {error}"))),
@@ -96,6 +100,7 @@ async fn listen(socket: &str, opener: Opener) -> Result<u8, Failure> {
     let server = Arc::new(ReplicaServer::new(
         move |spec| opener.open(spec, Symlinks::AsRuled),
         tuning,
+        ServedReads::new(&tuning),
     ));
     let serving = tokio::spawn(server.serve_unix(listener, |ended| {
         if let Err(error) = ended {

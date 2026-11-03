@@ -44,6 +44,7 @@ use crate::peer_preamble::issue;
 use crate::replica::Replica;
 use crate::replica_error::ReplicaError;
 use crate::replica_server::ReplicaServer;
+use crate::served_reads::ServedReads;
 use crate::symlinks::Symlinks;
 use crate::transport::{Liveness, Transport};
 use crate::unauthenticated_slots::{SlotRefusal, UnauthenticatedSlot, UnauthenticatedSlots};
@@ -86,6 +87,8 @@ pub struct PeerListener<F> {
     home: Option<String>,
     tuning: Tuning,
     sessions: Arc<LiveSessions>,
+    /// Shared by every session this listener serves (SPEC §4.2).
+    reads: ServedReads,
 }
 
 impl<F, Opening, R> PeerListener<F>
@@ -113,6 +116,7 @@ where
             home: host.home().map(str::to_owned),
             tuning,
             sessions: Arc::default(),
+            reads: ServedReads::new(&tuning),
         }
     }
 
@@ -181,6 +185,7 @@ where
                         }
                     },
                     served.tuning,
+                    served.reads.clone(),
                 );
                 // Registered before the reclaim, so this session's token
                 // can never be the one it ends.

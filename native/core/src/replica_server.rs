@@ -13,7 +13,7 @@
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use dsync_domain::{Bucket, BucketCount, ReplicaSpec, Tuning};
+use dsync_domain::{Bucket, BucketCount, RelPath, ReplicaSpec, Tuning};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
@@ -26,6 +26,7 @@ use crate::link_error::LinkError;
 use crate::remote_replica::silent_if_timed_out;
 use crate::replica::{BucketTicket, DigestTicket, Replica};
 use crate::replica_error::ReplicaError;
+use crate::served_reads::ServedReads;
 use crate::transport::{
     Liveness, Outbox, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
@@ -37,9 +38,13 @@ use crate::wire::{self, Answer, Reply, Request, WireError, WireIo};
 /// `open` is the seam where a session's replica is decided: it gets the
 /// spec exactly as the client sent it (the root unexpanded) and may refuse
 /// with [`ReplicaError::Refused`] before anything touches the filesystem.
+///
+/// `reads` is shared by every server of one process: its served reads,
+/// across all their sessions, are bounded together (SPEC §4.2).
 pub struct ReplicaServer<F> {
     open: F,
     tuning: Tuning,
+    reads: ServedReads,
 }
 
 /// One request as the reader decoded it, with its body for a write.
@@ -55,8 +60,12 @@ where
     Opening: Future<Output = Result<R, ReplicaError>> + Send,
     R: Replica + 'static,
 {
-    pub fn new(open: F, tuning: Tuning) -> ReplicaServer<F> {
-        ReplicaServer { open, tuning }
+    pub fn new(open: F, tuning: Tuning, reads: ServedReads) -> ReplicaServer<F> {
+        ReplicaServer {
+            open,
+            tuning,
+            reads,
+        }
     }
 
     /// Serves one session over `transport` until the client closes it (or
@@ -194,6 +203,7 @@ where
             scan: Mutex::new(ServedScan::Closed),
             outbox: outbox.clone(),
             credits: credits.clone(),
+            reads: self.reads.clone(),
         });
         let hello = hello.map(Reply::Hello);
         reply(outbox, first.id, hello.map_err(WireError::from)).await;
@@ -202,7 +212,9 @@ where
         // a bound a client that never grants credit could park every one
         // the process has. One past the window waits here for a place;
         // the reader queues a window's more behind it and then stops
-        // reading, so a client that overruns stalls only itself.
+        // reading, so a client that overruns stalls only itself. A
+        // read also takes one of the process's places (`ServedReads`),
+        // which bounds the blocking threads every session holds together.
         let window = Arc::new(Semaphore::new(self.tuning.request_window.max(1)));
         let mut running = JoinSet::new();
         loop {
@@ -243,13 +255,14 @@ impl<F> ReplicaServer<F> {
     }
 }
 
-/// A session's replica, where its scan exchange stands, and the credit
-/// of the read bodies it is sending.
+/// A session's replica, where its scan exchange stands, the credit of
+/// the read bodies it is sending, and the process's places for them.
 struct Served<R> {
     replica: R,
     scan: Mutex<ServedScan>,
     outbox: Outbox,
     credits: Arc<Credits>,
+    reads: ServedReads,
 }
 
 /// The tickets the replica issued, held for the client between its scan
@@ -343,19 +356,21 @@ impl<R: Replica> Served<R> {
                 self.set_scan(ServedScan::Digested(ticket, count));
                 answer.map(Reply::Buckets)
             }
-            Request::Read(path) => match replica.read(&path).await {
-                Ok(reading) => {
-                    // Open before the reply, so no grant can arrive ahead
-                    // of it.
-                    let credit = self.credits.open(id);
-                    reply(&self.outbox, id, Ok(Reply::Opened)).await;
-                    // Forwarded as it is read: a local read holds a blocking
-                    // thread until its body is consumed.
-                    let _ = self.outbox.send_read(id, reading, credit).await;
+            Request::Read(path) => {
+                // Taken before the replica starts the read's blocking
+                // thread, held until its body is over. A read waiting
+                // here holds no thread, and stops waiting with its
+                // connection: a cut session must not wait on places
+                // other sessions hold before it can let its lock go.
+                let place = tokio::select! {
+                    place = self.reads.place() => place,
+                    () = self.credits.closed() => None,
+                };
+                let Some(_place) = place else {
                     return;
-                }
-                Err(error) => Err(error),
-            },
+                };
+                return self.serve_read(id, &path).await;
+            }
             Request::Write {
                 path,
                 source,
@@ -380,6 +395,20 @@ impl<R: Replica> Served<R> {
             Request::Compact => replica.compact().await.map(|()| Reply::Done),
         };
         reply(&self.outbox, id, answer.map_err(WireError::from)).await;
+    }
+
+    /// Opens `path` and sends its body as it is read, or the failure.
+    async fn serve_read(&self, id: u32, path: &RelPath) {
+        let reading = match self.replica.read(path).await {
+            Ok(reading) => reading,
+            Err(error) => return reply(&self.outbox, id, Err(error.into())).await,
+        };
+        // Open before the reply, so no grant can arrive ahead of it.
+        let credit = self.credits.open(id);
+        reply(&self.outbox, id, Ok(Reply::Opened)).await;
+        // Forwarded as it is read: a local read holds a blocking thread
+        // until its body is consumed.
+        let _ = self.outbox.send_read(id, reading, credit).await;
     }
 }
 
@@ -637,6 +666,9 @@ mod tests {
         dir: tempfile::TempDir,
         /// What the server is tuned with.
         tuning: Tuning,
+        /// The places every session served from this site shares, as
+        /// one process's servers do.
+        reads: ServedReads,
     }
 
     impl Site {
@@ -646,6 +678,7 @@ mod tests {
             Site {
                 dir,
                 tuning: Tuning::DEFAULT,
+                reads: ServedReads::new(&Tuning::DEFAULT),
             }
         }
 
@@ -696,6 +729,7 @@ mod tests {
                     async move { Ok(replica) }
                 },
                 self.tuning,
+                self.reads.clone(),
             );
             let (near, far) = duplex(link_bytes);
             let transport = Transport::split(near);
@@ -1034,6 +1068,117 @@ mod tests {
         assert_eq!((&opened, &ended), (&pipelined, &pipelined));
         drop(client);
         within(DEADLINE, serving).await.unwrap().unwrap();
+    }
+
+    /// A session of `site` past its hello.
+    async fn hello(site: &Site) -> (Client, JoinHandle<Result<(), LinkError>>) {
+        let (mut client, serving) = site.serve(None).await;
+        assert!(matches!(
+            client.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        (client, serving)
+    }
+
+    /// Sends `count` reads of `path` at once: their ids.
+    async fn send_reads(client: &mut Client, path: &str, count: usize) -> Vec<u32> {
+        let read = wire::encode(&Request::Read(RelPath::parse(path).unwrap()));
+        let mut ids = Vec::new();
+        for _ in 0..count {
+            ids.push(client.send_raw(Kind::Request, read.clone()).await);
+        }
+        ids
+    }
+
+    /// The window of a session, and the places shared by every session:
+    /// more than one window, fewer than two.
+    const WINDOW: usize = 4;
+    const PLACES: usize = 6;
+
+    /// A site of a `BIG` file `big` and a small file `small`, tuned to
+    /// [`WINDOW`] and [`PLACES`].
+    fn sharing_places() -> Site {
+        let mut site = Site::new();
+        site.tuning.request_window = WINDOW;
+        site.tuning.served_reads = PLACES;
+        site.reads = ServedReads::new(&site.tuning);
+        fs::write(site.dir.path().join("root/big"), vec![7u8; BIG]).unwrap();
+        fs::write(site.dir.path().join("root/small"), "small").unwrap();
+        site
+    }
+
+    #[tokio::test]
+    async fn reads_parked_on_credit_across_sessions_stay_at_the_process_cap() {
+        let site = sharing_places();
+        let (mut first, first_serving) = hello(&site).await;
+        let (mut second, second_serving) = hello(&site).await;
+
+        // Each session parks a full window of reads, none granted past
+        // its first credit: the first takes a window of places, the
+        // second only what is left of them.
+        let parked = send_reads(&mut first, "big", WINDOW).await;
+        let (mut opened, _) = until_quiet(&mut first).await;
+        opened.sort_unstable();
+        assert_eq!(opened, parked);
+        let waiting = send_reads(&mut second, "big", WINDOW).await;
+        let (mut opened, _) = until_quiet(&mut second).await;
+        opened.sort_unstable();
+        assert_eq!(opened, waiting[..PLACES - WINDOW], "past the places");
+
+        // A new session's read waits too, though its own window is empty.
+        let (mut honest, honest_serving) = hello(&site).await;
+        let small = send_reads(&mut honest, "small", 1).await;
+        assert_eq!(until_quiet(&mut honest).await, (vec![], vec![]));
+
+        // Places given back go in the order they were asked for: the
+        // second session's two waiting reads, then the new session's.
+        for &id in &parked[..3] {
+            first.send_to(Kind::Cancel, id, Vec::new()).await;
+        }
+        let (_, ended) = until_quiet(&mut first).await;
+        assert_eq!(ended.len(), 3);
+        let (mut opened, _) = until_quiet(&mut second).await;
+        opened.sort_unstable();
+        assert_eq!(opened, waiting[PLACES - WINDOW..]);
+        assert_eq!(until_quiet(&mut honest).await, (small.clone(), small));
+
+        drop((first, second, honest));
+        for serving in [first_serving, second_serving, honest_serving] {
+            within(DEADLINE, serving).await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_cut_while_its_reads_wait_for_a_place_ends_at_once() {
+        let site = sharing_places();
+        // Two other sessions take every place between them.
+        let (mut first, first_serving) = hello(&site).await;
+        let (mut second, second_serving) = hello(&site).await;
+        send_reads(&mut first, "big", WINDOW).await;
+        assert_eq!(until_quiet(&mut first).await.0.len(), WINDOW);
+        send_reads(&mut second, "big", PLACES - WINDOW).await;
+        assert_eq!(until_quiet(&mut second).await.0.len(), PLACES - WINDOW);
+
+        let (fire, until) = cut();
+        let (mut waiting, waiting_serving) = site
+            .serve_over(64 * 1024, None, until, |replica| replica)
+            .await;
+        assert!(matches!(
+            waiting.ask(&Request::Hello(site.spec())).await,
+            Ok(Reply::Hello(_))
+        ));
+        send_reads(&mut waiting, "small", WINDOW).await;
+        assert_eq!(until_quiet(&mut waiting).await, (vec![], vec![]));
+
+        // Its reads stop waiting with it, though every place is still
+        // taken by the others.
+        fire.send(()).unwrap();
+        within(DEADLINE, waiting_serving).await.unwrap().unwrap();
+
+        drop((first, second));
+        for serving in [first_serving, second_serving] {
+            within(DEADLINE, serving).await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test(start_paused = true)]

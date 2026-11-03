@@ -7,7 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dsync_core::{
-    Body, LocalReplica, RemoteReplica, Replica, ReplicaServer, Root, Symlinks, Transport,
+    Body, LocalReplica, RemoteReplica, Replica, ReplicaServer, Root, ServedReads, Symlinks,
+    Transport,
 };
 use dsync_domain::{
     ArchiveCommit, EntryId, Glob, Jobs, Precondition, ReplicaRoot, ReplicaSpec, RootKind, RuleSet,
@@ -48,7 +49,11 @@ fn local(site: &Site, file: &Path) -> LocalReplica {
 /// The file root at `file`, served over the protocol: what the dialer
 /// sends is all the far side acts on.
 async fn served(site: &Site, file: &Path) -> RemoteReplica {
-    let server = ReplicaServer::new(open_local(site.state()), Tuning::DEFAULT);
+    let server = ReplicaServer::new(
+        open_local(site.state()),
+        Tuning::DEFAULT,
+        ServedReads::new(&Tuning::DEFAULT),
+    );
     let (near, far) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move { server.serve(Transport::split(far)).await });
     let replica = with_deadline(

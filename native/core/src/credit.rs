@@ -51,6 +51,8 @@ pub(crate) fn granted(frame: &Frame) -> Result<usize, LinkError> {
 /// The credit of every body this end is sending.
 pub(crate) struct Credits {
     state: Mutex<State>,
+    /// Woken once, when the connection is over.
+    ended: Notify,
 }
 
 struct State {
@@ -88,6 +90,7 @@ impl Credits {
                 open: HashMap::new(),
                 closed: false,
             }),
+            ended: Notify::new(),
         })
     }
 
@@ -143,6 +146,21 @@ impl Credits {
         for stream in state.open.values() {
             stream.left().closed = true;
             stream.granted.notify_one();
+        }
+        self.ended.notify_waiters();
+    }
+
+    /// Ready once [`Credits::close`] has been called: what a request
+    /// waiting to start a body watches, so it stops waiting with its
+    /// connection.
+    pub async fn closed(&self) {
+        let ended = self.ended.notified();
+        tokio::pin!(ended);
+        // Registered before the check, so a close between the two still
+        // wakes it.
+        ended.as_mut().enable();
+        if !self.state().closed {
+            ended.await;
         }
     }
 }

@@ -14,7 +14,7 @@ use std::time::Duration;
 use dsync_core::{
     ArchiveHeader, ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan,
     LinkError, LocalReplica, OpenedScan, Peek, Reading, RemoteReplica, Replica, ReplicaError,
-    ReplicaServer, Run, RunEvent, RunReport, StateDir, Transport,
+    ReplicaServer, Run, RunEvent, RunReport, ServedReads, StateDir, Transport,
 };
 use dsync_domain::{
     Action, Archive, ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Command, EffectiveOptions,
@@ -567,6 +567,7 @@ where
             }
         },
         tuning,
+        ServedReads::new(&tuning),
     );
     tokio::spawn(async move { server.serve(Transport::split(stream)).await })
 }
