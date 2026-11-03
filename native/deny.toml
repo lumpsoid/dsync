@@ -1,0 +1,9 @@
+# `cargo deny check advisories` gates CI (.github/workflows/test.yml). Only the
+# advisories section is configured; licenses, bans and sources are not checked.
+
+[advisories]
+ignore = [
+    # bincode 1.x is unmaintained. It reaches us only through `rinf`, which
+    # hub/Cargo.toml pins to =8.10.1; drop this once rinf moves off bincode 1.
+    { id = "RUSTSEC-2025-0141", reason = "bincode comes in via the pinned rinf =8.10.1; no upgrade path until rinf drops it" },
+]
