@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use dsync_core::{
-    LocalReplica, PeerEvent, PeerListener, ReplicaError, Root, StateDir, Symlinks, bind_peer,
-    interface_addresses,
+    DiagnosticsLog, LocalReplica, PeerEvent, PeerListener, ReplicaError, Root, StateDir, Symlinks,
+    bind_peer, interface_addresses,
 };
 use dsync_domain::host_port::{format_host_port, parse_bind_address};
 use dsync_domain::{ReplicaSpec, Tuning, advertised_host, preferred_advertisable_address};
@@ -71,6 +71,7 @@ impl Hub {
             &self.facts,
             self.tuning,
         ));
+        let log = DiagnosticsLog::new(&self.state);
         let serving = control.clone();
         let crashed = control.clone();
         self.sessions.spawn(
@@ -79,8 +80,12 @@ impl Hub {
             async move {
                 let events = serving.clone();
                 let ended = peers
-                    .serve(listener, move |event| {
-                        events.update(|state| state.record(now_ms(), line(event)));
+                    .serve(listener, move |event| match line(event) {
+                        Ok(line) => events.update(|state| state.record(now_ms(), line)),
+                        Err(failure) => {
+                            let log = log.clone();
+                            tokio::task::spawn_blocking(move || log.note(&failure));
+                        }
                     })
                     .await;
                 serving.update(|state| state.ended(ended.err().map(text)));
@@ -279,8 +284,10 @@ impl Opener {
     }
 }
 
-fn line(event: PeerEvent) -> ServeEventView {
-    match event {
+/// The Serve page's line for `event`, or a failed request's whole story
+/// for the diagnostics log: the page shows connections, not requests.
+fn line(event: PeerEvent) -> Result<ServeEventView, String> {
+    Ok(match event {
         PeerEvent::Refused { from, why } => ServeEventView::Refused {
             from: from.to_string(),
             message: why.to_string(),
@@ -301,7 +308,13 @@ fn line(event: PeerEvent) -> ServeEventView {
             name: name.to_string(),
             failure: outcome.err().map(text),
         },
-    }
+        PeerEvent::Failed {
+            from,
+            name,
+            failure,
+            ..
+        } => return Err(format!("serving {name} ({from}): {failure}")),
+    })
 }
 
 #[cfg(test)]

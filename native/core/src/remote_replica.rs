@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -795,6 +796,10 @@ impl Replica for RemoteReplica {
             .unwrap_or_else(PoisonError::into_inner)
             .as_deref()
             .cloned()
+    }
+
+    fn base(&self) -> &Path {
+        Path::new(&self.spec.root)
     }
 }
 

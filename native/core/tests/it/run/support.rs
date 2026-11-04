@@ -530,6 +530,10 @@ impl<R: Replica> Replica for Probe<R> {
     fn write_stats(&self) -> Option<WriteStats> {
         self.inner.write_stats()
     }
+
+    fn base(&self) -> &std::path::Path {
+        self.inner.base()
+    }
 }
 
 /// A failure the run treats as the action's own, not the run's.

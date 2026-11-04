@@ -122,7 +122,7 @@ async fn lock_and_unlock_take_and_release_the_real_lock() {
 }
 
 #[tokio::test]
-async fn a_lock_held_on_the_far_side_comes_back_as_held() {
+async fn a_lock_held_on_the_far_side_comes_back_as_held_naming_only_its_file() {
     let site = Site::new();
     let local = site.replica(Side::B);
     with_deadline("local lock", local.lock()).await.unwrap();
@@ -131,8 +131,12 @@ async fn a_lock_held_on_the_far_side_comes_back_as_held() {
         .await
         .unwrap();
     let refused = with_deadline("remote lock", served.replica.lock()).await;
+    let lock = site
+        .state()
+        .lock(&EntryId::parse(PROFILE).unwrap(), Side::B);
     assert!(
-        matches!(&refused, Err(ReplicaError::Lock(LockError::Held { path })) if path == &site.state().lock(&EntryId::parse(PROFILE).unwrap(), Side::B)),
+        matches!(&refused, Err(ReplicaError::Lock(LockError::Held { path }))
+            if Some(path.as_os_str()) == lock.file_name()),
         "{refused:?}"
     );
     served.close().await;

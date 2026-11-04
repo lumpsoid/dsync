@@ -165,6 +165,17 @@ where
                     device: id,
                     name: name.clone(),
                 });
+                let failed = {
+                    let (events, name) = (events.clone(), name.clone());
+                    move |error: &ReplicaError| {
+                        events(PeerEvent::Failed {
+                            from,
+                            device: id,
+                            name: name.clone(),
+                            failure: error.to_string(),
+                        });
+                    }
+                };
                 let (open, home) = (served.open.clone(), served.home.clone());
                 let symlinks = Symlinks::WithinGrants(GrantedRoots::of(&device));
                 // `open` is reached only for a root `device` was granted,
@@ -186,7 +197,8 @@ where
                     },
                     served.tuning,
                     served.reads.clone(),
-                );
+                )
+                .reporting(failed);
                 // Registered before the reclaim, so this session's token
                 // can never be the one it ends.
                 let live = served.sessions.register(id);

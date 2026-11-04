@@ -2,6 +2,8 @@
 //! is not dyn-compatible (see [`crate::Replica`]), so a closed two-variant
 //! enum dispatches by delegation, statically.
 
+use std::path::Path;
+
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, Bucket, BucketCount, FileMeta, FileState, Precondition, RelPath,
     RootFacts, RuleSet, ScanEntry, WriteStats,
@@ -108,6 +110,13 @@ impl Replica for AnyReplica {
         match self {
             AnyReplica::Local(local) => Replica::write_stats(local),
             AnyReplica::Remote(remote) => Replica::write_stats(remote),
+        }
+    }
+
+    fn base(&self) -> &Path {
+        match self {
+            AnyReplica::Local(local) => Replica::base(local),
+            AnyReplica::Remote(remote) => Replica::base(remote),
         }
     }
 }

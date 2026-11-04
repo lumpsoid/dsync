@@ -196,6 +196,12 @@ fn report(event: PeerEvent) {
     let mut err = std::io::stderr().lock();
     let _ = match event {
         PeerEvent::Refused { from, why } => writeln!(err, "dsync agent: refused {from}: {why}"),
+        PeerEvent::Failed {
+            from,
+            name,
+            failure,
+            ..
+        } => writeln!(err, "dsync agent: {name} ({from}): {failure}"),
         PeerEvent::Ended {
             from,
             name,

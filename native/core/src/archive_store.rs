@@ -97,6 +97,18 @@ pub enum ArchiveError {
     },
 }
 
+impl ArchiveError {
+    /// The archive file this failure is about.
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            ArchiveError::Io { path, .. }
+            | ArchiveError::ForeignVersion { path, .. }
+            | ArchiveError::Mismatch { path, .. }
+            | ArchiveError::Corrupt { path, .. } => path,
+        }
+    }
+}
+
 /// One replica's archive log, open.
 ///
 /// Opening replays the log, so a store is never in a "not yet loaded"

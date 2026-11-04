@@ -490,6 +490,10 @@ impl Replica for LocalReplica {
     fn write_stats(&self) -> Option<WriteStats> {
         Some(LocalReplica::write_stats(self))
     }
+
+    fn base(&self) -> &Path {
+        self.shared.root.base()
+    }
 }
 
 /// `source` opened for reading, or a refusal of anything but a regular

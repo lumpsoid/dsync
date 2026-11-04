@@ -12,6 +12,7 @@
 //! static dispatch and a closed set of kinds.
 
 use std::future::Future;
+use std::path::Path;
 
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta,
@@ -156,6 +157,12 @@ pub trait Replica: Send + Sync {
     /// §17): a local replica's own pool, or what a remote one's server
     /// reported with its last `unlock`. `None` until there is a figure.
     fn write_stats(&self) -> Option<WriteStats>;
+
+    /// The folder this replica's paths sit under, as its own host names
+    /// it: a local root's folder (a file root's, the one it sits in); a
+    /// remote replica's root as it was asked for. A server shows a
+    /// failure's paths relative to it, never as its host's paths.
+    fn base(&self) -> &Path;
 }
 
 /// Phase 1 of a scan exchange, and the ticket to phase 2.

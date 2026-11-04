@@ -33,7 +33,7 @@ use crate::transport::{
     Liveness, Outbox, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
 use crate::version_handshake::handshake;
-use crate::wire::{self, Answer, DigestItem, Reply, Request, ScanItem, WireError, WireIo};
+use crate::wire::{self, Answer, DigestItem, Reply, Request, ScanItem, Shown, WireError, WireIo};
 
 /// Serves replicas opened by `open`, one per session.
 ///
@@ -43,11 +43,18 @@ use crate::wire::{self, Answer, DigestItem, Reply, Request, ScanItem, WireError,
 ///
 /// `reads` is shared by every server of one process: its served reads,
 /// across all their sessions, are bounded together (SPEC §4.2).
+///
+/// A failure is answered without this host's paths ([`Shown`]); the
+/// whole of it goes to [`ReplicaServer::reporting`]'s hook.
 pub struct ReplicaServer<F> {
     open: F,
     tuning: Tuning,
     reads: ServedReads,
+    failed: Failed,
 }
+
+/// Told of every failure a session answers with, in full.
+type Failed = Arc<dyn Fn(&ReplicaError) + Send + Sync>;
 
 /// One request as the reader decoded it, with its body for a write.
 struct Incoming {
@@ -67,7 +74,19 @@ where
             open,
             tuning,
             reads,
+            failed: Arc::new(|_: &ReplicaError| {}),
         }
+    }
+
+    /// Tells `failed` of every failure a session answers with, before it
+    /// is sent with this host's paths taken out: this side's record of
+    /// what the far side was told less of.
+    pub fn reporting(
+        mut self,
+        failed: impl Fn(&ReplicaError) + Send + Sync + 'static,
+    ) -> ReplicaServer<F> {
+        self.failed = Arc::new(failed);
+        self
     }
 
     /// Serves one session over `transport` until the client closes it (or
@@ -183,6 +202,8 @@ where
             }
             Err(error) => return reply(outbox, first.id, Err(undecodable(&error))).await,
         };
+        let unopened = Shown::unopened(&spec);
+        let named = spec.clone();
         let opening = async {
             let replica = (self.open)(spec).await?;
             let hello = replica.hello().await;
@@ -198,17 +219,23 @@ where
         };
         let (replica, hello) = match opened {
             Ok(opened) => opened,
-            Err(error) => return reply(outbox, first.id, Err(error.into())).await,
+            Err(error) => {
+                (self.failed)(&error);
+                let sent = WireError::sent(error, &unopened);
+                return reply(outbox, first.id, Err(sent)).await;
+            }
         };
         let served = Arc::new(Served {
+            shown: Shown::open(&named, replica.base()),
             replica,
             scan: Mutex::new(ServedScan::Closed),
             outbox: outbox.clone(),
             credits: credits.clone(),
             reads: self.reads.clone(),
+            failed: self.failed.clone(),
         });
         let hello = hello.map(Reply::Hello);
-        reply(outbox, first.id, hello.map_err(WireError::from)).await;
+        reply(outbox, first.id, hello.map_err(|error| served.sent(error))).await;
         // At most a window of requests served at once (SPEC §4.2): a served
         // read holds a blocking thread until its body is over, so without
         // a bound a client that never grants credit could park every one
@@ -257,14 +284,17 @@ impl<F> ReplicaServer<F> {
     }
 }
 
-/// A session's replica, where its scan exchange stands, the credit of
-/// the read bodies it is sending, and the process's places for them.
+/// A session's replica, how its paths are shown, where its scan exchange
+/// stands, the credit of the read bodies it is sending, the process's
+/// places for them, and who is told of its failures.
 struct Served<R> {
     replica: R,
+    shown: Shown,
     scan: Mutex<ServedScan>,
     outbox: Outbox,
     credits: Arc<Credits>,
     reads: ServedReads,
+    failed: Failed,
 }
 
 /// The tickets the replica issued, held for the client between its scan
@@ -288,6 +318,12 @@ impl<R: Replica> Served<R> {
 
     fn set_scan(&self, scan: ServedScan) {
         *self.scan() = scan;
+    }
+
+    /// `error` reported in full, and as it is sent.
+    fn sent(&self, error: ReplicaError) -> WireError {
+        (self.failed)(&error);
+        WireError::sent(error, &self.shown)
     }
 
     async fn handle(self: Arc<Self>, incoming: Incoming) {
@@ -420,7 +456,7 @@ impl<R: Replica> Served<R> {
             Request::Commit(batch) => replica.commit(batch).await.map(|()| Reply::Done),
             Request::Compact => replica.compact().await.map(|()| Reply::Done),
         };
-        reply(&self.outbox, id, answer.map_err(WireError::from)).await;
+        reply(&self.outbox, id, answer.map_err(|error| self.sent(error))).await;
     }
 
     /// The reply and its listing, or the failure.
@@ -431,7 +467,7 @@ impl<R: Replica> Served<R> {
     ) {
         let (header, items) = match listed {
             Ok(listed) => listed,
-            Err(error) => return reply(&self.outbox, id, Err(error.into())).await,
+            Err(error) => return reply(&self.outbox, id, Err(self.sent(error))).await,
         };
         // Open before the reply, so no grant can arrive ahead of it.
         let credit = self.credits.open(id);
@@ -451,7 +487,7 @@ impl<R: Replica> Served<R> {
     async fn serve_read(&self, id: u32, path: &RelPath) {
         let reading = match self.replica.read(path).await {
             Ok(reading) => reading,
-            Err(error) => return reply(&self.outbox, id, Err(error.into())).await,
+            Err(error) => return reply(&self.outbox, id, Err(self.sent(error))).await,
         };
         // Open before the reply, so no grant can arrive ahead of it.
         let credit = self.credits.open(id);
@@ -1594,6 +1630,10 @@ mod tests {
 
         fn write_stats(&self) -> Option<WriteStats> {
             Replica::write_stats(&self.inner)
+        }
+
+        fn base(&self) -> &std::path::Path {
+            Replica::base(&self.inner)
         }
     }
 }

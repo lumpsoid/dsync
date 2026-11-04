@@ -24,6 +24,15 @@ pub enum PeerEvent {
         device: DeviceId,
         name: PeerName,
     },
+    /// A request of the session failed. `failure` is the whole of it,
+    /// for this side's log: the device was answered without this host's
+    /// paths.
+    Failed {
+        from: SocketAddr,
+        device: DeviceId,
+        name: PeerName,
+        failure: String,
+    },
     Ended {
         from: SocketAddr,
         device: DeviceId,

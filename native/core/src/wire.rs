@@ -11,14 +11,16 @@
 //! ([`dsync_domain::BucketCount::new`], [`dsync_domain::BucketCount::bucket`]).
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, ChangedDuringSync, FileMeta, FileState, Naming, Precondition,
-    RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, ScanTally, SkippedPath, Stage, WriteStats,
+    RelPath, ReplicaSpec, RootFacts, RootKind, RuleSet, ScanEntry, ScanTally, SkippedPath, Stage,
+    WriteStats,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::archive_store::ArchiveError;
 use crate::replica_error::{FileOp, ReplicaError};
 use crate::replica_lock::LockError;
 use crate::scanner::UnreadableRoot;
@@ -118,7 +120,7 @@ pub(crate) type Answer = Result<Reply, WireError>;
 /// the local shape wherever there is one, so a run treats a remote failure
 /// exactly like the same local one - a held lock is still
 /// [`LockError::Held`], a failed write still a [`WriteError`] with its
-/// stage.
+/// stage. Its paths are as [`Shown`] shows them, never this host's own.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub(crate) enum WireError {
     LockHeld {
@@ -177,27 +179,29 @@ pub(crate) fn decode<'a, T: Deserialize<'a>>(payload: &'a [u8]) -> Result<T, pos
     postcard::from_bytes(payload)
 }
 
-impl From<ReplicaError> for WireError {
-    fn from(error: ReplicaError) -> WireError {
+impl WireError {
+    /// `error` as it is sent to the far side, its paths as `shown` shows
+    /// them.
+    pub(crate) fn sent(error: ReplicaError, shown: &Shown) -> WireError {
         match error {
-            ReplicaError::Lock(LockError::Held { path }) => {
-                WireError::LockHeld { path: shown(&path) }
-            }
-            ReplicaError::Lock(LockError::FolderInUse { folder, lock }) => WireError::FolderInUse {
-                folder: shown(&folder),
-                lock: shown(&lock),
+            ReplicaError::Lock(LockError::Held { path }) => WireError::LockHeld {
+                path: shown.path(&path),
+            },
+            ReplicaError::Lock(LockError::FolderInUse { lock, .. }) => WireError::FolderInUse {
+                folder: shown.named.clone(),
+                lock: shown.path(&lock),
             },
             ReplicaError::Lock(LockError::RootInUse { lock, owner }) => WireError::RootInUse {
-                lock: shown(&lock),
+                lock: shown.path(&lock),
                 owner,
             },
             ReplicaError::Lock(LockError::Io { path, source }) => WireError::Lock {
-                path: shown(&path),
+                path: shown.path(&path),
                 io: WireIo::from(&source),
             },
-            ReplicaError::Archive(error) => WireError::Archive(error.to_string()),
-            ReplicaError::Scan(UnreadableRoot { root, source }) => WireError::Scan {
-                root: shown(&root),
+            ReplicaError::Archive(error) => WireError::Archive(shown.archive(&error)),
+            ReplicaError::Scan(UnreadableRoot { source, .. }) => WireError::Scan {
+                root: shown.named.clone(),
                 io: WireIo::from(&source),
             },
             ReplicaError::Write(WriteError {
@@ -211,7 +215,7 @@ impl From<ReplicaError> for WireError {
             },
             ReplicaError::File { op, path, source } => WireError::File {
                 op,
-                path: shown(&path),
+                path: shown.path(&path),
                 io: WireIo::from(&source),
             },
             ReplicaError::NoScan => WireError::NoScan,
@@ -221,6 +225,66 @@ impl From<ReplicaError> for WireError {
             ReplicaError::RemoteArchive(message) => WireError::Archive(message),
             ReplicaError::Link(error) => WireError::Protocol(error.to_string()),
             ReplicaError::Halted(message) => WireError::Halted(message),
+        }
+    }
+}
+
+/// How a served replica's paths are shown to the far side, which is not
+/// told this host's filesystem (SPEC §4.4): one under the replica's base
+/// in the words the far side named its root with, any other - a lock or
+/// an archive in the state directory - by its file name alone.
+pub(crate) struct Shown {
+    /// `None` until the replica is open.
+    base: Option<PathBuf>,
+    /// The base as the far side named it.
+    named: String,
+}
+
+impl Shown {
+    /// Before `spec`'s replica is open, when no path is known to be
+    /// under it.
+    pub(crate) fn unopened(spec: &ReplicaSpec) -> Shown {
+        let root = Path::new(&spec.root);
+        let named = match spec.kind {
+            RootKind::Folder => root,
+            RootKind::File => root.parent().unwrap_or(root),
+        };
+        Shown {
+            base: None,
+            named: shown(named),
+        }
+    }
+
+    /// `spec`'s replica, open with its paths under `base`.
+    pub(crate) fn open(spec: &ReplicaSpec, base: &Path) -> Shown {
+        Shown {
+            base: Some(base.to_path_buf()),
+            ..Shown::unopened(spec)
+        }
+    }
+
+    fn path(&self, path: &Path) -> String {
+        if path.is_relative() {
+            return shown(&Path::new(&self.named).join(path));
+        }
+        match self.base.as_deref().map(|base| path.strip_prefix(base)) {
+            Some(Ok(under)) if under.as_os_str().is_empty() => self.named.clone(),
+            Some(Ok(under)) => shown(&Path::new(&self.named).join(under)),
+            _ => path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+        }
+    }
+
+    /// An archive failure's words, its file by name and the root as the
+    /// far side named it.
+    fn archive(&self, error: &ArchiveError) -> String {
+        let message = error
+            .to_string()
+            .replace(&shown(error.path()), &self.path(error.path()));
+        match &self.base {
+            Some(base) => message.replace(&shown(base), &self.named),
+            None => message,
         }
     }
 }
@@ -563,38 +627,56 @@ mod tests {
         out
     }
 
+    fn spec(root: &str, kind: RootKind) -> ReplicaSpec {
+        ReplicaSpec {
+            root: root.into(),
+            kind,
+            as_path: None,
+            entry: EntryId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            side: Side::B,
+            jobs: Jobs::new(8).unwrap(),
+        }
+    }
+
+    /// `error` as a replica at `/home/me/Docs`, asked for as `~/Docs`,
+    /// sends it.
+    fn sent(error: ReplicaError) -> WireError {
+        let spec = spec("~/Docs", RootKind::Folder);
+        WireError::sent(error, &Shown::open(&spec, Path::new("/home/me/Docs")))
+    }
+
     #[test]
     fn a_path_changed_during_sync_comes_back_as_changed() {
-        let wire = WireError::from(ReplicaError::Changed(ChangedDuringSync));
+        let wire = sent(ReplicaError::Changed(ChangedDuringSync));
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(matches!(back, ReplicaError::Changed(_)), "{back:?}");
     }
 
     #[test]
-    fn a_folder_in_use_comes_back_naming_the_folder() {
-        let wire = WireError::from(ReplicaError::Lock(LockError::FolderInUse {
+    fn a_folder_in_use_comes_back_naming_the_folder_as_it_was_asked_for() {
+        let wire = sent(ReplicaError::Lock(LockError::FolderInUse {
             folder: PathBuf::from("/home/me/Docs"),
             lock: PathBuf::from("/state/folder-0123.lock"),
         }));
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(
             matches!(&back, ReplicaError::Lock(LockError::FolderInUse { folder, lock })
-                if folder == &PathBuf::from("/home/me/Docs")
-                    && lock == &PathBuf::from("/state/folder-0123.lock")),
+                if folder == &PathBuf::from("~/Docs")
+                    && lock == &PathBuf::from("folder-0123.lock")),
             "{back:?}"
         );
     }
 
     #[test]
     fn a_root_in_use_comes_back_naming_its_owner() {
-        let wire = WireError::from(ReplicaError::Lock(LockError::RootInUse {
-            lock: PathBuf::from("/sdcard/Docs/.dsync-lock"),
+        let wire = sent(ReplicaError::Lock(LockError::RootInUse {
+            lock: PathBuf::from("/home/me/Docs/.dsync-lock"),
             owner: "pid 7 on host phone".to_owned(),
         }));
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(
             matches!(&back, ReplicaError::Lock(LockError::RootInUse { lock, owner })
-                if lock == &PathBuf::from("/sdcard/Docs/.dsync-lock")
+                if lock == &PathBuf::from("~/Docs/.dsync-lock")
                     && owner == "pid 7 on host phone"),
             "{back:?}"
         );
@@ -602,14 +684,14 @@ mod tests {
 
     #[test]
     fn an_unlocked_archive_comes_back_as_not_locked() {
-        let wire = WireError::from(ReplicaError::NotLocked);
+        let wire = sent(ReplicaError::NotLocked);
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(matches!(back, ReplicaError::NotLocked), "{back:?}");
     }
 
     #[test]
     fn a_halted_replica_comes_back_halted_and_ends_the_run() {
-        let wire = WireError::from(ReplicaError::Halted("no writer thread".into()));
+        let wire = sent(ReplicaError::Halted("no writer thread".into()));
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(
             matches!(&back, ReplicaError::Halted(why) if why == "no writer thread"),
@@ -619,20 +701,20 @@ mod tests {
     }
 
     #[test]
-    fn a_held_lock_comes_back_as_held() {
-        let wire = WireError::from(ReplicaError::Lock(LockError::Held {
+    fn a_held_lock_comes_back_as_held_naming_only_its_file() {
+        let wire = sent(ReplicaError::Lock(LockError::Held {
             path: PathBuf::from("/state/p-a.lock"),
         }));
         let back = ReplicaError::from(decode::<WireError>(&encode(&wire)).unwrap());
         assert!(
-            matches!(&back, ReplicaError::Lock(LockError::Held { path }) if path == &PathBuf::from("/state/p-a.lock")),
+            matches!(&back, ReplicaError::Lock(LockError::Held { path }) if path == &PathBuf::from("p-a.lock")),
             "{back:?}"
         );
     }
 
     #[test]
     fn a_failed_write_keeps_its_path_stage_kind_and_message() {
-        let wire = WireError::from(ReplicaError::Write(WriteError {
+        let wire = sent(ReplicaError::Write(WriteError {
             path: path("a/b"),
             stage: Stage::Create,
             source: io::Error::from(io::ErrorKind::PermissionDenied),
@@ -649,19 +731,97 @@ mod tests {
     }
 
     #[test]
-    fn a_file_error_keeps_its_op_path_and_kind() {
-        let wire = WireError::from(ReplicaError::File {
+    fn a_file_error_keeps_its_op_kind_and_path_under_the_root_as_asked_for() {
+        let wire = sent(ReplicaError::File {
             op: FileOp::Read,
-            path: PathBuf::from("/r/missing"),
+            path: PathBuf::from("/home/me/Docs/a/missing"),
             source: io::Error::from(io::ErrorKind::NotFound),
         });
         let back = ReplicaError::from(wire);
         assert!(matches!(
             &back,
             ReplicaError::File { op: FileOp::Read, path, source }
-                if path == &PathBuf::from("/r/missing") && source.kind() == io::ErrorKind::NotFound
+                if path == &PathBuf::from("~/Docs/a/missing")
+                    && source.kind() == io::ErrorKind::NotFound
         ));
-        assert_eq!(back.to_string(), "reading /r/missing: entity not found");
+        assert_eq!(
+            back.to_string(),
+            "reading ~/Docs/a/missing: entity not found"
+        );
+    }
+
+    #[test]
+    fn a_file_error_on_a_relative_path_or_the_root_itself_names_the_root_as_asked_for() {
+        let failed = |path: &str| {
+            let error = ReplicaError::File {
+                op: FileOp::CreateRoot,
+                path: PathBuf::from(path),
+                source: io::Error::from(io::ErrorKind::PermissionDenied),
+            };
+            match sent(error) {
+                WireError::File { path, .. } => path,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(failed("/home/me/Docs"), "~/Docs");
+        assert_eq!(failed("a/b"), "~/Docs/a/b");
+        // Outside the root, only the file's name crosses.
+        assert_eq!(failed("/home/me/Other/c"), "c");
+    }
+
+    #[test]
+    fn a_file_root_is_shown_under_the_folder_it_was_asked_for_in() {
+        let spec = spec("~/notes/todo.md", RootKind::File);
+        let shown = Shown::open(&spec, Path::new("/home/me/notes"));
+        let error = ReplicaError::Lock(LockError::RootInUse {
+            lock: PathBuf::from("/home/me/notes/.dsync-lock"),
+            owner: "pid 7".to_owned(),
+        });
+        assert!(
+            matches!(WireError::sent(error, &shown), WireError::RootInUse { lock, .. }
+                if lock == "~/notes/.dsync-lock")
+        );
+    }
+
+    #[test]
+    fn before_the_replica_opens_an_absolute_path_crosses_by_name_alone() {
+        let shown = Shown::unopened(&spec("~/Docs", RootKind::Folder));
+        let error = ReplicaError::Lock(LockError::Io {
+            path: PathBuf::from("/home/me/Docs/.dsync-lock"),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        });
+        assert!(
+            matches!(WireError::sent(error, &shown), WireError::Lock { path, .. }
+                if path == ".dsync-lock")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_root_comes_back_naming_the_root_as_asked_for() {
+        let wire = sent(ReplicaError::Scan(UnreadableRoot {
+            root: PathBuf::from("/home/me/Docs"),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        }));
+        assert!(
+            matches!(&wire, WireError::Scan { root, .. } if root == "~/Docs"),
+            "{wire:?}"
+        );
+    }
+
+    #[test]
+    fn an_archive_failure_names_its_file_and_the_root_as_asked_for() {
+        let wire = sent(ReplicaError::Archive(ArchiveError::Corrupt {
+            path: PathBuf::from("/home/me/.local/state/dsync/p-b.jsonl"),
+            line: 3,
+            reason: "under /home/me/Docs/x".into(),
+        }));
+        let WireError::Archive(message) = wire else {
+            panic!("{wire:?}");
+        };
+        assert_eq!(
+            message,
+            "Archive at p-b.jsonl is corrupt at line 3: under ~/Docs/x"
+        );
     }
 
     #[test]

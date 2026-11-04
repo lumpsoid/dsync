@@ -399,3 +399,46 @@ async fn a_peer_of_a_later_protocol_minor_is_served() {
     assert_eq!(answer, version_frame(PROTOCOL_VERSION));
     outcome.unwrap();
 }
+
+#[tokio::test]
+async fn a_failed_request_is_reported_in_full_on_the_serving_side() {
+    let server = Host::new(identity("desktop"));
+    let client = Host::new(identity("phone"));
+    let root = granted_root(&server);
+    server.pair(
+        &client.identity,
+        "phone",
+        somewhere(),
+        &[server.root("notes").as_path()],
+    );
+    client.pair(&server.identity, "desktop", somewhere(), &[]);
+    let mut serving = serve(&server).await;
+
+    let dialed = with_deadline("dial", client.dial("desktop", Some(serving.at), &root))
+        .await
+        .unwrap();
+    with_deadline("hello", dialed.replica.hello())
+        .await
+        .unwrap();
+    let missing = dsync_domain::RelPath::parse("missing").unwrap();
+    assert!(
+        with_deadline("read", dialed.replica.read(&missing))
+            .await
+            .is_err()
+    );
+
+    assert!(matches!(
+        serving.next_event().await,
+        PeerEvent::Started { .. }
+    ));
+    match serving.next_event().await {
+        PeerEvent::Failed { name, failure, .. } => {
+            assert_eq!(name.to_string(), "phone");
+            assert!(failure.contains(&format!("{root}/missing")), "{failure}");
+        }
+        other => panic!("{other:?}"),
+    }
+    with_deadline("close", dialed.replica.close())
+        .await
+        .unwrap();
+}
