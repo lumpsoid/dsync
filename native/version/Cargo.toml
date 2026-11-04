@@ -1,0 +1,11 @@
+[package]
+name = "dsync-version"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# This build's version, for the CLI's `--version` and the app's Settings
+# and diagnostics: pubspec.yaml's `X.Y.Z`, the one version source (see
+# RELEASING.md), and the commit it was built from. A crate of its own so a
+# new commit rebuilds only it and the two heads, not dsync-core.

@@ -331,6 +331,7 @@ dependencies = [
  "clap",
  "dsync-core",
  "dsync-domain",
+ "dsync-version",
  "gethostname",
  "libc",
  "qrcode",
@@ -388,6 +389,10 @@ dependencies = [
  "dsync-core",
  "dsync-domain",
 ]
+
+[[package]]
+name = "dsync-version"
+version = "0.1.0"
 
 [[package]]
 name = "embedded-io"
@@ -519,6 +524,7 @@ version = "0.1.0"
 dependencies = [
  "dsync-core",
  "dsync-domain",
+ "dsync-version",
  "futures-util",
  "rinf",
  "serde",

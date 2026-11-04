@@ -15,6 +15,24 @@ fn help_and_a_bare_dsync_print_usage_and_exit_0() {
 }
 
 #[test]
+fn version_prints_pubspecs_version_and_exits_0() {
+    let pubspec =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../pubspec.yaml"))
+            .unwrap();
+    let release = pubspec
+        .lines()
+        .find_map(|line| line.strip_prefix("version: "))
+        .and_then(|version| version.split('+').next())
+        .unwrap();
+    let finished = Site::new().run(&["--version"]);
+    finished.exits(0);
+    assert!(
+        finished.stdout.starts_with(&format!("dsync {release}")),
+        "{finished:#?}"
+    );
+}
+
+#[test]
 fn an_unknown_command_or_a_lookalike_exits_3() {
     let site = Site::new();
     site.run(&["frobnicate"]).exits(3);

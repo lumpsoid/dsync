@@ -24,6 +24,7 @@ wildcard_imports = "deny"
 [dependencies]
 dsync-core.workspace = true
 dsync-domain.workspace = true
+dsync-version.workspace = true
 # `catch_unwind` on a future: a panic in a command or session becomes its
 # Failed answer instead of a reply that never comes.
 futures-util.workspace = true

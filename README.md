@@ -32,6 +32,7 @@ page is.
 | `native/core/` (`dsync-core`) — I/O: stores, the `Replica` trait, the protocol, transports, pairing, `Run` | implemented |
 | `native/cli/` (`dsync-cli`, binary `dsync`) — sync, status, agent, pair, archive | implemented |
 | `native/hub/` — the rinf bridge the Flutter head loads | implemented |
+| `native/version/` (`dsync-version`) — this build's version, read from `pubspec.yaml` | implemented |
 | `lib/app/` — Flutter head: profiles home, devices, device, this device, pair, pair show, serve, run setup, run | implemented |
 
 ## Build and run
@@ -402,8 +403,10 @@ SPEC section that owns the detail.
   provider or a cloud document provider does not (SPEC §16).
 - **Files from a different major version are refused.** Archive logs,
   profiles, the paired-device store, pairing payloads and the wire protocol
-  all start at 1.0; a dsync of another major says so and stops rather than
-  guessing, so both devices need the same major (SPEC §8.4).
+  each carry their own `major.minor` format version; a dsync of another major
+  says so and stops rather than guessing, so both devices need builds that
+  agree on every major (SPEC §8.4). `dsync --version`, and the app's Settings
+  page, name the build.
 
 ## Layout
 
@@ -421,6 +424,8 @@ native/
   hub/      the rinf bridge: intent-named commands in, one reply per command,
             and each session (run, serve, pairing window) out as whole-view
             snapshots, over dsync-core
+  version/  dsync-version — this build's version for the CLI and the hub:
+            pubspec.yaml's X.Y.Z and the commit it was built from
   scan_probe/  dsync-scan-probe — developer tool, not shipped: what scanning
             a tree costs on this device (desktop or over adb; its README)
 lib/app/

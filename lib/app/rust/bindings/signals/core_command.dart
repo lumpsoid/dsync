@@ -47,6 +47,7 @@ abstract class CoreCommand {
       case 33: return CoreCommandCheckFolder.load(deserializer);
       case 34: return CoreCommandNoteDiagnostic.load(deserializer);
       case 35: return CoreCommandReadDiagnostics.load(deserializer);
+      case 36: return CoreCommandReadVersion.load(deserializer);
       default: throw Exception('Unknown variant index for CoreCommand: ' + index.toString());
     }
   }
@@ -2389,5 +2390,49 @@ class CoreCommandReadDiagnostics extends CoreCommand {
     }());
 
     return fullString ?? 'CoreCommandReadDiagnostics';
+  }
+}
+
+@immutable
+class CoreCommandReadVersion extends CoreCommand {
+  const CoreCommandReadVersion(
+  ) : super();
+
+  static CoreCommandReadVersion load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = CoreCommandReadVersion(
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(36);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is CoreCommandReadVersion;
+  }
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'CoreCommandReadVersion';
   }
 }

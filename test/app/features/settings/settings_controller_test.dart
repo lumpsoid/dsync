@@ -51,6 +51,34 @@ void main() {
       expect(controller.state.outcome, isA<SettingsIdle>());
     });
 
+    test('reads this build\'s version', () async {
+      await controller.load();
+
+      expect(controller.state.version, '0.1.0 (2d2ca38)');
+    });
+
+    test('a version the core cannot say leaves it unknown, and the settings '
+        'read', () async {
+      final core = FakeHub()
+        ..reply<wire.CoreCommandInit>(
+          initialised(
+            stateDir: tempDir.path,
+            profilesDir: '${tempDir.path}/profiles',
+          ),
+        )
+        ..reply<wire.CoreCommandReadVersion>(
+          const wire.ReplyResultFailed(message: 'core gone'),
+        );
+      final failing = SettingsController(fakeApp(core));
+      addTearDown(failing.dispose);
+
+      await failing.load();
+
+      expect(failing.state.version, isNull);
+      expect(failing.state.settings, isNotNull);
+      expect(failing.state.outcome, isA<SettingsIdle>());
+    });
+
     test('shows what was stored', () async {
       await controller.saveBindAddress('10.8.0.3');
 

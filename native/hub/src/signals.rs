@@ -229,6 +229,8 @@ pub enum CoreCommand {
     },
     /// The diagnostics log, for the user to attach to a bug report.
     ReadDiagnostics,
+    /// This build's version, as `dsync --version` prints it.
+    ReadVersion,
 }
 
 /// The head's profile: each entry's `local_root` on this device synced
@@ -346,6 +348,10 @@ pub enum ReplyResult {
     },
     /// The diagnostics log under the build it came from, as one text.
     Diagnostics {
+        text: String,
+    },
+    /// `ReadVersion`'s answer: `0.1.0 (2d2ca38)`, the commit when known.
+    Version {
         text: String,
     },
 }

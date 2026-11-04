@@ -543,6 +543,7 @@ dsync pair renew                  # re-issue this host's certificate under its e
 dsync archive list [--json]       # the archive logs this host keeps, and what they cost on disk (§8)
 dsync archive clear <profile>     # delete a profile's archive logs; --all for every one of them (§8)
 dsync log [--json]                # what each run this host started did, oldest first (§8.3)
+dsync --version                   # this build: pubspec.yaml's X.Y.Z, then the commit it was built from
 ```
 `status` is `sync --dry-run` under a friendlier name. `pair` and `archive` alone, with no subcommand, are usage errors.
 

@@ -12,6 +12,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 
 use dsync_core::DiagnosticsLog;
+use dsync_version::VERSION;
 
 use crate::dispatch::{Handled, Hub, blocking, text};
 use crate::signals::ReplyResult;
@@ -22,7 +23,7 @@ static PANICS_TO: Mutex<Option<DiagnosticsLog>> = Mutex::new(None);
 
 /// This build, as the log's reader needs it.
 fn build() -> String {
-    format!("dsync {} on {OS} {ARCH}", env!("CARGO_PKG_VERSION"))
+    format!("dsync {VERSION} on {OS} {ARCH}")
 }
 
 /// Notes every panic from here on in the log [`log_panics_to`] names,

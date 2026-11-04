@@ -13,6 +13,7 @@ use crate::failure::Failure;
 #[derive(Parser, Debug)]
 #[command(
     name = "dsync",
+    version = dsync_version::VERSION,
     about = "Bidirectional file sync between two replicas. See SPEC.md.",
     arg_required_else_help = true
 )]

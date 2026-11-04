@@ -336,6 +336,9 @@ wire.ReplyResult _neutral(wire.CoreCommand command) => switch (command) {
   wire.CoreCommandReadDiagnostics() => const wire.ReplyResultDiagnostics(
     text: 'dsync 0.1.0 on linux x86_64\n\nNothing logged yet.\n',
   ),
+  wire.CoreCommandReadVersion() => const wire.ReplyResultVersion(
+    text: '0.1.0 (2d2ca38)',
+  ),
   _ => throw StateError('script a reply for $command'),
 };
 

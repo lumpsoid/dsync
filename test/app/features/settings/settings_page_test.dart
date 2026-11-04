@@ -77,6 +77,28 @@ void main() {
     expect(find.textContaining('10.8.0.3'), findsOneWidget);
   });
 
+  testWidgets('shows this build\'s version, or unknown until it is read', (
+    tester,
+  ) async {
+    controller.state.recordSettings(at('0.0.0.0'));
+    await pumpPage(tester);
+    final version = find.byKey(const Key('settings-version'));
+    await tester.scrollUntilVisible(version, 200);
+
+    expect(
+      find.descendant(of: version, matching: find.text('Unknown')),
+      findsOneWidget,
+    );
+
+    controller.state.recordVersion('0.1.0 (2d2ca38)');
+    await tester.pump();
+
+    expect(
+      find.descendant(of: version, matching: find.text('0.1.0 (2d2ca38)')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('Copy diagnostics puts the core\'s text on the clipboard', (
     tester,
   ) async {

@@ -397,6 +397,21 @@ async fn the_heads_errors_are_noted_and_read_back_under_the_build() {
     );
 }
 
+#[tokio::test]
+async fn the_version_is_the_build_the_diagnostics_name() {
+    let mut head = Head::new("studio").await;
+    let (_, read) = head.ok(CoreCommand::ReadVersion).await;
+    let ReplyResult::Version { text: version } = read else {
+        panic!("expected the version");
+    };
+    assert!(!version.is_empty());
+    let (_, read) = head.ok(CoreCommand::ReadDiagnostics).await;
+    let ReplyResult::Diagnostics { text } = read else {
+        panic!("expected the diagnostics");
+    };
+    assert!(text.starts_with(&format!("dsync {version} on ")), "{text}");
+}
+
 fn draft(head: &Head, peer: &str, local_leaf: &str) -> ProfileDraft {
     entries_draft(
         peer,

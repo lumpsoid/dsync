@@ -242,6 +242,9 @@ impl Hub {
             CoreCommand::CheckFolder { path, kind } => self.check_folder(path, kind.into()).await,
             CoreCommand::NoteDiagnostic { message } => self.note_diagnostic(message).await,
             CoreCommand::ReadDiagnostics => self.read_diagnostics().await,
+            CoreCommand::ReadVersion => Ok(ReplyResult::Version {
+                text: dsync_version::VERSION.to_owned(),
+            }),
         }
     }
 }

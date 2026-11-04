@@ -54,6 +54,7 @@ final class SettingsFailed extends SettingsOutcome {
 class SettingsViewState extends ChangeNotifier {
   SettingsOutcome _outcome = const SettingsIdle();
   AppSettings? _settings;
+  String? _version;
 
   /// Where the last read or write stands.
   SettingsOutcome get outcome => _outcome;
@@ -61,6 +62,9 @@ class SettingsViewState extends ChangeNotifier {
   /// The stored settings, or `null` until the store has been read
   /// successfully.
   AppSettings? get settings => _settings;
+
+  /// This build's version, or `null` until the core has said it.
+  String? get version => _version;
 
   /// Moves the outcome. `SettingsController` only.
   void recordOutcome(SettingsOutcome outcome) {
@@ -72,6 +76,12 @@ class SettingsViewState extends ChangeNotifier {
   /// only.
   void recordSettings(AppSettings settings) {
     _settings = settings;
+    notifyListeners();
+  }
+
+  /// Records this build's version. `SettingsController` only.
+  void recordVersion(String version) {
+    _version = version;
     notifyListeners();
   }
 }

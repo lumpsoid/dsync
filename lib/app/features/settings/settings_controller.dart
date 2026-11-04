@@ -41,12 +41,21 @@ class SettingsController {
   /// the store's own line: the defaults must not be displayed as though the
   /// file had said them (see `AppSettingsStore`'s absent-vs-damaged rule),
   /// and the remedy — remove the file, or restore it — is in that line.
+  ///
+  /// Also reads this build's version. A core that cannot answer leaves it
+  /// `null`, which the page shows as unknown: the settings are this page's
+  /// to report on, and a version is no reason to replace their outcome.
   Future<void> load() async {
     try {
       state.recordSettings(await (await app.settings).load());
       state.recordOutcome(const SettingsIdle());
     } on AppSettingsStoreException catch (e) {
       state.recordOutcome(SettingsFailed(e.toString()));
+    }
+    try {
+      state.recordVersion(await app.core.readVersion());
+    } on CoreFailure {
+      // Left unknown; see above.
     }
   }
 

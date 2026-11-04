@@ -16,6 +16,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 dsync-core.workspace = true
 dsync-domain.workspace = true
+dsync-version.workspace = true
 gethostname = "1"
 qrcode = { version = "0.14", default-features = false }
 serde_json.workspace = true

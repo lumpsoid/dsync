@@ -16,7 +16,8 @@ import 'settings_view_state.dart';
 /// **Sync**, holding the size a run's review warns above, and
 /// **Deletion safety**, holding when a run stops to ask before deleting —
 /// its thresholds only: the guard has no off switch here — and
-/// **Diagnostics**, which copies what a user attaches to a bug report.
+/// **Diagnostics**, which shows this build's version and copies what a user
+/// attaches to a bug report.
 ///
 /// Widgets only, per the page role in `app_scope.dart`: the stored settings
 /// arrive as one value the controller has already parsed, and the only
@@ -247,6 +248,12 @@ class _SettingsBody extends StatelessWidget {
             ),
           ),
           const _SectionHeader('Diagnostics'),
+          ListTile(
+            key: const Key('settings-version'),
+            leading: const Icon(Icons.info_outline),
+            title: const Text('Version'),
+            subtitle: Text(state.version ?? 'Unknown'),
+          ),
           SelectionContainer.disabled(
             child: ListTile(
               key: const Key('settings-copy-diagnostics'),

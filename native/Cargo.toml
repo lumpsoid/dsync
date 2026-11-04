@@ -9,10 +9,10 @@
 
 [workspace]
 resolver = "3"
-members = ["domain", "core", "cli", "hub", "scan_probe"]
+members = ["domain", "core", "cli", "hub", "version", "scan_probe"]
 # `scan_probe` is a developer tool, not shipped: `--workspace` builds it,
 # a plain `cargo build` here does not.
-default-members = ["domain", "core", "cli", "hub"]
+default-members = ["domain", "core", "cli", "hub", "version"]
 
 # Debug info is most of what a dev build writes and links: ours keeps
 # file:line for backtraces, dependencies carry none.
@@ -26,6 +26,7 @@ debug = false
 [workspace.dependencies]
 dsync-domain = { path = "domain" }
 dsync-core = { path = "core" }
+dsync-version = { path = "version" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", default-features = false }
 tokio-util = { version = "0.7", default-features = false }

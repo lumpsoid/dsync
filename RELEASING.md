@@ -86,7 +86,10 @@ key.
    is the gate before every release.
 3. **Bump the version** in `pubspec.yaml`: `version: X.Y.Z+N`. `N` is Android's
    versionCode and must be higher than every published release's, or the
-   update will not install. Commit it (`chore: version X.Y.Z`).
+   update will not install. Commit it (`chore: version X.Y.Z`). It is the one
+   version source: `dsync --version` and the app's Settings page read `X.Y.Z`
+   from it at build time (`native/version/build.rs`), followed by the commit
+   built from; the crates' own `Cargo.toml` versions are never shown.
 4. **Build and verify** on each host (Linux, then macOS and Windows for their
    desktop apps and CLIs):
 

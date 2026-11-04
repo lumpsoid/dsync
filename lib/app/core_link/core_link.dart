@@ -519,4 +519,14 @@ final class CoreLink {
       _ => _unexpected(result),
     },
   );
+
+  /// This build's version as `dsync --version` prints it: pubspec.yaml's,
+  /// then the commit it was built from when the build knew it.
+  Future<String> readVersion() => _ask(
+    const wire.CoreCommandReadVersion(),
+    (result) => switch (result) {
+      wire.ReplyResultVersion(:final text) => text,
+      _ => _unexpected(result),
+    },
+  );
 }
