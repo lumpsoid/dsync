@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dsync_core::{ActionFailure, LockError, ReplicaError, RunError, RunEvent};
+use dsync_core::{ActionFailure, LastRun, LockError, ReplicaError, RunError, RunEvent};
 use dsync_domain::{
     Action, Locality, MissingReplicaRoot, Plan, ReplicaInfo, ReplicaOp, ReplicaRoot, RunSummary,
     ScanTally, Side, SkippedPath, SkippedReason, Status, Unchanged, Verbosity,
@@ -69,12 +69,12 @@ fn info(last_commit: Option<std::time::SystemTime>) -> ReplicaInfo {
     }
 }
 
-fn replicas(a: Option<u64>, b: Option<u64>, last_run_unfinished: bool) -> RunEvent {
+fn replicas(a: Option<u64>, b: Option<u64>, last_run: LastRun) -> RunEvent {
     let at = |ago: Option<u64>| ago.map(|seconds| clock().now - Duration::from_secs(seconds));
     RunEvent::Replicas {
         a: info(at(a)),
         b: info(at(b)),
-        last_run_unfinished,
+        last_run,
     }
 }
 
@@ -112,7 +112,7 @@ fn quiet_prints_only_the_summary_line() {
     let text = out(
         Verbosity::Quiet,
         &[
-            replicas(None, None, false),
+            replicas(None, None, LastRun::Settled),
             scan_tally(),
             skipped(Side::A, SkippedReason::Symlink, "broken link"),
             RunEvent::Conflict(conflict("c", Some(created(1)), Some(created(2)))),
@@ -328,7 +328,10 @@ fn the_size_warning_follows_the_plan_verdict() {
 
 #[test]
 fn the_header_of_a_synced_profile_names_it_both_sides_and_when() {
-    let text = out(Verbosity::Normal, &[replicas(Some(120), Some(120), false)]);
+    let text = out(
+        Verbosity::Normal,
+        &[replicas(Some(120), Some(120), LastRun::Settled)],
+    );
     assert_eq!(
         text,
         "profile work\nA  /home/me/notes  local\nB  box:notes  ssh\n  last synced 2023-11-14 \
@@ -336,7 +339,7 @@ fn the_header_of_a_synced_profile_names_it_both_sides_and_when() {
     );
     let apart = out(
         Verbosity::Normal,
-        &[replicas(Some(7_200), Some(3 * 86_400), false)],
+        &[replicas(Some(7_200), Some(3 * 86_400), LastRun::Settled)],
     );
     assert!(
         apart.contains(
@@ -352,7 +355,12 @@ fn a_unix_side_is_labelled_as_a_socket() {
         b: fixtures::replica("unix:///run/a.sock:/srv/x", Locality::Remote),
         ..fixtures::view()
     };
-    let text = rendered(&view, Verbosity::Normal, &[replicas(None, None, false)]).0;
+    let text = rendered(
+        &view,
+        Verbosity::Normal,
+        &[replicas(None, None, LastRun::Settled)],
+    )
+    .0;
     assert!(
         text.contains("B  unix:///run/a.sock:/srv/x  socket\n"),
         "{text}"
@@ -361,10 +369,13 @@ fn a_unix_side_is_labelled_as_a_socket() {
 
 #[test]
 fn a_first_sync_says_so_and_warns_that_nothing_is_deleted() {
-    let text = out(Verbosity::Normal, &[replicas(None, None, false)]);
+    let text = out(Verbosity::Normal, &[replicas(None, None, LastRun::Settled)]);
     assert!(text.contains("  first sync of this pair\n"), "{text}");
     assert!(text.contains("! First sync: with no archive"), "{text}");
-    let one_sided = out(Verbosity::Normal, &[replicas(Some(60), None, false)]);
+    let one_sided = out(
+        Verbosity::Normal,
+        &[replicas(Some(60), None, LastRun::Settled)],
+    );
     assert!(
         one_sided.contains("first sync of this pair (B has no archive yet"),
         "{one_sided}"
@@ -374,13 +385,33 @@ fn a_first_sync_says_so_and_warns_that_nothing_is_deleted() {
 
 #[test]
 fn an_unfinished_last_run_is_noted_and_a_finished_one_is_not() {
-    let unfinished = out(Verbosity::Normal, &[replicas(Some(1), Some(1), true)]);
+    let unfinished = out(
+        Verbosity::Normal,
+        &[replicas(Some(1), Some(1), LastRun::Died)],
+    );
     assert!(
         unfinished.contains("! The last run of this profile did not finish."),
         "{unfinished}"
     );
-    let finished = out(Verbosity::Normal, &[replicas(Some(1), Some(1), false)]);
+    let finished = out(
+        Verbosity::Normal,
+        &[replicas(Some(1), Some(1), LastRun::Settled)],
+    );
     assert!(!finished.contains("did not finish"), "{finished}");
+    assert!(!finished.contains("held back"), "{finished}");
+}
+
+#[test]
+fn a_finished_run_with_a_write_still_held_says_so_not_that_it_died() {
+    let held = out(
+        Verbosity::Normal,
+        &[replicas(Some(1), Some(1), LastRun::WriteHeld)],
+    );
+    assert!(
+        held.contains("! A write an interrupted run of this profile was making is still held back"),
+        "{held}"
+    );
+    assert!(!held.contains("did not finish"), "{held}");
 }
 
 #[test]
@@ -389,7 +420,12 @@ fn an_ad_hoc_run_shows_its_derived_id_instead_of_a_profile_line() {
         name: RunName::AdHoc,
         ..fixtures::view()
     };
-    let text = rendered(&view, Verbosity::Normal, &[replicas(None, None, false)]).0;
+    let text = rendered(
+        &view,
+        Verbosity::Normal,
+        &[replicas(None, None, LastRun::Settled)],
+    )
+    .0;
     assert!(!text.contains("profile "), "{text}");
     assert!(
         text.contains(&format!("  {PROFILE_ID} · first sync of this pair")),
@@ -556,7 +592,7 @@ fn the_scan_tally_shows_only_when_verbose() {
 #[test]
 fn verbose_shows_everything_normal_does() {
     let events = [
-        replicas(None, None, false),
+        replicas(None, None, LastRun::Settled),
         plan_event(vec![copy("f", Side::A)], false),
         summary(),
     ];
@@ -618,7 +654,7 @@ fn a_dialled_peer_s_certificate_notes_sit_under_its_side() {
     let mut renderer =
         HumanRenderer::new(&mut out, &mut err, Verbosity::Normal, view.clone(), clock());
     renderer.peer_contacts(&[peer]);
-    renderer.render(&replicas(Some(120), Some(120), false));
+    renderer.render(&replicas(Some(120), Some(120), LastRun::Settled));
     let text = String::from_utf8(out).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[2], "B  box:notes  ssh", "{text}");
@@ -635,7 +671,10 @@ fn a_dialled_peer_s_certificate_notes_sit_under_its_side() {
 }
 
 fn out_of_header() -> String {
-    out(Verbosity::Normal, &[replicas(Some(120), Some(120), false)])
+    out(
+        Verbosity::Normal,
+        &[replicas(Some(120), Some(120), LastRun::Settled)],
+    )
 }
 
 #[test]

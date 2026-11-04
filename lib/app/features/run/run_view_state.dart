@@ -406,6 +406,7 @@ final class SyncRunConflictRow {
     required this.remote,
     required this.offered,
     required this.offer,
+    required this.heldBack,
     this.changed,
   });
 
@@ -414,6 +415,12 @@ final class SyncRunConflictRow {
   final SyncRunConflictSide local;
   final SyncRunConflictSide remote;
   final List<ConflictChoice> offered;
+
+  /// Why the core held this path back rather than both sides having
+  /// changed it, in words ("the last run died while writing it on the
+  /// remote; check that copy before keeping it"); `null` for an ordinary
+  /// conflict.
+  final String? heldBack;
 
   /// Whether the two files can be compared; fixed for the plan.
   final CompareOffer offer;

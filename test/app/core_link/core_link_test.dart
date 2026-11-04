@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dsync/app/core_link/core_link.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/diff_hunk.dart';
@@ -120,7 +121,7 @@ void main() {
               peerName: 'desktop',
               jobs: 3,
               ignore: ['**/.git'],
-              lastRunUnfinished: true,
+              lastRun: wire.LastRunView.died,
               entries: [
                 wire.EntryView(
                   entryId: 'e1',
@@ -149,7 +150,7 @@ void main() {
     final profile = (await link.listProfiles()).single as HeadProfile;
 
     expect(profile.name, 'weekly');
-    expect(profile.lastRunUnfinished, isTrue);
+    expect(profile.lastRun, LastRun.died);
     expect(
       [
         for (final entry in profile.entries)

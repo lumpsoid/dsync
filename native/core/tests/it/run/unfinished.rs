@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
-use dsync_core::{DryRunDecider, Run, RunEvent, Stopped};
+use dsync_core::{DryRunDecider, LastRun, Run, RunEvent, Stopped};
 use dsync_domain::{Action, ConflictCause, Side, Tuning};
 
 use crate::run::flow::wait_for;
 use crate::run::support::{
-    Answer, Call, Fault, Finished, Probe, Site, path, run, sync, with_deadline,
+    Answer, Call, Fault, Finished, Probe, Site, path, refused, run, sync, with_deadline,
 };
 
 const WHOLE: &str = "the whole file, as both sides synced it";
@@ -86,6 +86,13 @@ async fn a_file_cut_short_where_a_dead_apply_was_writing_is_a_conflict_not_copie
     assert!(site.marker().exists(), "f is still held");
 }
 
+fn last_run(finished: &Finished) -> LastRun {
+    match finished.events.first() {
+        Some(RunEvent::Replicas { last_run, .. }) => *last_run,
+        other => panic!("{other:?}"),
+    }
+}
+
 fn held_f() -> [(String, ConflictCause); 1] {
     [("f".to_owned(), ConflictCause::UnfinishedWrite(Side::B))]
 }
@@ -93,8 +100,11 @@ fn held_f() -> [(String, ConflictCause); 1] {
 #[tokio::test]
 async fn a_conflict_left_open_by_a_finished_run_is_held_back_again_until_settled() {
     let site = died_writing_f_on_b().await;
-    for _ in 0..2 {
+    // The first run after the death says it died; the one after, that it
+    // finished with f still held.
+    for said in [LastRun::Died, LastRun::WriteHeld] {
         let next = sync(&site).await;
+        assert_eq!(last_run(&next), said);
         assert_eq!(unfinished_conflicts(&next), held_f());
         assert_eq!(site.get(Side::A, "f").unwrap(), WHOLE.as_bytes());
         assert!(site.marker().exists());
@@ -121,8 +131,46 @@ async fn a_conflict_left_open_by_a_finished_run_is_held_back_again_until_settled
     assert_eq!(site.get(Side::B, "f").unwrap(), WHOLE.as_bytes());
 
     let after = sync(&site).await;
+    assert_eq!(last_run(&after), LastRun::Settled);
     assert!(unfinished_conflicts(&after).is_empty());
     assert_eq!(after.exit_code(), 0);
+}
+
+#[tokio::test]
+async fn settling_the_held_path_releases_it_though_another_action_failed() {
+    let site = died_writing_f_on_b().await;
+    site.put(Side::A, "g", "new on A");
+    let (b, _log_b) = Probe::with_hook(
+        site.replica(Side::B),
+        Arc::new(|call: &Call| {
+            matches!(call, Call::Write(name) if name == "g").then(|| Fault::Fail(refused()))
+        }),
+    );
+    // Keep A's `f`, and copy `g`, whose write B refuses.
+    let mut keep_a = Answer {
+        actions: vec![
+            Action::Copy {
+                path: path("f"),
+                from: Side::A,
+                bytes: WHOLE.len() as u64,
+            },
+            Action::Copy {
+                path: path("g"),
+                from: Side::A,
+                bytes: 8,
+            },
+        ],
+        asked: false,
+    };
+
+    let settling = run(&site, site.replica(Side::A), b, &mut keep_a).await;
+
+    let mut results = settling.results();
+    results.sort();
+    assert_eq!(results, [("f".to_owned(), true), ("g".to_owned(), false)]);
+    assert!(!site.marker().exists(), "f applied, so nothing is held");
+    let after = sync(&site).await;
+    assert!(unfinished_conflicts(&after).is_empty());
 }
 
 #[tokio::test]
@@ -140,6 +188,7 @@ async fn a_dry_run_holds_the_path_back_and_leaves_it_held_for_the_real_run() {
     assert!(site.marker().exists(), "a dry run settles nothing");
 
     let real = sync(&site).await;
+    assert_eq!(last_run(&real), LastRun::WriteHeld, "the dry run finished");
     assert_eq!(unfinished_conflicts(&real), held_f());
     assert!(real.results().is_empty());
     assert_eq!(site.get(Side::A, "f").unwrap(), WHOLE.as_bytes());

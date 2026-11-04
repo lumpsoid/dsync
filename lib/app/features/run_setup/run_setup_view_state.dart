@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../../core_link/models/last_run.dart';
 import '../../core_link/models/root_kind.dart';
 import '../../run_request.dart';
 
@@ -37,7 +38,7 @@ class RunSetupPrefill {
   const RunSetupPrefill({
     required this.profileName,
     required this.remoteRoots,
-    required this.lastRunUnfinished,
+    required this.lastRun,
   });
 
   final String profileName;
@@ -46,11 +47,13 @@ class RunSetupPrefill {
   /// `RunSetupViewState.entries` — one text field's initial value each.
   final List<String> remoteRoots;
 
-  /// Whether the profile's run marker (SPEC §7.6) was still there when the
-  /// page opened: its last run died or aborted mid-apply, and the run this
-  /// page starts is what sorts out what it left (task 99f404). Here rather
-  /// than on the view state proper because only a saved profile has one.
-  final bool lastRunUnfinished;
+  /// What the profile's run markers (SPEC §7.6) said when the page opened:
+  /// its last run died or aborted mid-apply, and the run this page starts
+  /// is what sorts out what it left (task 99f404), or it finished with a
+  /// dead run's write still held back as a conflict (task 994c91). Here
+  /// rather than on the view state proper because only a saved profile has
+  /// one.
+  final LastRun lastRun;
 }
 
 /// The peer the page was opened for, as the page shows it. Sealed, for the

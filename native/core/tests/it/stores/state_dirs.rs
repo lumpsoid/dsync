@@ -35,7 +35,9 @@ fn every_store_writes_under_the_dsync_leaf_only() {
 
     let _lock = ReplicaLock::acquire(&state.lock(&profile(), Side::A)).unwrap();
     RunMarker::new(state.run_marker(&profile()))
-        .create(&dsync_domain::UnfinishedApply::default())
+        .create(&dsync_core::MarkerRecord::Applying(
+            dsync_domain::UnfinishedApply::default(),
+        ))
         .unwrap();
     let header = ArchiveHeader {
         entry_id: profile(),

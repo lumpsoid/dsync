@@ -62,7 +62,8 @@ use crate::run::pair::Pair;
 /// What an apply did.
 #[derive(Debug, Default)]
 pub(crate) struct Applied {
-    pub(crate) applied: usize,
+    /// The actions that applied, each committed on both sides.
+    pub(crate) applied: Vec<Action>,
     pub(crate) failed: usize,
     /// The first failure that ended the run, if one did; a side out of
     /// space with actions left unattempted is one, unless another came.
@@ -419,7 +420,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 }
             }
             if batch.is_empty() {
-                let left = total - (applied.applied + applied.failed);
+                let left = total - (applied.applied.len() + applied.failed);
                 if let Some(&side) = self.full.get()
                     && left > 0
                 {
@@ -441,7 +442,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                     Err(own) => Err(own),
                 };
                 match &outcome {
-                    Ok(()) => applied.applied += 1,
+                    Ok(()) => applied.applied.push(action.clone()),
                     Err(failure) => {
                         applied.failed += 1;
                         if let Some(fatal) = failure.ends_run() {
@@ -453,7 +454,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 self.events.emit(RunEvent::Result { action, outcome }).await;
                 self.events
                     .emit(RunEvent::Progress {
-                        completed: applied.applied + applied.failed,
+                        completed: applied.applied.len() + applied.failed,
                         total,
                     })
                     .await;

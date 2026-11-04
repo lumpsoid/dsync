@@ -10,6 +10,7 @@ import 'package:dsync/app/features/devices/devices_scope.dart';
 import 'package:dsync/app/focus_ring.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -84,7 +85,7 @@ void main() {
       ),
     ],
     breakage: null,
-    lastRunUnfinished: false,
+    lastRun: LastRun.settled,
   );
 
   void ready({String? certificateWarning}) => app.state.recordBootstrap(

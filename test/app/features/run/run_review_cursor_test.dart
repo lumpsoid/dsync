@@ -277,6 +277,7 @@ void main() {
         remote: SyncRunConflictSide(SyncRunSideStatus.modified),
         offered: [ConflictChoice.unresolved, ConflictChoice.keepB],
         offer: OfferNotComparable(),
+        heldBack: null,
       );
       expect(row.offers(ConflictChoice.keepB), isTrue);
       expect(row.offers(ConflictChoice.keepA), isFalse);

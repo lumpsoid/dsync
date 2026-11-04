@@ -129,7 +129,7 @@ pub use run::{
     Peek, Recall, RowRecall, Run, RunError, RunEvent, RunReport, RunStop, Stopped,
 };
 pub use run_history::RunHistory;
-pub use run_marker::RunMarker;
+pub use run_marker::{LastRun, MarkerRecord, RunMarker};
 pub use scan_probe::ScanProbe;
 pub use scan_session::ScanSession;
 pub use scanner::{HASH_READ_BUFFER_BYTES, Scanner, UnreadableRoot};

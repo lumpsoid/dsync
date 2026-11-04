@@ -7,11 +7,11 @@
 //! so the next run's reconcile can hold back a change found where a dead
 //! write may have left damage. A run whose apply returns, failed actions
 //! or not, rewrites it to the writes still held - not yet settled by a
-//! later run - and deletes it once there are none. A marker still there
-//! means a run died or aborted mid-apply and something it wrote is still
-//! unsettled. A file of
-//! its own rather than something read out of the archive log, so "did the
-//! last run finish?" costs one stat per profile, not a replay.
+//! later run - and deletes it once there are none. Which of the two wrote
+//! it ([`MarkerRecord`]) is what tells a run that died from one that
+//! finished with an earlier dead run's write still held. A file of its own
+//! rather than something read out of the archive log, so "did the last run
+//! finish?" costs one small read per profile, not a replay.
 
 use std::fs;
 use std::io;
@@ -20,6 +20,47 @@ use std::path::{Path, PathBuf};
 use dsync_domain::UnfinishedApply;
 
 use crate::atomic_write::write_atomically;
+
+/// What a run marker holds.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum MarkerRecord {
+    /// Written before an apply starts: its own writes beside every earlier
+    /// one still held. Still there, that apply died.
+    Applying(UnfinishedApply),
+    /// Written once an apply returned: the writes an earlier dead apply
+    /// made that no run has settled yet.
+    Held(UnfinishedApply),
+}
+
+impl MarkerRecord {
+    /// Every write the marker holds back, whichever run wrote it.
+    pub fn into_writes(self) -> UnfinishedApply {
+        match self {
+            MarkerRecord::Applying(writes) | MarkerRecord::Held(writes) => writes,
+        }
+    }
+
+    pub fn last_run(&self) -> LastRun {
+        match self {
+            MarkerRecord::Applying(_) => LastRun::Died,
+            MarkerRecord::Held(_) => LastRun::WriteHeld,
+        }
+    }
+}
+
+/// What the last run of an entry left, as its marker says. Ordered by how
+/// much it asks of the user, so a profile's entries report the greatest.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum LastRun {
+    /// No marker: the last apply returned and holds nothing back.
+    #[default]
+    Settled,
+    /// The last run finished, but a write an earlier run died making is
+    /// still held back, as a conflict, until a run settles it.
+    WriteHeld,
+    /// The last run died mid-apply.
+    Died,
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RunMarker {
@@ -35,30 +76,36 @@ impl RunMarker {
         &self.path
     }
 
-    /// Whether a run started an apply and never finished it.
-    pub fn is_present(&self) -> io::Result<bool> {
-        self.path.try_exists()
+    /// What the last run left; an unreadable marker is an error.
+    pub fn last_run(&self) -> io::Result<LastRun> {
+        Ok(self
+            .read()?
+            .map_or(LastRun::Settled, |record| record.last_run()))
     }
 
-    /// What the unfinished apply was writing; `None` when the last apply
-    /// finished. A marker whose record does not parse - cut short as it
-    /// was created, which is before the apply wrote anything - still says
-    /// the run died, with no writes known.
-    pub fn read(&self) -> io::Result<Option<UnfinishedApply>> {
+    /// The marker's record; `None` when there is no marker. A record that
+    /// does not parse - cut short as it was created, which is before the
+    /// apply wrote anything - still says the run died, with no writes
+    /// known.
+    pub fn read(&self) -> io::Result<Option<MarkerRecord>> {
         match fs::read(&self.path) {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).unwrap_or_default())),
+            Ok(bytes) => {
+                Ok(Some(serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                    MarkerRecord::Applying(UnfinishedApply::default())
+                })))
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
     }
 
-    /// Creates the marker holding `writes`, or replaces the one there,
+    /// Creates the marker holding `record`, or replaces the one there,
     /// durably and atomically: staged, fsynced and renamed, the directory
     /// fsynced. A kill mid-write leaves the marker as it was, never a
     /// record cut short that would forget the writes it held.
-    pub fn create(&self, writes: &UnfinishedApply) -> io::Result<()> {
-        let record = serde_json::to_vec(writes).map_err(io::Error::other)?;
-        write_atomically(&self.path, &record)?;
+    pub fn create(&self, record: &MarkerRecord) -> io::Result<()> {
+        let bytes = serde_json::to_vec(record).map_err(io::Error::other)?;
+        write_atomically(&self.path, &bytes)?;
         Ok(())
     }
 

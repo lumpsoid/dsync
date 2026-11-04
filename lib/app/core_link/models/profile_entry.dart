@@ -1,4 +1,5 @@
 import 'entry_view.dart';
+import 'last_run.dart';
 import 'other_entry.dart';
 
 /// One saved profile, by the shape the core found it in.
@@ -17,7 +18,7 @@ final class HeadProfile extends ProfileEntry {
     required this.peerName,
     required this.jobs,
     required this.ignorePatterns,
-    required this.lastRunUnfinished,
+    required this.lastRun,
     required this.entries,
   }) : super(name);
 
@@ -28,8 +29,7 @@ final class HeadProfile extends ProfileEntry {
   final int? jobs;
   final List<String> ignorePatterns;
 
-  /// SPEC §7.6's run marker is present for any of the entries.
-  final bool lastRunUnfinished;
+  final LastRun lastRun;
 
   /// Never empty: the core refuses a profile without entries.
   final List<EntryView> entries;

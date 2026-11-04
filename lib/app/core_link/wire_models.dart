@@ -6,6 +6,7 @@ import 'models/action_row_update.dart';
 import 'models/archive_info.dart';
 import 'models/compare_offer.dart';
 import 'models/compared_side.dart';
+import 'models/conflict_cause.dart';
 import 'models/conflict_change.dart';
 import 'models/conflict_choice.dart';
 import 'models/conflict_info.dart';
@@ -23,6 +24,7 @@ import 'models/file_status.dart';
 import 'models/filter_folder_summary.dart';
 import 'models/filter_preview.dart';
 import 'models/filter_row.dart';
+import 'models/last_run.dart';
 import 'models/mass_delete_side.dart';
 import 'models/mass_overwrite_side.dart';
 import 'models/other_entry.dart';
@@ -181,7 +183,11 @@ ProfileEntry profile(wire.ProfileEntry entry) => switch (entry) {
     peerName: value.peerName,
     jobs: value.jobs,
     ignorePatterns: value.ignore,
-    lastRunUnfinished: value.lastRunUnfinished,
+    lastRun: switch (value.lastRun) {
+      wire.LastRunView.settled => LastRun.settled,
+      wire.LastRunView.writeHeld => LastRun.writeHeld,
+      wire.LastRunView.died => LastRun.died,
+    },
     entries: [
       for (final entry in value.entries)
         EntryView(
@@ -531,6 +537,13 @@ ConflictInfo _conflict(wire.ConflictView view) => ConflictInfo(
   b: switch (view.b) {
     final status? => _status(status),
     null => null,
+  },
+  cause: switch (view.cause) {
+    wire.ConflictCauseViewChanges() => const ChangedOnBoth(),
+    wire.ConflictCauseViewUnfinishedWrite(:final value) => UnfinishedWrite(
+      side(value),
+    ),
+    _ => throw StateError('unknown conflict cause: ${view.cause}'),
   },
 );
 

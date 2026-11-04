@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/features/devices/devices_controller.dart';
 import 'package:dsync/app/paired_device_row.dart';
@@ -128,7 +129,7 @@ void main() {
         ),
       ],
       breakage: null,
-      lastRunUnfinished: false,
+      lastRun: LastRun.settled,
     );
 
     test('counts the saved runs that name each device', () {

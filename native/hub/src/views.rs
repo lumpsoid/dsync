@@ -5,13 +5,15 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dsync_core::{ActionFailure, Certificate, DeviceIdentity, PairedDevice, StoredArchive};
+use dsync_core::{
+    ActionFailure, Certificate, DeviceIdentity, LastRun, PairedDevice, StoredArchive,
+};
 use dsync_domain::{
-    Action, Block, CertificateExpiry, CertificateOwner, Comparison, Conflict, EntryKind,
-    FilterFolderRow, FilterPreviewFolder, FilterPreviewReport, Hunk, Line, Offer, PeekLimits, Plan,
-    Proposal, ReplicaInfo, ReplicaRoot, RootKind, RunSummary, ScanTally, Side, SideDeletes,
-    SideOverwrites, Sided, SkippedAt, SkippedPath, SkippedReason, Span, Status, TextDiff,
-    Unchanged,
+    Action, Block, CertificateExpiry, CertificateOwner, Comparison, Conflict, ConflictCause,
+    EntryKind, FilterFolderRow, FilterPreviewFolder, FilterPreviewReport, Hunk, Line, Offer,
+    PeekLimits, Plan, Proposal, ReplicaInfo, ReplicaRoot, RootKind, RunSummary, ScanTally, Side,
+    SideDeletes, SideOverwrites, Sided, SkippedAt, SkippedPath, SkippedReason, Span, Status,
+    TextDiff, Unchanged,
 };
 use rinf::SignalPiece;
 use serde::{Deserialize, Serialize};
@@ -217,9 +219,30 @@ pub struct ProfileView {
     pub peer_name: Option<String>,
     pub jobs: Option<u32>,
     pub ignore: Vec<String>,
-    /// SPEC §7.6's run marker is present for any of the entries.
-    pub last_run_unfinished: bool,
+    /// What SPEC §7.6's run markers say, the most pressing of any entry.
+    pub last_run: LastRunView,
     pub entries: Vec<EntryView>,
+}
+
+/// [`LastRun`], for the head.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, SignalPiece)]
+pub enum LastRunView {
+    Settled,
+    /// The last run finished, but a write an earlier run died making is
+    /// still held back as a conflict.
+    WriteHeld,
+    /// The last run died mid-apply.
+    Died,
+}
+
+impl From<LastRun> for LastRunView {
+    fn from(last_run: LastRun) -> LastRunView {
+        match last_run {
+            LastRun::Settled => LastRunView::Settled,
+            LastRun::WriteHeld => LastRunView::WriteHeld,
+            LastRun::Died => LastRunView::Died,
+        }
+    }
 }
 
 /// One entry of a [`ProfileView`]: a root on this device and one on the
@@ -495,6 +518,7 @@ pub struct ConflictView {
     pub path: String,
     pub a: Option<StatusView>,
     pub b: Option<StatusView>,
+    pub cause: ConflictCauseView,
 }
 
 impl From<&Conflict> for ConflictView {
@@ -503,6 +527,26 @@ impl From<&Conflict> for ConflictView {
             path: conflict.path.to_string(),
             a: conflict.a.as_ref().map(StatusView::from),
             b: conflict.b.as_ref().map(StatusView::from),
+            cause: conflict.cause.into(),
+        }
+    }
+}
+
+/// [`ConflictCause`]: why the path is a conflict.
+#[derive(Clone, Copy, Serialize, SignalPiece)]
+pub enum ConflictCauseView {
+    /// Both sides changed it.
+    Changes,
+    /// A run died while writing it on this side, so that copy may be
+    /// damaged (SPEC §7.6).
+    UnfinishedWrite(SideView),
+}
+
+impl From<ConflictCause> for ConflictCauseView {
+    fn from(cause: ConflictCause) -> ConflictCauseView {
+        match cause {
+            ConflictCause::Changes => ConflictCauseView::Changes,
+            ConflictCause::UnfinishedWrite(side) => ConflictCauseView::UnfinishedWrite(side.into()),
         }
     }
 }

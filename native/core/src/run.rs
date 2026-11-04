@@ -48,7 +48,7 @@ pub use recalled::{ActionChoice, ConflictChoice, Recall, RowRecall};
 
 use crate::listing::Listing;
 use crate::replica::Replica;
-use crate::run_marker::RunMarker;
+use crate::run_marker::{LastRun, MarkerRecord, RunMarker};
 use crate::state_dir::StateDir;
 use applier::Applier;
 use clock::RunClock;
@@ -315,17 +315,20 @@ impl Run {
         // read it.
         let info_a = ReplicaInfo::new(root_a, archive_a);
         let info_b = ReplicaInfo::new(root_b, archive_b);
-        let unfinished = marker_read(marker).await;
+        let found = marker_read(marker).await;
         self.events
             .emit(RunEvent::Replicas {
                 a: info_a.clone(),
                 b: info_b.clone(),
-                last_run_unfinished: unfinished.is_some(),
+                last_run: found
+                    .as_ref()
+                    .map_or(LastRun::Settled, MarkerRecord::last_run),
             })
             .await;
         let marked = Marked {
             path: marker,
-            unfinished: unfinished.unwrap_or_default(),
+            found: found.clone(),
+            unfinished: found.map(MarkerRecord::into_writes).unwrap_or_default(),
         };
         let summary = match self
             .locked(pair, [&info_a, &info_b], options, decider, marked)
@@ -442,10 +445,12 @@ impl Run {
         // The writes still held stay recorded beside this apply's: were it
         // to die too, a path held back now must still be held back next
         // time.
-        let recorded = marker.unfinished.adding(&kept);
+        let mut on_disk = marker.found;
         if !kept.is_empty() {
-            let writes = recorded.clone();
-            marker_io(marker.path, move |at| at.create(&writes)).await?;
+            let applying = MarkerRecord::Applying(marker.unfinished.adding(&kept));
+            let record = applying.clone();
+            marker_io(marker.path, move |at| at.create(&record)).await?;
+            on_disk = Some(applying);
         }
         let applier = Applier::new(
             pair,
@@ -470,24 +475,23 @@ impl Run {
         // earlier dead apply's writes this run did not settle. A run that
         // applied nothing - a dry run, a stopped review, conflicts left
         // open - settles only what is quiet, so a path it held back stays
-        // held for the next. Settling by action needs every one applied:
-        // the applier reports counts, not which failed or which a stop
-        // left unattempted.
-        let settled: &[Action] = if applied.applied == kept.len() {
-            &kept
-        } else {
-            &[]
-        };
+        // held for the next. An action settles its path only if it
+        // applied: one that failed left the damage where it was, and one a
+        // stop left unattempted never reached it.
         let held = marker
             .unfinished
-            .still_held(&plan, &unreadable_paths, settled);
+            .still_held(&plan, &unreadable_paths, &applied.applied);
         if held.is_empty() {
             marker_io(marker.path, RunMarker::delete).await?;
-        } else if held != recorded {
-            marker_io(marker.path, move |at| at.create(&held)).await?;
+        } else if on_disk.as_ref() != Some(&MarkerRecord::Held(held.clone())) {
+            // Rewritten even with the same writes when this run's own
+            // record, or a dead run's, is what is there: this run
+            // finished, and the marker must say so.
+            let record = MarkerRecord::Held(held);
+            marker_io(marker.path, move |at| at.create(&record)).await?;
         }
         // SPEC §8.2: a run that committed nothing does not compact.
-        if applied.applied > 0 {
+        if !applied.applied.is_empty() {
             for side in Side::BOTH {
                 pair.clock
                     .phase(RunPhase::Compact, pair.compact(side))
@@ -495,7 +499,13 @@ impl Run {
                     .map_err(RunError::replica(side, ReplicaOp::Compact))?;
             }
         }
-        let summary = RunSummary::of(&plan, &kept, applied.applied, applied.failed, unreadable);
+        let summary = RunSummary::of(
+            &plan,
+            &kept,
+            applied.applied.len(),
+            applied.failed,
+            unreadable,
+        );
         self.events.emit(RunEvent::Summary(summary)).await;
         Ok(summary)
     }
@@ -722,13 +732,14 @@ fn hold_back_unholdable(a: &mut Scanned, b: &mut Scanned) {
 /// The run marker's path, and what it said when the run read it.
 struct Marked<'a> {
     path: &'a Path,
+    found: Option<MarkerRecord>,
+    /// The writes `found` holds back.
     unfinished: UnfinishedApply,
 }
 
-/// What the run that left the marker was writing when its apply died;
-/// `None` when the last apply finished. A marker that cannot be read is
-/// reported absent: it is a warning, not a reason to stop.
-async fn marker_read(path: &Path) -> Option<UnfinishedApply> {
+/// The marker's record; `None` when there is none. A marker that cannot
+/// be read is reported absent: it is a warning, not a reason to stop.
+async fn marker_read(path: &Path) -> Option<MarkerRecord> {
     let marker = RunMarker::new(path.to_path_buf());
     tokio::task::spawn_blocking(move || marker.read().ok().flatten())
         .await

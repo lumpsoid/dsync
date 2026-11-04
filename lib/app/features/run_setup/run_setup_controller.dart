@@ -162,7 +162,7 @@ class RunSetupController {
               remoteRoots: [
                 for (final entry in profile.entries) entry.remoteRoot,
               ],
-              lastRunUnfinished: profile.lastRunUnfinished,
+              lastRun: profile.lastRun,
             ),
           );
       }

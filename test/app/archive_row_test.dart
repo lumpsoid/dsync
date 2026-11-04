@@ -1,5 +1,6 @@
 import 'package:dsync/app/archive_row.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
@@ -32,7 +33,7 @@ void main() {
       ),
     ],
     breakage: null,
-    lastRunUnfinished: false,
+    lastRun: LastRun.settled,
   );
 
   test('names the run and the device it syncs with', () {

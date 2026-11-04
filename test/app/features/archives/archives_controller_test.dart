@@ -1,5 +1,6 @@
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/archive_row.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/replica_side.dart';
 import 'package:dsync/app/features/archives/archives_controller.dart';
@@ -76,7 +77,7 @@ void main() {
     peerName: peerName,
     entries: [entry(id), for (final more in moreIds) entry(more)],
     breakage: null,
-    lastRunUnfinished: false,
+    lastRun: LastRun.settled,
   );
 
   List<ArchiveRow> rows() => (controller.state.listing as ArchivesReady).rows;

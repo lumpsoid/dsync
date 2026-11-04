@@ -3,6 +3,7 @@ import 'package:dsync/app/core_link/core_link.dart';
 
 import 'fake_hub.dart';
 
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/entry_view.dart';
 import 'package:dsync/app/core_link/models/paired_device_info.dart';
@@ -60,14 +61,14 @@ HeadProfile headProfile({
   List<EntryView>? entries,
   int? jobs,
   List<String> ignorePatterns = const [],
-  bool lastRunUnfinished = false,
+  LastRun lastRun = LastRun.settled,
 }) => HeadProfile(
   name: name,
   peerDeviceId: peerDeviceId,
   peerName: peerName,
   jobs: jobs,
   ignorePatterns: ignorePatterns,
-  lastRunUnfinished: lastRunUnfinished,
+  lastRun: lastRun,
   entries:
       entries ??
       [

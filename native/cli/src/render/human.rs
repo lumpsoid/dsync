@@ -8,8 +8,8 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use dsync_core::{
-    ConnectError, EntryFailure, EntryOutcome, EntryReport, LockError, PeerContact, ReconnectCause,
-    ReplicaError, RunError, RunEvent, SkipReason,
+    ConnectError, EntryFailure, EntryOutcome, EntryReport, LastRun, LockError, PeerContact,
+    ReconnectCause, ReplicaError, RunError, RunEvent, SkipReason,
 };
 use dsync_domain::{
     Action, Conflict, ConflictCause, ReplicaInfo, RunSummary, ScanTally, Side, SkippedPath,
@@ -162,11 +162,7 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
             RunEvent::Summary(summary) => self.summary(summary),
             RunEvent::Error(error) => self.error(error),
             _ if quiet => {}
-            RunEvent::Replicas {
-                a,
-                b,
-                last_run_unfinished,
-            } => self.replicas(a, b, *last_run_unfinished),
+            RunEvent::Replicas { a, b, last_run } => self.replicas(a, b, *last_run),
             RunEvent::ScanTally { a, b } => {
                 if self.verbosity == Verbosity::Verbose {
                     self.scan_tally(Side::A, a);
@@ -242,7 +238,7 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
         }
     }
 
-    fn replicas(&mut self, a: &ReplicaInfo, b: &ReplicaInfo, last_run_unfinished: bool) {
+    fn replicas(&mut self, a: &ReplicaInfo, b: &ReplicaInfo, last_run: LastRun) {
         let label = match &self.view.name {
             RunName::Profile(name) => {
                 let _ = writeln!(self.out, "profile {name}");
@@ -287,12 +283,22 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
                 let _ = writeln!(self.out, "  {label}{synced}");
             }
         }
-        if last_run_unfinished {
-            let _ = writeln!(
-                self.out,
-                "! The last run of this profile did not finish. This run picks up after it:\n  \
-                 files it never reached, or stopped mid-write, sync as usual."
-            );
+        match last_run {
+            LastRun::Settled => {}
+            LastRun::WriteHeld => {
+                let _ = writeln!(
+                    self.out,
+                    "! A write an interrupted run of this profile was making is still held back:\n  \
+                     its path stays a conflict until you keep one side's copy."
+                );
+            }
+            LastRun::Died => {
+                let _ = writeln!(
+                    self.out,
+                    "! The last run of this profile did not finish. This run picks up after it:\n  \
+                     files it never reached, or stopped mid-write, sync as usual."
+                );
+            }
         }
     }
 

@@ -3,13 +3,16 @@
 
 use std::time::SystemTime;
 
-use dsync_core::{DeviceIdentity, PairedDevice, PairedDeviceStore, ProfileStore, StateDir};
+use dsync_core::{
+    DeviceIdentity, MarkerRecord, PairedDevice, PairedDeviceStore, ProfileStore, RunMarker,
+    StateDir,
+};
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
     DIR_LEAF, EntryId, HostFacts, Location, Platform, ProfileName, ReplicaLocation,
 };
 use hub::signals::{CoreCommand, EntryDraft, ProfileDraft, ReplyResult};
-use hub::views::{DeviceView, EntryKindView, ProfileEntry, ProfileView, RootKindView};
+use hub::views::{DeviceView, EntryKindView, LastRunView, ProfileEntry, ProfileView, RootKindView};
 use hub::{Core, Outbox};
 
 use crate::support::{Head, one_entry, write};
@@ -456,7 +459,7 @@ async fn a_saved_profile_lists_with_its_peer_its_folder_check_and_its_id() {
     assert_eq!(notes.peer_name.as_deref(), Some("phone"));
     assert_eq!(notes.jobs, Some(2));
     assert_eq!(notes.ignore, ["**/.git"]);
-    assert!(!notes.last_run_unfinished);
+    assert_eq!(notes.last_run, LastRunView::Settled);
     let [only] = &notes.entries[..] else {
         panic!("expected one entry");
     };
@@ -697,14 +700,26 @@ async fn a_two_entry_profile_lists_every_entry_with_its_own_id_and_check() {
         "{:?}",
         list.local_root_refusal
     );
-    assert!(!listed.last_run_unfinished);
+    assert_eq!(listed.last_run, LastRunView::Settled);
 
-    // Only the second entry's run marker: the profile's last run did not
-    // finish.
-    let marker_id = EntryId::parse(&list.entry_id).unwrap_or_else(|error| panic!("{error}"));
-    write(&StateDir::new(head.state()).run_marker(&marker_id), "");
+    // The first entry's run finished with a write still held: the profile
+    // says so.
+    let state = StateDir::new(head.state());
+    let entry_id = |id: &str| EntryId::parse(id).unwrap_or_else(|error| panic!("{error}"));
+    RunMarker::new(state.run_marker(&entry_id(&todo.entry_id)))
+        .create(&MarkerRecord::Held(dsync_domain::UnfinishedApply::default()))
+        .unwrap_or_else(|error| panic!("{error}"));
     let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);
-    assert!(head_profile(&listed, "Two").last_run_unfinished);
+    assert_eq!(
+        head_profile(&listed, "Two").last_run,
+        LastRunView::WriteHeld
+    );
+
+    // The second entry's run died: that is what the profile says, the
+    // more pressing of the two.
+    write(&state.run_marker(&entry_id(&list.entry_id)), "");
+    let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);
+    assert_eq!(head_profile(&listed, "Two").last_run, LastRunView::Died);
 }
 
 #[tokio::test]

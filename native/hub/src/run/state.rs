@@ -2303,7 +2303,7 @@ mod tests {
         state.event(RunEvent::Replicas {
             a: replica(a),
             b: replica(b),
-            last_run_unfinished: false,
+            last_run: dsync_core::LastRun::Settled,
         });
         state
             .view()

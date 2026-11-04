@@ -165,6 +165,7 @@ void main() {
       remote: const SyncRunConflictSide(SyncRunSideStatus.modified),
       offered: const [ConflictChoice.keepA, ConflictChoice.keepB],
       offer: const OfferNotComparable(),
+      heldBack: null,
     );
 
     SyncRunResultRow result(String path, {String? error}) =>

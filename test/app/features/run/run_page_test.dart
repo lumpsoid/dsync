@@ -2194,6 +2194,36 @@ void main() {
       );
     });
 
+    testWidgets('a conflict a dead run left says why it is held back; an '
+        'ordinary one does not (task 994c91)', (tester) async {
+      await open(
+        tester,
+        runView(
+          phase: reviewing(apply: 0, leftOpen: 2),
+          conflicts: [
+            conflictRow(
+              'cut.txt',
+              a: modifiedFile(),
+              b: modifiedFile(),
+              cause: const wire.ConflictCauseViewUnfinishedWrite(
+                value: wire.SideView.b,
+              ),
+            ),
+            conflictRow('both.txt', a: modifiedFile(), b: modifiedFile()),
+          ],
+        ),
+      );
+
+      expect(
+        find.text(
+          'The last run died while writing it on the remote; check that '
+          'copy before keeping it.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('run-conflict-held-both.txt')), findsNothing);
+    });
+
     testWidgets('a conflict under review is marked', (tester) async {
       await open(
         tester,
@@ -2675,7 +2705,11 @@ void main() {
             wire.ConflictChoiceView.keepB,
           ],
           changed: wire.ConflictChangeView(
-            was: wire.ConflictView(path: 'theirs.txt', b: createdFile()),
+            was: wire.ConflictView(
+              path: 'theirs.txt',
+              b: createdFile(),
+              cause: const wire.ConflictCauseViewChanges(),
+            ),
           ),
         ),
       ],

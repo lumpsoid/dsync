@@ -6,6 +6,7 @@ import '../../app_controller.dart';
 import '../../app_settings_store.dart';
 import '../../core_link/models/action_choice.dart';
 import '../../core_link/models/action_result.dart';
+import '../../core_link/models/conflict_cause.dart';
 import '../../core_link/models/conflict_choice.dart';
 import '../../core_link/models/conflict_info.dart';
 import '../../core_link/models/core_failure.dart';
@@ -612,6 +613,7 @@ class SyncRunController {
                 remote: _conflictSide(row.conflict.b),
                 offered: row.offered,
                 offer: row.offer,
+                heldBack: _heldBack(row.conflict.cause),
                 changed: switch (row.changed) {
                   final change? => SyncRunRowChange(
                     was: switch (change.was) {
@@ -824,6 +826,18 @@ String _actionLabel(PlanAction action) => switch (action) {
 String _conflictWas(ConflictInfo conflict) =>
     'a conflict: ${_sideWas(conflict.a)} on this device, '
     '${_sideWas(conflict.b)} on the remote';
+
+/// Why [cause] holds a conflict back, in words; `null` for one both sides
+/// changed. The CLI's conflict line says the same.
+String? _heldBack(ConflictCause cause) => switch (cause) {
+  ChangedOnBoth() => null,
+  UnfinishedWrite(side: ReplicaSide.a) =>
+    'The last run died while writing it on this device; check that copy '
+        'before keeping it.',
+  UnfinishedWrite(side: ReplicaSide.b) =>
+    'The last run died while writing it on the remote; check that copy '
+        'before keeping it.',
+};
 
 String _sideWas(FileStatus? status) => switch (status) {
   null => 'no record',

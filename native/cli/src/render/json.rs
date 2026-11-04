@@ -93,17 +93,13 @@ impl<O: Write> JsonRenderer<O> {
 
     fn line(&self, event: &RunEvent) -> Value {
         match event {
-            RunEvent::Replicas {
-                a,
-                b,
-                last_run_unfinished,
-            } => json!({
+            RunEvent::Replicas { a, b, last_run } => json!({
                 "type": "replicas",
                 "entryId": self.view.entry_id.as_str(),
                 "a": self.replica(Side::A, a),
                 "b": self.replica(Side::B, b),
                 "firstSync": a.last_commit.is_none() || b.last_commit.is_none(),
-                "lastRunUnfinished": last_run_unfinished,
+                "lastRun": words::last_run(*last_run),
             }),
             RunEvent::ScanTally { a, b } => json!({
                 "type": "scanTally",

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core_link/models/last_run.dart';
 import '../../profile_breakage.dart';
 import '../../profile_row.dart';
 import '../../row_action.dart';
@@ -8,7 +9,8 @@ import '../../row_action.dart';
 /// A saved run's actions, in menu order — what the row's buttons offer
 /// ([RowAction] states the rule):
 ///
-/// - "Run again", while the last run did not finish, as the row's button;
+/// - "Run again", while the last run did not finish or a write a dead run
+///   was making is still held, as the row's button;
 /// - the breakage's remedy, as the row's button: "Choose folder" or
 ///   "Pair again";
 /// - a copy of each path the row draws, headed as the row heads it ("path
@@ -29,7 +31,7 @@ List<RowAction> profileRowActions(
   final shown = profileEntriesShown(row.entries);
   final peer = profilePeerLabel(row);
   return [
-    if (row.lastRunUnfinished)
+    if (row.lastRun != LastRun.settled)
       RowCommand(
         label: 'Run again',
         icon: Icons.replay,

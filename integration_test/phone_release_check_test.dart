@@ -41,6 +41,7 @@ import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/app_settings.dart';
 import 'package:dsync/app/core_link/core_channel.dart';
 import 'package:dsync/app/core_link/core_link.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/entry_draft.dart';
 import 'package:dsync/app/core_link/models/profile_draft.dart';
@@ -360,7 +361,7 @@ class _Session {
   /// running the profile again converges it.
   Future<void> recover() async {
     final before = await _killProfileEntry();
-    if (!before.lastRunUnfinished) {
+    if (before.lastRun != LastRun.died) {
       _fail('d', 'no run marker on $_killProfile after the kill');
     }
     _mark('d|marker|true');
@@ -387,7 +388,7 @@ class _Session {
       );
     }
     final after = await _killProfileEntry();
-    if (after.lastRunUnfinished) {
+    if (after.lastRun != LastRun.settled) {
       _fail('d', 'the run marker is still there after the recovery run');
     }
     _mark('d|recovered|applied=${finished.applied}');

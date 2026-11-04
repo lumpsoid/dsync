@@ -10,7 +10,7 @@ class ProfileView {
     this.peerName,
     this.jobs,
     required this.ignore,
-    required this.lastRunUnfinished,
+    required this.lastRun,
     required this.entries,
   });
 
@@ -22,7 +22,7 @@ class ProfileView {
       peerName: TraitHelpers.deserializeOptionStr(deserializer),
       jobs: TraitHelpers.deserializeOptionU32(deserializer),
       ignore: TraitHelpers.deserializeVectorStr(deserializer),
-      lastRunUnfinished: deserializer.deserializeBool(),
+      lastRun: LastRunViewExtension.deserialize(deserializer),
       entries: TraitHelpers.deserializeVectorEntryView(deserializer),
     );
     deserializer.decreaseContainerDepth();
@@ -43,7 +43,7 @@ class ProfileView {
   final String? peerName;
   final int? jobs;
   final List<String> ignore;
-  final bool lastRunUnfinished;
+  final LastRunView lastRun;
   final List<EntryView> entries;
 
   ProfileView copyWith({
@@ -52,7 +52,7 @@ class ProfileView {
     String? Function()? peerName,
     int? Function()? jobs,
     List<String>? ignore,
-    bool? lastRunUnfinished,
+    LastRunView? lastRun,
     List<EntryView>? entries,
   }) {
     return ProfileView(
@@ -61,7 +61,7 @@ class ProfileView {
       peerName: peerName == null ? this.peerName : peerName(),
       jobs: jobs == null ? this.jobs : jobs(),
       ignore: ignore ?? this.ignore,
-      lastRunUnfinished: lastRunUnfinished ?? this.lastRunUnfinished,
+      lastRun: lastRun ?? this.lastRun,
       entries: entries ?? this.entries,
     );
   }
@@ -73,7 +73,7 @@ class ProfileView {
     TraitHelpers.serializeOptionStr(peerName, serializer);
     TraitHelpers.serializeOptionU32(jobs, serializer);
     TraitHelpers.serializeVectorStr(ignore, serializer);
-    serializer.serializeBool(lastRunUnfinished);
+    lastRun.serialize(serializer);
     TraitHelpers.serializeVectorEntryView(entries, serializer);
     serializer.decreaseContainerDepth();
   }
@@ -95,7 +95,7 @@ class ProfileView {
       && peerName == other.peerName
       && jobs == other.jobs
       && listEquals(ignore, other.ignore)
-      && lastRunUnfinished == other.lastRunUnfinished
+      && lastRun == other.lastRun
       && listEquals(entries, other.entries);
   }
 
@@ -106,7 +106,7 @@ class ProfileView {
         peerName,
         jobs,
         ignore,
-        lastRunUnfinished,
+        lastRun,
         entries,
       );
 
@@ -121,7 +121,7 @@ class ProfileView {
         'peerName: $peerName, '
         'jobs: $jobs, '
         'ignore: $ignore, '
-        'lastRunUnfinished: $lastRunUnfinished, '
+        'lastRun: $lastRun, '
         'entries: $entries'
         ')';
       return true;

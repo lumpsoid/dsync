@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core_link/models/last_run.dart';
 import '../../destructive_confirm_dialog.dart';
 import '../../path_text.dart';
 import '../../profile_breakage.dart';
@@ -357,11 +358,10 @@ class _ProfileTile extends StatelessWidget {
                     ),
                   ),
                 ],
-                if (row.lastRunUnfinished) ...[
+                if (_lastRunWarning(row.lastRun) case final warning?) ...[
                   const SizedBox(height: 8),
                   Text(
-                    'The last run did not finish. Run it again to sort out the '
-                    'files it left.',
+                    warning,
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                   Align(
@@ -472,3 +472,15 @@ class _DeleteDialog extends StatelessWidget {
     );
   }
 }
+
+/// What a row says of its last run, or `null` when there is nothing to
+/// warn of.
+String? _lastRunWarning(LastRun lastRun) => switch (lastRun) {
+  LastRun.settled => null,
+  LastRun.died =>
+    'The last run did not finish. Run it again to sort out the files it '
+        'left.',
+  LastRun.writeHeld =>
+    'A write an interrupted run was making is still held back. Run it to '
+        "choose which side's copy to keep.",
+};

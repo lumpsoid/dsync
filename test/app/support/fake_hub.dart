@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'package:dsync/app/core_link/core_channel.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/archive_info.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/core_link/models/filter_preview.dart';
@@ -489,7 +490,11 @@ wire.ProfileEntry wireProfile(ProfileEntry entry) => switch (entry) {
       peerName: head.peerName,
       jobs: head.jobs,
       ignore: head.ignorePatterns,
-      lastRunUnfinished: head.lastRunUnfinished,
+      lastRun: switch (head.lastRun) {
+        LastRun.settled => wire.LastRunView.settled,
+        LastRun.writeHeld => wire.LastRunView.writeHeld,
+        LastRun.died => wire.LastRunView.died,
+      },
       entries: [
         for (final entry in head.entries)
           wire.EntryView(

@@ -16,6 +16,7 @@ use dsync_domain::{
 
 use crate::replica_error::ReplicaError;
 use crate::replica_lock::LockError;
+use crate::run_marker::LastRun;
 
 /// One step of a run, in the order the run takes them.
 #[derive(Clone, Debug)]
@@ -23,12 +24,12 @@ pub enum RunEvent {
     /// The run header's facts, once both replicas are locked: each root as
     /// its `hello` found it, each archive as its `lock` read it. Not sent
     /// for a run refused before then (a failed `hello`, a root of the wrong
-    /// kind, a lock refused); its error is. `last_run_unfinished` is SPEC
-    /// §7.6's run marker, as found before this run touched it.
+    /// kind, a lock refused); its error is. `last_run` is what SPEC §7.6's
+    /// run marker said, as found before this run touched it.
     Replicas {
         a: ReplicaInfo,
         b: ReplicaInfo,
-        last_run_unfinished: bool,
+        last_run: LastRun,
     },
     /// Both scans' SPEC §5.2 branch counts, once both are done.
     ScanTally { a: ScanTally, b: ScanTally },

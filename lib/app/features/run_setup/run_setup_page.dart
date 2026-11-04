@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core_link/models/last_run.dart';
 import '../../core_link/models/root_kind.dart';
 import '../../keyboard_first.dart';
 import '../../path_text.dart';
@@ -452,13 +453,27 @@ class _RunSetupForm extends StatelessWidget {
               padding: padding,
               children: [
                 if (state.prefill case RunSetupPrefill(
-                  lastRunUnfinished: true,
+                  lastRun: LastRun.died,
                 )) ...[
                   Text(
                     key: const Key('run-setup-last-run-unfinished'),
                     'The last run of this profile did not finish. Starting it '
                     'again sorts out what it left: files it never reached, or '
                     'stopped mid-write, sync as usual.',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
+                if (state.prefill case RunSetupPrefill(
+                  lastRun: LastRun.writeHeld,
+                )) ...[
+                  Text(
+                    key: const Key('run-setup-write-held'),
+                    'A write an interrupted run of this profile was making is '
+                    'still held back. Its path stays a conflict until you keep '
+                    "one side's copy.",
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                     ),

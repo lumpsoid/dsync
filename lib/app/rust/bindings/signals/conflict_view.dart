@@ -8,6 +8,7 @@ class ConflictView {
     required this.path,
     this.a,
     this.b,
+    required this.cause,
   });
 
   static ConflictView deserialize(BinaryDeserializer deserializer) {
@@ -16,6 +17,7 @@ class ConflictView {
       path: deserializer.deserializeString(),
       a: TraitHelpers.deserializeOptionStatusView(deserializer),
       b: TraitHelpers.deserializeOptionStatusView(deserializer),
+      cause: ConflictCauseView.deserialize(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -33,16 +35,19 @@ class ConflictView {
   final String path;
   final StatusView? a;
   final StatusView? b;
+  final ConflictCauseView cause;
 
   ConflictView copyWith({
     String? path,
     StatusView? Function()? a,
     StatusView? Function()? b,
+    ConflictCauseView? cause,
   }) {
     return ConflictView(
       path: path ?? this.path,
       a: a == null ? this.a : a(),
       b: b == null ? this.b : b(),
+      cause: cause ?? this.cause,
     );
   }
 
@@ -51,6 +56,7 @@ class ConflictView {
     serializer.serializeString(path);
     TraitHelpers.serializeOptionStatusView(a, serializer);
     TraitHelpers.serializeOptionStatusView(b, serializer);
+    cause.serialize(serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -68,7 +74,8 @@ class ConflictView {
     return other is ConflictView
       && path == other.path
       && a == other.a
-      && b == other.b;
+      && b == other.b
+      && cause == other.cause;
   }
 
   @override
@@ -76,6 +83,7 @@ class ConflictView {
         path,
         a,
         b,
+        cause,
       );
 
   @override
@@ -86,7 +94,8 @@ class ConflictView {
       fullString = '$runtimeType('
         'path: $path, '
         'a: $a, '
-        'b: $b'
+        'b: $b, '
+        'cause: $cause'
         ')';
       return true;
     }());

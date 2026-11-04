@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
@@ -80,7 +81,7 @@ void main() {
   /// A profile saved for [desktop] over [notes], as the core lists it.
   HeadProfile weekly({
     List<String> ignorePatterns = const [],
-    bool lastRunUnfinished = false,
+    LastRun lastRun = LastRun.settled,
   }) => headProfile(
     name: 'weekly',
     localRoot: notes(),
@@ -88,7 +89,7 @@ void main() {
     peerName: desktop.name,
     remoteRoot: '~/notes',
     ignorePatterns: ignorePatterns,
-    lastRunUnfinished: lastRunUnfinished,
+    lastRun: lastRun,
   );
 
   group('load', () {
@@ -759,11 +760,11 @@ void main() {
         'says so (task 99f404)', () async {
       listing([weekly()]);
       await controller.load(const RunSetupFromProfile('weekly'));
-      expect(controller.state.prefill!.lastRunUnfinished, isFalse);
+      expect(controller.state.prefill!.lastRun, LastRun.settled);
 
-      listing([weekly(lastRunUnfinished: true)]);
+      listing([weekly(lastRun: LastRun.died)]);
       await controller.load(const RunSetupFromProfile('weekly'));
-      expect(controller.state.prefill!.lastRunUnfinished, isTrue);
+      expect(controller.state.prefill!.lastRun, LastRun.died);
     });
 
     test('a start from a profile saves over it, not beside it', () async {

@@ -2,6 +2,7 @@
 //! names (SPEC §11.4). One place, so the two renderers and the interactive
 //! prompt never disagree about what an action or a status is called.
 
+use dsync_core::LastRun;
 use dsync_domain::{Action, Side, SkippedAt, SkippedReason, Status, Unchanged};
 
 /// `A` or `B`, as every human line names a side.
@@ -9,6 +10,16 @@ pub fn side(side: Side) -> &'static str {
     match side {
         Side::A => "A",
         Side::B => "B",
+    }
+}
+
+/// The `--json` `replicas` line's `lastRun`: what the entry's run marker
+/// said (SPEC §7.6).
+pub fn last_run(last_run: LastRun) -> &'static str {
+    match last_run {
+        LastRun::Settled => "settled",
+        LastRun::WriteHeld => "writeHeld",
+        LastRun::Died => "died",
     }
 }
 

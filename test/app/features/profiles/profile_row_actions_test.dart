@@ -1,3 +1,4 @@
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/features/profiles/profile_row_actions.dart';
 import 'package:dsync/app/profile_breakage.dart';
@@ -25,14 +26,14 @@ void main() {
     String? peerName = 'desktop',
     List<ProfileEntryRow>? entries,
     ProfileBreakage? breakage,
-    bool lastRunUnfinished = false,
+    LastRun lastRun = LastRun.settled,
   }) => ProfileRow(
     name: 'weekly',
     peerDeviceId: 'a1b2:c3d4',
     peerName: peerName,
     entries: entries ?? [entry('/on-device/notes', '~/notes')],
     breakage: breakage,
-    lastRunUnfinished: lastRunUnfinished,
+    lastRun: lastRun,
   );
 
   List<String> actionsOf(ProfileRow row) => describeActions(
@@ -54,7 +55,11 @@ void main() {
   });
 
   test('an unfinished run offers to run again first', () {
-    expect(actionsOf(row(lastRunUnfinished: true)).first, 'Run again');
+    expect(actionsOf(row(lastRun: LastRun.died)).first, 'Run again');
+  });
+
+  test('a write still held offers to run again first', () {
+    expect(actionsOf(row(lastRun: LastRun.writeHeld)).first, 'Run again');
   });
 
   test('a breakage offers its remedy, aimed where the row aims it', () {

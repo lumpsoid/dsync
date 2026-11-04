@@ -160,11 +160,15 @@ impl Listing {
                     .collect();
                 // Unreadable reads as absent: a warning, not a reason to
                 // hide the profile.
-                let last_run_unfinished = ids.iter().any(|id| {
-                    RunMarker::new(self.state.run_marker(id))
-                        .is_present()
-                        .unwrap_or(false)
-                });
+                let last_run = ids
+                    .iter()
+                    .map(|id| {
+                        RunMarker::new(self.state.run_marker(id))
+                            .last_run()
+                            .unwrap_or_default()
+                    })
+                    .max()
+                    .unwrap_or_default();
                 ProfileEntry::Head(ProfileView {
                     name: name.to_string(),
                     peer_device_id: device.to_string(),
@@ -178,7 +182,7 @@ impl Listing {
                         .iter()
                         .map(|glob| glob.as_str().to_owned())
                         .collect(),
-                    last_run_unfinished,
+                    last_run: last_run.into(),
                     entries,
                 })
             }

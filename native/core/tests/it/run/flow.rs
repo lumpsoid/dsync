@@ -5,7 +5,9 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use dsync_core::{BatchDecider, DryRunDecider, Replica, ReplicaError, RunError, RunEvent, Stopped};
+use dsync_core::{
+    BatchDecider, DryRunDecider, LastRun, Replica, ReplicaError, RunError, RunEvent, Stopped,
+};
 use dsync_domain::{
     ArchiveCommit, Glob, ReplicaOp, RuleSet, Side, SkippedAt, SkippedReason, Tuning,
 };
@@ -48,16 +50,11 @@ async fn both_hello_replies_come_first_and_a_synced_pair_reports_its_last_commit
     assert_eq!((a.last_commit, b.last_commit), (None, None));
 
     let second = sync(&site).await;
-    let RunEvent::Replicas {
-        a,
-        b,
-        last_run_unfinished,
-    } = &second.events[0]
-    else {
+    let RunEvent::Replicas { a, b, last_run } = &second.events[0] else {
         panic!("{:?}", second.kinds());
     };
     assert!(a.last_commit.is_some() && b.last_commit.is_some());
-    assert!(!last_run_unfinished);
+    assert_eq!(*last_run, LastRun::Settled);
 }
 
 #[tokio::test]
@@ -761,14 +758,10 @@ async fn a_stale_marker_is_reported_and_cleared_by_a_run_with_nothing_to_apply()
 
     let finished = sync(&site).await;
 
-    let RunEvent::Replicas {
-        last_run_unfinished,
-        ..
-    } = finished.events[0]
-    else {
+    let RunEvent::Replicas { last_run, .. } = finished.events[0] else {
         panic!()
     };
-    assert!(last_run_unfinished);
+    assert_eq!(last_run, LastRun::Died);
     assert!(!site.marker().exists());
     assert_eq!(finished.exit_code(), 0);
 }

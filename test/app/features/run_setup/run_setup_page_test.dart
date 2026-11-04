@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/app_theme.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run_setup/file_chooser.dart';
@@ -318,7 +319,7 @@ void main() {
         headProfile(
           name: 'weekly',
           peerDeviceId: desktop.deviceId,
-          lastRunUnfinished: true,
+          lastRun: LastRun.died,
         ),
       ]),
     );
@@ -328,6 +329,27 @@ void main() {
     expect(
       find.byKey(const Key('run-setup-last-run-unfinished')),
       findsOneWidget,
+    );
+  });
+
+  testWidgets('a profile with a dead run\'s write still held says so, not '
+      'that its last run did not finish (task 994c91)', (tester) async {
+    core.reply<wire.CoreCommandListProfiles>(
+      profilesReply([
+        headProfile(
+          name: 'weekly',
+          peerDeviceId: desktop.deviceId,
+          lastRun: LastRun.writeHeld,
+        ),
+      ]),
+    );
+
+    await pumpLoaded(tester, source: const RunSetupFromProfile('weekly'));
+
+    expect(find.byKey(const Key('run-setup-write-held')), findsOneWidget);
+    expect(
+      find.byKey(const Key('run-setup-last-run-unfinished')),
+      findsNothing,
     );
   });
 

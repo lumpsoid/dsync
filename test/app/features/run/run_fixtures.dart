@@ -449,8 +449,9 @@ wire.ConflictRowView conflictRow(
   wire.ResultView? outcome,
   wire.OfferView offer = const wire.OfferViewNotComparable(),
   wire.ConflictChangeView? changed,
+  wire.ConflictCauseView cause = const wire.ConflictCauseViewChanges(),
 }) => wire.ConflictRowView(
-  conflict: wire.ConflictView(path: path, a: a, b: b),
+  conflict: wire.ConflictView(path: path, a: a, b: b, cause: cause),
   offered: offered,
   offer: offer,
   choice: choice,

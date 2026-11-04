@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use dsync_core::{ActionFailure, ReplicaError, RunError, RunEvent};
+use dsync_core::{ActionFailure, LastRun, ReplicaError, RunError, RunEvent};
 use dsync_domain::{
     Action, Locality, Plan, ReplicaInfo, ReplicaOp, ReplicaRoot, RunSummary, ScanTally, Side,
     SkippedPath, SkippedReason, Status, Unchanged,
@@ -56,7 +56,7 @@ fn replicas_carry_each_side_location_locality_archive_and_last_commit() {
     let line = one(RunEvent::Replicas {
         a: info(Some(at), Some("/state/x-a.jsonl")),
         b: info(Some(at), None),
-        last_run_unfinished: false,
+        last_run: LastRun::Settled,
     });
     assert_eq!(
         line,
@@ -76,7 +76,7 @@ fn replicas_carry_each_side_location_locality_archive_and_last_commit() {
                 "lastCommitTime": "2023-11-14T22:13:20Z",
             },
             "firstSync": false,
-            "lastRunUnfinished": false,
+            "lastRun": "settled",
         })
     );
 }
@@ -86,11 +86,21 @@ fn a_first_sync_and_an_unfinished_run_are_facts_on_the_replicas_line() {
     let line = one(RunEvent::Replicas {
         a: info(None, None),
         b: info(Some(SystemTime::UNIX_EPOCH), None),
-        last_run_unfinished: true,
+        last_run: LastRun::Died,
     });
     assert_eq!(line["firstSync"], true);
-    assert_eq!(line["lastRunUnfinished"], true);
+    assert_eq!(line["lastRun"], "died");
     assert!(line["a"].get("lastCommitTime").is_none());
+}
+
+#[test]
+fn a_write_still_held_after_a_finished_run_is_its_own_last_run() {
+    let line = one(RunEvent::Replicas {
+        a: info(None, None),
+        b: info(None, None),
+        last_run: LastRun::WriteHeld,
+    });
+    assert_eq!(line["lastRun"], "writeHeld");
 }
 
 #[test]
@@ -104,7 +114,7 @@ fn a_unix_side_reports_a_socket_never_a_host() {
         &[RunEvent::Replicas {
             a: info(None, None),
             b: info(None, None),
-            last_run_unfinished: false,
+            last_run: LastRun::Settled,
         }],
     )
     .remove(0);
@@ -386,7 +396,7 @@ fn a_whole_run_is_one_decodable_line_per_event_in_order() {
         RunEvent::Replicas {
             a: info(None, None),
             b: info(None, None),
-            last_run_unfinished: false,
+            last_run: LastRun::Settled,
         },
         RunEvent::ScanTally {
             a: ScanTally::default(),

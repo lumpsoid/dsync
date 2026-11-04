@@ -60,7 +60,7 @@ impl UnfinishedApply {
 
     /// What is still held once a run's apply returned without dying:
     /// every recorded write except those whose path the run settled -
-    /// `applied`, the actions that all applied (a copy aside settles
+    /// `applied`, the actions that applied (a copy aside settles
     /// nothing), or quiet: in neither the plan's actions nor its conflicts,
     /// not beneath one of its conflicts (a file-against-directory one
     /// holds its whole subtree), and not `unreadable`, so both sides agree

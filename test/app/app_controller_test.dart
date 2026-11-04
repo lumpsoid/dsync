@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dsync/app/app_bootstrap.dart';
 import 'package:dsync/app/app_controller.dart';
 import 'package:dsync/app/core_link/core_link.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/core_failure.dart';
 import 'package:dsync/app/core_link/models/device_identity_info.dart';
 import 'package:dsync/app/core_link/models/entry_draft.dart';
@@ -505,12 +506,12 @@ void main() {
     test('a run ending re-reads the profiles, so the run marker the core '
         'wrote or cleared shows', () async {
       core.reply<wire.CoreCommandListProfiles>(
-        profilesReply([headProfile(lastRunUnfinished: true)]),
+        profilesReply([headProfile(lastRun: LastRun.died)]),
       );
 
       await controller.runEnded();
 
-      expect(controller.state.profiles.single.lastRunUnfinished, isTrue);
+      expect(controller.state.profiles.single.lastRun, LastRun.died);
     });
 
     test('a run ending whose profiles cannot be re-read does not '
@@ -536,30 +537,30 @@ void main() {
       expect(row.peerName, 'desktop');
       expect(row.remoteRootPath, '~/notes');
       expect(row.breakage, isNull);
-      expect(row.lastRunUnfinished, isFalse);
+      expect(row.lastRun, LastRun.settled);
     });
 
     test('a run marker still there renders the last run unfinished', () async {
       core.reply<wire.CoreCommandListProfiles>(
-        profilesReply([headProfile(lastRunUnfinished: true)]),
+        profilesReply([headProfile(lastRun: LastRun.died)]),
       );
 
       await controller.refreshProfiles();
 
-      expect(controller.state.profiles.single.lastRunUnfinished, isTrue);
+      expect(controller.state.profiles.single.lastRun, LastRun.died);
     });
 
     test('an unpaired device renders the profile broken, not gone, and '
         'not also offered to run again', () async {
       core.reply<wire.CoreCommandListProfiles>(
-        profilesReply([headProfile(peerName: null, lastRunUnfinished: true)]),
+        profilesReply([headProfile(peerName: null, lastRun: LastRun.died)]),
       );
 
       await controller.refreshProfiles();
 
       final row = controller.state.profiles.single;
       expect(row.breakage, isA<ProfileDeviceUnpaired>());
-      expect(row.lastRunUnfinished, isFalse);
+      expect(row.lastRun, LastRun.settled);
     });
 
     test('a local root the core refuses renders the profile broken', () async {

@@ -1,4 +1,5 @@
 import 'core_link/models/entry_view.dart';
+import 'core_link/models/last_run.dart';
 import 'core_link/models/profile_entry.dart';
 import 'core_link/models/root_kind.dart';
 import 'profile_breakage.dart';
@@ -24,12 +25,12 @@ class ProfileRow {
     required this.peerName,
     required this.entries,
     required this.breakage,
-    required this.lastRunUnfinished,
+    required this.lastRun,
   });
 
   /// [profile] as the core listed it: its device's name *now* (`null`
   /// once revoked), each entry's own folder refusal (`null` while it is
-  /// usable), and whether its run marker (SPEC §7.6) is still there.
+  /// usable), and what its run markers (SPEC §7.6) say.
   factory ProfileRow.render(HeadProfile profile) {
     final entries = [
       for (final entry in profile.entries) ProfileEntryRow.render(entry),
@@ -47,7 +48,7 @@ class ProfileRow {
       peerName: profile.peerName,
       entries: entries,
       breakage: broken,
-      lastRunUnfinished: broken == null && profile.lastRunUnfinished,
+      lastRun: broken == null ? profile.lastRun : LastRun.settled,
     );
   }
 
@@ -72,11 +73,12 @@ class ProfileRow {
   /// while it can be run.
   final ProfileBreakage? breakage;
 
-  /// Whether to warn that this profile's last run did not finish and offer
-  /// to run it again (task 99f404). Never alongside a [breakage]: a profile
-  /// that cannot be run has its remedy to show first, and running it again
-  /// is not one of them until that is fixed.
-  final bool lastRunUnfinished;
+  /// What to warn of — the last run did not finish, or a write a dead run
+  /// was making is still held back — and offer to run it again (tasks
+  /// 99f404, 994c91); [LastRun.settled] warns of nothing. Never alongside a
+  /// [breakage]: a profile that cannot be run has its remedy to show
+  /// first, and running it again is not one of them until that is fixed.
+  final LastRun lastRun;
 
   /// The ids the core derives from each entry's two sides, in entry order:
   /// what the profile's archive logs are filed under.

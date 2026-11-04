@@ -9,6 +9,7 @@ import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -97,7 +98,7 @@ void main() {
     peerName: 'desktop',
     entries: [entry('p1')],
     breakage: null,
-    lastRunUnfinished: false,
+    lastRun: LastRun.settled,
   );
 
   ProfileRow broken() => ProfileRow(
@@ -106,7 +107,7 @@ void main() {
     peerName: null,
     entries: [entry('p2')],
     breakage: const ProfileDeviceUnpaired(),
-    lastRunUnfinished: false,
+    lastRun: LastRun.settled,
   );
 
   ProfileRow folderLost() => ProfileRow(
@@ -115,7 +116,7 @@ void main() {
     peerName: 'desktop',
     entries: [entry('p3', localRootPath: '/on-device/gone')],
     breakage: const ProfileLocalRootUnusable(0),
-    lastRunUnfinished: false,
+    lastRun: LastRun.settled,
   );
 
   testWidgets('an empty list is the first-run state, pointing at Devices', (
@@ -295,7 +296,7 @@ void main() {
           entry('p3'),
         ],
         breakage: null,
-        lastRunUnfinished: false,
+        lastRun: LastRun.settled,
       ),
     ]);
     await pumpPage(tester);
@@ -338,12 +339,36 @@ void main() {
         peerName: 'desktop',
         entries: [entry('p1')],
         breakage: null,
-        lastRunUnfinished: true,
+        lastRun: LastRun.died,
       ),
     ]);
     await pumpPage(tester);
 
     expect(find.textContaining('The last run did not finish'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('profile-run-again-weekly')));
+
+    expect(opened, ['weekly']);
+  });
+
+  testWidgets('a profile whose last run finished with a dead run\'s write '
+      'still held says so, not that it did not finish (task 994c91)', (
+    tester,
+  ) async {
+    ready();
+    app.state.recordProfiles([
+      ProfileRow(
+        name: 'weekly',
+        peerDeviceId: 'a1b2:c3d4',
+        peerName: 'desktop',
+        entries: [entry('p1')],
+        breakage: null,
+        lastRun: LastRun.writeHeld,
+      ),
+    ]);
+    await pumpPage(tester);
+
+    expect(find.textContaining('still held back'), findsOneWidget);
+    expect(find.textContaining('did not finish'), findsNothing);
     await tester.tap(find.byKey(const Key('profile-run-again-weekly')));
 
     expect(opened, ['weekly']);
@@ -441,7 +466,7 @@ void main() {
           ),
         ],
         breakage: const ProfileLocalRootUnusable(2),
-        lastRunUnfinished: false,
+        lastRun: LastRun.settled,
       ),
     ]);
     await pumpPage(tester);

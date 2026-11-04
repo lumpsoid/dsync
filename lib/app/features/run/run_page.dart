@@ -1840,6 +1840,17 @@ class _ConflictRow extends StatelessWidget {
                       ),
                     ),
                   ),
+                if (row.heldBack case final heldBack?)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 22, top: 4),
+                    child: Text(
+                      heldBack,
+                      key: Key('run-conflict-held-${row.path}'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 // Both boxes as tall as the taller: a side with a file
                 // carries a line more than one without.
