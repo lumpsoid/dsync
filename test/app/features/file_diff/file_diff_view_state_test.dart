@@ -160,6 +160,7 @@ void main() {
             newSide: b,
             side: ReplicaSide.a,
             size: 5 << 20,
+            maxBytes: 4 << 20,
           ),
         ),
         'Larger than 4 MB on This device',

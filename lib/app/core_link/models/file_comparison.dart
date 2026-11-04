@@ -34,7 +34,8 @@ final class MediaFile extends ComparedFile {
   });
 }
 
-/// The file on [side] is [size] bytes, too large to read.
+/// The file on [side] is [size] bytes, over the core's read cap of
+/// [maxBytes].
 final class TooLargeFile extends ComparedFile {
   const TooLargeFile({
     required super.path,
@@ -42,10 +43,12 @@ final class TooLargeFile extends ComparedFile {
     required super.newSide,
     required this.side,
     required this.size,
+    required this.maxBytes,
   });
 
   final ReplicaSide side;
   final int size;
+  final int maxBytes;
 }
 
 /// The file on [side] is not text.

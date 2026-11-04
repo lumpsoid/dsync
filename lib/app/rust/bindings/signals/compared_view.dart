@@ -1,7 +1,8 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// What the compare found: left unread (media, over the cap), unreadable
+/// What the compare found: left unread (media, over the cap of
+/// `max_bytes`, which the page names), unreadable
 /// as text (binary, a failed read), or both texts' line diff - the same
 /// text, or the hunks that differ.
 abstract class ComparedView {
@@ -88,6 +89,7 @@ class ComparedViewTooLarge extends ComparedView {
   const ComparedViewTooLarge({
     required this.side,
     required this.size,
+    required this.maxBytes,
   }) : super();
 
   static ComparedViewTooLarge load(BinaryDeserializer deserializer) {
@@ -95,6 +97,7 @@ class ComparedViewTooLarge extends ComparedView {
     final instance = ComparedViewTooLarge(
       side: SideViewExtension.deserialize(deserializer),
       size: deserializer.deserializeUint64(),
+      maxBytes: deserializer.deserializeUint64(),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -102,14 +105,17 @@ class ComparedViewTooLarge extends ComparedView {
 
   final SideView side;
   final Uint64 size;
+  final Uint64 maxBytes;
 
   ComparedViewTooLarge copyWith({
     SideView? side,
     Uint64? size,
+    Uint64? maxBytes,
   }) {
     return ComparedViewTooLarge(
       side: side ?? this.side,
       size: size ?? this.size,
+      maxBytes: maxBytes ?? this.maxBytes,
     );
   }
 
@@ -118,6 +124,7 @@ class ComparedViewTooLarge extends ComparedView {
     serializer.serializeVariantIndex(1);
     side.serialize(serializer);
     serializer.serializeUint64(size);
+    serializer.serializeUint64(maxBytes);
     serializer.decreaseContainerDepth();
   }
 
@@ -128,13 +135,15 @@ class ComparedViewTooLarge extends ComparedView {
 
     return other is ComparedViewTooLarge
       && side == other.side
-      && size == other.size;
+      && size == other.size
+      && maxBytes == other.maxBytes;
   }
 
   @override
   int get hashCode => Object.hash(
         side,
         size,
+        maxBytes,
       );
 
   @override
@@ -144,7 +153,8 @@ class ComparedViewTooLarge extends ComparedView {
     assert(() {
       fullString = '$runtimeType('
         'side: $side, '
-        'size: $size'
+        'size: $size, '
+        'maxBytes: $maxBytes'
         ')';
       return true;
     }());

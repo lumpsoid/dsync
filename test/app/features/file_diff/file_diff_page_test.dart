@@ -275,18 +275,20 @@ void main() {
     });
   }
 
-  testWidgets('a file over the read limit says so, naming its side', (
-    tester,
-  ) async {
-    replyWith(
-      wire.ComparedViewTooLarge(
-        side: wire.SideView.a,
-        size: wire.Uint64(BigInt.from(5 << 20)),
-      ),
-    );
-    await pumpPage(tester, window: const Size(400, 800));
-    expect(find.text('Larger than 4 MB on This device'), findsOneWidget);
-  });
+  testWidgets(
+    'a file over the read limit says so, naming its side and the core cap',
+    (tester) async {
+      replyWith(
+        wire.ComparedViewTooLarge(
+          side: wire.SideView.a,
+          size: wire.Uint64(BigInt.from(9 << 20)),
+          maxBytes: wire.Uint64(BigInt.from(8 << 20)),
+        ),
+      );
+      await pumpPage(tester, window: const Size(400, 800));
+      expect(find.text('Larger than 8 MB on This device'), findsOneWidget);
+    },
+  );
 
   testWidgets('a row with nothing to compare says so', (tester) async {
     hub.reply<wire.CoreCommandCompareRow>(

@@ -47,7 +47,13 @@ impl<'r, A: Replica, B: Replica> Peek<'r, A, B> {
     pub async fn compare(&self, comparison: &Comparison) -> Compared {
         match comparison.offer(&self.limits) {
             Offer::Media => return Compared::Media,
-            Offer::TooLarge { side, size } => return Compared::TooLarge { side, size },
+            Offer::TooLarge { side, size } => {
+                return Compared::TooLarge {
+                    side,
+                    size,
+                    max_bytes: self.limits.max_bytes,
+                };
+            }
             Offer::Readable => {}
         }
         let path = &comparison.path;
@@ -55,11 +61,12 @@ impl<'r, A: Replica, B: Replica> Peek<'r, A, B> {
             self.fetch(path, comparison.old),
             self.fetch(path, comparison.new)
         );
-        let old = match text(comparison.old.side, old) {
+        let max_bytes = self.limits.max_bytes;
+        let old = match text(comparison.old.side, old, max_bytes) {
             Ok(old) => old,
             Err(refused) => return refused,
         };
-        match text(comparison.new.side, new) {
+        match text(comparison.new.side, new, max_bytes) {
             Ok(new) => Compared::Texts { old, new },
             Err(refused) => refused,
         }
@@ -100,14 +107,19 @@ async fn capped<R: Replica>(replica: &R, path: &RelPath, max_bytes: u64) -> Fetc
     }
 }
 
-/// `side`'s text, or the [`Compared`] that refuses the comparison.
-fn text(side: Side, fetched: Fetched) -> Result<Option<FileText>, Compared> {
+/// `side`'s text, or the [`Compared`] that refuses the comparison; a read
+/// past `max_bytes` refuses it as too large.
+fn text(side: Side, fetched: Fetched, max_bytes: u64) -> Result<Option<FileText>, Compared> {
     match fetched {
         Fetched::Absent => Ok(None),
         Fetched::Bytes(bytes) => FileText::decode(bytes)
             .map(Some)
             .map_err(|_| Compared::Binary { side }),
-        Fetched::TooLarge(size) => Err(Compared::TooLarge { side, size }),
+        Fetched::TooLarge(size) => Err(Compared::TooLarge {
+            side,
+            size,
+            max_bytes,
+        }),
         Fetched::Unreadable(message) => Err(Compared::Unreadable { side, message }),
     }
 }

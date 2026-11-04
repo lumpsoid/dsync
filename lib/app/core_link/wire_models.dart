@@ -721,13 +721,15 @@ ComparedFile _compared(
     oldSide: oldSide,
     newSide: newSide,
   ),
-  wire.ComparedViewTooLarge(side: final s, :final size) => TooLargeFile(
-    path: path,
-    oldSide: oldSide,
-    newSide: newSide,
-    side: side(s),
-    size: _n(size),
-  ),
+  wire.ComparedViewTooLarge(side: final s, :final size, :final maxBytes) =>
+    TooLargeFile(
+      path: path,
+      oldSide: oldSide,
+      newSide: newSide,
+      side: side(s),
+      size: _n(size),
+      maxBytes: _n(maxBytes),
+    ),
   wire.ComparedViewBinary(side: final s) => BinaryFile(
     path: path,
     oldSide: oldSide,

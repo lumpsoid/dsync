@@ -852,9 +852,14 @@ async fn compare<A: Replica, B: Replica>(
     };
     let verdict = match peek.compare(&comparison).await {
         Compared::Media => ComparedView::Media,
-        Compared::TooLarge { side, size } => ComparedView::TooLarge {
+        Compared::TooLarge {
+            side,
+            size,
+            max_bytes,
+        } => ComparedView::TooLarge {
             side: side.into(),
             size,
+            max_bytes,
         },
         Compared::Binary { side } => ComparedView::Binary { side: side.into() },
         Compared::Unreadable { side, message } => ComparedView::Unreadable {

@@ -222,7 +222,8 @@ async fn row_offers_and_the_compare_agree_under_the_hub_s_tuning() {
         verdict,
         ComparedView::TooLarge {
             side: SideView::A,
-            size: 11
+            size: 11,
+            max_bytes: 8
         }
     ));
 

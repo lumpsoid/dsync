@@ -208,6 +208,7 @@ async fn a_file_grown_past_the_cap_since_the_scan_is_too_large_and_one_at_the_ca
         &Compared::TooLarge {
             side: Side::A,
             size: 11,
+            max_bytes: 10,
         }
     );
     assert_eq!(
@@ -316,6 +317,7 @@ async fn a_media_or_over_cap_comparison_is_answered_without_a_read() {
         &Compared::TooLarge {
             side: Side::A,
             size: Tuning::DEFAULT.peek.max_bytes + 1,
+            max_bytes: Tuning::DEFAULT.peek.max_bytes,
         }
     );
     assert!(

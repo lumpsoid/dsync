@@ -35,11 +35,6 @@ class FileDiffArgs {
   final ComparedSide newSide;
 }
 
-/// The size of the largest file the core reads to compare, in bytes.
-/// Mirrors `Tuning::DEFAULT.peek.max_bytes` in `native/domain`; a larger
-/// file comes back as [TooLargeFile] and the page names this cap.
-const peekLimitBytes = 4 * 1024 * 1024;
-
 /// What the page shows under its header.
 sealed class FileDiffView {
   const FileDiffView();
@@ -71,8 +66,8 @@ sealed class FileDiffShown extends FileDiffView {
       'Nothing to compare for this row',
     ),
     MediaFile() => const FileDiffSentence('Media file — not compared'),
-    TooLargeFile(:final side) => FileDiffSentence(
-      'Larger than ${peekLimitBytes ~/ (1024 * 1024)} MB on '
+    TooLargeFile(:final side, :final maxBytes) => FileDiffSentence(
+      'Larger than ${maxBytes ~/ (1024 * 1024)} MB on '
       '${replicaName(side)}',
     ),
     BinaryFile(:final side) => FileDiffSentence(

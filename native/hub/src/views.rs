@@ -741,7 +741,8 @@ impl From<Sided> for SidedView {
     }
 }
 
-/// What the compare found: left unread (media, over the cap), unreadable
+/// What the compare found: left unread (media, over the cap of
+/// `max_bytes`, which the page names), unreadable
 /// as text (binary, a failed read), or both texts' line diff - the same
 /// text, or the hunks that differ.
 #[derive(Serialize, SignalPiece)]
@@ -750,6 +751,7 @@ pub enum ComparedView {
     TooLarge {
         side: SideView,
         size: u64,
+        max_bytes: u64,
     },
     Binary {
         side: SideView,

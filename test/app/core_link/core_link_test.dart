@@ -247,9 +247,11 @@ void main() {
         wire.ComparedViewTooLarge(
           side: wire.SideView.a,
           size: n(7),
+          maxBytes: n(4),
         ): isA<TooLargeFile>()
             .having((f) => f.side, 'side', ReplicaSide.a)
-            .having((f) => f.size, 'size', 7),
+            .having((f) => f.size, 'size', 7)
+            .having((f) => f.maxBytes, 'maxBytes', 4),
         const wire.ComparedViewBinary(side: wire.SideView.b): isA<BinaryFile>()
             .having((f) => f.side, 'side', ReplicaSide.b),
         const wire.ComparedViewUnreadable(

@@ -9,9 +9,14 @@ use dsync_domain::{FileText, Side};
 pub enum Compared {
     /// Not read: the path names a media file.
     Media,
-    /// `side` is over the peek's cap: by the plan's size before any read,
-    /// or by the bytes seen when the file grew past it since the scan.
-    TooLarge { side: Side, size: u64 },
+    /// `side` is over the peek's cap of `max_bytes`: by the plan's size
+    /// before any read, or by the bytes seen when the file grew past it
+    /// since the scan.
+    TooLarge {
+        side: Side,
+        size: u64,
+        max_bytes: u64,
+    },
     /// `side`'s bytes are not UTF-8 text.
     Binary { side: Side },
     /// `side` could not be read - e.g. its file was deleted since the scan.
